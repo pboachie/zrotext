@@ -82,21 +82,22 @@ def main():
     secret = secrets.token_hex(24)
     port = available_loopback_port()
     try:
-        # Compose requires an env file. Create it exclusively with private
-        # permissions from the first write; chmod after write leaves a window.
+        # The restore drill requires --env-file, but Compose gives the process
+        # environment precedence. Keep the random test password out of files.
         with open(env_file, "x", encoding="utf-8",
                   opener=lambda path, flags: os.open(path, flags, 0o600)) as output:
-            output.write(
-                f"POSTGRES_PASSWORD={secret}\n"
-                f"DATABASE_URL=postgres://zrotext:{secret}@db:5432/zrotext\n"
-                f"APP_PORT={port}\n"
-                "SITE_ID=local-a\nINSTANCE_ID=api-1\nDEPLOYMENT_EPOCH=1\n"
-                "DISPATCH_ENABLED=false\nSYNTHETIC_ALPHA_ENABLED=false\n"
-                "M0_TEST_TOKEN=\n",
-            )
+            output.write("# Disposable smoke values are process-scoped.\n")
     except OSError:
         shutil.rmtree(directory)
         raise
+    os.environ.update({
+        "POSTGRES_PASSWORD": secret,
+        "DATABASE_URL": f"postgres://zrotext:{secret}@db:5432/zrotext",
+        "APP_PORT": str(port),
+        "SITE_ID": "local-a", "INSTANCE_ID": "api-1", "DEPLOYMENT_EPOCH": "1",
+        "DISPATCH_ENABLED": "false", "SYNTHETIC_ALPHA_ENABLED": "false",
+        "M0_TEST_TOKEN": "",
+    })
     compose = ["docker", "compose", "--project-name", project,
                "--env-file", str(env_file), "-f", str(COMPOSE)]
     started = False
