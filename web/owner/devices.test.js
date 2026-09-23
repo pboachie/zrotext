@@ -380,6 +380,24 @@ test("device authorization is not presented as a live connection", async () => {
   assert.doesNotMatch(visibleText(revoked), /Approved for connection/);
 });
 
+test("owner device list distinguishes a socket lease from SMS readiness", async () => {
+  const { element, state } = await ownerPage();
+  state.devices = [
+    { device_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", display_name: "Phone A", revoked: false, active_socket_lease: true },
+    { device_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", display_name: "Phone B", revoked: false, active_socket_lease: false },
+    { device_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", display_name: "Phone C", revoked: true, active_socket_lease: true },
+  ];
+  await element("refresh-devices").listeners.click();
+  const [leased, absent, revoked] = element("device-list").children;
+  assert.match(visibleText(leased), /authenticated socket lease observed.*SMS readiness unknown/);
+  assert.match(visibleText(absent), /no current authenticated socket lease.*SMS readiness unknown/);
+  assert.match(visibleText(revoked), /Revoked/);
+  assert.doesNotMatch(visibleText(revoked), /socket lease observed/);
+  for (const row of [leased, absent]) {
+    assert.doesNotMatch(visibleText(row), /Ready to send|SMS connected/);
+  }
+});
+
 test("downgrade asks the owner to choose devices and never revokes one automatically", async () => {
   const { element, state } = await ownerPage();
   state.billingCapacity = { limit: 1, active: 2, overLimit: true, enrollmentBlocked: true };

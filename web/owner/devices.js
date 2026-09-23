@@ -471,7 +471,13 @@ async function loadDevices(reset = true) {
       const state = document.createElement("span");
       name.textContent = device.display_name;
       id.textContent = device.device_id;
-      state.textContent = device.revoked ? "Revoked" : "Approved for connection · live status unavailable";
+      state.textContent = device.revoked
+        ? "Revoked"
+        : device.active_socket_lease === true
+          ? "Approved · authenticated socket lease observed (may lag up to 90 seconds) · SMS readiness unknown"
+          : device.active_socket_lease === false
+            ? "Approved · no current authenticated socket lease · SMS readiness unknown"
+            : "Approved for connection · live status unavailable";
       detail.append(name, id, state);
       row.append(detail);
       if (!device.revoked) {
