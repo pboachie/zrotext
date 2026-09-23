@@ -187,12 +187,20 @@ class M1LocalAuthenticatedWssTest {
                 sample()
                 Thread.sleep(250)
             }
-            assertTrue("too few first-window heartbeat acknowledgments: ${samples.length()}",
-                samples.length() >= 7)
+            sample()
+            val firstSession = AuthenticatedGatewayStatus.authenticatedSessions
+            assertEquals("unexpected reauthentication during first idle window", 1, firstSession)
+            val firstAcks = (0 until samples.length()).count {
+                samples.getJSONObject(it).getInt("session") == firstSession
+            }
+            // The authenticated stream requests one heartbeat every 30 seconds.
+            // Three new acks allow one delayed/missed sample in this 120-second window.
+            assertTrue("too few first-window heartbeat acknowledgments: $firstAcks", firstAcks >= 3)
             marker.writeText("close_proxy")
             awaitIdle(90_000, "fresh proof and heartbeat after proxy close") {
-                AuthenticatedGatewayStatus.authenticatedSessions >= 2 &&
-                    samples.length() > 0 && samples.getJSONObject(samples.length() - 1).getInt("session") >= 2
+                AuthenticatedGatewayStatus.authenticatedSessions > firstSession &&
+                    samples.length() > 0 &&
+                    samples.getJSONObject(samples.length() - 1).getInt("session") > firstSession
             }
             val secondWindow = SystemClock.elapsedRealtime() + 120_000
             while (SystemClock.elapsedRealtime() < secondWindow) {
@@ -200,10 +208,12 @@ class M1LocalAuthenticatedWssTest {
                 Thread.sleep(250)
             }
             val secondAcks = (0 until samples.length()).count {
-                samples.getJSONObject(it).getInt("session") >= 2
+                samples.getJSONObject(it).getInt("session") == firstSession + 1
             }
-            assertTrue("too few recovery-window heartbeat acknowledgments: $secondAcks", secondAcks >= 7)
-            assertEquals(2, AuthenticatedGatewayStatus.authenticatedSessions)
+            // Includes the first post-reconnect ack plus at least three more.
+            assertTrue("too few recovery-window heartbeat acknowledgments: $secondAcks", secondAcks >= 4)
+            assertEquals("unexpected reauthentication during recovery idle window",
+                firstSession + 1, AuthenticatedGatewayStatus.authenticatedSessions)
             marker.writeText("complete")
         } finally {
             evidence.writeText(JSONObject()
