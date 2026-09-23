@@ -34,6 +34,8 @@ pub enum Evidence {
     DeliveryCallbackOk,
     DeliveryTimeout,
     CrashWithoutCallback,
+    GrantTimeout,
+    SentCallbackTimeout,
     Cancel,
     Expire,
 }
@@ -57,6 +59,8 @@ impl MessageState {
             (Submitting, SentCallbackFailed) => Failed,
             (Submitting, PartialSentCallbacks) => Unknown,
             (Submitting, CrashWithoutCallback) => Unknown,
+            (Claimed, GrantTimeout) => Unknown,
+            (Submitting, SentCallbackTimeout) => Unknown,
             (Unknown, SentCallbackOk) => Submitted,
             (Unknown, SentCallbackFailed) => Failed,
             (Submitted, DeliveryCallbackOk) => Delivered,
