@@ -1,4 +1,29 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import org.gradle.api.DefaultTask
+import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.provider.Property
+import org.gradle.api.tasks.Input
+import org.gradle.api.tasks.OutputDirectory
+import org.gradle.api.tasks.TaskAction
+
+abstract class WriteReleaseSourceCommit : DefaultTask() {
+    @get:Input abstract val sourceCommit: Property<String>
+    @get:OutputDirectory abstract val outputDir: DirectoryProperty
+
+    @TaskAction fun write() {
+        val commit = sourceCommit.get()
+        require(Regex("[0-9a-f]{40}").matches(commit)) { "A full source commit SHA is required" }
+        outputDir.get().file("zrotext-source-commit.txt").asFile.apply {
+            parentFile.mkdirs()
+            writeText("$commit\n", Charsets.US_ASCII)
+        }
+    }
+}
+
+val writeReleaseSourceCommit = tasks.register<WriteReleaseSourceCommit>("writeReleaseSourceCommit") {
+    sourceCommit.set(providers.gradleProperty("zrotextSourceCommit"))
+    outputDir.set(layout.buildDirectory.dir("generated/releaseSourceAssets"))
+}
 
 plugins {
     id("com.android.application")
@@ -30,6 +55,14 @@ android {
     }
     buildFeatures {
         compose = true
+    }
+}
+
+androidComponents {
+    onVariants(selector().withBuildType("release")) { variant ->
+        variant.sources.assets?.addGeneratedSourceDirectory(
+            writeReleaseSourceCommit, WriteReleaseSourceCommit::outputDir
+        )
     }
 }
 

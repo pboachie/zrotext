@@ -1,0 +1,64 @@
+name: Android release candidate (manual)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: android-release-candidate
+  cancel-in-progress: false
+jobs:
+  candidate:
+    # Signing secrets never run against a PR or a manually selected feature branch.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
+      - name: Install Android SDK platform and signing tools
+        run: |
+          sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0'
+          echo "$ANDROID_HOME/build-tools/37.0.0" >> "$GITHUB_PATH"
+      - name: Test release boundary
+        run: python3 -m unittest discover -s android/tools -p 'test_*.py'
+      - name: Build unsigned candidate without signing secrets
+        run: python3 android/tools/release_candidate.py build
+      # Required repository secrets: ZROTEXT_ANDROID_KEYSTORE_B64,
+      # ZROTEXT_ANDROID_KEYSTORE_PASSWORD, ZROTEXT_ANDROID_KEY_ALIAS,
+      # ZROTEXT_ANDROID_KEY_PASSWORD. Never add signing material to git.
+      - name: Sign and verify candidate
+        env:
+          ZROTEXT_ANDROID_KEYSTORE_B64: ${{ secrets.ZROTEXT_ANDROID_KEYSTORE_B64 }}
+          ZROTEXT_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ZROTEXT_ANDROID_KEYSTORE_PASSWORD }}
+          ZROTEXT_ANDROID_KEY_ALIAS: ${{ secrets.ZROTEXT_ANDROID_KEY_ALIAS }}
+          ZROTEXT_ANDROID_KEY_PASSWORD: ${{ secrets.ZROTEXT_ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          keystore="/tmp/zrotext-android-release/keystore.p12"
+          trap 'rm -f "$keystore"' EXIT
+          python3 - <<'PY'
+          import base64
+          import os
+          from pathlib import Path
+          encoded = os.environ.get("ZROTEXT_ANDROID_KEYSTORE_B64", "")
+          if not encoded:
+              raise SystemExit("Missing release keystore secret")
+          path = Path("/tmp/zrotext-android-release/keystore.p12")
+          path.write_bytes(base64.b64decode(encoded, validate=True))
+          path.chmod(0o600)
+          PY
+          unset ZROTEXT_ANDROID_KEYSTORE_B64
+          test "$ZROTEXT_ANDROID_KEY_ALIAS" = "zrotext-release"
+          python3 android/tools/release_candidate.py sign
+      - name: Store candidate for manual review
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: android-candidate-${{ github.sha }}
+          path: /tmp/zrotext-android-release/candidate/
+          if-no-files-found: error
+          retention-days: 7
