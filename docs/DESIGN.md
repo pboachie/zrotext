@@ -36,11 +36,11 @@ Sealed dashboard rules: fetch metadata and ciphertext; decrypt locally; render m
 
 ## Deliverable assets
 
-Visual prototype files are in the separate private `zrotext-ops` working folder. Public application design requirements remain here.
+Application design requirements are documented here; marketing prototypes are maintained separately.
 
 - `marketing/preview/assets/mark.svg`: original editable UI logo mark.
 - `marketing/preview/assets/android-app-phone.png`: browser-rendered phone artwork using the actual Android concept UI and ZROtext wordmark. This is the selected hero.
-- Original generated relay artwork and its ImageGen prompt remain private exploration assets; the founder selected the app-screen phone instead.
+- Use an Android app screen on the phone graphic rather than an abstract relay illustration.
 - `marketing/preview/index.html`, `style.css`, `app.js`: interactive visual reference with sample data and no dependencies.
 - `marketing/preview/architecture.html`: interactive two-location concept and failure behavior.
 - `marketing/preview/screenshots/`: browser captures of the locally running reference. These are not Android hardware screenshots or production evidence.

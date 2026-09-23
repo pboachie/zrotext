@@ -1,6 +1,6 @@
 # Two-location operation, traffic steering and failover
 
-**Founder requirement:** support two different locations, load balancing and redirecting load. Design this into the first implementation. Support single-site and dual-site configurations without encoding business milestones. Operator-specific deployment timing belongs outside the public repository. Two VMs in the same home do not satisfy separate-location resilience.
+ZROtext is designed for traffic routing across two independent locations. Single-site and dual-site configurations share the same application contracts. Two VMs on one host do not provide separate-location resilience.
 
 ## Decision
 

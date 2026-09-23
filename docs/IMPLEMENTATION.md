@@ -1,6 +1,6 @@
-# Implementation backlog and launch gates
+# Development roadmap
 
-The task definitions below are the planning baseline. Current progress and verified evidence are in [implementation-status.md](implementation-status.md). The design preview does not count as SMS implementation.
+This roadmap describes planned work and the evidence needed to call each stage complete. See [implementation-status.md](implementation-status.md) for what has been built and tested.
 
 ## Stage map
 
@@ -13,19 +13,19 @@ The task definitions below are the planning baseline. Current progress and verif
 | M4 — payments and economics pilot | 2–3 weeks | Stripe lifecycle suite, quota tests, pilot readiness evidence |
 | M5 — release review and operations | 2–4 weeks | Independent review remediation, release provenance, incident/rollback drill |
 
-Total 14–22 engineering weeks. Review lead times and phone/carrier access can extend calendar time. Some documentation/UI work overlaps, but M2 cannot be rubber-stamped by the same agent writing the crypto. Public paid availability follows M5; participants can enter a clearly labeled, reviewed paid pilot after equivalent security/billing gates are met.
+The estimates total 14–22 engineering weeks and are subject to change as hardware and carrier testing progresses. Security-sensitive work needs independent review. Public paid availability follows the release stage; a limited paid pilot would need equivalent security and billing evidence.
 
 ## M0: resolve risks first
 
 **ZT-001 Repository foundations.** Initialize Git if absent; root AGPL-3.0-only plus component-license plan; DCO, CONTRIBUTING, SECURITY, code of conduct, issue templates, Cargo workspace domain/server/device-sim, Android shell, `.env.example`, and public self-host Compose. Pin current supported versions; build/check in CI. No generated implementation of speculative MMS/OPAQUE crates. Proof: clean checkout compiles, no secrets, safe unprivileged PR CI. Dependencies: none.
 
-**ZT-002 Android feasibility spike.** Implement explicit gateway-mode UI, permissions, SIM selector, authenticated test socket, screen-off heartbeat and pause. Select service type through current official rules; document distribution strategy. The founder narrowed the initial hardware scope on 2026-09-22 to the dedicated Samsung SM-S928U running Android 16 because no Pixel is available; only the verified device/build may be claimed as supported. Run the full charging/unplugged, Doze, battery saver, Wi-Fi/mobile switch, airplane mode, force-stop, reboot, revoked permission, SIM removal, no default SIM, app upgrade and 24-hour idle matrix there. Use the simulator for state/fault behavior, never as radio or OEM reliability evidence. Test other versions and OEMs before expanding support claims. Log only test identifiers. Proof: dated matrix with exact model, OS/build, settings, connection gaps and manual-recovery steps. Dependency: ZT-001.
+**ZT-002 Android feasibility spike.** Implement explicit gateway-mode UI, permissions, SIM selector, authenticated test socket, screen-off heartbeat and pause. Select service type through current official rules; document distribution strategy. Initial hardware validation targets a dedicated Samsung SM-S928U running Android 16; only verified device/build combinations may be claimed as supported. Run the full charging/unplugged, Doze, battery saver, Wi-Fi/mobile switch, airplane mode, force-stop, reboot, revoked permission, SIM removal, no default SIM, app upgrade and 24-hour idle matrix there. Use the simulator for state/fault behavior, never as radio or OEM reliability evidence. Test other versions and OEMs before expanding support claims. Log only test identifiers. Proof: dated matrix with exact model, OS/build, settings, connection gaps and manual-recovery steps. Dependency: ZT-001.
 
 **ZT-003 Protocol/state ADR.** Finalize the explicit unknown/retry policy and JSON contracts. Device simulator models dropped ACKs and crashes before/after the radio boundary. Proof: timeline diagrams and executable state-transition tests. Dependency: ZT-001.
 
 ZT-003 also includes the required site/instance configuration, device session epochs, global idempotency, health/drain contracts and two-hub simulator from MULTI-LOCATION. This design work is not deferred until cloud provisioning.
 
-**ZT-004 PVE deployment preflight.** Read the founder's infra project and current rules; inspect capacity/inventory read-only using approved tooling when implementation is authorized. Produce a dedicated-VM plan, reserved IDs via inventory, network/backup approach, priced incremental budget and exact config diff. Operator-specific deployment timing stays in the private operations brief. No changes to existing unrelated workloads. Proof: private preflight record with sanitized public summary. Dependency: none; can proceed while hardware tests wait.
+**ZT-004 Hosting preflight.** Inspect capacity and inventory before provisioning. Produce a dedicated-VM plan, network and backup approach, cost estimate and exact configuration diff. Keep site-specific inventory and credentials in private operations records. Proof: a sanitized public summary and a reviewable operator plan. Dependency: none; can proceed while hardware tests wait.
 
 M0 go/no-go: a legitimate Android runtime strategy exists on the supported matrix, and a restoreable isolated PVE deployment fits capacity. If phone connection is unreliable, narrow support or request the specific product decision about wake-only push; do not disguise it with long polling claims.
 
@@ -57,7 +57,7 @@ M1 demo: controlled test number receives one SMS, replies, dashboard shows truth
 
 **ZT-014 Self-host and release.** One-command documented Compose, environment validation, migrations, backup/restore, no mandatory vendor login, signed APK, hash/signature verification, source/tag/digest correspondence. Proof: a fresh machine can send/reply with only documented steps. Dependency: 012,013.
 
-**ZT-015 PVE deployment.** Implement HOSTING plan in private infra repo with resource/egress isolation, dedicated tunnel, external health, redacted monitoring, bounded logs, off-site encrypted backup and restore drill. Test WSS outside the LAN, cloud-edge restart, power/internet loss simulation and queued-event reconciliation. Dependencies: 004,014. Domain and production secret setup are founder dependencies.
+**ZT-015 Hosted deployment.** Deploy published artifacts with private environment configuration, resource/egress isolation, dedicated tunnel, external health, redacted monitoring, bounded logs, off-site encrypted backup and restore drill. Test WSS outside the LAN, cloud-edge restart, power/internet loss simulation and queued-event reconciliation. Dependencies: 004,014.
 
 ## M4: charge fairly and validate demand
 
@@ -69,7 +69,7 @@ M1 demo: controlled test number receives one SMS, replies, dashboard shows truth
 
 ## M5: launch
 
-**ZT-019 External reviews and operations.** Close high-severity findings, legal/terms/privacy/abuse checks for selected countries, publish audit scope and support expectations, restore and incident drill, dependency/signature/SBOM checks, freeze tested versions. Independent review is required even when agents write most code.
+**ZT-019 External reviews and operations.** Close high-severity findings, legal/terms/privacy/abuse checks for selected countries, publish review scope and support expectations, restore and incident drill, dependency/signature/SBOM checks, freeze tested versions.
 
 **ZT-020 Public launch package.** README, contribution guide, self-host guide, real screenshot set, short real-phone demo, current pricing comparison, changelog, status URL, support/recovery docs. Screenshots scrub real recipients/API keys and distinguish sample data. Performance claims show hardware/workload/date and exclude carrier latency. Domain/live endpoint check before publishing.
 
@@ -91,6 +91,6 @@ M1 demo: controlled test number receives one SMS, replies, dashboard shows truth
 
 Simulator tests run per PR. Heavy load tests run on scheduled/release runs, with a quick queue regression test per PR. Real-phone tests and independent review are explicit manual gates. Report unrun checks honestly; a screenshot is not a radio test.
 
-## Evidence and continuation
+## Tracking progress
 
-For each task, write `docs/implementation-status.md` with task ID, commit/files, commands and results, real/simulated distinction, remaining risk and exact next task. Each agent session tackles one stage or a small dependency-complete slice. Avoid a single “implement everything” prompt. If a human dependency blocks part of a stage, finish independent work and name the missing evidence rather than claiming the whole stage passed.
+Update [implementation-status.md](implementation-status.md) as milestones are verified. Record the relevant commit, tests, hardware or simulator evidence, and remaining limitations. Keep incomplete work visible so contributors can choose a bounded issue without mistaking a design goal for a released feature.
