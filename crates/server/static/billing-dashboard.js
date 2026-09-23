@@ -47,7 +47,7 @@ async function loadStatus() {
         : capacity.enrollmentBlocked
           ? `${capacity.active} devices enrolled; plan limit ${capacity.limit}. New enrollment is currently blocked.`
           : `${capacity.active} devices enrolled; plan limit ${capacity.limit}.`;
-      manageDevices.hidden = !capacity.enrollmentBlocked;
+      manageDevices.hidden = !capacity.enrollmentBlocked || capacity.active === 0;
     }
     if (result.moreSubscriptions) {
       const item = document.createElement("li");
