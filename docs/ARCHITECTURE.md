@@ -136,10 +136,21 @@ identity for the authenticated device stream.
 | POST /v1/enrollment/pairings/{pairing_id}/approve; POST /v1/enrollment/pairings/{pairing_id}/cancel | Owner compares code and fingerprint, then approves or cancels with CSRF proof |
 | POST /v1/enrollment/devices/{device_id}/challenge; POST /v1/enrollment/devices/authenticate | One-use device-key proof; no socket credential is issued |
 | DELETE /v1/enrollment/devices/{device_id} | Owner revokes a device with CSRF proof |
-| GET /v1/enrollment/devices?before={device_id} | Owner-only cursor page of enrolled device UUIDs, names and revocation status; tenant scoped and no-store |
+| GET /v1/enrollment/devices?before={device_id} | Owner-only cursor page of enrolled device UUIDs, names, revocation status, and `active_socket_lease`; tenant scoped and no-store |
 | GET /owner/devices | Same-origin owner sign-in and enrollment page; manual code and fingerprint comparison, CSRF-protected writes, no pairing token in a URL |
 | GET /v1/device-stream | Native WebSocket challenge-response with the enrolled P-256 key and writer-owned session epoch. An opt-in controlled-test extension requires a one-shot phone readiness frame and an allowlisted recipient digest. |
 | POST /v1/alpha/messages; GET /v1/alpha/messages/{id}; POST /v1/alpha/messages/{id}/cancel | Mounted only with explicit synthetic-alpha account and recipient allowlists. Bearer API key, tenant/device scope and idempotency are required. The server builds a fixed test body from a short case ID; no caller-supplied arbitrary plaintext or recipient appears in the response. This is separate from the planned sealed-content API. |
+
+`active_socket_lease` is an observation of the authoritative writer's current
+authenticated device session. It is true only while the lease is unexpired,
+the session deployment epoch is current, the hosting site is enabled and not
+draining, and the device, key, and account remain active. Reconnection replaces
+the device's prior session with a higher connection epoch. A dropped socket can
+remain represented until its 90-second lease expires; the page is a snapshot,
+not a continuous connection monitor. Approval/revocation and this lease are
+separate fields. Neither field establishes Android SMS permission, SIM state,
+carrier service, or radio send readiness. The owner API returns 503 rather than
+rendering a standby's potentially stale lease state.
 
 ## Planned API v1 outline
 

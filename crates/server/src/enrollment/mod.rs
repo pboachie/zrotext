@@ -29,6 +29,8 @@ pub enum EnrollmentError {
     Unauthorized,
     #[error("active-device plan cap reached")]
     DeviceLimitReached,
+    #[error("authoritative writer unavailable")]
+    AuthorityUnavailable,
     #[error("enrollment storage failed")]
     Database(#[from] tokio_postgres::Error),
 }
@@ -79,6 +81,8 @@ pub struct OwnerDevice {
     pub id: Uuid,
     pub display_name: String,
     pub revoked: bool,
+    /// A current authenticated hub lease, not evidence of SIM or SMS readiness.
+    pub active_socket_lease: bool,
 }
 
 pub struct OwnerDevicePage {
@@ -329,10 +333,27 @@ pub async fn list_owner_devices(
     if !owner_session_active(client, principal).await? {
         return Err(EnrollmentError::Unauthorized);
     }
+    // A standby can lag the writer's lease/epoch state. Never render its view
+    // as an authoritative absence of an authenticated socket.
+    if client
+        .query_one("SELECT pg_is_in_recovery()", &[])
+        .await?
+        .get(0)
+    {
+        return Err(EnrollmentError::AuthorityUnavailable);
+    }
     let rows = client
         .query(
-            "SELECT d.id,d.display_name,(d.revoked_at IS NOT NULL OR k.revoked_at IS NOT NULL) AS revoked \
+            "SELECT d.id,d.display_name,(d.revoked_at IS NOT NULL OR k.revoked_at IS NOT NULL) AS revoked, \
+               COALESCE(d.revoked_at IS NULL AND k.revoked_at IS NULL AND a.disabled_at IS NULL \
+                 AND ds.lease_until>now() AND ds.connection_epoch>0 \
+                 AND ds.deployment_epoch=p.epoch AND s.enabled=TRUE AND s.draining=FALSE \
+                 AND NOT pg_is_in_recovery(),FALSE) AS active_socket_lease \
              FROM devices d JOIN device_keys k ON (k.account_id,k.device_id)=(d.account_id,d.id) \
+             JOIN accounts a ON a.id=d.account_id \
+             LEFT JOIN device_sessions ds ON (ds.account_id,ds.device_id)=(d.account_id,d.id) \
+             LEFT JOIN sites s ON s.site_id=ds.site_id \
+             LEFT JOIN deployment_authority p ON p.singleton=TRUE \
              WHERE d.account_id=$1 AND ($2::uuid IS NULL OR (d.created_at,d.id) < \
                (SELECT c.created_at,c.id FROM devices c JOIN device_keys ck \
                 ON (ck.account_id,ck.device_id)=(c.account_id,c.id) \
@@ -349,6 +370,7 @@ pub async fn list_owner_devices(
             id: row.get(0),
             display_name: row.get(1),
             revoked: row.get(2),
+            active_socket_lease: row.get(3),
         })
         .collect();
     Ok(OwnerDevicePage {
