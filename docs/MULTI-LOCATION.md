@@ -111,6 +111,8 @@ The former primary rejoins only as a reseeded/rewound replica after timeline and
 
 Route 100 requests with a configurable 90/10 weight and verify aggregate behavior without requiring exact per-request distribution. Kill either frontend, drain a hub, move one phone between hubs, drop ACKs, sever the private link, introduce stale session epochs, replay Stripe/webhooks, delay replica WAL, fill standby disk, simulate primary loss, fence/reseed old primary and perform a controlled failback.
 
+Run `cargo run --locked -p zrotext-device-sim` for a deterministic two-hub matrix covering dropped acceptance/result acknowledgments, writer loss with paused dispatch, stale hub sessions, and lease expiry/reconnect. Its JSON timelines assert one shared writer, no blind regrant of an ambiguous message, and at most one modeled radio call per stable message. This pure model does not simulate PostgreSQL promotion, network packet loss, Android radio behavior, or geographic failure; those require separate integration and device tests.
+
 Assert: quota and idempotency remain globally consistent; no concurrent radio submission for the same stable message ID; accepted unknowns are surfaced; a site without writer authority issues no new grants; replica lag is visible; failover never enables two writers; both sides of an ambiguous submission cannot retry independently. Capture packet timelines and state-event histories from the simulator, then repeat relevant cases with two real phones.
 
 HTTP origin failover, device reconnect, and database recovery depend on the chosen network and replication setup. Document measured behavior for each deployment.
