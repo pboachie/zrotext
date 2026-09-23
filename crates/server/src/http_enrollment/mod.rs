@@ -11,7 +11,7 @@ use crate::{
 };
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Path, State},
+    extract::{DefaultBodyLimit, Path, Query, State},
     http::{HeaderMap, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -90,6 +90,7 @@ pub fn router(state: EnrollmentHttpState) -> Router {
         .route("/pairings/{pairing_id}/cancel", post(cancel_pairing))
         .route("/devices/{device_id}/challenge", post(device_challenge))
         .route("/devices/authenticate", post(device_authenticate))
+        .route("/devices", get(list_devices))
         .route("/devices/{device_id}", delete(revoke_device))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .layer(middleware::from_fn(no_store))
@@ -536,6 +537,62 @@ async fn revoke_device(
     }
 }
 
+#[derive(Serialize)]
+struct OwnerDeviceResponse {
+    device_id: Uuid,
+    display_name: String,
+    revoked: bool,
+}
+
+#[derive(Deserialize)]
+struct ListDevicesQuery {
+    before: Option<Uuid>,
+}
+
+#[derive(Serialize)]
+struct OwnerDevicePageResponse {
+    devices: Vec<OwnerDeviceResponse>,
+    next_cursor: Option<Uuid>,
+}
+
+async fn list_devices(
+    State(state): State<Arc<EnrollmentHttpState>>,
+    Query(query): Query<ListDevicesQuery>,
+    headers: HeaderMap,
+) -> Response {
+    let Ok(client) = connect(&state).await else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let principal = match require_owner(
+        &client,
+        &state.auth_hasher,
+        &state.canonical_origin,
+        &headers,
+        false,
+    )
+    .await
+    {
+        Ok(principal) => principal,
+        Err(error) => return error.into_response(),
+    };
+    match enrollment::list_owner_devices(&client, &principal, query.before).await {
+        Ok(page) => Json(OwnerDevicePageResponse {
+            devices: page
+                .devices
+                .into_iter()
+                .map(|device| OwnerDeviceResponse {
+                    device_id: device.id,
+                    display_name: device.display_name,
+                    revoked: device.revoked,
+                })
+                .collect::<Vec<_>>(),
+            next_cursor: page.next_cursor,
+        })
+        .into_response(),
+        Err(error) => owner_error(error),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -547,11 +604,11 @@ mod tests {
         body::{Body, to_bytes},
         http::{Method, Request},
     };
+    use p256::elliptic_curve::rand_core::OsRng;
     use p256::{
         ecdsa::{Signature, SigningKey, signature::Signer},
         pkcs8::EncodePublicKey,
     };
-    use rand::rngs::OsRng;
     use serde_json::{Value, json};
     use sha2::{Digest, Sha256};
     use tower::ServiceExt;
@@ -579,7 +636,7 @@ mod tests {
     }
 
     async fn json_response(response: Response) -> Value {
-        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
         serde_json::from_slice(&body).unwrap()
     }
 
@@ -663,6 +720,28 @@ mod tests {
             enrollment_hasher,
             "https://test.example".into(),
         ));
+
+        let unauthenticated_list = app
+            .clone()
+            .oneshot(request(Method::GET, "/devices", json!({}), None))
+            .await
+            .unwrap();
+        assert_eq!(unauthenticated_list.status(), StatusCode::UNAUTHORIZED);
+        let empty_list = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                "/devices",
+                json!({}),
+                Some((&sa.token, &sa.csrf_token)),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(empty_list.status(), StatusCode::OK);
+        assert_eq!(
+            json_response(empty_list).await,
+            json!({"devices":[],"next_cursor":null})
+        );
 
         let oversized = app
             .clone()
@@ -765,6 +844,53 @@ mod tests {
             .parse()
             .unwrap();
 
+        let owner_devices = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                "/devices",
+                json!({}),
+                Some((&sa.token, &sa.csrf_token)),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(owner_devices.headers()[header::CACHE_CONTROL], "no-store");
+        let owner_devices = json_response(owner_devices).await;
+        assert_eq!(owner_devices["devices"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            owner_devices["devices"][0]["device_id"],
+            device_id.to_string()
+        );
+        assert_eq!(owner_devices["devices"][0]["display_name"], "Phone");
+        assert_eq!(owner_devices["devices"][0]["revoked"], false);
+        assert_eq!(owner_devices["next_cursor"], Value::Null);
+        let other_tenant_devices = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                "/devices",
+                json!({}),
+                Some((&sb.token, &sb.csrf_token)),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            json_response(other_tenant_devices).await,
+            json!({"devices":[],"next_cursor":null})
+        );
+
+        let forbidden_revoke = app
+            .clone()
+            .oneshot(request(
+                Method::DELETE,
+                &format!("/devices/{device_id}"),
+                json!({}),
+                Some((&sb.token, &sb.csrf_token)),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(forbidden_revoke.status(), StatusCode::NOT_FOUND);
+
         let response = app
             .clone()
             .oneshot(request(
@@ -824,6 +950,77 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        let revoked_list = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                "/devices",
+                json!({}),
+                Some((&sa.token, &sa.csrf_token)),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            json_response(revoked_list).await["devices"][0]["revoked"],
+            true
+        );
+
+        // Listing stays bounded and the cursor cannot cross tenant scope.
+        let sec1 = signing.verifying_key().to_encoded_point(false);
+        for index in 0..51 {
+            let extra_id = Uuid::new_v4();
+            admin
+                .execute(
+                    "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,$3)",
+                    &[&extra_id, &a.account_id, &format!("Extra {index}")],
+                )
+                .await
+                .unwrap();
+            admin
+                .execute(
+                    "INSERT INTO device_keys(device_id,account_id,signing_key_sec1,fingerprint) VALUES($1,$2,$3,$4)",
+                    &[&extra_id, &a.account_id, &sec1.as_bytes(), &&fingerprint[..]],
+                )
+                .await
+                .unwrap();
+        }
+        let first_page = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                "/devices",
+                json!({}),
+                Some((&sa.token, &sa.csrf_token)),
+            ))
+            .await
+            .unwrap();
+        let first_page = json_response(first_page).await;
+        assert_eq!(first_page["devices"].as_array().unwrap().len(), 50);
+        let cursor = first_page["next_cursor"].as_str().unwrap();
+        let second_page = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                &format!("/devices?before={cursor}"),
+                json!({}),
+                Some((&sa.token, &sa.csrf_token)),
+            ))
+            .await
+            .unwrap();
+        let second_page = json_response(second_page).await;
+        assert_eq!(second_page["devices"].as_array().unwrap().len(), 2);
+        assert_eq!(second_page["next_cursor"], Value::Null);
+        let tenant_b_cursor = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                &format!("/devices?before={cursor}"),
+                json!({}),
+                Some((&sb.token, &sb.csrf_token)),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(json_response(tenant_b_cursor).await["devices"], json!([]));
         let response = app
             .oneshot(request(
                 Method::POST,
