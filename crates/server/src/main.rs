@@ -167,6 +167,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             config.mfa_recovery_only,
         )
         .await?;
+        if let Some(vault) = webhook_vault.as_ref() {
+            let (mut key_db, key_connection) =
+                tokio_postgres::connect(&config.database_url, NoTls).await?;
+            tokio::spawn(async move {
+                let _ = key_connection.await;
+            });
+            webhook_worker::validate_runtime_keys(&mut key_db, vault).await?;
+        }
         ensure_local_site(&config).await?;
         reset_test_quotas_on_start(&config.database_url, billing_test.is_some()).await?;
         quotas_reset = true;
@@ -413,15 +421,35 @@ fn webhook_config() -> Result<(Option<WebhookSecretVault>, bool), Box<dyn std::e
         Some("true") => true,
         Some(_) => return Err("WEBHOOK_DELIVERY_ENABLED must be true or false".into()),
     };
+    let secondary = match (
+        env::var("WEBHOOK_KEK_SECONDARY_VERSION"),
+        env::var("WEBHOOK_KEK_SECONDARY_B64"),
+    ) {
+        (Err(env::VarError::NotPresent), Err(env::VarError::NotPresent)) => None,
+        (Ok(version), Ok(encoded)) => {
+            let version: i32 = version.parse()?;
+            let encoded = Zeroizing::new(encoded);
+            let decoded = Zeroizing::new(STANDARD.decode(encoded.as_bytes())?);
+            Some((version, decoded))
+        }
+        _ => return Err(
+            "WEBHOOK_KEK_SECONDARY_VERSION and WEBHOOK_KEK_SECONDARY_B64 must be supplied together"
+                .into(),
+        ),
+    };
     let vault = match (env::var("WEBHOOK_KEK_VERSION"), env::var("WEBHOOK_KEK_B64")) {
-        (Err(env::VarError::NotPresent), Err(env::VarError::NotPresent)) if !delivery_enabled => {
+        (Err(env::VarError::NotPresent), Err(env::VarError::NotPresent))
+            if !delivery_enabled && secondary.is_none() =>
+        {
             None
         }
         (Ok(version), Ok(encoded)) => {
             let version: i32 = version.parse()?;
             let encoded = Zeroizing::new(encoded);
             let decoded = Zeroizing::new(STANDARD.decode(encoded.as_bytes())?);
-            Some(WebhookSecretVault::new(version, decoded)?)
+            Some(WebhookSecretVault::with_secondary(
+                version, decoded, secondary,
+            )?)
         }
         _ => {
             return Err("WEBHOOK_KEK_VERSION and WEBHOOK_KEK_B64 must be supplied together".into());
