@@ -76,6 +76,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "true" if alpha_policy.enabled() => true,
         _ => return Err("DISPATCH_ENABLED requires explicit synthetic alpha allowlists".into()),
     };
+    let inbound_pilot_enabled = match env::var("INBOUND_PILOT_ENABLED").ok().as_deref() {
+        None | Some("false") => false,
+        Some("true") => true,
+        Some(_) => return Err("INBOUND_PILOT_ENABLED must be true or false".into()),
+    };
     let config = Arc::new(Config {
         database_url: required("DATABASE_URL")?,
         site_id: required("SITE_ID")?,
@@ -204,6 +209,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             enrollment_hasher: enrollment_state.enrollment_hasher.clone(),
             alpha_policy: config.alpha_policy.clone(),
             dispatch_runtime_enabled: config.dispatch_runtime_enabled,
+            inbound_pilot_enabled,
             draining: config.draining.clone(),
             drain_notify: config.drain_notify.clone(),
         };
@@ -221,9 +227,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             app = app.nest("/v1/alpha", http_messages::router(message_state));
         }
     } else if config.alpha_policy.enabled()
+        || inbound_pilot_enabled
         || env::var("WEBHOOK_DELIVERY_ENABLED").ok().as_deref() == Some("true")
     {
-        return Err("account routes are required for enabled workers".into());
+        return Err(
+            "account and enrollment routes are required for device pilots or enabled workers"
+                .into(),
+        );
     }
     eprintln!(
         "zrotext site={} instance={} listening={bind}",
