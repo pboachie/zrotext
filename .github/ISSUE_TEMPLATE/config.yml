@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Feature ideas and questions
+    url: https://github.com/pboachie/zrotext/discussions
+    about: Discuss a proposal or ask the community before opening an implementation issue.
+  - name: Report a security vulnerability privately
+    url: https://github.com/pboachie/zrotext/security/advisories/new
+    about: Do not disclose vulnerabilities or secrets in a public issue.
