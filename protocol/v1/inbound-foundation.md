@@ -3,9 +3,9 @@
 This describes a store API, **not an enabled device frame or public route**. The
 Android inbound pilot in PR #25 keeps reply bodies in the phone's local vault;
 it does not upload them. An opt-in device-stream frame carries signed metadata
-only; Android upload, a customer-decryptable sealed envelope, and endpoint
-management still need separate implementation and review. The webhook sender
-is disabled by default. Synthetic/consented test content only.
+only; Android upload and a customer-decryptable sealed envelope remain separate
+gates. Owner endpoint management is described in `webhook-endpoints.md`.
+The webhook sender is disabled by default. Synthetic/consented test content only.
 
 `inbound::ingest` accepts an event only through an enrolled device's current
 writer session. It checks the tenant/device, site and instance, connection and
@@ -60,7 +60,9 @@ context. It rejects cross-tenant moves, version mismatch and tampering.
 `WEBHOOK_DELIVERY_ENABLED` defaults to off. To start the worker, set it to
 `true`, supply `WEBHOOK_KEK_VERSION` as a positive integer and
 `WEBHOOK_KEK_B64` as a base64-encoded 32-byte key from an external secret
-source. A missing or malformed key fails startup. Do not put the KEK or
+source. The same key pair can mount owner endpoint management while delivery
+remains off. A missing or malformed key fails startup if delivery is enabled;
+an incomplete key pair always fails startup. Do not put the KEK or
 endpoint signing secrets in source, images or SQL. This worker accepts one
 key version at a time; pause delivery and reseal existing endpoint secrets
 before a version change. Automated rotation is not implemented.
@@ -82,6 +84,7 @@ letter; unavailable DNS/transport and other HTTP statuses follow the bounded
 retry schedule. The sender needs an independent network egress firewall in a
 deployment; application validation alone is not a complete SSRF boundary.
 
-No endpoint API, secret rotation, manual replay route, Android upload frame,
-or customer-decryptable sealed-content protocol is wired. These are separate
-gates before public inbound/webhook use.
+Owner endpoint creation, listing, enable/disable and secret rotation are
+described in `webhook-endpoints.md`. Manual replay, Android upload frame and
+customer-decryptable sealed-content protocol remain separate gates before
+public inbound/webhook use.
