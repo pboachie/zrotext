@@ -8,6 +8,7 @@ use aes_gcm::{
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::json;
+use std::future::Future;
 use thiserror::Error;
 use tokio_postgres::Client;
 use uuid::Uuid;
@@ -162,11 +163,29 @@ pub async fn dispatch_one(
     vault: &WebhookSecretVault,
     worker_id: &str,
 ) -> Result<bool, WorkerError> {
+    dispatch_one_with(client, vault, worker_id, |url, body, secret| async move {
+        webhook_egress::post_signed(&url, &body, &secret).await
+    })
+    .await
+}
+
+/// The transport seam keeps the real sender fixed above while a test can
+/// exercise claim, authenticated payload preparation and retry accounting.
+pub(crate) async fn dispatch_one_with<F, Fut>(
+    client: &mut Client,
+    vault: &WebhookSecretVault,
+    worker_id: &str,
+    sender: F,
+) -> Result<bool, WorkerError>
+where
+    F: FnOnce(String, Vec<u8>, Zeroizing<Vec<u8>>) -> Fut,
+    Fut: Future<Output = Result<webhook_egress::DeliveryResponse, EgressError>>,
+{
     let Some(lease) = inbound::claim_webhook(client, worker_id).await? else {
         return Ok(false);
     };
     let payload = inbound::load_webhook_payload(client, &lease).await?;
-    let outcome = dispatch_payload(vault, &lease, &payload).await;
+    let outcome = dispatch_payload_with(vault, &lease, &payload, sender).await;
     let (result, status) = match outcome {
         Ok(response) if response.acknowledged => {
             (WebhookOutcome::Ack, Some(response.status as i16))
@@ -187,11 +206,17 @@ enum DispatchError {
     Network,
 }
 
-async fn dispatch_payload(
+async fn dispatch_payload_with<F, Fut>(
     vault: &WebhookSecretVault,
     lease: &WebhookLease,
     payload: &WebhookPayload,
-) -> Result<webhook_egress::DeliveryResponse, DispatchError> {
+    sender: F,
+) -> Result<webhook_egress::DeliveryResponse, DispatchError>
+where
+    F: FnOnce(String, Vec<u8>, Zeroizing<Vec<u8>>) -> Fut,
+    Fut: Future<Output = Result<webhook_egress::DeliveryResponse, EgressError>>,
+{
+    webhook_egress::validate_target(&payload.callback_url).map_err(|_| DispatchError::Policy)?;
     let secret = vault
         .open(
             lease.account_id,
@@ -201,7 +226,7 @@ async fn dispatch_payload(
         )
         .map_err(|_| DispatchError::Policy)?;
     let body = event_body(lease, payload).map_err(|_| DispatchError::Policy)?;
-    webhook_egress::post_signed(&payload.callback_url, &body, &secret)
+    sender(payload.callback_url.clone(), body, secret)
         .await
         .map_err(|error| match error {
             EgressError::InvalidInput | EgressError::UnsafeResolution => DispatchError::Policy,
