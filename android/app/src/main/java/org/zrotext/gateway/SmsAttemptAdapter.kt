@@ -87,8 +87,8 @@ internal object SmsAttemptAdapter {
         if (!isSessionCurrent() || System.currentTimeMillis() >= grant.expiresAtMs ||
             !hasSelectedSim(context, subscriptionId)) {
             return try {
-                dao.setState(attemptId, AttemptState.NOT_SUBMITTED, System.currentTimeMillis())
-                StartResult.RESERVED_NOT_SENT
+                if (dao.markPreflightNoRadio(attemptId, System.currentTimeMillis()) == 1)
+                    StartResult.RESERVED_NOT_SENT else StartResult.UNKNOWN
             } catch (_: RuntimeException) {
                 StartResult.UNKNOWN
             }

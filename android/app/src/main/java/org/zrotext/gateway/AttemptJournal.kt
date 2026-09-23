@@ -289,6 +289,9 @@ abstract class SmsAttemptDao {
     @Query("SELECT * FROM alpha_radio_events WHERE acknowledgedAtMs IS NULL ORDER BY rowid LIMIT 1")
     abstract fun nextAlphaEvent(): AlphaRadioEvent?
 
+    @Query("SELECT e.* FROM alpha_radio_events e JOIN sms_attempts a ON a.attemptId = e.attemptId WHERE e.evidence = 'durable_submit_intent' AND e.acknowledgedAtMs IS NULL AND a.state IN ('reserved','not_submitted') ORDER BY e.rowid")
+    protected abstract fun orphanedAlphaIntents(): List<AlphaRadioEvent>
+
     @Query("UPDATE alpha_radio_events SET acknowledgedAtMs = :now WHERE eventId = :eventId AND acknowledgedAtMs IS NULL")
     abstract fun acknowledgeAlphaEvent(eventId: String, now: Long): Int
 
@@ -309,7 +312,56 @@ abstract class SmsAttemptDao {
                                    segmentCount: Int, now: Long): Int
 
     @Query("UPDATE sms_attempts SET state = 'not_submitted', updatedAtMs = :now WHERE attemptId = :attemptId AND state = 'submitting' AND messageId IS NOT NULL")
-    abstract fun markAcknowledgedNoRadio(attemptId: String, now: Long): Int
+    protected abstract fun markAcknowledgedNoRadioState(attemptId: String, now: Long): Int
+
+    @Query("UPDATE sms_attempts SET state = 'not_submitted', updatedAtMs = :now WHERE attemptId = :attemptId AND state = 'radio_started' AND messageId IS NOT NULL")
+    protected abstract fun markPreflightNoRadioState(attemptId: String, now: Long): Int
+
+    @Query("SELECT EXISTS(SELECT 1 FROM alpha_radio_events WHERE attemptId = :attemptId AND evidence = 'proven_no_submit')")
+    protected abstract fun hasNoRadioProof(attemptId: String): Boolean
+
+    @Query("DELETE FROM alpha_radio_events WHERE attemptId = :attemptId AND evidence = 'proven_no_submit' AND acknowledgedAtMs IS NULL")
+    protected abstract fun removePendingNoRadioProof(attemptId: String)
+
+    private fun recordNoRadioProof(attemptId: String, now: Long) {
+        val attempt = getAttempt(attemptId) ?: return
+        val messageId = attempt.messageId ?: return
+        if (attempt.state != AttemptState.NOT_SUBMITTED || attempt.evidenceConflict ||
+            hasNoRadioProof(attemptId) || getSegments(attemptId).any {
+                it.sentResultCode != null || it.deliveryResultCode != null || it.deliveryStatus != null
+            }) return
+        insertAlphaEvent(AlphaRadioEvent(UUID.randomUUID().toString(), messageId,
+            attemptId, "proven_no_submit", now))
+    }
+
+    /** The state and proof are committed together, before a later grant can be issued. */
+    @Transaction
+    open fun markAcknowledgedNoRadio(attemptId: String, now: Long): Int {
+        val changed = markAcknowledgedNoRadioState(attemptId, now)
+        if (changed == 1) recordNoRadioProof(attemptId, now)
+        return changed
+    }
+
+    /** The platform send call was never entered after the one-use local gate. */
+    @Transaction
+    open fun markPreflightNoRadio(attemptId: String, now: Long): Int {
+        val changed = markPreflightNoRadioState(attemptId, now)
+        if (changed == 1) recordNoRadioProof(attemptId, now)
+        return changed
+    }
+
+    /** A replaced/expired stream cannot authorize a still-reserved intent. */
+    @Transaction
+    open fun retireOrphanedAlphaIntents(now: Long) {
+        for (event in orphanedAlphaIntents()) {
+            val attempt = getAttempt(event.attemptId) ?: continue
+            if (attempt.state == AttemptState.RESERVED) {
+                setState(event.attemptId, AttemptState.NOT_SUBMITTED, now)
+            }
+            check(acknowledgeAlphaEvent(event.eventId, now) == 1)
+            recordNoRadioProof(event.attemptId, now)
+        }
+    }
 
     @Query("UPDATE sms_attempts SET state = 'unknown', evidenceConflict = 1, updatedAtMs = :now WHERE attemptId = :attemptId AND evidenceConflict = 0")
     abstract fun markCallbackConflict(attemptId: String, now: Long): Int
@@ -318,7 +370,7 @@ abstract class SmsAttemptDao {
     private fun recordConflict(attempt: SmsAttempt, now: Long) {
         if (markCallbackConflict(attempt.attemptId, now) != 1) return
         val messageId = attempt.messageId ?: return
-        if (attempt.state in listOf(AttemptState.RESERVED, AttemptState.NOT_SUBMITTED)) return
+        removePendingNoRadioProof(attempt.attemptId)
         insertAlphaEvent(AlphaRadioEvent(UUID.randomUUID().toString(), messageId,
             attempt.attemptId, "callback_conflict", now))
     }
@@ -379,11 +431,13 @@ abstract class SmsAttemptDao {
         val attempt = getAttempt(event.attemptId) ?: return false
         if (attempt.state != AttemptState.RESERVED || attempt.messageId != event.messageId) {
             acknowledgeAlphaEvent(eventId, now)
+            if (attempt.state == AttemptState.NOT_SUBMITTED) recordNoRadioProof(event.attemptId, now)
             return false
         }
         if (acknowledgeAlphaEvent(eventId, now) != 1) return false
         setState(event.attemptId,
             if (permitted) AttemptState.SUBMITTING else AttemptState.NOT_SUBMITTED, now)
+        if (!permitted) recordNoRadioProof(event.attemptId, now)
         return permitted
     }
 
@@ -502,6 +556,7 @@ class GatewayApplication : Application() {
             val dao = SmsJournalDatabase.get(app).attempts()
             dao.markInterrupted(now)
             dao.markUnsentReservations(now)
+            dao.retireOrphanedAlphaIntents(now)
             dao.markTimedOutDeliveries(now - DELIVERY_RECEIPT_TIMEOUT_MS, now)
         }
     }

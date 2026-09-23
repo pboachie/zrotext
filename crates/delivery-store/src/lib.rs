@@ -924,6 +924,19 @@ impl<'a> DeliveryStore<'a> {
                 return Err(StoreError::InvalidTransition);
             }
         }
+        if event.evidence == Evidence::ProvenNoSubmit {
+            // The phone's durable no-radio proof may arrive after the writer's
+            // silent-attempt timeout. Never release a fence once any radio
+            // callback or contradictory evidence was recorded for this attempt.
+            let contrary: bool = tx.query_one(
+                "SELECT EXISTS(SELECT 1 FROM message_events WHERE attempt_id=$1 AND evidence_code IN \
+                 ('sent_callback_ok','sent_callback_failed','delivery_callback_ok','callback_conflict'))",
+                &[&event.attempt_id],
+            ).await?.get(0);
+            if contrary {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
         let next = match event.evidence {
             Evidence::CallbackConflict => {
                 let intent: bool = tx.query_one(
@@ -2150,6 +2163,150 @@ mod tests {
             .unwrap()
             .get(0);
         assert_eq!(fence, "unknown");
+
+        // A durable phone proof can release an ambiguous fence exactly once.
+        // This uses a distinct device so the prior unknown attempt stays fenced.
+        let proof_device = Uuid::new_v4();
+        let proof_message = Uuid::new_v4();
+        let proof_attempt = Uuid::new_v4();
+        client
+            .execute(
+                "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'no radio phone')",
+                &[&proof_device, &account],
+            )
+            .await
+            .unwrap();
+        let proof_event = |evidence, event_id| RadioEvent {
+            event_id,
+            account_id: account,
+            device_id: proof_device,
+            message_id: proof_message,
+            attempt_id: proof_attempt,
+            evidence,
+            observed_at_ms: now_ms(),
+            segment_index: None,
+            segment_count: None,
+        };
+        {
+            let mut store = DeliveryStore::new(&mut client);
+            store
+                .accept(NewMessage {
+                    account_id: account,
+                    client_message_id: proof_message,
+                    device_id: proof_device,
+                    idempotency_key: "proved-no-radio",
+                    recipient_e164: "+15551234567",
+                    synthetic_payload: b"test only",
+                    expires_at_ms: expiry,
+                })
+                .await
+                .unwrap();
+            let claim = store
+                .claim_due_for_device("proof", account, proof_device)
+                .await
+                .unwrap()
+                .unwrap();
+            let session = store
+                .connect_session(account, proof_device, "a", "proof-hub", 60)
+                .await
+                .unwrap();
+            store
+                .issue_grant(&claim, &session, proof_attempt)
+                .await
+                .unwrap();
+            assert_eq!(
+                store
+                    .record_radio_event(proof_event(Evidence::DurableSubmitIntent, Uuid::new_v4()))
+                    .await
+                    .unwrap(),
+                MessageState::Submitting
+            );
+            assert_eq!(
+                store
+                    .record_radio_event(proof_event(Evidence::CrashWithoutCallback, Uuid::new_v4()))
+                    .await
+                    .unwrap(),
+                MessageState::Unknown
+            );
+            let no_radio = proof_event(Evidence::ProvenNoSubmit, Uuid::new_v4());
+            assert_eq!(
+                store.record_radio_event(no_radio).await.unwrap(),
+                MessageState::Queued
+            );
+            assert_eq!(
+                store.record_radio_event(no_radio).await.unwrap(),
+                MessageState::Queued
+            );
+            assert!(matches!(
+                store
+                    .record_radio_event(proof_event(Evidence::ProvenNoSubmit, Uuid::new_v4()))
+                    .await,
+                Err(StoreError::InvalidTransition)
+            ));
+            let replay_claim = store
+                .claim_due_for_device("proof-retry", account, proof_device)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(replay_claim.message_id, proof_message);
+            let fresh_session = store
+                .connect_session(account, proof_device, "b", "proof-hub", 60)
+                .await
+                .unwrap();
+            let fresh_attempt = Uuid::new_v4();
+            assert!(
+                store
+                    .issue_grant(&replay_claim, &fresh_session, fresh_attempt)
+                    .await
+                    .is_ok()
+            );
+            let fresh_event = |evidence, event_id| RadioEvent {
+                attempt_id: fresh_attempt,
+                evidence,
+                event_id,
+                ..no_radio
+            };
+            assert_eq!(
+                store
+                    .record_radio_event(fresh_event(Evidence::DurableSubmitIntent, Uuid::new_v4()))
+                    .await
+                    .unwrap(),
+                MessageState::Submitting
+            );
+            assert_eq!(
+                store
+                    .record_radio_event(RadioEvent {
+                        segment_index: Some(0),
+                        segment_count: Some(2),
+                        ..fresh_event(Evidence::SentCallbackOk, Uuid::new_v4())
+                    })
+                    .await
+                    .unwrap(),
+                MessageState::Submitting
+            );
+            assert_eq!(
+                store
+                    .record_radio_event(fresh_event(Evidence::CrashWithoutCallback, Uuid::new_v4()))
+                    .await
+                    .unwrap(),
+                MessageState::Unknown
+            );
+            assert!(matches!(
+                store
+                    .record_radio_event(fresh_event(Evidence::ProvenNoSubmit, Uuid::new_v4()))
+                    .await,
+                Err(StoreError::InvalidTransition)
+            ));
+        }
+        let old_fence_count: i64 = client
+            .query_one(
+                "SELECT COUNT(*) FROM dispatch_fences WHERE attempt_id=$1",
+                &[&proof_attempt],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(old_fence_count, 0);
         client
             .batch_execute(&format!(
                 "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
