@@ -3,12 +3,7 @@
 
 const assert = require("node:assert/strict");
 const { randomBytes } = require("node:crypto");
-const fs = require("node:fs");
-const path = require("node:path");
 const test = require("node:test");
-const vm = require("node:vm");
-
-const source = fs.readFileSync(path.join(__dirname, "devices.js"), "utf8");
 const response = (status, body = {}) => ({
   status, ok: status >= 200 && status < 300, json: async () => body,
 });
@@ -50,11 +45,11 @@ async function ownerPage(mfaEnabled) {
     if (url === "/v1/owner/messages") return response(200, { messages: [], next_cursor: null });
     throw new Error(`Unexpected request: ${url}`);
   };
-  vm.runInNewContext(source, {
-    document: { cookie: "", getElementById: element },
-    window: { location: { origin: "https://example.test" } },
-    fetch,
-  });
+  globalThis.document = { cookie: "", getElementById: element };
+  globalThis.window = { location: { origin: "https://example.test" } };
+  globalThis.fetch = fetch;
+  delete require.cache[require.resolve("./devices.js")];
+  require("./devices.js");
   await new Promise(setImmediate);
   return { element, state };
 }
