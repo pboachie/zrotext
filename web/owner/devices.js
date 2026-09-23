@@ -7,6 +7,7 @@ let nextDeviceCursor = null;
 let shownDeviceCount = 0;
 let nextMessageCursor = null;
 let shownMessageCount = 0;
+let pendingMfaChallenge = null;
 
 function message(id, value) {
   byId(id).textContent = value;
@@ -21,7 +22,7 @@ function csrfToken() {
 async function api(path, method = "GET", body = undefined) {
   const headers = {};
   if (body !== undefined) headers["content-type"] = "application/json";
-  if (method !== "GET" && path !== "/v1/auth/login") {
+  if (method !== "GET" && path !== "/v1/auth/login" && path !== "/v1/auth/login/mfa") {
     const csrf = csrfToken();
     if (!csrf) throw new Error("Your sign-in expired. Sign in again.");
     headers["x-zrotext-csrf"] = csrf;
@@ -50,6 +51,23 @@ function showSignedIn(signedIn) {
   byId("sign-in").hidden = signedIn;
   byId("owner-content").hidden = !signedIn;
   byId("logout").hidden = !signedIn;
+}
+
+function clearMfaChallenge() {
+  pendingMfaChallenge = null;
+  byId("mfa-code").value = "";
+  byId("mfa-form").hidden = true;
+  byId("login-form").hidden = false;
+  message("mfa-status", "");
+}
+
+async function completeSignIn() {
+  await api("/v1/auth/session");
+  clearMfaChallenge();
+  showSignedIn(true);
+  message("login-status", "");
+  message("global-status", "Signed in.");
+  await Promise.all([loadDevices(), loadMessages()]);
 }
 
 function clearPairing() {
@@ -225,23 +243,62 @@ async function checkPairing() {
 
 byId("login-form").addEventListener("submit", async (event) => {
   event.preventDefault();
+  clearMfaChallenge();
+  showSignedIn(false);
   message("login-status", "Signing in…");
   const password = byId("password").value;
   byId("password").value = "";
   try {
-    await api("/v1/auth/login", "POST", { email: byId("email").value, password });
-    showSignedIn(true);
-    message("login-status", "");
-    message("global-status", "Signed in.");
-    await Promise.all([loadDevices(), loadMessages()]);
+    const result = await api("/v1/auth/login", "POST", { email: byId("email").value, password });
+    if (result && typeof result.challenge_token === "string" && result.challenge_token.startsWith("ztm_")) {
+      pendingMfaChallenge = result.challenge_token;
+      byId("login-form").hidden = true;
+      byId("mfa-form").hidden = false;
+      message("login-status", "");
+      message("mfa-status", "Finish sign-in with your second factor.");
+      byId("mfa-code").focus();
+      return;
+    }
+    if (result !== null) throw new Error("Unexpected sign-in response. Try again.");
+    await completeSignIn();
   } catch (error) {
     message("login-status", `Sign-in failed. ${error.message}`);
   }
 });
 
+byId("mfa-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!pendingMfaChallenge) return;
+  const code = byId("mfa-code").value.trim();
+  byId("mfa-code").value = "";
+  message("mfa-status", "Verifying code…");
+  let factorAccepted = false;
+  try {
+    const result = await api("/v1/auth/login/mfa", "POST", {
+      challenge_token: pendingMfaChallenge, code,
+    });
+    if (result !== null) throw new Error("Unexpected verification response. Try again.");
+    factorAccepted = true;
+    await completeSignIn();
+  } catch (error) {
+    if (factorAccepted) {
+      clearMfaChallenge();
+      message("login-status", `Could not verify the new session. ${error.message}`);
+    } else {
+      message("mfa-status", `Code verification failed. ${error.message}`);
+    }
+  }
+});
+
+byId("cancel-mfa").addEventListener("click", () => {
+  clearMfaChallenge();
+  message("login-status", "Enter your password to start again.");
+});
+
 byId("logout").addEventListener("click", async () => {
   try {
     await api("/v1/auth/logout", "POST");
+    clearMfaChallenge();
     clearPairing();
     byId("device-list").replaceChildren();
     byId("more-devices").hidden = true;

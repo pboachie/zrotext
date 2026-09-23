@@ -169,12 +169,12 @@ class AttemptJournalRoomTest {
         val migrated = Room.databaseBuilder(context, SmsJournalDatabase::class.java, name)
             .allowMainThreadQueries().addMigrations(
                 SmsJournalDatabase.MIGRATION_1_2, SmsJournalDatabase.MIGRATION_2_3,
-                SmsJournalDatabase.MIGRATION_3_4).build()
+                SmsJournalDatabase.MIGRATION_3_4, SmsJournalDatabase.MIGRATION_4_5).build()
         try {
             assertNotNull(migrated.attempts().getAttempt("legacy-attempt"))
             assertEquals(false, migrated.attempts().getAttempt("legacy-attempt")!!.evidenceConflict)
             assertEquals(null, migrated.attempts().getAttempt("legacy-attempt")!!.messageId)
-            assertEquals(4, migrated.openHelper.readableDatabase.version)
+            assertEquals(5, migrated.openHelper.readableDatabase.version)
             migrated.attempts().markInterrupted(20)
             assertEquals(AttemptState.UNKNOWN, migrated.attempts().getAttempt("legacy-attempt")?.state)
         } finally {
