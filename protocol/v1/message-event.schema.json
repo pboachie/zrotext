@@ -17,6 +17,6 @@
     "observed_at": {"type": "string", "format": "date-time"},
     "segment_index": {"type": "integer", "minimum": 0},
     "segment_count": {"type": "integer", "minimum": 1, "maximum": 6},
-    "evidence_code": {"enum": ["durable_intent", "sent_callback_ok", "sent_callback_failed", "delivery_callback_ok", "delivery_timeout", "crash_no_callback", "proved_no_submit", "user_cancel", "expiry"]}
+    "evidence_code": {"enum": ["durable_intent", "sent_callback_ok", "sent_callback_failed", "partial_sent_callbacks", "delivery_callback_ok", "delivery_timeout", "crash_no_callback", "proved_no_submit", "user_cancel", "expiry"]}
   }
 }

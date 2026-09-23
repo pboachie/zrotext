@@ -1,0 +1,9 @@
+# M1 local SMS adapter slice
+
+This build retains the M0 heartbeat-only gateway session. The UI and WSS probe never call `SmsAttemptAdapter`; there is no server execution grant, inbound SMS path, or test-send screen. Installing the APK does not send an SMS.
+
+`SmsAttemptAdapter.submit` is an internal boundary for a future grant-validated dispatcher. It requires a stable UUID attempt ID and an explicit active subscription ID. It validates `SEND_SMS` and `READ_PHONE_STATE`, the selected subscription, an E.164 destination, and a body of at most six segments before reserving the attempt. The Room transaction writes `submitting` and one row per segment before `SmsManager` is called. The callback receiver stores each sent and delivery result code once. Neither the recipient nor message body is stored in Room.
+
+On process start, unresolved `submitting` rows become `unknown`. A synchronous exception after reservation is also `unknown`. A repeated attempt ID is refused, including after a restart. Sent callbacks may resolve an unknown attempt; no callback and no returned call alone proves submission. `submitted` requires every segment's sent callback to succeed. `delivered` requires every delivery status report to parse as received; an unparseable report does not prove delivery. Mixed sent outcomes become `partial_failure`. Missing or unverified delivery receipts become `delivery_unknown` after 24 hours when the process next starts. There is no automatic radio retry or failover.
+
+This is local state only. Durable server event reconciliation, execution grant validation, pacing, cancellation/expiry, inbound reply handling, and real-phone carrier results remain M1 integration and hardware work. A controlled send must use a dedicated test phone, a recipient controlled by the operator, and an explicit grant/test setup. Debug APK compilation and local unit tests do not satisfy that gate.

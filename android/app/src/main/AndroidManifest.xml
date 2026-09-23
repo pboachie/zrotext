@@ -10,6 +10,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" />
 
     <application
+        android:name=".GatewayApplication"
         android:allowBackup="false"
         android:label="ZROtext gateway spike"
         android:theme="@android:style/Theme.Material.Light.NoActionBar"
@@ -24,5 +25,6 @@
             android:name=".GatewayService"
             android:exported="false"
             android:foregroundServiceType="remoteMessaging" />
+        <receiver android:name=".SmsCallbackReceiver" android:exported="false" />
     </application>
 </manifest>

@@ -63,12 +63,16 @@ class MainActivity : ComponentActivity() {
                 ) {
                     Text("ZROtext", style = MaterialTheme.typography.headlineLarge)
                     Text("Gateway mode spike", style = MaterialTheme.typography.titleMedium)
-                    Text("This build tests SIM visibility and a live socket heartbeat. It cannot send or receive SMS.")
+                    Text("This gateway session tests SIM visibility and a live socket heartbeat. It does not send or receive SMS. The M1 radio adapter is not connected to this screen or socket.")
                     Text("Status: ${GatewayStatus.value}; heartbeat acknowledgments this process: ${GatewayStatus.heartbeats}")
                     Button(onClick = { askPermissions() }) { Text("Grant gateway permissions") }
                     Text("Selected SIM: ${selectedSim?.toString() ?: "none"}")
                     sims.forEach { (id, label) ->
-                        Button(onClick = { selectedSim = id }) { Text(label) }
+                        Button(onClick = {
+                            selectedSim = id
+                            getSharedPreferences("gateway_selection", MODE_PRIVATE).edit()
+                                .putInt("subscription_id", id).apply()
+                        }) { Text(label) }
                     }
                     OutlinedTextField(value = endpoint, onValueChange = { endpoint = it }, label = { Text("WSS test endpoint") })
                     OutlinedTextField(
@@ -113,6 +117,8 @@ class MainActivity : ComponentActivity() {
         sims = (manager.activeSubscriptionInfoList ?: emptyList()).map { info ->
             info.subscriptionId to "SIM ${info.simSlotIndex + 1}: ${info.displayName}"
         }
-        if (sims.none { it.first == selectedSim }) selectedSim = null
+        val saved = getSharedPreferences("gateway_selection", MODE_PRIVATE)
+            .getInt("subscription_id", SubscriptionManager.INVALID_SUBSCRIPTION_ID)
+        selectedSim = saved.takeIf { id -> sims.any { it.first == id } }
     }
 }

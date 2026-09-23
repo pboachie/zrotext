@@ -30,6 +30,7 @@ pub enum Evidence {
     ProvenNoSubmit,
     SentCallbackOk,
     SentCallbackFailed,
+    PartialSentCallbacks,
     DeliveryCallbackOk,
     DeliveryTimeout,
     CrashWithoutCallback,
@@ -54,6 +55,7 @@ impl MessageState {
             (Claimed, ProvenNoSubmit) => Queued,
             (Submitting, SentCallbackOk) => Submitted,
             (Submitting, SentCallbackFailed) => Failed,
+            (Submitting, PartialSentCallbacks) => Unknown,
             (Submitting, CrashWithoutCallback) => Unknown,
             (Unknown, SentCallbackOk) => Submitted,
             (Unknown, SentCallbackFailed) => Failed,
@@ -374,6 +376,15 @@ mod tests {
             .unwrap();
         assert_eq!(state, MessageState::Submitted);
         assert_ne!(state, MessageState::Delivered);
+        assert!(state.apply(Evidence::Claim).is_err());
+    }
+
+    #[test]
+    fn multipart_partial_result_is_ambiguous_and_not_retryable() {
+        let state = MessageState::Submitting
+            .apply(Evidence::PartialSentCallbacks)
+            .unwrap();
+        assert_eq!(state, MessageState::Unknown);
         assert!(state.apply(Evidence::Claim).is_err());
     }
 }

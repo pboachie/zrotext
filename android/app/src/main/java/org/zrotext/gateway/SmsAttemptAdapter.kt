@@ -1,0 +1,170 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+package org.zrotext.gateway
+
+import android.Manifest
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
+import android.telephony.SmsManager
+import android.telephony.SmsMessage
+import android.telephony.SubscriptionManager
+import androidx.core.content.ContextCompat
+import java.util.UUID
+
+/**
+ * Local radio boundary for a future grant-validated dispatcher. Nothing in the M0 socket/UI calls it.
+ * A caller must provide a stable attempt ID and a consciously selected subscription ID.
+ */
+internal object SmsAttemptAdapter {
+    enum class StartResult { NOT_STARTED, ALREADY_RESERVED, JOURNAL_ERROR, CALL_RETURNED, UNKNOWN }
+
+    fun submit(
+        context: Context,
+        attemptId: String,
+        subscriptionId: Int,
+        destination: String,
+        body: String,
+        finished: (StartResult) -> Unit
+    ) {
+        val app = context.applicationContext
+        JournalRuntime.io.execute {
+            finished(submitOnJournalThread(app, attemptId, subscriptionId, destination, body))
+        }
+    }
+
+    private fun submitOnJournalThread(
+        context: Context, attemptId: String, subscriptionId: Int, destination: String, body: String
+    ): StartResult {
+        if (runCatching { UUID.fromString(attemptId) }.isFailure ||
+            !destination.matches(Regex("^\\+[1-9][0-9]{1,14}$")) || body.isBlank() ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.SEND_SMS) != PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED ||
+            subscriptionId < 0) return StartResult.NOT_STARTED
+
+        // Never fall back to the default SIM. A missing or changed SIM is a preflight refusal.
+        val active = try {
+            context.getSystemService(SubscriptionManager::class.java)
+                .activeSubscriptionInfoList.orEmpty().any { it.subscriptionId == subscriptionId }
+        } catch (_: SecurityException) {
+            false
+        }
+        if (!active) return StartResult.NOT_STARTED
+
+        val manager = try {
+            if (Build.VERSION.SDK_INT >= 31) context.getSystemService(SmsManager::class.java)
+                .createForSubscriptionId(subscriptionId)
+            else @Suppress("DEPRECATION") SmsManager.getSmsManagerForSubscriptionId(subscriptionId)
+        } catch (_: RuntimeException) {
+            return StartResult.NOT_STARTED
+        }
+        val parts = try { manager.divideMessage(body) } catch (_: RuntimeException) { return StartResult.NOT_STARTED }
+        if (parts.isEmpty() || parts.size > MAX_SEGMENTS) return StartResult.NOT_STARTED
+        val sent = ArrayList<PendingIntent>(parts.size)
+        val delivered = ArrayList<PendingIntent>(parts.size)
+        try {
+            parts.indices.forEach { index ->
+                sent += callbackIntent(context, attemptId, index, SmsCallbackReceiver.ACTION_SENT)
+                delivered += callbackIntent(context, attemptId, index, SmsCallbackReceiver.ACTION_DELIVERED)
+            }
+        } catch (_: RuntimeException) {
+            return StartResult.NOT_STARTED
+        }
+
+        val dao = SmsJournalDatabase.get(context).attempts()
+        if (dao.getAttempt(attemptId) != null) return StartResult.ALREADY_RESERVED
+        try {
+            dao.reserve(attemptId, subscriptionId, parts.size, System.currentTimeMillis())
+        } catch (_: RuntimeException) {
+            return StartResult.JOURNAL_ERROR
+        }
+
+        // There is intentionally no retry around this call. A throw may follow a partial radio action.
+        return try {
+            if (parts.size == 1) {
+                manager.sendTextMessage(destination, null, parts[0], sent[0], delivered[0])
+            } else {
+                manager.sendMultipartTextMessage(destination, null, parts, sent, delivered)
+            }
+            StartResult.CALL_RETURNED // Call return is not a sent or delivery acknowledgment.
+        } catch (_: RuntimeException) {
+            dao.setState(attemptId, AttemptState.UNKNOWN, System.currentTimeMillis())
+            StartResult.UNKNOWN
+        }
+    }
+
+    private fun callbackIntent(context: Context, attemptId: String, index: Int, action: String): PendingIntent {
+        val intent = Intent(context, SmsCallbackReceiver::class.java).apply {
+            this.action = action
+            data = Uri.Builder().scheme("zrotext").authority("sms-callback")
+                .appendPath(attemptId).appendPath(action).appendPath(index.toString()).build()
+        }
+        // The delivery status PDU arrives through the platform fill-in Intent, so it must be mutable.
+        // The component/action/data are explicit and the receiver reads identity only from the fixed URI.
+        val mutability = if (action == SmsCallbackReceiver.ACTION_DELIVERED) {
+            if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0
+        } else PendingIntent.FLAG_IMMUTABLE
+        return PendingIntent.getBroadcast(
+            context, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or mutability
+        )
+    }
+
+    private const val MAX_SEGMENTS = 6
+}
+
+/** Explicit, non-exported callbacks persist the result code once per segment. */
+class SmsCallbackReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        val delivery = when (intent.action) {
+            ACTION_SENT -> false
+            ACTION_DELIVERED -> true
+            else -> return
+        }
+        val uri = intent.data ?: return
+        if (uri.scheme != "zrotext" || uri.authority != "sms-callback" ||
+            uri.pathSegments.size != 3 || uri.pathSegments[1] != intent.action) return
+        val attemptId = uri.pathSegments[0]
+        val index = uri.pathSegments[2].toIntOrNull() ?: return
+        if (attemptId.length > 64 || index !in 0..5) return
+        val result = resultCode
+        val pdu = if (delivery) intent.getByteArrayExtra("pdu") else null
+        val format = if (delivery) intent.getStringExtra("format") else null
+        val pending = goAsync()
+        val app = context.applicationContext
+        JournalRuntime.io.execute {
+            try {
+                SmsJournalDatabase.get(app).attempts()
+                    .recordCallback(attemptId, index, delivery, result,
+                        if (delivery) {
+                            if (result == android.app.Activity.RESULT_OK) readDeliveryStatus(pdu, format)
+                            else DeliveryStatus.UNVERIFIED
+                        } else null,
+                        System.currentTimeMillis())
+            } finally {
+                pending.finish()
+            }
+        }
+    }
+
+    private fun readDeliveryStatus(pdu: ByteArray?, format: String?): Int {
+        if (pdu == null || pdu.isEmpty() || pdu.size > 512 || format !in listOf("3gpp", "3gpp2")) {
+            return DeliveryStatus.UNVERIFIED
+        }
+        val report = runCatching { SmsMessage.createFromPdu(pdu, format) }.getOrNull()
+            ?: return DeliveryStatus.UNVERIFIED
+        if (!report.isStatusReportMessage) return DeliveryStatus.UNVERIFIED
+        return when (report.status) {
+            0, 2 shl 16 -> DeliveryStatus.RECEIVED
+            in 64..127 -> DeliveryStatus.FAILED
+            else -> DeliveryStatus.UNVERIFIED
+        }
+    }
+
+    companion object {
+        const val ACTION_SENT = "org.zrotext.gateway.SMS_SENT"
+        const val ACTION_DELIVERED = "org.zrotext.gateway.SMS_DELIVERED"
+    }
+}
