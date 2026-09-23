@@ -4,7 +4,7 @@
 
 use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio_postgres::{Client, Row, error::SqlState};
+use tokio_postgres::{Client, Row, Transaction, error::SqlState};
 use uuid::Uuid;
 use zrotext_domain::{Evidence, MessageState};
 
@@ -32,6 +32,18 @@ pub enum StoreError {
     InvalidTransition,
     #[error("event ID was reused for different evidence")]
     EventIdConflict,
+    #[error("outbound quota policy is not configured")]
+    QuotaNotConfigured,
+    #[error("outbound quota is exhausted")]
+    QuotaExceeded,
+}
+
+#[derive(Clone, Copy)]
+enum MeteringTime {
+    Unmetered,
+    Database,
+    #[cfg(test)]
+    UnixMillis(i64),
 }
 
 pub struct NewMessage<'a> {
@@ -159,8 +171,37 @@ impl<'a> DeliveryStore<'a> {
     /// Inserts idempotency identity, message and job in one writer transaction.
     /// No HTTP 202 should be returned until this transaction commits.
     pub async fn accept(&mut self, input: NewMessage<'_>) -> Result<AcceptOutcome, StoreError> {
+        self.accept_inner(input, MeteringTime::Unmetered).await
+    }
+
+    /// Use for a quota-governed send. The reservation, idempotency record,
+    /// message and dispatch job commit together. The period is UTC calendar
+    /// month at the database transaction start; replay never reserves again.
+    pub async fn accept_metered(
+        &mut self,
+        input: NewMessage<'_>,
+    ) -> Result<AcceptOutcome, StoreError> {
+        self.accept_inner(input, MeteringTime::Database).await
+    }
+
+    #[cfg(test)]
+    async fn accept_metered_at(
+        &mut self,
+        input: NewMessage<'_>,
+        unix_ms: i64,
+    ) -> Result<AcceptOutcome, StoreError> {
+        self.accept_inner(input, MeteringTime::UnixMillis(unix_ms))
+            .await
+    }
+
+    async fn accept_inner(
+        &mut self,
+        input: NewMessage<'_>,
+        metering: MeteringTime,
+    ) -> Result<AcceptOutcome, StoreError> {
         validate_message(&input)?;
         let digest = request_digest(&input);
+        let require_reservation = !matches!(metering, MeteringTime::Unmetered);
         let recipient_digest = Sha256::digest(input.recipient_e164.as_bytes()).to_vec();
         let expiry = input.expires_at_ms as f64;
         let tx = self.client.transaction().await?;
@@ -196,6 +237,10 @@ impl<'a> DeliveryStore<'a> {
                 return Err(StoreError::IdempotencyConflict);
             }
             let message_id: Uuid = row.get(0);
+            if require_reservation && !reservation_exists(&tx, input.account_id, message_id).await?
+            {
+                return Err(StoreError::IdempotencyConflict);
+            }
             tx.commit().await?;
             return Ok(AcceptOutcome {
                 message_id,
@@ -224,11 +269,32 @@ impl<'a> DeliveryStore<'a> {
             if owner != input.account_id || saved_digest != digest {
                 return Err(StoreError::MessageIdConflict);
             }
+            if require_reservation
+                && !reservation_exists(&tx, input.account_id, input.client_message_id).await?
+            {
+                return Err(StoreError::IdempotencyConflict);
+            }
             tx.commit().await?;
             return Ok(AcceptOutcome {
                 message_id: input.client_message_id,
                 created: false,
             });
+        }
+        match metering {
+            MeteringTime::Unmetered => {}
+            MeteringTime::Database => {
+                reserve_outbound(&tx, input.account_id, input.client_message_id, None).await?
+            }
+            #[cfg(test)]
+            MeteringTime::UnixMillis(unix_ms) => {
+                reserve_outbound(
+                    &tx,
+                    input.account_id,
+                    input.client_message_id,
+                    Some(unix_ms),
+                )
+                .await?
+            }
         }
         tx.execute(
             "INSERT INTO dispatch_jobs (message_id,account_id,device_id) VALUES ($1,$2,$3)",
@@ -423,6 +489,7 @@ impl<'a> DeliveryStore<'a> {
             "UPDATE dispatch_jobs SET lease_owner=NULL,lease_until=NULL WHERE account_id=$1 AND message_id=$2",
             &[&account_id, &message_id],
         ).await?;
+        refund_outbound(&tx, account_id, message_id).await?;
         tx.commit().await?;
         Ok(true)
     }
@@ -440,21 +507,27 @@ impl<'a> DeliveryStore<'a> {
              ORDER BY m.expires_at,j.message_id FOR UPDATE OF j SKIP LOCKED LIMIT $1",
             &[&limit],
         ).await?;
+        let mut expired = 0;
         for row in &rows {
             let account_id: Uuid = row.get(0);
             let message_id: Uuid = row.get(1);
-            tx.execute(
+            let updated = tx.execute(
                 "UPDATE messages SET state='expired',state_version=state_version+1,updated_at=now() \
                  WHERE account_id=$1 AND id=$2 AND state IN ('queued','claimed') AND expires_at<=now()",
                 &[&account_id, &message_id],
             ).await?;
+            if updated != 1 {
+                continue;
+            }
             tx.execute(
                 "UPDATE dispatch_jobs SET lease_owner=NULL,lease_until=NULL WHERE account_id=$1 AND message_id=$2",
                 &[&account_id, &message_id],
             ).await?;
+            refund_outbound(&tx, account_id, message_id).await?;
+            expired += 1;
         }
         tx.commit().await?;
-        Ok(rows.len() as u64)
+        Ok(expired)
     }
 
     /// Silence after a grant is ambiguous. Keep the device fence and mark the
@@ -912,6 +985,102 @@ impl<'a> DeliveryStore<'a> {
     }
 }
 
+async fn reservation_exists(
+    tx: &Transaction<'_>,
+    account_id: Uuid,
+    message_id: Uuid,
+) -> Result<bool, StoreError> {
+    Ok(tx
+        .query_opt(
+            "SELECT 1 FROM usage_ledger WHERE account_id=$1 AND message_id=$2 AND entry_kind='reserve'",
+            &[&account_id, &message_id],
+        )
+        .await?
+        .is_some())
+}
+
+async fn reserve_outbound(
+    tx: &Transaction<'_>,
+    account_id: Uuid,
+    message_id: Uuid,
+    at_unix_ms: Option<i64>,
+) -> Result<(), StoreError> {
+    let policy = tx
+        .query_opt(
+            "SELECT limit_units FROM usage_quota_policies \
+             WHERE account_id=$1 AND metric='outbound_message' FOR SHARE",
+            &[&account_id],
+        )
+        .await?
+        .ok_or(StoreError::QuotaNotConfigured)?;
+    let limit: i64 = policy.get(0);
+    let period_start: String = tx
+        .query_one(
+            "SELECT date_trunc('month', COALESCE(to_timestamp($1::bigint::double precision / 1000), \
+             transaction_timestamp()) AT TIME ZONE 'UTC')::date::text",
+            &[&at_unix_ms],
+        )
+        .await?
+        .get(0);
+    tx.execute(
+        "INSERT INTO usage_periods(account_id,metric,period_start,period_end,limit_units) \
+         VALUES($1,'outbound_message',$2::text::date,($2::text::date + interval '1 month')::date,$3) \
+         ON CONFLICT(account_id,metric,period_start) DO NOTHING",
+        &[&account_id, &period_start, &limit],
+    )
+    .await?;
+    let reserved = tx
+        .query_opt(
+            "UPDATE usage_periods SET reserved_units=reserved_units+1 \
+             WHERE account_id=$1 AND metric='outbound_message' AND period_start=$2::text::date \
+               AND reserved_units-refunded_units < limit_units \
+             RETURNING period_start",
+            &[&account_id, &period_start],
+        )
+        .await?;
+    if reserved.is_none() {
+        return Err(StoreError::QuotaExceeded);
+    }
+    tx.execute(
+        "INSERT INTO usage_ledger(account_id,message_id,metric,period_start,entry_kind,units) \
+         VALUES($1,$2,'outbound_message',$3::text::date,'reserve',1)",
+        &[&account_id, &message_id, &period_start],
+    )
+    .await?;
+    Ok(())
+}
+
+/// Called only while changing a pre-grant message to a terminal state in the
+/// same transaction. The unique refund entry makes repeated sweeps harmless.
+async fn refund_outbound(
+    tx: &Transaction<'_>,
+    account_id: Uuid,
+    message_id: Uuid,
+) -> Result<bool, StoreError> {
+    let refund = tx
+        .query_opt(
+            "INSERT INTO usage_ledger(account_id,message_id,metric,period_start,entry_kind,units) \
+             SELECT account_id,message_id,metric,period_start,'refund',-1 FROM usage_ledger \
+             WHERE account_id=$1 AND message_id=$2 AND entry_kind='reserve' \
+             ON CONFLICT(account_id,message_id,entry_kind) DO NOTHING \
+             RETURNING metric,period_start::text",
+            &[&account_id, &message_id],
+        )
+        .await?;
+    let Some(refund) = refund else {
+        return Ok(false);
+    };
+    let metric: String = refund.get(0);
+    let period_start: String = refund.get(1);
+    tx.execute(
+        "UPDATE usage_periods SET refunded_units=refunded_units+1 \
+         WHERE account_id=$1 AND metric=$2 AND period_start=$3::text::date",
+        &[&account_id, &metric, &period_start],
+    )
+    .await?;
+    Ok(true)
+}
+
 fn validate_message(input: &NewMessage<'_>) -> Result<(), StoreError> {
     let valid_number = input.recipient_e164.starts_with('+')
         && (3..=16).contains(&input.recipient_e164.len())
@@ -1065,6 +1234,12 @@ mod tests {
         client
             .batch_execute(include_str!(
                 "../../../deploy/compose/migrations/003_delivery.sql"
+            ))
+            .await
+            .unwrap();
+        client
+            .batch_execute(include_str!(
+                "../../../deploy/compose/migrations/006_usage_metering.sql"
             ))
             .await
             .unwrap();
@@ -1708,3 +1883,6 @@ mod tests {
             .unwrap();
     }
 }
+
+#[cfg(test)]
+mod metering_tests;

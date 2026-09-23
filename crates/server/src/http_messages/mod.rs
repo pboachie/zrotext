@@ -81,6 +81,7 @@ enum MessageHttpError {
     Forbidden,
     NotFound,
     Conflict,
+    QuotaExceeded,
     Unavailable,
 }
 
@@ -92,6 +93,7 @@ impl IntoResponse for MessageHttpError {
             Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden"),
             Self::NotFound => (StatusCode::NOT_FOUND, "not_found"),
             Self::Conflict => (StatusCode::CONFLICT, "conflict"),
+            Self::QuotaExceeded => (StatusCode::TOO_MANY_REQUESTS, "quota_exceeded"),
             Self::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
         };
         (status, Json(ErrorBody { code })).into_response()
@@ -119,9 +121,11 @@ fn map_store(error: StoreError) -> MessageHttpError {
         | StoreError::MessageIdConflict
         | StoreError::InvalidTransition => MessageHttpError::Conflict,
         StoreError::NotFound | StoreError::Revoked => MessageHttpError::NotFound,
-        StoreError::Database(_) | StoreError::DispatchDisabled | StoreError::StaleFence => {
-            MessageHttpError::Unavailable
-        }
+        StoreError::Database(_)
+        | StoreError::DispatchDisabled
+        | StoreError::StaleFence
+        | StoreError::QuotaNotConfigured => MessageHttpError::Unavailable,
+        StoreError::QuotaExceeded => MessageHttpError::QuotaExceeded,
         StoreError::DeviceBusy | StoreError::EventIdConflict => MessageHttpError::Conflict,
     }
 }
@@ -461,6 +465,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
             include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
             include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+            include_str!("../../../../deploy/compose/migrations/006_usage_metering.sql"),
         ] {
             client.batch_execute(sql).await.unwrap();
         }
