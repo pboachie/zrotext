@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! A bounded HTTPS sender for ciphertext webhook bodies. No route or worker
-//! invokes this module until endpoint secret custody and the inbound outbox
-//! are wired. The network firewall remains a required second SSRF boundary.
+//! A bounded HTTPS sender for ciphertext webhook bodies. The network firewall
+//! remains a required second SSRF boundary.
 
 use hmac::{Hmac, Mac};
 use reqwest::{Url, redirect, retry};
@@ -21,6 +20,8 @@ pub enum EgressError {
     InvalidInput,
     #[error("webhook DNS resolution is unsafe or unavailable")]
     UnsafeResolution,
+    #[error("webhook DNS resolution is unavailable")]
+    ResolutionUnavailable,
     #[error("webhook transport is unavailable")]
     Transport,
 }
@@ -181,8 +182,8 @@ pub async fn post_signed(
         tokio::net::lookup_host((host, WEBHOOK_PORT)),
     )
     .await
-    .map_err(|_| EgressError::UnsafeResolution)?
-    .map_err(|_| EgressError::UnsafeResolution)?;
+    .map_err(|_| EgressError::ResolutionUnavailable)?
+    .map_err(|_| EgressError::ResolutionUnavailable)?;
     let addrs: Vec<SocketAddr> = answers.take(MAX_DNS_ADDRESSES + 1).collect();
     validate_resolved_addresses(&addrs)?;
 
