@@ -474,16 +474,25 @@ pub async fn reset_test_quotas_on_start(
     tokio::spawn(async move {
         let _ = connection.await;
     });
-    let available: bool = db
-        .query_one("SELECT to_regclass('billing_quota_audit') IS NOT NULL AND to_regclass('billing_risk_events') IS NOT NULL AND to_regclass('billing_payment_holds') IS NOT NULL", &[])
-        .await?
-        .get(0);
-    if !available {
+    let schema = db
+        .query_one(
+            "SELECT to_regclass('billing_quota_audit') IS NOT NULL, to_regclass('billing_risk_events') IS NOT NULL AND to_regclass('billing_payment_holds') IS NOT NULL",
+            &[],
+        )
+        .await?;
+    let quota_available: bool = schema.get(0);
+    let risk_available: bool = schema.get(1);
+    if !quota_available {
         return if require_schema {
             Err(BillingError::InvalidEvent)
         } else {
             Ok(())
         };
+    }
+    // Disabling test billing must still clear old allowances when only the
+    // entitlement migration has run; enabling requires the hold schema too.
+    if require_schema && !risk_available {
+        return Err(BillingError::InvalidEvent);
     }
     let tx = db.transaction().await?;
     tx.execute(
@@ -1330,6 +1339,25 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(row.get::<_, i64>(0), 8);
+        // A rolling upgrade can temporarily have entitlement migration 009
+        // without risk migration 010. Disabling billing still clears its old
+        // allowance, while enabling billing requires both schemas.
+        db.batch_execute("DROP TABLE billing_payment_holds,billing_risk_events")
+            .await
+            .unwrap();
+        assert!(reset_test_quotas_on_start(&scoped_url, true).await.is_err());
+        reset_test_quotas_on_start(&scoped_url, false)
+            .await
+            .unwrap();
+        let limit: i64 = db
+            .query_one(
+                "SELECT limit_units FROM usage_quota_policies WHERE account_id=$1",
+                &[&account],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(limit, 0);
         setup
             .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
             .await
