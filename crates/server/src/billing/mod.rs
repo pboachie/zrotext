@@ -10,13 +10,19 @@ use tokio_postgres::{Client, Transaction};
 use uuid::Uuid;
 
 pub mod http;
+pub mod owner;
 pub mod risk;
+pub mod sessions;
 pub mod worker;
 
 type HmacSha256 = Hmac<Sha256>;
 const MAX_BODY: usize = 64 * 1024;
 const MAX_HEADER: usize = 1024;
 const TOLERANCE_SECONDS: i64 = 300;
+
+fn is_test_api_key(key: &str) -> bool {
+    (key.starts_with("sk_test_") || key.starts_with("rk_test_")) && key.len() >= 16
+}
 
 #[derive(Debug, Error)]
 pub enum BillingError {
@@ -685,6 +691,21 @@ mod tests {
     const HEADER: &str =
         "t=1750000000,v0=0000,v1=17db9d23bf1f46a7db28382296af063cf65b36c77d80f154712e9f0803633536";
     const SECRET: &str = "whsec_testfixture1234567890";
+
+    #[test]
+    fn api_key_gate_accepts_only_test_secret_or_restricted_keys() {
+        assert!(is_test_api_key("sk_test_fixture123456"));
+        assert!(is_test_api_key("rk_test_fixture123456"));
+        for key in [
+            "sk_live_fixture123456",
+            "rk_live_fixture123456",
+            "pk_test_fixture123456",
+            "rk_test_",
+            "sk_test_",
+        ] {
+            assert!(!is_test_api_key(key));
+        }
+    }
 
     fn signed_header(timestamp: i64, mac: HmacSha256) -> String {
         let digest = mac.finalize().into_bytes();
@@ -1557,7 +1578,7 @@ mod tests {
                 "incomplete_expired",
             ),
         ];
-        assert!(secret_key.starts_with("sk_test_"));
+        assert!(is_test_api_key(&secret_key));
         valid_id(&price_id, "price_").unwrap();
         let (setup, connection) = tokio_postgres::connect(&database_url, NoTls).await.unwrap();
         tokio::spawn(async move { connection.await.unwrap() });

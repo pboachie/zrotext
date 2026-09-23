@@ -10,5 +10,6 @@
 *.jks
 *.keystore
 *.log
+__pycache__/
 .idea/
 .vscode/
