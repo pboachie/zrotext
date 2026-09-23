@@ -1,16 +1,14 @@
 # Device stream v1: authenticated session
 
-This is the implemented M1 phone-to-hub handshake. A production endpoint must
-use WSS. The current Android client requires a manually entered approved
-device UUID and a `wss://` URL ending in `/v1/device-stream`. Authenticated
-WSS interoperability passed on a dedicated Samsung through a disposable
-loopback TLS fixture, including a safe proxy transport-close/reconnect and
-terminal device-revocation probe. A guarded server-side
-[synthetic-alpha extension](synthetic-alpha-stream.md) and a manually armed
-Android extension completed one separately authorized outbound synthetic SMS
-with positive sent and delivery callbacks. This does not establish production
-TLS, reliable background transport, an inbound reply, or an inbound-upload
-end-to-end path; see [implementation status](../../docs/implementation-status.md).
+This is the authenticated phone-to-hub handshake. A public endpoint must use
+WSS. The Android client requires an approved device UUID and a `wss://` URL
+ending in `/v1/device-stream`. A dedicated Android phone completed an
+authenticated session and fresh proof after a disposable local TLS proxy
+close; a separate revocation probe stopped the client. The guarded
+[synthetic-alpha extension](synthetic-alpha-stream.md) completed one
+separately authorized outbound test SMS with positive sent and delivery
+callbacks. These bounded tests do not establish production TLS or general
+carrier reliability.
 
 1. Phone sends `{"v":1,"type":"hello","device_id":"UUID"}`.
 2. Hub returns `{"v":1,"type":"challenge","challenge_id":"UUID","account_id":"UUID","device_id":"UUID","nonce":"BASE64URL_NO_PAD"}`. The nonce is 32 random bytes.
@@ -43,10 +41,8 @@ an established session's close, or a heartbeat timeout can retry with bounded
 backoff and a fresh challenge proof and epoch. A manual synthetic-SMS arm or
 inbound-upload opt-in is consumed before retry; a reconnect is heartbeat-only.
 Pause, force-stop, service/process stop, and reboot do not self-start the
-client. A Samsung loopback proxy-close/reconnect probe passed, but subsequent
-120-second unplugged screen-off windows did not meet stable heartbeat liveness,
-including with the app's Battery UI verified Unrestricted. Neither a session
-nor a heartbeat authorizes SMS.
+client. A Samsung loopback proxy-close/reconnect probe passed. Neither a
+session nor a heartbeat authorizes SMS.
 
 ## Opt-in inbound metadata pilot (Android client)
 

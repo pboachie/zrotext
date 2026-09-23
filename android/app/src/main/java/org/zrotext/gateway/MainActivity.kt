@@ -75,8 +75,8 @@ class MainActivity : ComponentActivity() {
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
                     Text("ZROtext", style = MaterialTheme.typography.headlineLarge)
-                    Text("Gateway mode spike", style = MaterialTheme.typography.titleMedium)
-                    Text("The M0 gateway button tests SIM visibility and a token socket heartbeat. That button does not send or receive SMS.")
+                    Text("Gateway connection test", style = MaterialTheme.typography.titleMedium)
+                    Text("Check SIM visibility and a test socket connection. This connection test does not send or receive SMS.")
                     Text("Status: ${GatewayStatus.value}; heartbeat acknowledgments this process: ${GatewayStatus.heartbeats}")
                     Button(onClick = { askPermissions() }) { Text("Grant gateway permissions") }
                     Text("Selected SIM: ${selectedSim?.toString() ?: "none"}")
@@ -109,7 +109,7 @@ class MainActivity : ComponentActivity() {
                     Button(onClick = {
                         startService(Intent(this@MainActivity, GatewayService::class.java).setAction(GatewayService.ACTION_PAUSE))
                     }) { Text("Pause gateway") }
-                    Text("Keep this dedicated phone plugged in for the screen-off test. Reopen the app after a stop or reboot; automatic recovery is not implemented in M0.")
+                    Text("Keep this dedicated phone plugged in for a screen-off connection test. Reopen the app after a stop or reboot; automatic recovery is not available yet.")
                     HorizontalDivider()
                     Text("Authenticated device heartbeat", style = MaterialTheme.typography.titleMedium)
                     Text("After owner approval, enter the approved device UUID and trusted WSS origin. The heartbeat button only proves the phone's Keystore key and exchanges heartbeats.")
@@ -143,8 +143,8 @@ class MainActivity : ComponentActivity() {
                         ContextCompat.startForegroundService(this@MainActivity, intent)
                     }) { Text("Start inbound metadata pilot") }
                     HorizontalDivider()
-                    Text("One controlled synthetic SMS", style = MaterialTheme.typography.titleMedium)
-                    Text("Enter a recipient you control in +E.164 form. This private pilot can consume one grant per app installation. A valid writer ack can make one SMS call from the selected SIM; silence or an uncertain result is never retried.")
+                    Text("Controlled SMS test", style = MaterialTheme.typography.titleMedium)
+                    Text("Enter a recipient you control in +E.164 form. This test allows one send per app installation. A confirmed grant can send one SMS from the selected SIM; an uncertain result is never retried automatically.")
                     OutlinedTextField(value = alphaRecipient, onValueChange = { alphaRecipient = it.trim() },
                         label = { Text("Controlled recipient +E.164") })
                     Button(onClick = {
@@ -161,7 +161,7 @@ class MainActivity : ComponentActivity() {
                             ContextCompat.startForegroundService(this@MainActivity, intent)
                             alphaRecipient = ""
                         }
-                    }) { Text("Arm one synthetic SMS") }
+                    }) { Text("Arm one test SMS") }
                     HorizontalDivider()
                     Text("Device pairing", style = MaterialTheme.typography.titleMedium)
                     Text("Enter the one-use pairing ID and token from the owner account. The phone will prove possession of its Keystore key. Compare both values below with the browser before approving there.")

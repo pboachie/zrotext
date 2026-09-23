@@ -7,8 +7,7 @@ use super::{
     AuthError, TokenHasher, VERIFICATION_HOURS, normalize_email, password_engine,
     verification_token_for_id,
 };
-use argon2::{PasswordHash, PasswordHasher, PasswordVerifier, password_hash::SaltString};
-use rand::rngs::OsRng;
+use argon2::{PasswordHash, PasswordHasher, PasswordVerifier};
 use std::sync::OnceLock;
 use tokio_postgres::Client;
 use uuid::Uuid;
@@ -47,11 +46,10 @@ pub async fn request_verification_resend(
         // Burn comparable Argon2 verification work for an unknown address.
         // Initialization occurs once per process; no mail is queued.
         let dummy = DUMMY_PASSWORD_HASH.get_or_init(|| {
-            let salt = SaltString::generate(&mut OsRng);
             password_engine()
                 .expect("fixed Argon2 parameters")
-                .hash_password(b"unregistered-account", &salt)
-                .expect("fixed Argon2 parameters and valid salt")
+                .hash_password(b"unregistered-account")
+                .expect("fixed Argon2 parameters and random salt")
                 .to_string()
         });
         (None, dummy.clone())
