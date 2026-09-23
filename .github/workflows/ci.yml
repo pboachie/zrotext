@@ -6,6 +6,33 @@ on:
 permissions:
   contents: read
 jobs:
+  owner-browser:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Test owner browser flows
+        run: node --test web/owner/*.test.js
+  quality:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Public-tree hygiene
+        run: python3 scripts/check_public_tree.py
+      - name: Hygiene regression tests
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
+      - name: JavaScript syntax
+        run: node --check web/owner/devices.js
+      - name: Commit sign-off
+        if: github.event_name == 'pull_request'
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_CREATED_AT: ${{ github.event.pull_request.created_at }}
+        run: python3 scripts/check_dco.py
+      - name: Spelling
+        uses: crate-ci/typos@5e183518f8764162ed2841339af896246fccbcfd # v1.49.0
   rust:
     runs-on: ubuntu-24.04
     services:

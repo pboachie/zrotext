@@ -1,0 +1,18 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Billing · ZROtext</title>
+<main>
+  <h1>Billing test mode</h1>
+  <p>This page shows locally reconciled Stripe test records. A Checkout or Portal return does not confirm payment or access.</p>
+  <p id="billing-state" role="status">Loading billing status…</p>
+  <ul id="subscriptions"></ul>
+  <p id="billing-error" role="alert"></p>
+  <button id="checkout" type="button">Open test Checkout</button>
+  <button id="portal" type="button" disabled>Open customer portal</button>
+  <button id="refresh" type="button">Refresh status</button>
+</main>
+<script src="/billing/dashboard.js" defer></script>
+</html>
