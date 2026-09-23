@@ -24,6 +24,16 @@ struct BillingStatus {
     pending_reconciliations: i64,
     subscriptions: Vec<SubscriptionView>,
     more_subscriptions: bool,
+    device_capacity: DeviceCapacityView,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeviceCapacityView {
+    limit: Option<i64>,
+    active: i64,
+    over_limit: bool,
+    enrollment_blocked: bool,
 }
 
 #[derive(Serialize)]
@@ -104,6 +114,20 @@ async fn status(
         .await
         .map_err(|_| AuthHttpError::Unavailable)?
         .get(0);
+    let capacity = db
+        .query_one(
+            "SELECT (SELECT limit_devices FROM billing_device_caps WHERE account_id=$1), (SELECT count(*) FROM devices WHERE account_id=$1 AND revoked_at IS NULL), (SELECT enabled FROM billing_device_cap_config WHERE singleton=true)",
+            &[&account_id],
+        )
+        .await
+        .map_err(|_| AuthHttpError::Unavailable)?;
+    let cap_policy_enabled: bool = capacity.get(2);
+    let limit: Option<i64> = if cap_policy_enabled {
+        capacity.get(0)
+    } else {
+        None
+    };
+    let active: i64 = capacity.get(1);
     let rows = db
         .query(
             "SELECT s.stripe_status,s.recognized_price,r.dirty_generation>r.processed_generation,extract(epoch from s.reconciled_at)::bigint FROM billing_subscriptions s JOIN billing_reconciliations r ON r.stripe_subscription_id=s.stripe_subscription_id AND r.account_id=s.account_id WHERE s.account_id=$1 ORDER BY s.reconciled_at DESC,s.stripe_subscription_id LIMIT 21",
@@ -128,6 +152,14 @@ async fn status(
         pending_reconciliations,
         subscriptions,
         more_subscriptions,
+        device_capacity: DeviceCapacityView {
+            limit,
+            active,
+            over_limit: limit.is_some_and(|value| active > value),
+            enrollment_blocked: limit.is_some_and(|value| active >= value)
+                || (limit.is_some() && pending_reconciliations > 0)
+                || (limit.is_none() && cap_policy_enabled),
+        },
     }))
 }
 
@@ -209,6 +241,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
             include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
             include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+            include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
@@ -258,6 +291,12 @@ mod tests {
                 .status(),
             StatusCode::UNAUTHORIZED
         );
+        db.execute(
+            "UPDATE billing_device_cap_config SET enabled=true WHERE singleton=true",
+            &[],
+        )
+        .await
+        .unwrap();
         let empty = app
             .clone()
             .oneshot(get("/v1/billing/status", Some(&owner_a.token)))
@@ -270,6 +309,7 @@ mod tests {
         assert_eq!(empty["customerBound"], false);
         assert_eq!(empty["pendingReconciliations"], 0);
         assert_eq!(empty["subscriptions"].as_array().unwrap().len(), 0);
+        assert_eq!(empty["deviceCapacity"]["enrollmentBlocked"], true);
 
         for (account, customer, subscription, status, recognized, dirty, processed) in [
             (
@@ -300,6 +340,20 @@ mod tests {
             db.execute("INSERT INTO billing_reconciliations(stripe_subscription_id,account_id,stripe_customer_id,dirty_generation,processed_generation) VALUES($1,$2,$3,$4,$5)", &[&subscription, &account, &customer, &dirty, &processed]).await.unwrap();
             db.execute("INSERT INTO billing_subscriptions(stripe_subscription_id,account_id,stripe_customer_id,stripe_status,stripe_price_id,recognized_price) VALUES($1,$2,$3,$4,$5,$6)", &[&subscription, &account, &customer, &status, &"price_Private", &recognized]).await.unwrap();
         }
+        db.execute(
+            "INSERT INTO billing_device_caps(account_id,limit_devices) VALUES($1,1)",
+            &[&first.account_id],
+        )
+        .await
+        .unwrap();
+        for _ in 0..2 {
+            db.execute(
+                "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'test device')",
+                &[&Uuid::new_v4(), &first.account_id],
+            )
+            .await
+            .unwrap();
+        }
         let response = app
             .clone()
             .oneshot(get("/v1/billing/status", Some(&owner_a.token)))
@@ -316,13 +370,17 @@ mod tests {
         assert_eq!(status["subscriptions"][0]["stripeStatus"], "past_due");
         assert_eq!(status["subscriptions"][0]["recognizedTestPrice"], false);
         assert_eq!(status["subscriptions"][0]["reconciliationPending"], true);
+        assert_eq!(status["deviceCapacity"]["limit"], 1);
+        assert_eq!(status["deviceCapacity"]["active"], 2);
+        assert_eq!(status["deviceCapacity"]["overLimit"], true);
+        assert_eq!(status["deviceCapacity"]["enrollmentBlocked"], true);
         for secret in [
             "cus_OwnerA",
             "sub_OwnerA",
             "cus_OwnerB",
             "sub_OwnerB",
             "price_Private",
-            "active",
+            "\"stripeStatus\":\"active\"",
             &first.account_id.to_string(),
             &second.account_id.to_string(),
         ] {
@@ -340,6 +398,9 @@ mod tests {
             serde_json::from_slice(&to_bytes(other.into_body(), 4096).await.unwrap()).unwrap();
         assert_eq!(other["subscriptions"][0]["stripeStatus"], "active");
         assert_eq!(other["pendingReconciliations"], 0);
+        assert_eq!(other["deviceCapacity"]["limit"], Value::Null);
+        assert_eq!(other["deviceCapacity"]["active"], 0);
+        assert_eq!(other["deviceCapacity"]["enrollmentBlocked"], true);
 
         let page = app
             .clone()

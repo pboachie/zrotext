@@ -90,10 +90,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &env::var("STRIPE_TEST_QUOTA_PLANS").unwrap_or_default(),
                 &prices,
             )?;
+            let device_caps_enabled = plans.iter().any(|plan| plan.device_limit.is_some());
             let secret_key = required("STRIPE_TEST_SECRET_KEY")?;
             let worker =
                 StripeTestWorker::new_with_quotas(secret_key.clone(), prices.clone(), plans)?;
-            Some((endpoint_secret, worker, secret_key, prices))
+            Some((
+                endpoint_secret,
+                worker,
+                secret_key,
+                prices,
+                device_caps_enabled,
+            ))
         }
         _ => return Err("invalid STRIPE_BILLING_TEST_ENABLED".into()),
     };
@@ -176,7 +183,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             webhook_worker::validate_runtime_keys(&mut key_db, vault).await?;
         }
         ensure_local_site(&config).await?;
-        reset_test_quotas_on_start(&config.database_url, billing_test.is_some()).await?;
+        reset_test_quotas_on_start(
+            &config.database_url,
+            billing_test.is_some(),
+            billing_test.as_ref().is_some_and(|billing| billing.4),
+        )
+        .await?;
         quotas_reset = true;
         if let Some(vault) = webhook_vault {
             let vault = Arc::new(vault);
@@ -339,10 +351,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         return Err("account and enrollment routes are required for enabled features".into());
     }
-    if let Some((endpoint_secret, worker, secret_key, prices)) = billing_test {
+    if let Some((endpoint_secret, worker, secret_key, prices, device_caps_enabled)) = billing_test {
         let billing_database = config.database_url.clone();
         if !quotas_reset {
-            reset_test_quotas_on_start(&billing_database, true).await?;
+            reset_test_quotas_on_start(&billing_database, true, device_caps_enabled).await?;
         }
         let mut billing_routes = billing_http::router(BillingHttpState {
             database_url: billing_database.clone(),

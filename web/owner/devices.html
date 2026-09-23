@@ -46,6 +46,7 @@
           <button type="submit">Create pairing</button>
         </form>
         <p id="pair-status" role="status" aria-live="polite"></p>
+        <p><a id="pair-cap-devices-link" href="#approved-devices" hidden>Choose devices to revoke</a></p>
         <div id="pair-ticket" hidden>
           <dl>
             <dt>Server origin</dt><dd><code id="server-origin"></code></dd>
@@ -75,8 +76,9 @@
         <p id="approved-result" role="status" aria-live="polite"></p>
       </section>
 
-      <section aria-labelledby="devices-title">
+      <section id="approved-devices" aria-labelledby="devices-title">
         <div class="section-head"><h2 id="devices-title">Approved devices</h2><button id="refresh-devices" type="button" class="quiet">Refresh</button></div>
+        <p id="device-cap-prompt" role="status" aria-live="polite" hidden></p>
         <p id="device-status" role="status" aria-live="polite"></p>
         <ul id="device-list"></ul>
         <button id="more-devices" type="button" class="quiet" hidden>Load more devices</button>

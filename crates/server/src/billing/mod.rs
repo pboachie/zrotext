@@ -430,6 +430,7 @@ pub struct SubscriptionSnapshot {
 pub struct TestQuotaPlan {
     pub price_id: String,
     pub outbound_limit: i64,
+    pub device_limit: Option<i64>,
 }
 
 /// Explicit test-mode price mapping. No price ID or limit comes from Checkout
@@ -443,10 +444,20 @@ pub fn parse_test_quota_plans(
     }
     let mut plans = Vec::new();
     for entry in value.split(',') {
-        let (price_id, limit) = entry
-            .trim()
-            .split_once(':')
-            .ok_or("invalid Stripe test quota plan")?;
+        let mut fields = entry.trim().split(':');
+        let price_id = fields.next().ok_or("invalid Stripe test quota plan")?;
+        let limit = fields.next().ok_or("invalid Stripe test quota plan")?;
+        let device_limit = fields
+            .next()
+            .map(|value| {
+                value
+                    .parse::<i64>()
+                    .map_err(|_| "invalid Stripe test quota plan")
+            })
+            .transpose()?;
+        if fields.next().is_some() || device_limit.is_some_and(|limit| limit < 0) {
+            return Err("invalid Stripe test quota plan");
+        }
         valid_id(price_id, "price_").map_err(|_| "invalid Stripe test quota plan")?;
         if !recognized_prices.iter().any(|known| known == price_id)
             || plans
@@ -464,7 +475,13 @@ pub fn parse_test_quota_plans(
         plans.push(TestQuotaPlan {
             price_id: price_id.to_owned(),
             outbound_limit,
+            device_limit,
         });
+    }
+    if plans.iter().any(|plan| plan.device_limit.is_some())
+        && plans.iter().any(|plan| plan.device_limit.is_none())
+    {
+        return Err("every mapped test price needs an explicit device cap");
     }
     Ok(plans)
 }
@@ -475,6 +492,7 @@ pub fn parse_test_quota_plans(
 pub async fn reset_test_quotas_on_start(
     database_url: &str,
     require_schema: bool,
+    device_caps_enabled: bool,
 ) -> Result<(), BillingError> {
     let (mut db, connection) = tokio_postgres::connect(database_url, tokio_postgres::NoTls).await?;
     tokio::spawn(async move {
@@ -482,12 +500,13 @@ pub async fn reset_test_quotas_on_start(
     });
     let schema = db
         .query_one(
-            "SELECT to_regclass('billing_quota_audit') IS NOT NULL, to_regclass('billing_risk_events') IS NOT NULL AND to_regclass('billing_payment_holds') IS NOT NULL",
+            "SELECT to_regclass('billing_quota_audit') IS NOT NULL, to_regclass('billing_risk_events') IS NOT NULL AND to_regclass('billing_payment_holds') IS NOT NULL, to_regclass('billing_device_cap_config') IS NOT NULL AND to_regclass('billing_device_caps') IS NOT NULL AND to_regclass('billing_device_cap_audit') IS NOT NULL",
             &[],
         )
         .await?;
     let quota_available: bool = schema.get(0);
     let risk_available: bool = schema.get(1);
+    let device_caps_available: bool = schema.get(2);
     if !quota_available {
         return if require_schema {
             Err(BillingError::InvalidEvent)
@@ -500,7 +519,20 @@ pub async fn reset_test_quotas_on_start(
     if require_schema && !risk_available {
         return Err(BillingError::InvalidEvent);
     }
+    if require_schema && !device_caps_available {
+        return Err(BillingError::InvalidEvent);
+    }
     let tx = db.transaction().await?;
+    if device_caps_available {
+        let enabled: bool = tx.query_one(
+            "UPDATE billing_device_cap_config SET enabled=enabled OR $1,updated_at=now() WHERE singleton=true RETURNING enabled",
+            &[&device_caps_enabled],
+        )
+        .await?.get(0);
+        if enabled && !device_caps_enabled {
+            return Err(BillingError::InvalidEvent);
+        }
+    }
     tx.execute(
         "UPDATE billing_reconciliations SET dirty_generation=dirty_generation+1,next_attempt_at=now(),updated_at=now()",
         &[],
@@ -517,6 +549,16 @@ pub async fn reset_test_quotas_on_start(
         "UPDATE usage_periods u SET limit_units=0 FROM usage_quota_policies p WHERE u.account_id=p.account_id AND u.metric='outbound_message' AND p.metric='outbound_message' AND p.source='stripe_test' AND u.period_start=date_trunc('month',transaction_timestamp() AT TIME ZONE 'UTC')::date",
         &[],
     ).await?;
+    if device_caps_available {
+        tx.execute(
+            "INSERT INTO billing_device_cap_audit(account_id,reconciliation_generation,previous_limit_devices,limit_devices,reason) SELECT account_id,0,limit_devices,0,'startup_reset' FROM billing_device_caps WHERE limit_devices<>0",
+            &[],
+        ).await?;
+        tx.execute(
+            "UPDATE billing_device_caps SET limit_devices=0,updated_at=now() WHERE limit_devices<>0",
+            &[],
+        ).await?;
+    }
     tx.commit().await?;
     Ok(())
 }
@@ -560,6 +602,24 @@ pub async fn reconcile_snapshot_with_quotas(
         &[&account_id.to_string()],
     )
     .await?;
+    // Pairing approval takes the same account lock before counting devices.
+    tx.query_one(
+        "SELECT id FROM accounts WHERE id=$1 FOR UPDATE",
+        &[&account_id],
+    )
+    .await?;
+    let device_caps_enabled: bool = tx
+        .query_one(
+            "SELECT enabled FROM billing_device_cap_config WHERE singleton=true",
+            &[],
+        )
+        .await?
+        .get(0);
+    if device_caps_enabled
+        && (quota_plans.is_empty() || quota_plans.iter().any(|plan| plan.device_limit.is_none()))
+    {
+        return Err(BillingError::InvalidEvent);
+    }
     let row = tx.query_opt(
         "SELECT stripe_customer_id,dirty_generation,processed_generation FROM billing_reconciliations WHERE stripe_subscription_id=$1 AND account_id=$2 FOR UPDATE",
         &[&snapshot.subscription_id, &account_id],
@@ -677,6 +737,38 @@ async fn project_test_quota(
             &[&account_id, &changed_subscription, &generation, &prior, &limit, &reason],
         ).await?;
     }
+    if plans.iter().any(|plan| plan.device_limit.is_some()) {
+        let device_limit = if reason == "active" {
+            let price: Option<String> = nonterminal[0].get(1);
+            plans
+                .iter()
+                .find(|plan| price.as_deref() == Some(&plan.price_id))
+                .and_then(|plan| plan.device_limit)
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        let prior = tx
+            .query_opt(
+                "SELECT limit_devices FROM billing_device_caps WHERE account_id=$1 FOR UPDATE",
+                &[&account_id],
+            )
+            .await?;
+        if prior
+            .as_ref()
+            .is_none_or(|row| row.get::<_, i64>(0) != device_limit)
+        {
+            tx.execute(
+                "INSERT INTO billing_device_caps(account_id,limit_devices) VALUES($1,$2) ON CONFLICT(account_id) DO UPDATE SET limit_devices=EXCLUDED.limit_devices,updated_at=now()",
+                &[&account_id, &device_limit],
+            ).await?;
+            let previous: Option<i64> = prior.map(|row| row.get(0));
+            tx.execute(
+                "INSERT INTO billing_device_cap_audit(account_id,stripe_subscription_id,reconciliation_generation,previous_limit_devices,limit_devices,reason) VALUES($1,$2,$3,$4,$5,$6)",
+                &[&account_id, &changed_subscription, &generation, &previous, &device_limit, &reason],
+            ).await?;
+        }
+    }
     Ok(())
 }
 
@@ -779,13 +871,23 @@ mod tests {
             vec![
                 TestQuotaPlan {
                     price_id: prices[0].clone(),
-                    outbound_limit: 2
+                    outbound_limit: 2,
+                    device_limit: None,
                 },
                 TestQuotaPlan {
                     price_id: prices[1].clone(),
-                    outbound_limit: 10
+                    outbound_limit: 10,
+                    device_limit: None,
                 },
             ]
+        );
+        assert_eq!(
+            parse_test_quota_plans("price_basic1:2:1,price_plus1:10:3", &prices)
+                .unwrap()
+                .iter()
+                .map(|plan| plan.device_limit)
+                .collect::<Vec<_>>(),
+            vec![Some(1), Some(3)]
         );
         for invalid in [
             "price_unknown1:2",
@@ -794,6 +896,9 @@ mod tests {
             "price_basic1:2,price_basic1:3",
             "price_basic1:18446744073709551616",
             "price_basic1:x",
+            "price_basic1:2:-1",
+            "price_basic1:2:1:4",
+            "price_basic1:2:1,price_plus1:10",
         ] {
             assert!(parse_test_quota_plans(invalid, &prices).is_err());
         }
@@ -854,6 +959,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/009_webhook_manual_replay.sql"),
             include_str!("../../../../deploy/compose/migrations/010_billing_test_entitlement.sql"),
             include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
+            include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
@@ -1132,6 +1238,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/009_webhook_manual_replay.sql"),
             include_str!("../../../../deploy/compose/migrations/010_billing_test_entitlement.sql"),
             include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
+            include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
@@ -1237,7 +1344,9 @@ mod tests {
                 Err(StoreError::QuotaExceeded)
             ));
         }
-        reset_test_quotas_on_start(&scoped_url, true).await.unwrap();
+        reset_test_quotas_on_start(&scoped_url, true, false)
+            .await
+            .unwrap();
         {
             let mut store = DeliveryStore::new(&mut db);
             assert!(matches!(
@@ -1411,8 +1520,12 @@ mod tests {
         db.batch_execute("DROP TABLE billing_payment_holds,billing_risk_events")
             .await
             .unwrap();
-        assert!(reset_test_quotas_on_start(&scoped_url, true).await.is_err());
-        reset_test_quotas_on_start(&scoped_url, false)
+        assert!(
+            reset_test_quotas_on_start(&scoped_url, true, false)
+                .await
+                .is_err()
+        );
+        reset_test_quotas_on_start(&scoped_url, false, false)
             .await
             .unwrap();
         let limit: i64 = db
@@ -1459,6 +1572,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/009_webhook_manual_replay.sql"),
             include_str!("../../../../deploy/compose/migrations/010_billing_test_entitlement.sql"),
             include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
+            include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
@@ -1605,6 +1719,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/009_webhook_manual_replay.sql"),
             include_str!("../../../../deploy/compose/migrations/010_billing_test_entitlement.sql"),
             include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
+            include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }

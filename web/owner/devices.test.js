@@ -28,6 +28,7 @@ async function ownerPage() {
     unauthorized: false, pendingCreate: null, nextCreateResponse: null, pendingHistory: null,
     historyPages: [], historyRequests: [], webhookPages: [], webhookRequests: [], pendingWebhook: null,
     endpoints: [], pendingEndpoints: null, pendingDevices: null, messages: [],
+    devices: [], deletedDevices: [], billingCapacity: null, approveResponse: response(409),
   };
   const fetch = async (url, options) => {
     if (url === "/v1/auth/session") return response(200);
@@ -35,7 +36,20 @@ async function ownerPage() {
     if (url === "/v1/auth/logout") return response(204);
     if (url === "/v1/enrollment/devices") {
       if (state.pendingDevices) return state.pendingDevices;
-      return state.unauthorized ? response(401) : response(200, { devices: [], next_cursor: null });
+      return state.unauthorized ? response(401) : response(200, { devices: state.devices, next_cursor: null });
+    }
+    if (url === "/v1/billing/status") return state.billingCapacity
+      ? response(200, { mode: "test", deviceCapacity: state.billingCapacity }) : response(404);
+    if (url === "/v1/enrollment/pairings" && options.method === "POST")
+      return response(201, { pairing_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", token: "synthetic" });
+    if (url.endsWith("/approve") && options.method === "POST") return state.approveResponse;
+    if (url.startsWith("/v1/enrollment/devices/") && options.method === "DELETE") {
+      const id = url.split("/").at(-1);
+      state.deletedDevices.push(id);
+      state.devices = state.devices.map((device) =>
+        device.device_id === id ? { ...device, revoked: true } : device);
+      if (state.billingCapacity) state.billingCapacity.active -= 1;
+      return response(204);
     }
     if (url === "/v1/owner/messages") return response(200, { messages: state.messages, next_cursor: null });
     if (url === "/v1/auth/api-keys" && options.method === "GET") {
@@ -64,7 +78,7 @@ async function ownerPage() {
     throw new Error(`Unexpected request: ${url}`);
   };
   globalThis.document = { cookie: "__Host-zrotext_csrf=ztc_synthetic", getElementById: element, createElement: makeElement };
-  globalThis.window = { location: { origin: "https://example.test" }, addEventListener() {} };
+  globalThis.window = { location: { origin: "https://example.test" }, addEventListener() {}, confirm: () => false };
   globalThis.fetch = fetch;
   delete require.cache[require.resolve("./devices.js")];
   require("./devices.js");
@@ -350,4 +364,34 @@ test("unknown message state warns that a new send may duplicate it", async () =>
   assert.match(uncertain.children.find((child) => child.className === "message-uncertain").textContent,
     /may have sent.*could duplicate/);
   assert.equal(delivered.children.some((child) => child.className === "message-uncertain"), false);
+});
+
+test("downgrade asks the owner to choose devices and never revokes one automatically", async () => {
+  const { element, state } = await ownerPage();
+  state.billingCapacity = { limit: 1, active: 2, overLimit: true, enrollmentBlocked: true };
+  state.devices = [
+    { device_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", display_name: "Phone A", revoked: false },
+    { device_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", display_name: "Phone B", revoked: false },
+  ];
+  await element("refresh-devices").listeners.click();
+  assert.equal(element("device-cap-prompt").hidden, false);
+  assert.match(element("device-cap-prompt").textContent, /Choose which devices to revoke/);
+  assert.deepEqual(state.deletedDevices, []);
+
+  element("display-name").value = "New phone";
+  await element("create-form").listeners.submit({ preventDefault() {} });
+  element("compared").checked = true;
+  await element("approve-form").listeners.submit({ preventDefault() {} });
+  assert.match(element("pair-status").textContent, /Device limit reached/);
+  assert.doesNotMatch(element("pair-status").textContent, /mismatch|phone values/i);
+  assert.equal(element("pair-cap-devices-link").hidden, false);
+  assert.deepEqual(state.deletedDevices, []);
+
+  const revoke = element("device-list").children[1].children.find((child) => child.textContent === "Revoke");
+  await revoke.listeners.click();
+  assert.deepEqual(state.deletedDevices, []);
+  globalThis.window.confirm = () => true;
+  await revoke.listeners.click();
+  assert.deepEqual(state.deletedDevices, ["bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"]);
+  assert.equal(state.devices[0].revoked, false);
 });
