@@ -10,7 +10,7 @@ use crate::{
 };
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Path, Request, State},
+    extract::{DefaultBodyLimit, Path, Query, Request, State},
     http::{HeaderMap, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -19,13 +19,14 @@ use axum::{
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use rand::{RngCore, rngs::OsRng};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 use tokio_postgres::{Client, NoTls};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
 const MAX_BODY_BYTES: usize = 4096;
 const MAX_ENDPOINTS_PER_ACCOUNT: i64 = 8;
+const MAX_HISTORY_PAGE: u8 = 20;
 
 pub struct WebhookHttpState {
     pub database_url: String,
@@ -37,6 +38,10 @@ pub struct WebhookHttpState {
 pub fn router(state: WebhookHttpState) -> Router {
     Router::new()
         .route("/v1/webhooks", get(list_endpoints).post(create_endpoint))
+        .route(
+            "/v1/webhooks/{endpoint_id}/deliveries",
+            get(list_deliveries),
+        )
         .route("/v1/webhooks/{endpoint_id}/enable", post(enable_endpoint))
         .route("/v1/webhooks/{endpoint_id}/disable", post(disable_endpoint))
         .route("/v1/webhooks/{endpoint_id}/rotate", post(rotate_endpoint))
@@ -161,6 +166,170 @@ async fn list_endpoints(
         .into_response(),
         Err(_) => EndpointError::Unavailable.into_response(),
     }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HistoryQuery {
+    limit: Option<u8>,
+    before: Option<Uuid>,
+}
+
+#[derive(Serialize)]
+struct AttemptView {
+    attempt_number: i16,
+    started_at_ms: i64,
+    completed_at_ms: Option<i64>,
+    outcome: Option<String>,
+    http_status: Option<i16>,
+}
+
+#[derive(Serialize)]
+struct DeliveryView {
+    delivery_id: Uuid,
+    event_id: Uuid,
+    status: String,
+    attempt_count: i16,
+    next_attempt_at_ms: Option<i64>,
+    created_at_ms: i64,
+    updated_at_ms: i64,
+    attempts: Vec<AttemptView>,
+}
+
+#[derive(Serialize)]
+struct HistoryResponse {
+    deliveries: Vec<DeliveryView>,
+    next_before: Option<Uuid>,
+}
+
+async fn list_deliveries(
+    State(state): State<Arc<WebhookHttpState>>,
+    Path(endpoint_id): Path<Uuid>,
+    Query(query): Query<HistoryQuery>,
+    headers: HeaderMap,
+) -> Response {
+    let Ok(client) = connect(&state).await else {
+        return EndpointError::Unavailable.into_response();
+    };
+    let principal = match owner(&client, &state, &headers, false).await {
+        Ok(principal) => principal,
+        Err(response) => return response,
+    };
+    match history(&client, principal.tenant.account_id(), endpoint_id, query).await {
+        Ok(page) => Json(page).into_response(),
+        Err(error) => error.into_response(),
+    }
+}
+
+async fn history(
+    client: &Client,
+    account_id: Uuid,
+    endpoint_id: Uuid,
+    query: HistoryQuery,
+) -> Result<HistoryResponse, EndpointError> {
+    let limit = query.limit.unwrap_or(MAX_HISTORY_PAGE);
+    if !(1..=MAX_HISTORY_PAGE).contains(&limit) {
+        return Err(EndpointError::BadRequest);
+    }
+    let endpoint = client
+        .query_opt(
+            "SELECT id FROM webhook_endpoints WHERE account_id=$1 AND id=$2",
+            &[&account_id, &endpoint_id],
+        )
+        .await
+        .map_err(|_| EndpointError::Unavailable)?;
+    if endpoint.is_none() {
+        return Err(EndpointError::NotFound);
+    }
+    let anchor: Option<(std::time::SystemTime, Uuid)> = match query.before {
+        Some(before) => {
+            let row = client
+                .query_opt(
+                    "SELECT created_at,id FROM webhook_deliveries \
+                     WHERE account_id=$1 AND endpoint_id=$2 AND id=$3",
+                    &[&account_id, &endpoint_id, &before],
+                )
+                .await
+                .map_err(|_| EndpointError::Unavailable)?
+                .ok_or(EndpointError::NotFound)?;
+            Some((row.get(0), row.get(1)))
+        }
+        None => None,
+    };
+    let anchor_time = anchor.as_ref().map(|(time, _)| *time);
+    let anchor_id = anchor.map(|(_, id)| id);
+    let rows = client
+        .query(
+            "SELECT id,event_id,status,attempt_count, \
+             CASE WHEN status='pending' THEN (extract(epoch FROM next_attempt_at)*1000)::bigint END, \
+             (extract(epoch FROM created_at)*1000)::bigint, \
+             (extract(epoch FROM updated_at)*1000)::bigint \
+             FROM webhook_deliveries WHERE account_id=$1 AND endpoint_id=$2 \
+             AND ($3::timestamptz IS NULL OR (created_at,id)<($3,$4)) \
+             ORDER BY created_at DESC,id DESC LIMIT $5",
+            &[&account_id, &endpoint_id, &anchor_time, &anchor_id, &(i64::from(limit) + 1)],
+        )
+        .await
+        .map_err(|_| EndpointError::Unavailable)?;
+    let has_more = rows.len() > usize::from(limit);
+    let mut deliveries: Vec<DeliveryView> = rows
+        .into_iter()
+        .take(usize::from(limit))
+        .map(|row| DeliveryView {
+            delivery_id: row.get(0),
+            event_id: row.get(1),
+            status: row.get(2),
+            attempt_count: row.get(3),
+            next_attempt_at_ms: row.get(4),
+            created_at_ms: row.get(5),
+            updated_at_ms: row.get(6),
+            attempts: Vec::new(),
+        })
+        .collect();
+    let next_before = if has_more {
+        deliveries.last().map(|delivery| delivery.delivery_id)
+    } else {
+        None
+    };
+    if !deliveries.is_empty() {
+        let ids: Vec<Uuid> = deliveries
+            .iter()
+            .map(|delivery| delivery.delivery_id)
+            .collect();
+        let by_id: HashMap<Uuid, usize> = deliveries
+            .iter()
+            .enumerate()
+            .map(|(index, delivery)| (delivery.delivery_id, index))
+            .collect();
+        let attempts = client
+            .query(
+                "SELECT a.delivery_id,a.attempt_number, \
+                 (extract(epoch FROM a.started_at)*1000)::bigint, \
+                 (extract(epoch FROM a.completed_at)*1000)::bigint,a.outcome,a.http_status \
+                 FROM webhook_attempts a JOIN webhook_deliveries d ON d.id=a.delivery_id \
+                 WHERE d.account_id=$1 AND d.endpoint_id=$2 AND a.delivery_id=ANY($3) \
+                 ORDER BY a.delivery_id,a.attempt_number",
+                &[&account_id, &endpoint_id, &ids],
+            )
+            .await
+            .map_err(|_| EndpointError::Unavailable)?;
+        for row in attempts {
+            let id: Uuid = row.get(0);
+            if let Some(&index) = by_id.get(&id) {
+                deliveries[index].attempts.push(AttemptView {
+                    attempt_number: row.get(1),
+                    started_at_ms: row.get(2),
+                    completed_at_ms: row.get(3),
+                    outcome: row.get(4),
+                    http_status: row.get(5),
+                });
+            }
+        }
+    }
+    Ok(HistoryResponse {
+        deliveries,
+        next_before,
+    })
 }
 
 async fn create_endpoint(
@@ -474,6 +643,284 @@ mod tests {
 
     async fn json_body(response: Response) -> Value {
         serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap()
+    }
+
+    async fn history_fixture(
+        admin: &Client,
+        account_id: Uuid,
+        endpoint_id: Uuid,
+        count: usize,
+    ) -> Vec<Uuid> {
+        admin.execute("INSERT INTO webhook_endpoints(id,account_id,callback_url,signing_secret_ciphertext,signing_secret_key_version) VALUES($1,$2,'https://user:private@hooks.example.org/receive',$3,1)", &[&endpoint_id, &account_id, &vec![8_u8; 32]]).await.unwrap();
+        let device = Uuid::new_v4();
+        let message = Uuid::new_v4();
+        let attempt = Uuid::new_v4();
+        admin
+            .execute(
+                "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'fixture')",
+                &[&device, &account_id],
+            )
+            .await
+            .unwrap();
+        admin.execute("INSERT INTO messages(id,account_id,device_id,recipient_e164,recipient_digest,transport_mode,transport_payload,request_digest,state,expires_at) VALUES($1,$2,$3,'+15551234567',$4,'synthetic_alpha',$5,$6,'submitted',now()+interval '1 hour')", &[&message, &account_id, &device, &vec![2_u8; 32], &b"private-message-body".as_slice(), &vec![3_u8; 32]]).await.unwrap();
+        admin.execute("INSERT INTO message_attempts(id,account_id,message_id,device_id,generation,session_epoch,deployment_epoch,status) VALUES($1,$2,$3,$4,1,2,1,'submitted')", &[&attempt, &account_id, &message, &device]).await.unwrap();
+        let mut ids = Vec::new();
+        for index in 0..count {
+            let event = Uuid::new_v4();
+            let delivery = Uuid::new_v4();
+            let sequence = (index + 1) as i64;
+            admin.execute("INSERT INTO inbound_events(id,account_id,device_id,message_id,attempt_id,device_sequence,classification,observed_at,part_count,content_kind,content_ciphertext,event_digest,signature_der) VALUES($1,$2,$3,$4,$5,$6,'captured_local',now(),1,'opaque_pilot',$7,$8,$9)", &[&event, &account_id, &device, &message, &attempt, &sequence, &vec![17_u8; 32], &vec![4_u8; 32], &vec![5_u8; 8]]).await.unwrap();
+            let delivered = index == 0 && count > 1;
+            let status = if delivered { "succeeded" } else { "pending" };
+            let attempt_count: i16 = if delivered { 2 } else { 0 };
+            let age = index as i32;
+            admin.execute("INSERT INTO webhook_deliveries(id,account_id,endpoint_id,event_id,status,attempt_count,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,now()-($7::int * interval '1 second'),now()-($7::int * interval '1 second'))", &[&delivery, &account_id, &endpoint_id, &event, &status, &attempt_count, &age]).await.unwrap();
+            if delivered {
+                admin.execute("INSERT INTO webhook_attempts(id,delivery_id,attempt_number,completed_at,outcome,http_status) VALUES($1,$2,1,now(),'http_error',500),($3,$2,2,now(),'ack',200)", &[&Uuid::new_v4(), &delivery, &Uuid::new_v4()]).await.unwrap();
+            }
+            ids.push(delivery);
+        }
+        ids
+    }
+
+    #[tokio::test]
+    async fn delivery_history_is_bounded_tenant_scoped_and_content_free() {
+        let Ok(root_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
+            eprintln!("set ZT_AUTH_TEST_DATABASE_URL to run webhook history database test");
+            return;
+        };
+        let (mut admin, connection) = tokio_postgres::connect(&root_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let schema = format!("webhook_history_test_{}", Uuid::new_v4().simple());
+        admin
+            .batch_execute(&format!(
+                "CREATE SCHEMA {schema}; SET search_path TO {schema}"
+            ))
+            .await
+            .unwrap();
+        for migration in [
+            include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
+            include_str!("../../../deploy/compose/migrations/002_auth.sql"),
+            include_str!("../../../deploy/compose/migrations/003_delivery.sql"),
+            include_str!("../../../deploy/compose/migrations/004_enrollment.sql"),
+            include_str!("../../../deploy/compose/migrations/005_verification_outbox.sql"),
+            include_str!("../../../deploy/compose/migrations/006_usage_metering.sql"),
+            include_str!("../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"),
+        ] {
+            admin.batch_execute(migration).await.unwrap();
+        }
+        let hasher = Arc::new(TokenHasher::new(vec![32; 32]).unwrap());
+        let a = register(
+            &mut admin,
+            &hasher,
+            "history-a@example.test",
+            "correct horse 123",
+        )
+        .await
+        .unwrap();
+        let b = register(
+            &mut admin,
+            &hasher,
+            "history-b@example.test",
+            "correct horse 456",
+        )
+        .await
+        .unwrap();
+        verify_email(&mut admin, &hasher, &a.verification_token)
+            .await
+            .unwrap();
+        verify_email(&mut admin, &hasher, &b.verification_token)
+            .await
+            .unwrap();
+        let sa = login(
+            &admin,
+            &hasher,
+            "history-a@example.test",
+            "correct horse 123",
+        )
+        .await
+        .unwrap();
+        let sb = login(
+            &admin,
+            &hasher,
+            "history-b@example.test",
+            "correct horse 456",
+        )
+        .await
+        .unwrap();
+        let separator = if root_url.contains('?') { '&' } else { '?' };
+        let scoped_url = format!("{root_url}{separator}options=-csearch_path%3D{schema}");
+        let app = router(WebhookHttpState {
+            database_url: scoped_url,
+            auth_hasher: hasher,
+            canonical_origin: "https://test.example".into(),
+            vault: Arc::new(WebhookSecretVault::new(1, Zeroizing::new(vec![7_u8; 32])).unwrap()),
+        });
+        let endpoint = Uuid::new_v4();
+        let other_endpoint = Uuid::new_v4();
+        let foreign_endpoint = Uuid::new_v4();
+        let ids = history_fixture(&admin, a.account_id, endpoint, 4).await;
+        let other_ids = history_fixture(&admin, a.account_id, other_endpoint, 1).await;
+        let foreign_ids = history_fixture(&admin, b.account_id, foreign_endpoint, 1).await;
+        let path = format!("/v1/webhooks/{endpoint}/deliveries");
+
+        let anonymous = app
+            .clone()
+            .oneshot(request(Method::GET, &path, json!({}), None, false))
+            .await
+            .unwrap();
+        assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
+        let foreign = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                &path,
+                json!({}),
+                Some((&sb.token, &sb.csrf_token)),
+                false,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(foreign.status(), StatusCode::NOT_FOUND);
+        let unknown = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                &format!("/v1/webhooks/{}/deliveries", Uuid::new_v4()),
+                json!({}),
+                Some((&sa.token, &sa.csrf_token)),
+                false,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+        let invalid_endpoint = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                "/v1/webhooks/not-a-uuid/deliveries",
+                json!({}),
+                Some((&sa.token, &sa.csrf_token)),
+                false,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(invalid_endpoint.status(), StatusCode::BAD_REQUEST);
+        for suffix in [
+            "?limit=0".to_string(),
+            "?limit=21".to_string(),
+            "?before=not-a-uuid".to_string(),
+        ] {
+            let invalid = app
+                .clone()
+                .oneshot(request(
+                    Method::GET,
+                    &format!("{path}{suffix}"),
+                    json!({}),
+                    Some((&sa.token, &sa.csrf_token)),
+                    false,
+                ))
+                .await
+                .unwrap();
+            assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+        }
+        for cursor in [other_ids[0], foreign_ids[0], Uuid::new_v4()] {
+            let invalid = app
+                .clone()
+                .oneshot(request(
+                    Method::GET,
+                    &format!("{path}?before={cursor}"),
+                    json!({}),
+                    Some((&sa.token, &sa.csrf_token)),
+                    false,
+                ))
+                .await
+                .unwrap();
+            assert_eq!(invalid.status(), StatusCode::NOT_FOUND);
+        }
+
+        let first = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                &format!("{path}?limit=2"),
+                json!({}),
+                Some((&sa.token, &sa.csrf_token)),
+                false,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(first.headers()[header::CACHE_CONTROL], "no-store");
+        let first_text =
+            String::from_utf8(to_bytes(first.into_body(), 16384).await.unwrap().to_vec()).unwrap();
+        for private in [
+            "private-message-body",
+            "+15551234567",
+            "callback_url",
+            "signing_secret",
+            "user:private",
+            "content_ciphertext",
+            "lease_owner",
+            "signature_der",
+            "event_digest",
+        ] {
+            assert!(!first_text.contains(private), "history disclosed {private}");
+        }
+        let first: Value = serde_json::from_str(&first_text).unwrap();
+        let entries = first["deliveries"].as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["delivery_id"], ids[0].to_string());
+        assert_eq!(entries[0]["status"], "succeeded");
+        assert_eq!(entries[0]["attempt_count"], 2);
+        assert_eq!(entries[0]["next_attempt_at_ms"], Value::Null);
+        assert_eq!(entries[0]["attempts"][0]["outcome"], "http_error");
+        assert_eq!(entries[0]["attempts"][0]["http_status"], 500);
+        assert_eq!(entries[0]["attempts"][1]["outcome"], "ack");
+        assert_eq!(entries[1]["delivery_id"], ids[1].to_string());
+        assert!(entries[1]["next_attempt_at_ms"].is_number());
+        assert_eq!(first["next_before"], ids[1].to_string());
+        let second = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                &format!("{path}?limit=2&before={}", ids[1]),
+                json!({}),
+                Some((&sa.token, &sa.csrf_token)),
+                false,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(second.status(), StatusCode::OK);
+        let second = json_body(second).await;
+        assert_eq!(second["deliveries"].as_array().unwrap().len(), 2);
+        assert_eq!(second["deliveries"][0]["delivery_id"], ids[2].to_string());
+        assert_eq!(second["deliveries"][1]["delivery_id"], ids[3].to_string());
+        assert_eq!(second["next_before"], Value::Null);
+        let default_page = app
+            .oneshot(request(
+                Method::GET,
+                &path,
+                json!({}),
+                Some((&sa.token, &sa.csrf_token)),
+                false,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            json_body(default_page).await["deliveries"]
+                .as_array()
+                .unwrap()
+                .len(),
+            4
+        );
+
+        admin
+            .batch_execute(&format!(
+                "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
+            ))
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

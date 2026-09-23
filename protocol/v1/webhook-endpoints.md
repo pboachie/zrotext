@@ -12,6 +12,7 @@ and the session's double-submit CSRF cookie/header. Responses use
 | --- | --- |
 | `POST /v1/webhooks` with `{"callback_url":"https://..."}` | Creates a disabled endpoint. Returns its ID, URL, `enabled:false`, and `signing_secret_b64url` once. |
 | `GET /v1/webhooks` | Lists this account's IDs, URLs, enabled states, and creation times. Never includes signing secrets or encrypted secret bytes. |
+| `GET /v1/webhooks/{id}/deliveries` | Pages recent delivery and attempt metadata for this account's endpoint. No payload, callback URL, signing secret, response body, recipient, or inbound content is returned. |
 | `POST /v1/webhooks/{id}/enable` | Revalidates the HTTPS URL and decryptability of its secret, then enables future inbound fan-out. |
 | `POST /v1/webhooks/{id}/disable` | Disables the endpoint and permanently retires its pending and leased deliveries. |
 | `POST /v1/webhooks/{id}/rotate` | Generates a new secret, disables the endpoint, and retires pending/leased deliveries. Returns the new secret once. |
@@ -22,6 +23,17 @@ verification. Only an AES-256-GCM ciphertext, bound to account/endpoint/key
 version by authenticated context, is stored. There is no secret retrieval
 route. Losing the response requires rotation. The limit is eight endpoints per
 account, including disabled endpoints.
+
+History accepts optional `limit` (1–20; default 20) and `before` (the
+`delivery_id` returned on the preceding page). The response has `deliveries`
+and a nullable `next_before`; use the latter while it is present. Deliveries
+are ordered newest first by creation time and ID. Each contains `delivery_id`,
+`event_id`, `status`, `attempt_count`, `created_at_ms`, `updated_at_ms`, a
+`next_attempt_at_ms` value only while pending, and attempts ordered by number.
+Each attempt contains its number, start/completion times in Unix milliseconds,
+outcome, and optional HTTP status. An unknown or another account's endpoint or
+cursor returns 404. Invalid IDs and page sizes return 400. History is read-only
+and includes retired deliveries; it does not retry or replay them.
 
 The URL parser accepts HTTPS DNS names on port 443 and rejects IP literals,
 userinfo, fragments, local/internal names, and invalid host labels. It runs
