@@ -11,8 +11,10 @@ class PublicTreeTests(unittest.TestCase):
         self.assertIn("credential-shaped token", scan_line(sample))
 
     def test_rejects_real_phone_shape(self):
-        sample = "+1" + "720" + "621" + "8940"
+        sample = "+1" + "9" * 10
         self.assertIn("non-synthetic US phone number", scan_line(sample))
+        self.assertIn("non-synthetic US phone number", scan_line(sample[2:]))
+        self.assertIn("non-synthetic US phone number", scan_line(sample[2:5] + "-" + sample[5:8] + "-" + sample[8:]))
 
     def test_accepts_reserved_example_number(self):
         self.assertNotIn("non-synthetic US phone number", scan_line("+12025550123"))

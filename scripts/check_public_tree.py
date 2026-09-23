@@ -16,7 +16,7 @@ SECRET_PATTERNS = {
     "SMTP password value": re.compile(r"(?i)\bSMTP_PASS\s*[:=]\s*['\"]?(?!\$\{|\$|<|example|changeme|your-|placeholder|\s*$)[^\s'\"]{8,}"),
     "personal Windows path": re.compile(r"(?i)\b[A-Z]:[/\\]Users[/\\](?!<|\$\{|%|example|user[/\\])[^/\\\s]+"),
 }
-PHONE = re.compile(r"(?<!\d)\+1([2-9]\d{2})([2-9]\d{2})(\d{4})(?!\d)")
+PHONE = re.compile(r"(?<![A-Za-z0-9])(?:\+1[-. ]?)?([2-9]\d{2})[-. ]?([2-9]\d{2})[-. ]?(\d{4})(?![A-Za-z0-9])")
 
 
 def looks_synthetic(number: re.Match[str]) -> bool:
