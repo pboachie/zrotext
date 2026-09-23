@@ -28,7 +28,10 @@ use zeroize::Zeroizing;
 use zrotext_delivery_store::DeliveryStore;
 use zrotext_server::{
     alpha_policy::AlphaPolicy,
-    auth::{TokenHasher, abuse_limits},
+    auth::{
+        TokenHasher, abuse_limits,
+        mfa::{self, MfaCipher},
+    },
     billing::{
         http::{self as billing_http, BillingHttpState},
         parse_test_quota_plans, reset_test_quotas_on_start,
@@ -200,6 +203,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if let Ok((client, connection)) = tokio_postgres::connect(&abuse_database, NoTls).await {
                             tokio::spawn(async move { let _ = connection.await; });
                             let _ = abuse_limits::prune(&client).await;
+                            let _ = mfa::prune_expired_challenges(&client).await;
                         }
                     }
                     _ = abuse_drain_notify.notified() => break,
@@ -387,7 +391,11 @@ fn account_routes(
     let origin = env::var("AUTH_ORIGIN").ok();
     let auth_pepper = env::var("AUTH_TOKEN_PEPPER_B64").ok();
     let enrollment_pepper = env::var("ENROLLMENT_TOKEN_PEPPER_B64").ok();
-    if origin.is_none() && auth_pepper.is_none() && enrollment_pepper.is_none() {
+    let mfa_key = env::var("MFA_ENCRYPTION_KEY_B64")
+        .ok()
+        .filter(|value| !value.is_empty());
+    if origin.is_none() && auth_pepper.is_none() && enrollment_pepper.is_none() && mfa_key.is_none()
+    {
         return Ok(None);
     }
     let origin = origin.ok_or("AUTH_ORIGIN is required when account routes are enabled")?;
@@ -426,12 +434,20 @@ fn account_routes(
         Err(env::VarError::NotPresent) => Arc::new(DisabledVerificationDispatcher),
         Err(_) => return Err("SMTP_HOST must be valid UTF-8".into()),
     };
-    let auth_state = AuthHttpState::new(
+    let mut auth_state = AuthHttpState::new(
         config.database_url.clone(),
         auth_hasher.clone(),
         origin.clone(),
         dispatcher,
     )?;
+    if let Some(encoded) = mfa_key {
+        let key = STANDARD
+            .decode(encoded)
+            .map_err(|_| "MFA_ENCRYPTION_KEY_B64 must be valid base64")?;
+        let cipher = MfaCipher::new(key)
+            .map_err(|_| "MFA_ENCRYPTION_KEY_B64 must decode to exactly 32 bytes")?;
+        auth_state = auth_state.with_mfa_cipher(Arc::new(cipher));
+    }
     let enrollment_state = EnrollmentHttpState::new(
         config.database_url.clone(),
         auth_hasher,

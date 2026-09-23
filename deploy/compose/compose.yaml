@@ -55,6 +55,7 @@ services:
       DEPLOYMENT_EPOCH: ${DEPLOYMENT_EPOCH:-1}
       DISPATCH_ENABLED: "false"
       M0_TEST_TOKEN: ${M0_TEST_TOKEN:-}
+      MFA_ENCRYPTION_KEY_B64: ${MFA_ENCRYPTION_KEY_B64:-}
     ports:
       - "127.0.0.1:8080:8080"
   app_b:
@@ -67,6 +68,7 @@ services:
       DEPLOYMENT_EPOCH: ${DEPLOYMENT_EPOCH:-1}
       DISPATCH_ENABLED: "false"
       M0_TEST_TOKEN: ${M0_TEST_TOKEN:-}
+      MFA_ENCRYPTION_KEY_B64: ${MFA_ENCRYPTION_KEY_B64:-}
     ports:
       - "127.0.0.1:8081:8080"
 volumes:

@@ -16,6 +16,8 @@ pub enum Limit {
     PairProof,
     DeviceChallenge,
     DeviceAuthenticate,
+    MfaChallenge,
+    MfaManage,
 }
 
 impl Limit {
@@ -30,6 +32,8 @@ impl Limit {
             Self::PairProof => ("pair_proof", 300, 60, Some((20, 60))),
             Self::DeviceChallenge => ("device_challenge", 300, 60, Some((30, 60))),
             Self::DeviceAuthenticate => ("device_authenticate", 300, 60, Some((30, 60))),
+            Self::MfaChallenge => ("mfa_challenge", 300, 60, Some((5, 300))),
+            Self::MfaManage => ("mfa_manage", 120, 60, Some((8, 900))),
         }
     }
 }
