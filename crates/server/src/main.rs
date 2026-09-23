@@ -28,7 +28,7 @@ use zeroize::Zeroizing;
 use zrotext_delivery_store::DeliveryStore;
 use zrotext_server::{
     alpha_policy::AlphaPolicy,
-    auth::TokenHasher,
+    auth::{TokenHasher, abuse_limits},
     billing::{
         http::{self as billing_http, BillingHttpState},
         parse_test_quota_plans, reset_test_quotas_on_start,
@@ -187,6 +187,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 });
             }
         }
+        let abuse_database = config.database_url.clone();
+        let abuse_draining = config.draining.clone();
+        let abuse_drain_notify = config.drain_notify.clone();
+        tokio::spawn(async move {
+            let mut checks = tokio::time::interval(Duration::from_secs(300));
+            checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = checks.tick() => {
+                        if abuse_draining.load(Ordering::Acquire) { break; }
+                        if let Ok((client, connection)) = tokio_postgres::connect(&abuse_database, NoTls).await {
+                            tokio::spawn(async move { let _ = connection.await; });
+                            let _ = abuse_limits::prune(&client).await;
+                        }
+                    }
+                    _ = abuse_drain_notify.notified() => break,
+                }
+            }
+        });
         let mail_state = auth_state.clone();
         let message_hasher = auth_state.hasher.clone();
         let mail_draining = config.draining.clone();

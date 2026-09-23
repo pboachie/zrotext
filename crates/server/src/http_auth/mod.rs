@@ -2,7 +2,10 @@
 //! Browser-facing account routes. All cookie-authenticated writes require an
 //! exact, configured HTTPS Origin and the double-submit CSRF token.
 
-use crate::auth::{self, AuthError, Scope, SessionPrincipal, TokenHasher};
+use crate::auth::{
+    self, AuthError, Scope, SessionPrincipal, TokenHasher,
+    abuse_limits::{self, Limit},
+};
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Path, Request, State},
@@ -318,12 +321,24 @@ async fn register(
     if !state.dispatcher.ready() {
         return Err(AuthHttpError::Unavailable);
     }
+    let mut client = connect(&state.database_url).await?;
+    let subject = auth::normalize_email(&body.email).ok();
+    if !abuse_limits::consume(
+        &client,
+        &state.hasher,
+        Limit::Registration,
+        subject.as_deref(),
+    )
+    .await
+    .map_err(|_| AuthHttpError::Unavailable)?
+    {
+        return Err(AuthHttpError::TooManyRequests);
+    }
     let _permit = state
         .hash_limit
         .clone()
         .try_acquire_owned()
         .map_err(|_| AuthHttpError::TooManyRequests)?;
-    let mut client = connect(&state.database_url).await?;
     match auth::register(&mut client, &state.hasher, &body.email, &body.password).await {
         Ok(_) => {}
         // Avoid leaking whether this address is already registered.
@@ -352,12 +367,19 @@ async fn resend_verification(
     if !state.dispatcher.ready() {
         return Err(AuthHttpError::Unavailable);
     }
+    let mut client = connect(&state.database_url).await?;
+    let subject = auth::normalize_email(&body.email).ok();
+    if !abuse_limits::consume(&client, &state.hasher, Limit::Resend, subject.as_deref())
+        .await
+        .map_err(|_| AuthHttpError::Unavailable)?
+    {
+        return Err(AuthHttpError::TooManyRequests);
+    }
     let _permit = state
         .hash_limit
         .clone()
         .try_acquire_owned()
         .map_err(|_| AuthHttpError::TooManyRequests)?;
-    let mut client = connect(&state.database_url).await?;
     // Valid, unknown, verified and throttled accounts all have the same
     // outward result. No code or account-existence signal enters the body.
     let _ =
@@ -405,6 +427,12 @@ async fn verify_email(
 ) -> Result<StatusCode, AuthHttpError> {
     require_origin(&headers, &state.canonical_origin)?;
     let mut client = connect(&state.database_url).await?;
+    if !abuse_limits::consume(&client, &state.hasher, Limit::Verify, None)
+        .await
+        .map_err(|_| AuthHttpError::Unavailable)?
+    {
+        return Err(AuthHttpError::TooManyRequests);
+    }
     if auth::verify_email(&mut client, &state.hasher, &body.token)
         .await
         .map_err(map_auth)?
@@ -427,12 +455,19 @@ async fn login(
     Json(body): Json<LoginBody>,
 ) -> Result<Response, AuthHttpError> {
     require_origin(&headers, &state.canonical_origin)?;
+    let client = connect(&state.database_url).await?;
+    let subject = auth::normalize_email(&body.email).ok();
+    if !abuse_limits::consume(&client, &state.hasher, Limit::Login, subject.as_deref())
+        .await
+        .map_err(|_| AuthHttpError::Unavailable)?
+    {
+        return Err(AuthHttpError::TooManyRequests);
+    }
     let _permit = state
         .hash_limit
         .clone()
         .try_acquire_owned()
         .map_err(|_| AuthHttpError::TooManyRequests)?;
-    let client = connect(&state.database_url).await?;
     let credentials = auth::login(&client, &state.hasher, &body.email, &body.password)
         .await
         .map_err(map_auth)?;
@@ -778,6 +813,12 @@ mod tests {
             ))
             .await
             .unwrap();
+        test_client
+            .batch_execute(include_str!(
+                "../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"
+            ))
+            .await
+            .unwrap();
         let capture = Arc::new(CaptureVerification(Mutex::new(None)));
         let state = AuthHttpState::new(
             url,
@@ -916,6 +957,26 @@ mod tests {
             app.oneshot(request).await.unwrap().status(),
             StatusCode::UNAUTHORIZED
         );
+        for _ in 0..11 {
+            assert!(
+                auth::abuse_limits::consume(
+                    &test_client,
+                    &state.hasher,
+                    Limit::Login,
+                    Some("owner@example.test"),
+                )
+                .await
+                .unwrap()
+            );
+        }
+        let response = router(state)
+            .oneshot(json_post(
+                "/login",
+                serde_json::json!({"email":"OWNER@example.test","password":"correct horse 123"}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
         setup
             .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
             .await

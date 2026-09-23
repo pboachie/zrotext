@@ -16,6 +16,7 @@ const SESSION_DAYS: i32 = 14;
 const VERIFICATION_HOURS: i32 = 24;
 const MAX_EMAIL_BYTES: usize = 254;
 
+pub mod abuse_limits;
 mod verification_outbox;
 pub use verification_outbox::{
     VerificationMail, ack_verification_mail, claim_verification_mail, request_verification_resend,
@@ -220,7 +221,7 @@ fn password_engine() -> Result<Argon2<'static>, AuthError> {
     Ok(Argon2::new(Algorithm::Argon2id, Version::V0x13, params))
 }
 
-fn normalize_email(email: &str) -> Result<String, AuthError> {
+pub(crate) fn normalize_email(email: &str) -> Result<String, AuthError> {
     let email = email.trim().to_ascii_lowercase();
     if email.len() < 3
         || email.len() > MAX_EMAIL_BYTES
