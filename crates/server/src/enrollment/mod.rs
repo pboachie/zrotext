@@ -592,6 +592,8 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
             include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
             include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+            include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
+            include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
         ] {
             client.batch_execute(sql).await.unwrap();
         }

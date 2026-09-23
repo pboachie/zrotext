@@ -5,7 +5,10 @@
 //! credential or authenticate the M0 heartbeat socket.
 
 use crate::{
-    auth::TokenHasher,
+    auth::{
+        TokenHasher,
+        abuse_limits::{self, Limit},
+    },
     enrollment::{self, DeviceChallenge, EnrollmentError, EnrollmentHasher},
     http_auth::require_owner,
 };
@@ -19,27 +22,17 @@ use axum::{
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
-use std::{
-    sync::{Arc, Mutex},
-    time::{Duration, Instant},
-};
+use std::sync::Arc;
 use tokio_postgres::{Client, NoTls};
 use uuid::Uuid;
 
 const MAX_BODY_BYTES: usize = 4096;
-const PUBLIC_REQUESTS_PER_MINUTE: u32 = 300;
 
 pub struct EnrollmentHttpState {
     pub database_url: String,
     pub auth_hasher: Arc<TokenHasher>,
     pub enrollment_hasher: Arc<EnrollmentHasher>,
     pub canonical_origin: String,
-    public_gate: Mutex<PublicWindow>,
-}
-
-struct PublicWindow {
-    opened: Instant,
-    count: u32,
 }
 
 impl EnrollmentHttpState {
@@ -54,26 +47,7 @@ impl EnrollmentHttpState {
             auth_hasher,
             enrollment_hasher,
             canonical_origin,
-            public_gate: Mutex::new(PublicWindow {
-                opened: Instant::now(),
-                count: 0,
-            }),
         }
-    }
-
-    fn allow_public(&self) -> bool {
-        let Ok(mut window) = self.public_gate.lock() else {
-            return false;
-        };
-        if window.opened.elapsed() >= Duration::from_secs(60) {
-            window.opened = Instant::now();
-            window.count = 0;
-        }
-        if window.count >= PUBLIC_REQUESTS_PER_MINUTE {
-            return false;
-        }
-        window.count += 1;
-        true
     }
 }
 
@@ -114,6 +88,19 @@ async fn connect(state: &EnrollmentHttpState) -> Result<Client, Response> {
         let _ = connection.await;
     });
     Ok(client)
+}
+
+async fn public_admission(
+    state: &EnrollmentHttpState,
+    client: &Client,
+    limit: Limit,
+    subject: &str,
+) -> Result<(), Response> {
+    match abuse_limits::consume(client, &state.auth_hasher, limit, Some(subject)).await {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(StatusCode::TOO_MANY_REQUESTS.into_response()),
+        Err(_) => Err(StatusCode::SERVICE_UNAVAILABLE.into_response()),
+    }
 }
 
 fn owner_error(error: EnrollmentError) -> Response {
@@ -275,8 +262,13 @@ async fn claim_pairing(
     Path(pairing_id): Path<Uuid>,
     Json(body): Json<ClaimBody>,
 ) -> Response {
-    if !state.allow_public() {
-        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    let Ok(mut client) = connect(&state).await else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    if let Err(response) =
+        public_admission(&state, &client, Limit::PairClaim, &pairing_id.to_string()).await
+    {
+        return response;
     }
     if body.token.len() != 47 {
         return StatusCode::NOT_FOUND.into_response();
@@ -284,9 +276,6 @@ async fn claim_pairing(
     let public_key = match decode_bounded(&body.public_key_spki, 214, 80, 160) {
         Ok(bytes) => bytes,
         Err(status) => return status.into_response(),
-    };
-    let Ok(mut client) = connect(&state).await else {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
     match enrollment::claim_pairing(
         &mut client,
@@ -326,8 +315,13 @@ async fn prove_pairing(
     Path(pairing_id): Path<Uuid>,
     Json(body): Json<ProveBody>,
 ) -> Response {
-    if !state.allow_public() {
-        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    let Ok(mut client) = connect(&state).await else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    if let Err(response) =
+        public_admission(&state, &client, Limit::PairProof, &pairing_id.to_string()).await
+    {
+        return response;
     }
     let nonce = match decode_nonce(&body.challenge_nonce) {
         Ok(nonce) => nonce,
@@ -336,9 +330,6 @@ async fn prove_pairing(
     let signature = match decode_bounded(&body.signature_der, 107, 8, 80) {
         Ok(bytes) => bytes,
         Err(status) => return status.into_response(),
-    };
-    let Ok(mut client) = connect(&state).await else {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
     match enrollment::prove_pairing_key(
         &mut client,
@@ -445,12 +436,19 @@ async fn device_challenge(
     State(state): State<Arc<EnrollmentHttpState>>,
     Path(device_id): Path<Uuid>,
 ) -> Response {
-    if !state.allow_public() {
-        return StatusCode::TOO_MANY_REQUESTS.into_response();
-    }
     let Ok(client) = connect(&state).await else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
+    if let Err(response) = public_admission(
+        &state,
+        &client,
+        Limit::DeviceChallenge,
+        &device_id.to_string(),
+    )
+    .await
+    {
+        return response;
+    }
     match enrollment::issue_device_challenge(&client, &state.enrollment_hasher, device_id).await {
         Ok(challenge) => Json(ChallengeResponse {
             challenge_id: challenge.id,
@@ -477,8 +475,18 @@ async fn device_authenticate(
     State(state): State<Arc<EnrollmentHttpState>>,
     Json(body): Json<AuthenticateBody>,
 ) -> Response {
-    if !state.allow_public() {
-        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    let Ok(mut client) = connect(&state).await else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    if let Err(response) = public_admission(
+        &state,
+        &client,
+        Limit::DeviceAuthenticate,
+        &body.device_id.to_string(),
+    )
+    .await
+    {
+        return response;
     }
     let nonce = match decode_nonce(&body.nonce) {
         Ok(nonce) => nonce,
@@ -493,9 +501,6 @@ async fn device_authenticate(
         account_id: body.account_id,
         device_id: body.device_id,
         nonce,
-    };
-    let Ok(mut client) = connect(&state).await else {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
     match enrollment::authenticate_device_challenge(
         &mut client,
@@ -669,11 +674,15 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
             include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
             include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+            include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
+            include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
+            include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
         ] {
             admin.batch_execute(sql).await.unwrap();
         }
-        let auth_hasher = Arc::new(TokenHasher::new(vec![31; 32]).unwrap());
-        let enrollment_hasher = Arc::new(EnrollmentHasher::new(vec![37; 32]).unwrap());
+        let auth_hasher = Arc::new(TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
+        let enrollment_hasher =
+            Arc::new(EnrollmentHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
         let a = register(
             &mut admin,
             &auth_hasher,
@@ -716,7 +725,7 @@ mod tests {
         let scoped_url = format!("{root_url}{separator}options=-csearch_path%3D{schema}");
         let app = router(EnrollmentHttpState::new(
             scoped_url,
-            auth_hasher,
+            auth_hasher.clone(),
             enrollment_hasher,
             "https://test.example".into(),
         ));
@@ -1022,10 +1031,47 @@ mod tests {
             .unwrap();
         assert_eq!(json_response(tenant_b_cursor).await["devices"], json!([]));
         let response = app
+            .clone()
             .oneshot(request(
                 Method::POST,
                 &format!("/devices/{device_id}/challenge"),
                 json!({}),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let gate_hasher = auth_hasher.clone();
+        for _ in 0..19 {
+            assert!(
+                abuse_limits::consume(
+                    &admin,
+                    &gate_hasher,
+                    Limit::PairClaim,
+                    Some(&pairing_id.to_string()),
+                )
+                .await
+                .unwrap()
+            );
+        }
+        let response = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                &format!("/pairings/{pairing_id}/claim"),
+                json!({"token":"x".repeat(47),"public_key_spki":URL_SAFE_NO_PAD.encode(spki.as_bytes())}),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        let other_pairing = Uuid::new_v4();
+        let response = app
+            .oneshot(request(
+                Method::POST,
+                &format!("/pairings/{other_pairing}/claim"),
+                json!({"token":"x".repeat(47),"public_key_spki":URL_SAFE_NO_PAD.encode(spki.as_bytes())}),
                 None,
             ))
             .await

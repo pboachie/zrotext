@@ -2,7 +2,11 @@
 //! Browser-facing account routes. All cookie-authenticated writes require an
 //! exact, configured HTTPS Origin and the double-submit CSRF token.
 
-use crate::auth::{self, AuthError, Scope, SessionPrincipal, TokenHasher};
+use crate::auth::{
+    self, AuthError, Scope, SessionPrincipal, TokenHasher,
+    abuse_limits::{self, Limit},
+    mfa::{self, MfaCipher},
+};
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Path, Request, State},
@@ -137,6 +141,8 @@ pub struct AuthHttpState {
     pub canonical_origin: String,
     pub dispatcher: Arc<dyn VerificationDispatcher>,
     pub hash_limit: Arc<Semaphore>,
+    pub mfa_cipher: Option<Arc<MfaCipher>>,
+    pub mfa_enrollment_enabled: bool,
 }
 
 impl AuthHttpState {
@@ -156,7 +162,19 @@ impl AuthHttpState {
             dispatcher,
             // Argon2id uses 64 MiB per operation. Limit concurrent hashes.
             hash_limit: Arc::new(Semaphore::new(2)),
+            mfa_cipher: None,
+            mfa_enrollment_enabled: false,
         })
+    }
+
+    pub fn with_mfa_cipher(mut self, cipher: Arc<MfaCipher>) -> Self {
+        self.mfa_cipher = Some(cipher);
+        self
+    }
+
+    pub fn with_mfa_enrollment_enabled(mut self) -> Self {
+        self.mfa_enrollment_enabled = true;
+        self
     }
 }
 
@@ -166,8 +184,13 @@ pub fn router(state: AuthHttpState) -> Router {
         .route("/resend-verification", post(resend_verification))
         .route("/verify-email", post(verify_email))
         .route("/login", post(login))
+        .route("/login/mfa", post(complete_mfa_login))
         .route("/logout", post(logout))
         .route("/session", get(session))
+        .route("/mfa", get(mfa_status))
+        .route("/mfa/enroll", post(begin_mfa_enrollment))
+        .route("/mfa/confirm", post(confirm_mfa_enrollment))
+        .route("/mfa/disable", post(disable_mfa))
         .route("/api-keys", post(create_api_key))
         .route("/api-keys/{key_id}", delete(revoke_api_key))
         .layer(DefaultBodyLimit::max(16 * 1024))
@@ -220,10 +243,14 @@ struct ErrorBody {
 fn map_auth(error: AuthError) -> AuthHttpError {
     match error {
         AuthError::InvalidInput => AuthHttpError::BadRequest,
-        AuthError::InvalidCredentials | AuthError::Unauthorized => AuthHttpError::Unauthorized,
+        AuthError::InvalidCredentials | AuthError::Unauthorized | AuthError::MfaRequired { .. } => {
+            AuthHttpError::Unauthorized
+        }
         AuthError::EmailNotVerified | AuthError::Forbidden => AuthHttpError::Forbidden,
         AuthError::Database(_) => AuthHttpError::Unavailable,
         AuthError::Password => AuthHttpError::Internal,
+        AuthError::Crypto => AuthHttpError::Unavailable,
+        AuthError::RateLimited => AuthHttpError::TooManyRequests,
     }
 }
 
@@ -318,12 +345,24 @@ async fn register(
     if !state.dispatcher.ready() {
         return Err(AuthHttpError::Unavailable);
     }
+    let mut client = connect(&state.database_url).await?;
+    let subject = auth::normalize_email(&body.email).ok();
+    if !abuse_limits::consume(
+        &client,
+        &state.hasher,
+        Limit::Registration,
+        subject.as_deref(),
+    )
+    .await
+    .map_err(|_| AuthHttpError::Unavailable)?
+    {
+        return Err(AuthHttpError::TooManyRequests);
+    }
     let _permit = state
         .hash_limit
         .clone()
         .try_acquire_owned()
         .map_err(|_| AuthHttpError::TooManyRequests)?;
-    let mut client = connect(&state.database_url).await?;
     match auth::register(&mut client, &state.hasher, &body.email, &body.password).await {
         Ok(_) => {}
         // Avoid leaking whether this address is already registered.
@@ -352,12 +391,19 @@ async fn resend_verification(
     if !state.dispatcher.ready() {
         return Err(AuthHttpError::Unavailable);
     }
+    let mut client = connect(&state.database_url).await?;
+    let subject = auth::normalize_email(&body.email).ok();
+    if !abuse_limits::consume(&client, &state.hasher, Limit::Resend, subject.as_deref())
+        .await
+        .map_err(|_| AuthHttpError::Unavailable)?
+    {
+        return Err(AuthHttpError::TooManyRequests);
+    }
     let _permit = state
         .hash_limit
         .clone()
         .try_acquire_owned()
         .map_err(|_| AuthHttpError::TooManyRequests)?;
-    let mut client = connect(&state.database_url).await?;
     // Valid, unknown, verified and throttled accounts all have the same
     // outward result. No code or account-existence signal enters the body.
     let _ =
@@ -405,6 +451,12 @@ async fn verify_email(
 ) -> Result<StatusCode, AuthHttpError> {
     require_origin(&headers, &state.canonical_origin)?;
     let mut client = connect(&state.database_url).await?;
+    if !abuse_limits::consume(&client, &state.hasher, Limit::Verify, None)
+        .await
+        .map_err(|_| AuthHttpError::Unavailable)?
+    {
+        return Err(AuthHttpError::TooManyRequests);
+    }
     if auth::verify_email(&mut client, &state.hasher, &body.token)
         .await
         .map_err(map_auth)?
@@ -427,17 +479,86 @@ async fn login(
     Json(body): Json<LoginBody>,
 ) -> Result<Response, AuthHttpError> {
     require_origin(&headers, &state.canonical_origin)?;
+    let client = connect(&state.database_url).await?;
+    let subject = auth::normalize_email(&body.email).ok();
+    if !abuse_limits::consume(&client, &state.hasher, Limit::Login, subject.as_deref())
+        .await
+        .map_err(|_| AuthHttpError::Unavailable)?
+    {
+        return Err(AuthHttpError::TooManyRequests);
+    }
     let _permit = state
         .hash_limit
         .clone()
         .try_acquire_owned()
         .map_err(|_| AuthHttpError::TooManyRequests)?;
-    let client = connect(&state.database_url).await?;
-    let credentials = auth::login(&client, &state.hasher, &body.email, &body.password)
-        .await
-        .map_err(map_auth)?;
+    let credentials = match auth::login(&client, &state.hasher, &body.email, &body.password).await {
+        Ok(credentials) => credentials,
+        Err(AuthError::MfaRequired {
+            account_id,
+            user_id,
+        }) => {
+            let challenge_token =
+                mfa::begin_login_challenge(&client, &state.hasher, account_id, user_id)
+                    .await
+                    .map_err(map_auth)?;
+            let mut response = (
+                StatusCode::ACCEPTED,
+                Json(MfaChallengeBody { challenge_token }),
+            )
+                .into_response();
+            no_store(&mut response);
+            return Ok(response);
+        }
+        Err(error) => return Err(map_auth(error)),
+    };
+    session_response(&credentials)
+}
+
+#[derive(Serialize)]
+struct MfaChallengeBody {
+    challenge_token: String,
+}
+
+#[derive(Deserialize)]
+struct MfaLoginBody {
+    challenge_token: String,
+    code: String,
+}
+
+async fn complete_mfa_login(
+    State(state): State<Arc<AuthHttpState>>,
+    headers: HeaderMap,
+    Json(body): Json<MfaLoginBody>,
+) -> Result<Response, AuthHttpError> {
+    require_origin(&headers, &state.canonical_origin)?;
+    let mut client = connect(&state.database_url).await?;
+    if !abuse_limits::consume(
+        &client,
+        &state.hasher,
+        Limit::MfaChallenge,
+        Some(&body.challenge_token),
+    )
+    .await
+    .map_err(|_| AuthHttpError::Unavailable)?
+    {
+        return Err(AuthHttpError::TooManyRequests);
+    }
+    let credentials = mfa::complete_login(
+        &mut client,
+        state.mfa_cipher.as_deref(),
+        &state.hasher,
+        &body.challenge_token,
+        &body.code,
+    )
+    .await
+    .map_err(map_auth)?;
+    session_response(&credentials)
+}
+
+fn session_response(credentials: &auth::SessionCredentials) -> Result<Response, AuthHttpError> {
     let mut response = StatusCode::NO_CONTENT.into_response();
-    for value in auth::session_cookies(&credentials) {
+    for value in auth::session_cookies(credentials) {
         response.headers_mut().append(
             header::SET_COOKIE,
             HeaderValue::from_str(&value).map_err(|_| AuthHttpError::Internal)?,
@@ -481,6 +602,183 @@ async fn session(
     .into_response();
     no_store(&mut response);
     Ok(response)
+}
+
+#[derive(Serialize)]
+struct MfaStatusBody {
+    enabled: bool,
+    pending: bool,
+}
+
+async fn mfa_status(
+    State(state): State<Arc<AuthHttpState>>,
+    headers: HeaderMap,
+) -> Result<Response, AuthHttpError> {
+    let client = connect(&state.database_url).await?;
+    let owner = require_owner(
+        &client,
+        &state.hasher,
+        &state.canonical_origin,
+        &headers,
+        false,
+    )
+    .await?;
+    let status = mfa::status(&client, &owner).await.map_err(map_auth)?;
+    let mut response = Json(MfaStatusBody {
+        enabled: status.enabled,
+        pending: status.pending,
+    })
+    .into_response();
+    no_store(&mut response);
+    Ok(response)
+}
+
+async fn mfa_manage_budget(
+    client: &Client,
+    state: &AuthHttpState,
+    owner: &SessionPrincipal,
+) -> Result<(), AuthHttpError> {
+    let subject = owner.user_id.to_string();
+    if abuse_limits::consume(client, &state.hasher, Limit::MfaManage, Some(&subject))
+        .await
+        .map_err(|_| AuthHttpError::Unavailable)?
+    {
+        Ok(())
+    } else {
+        Err(AuthHttpError::TooManyRequests)
+    }
+}
+
+#[derive(Deserialize)]
+struct MfaEnrollBody {
+    password: String,
+}
+
+#[derive(Serialize)]
+struct MfaEnrollBodyResponse {
+    secret_base32: String,
+    provisioning_uri: String,
+}
+
+async fn begin_mfa_enrollment(
+    State(state): State<Arc<AuthHttpState>>,
+    headers: HeaderMap,
+    Json(body): Json<MfaEnrollBody>,
+) -> Result<Response, AuthHttpError> {
+    if !state.mfa_enrollment_enabled {
+        return Err(AuthHttpError::NotFound);
+    }
+    let cipher = state
+        .mfa_cipher
+        .as_ref()
+        .ok_or(AuthHttpError::Unavailable)?;
+    let mut client = connect(&state.database_url).await?;
+    let owner = require_owner(
+        &client,
+        &state.hasher,
+        &state.canonical_origin,
+        &headers,
+        true,
+    )
+    .await?;
+    mfa_manage_budget(&client, &state, &owner).await?;
+    let _permit = state
+        .hash_limit
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| AuthHttpError::TooManyRequests)?;
+    let enrollment = mfa::begin_enrollment(&mut client, cipher, &owner, &body.password)
+        .await
+        .map_err(map_auth)?;
+    let mut response = Json(MfaEnrollBodyResponse {
+        secret_base32: enrollment.secret_base32,
+        provisioning_uri: enrollment.provisioning_uri,
+    })
+    .into_response();
+    no_store(&mut response);
+    Ok(response)
+}
+
+#[derive(Deserialize)]
+struct MfaCodeBody {
+    code: String,
+}
+
+#[derive(Serialize)]
+struct MfaRecoveryBody {
+    recovery_codes: Vec<String>,
+}
+
+async fn confirm_mfa_enrollment(
+    State(state): State<Arc<AuthHttpState>>,
+    headers: HeaderMap,
+    Json(body): Json<MfaCodeBody>,
+) -> Result<Response, AuthHttpError> {
+    if !state.mfa_enrollment_enabled {
+        return Err(AuthHttpError::NotFound);
+    }
+    let cipher = state
+        .mfa_cipher
+        .as_ref()
+        .ok_or(AuthHttpError::Unavailable)?;
+    let mut client = connect(&state.database_url).await?;
+    let owner = require_owner(
+        &client,
+        &state.hasher,
+        &state.canonical_origin,
+        &headers,
+        true,
+    )
+    .await?;
+    mfa_manage_budget(&client, &state, &owner).await?;
+    let codes = mfa::confirm_enrollment(&mut client, cipher, &state.hasher, &owner, &body.code)
+        .await
+        .map_err(map_auth)?;
+    let mut response = Json(MfaRecoveryBody {
+        recovery_codes: codes.codes,
+    })
+    .into_response();
+    no_store(&mut response);
+    Ok(response)
+}
+
+#[derive(Deserialize)]
+struct MfaDisableBody {
+    password: String,
+    code: String,
+}
+
+async fn disable_mfa(
+    State(state): State<Arc<AuthHttpState>>,
+    headers: HeaderMap,
+    Json(body): Json<MfaDisableBody>,
+) -> Result<StatusCode, AuthHttpError> {
+    let mut client = connect(&state.database_url).await?;
+    let owner = require_owner(
+        &client,
+        &state.hasher,
+        &state.canonical_origin,
+        &headers,
+        true,
+    )
+    .await?;
+    mfa_manage_budget(&client, &state, &owner).await?;
+    let _permit = state
+        .hash_limit
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| AuthHttpError::TooManyRequests)?;
+    mfa::disable(
+        &mut client,
+        state.mfa_cipher.as_deref(),
+        &state.hasher,
+        &owner,
+        &body.password,
+        &body.code,
+    )
+    .await
+    .map_err(map_auth)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn logout(
@@ -640,6 +938,36 @@ mod tests {
             .unwrap()
     }
 
+    fn owner_post(uri: &str, body: serde_json::Value, cookies: &str, csrf: &str) -> Request<Body> {
+        let mut request = json_post(uri, body);
+        request
+            .headers_mut()
+            .insert(header::COOKIE, HeaderValue::from_str(cookies).unwrap());
+        request
+            .headers_mut()
+            .insert(CSRF_HEADER, HeaderValue::from_str(csrf).unwrap());
+        request
+    }
+
+    #[tokio::test]
+    async fn mfa_enrollment_is_off_by_default() {
+        let state = AuthHttpState::new(
+            "postgres://unused".to_owned(),
+            Arc::new(TokenHasher::new(vec![7; 32]).unwrap()),
+            "https://zrotext.example".to_owned(),
+            Arc::new(DisabledVerificationDispatcher),
+        )
+        .unwrap();
+        let app = router(state);
+        for (path, body) in [
+            ("/mfa/enroll", serde_json::json!({"password":"unused"})),
+            ("/mfa/confirm", serde_json::json!({"code":"000000"})),
+        ] {
+            let response = app.clone().oneshot(json_post(path, body)).await.unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        }
+    }
+
     #[test]
     fn canonical_origin_and_cookie_parsing_are_strict() {
         assert!(valid_canonical_origin("https://zrotext.example"));
@@ -675,7 +1003,7 @@ mod tests {
     fn smtp_configuration_preserves_sender_identity_without_connecting() {
         let sender = SmtpVerificationDispatcher::new(
             "smtp.example.test",
-            587,
+            465,
             "user".to_owned(),
             "test-only-password".to_owned(),
             "notice@example.test",
@@ -775,6 +1103,24 @@ mod tests {
         test_client
             .batch_execute(include_str!(
                 "../../../../deploy/compose/migrations/005_verification_outbox.sql"
+            ))
+            .await
+            .unwrap();
+        test_client
+            .batch_execute(include_str!(
+                "../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"
+            ))
+            .await
+            .unwrap();
+        test_client
+            .batch_execute(include_str!(
+                "../../../../deploy/compose/migrations/013_owner_mfa.sql"
+            ))
+            .await
+            .unwrap();
+        test_client
+            .batch_execute(include_str!(
+                "../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"
             ))
             .await
             .unwrap();
@@ -916,6 +1262,409 @@ mod tests {
             app.oneshot(request).await.unwrap().status(),
             StatusCode::UNAUTHORIZED
         );
+        for _ in 0..11 {
+            assert!(
+                auth::abuse_limits::consume(
+                    &test_client,
+                    &state.hasher,
+                    Limit::Login,
+                    Some("owner@example.test"),
+                )
+                .await
+                .unwrap()
+            );
+        }
+        let response = router(state)
+            .oneshot(json_post(
+                "/login",
+                serde_json::json!({"email":"OWNER@example.test","password":"correct horse 123"}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        setup
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn postgres_http_mfa_never_sets_session_before_factor_and_limits_replay() {
+        let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
+            return;
+        };
+        let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let schema = format!("http_mfa_test_{}", Uuid::new_v4().simple());
+        setup
+            .batch_execute(&format!("CREATE SCHEMA {schema}"))
+            .await
+            .unwrap();
+        let separator = if base_url.contains('?') { '&' } else { '?' };
+        let url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
+        let (mut client, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        for migration in [
+            include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+            include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+            include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
+            include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
+            include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
+        ] {
+            client.batch_execute(migration).await.unwrap();
+        }
+        let hasher = Arc::new(TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
+        let password = Uuid::new_v4().to_string();
+        let wrong_password = Uuid::new_v4().to_string();
+        let signup = auth::register(&mut client, &hasher, "mfa@example.test", &password)
+            .await
+            .unwrap();
+        assert!(
+            auth::verify_email(&mut client, &hasher, &signup.verification_token)
+                .await
+                .unwrap()
+        );
+        let key = rand::random::<[u8; 32]>().to_vec();
+        let state = AuthHttpState::new(
+            url.clone(),
+            hasher.clone(),
+            "https://zrotext.example".to_owned(),
+            Arc::new(DisabledVerificationDispatcher),
+        )
+        .unwrap()
+        .with_mfa_cipher(Arc::new(MfaCipher::new(key).unwrap()))
+        .with_mfa_enrollment_enabled();
+        let app = router(state);
+        let response = app
+            .clone()
+            .oneshot(json_post(
+                "/login",
+                serde_json::json!({"email":"mfa@example.test","password":password.as_str()}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        let cookies = response
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .map(|v| v.to_str().unwrap().split(';').next().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(cookies.len(), 2);
+        let cookie_header = cookies.join("; ");
+        let csrf = cookies[1].split_once('=').unwrap().1;
+        let response = app
+            .clone()
+            .oneshot(json_post(
+                "/mfa/enroll",
+                serde_json::json!({"password":password.as_str()}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let response = app
+            .clone()
+            .oneshot(owner_post(
+                "/mfa/enroll",
+                serde_json::json!({"password":wrong_password.as_str()}),
+                &cookie_header,
+                csrf,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let response = app
+            .clone()
+            .oneshot(owner_post(
+                "/mfa/enroll",
+                serde_json::json!({"password":password.as_str()}),
+                &cookie_header,
+                csrf,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-store"
+        );
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 16 * 1024)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let secret =
+            totp_rs::Secret::try_from_base32(body["secret_base32"].as_str().unwrap()).unwrap();
+        let code = totp_rs::Builder::new()
+            .with_secret(secret)
+            .build()
+            .unwrap()
+            .generate_current()
+            .to_string();
+        let response = app
+            .clone()
+            .oneshot(owner_post(
+                "/mfa/confirm",
+                serde_json::json!({"code":code}),
+                &cookie_header,
+                csrf,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-store"
+        );
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 16 * 1024)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let recovery = body["recovery_codes"][0].as_str().unwrap();
+        let recovery_next = body["recovery_codes"][1].as_str().unwrap().to_owned();
+        let recovery_disable = body["recovery_codes"][2].as_str().unwrap().to_owned();
+        let status_request = Request::builder()
+            .method("GET")
+            .uri("/mfa")
+            .header(header::COOKIE, &cookie_header)
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(status_request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-store"
+        );
+        let response = app
+            .clone()
+            .oneshot(json_post(
+                "/login",
+                serde_json::json!({"email":"mfa@example.test","password":password.as_str()}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert!(response.headers().get(header::SET_COOKIE).is_none());
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-store"
+        );
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 16 * 1024)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let challenge = body["challenge_token"].as_str().unwrap();
+        let count: i64 = client
+            .query_one(
+                "SELECT count(*) FROM sessions WHERE account_id=$1",
+                &[&signup.account_id],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(count, 1);
+        let response = app
+            .clone()
+            .oneshot(json_post(
+                "/login/mfa",
+                serde_json::json!({"challenge_token":challenge,"code":recovery}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            response
+                .headers()
+                .get_all(header::SET_COOKIE)
+                .iter()
+                .count(),
+            2
+        );
+        let response = app
+            .clone()
+            .oneshot(json_post(
+                "/login/mfa",
+                serde_json::json!({"challenge_token":challenge,"code":recovery}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let count: i64 = client
+            .query_one(
+                "SELECT count(*) FROM sessions WHERE account_id=$1",
+                &[&signup.account_id],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(count, 2);
+        let response = app
+            .clone()
+            .oneshot(json_post(
+                "/login",
+                serde_json::json!({"email":"mfa@example.test","password":password.as_str()}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 16 * 1024)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let second_challenge = body["challenge_token"].as_str().unwrap();
+        for _ in 0..5 {
+            let response = app
+                .clone()
+                .oneshot(json_post(
+                    "/login/mfa",
+                    serde_json::json!({"challenge_token":second_challenge,"code":"invalid"}),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+        let response = app
+            .clone()
+            .oneshot(json_post(
+                "/login/mfa",
+                serde_json::json!({"challenge_token":second_challenge,"code":recovery_next}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        let response = app
+            .clone()
+            .oneshot(json_post(
+                "/login",
+                serde_json::json!({"email":"mfa@example.test","password":password.as_str()}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 16 * 1024)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let fresh_challenge = body["challenge_token"].as_str().unwrap();
+        let response = app
+            .clone()
+            .oneshot(json_post(
+                "/login/mfa",
+                serde_json::json!({"challenge_token":fresh_challenge,"code":recovery_next}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        let response = app
+            .clone()
+            .oneshot(owner_post(
+                "/mfa/disable",
+                serde_json::json!({"password":password.as_str(),"code":recovery_disable}),
+                &cookie_header,
+                csrf,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        client
+            .execute(
+                "UPDATE owner_mfa SET failed_window_started_at=now()-interval '16 minutes' WHERE account_id=$1",
+                &[&signup.account_id],
+            )
+            .await
+            .unwrap();
+        let no_key_app = router(
+            AuthHttpState::new(
+                url,
+                hasher,
+                "https://zrotext.example".to_owned(),
+                Arc::new(DisabledVerificationDispatcher),
+            )
+            .unwrap(),
+        );
+        let response = no_key_app
+            .clone()
+            .oneshot(json_post(
+                "/login",
+                serde_json::json!({"email":"mfa@example.test","password":password.as_str()}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert!(response.headers().get(header::SET_COOKIE).is_none());
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 16 * 1024)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let challenge = body["challenge_token"].as_str().unwrap();
+        let response = no_key_app
+            .clone()
+            .oneshot(json_post(
+                "/login/mfa",
+                serde_json::json!({"challenge_token":challenge,"code":recovery_next}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        let cookies = response
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .map(|v| v.to_str().unwrap().split(';').next().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(cookies.len(), 2);
+        let cookie_header = cookies.join("; ");
+        let csrf = cookies[1].split_once('=').unwrap().1;
+        let response = no_key_app
+            .clone()
+            .oneshot(owner_post(
+                "/mfa/disable",
+                serde_json::json!({"password":password.as_str(),"code":"zrc_AAAAAAAAAAAAAAAAAAAAAA"}),
+                &cookie_header,
+                csrf,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let failures: i32 = client
+            .query_one(
+                "SELECT failed_attempts FROM owner_mfa WHERE account_id=$1",
+                &[&signup.account_id],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(failures, 1);
+        let response = no_key_app
+            .clone()
+            .oneshot(owner_post(
+                "/mfa/disable",
+                serde_json::json!({"password":password.as_str(),"code":recovery_disable}),
+                &cookie_header,
+                csrf,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        let response = no_key_app
+            .oneshot(json_post(
+                "/login",
+                serde_json::json!({"email":"mfa@example.test","password":password.as_str()}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
         setup
             .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
             .await

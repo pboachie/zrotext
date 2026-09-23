@@ -28,7 +28,10 @@ use zeroize::Zeroizing;
 use zrotext_delivery_store::DeliveryStore;
 use zrotext_server::{
     alpha_policy::AlphaPolicy,
-    auth::TokenHasher,
+    auth::{
+        TokenHasher, abuse_limits,
+        mfa::{self, MfaCipher},
+    },
     billing::{
         http::{self as billing_http, BillingHttpState},
         owner as billing_owner, parse_test_quota_plans, reset_test_quotas_on_start,
@@ -58,6 +61,8 @@ struct Config {
     m0_test_token: Option<String>,
     alpha_policy: Arc<AlphaPolicy>,
     dispatch_runtime_enabled: bool,
+    mfa_recovery_only: bool,
+    mfa_enrollment_enabled: bool,
     draining: Arc<AtomicBool>,
     drain_notify: Arc<Notify>,
 }
@@ -121,6 +126,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some("true") => true,
         Some(_) => return Err("INBOUND_PILOT_ENABLED must be true or false".into()),
     };
+    let mfa_recovery_only = optional_bool("MFA_RECOVERY_ONLY")?;
+    let mfa_enrollment_enabled = optional_bool("MFA_ENROLLMENT_ENABLED")?;
+    if mfa_recovery_only && mfa_enrollment_enabled {
+        return Err("MFA enrollment cannot be enabled in recovery-only mode".into());
+    }
     let config = Arc::new(Config {
         database_url: required("DATABASE_URL")?,
         site_id: required("SITE_ID")?,
@@ -131,6 +141,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .filter(|token| token.len() >= 32),
         alpha_policy,
         dispatch_runtime_enabled,
+        mfa_recovery_only,
+        mfa_enrollment_enabled,
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),
     });
@@ -149,6 +161,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut billing_auth_state = None;
     if let Some((auth_state, enrollment_state)) = account_routes(&config)? {
         billing_auth_state = Some(auth_state.clone());
+        ensure_mfa_startup(
+            &config.database_url,
+            auth_state.mfa_cipher.as_deref(),
+            config.mfa_recovery_only,
+        )
+        .await?;
         ensure_local_site(&config).await?;
         reset_test_quotas_on_start(&config.database_url, billing_test.is_some()).await?;
         quotas_reset = true;
@@ -196,6 +214,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 });
             }
         }
+        let abuse_database = config.database_url.clone();
+        let abuse_draining = config.draining.clone();
+        let abuse_drain_notify = config.drain_notify.clone();
+        tokio::spawn(async move {
+            let mut checks = tokio::time::interval(Duration::from_secs(300));
+            checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = checks.tick() => {
+                        if abuse_draining.load(Ordering::Acquire) { break; }
+                        if let Ok((client, connection)) = tokio_postgres::connect(&abuse_database, NoTls).await {
+                            tokio::spawn(async move { let _ = connection.await; });
+                            let _ = abuse_limits::prune(&client).await;
+                            let _ = mfa::prune_expired_challenges(&client).await;
+                        }
+                    }
+                    _ = abuse_drain_notify.notified() => break,
+                }
+            }
+        });
         let mail_state = auth_state.clone();
         let message_hasher = auth_state.hasher.clone();
         let mail_draining = config.draining.clone();
@@ -398,7 +436,14 @@ fn account_routes(
     let origin = env::var("AUTH_ORIGIN").ok();
     let auth_pepper = env::var("AUTH_TOKEN_PEPPER_B64").ok();
     let enrollment_pepper = env::var("ENROLLMENT_TOKEN_PEPPER_B64").ok();
-    if origin.is_none() && auth_pepper.is_none() && enrollment_pepper.is_none() {
+    let mfa_key = env::var("MFA_ENCRYPTION_KEY_B64")
+        .ok()
+        .filter(|value| !value.is_empty());
+    if origin.is_none() && auth_pepper.is_none() && enrollment_pepper.is_none() && mfa_key.is_none()
+    {
+        if config.mfa_recovery_only || config.mfa_enrollment_enabled {
+            return Err("MFA mode requires configured account routes".into());
+        }
         return Ok(None);
     }
     let origin = origin.ok_or("AUTH_ORIGIN is required when account routes are enabled")?;
@@ -437,12 +482,26 @@ fn account_routes(
         Err(env::VarError::NotPresent) => Arc::new(DisabledVerificationDispatcher),
         Err(_) => return Err("SMTP_HOST must be valid UTF-8".into()),
     };
-    let auth_state = AuthHttpState::new(
+    let mut auth_state = AuthHttpState::new(
         config.database_url.clone(),
         auth_hasher.clone(),
         origin.clone(),
         dispatcher,
     )?;
+    if let Some(encoded) = mfa_key.filter(|_| !config.mfa_recovery_only) {
+        let key = STANDARD
+            .decode(encoded)
+            .map_err(|_| "MFA_ENCRYPTION_KEY_B64 must be valid base64")?;
+        let cipher = MfaCipher::new(key)
+            .map_err(|_| "MFA_ENCRYPTION_KEY_B64 must decode to exactly 32 bytes")?;
+        auth_state = auth_state.with_mfa_cipher(Arc::new(cipher));
+    }
+    if config.mfa_enrollment_enabled {
+        if auth_state.mfa_cipher.is_none() {
+            return Err("MFA enrollment requires MFA_ENCRYPTION_KEY_B64".into());
+        }
+        auth_state = auth_state.with_mfa_enrollment_enabled();
+    }
     let enrollment_state = EnrollmentHttpState::new(
         config.database_url.clone(),
         auth_hasher,
@@ -450,6 +509,25 @@ fn account_routes(
         origin,
     );
     Ok(Some((auth_state, enrollment_state)))
+}
+
+async fn ensure_mfa_startup(
+    database_url: &str,
+    cipher: Option<&MfaCipher>,
+    recovery_only: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (client, connection) = tokio_postgres::connect(database_url, NoTls)
+        .await
+        .map_err(|_| "MFA startup key check could not reach database")?;
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    mfa::validate_runtime_key(&client, cipher, recovery_only)
+        .await
+        .map_err(
+            |_| "enabled owner MFA secrets need the matching key or explicit recovery-only mode",
+        )?;
+    Ok(())
 }
 
 /// A configured M1 site registers once on a fresh writer. An operator-disabled
@@ -506,6 +584,15 @@ fn required(key: &'static str) -> Result<String, Box<dyn std::error::Error>> {
         return Err(format!("{key} must not be empty").into());
     }
     Ok(value)
+}
+
+fn optional_bool(key: &'static str) -> Result<bool, Box<dyn std::error::Error>> {
+    match env::var(key) {
+        Err(env::VarError::NotPresent) => Ok(false),
+        Ok(value) if value == "true" => Ok(true),
+        Ok(value) if value == "false" => Ok(false),
+        _ => Err(format!("{key} must be true or false").into()),
+    }
 }
 
 async fn ready(
@@ -619,7 +706,79 @@ async fn device_test(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use p256::elliptic_curve::rand_core::{OsRng, RngCore};
     use uuid::Uuid;
+
+    #[tokio::test]
+    async fn account_startup_requires_matching_mfa_key_or_explicit_recovery_mode() {
+        let Ok(base_url) = env::var("ZT_AUTH_TEST_DATABASE_URL") else {
+            return;
+        };
+        let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let schema = format!("mfa_startup_test_{}", Uuid::new_v4().simple());
+        setup
+            .batch_execute(&format!("CREATE SCHEMA {schema}"))
+            .await
+            .unwrap();
+        let separator = if base_url.contains('?') { '&' } else { '?' };
+        let database_url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
+        let (client, connection) = tokio_postgres::connect(&database_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        for sql in [
+            include_str!("../../../deploy/compose/migrations/002_auth.sql"),
+            include_str!("../../../deploy/compose/migrations/013_owner_mfa.sql"),
+            include_str!("../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
+        ] {
+            client.batch_execute(sql).await.unwrap();
+        }
+        assert!(ensure_mfa_startup(&database_url, None, false).await.is_ok());
+        let account_id = Uuid::new_v4();
+        let user_id = Uuid::new_v4();
+        client
+            .execute("INSERT INTO accounts(id) VALUES($1)", &[&account_id])
+            .await
+            .unwrap();
+        client
+            .execute(
+                "INSERT INTO users(id,email,password_hash,mfa_enabled) VALUES($1,$2,$3,true)",
+                &[&user_id, &"startup@example.test", &"test-only-placeholder"],
+            )
+            .await
+            .unwrap();
+        client
+            .execute(
+                "INSERT INTO memberships(account_id,user_id,role) VALUES($1,$2,'owner')",
+                &[&account_id, &user_id],
+            )
+            .await
+            .unwrap();
+        client
+            .execute(
+                "INSERT INTO owner_mfa(account_id,user_id,secret_nonce,secret_ciphertext,enabled_at) VALUES($1,$2,$3,$4,now())",
+                &[&account_id, &user_id, &vec![0u8; 12], &vec![0u8; 36]],
+            )
+            .await
+            .unwrap();
+        let mut key = vec![0u8; 32];
+        OsRng.fill_bytes(&mut key);
+        let cipher = MfaCipher::new(key).unwrap();
+        assert!(
+            ensure_mfa_startup(&database_url, None, false)
+                .await
+                .is_err()
+        );
+        assert!(
+            ensure_mfa_startup(&database_url, Some(&cipher), false)
+                .await
+                .is_err()
+        );
+        assert!(ensure_mfa_startup(&database_url, None, true).await.is_ok());
+        setup
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .unwrap();
+    }
 
     #[tokio::test]
     async fn configured_site_registers_once_and_disabled_site_fails_closed() {
@@ -650,6 +809,8 @@ mod tests {
             m0_test_token: None,
             alpha_policy: Arc::new(AlphaPolicy::parse(None, None, None).unwrap()),
             dispatch_runtime_enabled: false,
+            mfa_recovery_only: false,
+            mfa_enrollment_enabled: false,
             draining: Arc::new(AtomicBool::new(false)),
             drain_notify: Arc::new(Notify::new()),
         };
