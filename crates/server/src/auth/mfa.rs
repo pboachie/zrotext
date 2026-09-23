@@ -19,6 +19,7 @@ use zeroize::Zeroizing;
 const PENDING_MINUTES: i32 = 10;
 const CHALLENGE_MINUTES: i32 = 5;
 const RECOVERY_COUNT: usize = 10;
+const FACTOR_FAILURES_PER_WINDOW: i32 = 5;
 
 pub struct MfaCipher(Zeroizing<[u8; 32]>);
 
@@ -171,6 +172,39 @@ fn new_recovery_code() -> String {
     )
 }
 
+/// The owner row is locked before checking or spending this budget. It is
+/// shared by every challenge and management flow on every API site.
+async fn ensure_factor_budget(
+    tx: &Transaction<'_>,
+    account_id: Uuid,
+    user_id: Uuid,
+) -> Result<(), AuthError> {
+    let row = tx
+        .query_opt(
+            "SELECT failed_attempts, failed_window_started_at > clock_timestamp()-interval '15 minutes' FROM owner_mfa WHERE account_id=$1 AND user_id=$2 FOR UPDATE",
+            &[&account_id, &user_id],
+        )
+        .await?
+        .ok_or(AuthError::Unauthorized)?;
+    if row.get::<_, bool>(1) && row.get::<_, i32>(0) >= FACTOR_FAILURES_PER_WINDOW {
+        return Err(AuthError::RateLimited);
+    }
+    Ok(())
+}
+
+async fn record_failed_factor(
+    tx: &Transaction<'_>,
+    account_id: Uuid,
+    user_id: Uuid,
+) -> Result<(), AuthError> {
+    tx.execute(
+        "UPDATE owner_mfa SET failed_attempts=CASE WHEN failed_window_started_at <= clock_timestamp()-interval '15 minutes' THEN 1 ELSE failed_attempts+1 END, failed_window_started_at=CASE WHEN failed_window_started_at <= clock_timestamp()-interval '15 minutes' THEN clock_timestamp() ELSE failed_window_started_at END WHERE account_id=$1 AND user_id=$2",
+        &[&account_id, &user_id],
+    )
+    .await?;
+    Ok(())
+}
+
 async fn check_owner_password(
     client: &Client,
     principal: &SessionPrincipal,
@@ -285,14 +319,18 @@ pub async fn confirm_enrollment(
         "SELECT secret_nonce,secret_ciphertext,last_accepted_step FROM owner_mfa WHERE account_id=$1 AND user_id=$2 AND pending_session_id=$3 AND enabled_at IS NULL AND pending_expires_at>now() FOR UPDATE",
         &[&account_id, &principal.user_id, &principal.session_id],
     ).await?.ok_or(AuthError::Forbidden)?;
+    ensure_factor_budget(&tx, account_id, principal.user_id).await?;
     let secret = cipher.open(
         account_id,
         principal.user_id,
         &row.get::<_, Vec<u8>>(0),
         &row.get::<_, Vec<u8>>(1),
     )?;
-    let step = accepted_step(secret, code, row.get(2), unix_seconds()?)?
-        .ok_or(AuthError::InvalidCredentials)?;
+    let Some(step) = accepted_step(secret, code, row.get(2), unix_seconds()?)? else {
+        record_failed_factor(&tx, account_id, principal.user_id).await?;
+        tx.commit().await?;
+        return Err(AuthError::InvalidCredentials);
+    };
     tx.execute(
         "UPDATE owner_mfa SET enabled_at=now(),pending_expires_at=NULL,pending_session_id=NULL,last_accepted_step=$3 WHERE account_id=$1 AND user_id=$2",
         &[&account_id, &principal.user_id, &step],
@@ -419,8 +457,10 @@ pub async fn complete_login(
     if challenge.get::<_, i32>(0) >= 5 {
         return Err(AuthError::Unauthorized);
     }
+    ensure_factor_budget(&tx, account_id, user_id).await?;
     let valid = use_factor(&tx, cipher, hasher, account_id, user_id, code).await?;
     if !valid {
+        record_failed_factor(&tx, account_id, user_id).await?;
         tx.execute(
             "UPDATE owner_mfa_login_challenges SET attempts=attempts+1 WHERE token_hash=$1",
             &[&&hash[..]],
@@ -475,7 +515,10 @@ pub async fn disable(
         return Err(AuthError::Forbidden);
     }
     require_live_session(&tx, principal).await?;
+    ensure_factor_budget(&tx, account_id, principal.user_id).await?;
     if !use_factor(&tx, cipher, hasher, account_id, principal.user_id, code).await? {
+        record_failed_factor(&tx, account_id, principal.user_id).await?;
+        tx.commit().await?;
         return Err(AuthError::InvalidCredentials);
     }
     tx.execute(
@@ -604,6 +647,23 @@ mod tests {
         let pending = begin_enrollment(&mut client, &cipher, &secondary_owner, "owner password a")
             .await
             .unwrap();
+        client
+            .batch_execute(include_str!(
+                "../../../../deploy/compose/migrations/008_owner_mfa_failure_budget.sql"
+            ))
+            .await
+            .unwrap();
+        let backfilled: (i32, bool) = {
+            let row = client
+                .query_one(
+                    "SELECT failed_attempts,failed_window_started_at IS NOT NULL FROM owner_mfa WHERE account_id=$1",
+                    &[&a.account_id],
+                )
+                .await
+                .unwrap();
+            (row.get(0), row.get(1))
+        };
+        assert_eq!(backfilled, (0, true));
         let pending_secret = Secret::try_from_base32(&pending.secret_base32).unwrap();
         let pending_code = Builder::new()
             .with_secret(pending_secret)
@@ -776,7 +836,7 @@ mod tests {
             .await,
             Err(AuthError::InvalidCredentials)
         ));
-        for _ in 0..4 {
+        for _ in 0..3 {
             let _ = complete_login(
                 &mut client,
                 Some(&cipher),
@@ -786,16 +846,19 @@ mod tests {
             )
             .await;
         }
+        let fresh_challenge = begin_login_challenge(&client, &hasher, a.account_id, a.user_id)
+            .await
+            .unwrap();
         assert!(matches!(
             complete_login(
                 &mut client,
                 Some(&cipher),
                 &hasher,
-                &replay_challenge,
+                &fresh_challenge,
                 &recovery.codes[1]
             )
             .await,
-            Err(AuthError::Unauthorized)
+            Err(AuthError::RateLimited)
         ));
         let recovered_principal = auth::authenticate_session(&client, &hasher, &recovered.token)
             .await
@@ -812,6 +875,57 @@ mod tests {
             .await,
             Err(AuthError::InvalidCredentials)
         ));
+        assert!(matches!(
+            disable(
+                &mut client,
+                None,
+                &hasher,
+                &recovered_principal,
+                "owner password a",
+                &recovery.codes[1]
+            )
+            .await,
+            Err(AuthError::RateLimited)
+        ));
+        client
+            .execute(
+                "UPDATE owner_mfa SET failed_window_started_at=now()-interval '16 minutes' WHERE account_id=$1",
+                &[&a.account_id],
+            )
+            .await
+            .unwrap();
+        for _ in 0..5 {
+            assert!(matches!(
+                disable(
+                    &mut client,
+                    None,
+                    &hasher,
+                    &recovered_principal,
+                    "owner password a",
+                    "zrc_AAAAAAAAAAAAAAAAAAAAAA"
+                )
+                .await,
+                Err(AuthError::InvalidCredentials)
+            ));
+        }
+        assert!(matches!(
+            complete_login(
+                &mut client,
+                None,
+                &hasher,
+                &fresh_challenge,
+                &recovery.codes[1]
+            )
+            .await,
+            Err(AuthError::RateLimited)
+        ));
+        client
+            .execute(
+                "UPDATE owner_mfa SET failed_window_started_at=now()-interval '16 minutes' WHERE account_id=$1",
+                &[&a.account_id],
+            )
+            .await
+            .unwrap();
         disable(
             &mut client,
             None,

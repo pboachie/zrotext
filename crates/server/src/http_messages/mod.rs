@@ -122,7 +122,7 @@ fn map_auth(error: AuthError) -> MessageHttpError {
         AuthError::Database(_) | AuthError::Password | AuthError::Crypto => {
             MessageHttpError::Unavailable
         }
-        AuthError::MfaRequired { .. } => MessageHttpError::Unauthorized,
+        AuthError::MfaRequired { .. } | AuthError::RateLimited => MessageHttpError::Unauthorized,
     }
 }
 
@@ -481,6 +481,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
             include_str!("../../../../deploy/compose/migrations/006_usage_metering.sql"),
             include_str!("../../../../deploy/compose/migrations/007_owner_mfa.sql"),
+            include_str!("../../../../deploy/compose/migrations/008_owner_mfa_failure_budget.sql"),
         ] {
             client.batch_execute(sql).await.unwrap();
         }

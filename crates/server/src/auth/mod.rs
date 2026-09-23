@@ -43,6 +43,8 @@ pub enum AuthError {
     MfaRequired { account_id: Uuid, user_id: Uuid },
     #[error("authentication cryptography failed")]
     Crypto,
+    #[error("authentication rate limit exceeded")]
+    RateLimited,
 }
 
 /// This pepper must be generated once, backed up, and shared across API sites.
@@ -657,6 +659,12 @@ mod tests {
         client
             .batch_execute(include_str!(
                 "../../../../deploy/compose/migrations/007_owner_mfa.sql"
+            ))
+            .await
+            .unwrap();
+        client
+            .batch_execute(include_str!(
+                "../../../../deploy/compose/migrations/008_owner_mfa_failure_budget.sql"
             ))
             .await
             .unwrap();
