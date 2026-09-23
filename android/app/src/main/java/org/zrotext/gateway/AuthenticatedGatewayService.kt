@@ -35,6 +35,7 @@ import org.json.JSONObject
 import java.net.URI
 import java.security.MessageDigest
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
@@ -57,6 +58,8 @@ class AuthenticatedGatewayService : Service() {
     private var eventPump: ScheduledFuture<*>? = null
     private var retry: ScheduledFuture<*>? = null
     private val reconnect = DeviceReconnectPolicy { Random.nextDouble() }
+    private val timingTrace = HeartbeatTimingTrace()
+    private val traceEpoch = AtomicLong(-1L)
     private var endpoint: String? = null
     private var approvedDevice: UUID? = null
     private var observedNetwork: Network? = null
@@ -111,6 +114,7 @@ class AuthenticatedGatewayService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        timingTrace.start(intent?.getBooleanExtra(EXTRA_HEARTBEAT_TIMING_TRACE, false) == true)
         val armStartedAtNanos = System.nanoTime()
         val armRecipient = intent?.getStringExtra(EXTRA_ALPHA_RECIPIENT).orEmpty()
         val armSubscriptionId = intent?.getIntExtra(
@@ -165,6 +169,7 @@ class AuthenticatedGatewayService : Service() {
     ) {
         generation += 1
         val currentGeneration = generation
+        traceEpoch.set(-1L)
         cancelTimers()
         socket?.cancel()
         socket = null
@@ -223,6 +228,8 @@ class AuthenticatedGatewayService : Service() {
                             machine.session(epoch, seconds)
                             synchronized(this@AuthenticatedGatewayService) {
                                 if (generation != currentGeneration) return
+                                traceEpoch.set(epoch)
+                                timingTrace.mark(HeartbeatTraceEvent.SESSION, epoch)
                                 reconnect.authenticated(SystemClock.elapsedRealtime())
                             }
                             handshakeDeadline?.cancel(false)
@@ -253,8 +260,12 @@ class AuthenticatedGatewayService : Service() {
                             heartbeat = scheduler.scheduleAtFixedRate({
                                 if (generation == currentGeneration) {
                                     try {
-                                        machine.heartbeatEpoch()
-                                        if (!webSocket.send("{\"v\":1,\"type\":\"heartbeat\"}")) {
+                                        val heartbeatEpoch = machine.heartbeatEpoch()
+                                        timingTrace.mark(HeartbeatTraceEvent.SEND_CALL, heartbeatEpoch)
+                                        val queued = webSocket.send("{\"v\":1,\"type\":\"heartbeat\"}")
+                                        timingTrace.mark(if (queued) HeartbeatTraceEvent.SEND_QUEUED
+                                            else HeartbeatTraceEvent.SEND_REJECTED, heartbeatEpoch)
+                                        if (!queued) {
                                             disconnect(currentGeneration, DeviceReconnectPolicy.Loss.TRANSPORT)
                                         }
                                     } catch (_: IllegalStateException) {
@@ -282,7 +293,10 @@ class AuthenticatedGatewayService : Service() {
                         "heartbeat_ack" -> {
                             requireFields(frame, setOf("v", "type", "connection_epoch"))
                             check(frame.opt("connection_epoch") is Number)
-                            AuthenticatedGatewayStatus.heartbeats = machine.heartbeatAck(frame.getLong("connection_epoch"))
+                            val ackEpoch = frame.getLong("connection_epoch")
+                            AuthenticatedGatewayStatus.heartbeats = machine.heartbeatAck(ackEpoch)
+                            if (generation == currentGeneration)
+                                timingTrace.mark(HeartbeatTraceEvent.ACK, ackEpoch)
                             lastAckAtNanos = System.nanoTime()
                         }
                         "synthetic_grant" -> {
@@ -347,22 +361,31 @@ class AuthenticatedGatewayService : Service() {
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
                 val authenticated = machine.phase == DeviceStreamMachine.Phase.ACTIVE
                 Log.i("ZTReconnect", "stream closing code=$code authenticated=$authenticated")
+                val loss = DeviceDisconnectClassifier.closed(code, authenticated)
+                if (generation == currentGeneration)
+                    timingTrace.mark(HeartbeatTraceEvent.SOCKET_CLOSING, traceEpoch.get(), loss)
                 machine.close()
-                disconnect(currentGeneration, DeviceDisconnectClassifier.closed(code, authenticated))
+                disconnect(currentGeneration, loss)
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 val authenticated = machine.phase == DeviceStreamMachine.Phase.ACTIVE
                 Log.i("ZTReconnect", "stream closed code=$code authenticated=$authenticated")
+                val loss = DeviceDisconnectClassifier.closed(code, authenticated)
+                if (generation == currentGeneration)
+                    timingTrace.mark(HeartbeatTraceEvent.SOCKET_CLOSED, traceEpoch.get(), loss)
                 machine.close()
-                disconnect(currentGeneration, DeviceDisconnectClassifier.closed(code, authenticated))
+                disconnect(currentGeneration, loss)
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 Log.i("ZTReconnect", "stream failed error=${t.javaClass.simpleName} " +
                     "cause=${t.cause?.javaClass?.simpleName} http=${response?.code}")
+                val loss = DeviceDisconnectClassifier.failed(t, response?.code)
+                if (generation == currentGeneration)
+                    timingTrace.mark(HeartbeatTraceEvent.SOCKET_FAILURE, traceEpoch.get(), loss)
                 machine.close()
-                disconnect(currentGeneration, DeviceDisconnectClassifier.failed(t, response?.code))
+                disconnect(currentGeneration, loss)
             }
         })
     }
@@ -516,6 +539,7 @@ class AuthenticatedGatewayService : Service() {
     private fun disconnect(currentGeneration: Int, reason: DeviceReconnectPolicy.Loss) {
         if (generation != currentGeneration) return
         Log.i("ZTReconnect", "disconnect reason=$reason")
+        timingTrace.mark(HeartbeatTraceEvent.DISCONNECT, traceEpoch.get(), reason)
         generation += 1 // Fence queued callbacks, grants and radio authorization before any retry.
         cancelTimers()
         socket?.cancel()
@@ -687,6 +711,7 @@ class AuthenticatedGatewayService : Service() {
         const val EXTRA_ALPHA_RECIPIENT = "alpha_recipient"
         const val EXTRA_ALPHA_SUBSCRIPTION_ID = "alpha_subscription_id"
         const val EXTRA_INBOUND_UPLOAD = "inbound_upload"
+        const val EXTRA_HEARTBEAT_TIMING_TRACE = "heartbeat_timing_trace"
         private const val CHANNEL = "authenticated_gateway"
         private const val NOTIFICATION_ID = 1002
         private const val MAX_FRAME_BYTES = 4096

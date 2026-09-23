@@ -126,6 +126,7 @@ class M1LocalAuthenticatedWssTest {
         val start = Intent(app, AuthenticatedGatewayService::class.java)
             .putExtra(AuthenticatedGatewayService.EXTRA_URL, "wss://localhost:8443/v1/device-stream")
             .putExtra(AuthenticatedGatewayService.EXTRA_DEVICE_ID, deviceId)
+            .putExtra(AuthenticatedGatewayService.EXTRA_HEARTBEAT_TIMING_TRACE, true)
         var sampledSession = 0
         var sampledAck = 0
         var screenOffStartedAt = 0L
