@@ -308,7 +308,7 @@ impl<'a> DeliveryStore<'a> {
     /// SKIP LOCKED lets independent workers claim distinct jobs from the same
     /// writer. Claim expiry can requeue only before any execution grant.
     pub async fn claim_due(&mut self, worker_id: &str) -> Result<Option<Claim>, StoreError> {
-        self.claim_due_inner(worker_id, None, None).await
+        self.claim_due_inner(worker_id, None, None, None).await
     }
 
     /// A connected phone's worker must only claim jobs for that authenticated
@@ -319,8 +319,26 @@ impl<'a> DeliveryStore<'a> {
         account_id: Uuid,
         device_id: Uuid,
     ) -> Result<Option<Claim>, StoreError> {
-        self.claim_due_inner(worker_id, Some(account_id), Some(device_id))
+        self.claim_due_inner(worker_id, Some(account_id), Some(device_id), None)
             .await
+    }
+
+    /// A one-shot phone readiness signal can narrow a claim to the exact
+    /// recipient digest approved locally on that phone.
+    pub async fn claim_due_for_device_and_recipient(
+        &mut self,
+        worker_id: &str,
+        account_id: Uuid,
+        device_id: Uuid,
+        recipient_digest: &[u8; 32],
+    ) -> Result<Option<Claim>, StoreError> {
+        self.claim_due_inner(
+            worker_id,
+            Some(account_id),
+            Some(device_id),
+            Some(recipient_digest.as_slice()),
+        )
+        .await
     }
 
     async fn claim_due_inner(
@@ -328,6 +346,7 @@ impl<'a> DeliveryStore<'a> {
         worker_id: &str,
         account_id: Option<Uuid>,
         device_id: Option<Uuid>,
+        recipient_digest: Option<&[u8]>,
     ) -> Result<Option<Claim>, StoreError> {
         if worker_id.is_empty() {
             return Err(StoreError::InvalidInput);
@@ -343,11 +362,12 @@ impl<'a> DeliveryStore<'a> {
                      AND d.revoked_at IS NULL \
                      AND ($2::uuid IS NULL OR j.account_id=$2) \
                      AND ($3::uuid IS NULL OR j.device_id=$3) \
+                     AND ($4::bytea IS NULL OR m.recipient_digest=$4) \
                    ORDER BY j.next_attempt_at,j.message_id FOR UPDATE OF j SKIP LOCKED LIMIT 1 \
                  ) UPDATE dispatch_jobs j SET lease_owner=$1,lease_until=now()+interval '30 seconds', \
                    generation=j.generation+1 FROM picked WHERE j.message_id=picked.message_id \
                  RETURNING j.account_id,j.message_id,j.device_id,j.generation",
-                &[&worker_id, &account_id, &device_id],
+                &[&worker_id, &account_id, &device_id, &recipient_digest],
             )
             .await?;
         let Some(row) = row else {
