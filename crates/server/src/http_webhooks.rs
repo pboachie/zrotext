@@ -800,6 +800,10 @@ mod tests {
     use serde_json::{Value, json};
     use tower::ServiceExt;
 
+    fn fixture_key() -> Vec<u8> {
+        rand::random::<[u8; 32]>().to_vec()
+    }
+
     fn request(
         method: Method,
         uri: &str,
@@ -932,52 +936,34 @@ mod tests {
         ] {
             admin.batch_execute(migration).await.unwrap();
         }
-        let hasher = Arc::new(TokenHasher::new(vec![39; 32]).unwrap());
-        let a = register(
-            &mut admin,
-            &hasher,
-            "replay-a@example.test",
-            "correct horse 123",
-        )
-        .await
-        .unwrap();
-        let b = register(
-            &mut admin,
-            &hasher,
-            "replay-b@example.test",
-            "correct horse 456",
-        )
-        .await
-        .unwrap();
+        let hasher = Arc::new(TokenHasher::new(fixture_key()).unwrap());
+        let password_a = Uuid::new_v4().to_string();
+        let password_b = Uuid::new_v4().to_string();
+        let a = register(&mut admin, &hasher, "replay-a@example.test", &password_a)
+            .await
+            .unwrap();
+        let b = register(&mut admin, &hasher, "replay-b@example.test", &password_b)
+            .await
+            .unwrap();
         verify_email(&mut admin, &hasher, &a.verification_token)
             .await
             .unwrap();
         verify_email(&mut admin, &hasher, &b.verification_token)
             .await
             .unwrap();
-        let sa = login(
-            &admin,
-            &hasher,
-            "replay-a@example.test",
-            "correct horse 123",
-        )
-        .await
-        .unwrap();
-        let sb = login(
-            &admin,
-            &hasher,
-            "replay-b@example.test",
-            "correct horse 456",
-        )
-        .await
-        .unwrap();
+        let sa = login(&admin, &hasher, "replay-a@example.test", &password_a)
+            .await
+            .unwrap();
+        let sb = login(&admin, &hasher, "replay-b@example.test", &password_b)
+            .await
+            .unwrap();
         let separator = if root_url.contains('?') { '&' } else { '?' };
         let scoped_url = format!("{root_url}{separator}options=-csearch_path%3D{schema}");
         let app = router(WebhookHttpState {
             database_url: scoped_url.clone(),
             auth_hasher: hasher,
             canonical_origin: "https://test.example".into(),
-            vault: Arc::new(WebhookSecretVault::new(1, Zeroizing::new(vec![7_u8; 32])).unwrap()),
+            vault: Arc::new(WebhookSecretVault::new(1, Zeroizing::new(fixture_key())).unwrap()),
         });
         let endpoint = Uuid::new_v4();
         let foreign_endpoint = Uuid::new_v4();
@@ -1412,52 +1398,34 @@ mod tests {
         ] {
             admin.batch_execute(migration).await.unwrap();
         }
-        let hasher = Arc::new(TokenHasher::new(vec![32; 32]).unwrap());
-        let a = register(
-            &mut admin,
-            &hasher,
-            "history-a@example.test",
-            "correct horse 123",
-        )
-        .await
-        .unwrap();
-        let b = register(
-            &mut admin,
-            &hasher,
-            "history-b@example.test",
-            "correct horse 456",
-        )
-        .await
-        .unwrap();
+        let hasher = Arc::new(TokenHasher::new(fixture_key()).unwrap());
+        let password_a = Uuid::new_v4().to_string();
+        let password_b = Uuid::new_v4().to_string();
+        let a = register(&mut admin, &hasher, "history-a@example.test", &password_a)
+            .await
+            .unwrap();
+        let b = register(&mut admin, &hasher, "history-b@example.test", &password_b)
+            .await
+            .unwrap();
         verify_email(&mut admin, &hasher, &a.verification_token)
             .await
             .unwrap();
         verify_email(&mut admin, &hasher, &b.verification_token)
             .await
             .unwrap();
-        let sa = login(
-            &admin,
-            &hasher,
-            "history-a@example.test",
-            "correct horse 123",
-        )
-        .await
-        .unwrap();
-        let sb = login(
-            &admin,
-            &hasher,
-            "history-b@example.test",
-            "correct horse 456",
-        )
-        .await
-        .unwrap();
+        let sa = login(&admin, &hasher, "history-a@example.test", &password_a)
+            .await
+            .unwrap();
+        let sb = login(&admin, &hasher, "history-b@example.test", &password_b)
+            .await
+            .unwrap();
         let separator = if root_url.contains('?') { '&' } else { '?' };
         let scoped_url = format!("{root_url}{separator}options=-csearch_path%3D{schema}");
         let app = router(WebhookHttpState {
             database_url: scoped_url,
             auth_hasher: hasher,
             canonical_origin: "https://test.example".into(),
-            vault: Arc::new(WebhookSecretVault::new(1, Zeroizing::new(vec![7_u8; 32])).unwrap()),
+            vault: Arc::new(WebhookSecretVault::new(1, Zeroizing::new(fixture_key())).unwrap()),
         });
         let endpoint = Uuid::new_v4();
         let other_endpoint = Uuid::new_v4();
@@ -1653,38 +1621,30 @@ mod tests {
         ] {
             admin.batch_execute(migration).await.unwrap();
         }
-        let hasher = Arc::new(TokenHasher::new(vec![31; 32]).unwrap());
-        let a = register(
-            &mut admin,
-            &hasher,
-            "hook-a@example.test",
-            "correct horse 123",
-        )
-        .await
-        .unwrap();
-        let b = register(
-            &mut admin,
-            &hasher,
-            "hook-b@example.test",
-            "correct horse 456",
-        )
-        .await
-        .unwrap();
+        let hasher = Arc::new(TokenHasher::new(fixture_key()).unwrap());
+        let password_a = Uuid::new_v4().to_string();
+        let password_b = Uuid::new_v4().to_string();
+        let a = register(&mut admin, &hasher, "hook-a@example.test", &password_a)
+            .await
+            .unwrap();
+        let b = register(&mut admin, &hasher, "hook-b@example.test", &password_b)
+            .await
+            .unwrap();
         verify_email(&mut admin, &hasher, &a.verification_token)
             .await
             .unwrap();
         verify_email(&mut admin, &hasher, &b.verification_token)
             .await
             .unwrap();
-        let sa = login(&admin, &hasher, "hook-a@example.test", "correct horse 123")
+        let sa = login(&admin, &hasher, "hook-a@example.test", &password_a)
             .await
             .unwrap();
-        let sb = login(&admin, &hasher, "hook-b@example.test", "correct horse 456")
+        let sb = login(&admin, &hasher, "hook-b@example.test", &password_b)
             .await
             .unwrap();
         let separator = if root_url.contains('?') { '&' } else { '?' };
         let scoped_url = format!("{root_url}{separator}options=-csearch_path%3D{schema}");
-        let vault = Arc::new(WebhookSecretVault::new(1, Zeroizing::new(vec![7_u8; 32])).unwrap());
+        let vault = Arc::new(WebhookSecretVault::new(1, Zeroizing::new(fixture_key())).unwrap());
         let app = router(WebhookHttpState {
             database_url: scoped_url,
             auth_hasher: hasher,
