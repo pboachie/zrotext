@@ -1,5 +1,14 @@
 # Compose schema migrations
 
+Run `python deploy/compose/fresh_install_smoke.py` from the repository root to
+check a disposable fresh installation and logical restore. The script generates
+its own local credentials and Compose project, chooses an available loopback
+port, and removes its containers and database volume afterward. It does not
+read the repository `.env` or enable message dispatch.
+
+Set `APP_PORT` in `.env` if port 8080 is occupied for the normal local setup;
+the documented health endpoints then use that port.
+
 The `migrate` service applies `migrations/001_*.sql`, `002_*.sql`, and later
 consecutive numbered SQL files before the API starts. It holds a PostgreSQL
 advisory lock, records a SHA-256 checksum for each version, and commits each
