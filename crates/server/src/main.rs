@@ -245,6 +245,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                             Err(_) => {}
                         }
+                        match worker.reconcile_risk_one(&billing_database).await {
+                            Ok(_) => unavailable_logged = false,
+                            Err(_) if !unavailable_logged => {
+                                eprintln!("Stripe test payment-risk reconciliation unavailable");
+                                unavailable_logged = true;
+                            }
+                            Err(_) => {}
+                        }
                     }
                     _ = billing_notify.notified() => break,
                 }

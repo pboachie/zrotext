@@ -2,7 +2,8 @@
 //! Test-mode subscription reconciliation against Stripe's current API state.
 
 use super::{
-    BillingError, SubscriptionSnapshot, TestQuotaPlan, reconcile_snapshot_with_quotas, valid_id,
+    BillingError, SubscriptionSnapshot, TestQuotaPlan, reconcile_snapshot_with_quotas, risk,
+    valid_id,
 };
 use reqwest::{Client as HttpClient, redirect, retry};
 use serde_json::Value;
@@ -87,6 +88,52 @@ impl StripeTestWorker {
             }
         }
         Ok(true)
+    }
+
+    /// One bounded payment-risk job per tick. A known customer's queued risk
+    /// blocks new metered reservations while the provider chain is resolved.
+    pub async fn reconcile_risk_one(&self, database_url: &str) -> Result<bool, BillingError> {
+        let (mut db, connection) = tokio_postgres::connect(database_url, NoTls).await?;
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        let Some((event_id, charge_id, kind)) = risk::claim(&mut db).await? else {
+            return Ok(false);
+        };
+        let result = async {
+            let charge = risk::fetch_charge(&self.http, &self.secret_key, &charge_id).await?;
+            if !risk::bind_charge_customer(&mut db, &event_id, &charge.customer_id).await? {
+                return Err(BillingError::InvalidEvent);
+            }
+            if kind == "refund" && charge.amount_refunded == 0 {
+                return Err(BillingError::InvalidEvent);
+            }
+            let subscription =
+                risk::fetch_invoice_subscription(&self.http, &self.secret_key, &charge).await?;
+            risk::apply_hold(
+                &mut db,
+                &event_id,
+                &charge_id,
+                &charge.customer_id,
+                &subscription,
+                &kind,
+            )
+            .await
+        }
+        .await;
+        match result {
+            Ok(()) => Ok(true),
+            Err(error) => {
+                risk::backoff(&db, &event_id).await?;
+                if matches!(error, BillingError::Database(_)) {
+                    Err(error)
+                } else {
+                    // A provider read, unresolved binding or attribution
+                    // failure is retained for retry and later review.
+                    Ok(true)
+                }
+            }
+        }
     }
 
     async fn fetch_subscription(

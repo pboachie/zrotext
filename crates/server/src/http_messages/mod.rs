@@ -124,6 +124,7 @@ fn map_store(error: StoreError) -> MessageHttpError {
         StoreError::Database(_)
         | StoreError::DispatchDisabled
         | StoreError::StaleFence
+        | StoreError::PaymentHold
         | StoreError::QuotaNotConfigured => MessageHttpError::Unavailable,
         StoreError::QuotaExceeded => MessageHttpError::QuotaExceeded,
         StoreError::DeviceBusy | StoreError::EventIdConflict => MessageHttpError::Conflict,

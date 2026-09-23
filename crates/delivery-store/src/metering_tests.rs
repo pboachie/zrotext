@@ -43,6 +43,7 @@ impl TestDb {
             include_str!("../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"),
             include_str!("../../../deploy/compose/migrations/008_stripe_billing_foundation.sql"),
             include_str!("../../../deploy/compose/migrations/009_billing_test_entitlement.sql"),
+            include_str!("../../../deploy/compose/migrations/010_billing_payment_holds.sql"),
         ] {
             client.batch_execute(migration).await.unwrap();
         }

@@ -68,10 +68,8 @@ migration and its fixture references to 011.
 
 This branch has no Checkout or Portal route or customer-binding UI; separate
 draft PRs cover those surfaces. It has no paid-mode entitlement, payment grace
-rules, refund-to-entitlement hold, device/inbound caps, or operational alert
-for unbound/conflict events. A refund by itself can leave a Stripe subscription
-`active`; this projection would continue its quota until a subscription state
-change is reconciled. No public metered send route is wired yet. Signature
+rules, device/inbound caps, or operational alert for unbound/conflict events.
+No public metered send route is wired yet. Signature
 secret rotation needs multi-secret verification before production. Complete
 those gates and review them independently before enabling paid service. Tests
 use synthetic JSON shaped like Stripe's [Event](https://docs.stripe.com/api/events/object),
@@ -91,6 +89,39 @@ The provider-side payment, refund, and cancellation rehearsal is recorded in
 `docs/implementation-status.md`; this branch does not handle a completed
 hosted Checkout.
 
+### Refund and dispute hold slice
+
+Migration 010 in this isolated branch adds a durable risk queue and append-only
+payment holds. Combine it as migration 012 after auth-abuse 010 and entitlement
+011 in the integration stack. Signed test-mode `charge.refunded` (including a
+partial refund), `refund.created` with a Charge, and `charge.dispute.created`
+events are deduplicated by Stripe event ID. A bound customer with queued,
+held, or review-required risk cannot make a new metered reservation. The
+customer row lock serializes risk ingestion with reservation admission.
+
+The risk worker fetches the current test Charge, a unique paid InvoicePayment
+for its PaymentIntent, and the paid subscription Invoice. It requires the
+Charge and Invoice customers to agree and binds the invoice's Subscription to
+the local tenant. These payment reads pin Stripe API version
+`2025-07-30.basil`; the fixed Stripe API host, test key, no redirects, bounded
+response size and timeouts apply. A successful attribution appends a hold and
+marks the risk job held. Ten failed attempts leave it in `needs_review`; a
+known tenant stays blocked. Provider snapshots, a duplicate webhook, a late
+`charge.dispute.closed`, and active subscription re-reconciliation cannot
+silently clear a hold. An existing idempotent message replay still returns its
+original reservation.
+
+Any positive refund on a paid subscription invoice is conservatively held;
+there is no automatic release, partial-refund quota rule, dispute outcome
+policy, operator clearance route, or attribution of a refund without a Charge
+or a charge without a PaymentIntent. A Charge with no unique paid subscription
+invoice remains unresolved for review and may block a bound customer. This
+slice uses synthetic signed test events and a PostgreSQL lifecycle test; it
+does not establish a Stripe-delivered webhook or production payment readiness.
+
 References: [Stripe webhook signature and raw-body rules](https://docs.stripe.com/webhooks#verify-signature),
 [duplicate and unordered event guidance](https://docs.stripe.com/webhooks#event-ordering),
 [subscription webhook events](https://docs.stripe.com/billing/subscriptions/webhooks).
+The risk attribution chain follows the [Charge](https://docs.stripe.com/api/charges/object),
+[InvoicePayment](https://docs.stripe.com/api/invoice-payment/list), and
+[Invoice](https://docs.stripe.com/api/invoices/object) objects.

@@ -36,6 +36,8 @@ pub enum StoreError {
     QuotaNotConfigured,
     #[error("outbound quota is exhausted")]
     QuotaExceeded,
+    #[error("billing payment requires review")]
+    PaymentHold,
 }
 
 #[derive(Clone, Copy)]
@@ -1016,6 +1018,18 @@ async fn reserve_outbound(
         .await?
         .is_some();
     if billed {
+        // Ingestion or risk attribution takes the customer row FOR UPDATE.
+        // Holding it FOR SHARE above serializes admission with a new risk.
+        if tx
+            .query_opt(
+                "SELECT 1 FROM billing_risk_events WHERE account_id=$1 AND state IN ('queued','held','needs_review') LIMIT 1 FOR SHARE",
+                &[&account_id],
+            )
+            .await?
+            .is_some()
+        {
+            return Err(StoreError::PaymentHold);
+        }
         let rows = tx
             .query(
                 "SELECT dirty_generation,processed_generation FROM billing_reconciliations WHERE account_id=$1 FOR SHARE",

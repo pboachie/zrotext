@@ -10,6 +10,7 @@ use tokio_postgres::{Client, Transaction};
 use uuid::Uuid;
 
 pub mod http;
+pub mod risk;
 pub mod worker;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -38,6 +39,8 @@ pub struct VerifiedEvent {
     pub object_id: Option<String>,
     pub customer_id: Option<String>,
     pub subscription_id: Option<String>,
+    /// Only populated for verified test-mode refund or chargeback events.
+    pub risk_charge_id: Option<String>,
     pub body_sha256: [u8; 32],
 }
 
@@ -115,11 +118,12 @@ pub fn verify_event(
         return Err(BillingError::InvalidEvent);
     }
     let object = &json["data"]["object"];
-    let (object_id, customer_id, subscription_id) = match event_type {
+    let (object_id, customer_id, subscription_id, risk_charge_id) = match event_type {
         "checkout.session.completed" => (
             Some(stripe_id(&object["id"], "cs_test_")?.to_owned()),
             Some(stripe_id(&object["customer"], "cus_")?.to_owned()),
             Some(stripe_id(&object["subscription"], "sub_")?.to_owned()),
+            None,
         ),
         "customer.subscription.created"
         | "customer.subscription.updated"
@@ -131,6 +135,7 @@ pub fn verify_event(
                 Some(subscription.clone()),
                 Some(stripe_id(&object["customer"], "cus_")?.to_owned()),
                 Some(subscription),
+                None,
             )
         }
         "invoice.paid" | "invoice.payment_failed" => {
@@ -145,9 +150,57 @@ pub fn verify_event(
                 Some(stripe_id(&object["id"], "in_")?.to_owned()),
                 Some(stripe_id(&object["customer"], "cus_")?.to_owned()),
                 subscription.map(str::to_owned),
+                None,
             )
         }
-        _ => (None, None, None),
+        "charge.refunded" => {
+            if object["object"] != "charge"
+                || object["amount_refunded"]
+                    .as_i64()
+                    .is_none_or(|amount| amount <= 0)
+            {
+                return Err(BillingError::InvalidEvent);
+            }
+            let charge = stripe_id(&object["id"], "ch_")?.to_owned();
+            let customer = object["customer"]
+                .as_str()
+                .map(|id| valid_id(id, "cus_"))
+                .transpose()?
+                .map(str::to_owned);
+            (Some(charge.clone()), customer, None, Some(charge))
+        }
+        "refund.created" => {
+            if object["object"] != "refund" {
+                return Err(BillingError::InvalidEvent);
+            }
+            let charge = object["charge"]
+                .as_str()
+                .map(|id| valid_id(id, "ch_"))
+                .transpose()?
+                .map(str::to_owned);
+            (
+                Some(stripe_id(&object["id"], "re_")?.to_owned()),
+                None,
+                None,
+                charge,
+            )
+        }
+        "charge.dispute.created" => {
+            if object["object"] != "dispute" {
+                return Err(BillingError::InvalidEvent);
+            }
+            let dispute = object["id"].as_str().ok_or(BillingError::InvalidEvent)?;
+            if valid_id(dispute, "du_").is_err() {
+                valid_id(dispute, "dp_")?;
+            }
+            (
+                Some(dispute.to_owned()),
+                None,
+                None,
+                Some(stripe_id(&object["charge"], "ch_")?.to_owned()),
+            )
+        }
+        _ => (None, None, None, None),
     };
     Ok(VerifiedEvent {
         event_id,
@@ -155,6 +208,7 @@ pub fn verify_event(
         object_id,
         customer_id,
         subscription_id,
+        risk_charge_id,
         body_sha256: Sha256::digest(body).into(),
     })
 }
@@ -197,7 +251,11 @@ pub async fn ingest(
     let account_id: Option<Uuid> = if let Some(customer_id) = &event.customer_id {
         lock_customer(&tx, customer_id).await?;
         tx.query_opt(
-            "SELECT account_id FROM billing_customers WHERE stripe_customer_id=$1 FOR SHARE",
+            if event.risk_charge_id.is_some() {
+                "SELECT account_id FROM billing_customers WHERE stripe_customer_id=$1 FOR UPDATE"
+            } else {
+                "SELECT account_id FROM billing_customers WHERE stripe_customer_id=$1 FOR SHARE"
+            },
             &[customer_id],
         )
         .await?
@@ -205,7 +263,7 @@ pub async fn ingest(
     } else {
         None
     };
-    let initial = if event.subscription_id.is_none() {
+    let initial = if event.subscription_id.is_none() && event.risk_charge_id.is_none() {
         IngestResult::Ignored
     } else if account_id.is_none() {
         IngestResult::Unbound
@@ -235,6 +293,18 @@ pub async fn ingest(
         }
         tx.commit().await?;
         return Ok(IngestResult::Duplicate);
+    }
+    if let Some(charge_id) = &event.risk_charge_id {
+        let kind = if event.event_type == "charge.dispute.created" {
+            "dispute"
+        } else {
+            "refund"
+        };
+        tx.execute(
+            "INSERT INTO billing_risk_events(stripe_event_id,stripe_charge_id,risk_kind,account_id) VALUES($1,$2,$3,$4)",
+            &[&event.event_id, &charge_id, &kind, &account_id],
+        )
+        .await?;
     }
     let mut result = initial;
     if let (Some(account_id), Some(customer_id), Some(subscription_id)) =
@@ -301,7 +371,7 @@ pub async fn bind_customer(
     ).await?;
     let binding = tx
         .query_opt(
-            "SELECT account_id FROM billing_customers WHERE stripe_customer_id=$1",
+            "SELECT account_id FROM billing_customers WHERE stripe_customer_id=$1 FOR UPDATE",
             &[&customer_id],
         )
         .await?;
@@ -309,7 +379,7 @@ pub async fn bind_customer(
         return Err(BillingError::TenantConflict);
     }
     let rows = tx.query(
-        "SELECT stripe_event_id,stripe_subscription_id FROM billing_events WHERE stripe_customer_id=$1 AND disposition='unbound' ORDER BY received_at,stripe_event_id FOR UPDATE",
+        "SELECT stripe_event_id,stripe_subscription_id FROM billing_events WHERE stripe_customer_id=$1 AND stripe_subscription_id IS NOT NULL AND disposition='unbound' ORDER BY received_at,stripe_event_id FOR UPDATE",
         &[&customer_id],
     ).await?;
     for row in rows {
@@ -327,6 +397,17 @@ pub async fn bind_customer(
         )
         .await?;
     }
+    // A verified refund can precede the trusted Checkout/customer binding.
+    // Once bound, pending risk blocks fresh metered reservations immediately.
+    tx.execute(
+        "UPDATE billing_risk_events r SET account_id=$2 FROM billing_events e WHERE r.stripe_event_id=e.stripe_event_id AND e.stripe_customer_id=$1 AND r.account_id IS NULL",
+        &[&customer_id, &account_id],
+    )
+    .await?;
+    tx.execute(
+        "UPDATE billing_events SET account_id=$2,disposition='queued' WHERE stripe_customer_id=$1 AND stripe_subscription_id IS NULL AND event_type IN ('charge.refunded','refund.created','charge.dispute.created') AND disposition='unbound'",
+        &[&customer_id, &account_id],
+    ).await?;
     tx.commit().await?;
     Ok(())
 }
@@ -394,7 +475,7 @@ pub async fn reset_test_quotas_on_start(
         let _ = connection.await;
     });
     let available: bool = db
-        .query_one("SELECT to_regclass('billing_quota_audit') IS NOT NULL", &[])
+        .query_one("SELECT to_regclass('billing_quota_audit') IS NOT NULL AND to_regclass('billing_risk_events') IS NOT NULL AND to_regclass('billing_payment_holds') IS NOT NULL", &[])
         .await?
         .get(0);
     if !available {
@@ -679,6 +760,274 @@ mod tests {
         }
     }
 
+    fn signed_test_event(body: &[u8]) -> VerifiedEvent {
+        let mut mac = HmacSha256::new_from_slice(SECRET.as_bytes()).unwrap();
+        mac.update(b"1750000000.");
+        mac.update(body);
+        let signature = format!("t=1750000000,v1={:x}", mac.finalize().into_bytes());
+        verify_event(body, &signature, SECRET, 1_750_000_000).unwrap()
+    }
+
+    #[test]
+    fn verified_test_payment_risk_shapes_are_strict() {
+        let refund = signed_test_event(br#"{"id":"evt_riskrefund1","object":"event","livemode":false,"type":"refund.created","data":{"object":{"id":"re_risk1","object":"refund","charge":"ch_risk1"}}}"#);
+        assert_eq!(refund.risk_charge_id.as_deref(), Some("ch_risk1"));
+        let unsupported = signed_test_event(br#"{"id":"evt_riskrefund2","object":"event","livemode":false,"type":"refund.created","data":{"object":{"id":"re_risk2","object":"refund","charge":null}}}"#);
+        assert!(unsupported.risk_charge_id.is_none());
+        let zero = br#"{"id":"evt_riskzero1","object":"event","livemode":false,"type":"charge.refunded","data":{"object":{"id":"ch_risk1","object":"charge","customer":"cus_risk1","amount_refunded":0}}}"#;
+        let mut mac = HmacSha256::new_from_slice(SECRET.as_bytes()).unwrap();
+        mac.update(b"1750000000.");
+        mac.update(zero);
+        let signature = format!("t=1750000000,v1={:x}", mac.finalize().into_bytes());
+        assert!(matches!(
+            verify_event(zero, &signature, SECRET, 1_750_000_000),
+            Err(BillingError::InvalidEvent)
+        ));
+    }
+
+    #[tokio::test]
+    async fn verified_refund_and_dispute_hold_active_metered_accounts() {
+        let Ok(base_url) = env::var("ZT_AUTH_TEST_DATABASE_URL") else {
+            return;
+        };
+        let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let schema = format!("billing_hold_test_{}", Uuid::new_v4().simple());
+        setup
+            .batch_execute(&format!("CREATE SCHEMA {schema}"))
+            .await
+            .unwrap();
+        let separator = if base_url.contains('?') { '&' } else { '?' };
+        let scoped_url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
+        let (mut db, connection) = tokio_postgres::connect(&scoped_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        for sql in [
+            include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
+            include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+            include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
+            include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
+            include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+            include_str!("../../../../deploy/compose/migrations/006_usage_metering.sql"),
+            include_str!(
+                "../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"
+            ),
+            include_str!("../../../../deploy/compose/migrations/008_stripe_billing_foundation.sql"),
+            include_str!("../../../../deploy/compose/migrations/009_billing_test_entitlement.sql"),
+            include_str!("../../../../deploy/compose/migrations/010_billing_payment_holds.sql"),
+        ] {
+            db.batch_execute(sql).await.unwrap();
+        }
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        let device_a = Uuid::new_v4();
+        let device_b = Uuid::new_v4();
+        db.execute("INSERT INTO accounts(id) VALUES($1),($2)", &[&a, &b])
+            .await
+            .unwrap();
+        db.execute(
+            "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'phone a'),($3,$4,'phone b')",
+            &[&device_a, &a, &device_b, &b],
+        )
+        .await
+        .unwrap();
+        bind_customer(&mut db, a, "cus_holda1").await.unwrap();
+        bind_customer(&mut db, b, "cus_holdb1").await.unwrap();
+        let prices = vec!["price_hold1".to_owned()];
+        let plans = parse_test_quota_plans("price_hold1:10", &prices).unwrap();
+        for (event_id, account, customer, subscription) in [
+            ("evt_holda1", a, "cus_holda1", "sub_holda1"),
+            ("evt_holdb1", b, "cus_holdb1", "sub_holdb1"),
+        ] {
+            let event = signed_test_event(
+                format!("{{\"id\":\"{event_id}\",\"object\":\"event\",\"livemode\":false,\"type\":\"customer.subscription.updated\",\"data\":{{\"object\":{{\"id\":\"{subscription}\",\"customer\":\"{customer}\"}}}}}}")
+                    .as_bytes(),
+            );
+            assert_eq!(ingest(&mut db, &event).await.unwrap(), IngestResult::Queued);
+            reconcile_snapshot_with_quotas(
+                &mut db,
+                account,
+                &SubscriptionSnapshot {
+                    subscription_id: subscription.into(),
+                    customer_id: customer.into(),
+                    status: "active".into(),
+                    price_id: Some("price_hold1".into()),
+                },
+                &prices,
+                &plans,
+                1,
+            )
+            .await
+            .unwrap();
+        }
+        let expiry = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64
+            + 3_600_000;
+        let send = |account_id: Uuid, device_id: Uuid, id: Uuid, key: &'static str| NewMessage {
+            account_id,
+            device_id,
+            client_message_id: id,
+            idempotency_key: key,
+            recipient_e164: "+15551234567",
+            synthetic_payload: b"synthetic test",
+            expires_at_ms: expiry,
+        };
+        let first = Uuid::new_v4();
+        assert!(
+            DeliveryStore::new(&mut db)
+                .accept_metered(send(a, device_a, first, "a-first"))
+                .await
+                .unwrap()
+                .created
+        );
+
+        let refund = signed_test_event(br#"{"id":"evt_refund1","object":"event","livemode":false,"type":"charge.refunded","data":{"object":{"id":"ch_refund1","object":"charge","customer":"cus_holda1","amount_refunded":50}}}"#);
+        assert_eq!(refund.risk_charge_id.as_deref(), Some("ch_refund1"));
+        assert_eq!(
+            ingest(&mut db, &refund).await.unwrap(),
+            IngestResult::Queued
+        );
+        assert_eq!(
+            ingest(&mut db, &refund).await.unwrap(),
+            IngestResult::Duplicate
+        );
+        assert!(matches!(
+            DeliveryStore::new(&mut db)
+                .accept_metered(send(a, device_a, Uuid::new_v4(), "a-pending"))
+                .await,
+            Err(StoreError::PaymentHold)
+        ));
+        // The other tenant still has its own active allowance.
+        assert!(
+            DeliveryStore::new(&mut db)
+                .accept_metered(send(b, device_b, Uuid::new_v4(), "b-before"))
+                .await
+                .unwrap()
+                .created
+        );
+        assert!(matches!(
+            risk::apply_hold(
+                &mut db,
+                "evt_refund1",
+                "ch_refund1",
+                "cus_holdb1",
+                "sub_holdb1",
+                "refund"
+            )
+            .await,
+            Err(BillingError::TenantConflict)
+        ));
+        risk::bind_charge_customer(&mut db, "evt_refund1", "cus_holda1")
+            .await
+            .unwrap();
+        risk::apply_hold(
+            &mut db,
+            "evt_refund1",
+            "ch_refund1",
+            "cus_holda1",
+            "sub_holda1",
+            "refund",
+        )
+        .await
+        .unwrap();
+        risk::apply_hold(
+            &mut db,
+            "evt_refund1",
+            "ch_refund1",
+            "cus_holda1",
+            "sub_holda1",
+            "refund",
+        )
+        .await
+        .unwrap();
+        let count: i64 = db
+            .query_one(
+                "SELECT count(*) FROM billing_payment_holds WHERE account_id=$1",
+                &[&a],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(count, 1);
+        let active_a = SubscriptionSnapshot {
+            subscription_id: "sub_holda1".into(),
+            customer_id: "cus_holda1".into(),
+            status: "active".into(),
+            price_id: Some("price_hold1".into()),
+        };
+        reconcile_snapshot_with_quotas(&mut db, a, &active_a, &prices, &plans, 2)
+            .await
+            .unwrap();
+        assert!(matches!(
+            DeliveryStore::new(&mut db)
+                .accept_metered(send(a, device_a, Uuid::new_v4(), "a-still-held"))
+                .await,
+            Err(StoreError::PaymentHold)
+        ));
+        assert!(
+            !DeliveryStore::new(&mut db)
+                .accept_metered(send(a, device_a, first, "a-first"))
+                .await
+                .unwrap()
+                .created
+        );
+
+        // A closed dispute received first cannot clear or suppress a later
+        // creation event. The creation event carries no customer until the
+        // current Charge is fetched and bound by the worker.
+        let closed = signed_test_event(br#"{"id":"evt_disputeclosed1","object":"event","livemode":false,"type":"charge.dispute.closed","data":{"object":{"id":"du_holdb1","object":"dispute","charge":"ch_dispute1"}}}"#);
+        assert_eq!(
+            ingest(&mut db, &closed).await.unwrap(),
+            IngestResult::Ignored
+        );
+        let dispute = signed_test_event(br#"{"id":"evt_dispute1","object":"event","livemode":false,"type":"charge.dispute.created","data":{"object":{"id":"du_holdb1","object":"dispute","charge":"ch_dispute1"}}}"#);
+        assert_eq!(
+            ingest(&mut db, &dispute).await.unwrap(),
+            IngestResult::Unbound
+        );
+        assert!(
+            risk::bind_charge_customer(&mut db, "evt_dispute1", "cus_holdb1")
+                .await
+                .unwrap()
+        );
+        assert!(matches!(
+            DeliveryStore::new(&mut db)
+                .accept_metered(send(b, device_b, Uuid::new_v4(), "b-pending"))
+                .await,
+            Err(StoreError::PaymentHold)
+        ));
+        risk::apply_hold(
+            &mut db,
+            "evt_dispute1",
+            "ch_dispute1",
+            "cus_holdb1",
+            "sub_holdb1",
+            "dispute",
+        )
+        .await
+        .unwrap();
+        let count: i64 = db
+            .query_one("SELECT count(*) FROM billing_payment_holds", &[])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(count, 2);
+        let live = br#"{"id":"evt_live1","object":"event","livemode":true,"type":"charge.refunded","data":{"object":{"id":"ch_live1","object":"charge","customer":"cus_holda1","amount_refunded":50}}}"#;
+        let mut mac = HmacSha256::new_from_slice(SECRET.as_bytes()).unwrap();
+        mac.update(b"1750000000.");
+        mac.update(live);
+        let signed = format!("t=1750000000,v1={:x}", mac.finalize().into_bytes());
+        assert!(matches!(
+            verify_event(live, &signed, SECRET, 1_750_000_000),
+            Err(BillingError::InvalidEvent)
+        ));
+        setup
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn reconciled_test_subscription_controls_metered_reservations() {
         let Ok(base_url) = env::var("ZT_AUTH_TEST_DATABASE_URL") else {
@@ -707,6 +1056,7 @@ mod tests {
             ),
             include_str!("../../../../deploy/compose/migrations/008_stripe_billing_foundation.sql"),
             include_str!("../../../../deploy/compose/migrations/009_billing_test_entitlement.sql"),
+            include_str!("../../../../deploy/compose/migrations/010_billing_payment_holds.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
@@ -757,6 +1107,7 @@ mod tests {
             object_id: Some("sub_entitlement1".into()),
             customer_id: Some("cus_entitlement1".into()),
             subscription_id: Some("sub_entitlement1".into()),
+            risk_charge_id: None,
             body_sha256: [1; 32],
         };
         assert_eq!(ingest(&mut db, &event).await.unwrap(), IngestResult::Queued);
@@ -1011,6 +1362,8 @@ mod tests {
                 "../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"
             ),
             include_str!("../../../../deploy/compose/migrations/008_stripe_billing_foundation.sql"),
+            include_str!("../../../../deploy/compose/migrations/009_billing_test_entitlement.sql"),
+            include_str!("../../../../deploy/compose/migrations/010_billing_payment_holds.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
@@ -1154,6 +1507,8 @@ mod tests {
                 "../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"
             ),
             include_str!("../../../../deploy/compose/migrations/008_stripe_billing_foundation.sql"),
+            include_str!("../../../../deploy/compose/migrations/009_billing_test_entitlement.sql"),
+            include_str!("../../../../deploy/compose/migrations/010_billing_payment_holds.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
