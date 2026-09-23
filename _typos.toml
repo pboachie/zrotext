@@ -1,0 +1,2 @@
+[default.extend-words]
+BA = "BA" # Backup Active in the two-location design.
