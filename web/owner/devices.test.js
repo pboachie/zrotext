@@ -2,12 +2,7 @@
 "use strict";
 
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const path = require("node:path");
 const test = require("node:test");
-const vm = require("node:vm");
-
-const source = fs.readFileSync(path.join(__dirname, "devices.js"), "utf8");
 
 function response(status, body = {}) {
   return { status, ok: status >= 200 && status < 300, json: async () => body };
@@ -68,11 +63,11 @@ async function ownerPage() {
     }
     throw new Error(`Unexpected request: ${url}`);
   };
-  vm.runInNewContext(source, {
-    document: { cookie: "__Host-zrotext_csrf=ztc_synthetic", getElementById: element, createElement: makeElement },
-    window: { location: { origin: "https://example.test" }, addEventListener() {} },
-    fetch,
-  });
+  globalThis.document = { cookie: "__Host-zrotext_csrf=ztc_synthetic", getElementById: element, createElement: makeElement };
+  globalThis.window = { location: { origin: "https://example.test" }, addEventListener() {} };
+  globalThis.fetch = fetch;
+  delete require.cache[require.resolve("./devices.js")];
+  require("./devices.js");
   await new Promise(setImmediate);
   await new Promise(setImmediate);
   return { element, state };
