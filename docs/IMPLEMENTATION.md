@@ -45,6 +45,8 @@ M1 demo: controlled test number receives one SMS, replies, dashboard shows truth
 
 **ZT-009 Threat model and protocol review.** Refine SECURITY-DESIGN into versioned byte-level spec; select maintained compatible implementations and expert reviewer. Resolve every open cryptographic question before production crypto. Deliver threat diagram and decisions; record review limitations.
 
+The [ZT-009 review package](protocol/zt-009-review.md) and [byte profile draft 01](protocol/zt-sealed-draft-01.md) are proposed review inputs. Their unresolved decisions and external reviewer gate remain open; they do not authorize ZT-010 implementation or a sealed-content claim.
+
 **ZT-010 Shared vectors and client SDK.** Implement reviewed envelope library plus TypeScript SDK, Kotlin decryption/inbound encryption, scoped signing/decryption credentials and client key-manifest verification. Proof: published known-answer and cross-client vectors, tamper/replay/rollback tests, no plaintext accepted by public sealed endpoint. Dependency: 009.
 
 **ZT-011 Vault/recovery/rotation.** Separate login and content unlock, recovery kit with confirmation, new-device approval, revocation, key generation/rotation, encrypted export and local dashboard decrypt. Proof: lost-login reset cannot read old history; recovery can; revoked device cannot receive future envelopes; old ciphertext limitations disclosed. Dependency: 010.

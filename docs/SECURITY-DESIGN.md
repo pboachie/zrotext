@@ -2,6 +2,8 @@
 
 **Status: proposed protocol for expert review, not an audited cryptosystem.** Security is a launch gate. This brief deliberately separates requirements from implementation choices still needing verification.
 
+The [ZT-009 review package](protocol/zt-009-review.md) includes a [versioned byte profile draft](protocol/zt-sealed-draft-01.md), threat diagram, candidate libraries and unresolved review questions. Neither document approves production crypto or closes ZT-009.
+
 ## Claims and trust boundaries
 
 | Statement | Status / allowed use |
