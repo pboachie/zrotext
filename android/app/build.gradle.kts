@@ -9,14 +9,14 @@ plugins {
 
 android {
     namespace = "org.zrotext.gateway"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "org.zrotext.gateway"
         minSdk = 28
         targetSdk = 36
-        versionCode = 5
-        versionName = "0.1.4-m1-alpha-stream"
+        versionCode = 7
+        versionName = "0.1.6-m1-inbound-metadata"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     buildTypes {
@@ -49,7 +49,7 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    implementation("androidx.core:core-ktx:1.16.0")
+    implementation("androidx.core:core-ktx:1.19.0")
     implementation("androidx.room:room-runtime:2.8.5")
     ksp("androidx.room:room-compiler:2.8.5")
     testImplementation("junit:junit:4.13.2")

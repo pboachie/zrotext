@@ -5,6 +5,9 @@ const byId = (id) => document.getElementById(id);
 let activePairingId = null;
 let nextDeviceCursor = null;
 let shownDeviceCount = 0;
+let nextMessageCursor = null;
+let shownMessageCount = 0;
+let pendingMfaChallenge = null;
 let nextKeyCursor = null;
 let shownKeyCount = 0;
 let ownerEpoch = 0;
@@ -47,7 +50,8 @@ async function api(path, method = "GET", body = undefined) {
   const requestEpoch = ownerEpoch;
   const headers = {};
   if (body !== undefined) headers["content-type"] = "application/json";
-  if ((method !== "GET" && path !== "/v1/auth/login") || path.startsWith("/v1/auth/api-keys")) {
+  if ((method !== "GET" && path !== "/v1/auth/login" && path !== "/v1/auth/login/mfa")
+      || path.startsWith("/v1/auth/api-keys")) {
     const csrf = csrfToken();
     if (!csrf) throw new Error("Your sign-in expired. Sign in again.");
     headers["x-zrotext-csrf"] = csrf;
@@ -59,14 +63,16 @@ async function api(path, method = "GET", body = undefined) {
   if (requestEpoch !== ownerEpoch) {
     throw new Error("Your sign-in expired. Sign in again.");
   }
-  if (response.status === 401) {
+  if (response.status === 401 && path !== "/v1/auth/login" && path !== "/v1/auth/login/mfa") {
     clearOwnerState();
-    message("global-status", path === "/v1/auth/login" ? "Sign in to manage devices." : "Your sign-in expired. Sign in again.");
+    message("global-status", "Your sign-in expired. Sign in again.");
   }
   if (!response.ok) {
     const descriptions = {
       400: "Check the entered values and try again.",
-      401: path === "/v1/auth/login" ? "Email or password was not accepted." : "Your sign-in expired. Sign in again.",
+      401: path === "/v1/auth/login" ? "Email or password was not accepted."
+        : path === "/v1/auth/login/mfa" ? "Code was not accepted. Try again."
+          : "Your sign-in expired. Sign in again.",
       403: "This action was refused. Refresh the page and sign in again.",
       404: "The requested item was not found, expired, or is no longer available.",
       409: "This action conflicts with the current device state.",
@@ -88,6 +94,23 @@ function showSignedIn(signedIn) {
   byId("sign-in").hidden = signedIn;
   byId("owner-content").hidden = !signedIn;
   byId("logout").hidden = !signedIn;
+}
+
+function clearMfaChallenge() {
+  pendingMfaChallenge = null;
+  byId("mfa-code").value = "";
+  byId("mfa-form").hidden = true;
+  byId("login-form").hidden = false;
+  message("mfa-status", "");
+}
+
+async function completeSignIn() {
+  await api("/v1/auth/session");
+  clearMfaChallenge();
+  showSignedIn(true);
+  message("login-status", "");
+  message("global-status", "Signed in.");
+  await Promise.all([loadDevices(), loadMessages(), loadKeys(), loadWebhookEndpoints()]);
 }
 
 function clearPairing() {
@@ -147,6 +170,7 @@ function clearWebhookEndpoints() {
 
 function clearOwnerState() {
   ownerEpoch += 1;
+  clearMfaChallenge();
   clearPairing();
   clearKeySecret();
   clearInboundHistory();
@@ -155,6 +179,10 @@ function clearOwnerState() {
   byId("more-devices").hidden = true;
   nextDeviceCursor = null;
   shownDeviceCount = 0;
+  byId("message-list").replaceChildren();
+  byId("more-messages").hidden = true;
+  nextMessageCursor = null;
+  shownMessageCount = 0;
   byId("key-list").replaceChildren();
   byId("more-keys").hidden = true;
   nextKeyCursor = null;
@@ -441,6 +469,73 @@ async function loadDevices(reset = true) {
   }
 }
 
+function localTime(milliseconds) {
+  const date = new Date(milliseconds);
+  return Number.isFinite(milliseconds) && !Number.isNaN(date.getTime())
+    ? date.toLocaleString() : "Time unavailable";
+}
+
+async function loadMessages(reset = true) {
+  message("message-status", "Loading message states…");
+  if (reset) {
+    byId("message-list").replaceChildren();
+    byId("more-messages").hidden = true;
+    nextMessageCursor = null;
+    shownMessageCount = 0;
+  }
+  try {
+    const path = nextMessageCursor
+      ? `/v1/owner/messages?before=${encodeURIComponent(nextMessageCursor)}`
+      : "/v1/owner/messages";
+    const page = await api(path);
+    if (reset && page.messages.length === 0) {
+      message("message-status", "No messages yet.");
+      return;
+    }
+    nextMessageCursor = page.next_cursor;
+    shownMessageCount += page.messages.length;
+    byId("more-messages").hidden = !nextMessageCursor;
+    message("message-status", `${shownMessageCount} message${shownMessageCount === 1 ? "" : "s"} shown${nextMessageCursor ? "; more available" : ""}.`);
+    for (const item of page.messages) {
+      const row = document.createElement("li");
+      const state = document.createElement("strong");
+      const id = document.createElement("code");
+      const device = document.createElement("span");
+      const created = document.createElement("time");
+      state.textContent = item.state.replaceAll("_", " ");
+      id.textContent = item.message_id;
+      device.textContent = `Gateway ${item.device_id}`;
+      created.textContent = ` · Created ${localTime(item.created_at_ms)}`;
+      const createdDate = new Date(item.created_at_ms);
+      if (!Number.isNaN(createdDate.getTime())) created.dateTime = createdDate.toISOString();
+      row.append(state, id, device, created);
+      const details = document.createElement("details");
+      const summary = document.createElement("summary");
+      summary.textContent = `Writer events (${item.events.length}${item.events_truncated ? " most recent" : ""})`;
+      details.append(summary);
+      if (item.events.length === 0) {
+        const none = document.createElement("p");
+        none.textContent = "No writer event has been recorded yet.";
+        details.append(none);
+      } else {
+        const list = document.createElement("ol");
+        for (const event of item.events) {
+          const entry = document.createElement("li");
+          const segment = event.segment_index === null || event.segment_count === null
+            ? "" : ` · segment ${event.segment_index + 1}/${event.segment_count}`;
+          entry.textContent = `${localTime(event.received_at_ms)} · ${event.evidence.replaceAll("_", " ")} → ${event.resulting_state.replaceAll("_", " ")}${segment}`;
+          list.append(entry);
+        }
+        details.append(list);
+      }
+      row.append(details);
+      byId("message-list").append(row);
+    }
+  } catch (error) {
+    message("message-status", `Could not load messages. ${error.message}`);
+  }
+}
+
 async function checkPairing() {
   if (!activePairingId) return;
   const pairingId = activePairingId;
@@ -478,20 +573,56 @@ async function checkPairing() {
 
 byId("login-form").addEventListener("submit", async (event) => {
   event.preventDefault();
+  clearMfaChallenge();
+  showSignedIn(false);
   message("login-status", "Signing in…");
   const password = byId("password").value;
   byId("password").value = "";
   try {
-    await api("/v1/auth/login", "POST", { email: byId("email").value, password });
-    showSignedIn(true);
-    message("login-status", "");
-    message("global-status", "Signed in.");
-    await loadDevices();
-    await loadKeys();
-    await loadWebhookEndpoints();
+    const result = await api("/v1/auth/login", "POST", { email: byId("email").value, password });
+    if (result && typeof result.challenge_token === "string" && result.challenge_token.startsWith("ztm_")) {
+      pendingMfaChallenge = result.challenge_token;
+      byId("login-form").hidden = true;
+      byId("mfa-form").hidden = false;
+      message("login-status", "");
+      message("mfa-status", "Finish sign-in with your second factor.");
+      byId("mfa-code").focus();
+      return;
+    }
+    if (result !== null) throw new Error("Unexpected sign-in response. Try again.");
+    await completeSignIn();
   } catch (error) {
     message("login-status", `Sign-in failed. ${error.message}`);
   }
+});
+
+byId("mfa-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!pendingMfaChallenge) return;
+  const code = byId("mfa-code").value.trim();
+  byId("mfa-code").value = "";
+  message("mfa-status", "Verifying code…");
+  let factorAccepted = false;
+  try {
+    const result = await api("/v1/auth/login/mfa", "POST", {
+      challenge_token: pendingMfaChallenge, code,
+    });
+    if (result !== null) throw new Error("Unexpected verification response. Try again.");
+    factorAccepted = true;
+    await completeSignIn();
+  } catch (error) {
+    if (factorAccepted) {
+      clearMfaChallenge();
+      message("login-status", `Could not verify the new session. ${error.message}`);
+    } else {
+      message("mfa-status", `Code verification failed. ${error.message}`);
+    }
+  }
+});
+
+byId("cancel-mfa").addEventListener("click", () => {
+  clearMfaChallenge();
+  message("login-status", "Enter your password to start again.");
 });
 
 byId("logout").addEventListener("click", async () => {
@@ -558,6 +689,8 @@ byId("approve-form").addEventListener("submit", async (event) => {
 
 byId("refresh-devices").addEventListener("click", loadDevices);
 byId("more-devices").addEventListener("click", () => loadDevices(false));
+byId("refresh-messages").addEventListener("click", loadMessages);
+byId("more-messages").addEventListener("click", () => loadMessages(false));
 byId("refresh-keys").addEventListener("click", loadKeys);
 byId("more-keys").addEventListener("click", () => loadKeys(false));
 byId("dismiss-key-secret").addEventListener("click", clearKeySecret);
@@ -618,9 +751,7 @@ byId("key-create-form").addEventListener("submit", async (event) => {
   try {
     await api("/v1/auth/session");
     showSignedIn(true);
-    await loadDevices();
-    await loadKeys();
-    await loadWebhookEndpoints();
+    await Promise.all([loadDevices(), loadMessages(), loadKeys(), loadWebhookEndpoints()]);
   } catch (error) {
     showSignedIn(false);
     message("global-status", error.message.startsWith("Your sign-in") ? "Sign in to manage devices." : `Could not verify session. ${error.message}`);

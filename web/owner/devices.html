@@ -24,6 +24,16 @@
         <button type="submit">Sign in</button>
       </form>
       <p id="login-status" role="status" aria-live="polite"></p>
+      <form id="mfa-form" hidden>
+        <p>Enter a code from your authenticator, or one unused recovery code.</p>
+        <label for="mfa-code">Authenticator or recovery code</label>
+        <input id="mfa-code" name="code" autocomplete="one-time-code" maxlength="64" spellcheck="false" required>
+        <div class="actions">
+          <button type="submit">Verify code</button>
+          <button id="cancel-mfa" type="button" class="quiet">Use password again</button>
+        </div>
+      </form>
+      <p id="mfa-status" role="status" aria-live="polite"></p>
     </section>
 
     <div id="owner-content" hidden>
@@ -70,6 +80,14 @@
         <p id="device-status" role="status" aria-live="polite"></p>
         <ul id="device-list"></ul>
         <button id="more-devices" type="button" class="quiet" hidden>Load more devices</button>
+      </section>
+
+      <section aria-labelledby="messages-title">
+        <div class="section-head"><h2 id="messages-title">Message timeline</h2><button id="refresh-messages" type="button" class="quiet">Refresh</button></div>
+        <p>Message history shows server states and device events from controlled tests. A delivery callback does not prove the recipient read a message.</p>
+        <p id="message-status" role="status" aria-live="polite"></p>
+        <ul id="message-list"></ul>
+        <button id="more-messages" type="button" class="quiet" hidden>Load more messages</button>
       </section>
 
       <section aria-labelledby="keys-title">

@@ -81,6 +81,7 @@ enum MessageHttpError {
     Forbidden,
     NotFound,
     Conflict,
+    QueueFull,
     QuotaExceeded,
     Unavailable,
 }
@@ -93,10 +94,18 @@ impl IntoResponse for MessageHttpError {
             Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden"),
             Self::NotFound => (StatusCode::NOT_FOUND, "not_found"),
             Self::Conflict => (StatusCode::CONFLICT, "conflict"),
+            Self::QueueFull => (StatusCode::TOO_MANY_REQUESTS, "queue_full"),
             Self::QuotaExceeded => (StatusCode::TOO_MANY_REQUESTS, "quota_exceeded"),
             Self::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
         };
-        (status, Json(ErrorBody { code })).into_response()
+        let mut response = (status, Json(ErrorBody { code })).into_response();
+        if status == StatusCode::TOO_MANY_REQUESTS {
+            response.headers_mut().insert(
+                header::RETRY_AFTER,
+                "60".parse().expect("static retry-after"),
+            );
+        }
+        response
     }
 }
 
@@ -110,7 +119,10 @@ fn map_auth(error: AuthError) -> MessageHttpError {
         AuthError::Unauthorized | AuthError::InvalidCredentials => MessageHttpError::Unauthorized,
         AuthError::Forbidden | AuthError::EmailNotVerified => MessageHttpError::Forbidden,
         AuthError::InvalidInput => MessageHttpError::BadRequest,
-        AuthError::Database(_) | AuthError::Password => MessageHttpError::Unavailable,
+        AuthError::Database(_) | AuthError::Password | AuthError::Crypto => {
+            MessageHttpError::Unavailable
+        }
+        AuthError::MfaRequired { .. } | AuthError::RateLimited => MessageHttpError::Unauthorized,
     }
 }
 
@@ -124,9 +136,11 @@ fn map_store(error: StoreError) -> MessageHttpError {
         StoreError::Database(_)
         | StoreError::DispatchDisabled
         | StoreError::StaleFence
+        | StoreError::PaymentHold
         | StoreError::QuotaNotConfigured => MessageHttpError::Unavailable,
         StoreError::QuotaExceeded => MessageHttpError::QuotaExceeded,
         StoreError::DeviceBusy | StoreError::EventIdConflict => MessageHttpError::Conflict,
+        StoreError::QueueFull => MessageHttpError::QueueFull,
     }
 }
 
@@ -466,6 +480,8 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
             include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
             include_str!("../../../../deploy/compose/migrations/006_usage_metering.sql"),
+            include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
+            include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
         ] {
             client.batch_execute(sql).await.unwrap();
         }

@@ -1,7 +1,6 @@
-# ADR 0002: M1 account, enrollment, and heartbeat foundations
+# ADR 0002: Account, enrollment, and heartbeat foundations
 
-Status: accepted for M1 alpha foundations, 2026-09-22. This decision does
-not declare M0 or M1 complete, enable SMS dispatch, or approve sealed content.
+Status: accepted, 2026-09-22. This decision describes the account and device connection foundation; later protocol extensions are documented separately.
 
 ## Account and verification
 
@@ -30,18 +29,27 @@ site can register its configured `SITE_ID` while SMS dispatch is disabled;
 startup never re-enables an operator-disabled or draining site. Readiness
 falls to 503 when that site is disabled or draining.
 
-The current device stream carries heartbeat frames only. It admits at most
+At acceptance, the device stream carried heartbeat frames only. It admits at most
 128 sockets per process, limits frames and handshake time, and checks the
 writer before acknowledging heartbeats. It does not use an account-wide
 token, URL credential, or browser cookie. The older M0 test-token socket
-remains separate. No grant, radio adapter, or inbound handler is connected.
+remains separate. Later extensions are described in the addendum below.
 
 ## Migration and limits
 
-The locked migrator applies numbered migrations 001–005 on a fresh schema.
-An old M0 volume still requires backup and explicit shape-checked baseline
-before applying later migrations. Production database TLS, restore drill,
-live HTTPS/WSS pairing, owner approval UI, Android reconnect behavior,
-verification dead-letter operations, distributed rate limits, MFA, and real
-carrier tests remain gates. Sealed-content protocol and independent review
-remain separate M2 work.
+The locked migrator applies numbered migrations on a fresh schema.
+An older pre-migration volume requires backup and an explicit shape-checked baseline
+before applying later migrations. The [device-stream contract](../../protocol/v1/device-stream.md)
+and current server code describe subsequent connection behavior.
+
+## 2026-09-23 implementation addendum
+
+Subsequent extensions added a manually armed synthetic-alpha stream, an opt-in
+inbound-metadata pilot, and authenticated Android transport reconnect while
+the foreground service remains running. A dedicated Android phone completed
+authenticated WSS through a disposable loopback TLS proxy, including fresh
+device proof after a proxy close. A separate disposable revocation test stopped
+the client after fresh authentication was rejected. One separately authorized
+synthetic SMS produced positive sent and delivery callbacks. These bounded
+tests do not establish production TLS, general carrier reliability, or live
+inbound-upload delivery.

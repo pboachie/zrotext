@@ -36,11 +36,12 @@ async function ownerPage() {
   };
   const fetch = async (url, options) => {
     if (url === "/v1/auth/session") return response(200);
-    if (url === "/v1/auth/login") return response(200);
+    if (url === "/v1/auth/login") return response(204);
     if (url === "/v1/auth/logout") return response(204);
     if (url === "/v1/enrollment/devices") {
       return state.unauthorized ? response(401) : response(200, { devices: [], next_cursor: null });
     }
+    if (url === "/v1/owner/messages") return response(200, { messages: [], next_cursor: null });
     if (url === "/v1/auth/api-keys" && options.method === "GET") {
       return response(200, { keys: [], next_cursor: null });
     }
@@ -106,7 +107,9 @@ test("a 401 clears a displayed one-time key and hides owner content", async () =
   assert.equal(element("key-secret").textContent, "ztk_synthetic-only");
   assert.equal(element("key-secret-panel").hidden, false);
   state.unauthorized = true;
+  element("message-list").children = ["synthetic owner message"];
   await element("refresh-devices").listeners.click();
+  assert.equal(element("message-list").children.length, 0);
   assert.equal(element("key-secret").textContent, "");
   assert.equal(element("key-secret-panel").hidden, true);
   assert.equal(element("owner-content").hidden, true);

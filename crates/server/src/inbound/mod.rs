@@ -602,5 +602,66 @@ pub async fn finish_webhook(
     Ok(())
 }
 
+/// A KEK/version/ciphertext failure happens before network I/O. Return this
+/// delivery to the queue without consuming one of its seven send attempts.
+/// The separate failure counter leaves an operator-visible repair signal.
+pub async fn defer_webhook_key_failure(
+    client: &mut Client,
+    lease: &WebhookLease,
+) -> Result<(), InboundError> {
+    let tx = client.transaction().await?;
+    let row = tx
+        .query_opt(
+            "SELECT status,generation,attempt_count,lease_owner,coalesce(lease_until>now(),false) \
+             FROM webhook_deliveries WHERE id=$1 AND account_id=$2 AND endpoint_id=$3 \
+             AND event_id=$4 FOR UPDATE",
+            &[
+                &lease.delivery_id,
+                &lease.account_id,
+                &lease.endpoint_id,
+                &lease.event_id,
+            ],
+        )
+        .await?
+        .ok_or(InboundError::StaleLease)?;
+    let status: String = row.get(0);
+    let generation: i16 = row.get(1);
+    let attempts: i16 = row.get(2);
+    let owner: Option<String> = row.get(3);
+    let active: bool = row.get(4);
+    if status != "leased"
+        || generation != lease.generation
+        || attempts != lease.attempt_number
+        || owner.as_deref() != Some(&lease.worker_id)
+        || !active
+    {
+        return Err(InboundError::StaleLease);
+    }
+    let removed = tx
+        .execute(
+            "DELETE FROM webhook_attempts WHERE id=$1 AND delivery_id=$2 AND generation=$3 \
+             AND attempt_number=$4 AND completed_at IS NULL",
+            &[
+                &lease.attempt_id,
+                &lease.delivery_id,
+                &lease.generation,
+                &lease.attempt_number,
+            ],
+        )
+        .await?;
+    if removed != 1 {
+        return Err(InboundError::StaleLease);
+    }
+    tx.execute(
+        "UPDATE webhook_deliveries SET status='pending',attempt_count=attempt_count-1, \
+         key_failure_count=key_failure_count+1,lease_owner=NULL,lease_until=NULL, \
+         next_attempt_at=now()+interval '5 minutes',updated_at=now() WHERE id=$1",
+        &[&lease.delivery_id],
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests;

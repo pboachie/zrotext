@@ -1,4 +1,4 @@
-# Owner webhook endpoint lifecycle (ZT-008 slice)
+# Owner webhook endpoint lifecycle
 
 These browser routes are mounted only when account routes and an operational
 `WEBHOOK_KEK_VERSION`/`WEBHOOK_KEK_B64` pair are configured. They can be used
@@ -70,6 +70,10 @@ An HTTPS request that already loaded a leased payload may be in flight when
 the owner disables or rotates; its result may reach the receiver, but the
 retired delivery cannot retry. The receiver must deduplicate `event_id`.
 
-This slice does not provide endpoint deletion, key-version overlap, or
-customer-decryptable sealed content. The inbound pilot remains
-restricted to synthetic or consented test content pending the M2 review.
+The [operational KEK rotation procedure](../../docs/WEBHOOK-KEK-ROTATION.md)
+supports one active and one secondary encryption-key version, with an explicit
+bounded database rewrap. It does not change receiver signing secrets. This
+contract also defines bounded manual replay. Endpoint deletion and
+customer-decryptable sealed content remain outside this slice. The inbound
+pilot remains restricted to synthetic or consented test content pending the M2
+review.
