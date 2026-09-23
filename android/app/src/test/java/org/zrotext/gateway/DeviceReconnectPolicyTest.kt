@@ -5,22 +5,24 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class DeviceReconnectPolicyTest {
+    private val heartbeat = DeviceReconnectPolicy.Action.Connect(DeviceReconnectPolicy.PilotMode.HEARTBEAT_ONLY)
+
     @Test
     fun transportLossBacksOffWithBoundedJitterAndStableSessionResetsIt() {
         val policy = DeviceReconnectPolicy { 0.0 }
-        assertEquals(DeviceReconnectPolicy.Action.Connect, policy.start(true))
+        assertEquals(heartbeat, policy.start(true))
         assertEquals(DeviceReconnectPolicy.Action.RetryAfter(800),
             policy.lost(DeviceReconnectPolicy.Loss.TRANSPORT, 0))
         assertEquals(DeviceReconnectPolicy.Action.NoChange, policy.networkChanged(true))
-        assertEquals(DeviceReconnectPolicy.Action.Connect, policy.retryDue())
+        assertEquals(heartbeat, policy.retryDue())
         assertEquals(DeviceReconnectPolicy.Action.RetryAfter(1_600),
             policy.lost(DeviceReconnectPolicy.Loss.TRANSPORT, 1))
         repeat(10) {
-            assertEquals(DeviceReconnectPolicy.Action.Connect, policy.retryDue())
+            assertEquals(heartbeat, policy.retryDue())
             val next = policy.lost(DeviceReconnectPolicy.Loss.TRANSPORT, it.toLong() + 2)
             if (it == 9) assertEquals(DeviceReconnectPolicy.Action.RetryAfter(48_000), next)
         }
-        assertEquals(DeviceReconnectPolicy.Action.Connect, policy.retryDue())
+        assertEquals(heartbeat, policy.retryDue())
         policy.authenticated(10_000)
         assertEquals(DeviceReconnectPolicy.Action.RetryAfter(800),
             policy.lost(DeviceReconnectPolicy.Loss.ACTIVE_CLOSE, 130_000))
@@ -31,11 +33,11 @@ class DeviceReconnectPolicyTest {
         val policy = DeviceReconnectPolicy { 0.5 }
         assertEquals(DeviceReconnectPolicy.Action.WaitForNetwork, policy.start(false))
         assertEquals(DeviceReconnectPolicy.Action.WaitForNetwork, policy.retryDue())
-        assertEquals(DeviceReconnectPolicy.Action.Connect, policy.networkChanged(true))
+        assertEquals(heartbeat, policy.networkChanged(true))
         policy.authenticated(0)
         assertEquals(DeviceReconnectPolicy.Action.WaitForNetwork, policy.networkChanged(false))
         assertEquals(DeviceReconnectPolicy.Action.WaitForNetwork, policy.retryDue())
-        assertEquals(DeviceReconnectPolicy.Action.Connect, policy.networkChanged(true))
+        assertEquals(heartbeat, policy.networkChanged(true))
         assertEquals(DeviceReconnectPolicy.Action.NoChange, policy.networkChanged(true))
     }
 
@@ -67,7 +69,7 @@ class DeviceReconnectPolicyTest {
         policy.authenticated(0)
         assertEquals(DeviceReconnectPolicy.Action.RetryAfter(1_200),
             policy.lost(DeviceReconnectPolicy.Loss.ACTIVE_CLOSE, 1))
-        assertEquals(DeviceReconnectPolicy.Action.Connect, policy.retryDue())
+        assertEquals(heartbeat, policy.retryDue())
         assertEquals(DeviceReconnectPolicy.Action.Stop,
             policy.lost(DeviceReconnectPolicy.Loss.AUTH_REJECTED, 2))
         assertEquals(DeviceReconnectPolicy.Action.Stop, policy.retryDue())
@@ -81,6 +83,25 @@ class DeviceReconnectPolicyTest {
             val delay = policy.lost(DeviceReconnectPolicy.Loss.TRANSPORT, it.toLong())
             if (it == 9) assertEquals(DeviceReconnectPolicy.Action.RetryAfter(60_000), delay)
             policy.retryDue()
+        }
+    }
+
+    @Test
+    fun manualAlphaAndInboundModesAreConsumedBeforeAnyReconnect() {
+        for (mode in listOf(DeviceReconnectPolicy.PilotMode.ALPHA_ONCE,
+            DeviceReconnectPolicy.PilotMode.INBOUND_UPLOAD)) {
+            val policy = DeviceReconnectPolicy { 0.5 }
+            assertEquals(DeviceReconnectPolicy.Action.Connect(mode), policy.start(true, mode))
+            policy.authenticated(0)
+            assertEquals(DeviceReconnectPolicy.Action.RetryAfter(1_000),
+                policy.lost(DeviceReconnectPolicy.Loss.TRANSPORT, 1))
+            assertEquals(heartbeat, policy.retryDue())
+            assertEquals(DeviceReconnectPolicy.Action.WaitForNetwork, policy.networkChanged(false))
+            assertEquals(heartbeat, policy.networkChanged(true))
+
+            val offline = DeviceReconnectPolicy { 0.5 }
+            assertEquals(DeviceReconnectPolicy.Action.WaitForNetwork, offline.start(false, mode))
+            assertEquals(heartbeat, offline.networkChanged(true))
         }
     }
 }

@@ -5,8 +5,10 @@ import kotlin.math.min
 
 /** One visible foreground run. A process restart never restores this state. */
 internal class DeviceReconnectPolicy(private val jitter: () -> Double) {
+    enum class PilotMode { HEARTBEAT_ONLY, ALPHA_ONCE, INBOUND_UPLOAD }
+
     sealed interface Action {
-        data object Connect : Action
+        data class Connect(val pilotMode: PilotMode) : Action
         data class RetryAfter(val milliseconds: Long) : Action
         data object WaitForNetwork : Action
         data object NoChange : Action
@@ -21,13 +23,13 @@ internal class DeviceReconnectPolicy(private val jitter: () -> Double) {
     private var authenticatedAtMs: Long? = null
     private var failures = 0
 
-    fun start(hasNetwork: Boolean): Action {
+    fun start(hasNetwork: Boolean, pilotMode: PilotMode = PilotMode.HEARTBEAT_ONLY): Action {
         running = true
         networkAvailable = hasNetwork
         connected = hasNetwork
         authenticatedAtMs = null
         failures = 0
-        return if (hasNetwork) Action.Connect else Action.WaitForNetwork
+        return if (hasNetwork) Action.Connect(pilotMode) else Action.WaitForNetwork
     }
 
     fun authenticated(nowMs: Long) {
@@ -46,7 +48,7 @@ internal class DeviceReconnectPolicy(private val jitter: () -> Double) {
         }
         if (connected) return Action.NoChange
         connected = true
-        return Action.Connect
+        return Action.Connect(PilotMode.HEARTBEAT_ONLY)
     }
 
     fun lost(reason: Loss, nowMs: Long): Action {
@@ -72,7 +74,7 @@ internal class DeviceReconnectPolicy(private val jitter: () -> Double) {
         if (!networkAvailable) return Action.WaitForNetwork
         if (connected) return Action.NoChange
         connected = true
-        return Action.Connect
+        return Action.Connect(PilotMode.HEARTBEAT_ONLY)
     }
 
     fun pause() {

@@ -15,8 +15,8 @@ android {
         applicationId = "org.zrotext.gateway"
         minSdk = 28
         targetSdk = 36
-        versionCode = 5
-        versionName = "0.1.4-m1-alpha-stream"
+        versionCode = 7
+        versionName = "0.1.6-m1-inbound-metadata"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     buildTypes {

@@ -69,6 +69,8 @@ class AuthenticatedGatewayService : Service() {
     @Volatile private var generation = 0
     @Volatile private var lastAckAtNanos = 0L
     @Volatile private var awaitingEventId: String? = null
+    @Volatile private var awaitingInboundId: String? = null
+    @Volatile private var inboundSentAtNanos = 0L
     @Volatile private var activeGrant: AlphaGrantValidator.Grant? = null
 
     override fun onCreate() {
@@ -102,6 +104,13 @@ class AuthenticatedGatewayService : Service() {
             return START_NOT_STICKY
         }
         val armRequested = intent?.hasExtra(EXTRA_ALPHA_RECIPIENT) == true
+        val inboundUploadRequested = intent?.getBooleanExtra(EXTRA_INBOUND_UPLOAD, false) == true
+        if (armRequested && inboundUploadRequested) {
+            halt()
+            AuthenticatedGatewayStatus.value = "Choose one pilot mode at a time"
+            stopSelf()
+            return START_NOT_STICKY
+        }
         val armStartedAtNanos = System.nanoTime()
         val armRecipient = intent?.getStringExtra(EXTRA_ALPHA_RECIPIENT).orEmpty()
         val armSubscriptionId = intent?.getIntExtra(
@@ -131,9 +140,16 @@ class AuthenticatedGatewayService : Service() {
         approvedDevice = deviceId
         observedNetwork = connectivity.activeNetwork
         retry?.cancel(false)
-        when (reconnect.start(hasNetwork(observedNetwork))) {
-            DeviceReconnectPolicy.Action.Connect -> openConnection(
-                url, deviceId, armRequested, armRecipient, armSubscriptionId, armStartedAtNanos)
+        val pilotMode = when {
+            armRequested -> DeviceReconnectPolicy.PilotMode.ALPHA_ONCE
+            inboundUploadRequested -> DeviceReconnectPolicy.PilotMode.INBOUND_UPLOAD
+            else -> DeviceReconnectPolicy.PilotMode.HEARTBEAT_ONLY
+        }
+        when (val action = reconnect.start(hasNetwork(observedNetwork), pilotMode)) {
+            is DeviceReconnectPolicy.Action.Connect -> openConnection(
+                url, deviceId, action.pilotMode == DeviceReconnectPolicy.PilotMode.ALPHA_ONCE,
+                armRecipient, armSubscriptionId, armStartedAtNanos,
+                action.pilotMode == DeviceReconnectPolicy.PilotMode.INBOUND_UPLOAD)
             DeviceReconnectPolicy.Action.WaitForNetwork ->
                 AuthenticatedGatewayStatus.value = "Waiting for network"
             else -> error("Unexpected reconnect start")
@@ -145,7 +161,7 @@ class AuthenticatedGatewayService : Service() {
     private fun openConnection(
         url: String, deviceId: UUID, armRequested: Boolean = false,
         armRecipient: String = "", armSubscriptionId: Int = SubscriptionManager.INVALID_SUBSCRIPTION_ID,
-        armStartedAtNanos: Long = 0L
+        armStartedAtNanos: Long = 0L, inboundUploadRequested: Boolean = false
     ) {
         generation += 1
         val currentGeneration = generation
@@ -154,6 +170,8 @@ class AuthenticatedGatewayService : Service() {
         socket = null
         retry?.cancel(false)
         awaitingEventId = null
+        awaitingInboundId = null
+        inboundSentAtNanos = 0L
         activeGrant = null
         val keys = DeviceSigningKeyStore(applicationContext)
         val machine = DeviceStreamMachine(deviceId) { account, device, challenge, nonce ->
@@ -217,11 +235,19 @@ class AuthenticatedGatewayService : Service() {
                                     return disconnect(currentGeneration, DeviceReconnectPolicy.Loss.TRANSPORT)
                             }
                             AuthenticatedGatewayStatus.value =
-                                if (armRequested) "Armed for one synthetic grant" else "Authenticated heartbeat only"
+                                when {
+                                    armRequested -> "Armed for one synthetic grant"
+                                    inboundUploadRequested -> "Inbound metadata pilot active"
+                                    else -> "Authenticated heartbeat only"
+                                }
                             AuthenticatedGatewayStatus.heartbeats = 0
                             getSystemService(NotificationManager::class.java)
                                 .notify(NOTIFICATION_ID, notification(
-                                    if (armRequested) "Armed one-send alpha test" else "Authenticated heartbeat"))
+                                    when {
+                                        armRequested -> "Armed one-send alpha test"
+                                        inboundUploadRequested -> "Inbound metadata pilot"
+                                        else -> "Authenticated heartbeat"
+                                    }))
                             lastAckAtNanos = System.nanoTime()
                             heartbeat = scheduler.scheduleAtFixedRate({
                                 if (generation == currentGeneration) {
@@ -243,7 +269,12 @@ class AuthenticatedGatewayService : Service() {
                             }, 15, 15, TimeUnit.SECONDS)
                             eventPump = scheduler.scheduleAtFixedRate({
                                 if (generation == currentGeneration) {
-                                    pumpAlphaEvents(webSocket, machine, currentGeneration)
+                                    if (!inboundUploadRequested) {
+                                        pumpAlphaEvents(webSocket, machine, currentGeneration)
+                                    }
+                                    if (inboundUploadRequested) {
+                                        pumpInboundEvents(webSocket, machine, keys, currentGeneration)
+                                    }
                                 }
                             }, 0, 3, TimeUnit.SECONDS)
                         }
@@ -274,7 +305,9 @@ class AuthenticatedGatewayService : Service() {
                                     SmsJournalDatabase.get(applicationContext).attempts().reserveAlpha(
                                         grant.attemptId.toString(), grant.messageId.toString(),
                                         grant.subscriptionId, 1, UUID.randomUUID().toString(),
-                                        System.currentTimeMillis())
+                                        System.currentTimeMillis(),
+                                        InboundVault.token("sender-v1",
+                                            grant.recipientE164.toByteArray(Charsets.US_ASCII)))
                                     AuthenticatedGatewayStatus.value = "Grant reserved; waiting for writer ack"
                                     pumpAlphaEvents(webSocket, machine, currentGeneration)
                                 } catch (_: Exception) {
@@ -288,6 +321,16 @@ class AuthenticatedGatewayService : Service() {
                             handleAlphaAck(webSocket, machine, currentGeneration,
                                 uuid(frame, "event_id").toString(), frame.getString("state"),
                                 frame.getBoolean("submit_permitted"))
+                        }
+                        "inbound_event_ack" -> {
+                            check(inboundUploadRequested && machine.phase == DeviceStreamMachine.Phase.ACTIVE)
+                            requireFields(frame, setOf("v", "type", "event_id", "created", "queued_deliveries"))
+                            check(frame.opt("created") is Boolean)
+                            val deliveries = frame.opt("queued_deliveries")
+                            check((deliveries is Int || deliveries is Long) &&
+                                (deliveries as Number).toLong() >= 0)
+                            handleInboundAck(webSocket, currentGeneration,
+                                uuid(frame, "event_id").toString())
                         }
                         else -> error("Unexpected device frame")
                     }
@@ -338,6 +381,62 @@ class AuthenticatedGatewayService : Service() {
                 awaitingEventId = event.eventId
                 if (!webSocket.send(frame.toString()))
                     disconnect(currentGeneration, DeviceReconnectPolicy.Loss.TRANSPORT)
+            } catch (_: Exception) {
+                fail(webSocket, currentGeneration)
+            }
+        }
+    }
+
+    private fun pumpInboundEvents(webSocket: WebSocket, machine: DeviceStreamMachine,
+                                  keys: DeviceSigningKeyStore, currentGeneration: Int) {
+        JournalRuntime.io.execute {
+            if (generation != currentGeneration) return@execute
+            try {
+                val epoch = machine.heartbeatEpoch()
+                val accountId = machine.activeAccountId()
+                val deviceId = machine.activeDeviceId()
+                val dao = SmsJournalDatabase.get(applicationContext).attempts()
+                // The writer rejects observations older than seven days; leave old rows local.
+                val pending = dao.nextInboundUpload(System.currentTimeMillis() -
+                    TimeUnit.DAYS.toMillis(6)) ?: return@execute
+                if (awaitingInboundId != null && awaitingInboundId != pending.eventId) return@execute
+                if (awaitingInboundId == pending.eventId &&
+                    System.nanoTime() - inboundSentAtNanos < TimeUnit.SECONDS.toNanos(30)) return@execute
+                val event = dao.inboundByEventId(pending.eventId) ?: error("Missing inbound event")
+                check(event.classification == InboundClassification.CAPTURED_LOCAL)
+                val upload = if (pending.signatureDer == null) {
+                    val signature = keys.signInboundMetadata(accountId, deviceId, pending, event)
+                    check(signature.size in 8..80)
+                    check(dao.signInboundUpload(pending.eventId, accountId.toString(),
+                        deviceId.toString(), signature) == 1)
+                    dao.inboundUpload(pending.eventId) ?: error("Missing signed upload")
+                } else pending
+                check(upload.accountId == accountId.toString() &&
+                    upload.deviceId == deviceId.toString())
+                awaitingInboundId = upload.eventId
+                inboundSentAtNanos = System.nanoTime()
+                if (!webSocket.send(InboundUploadFrame.encode(epoch, upload, event))) {
+                    fail(webSocket, currentGeneration)
+                }
+            } catch (_: Exception) {
+                fail(webSocket, currentGeneration)
+            }
+        }
+    }
+
+    private fun handleInboundAck(webSocket: WebSocket, currentGeneration: Int, eventId: String) {
+        JournalRuntime.io.execute {
+            if (generation != currentGeneration) return@execute
+            try {
+                val dao = SmsJournalDatabase.get(applicationContext).attempts()
+                val upload = dao.inboundUpload(eventId) ?: error("Unknown inbound upload")
+                if (awaitingInboundId != eventId) {
+                    check(upload.acknowledgedAtMs != null)
+                    return@execute
+                }
+                check(upload.acknowledgedAtMs == null)
+                check(dao.acknowledgeInboundUpload(eventId, System.currentTimeMillis()) == 1)
+                awaitingInboundId = null
             } catch (_: Exception) {
                 fail(webSocket, currentGeneration)
             }
@@ -417,6 +516,8 @@ class AuthenticatedGatewayService : Service() {
         socket = null
         activeGrant = null
         awaitingEventId = null
+        awaitingInboundId = null
+        inboundSentAtNanos = 0L
         when (val action = reconnect.lost(reason, SystemClock.elapsedRealtime())) {
             is DeviceReconnectPolicy.Action.RetryAfter -> {
                 AuthenticatedGatewayStatus.value = "Disconnected; retrying device proof"
@@ -425,7 +526,9 @@ class AuthenticatedGatewayService : Service() {
                 retry?.cancel(false)
                 retry = scheduler.schedule({
                     synchronized(this) {
-                        if (reconnect.retryDue() == DeviceReconnectPolicy.Action.Connect) {
+                        val next = reconnect.retryDue()
+                        if (next is DeviceReconnectPolicy.Action.Connect) {
+                            check(next.pilotMode == DeviceReconnectPolicy.PilotMode.HEARTBEAT_ONLY)
                             val url = endpoint
                             val device = approvedDevice
                             if (url != null && device != null) openConnection(url, device)
@@ -459,7 +562,7 @@ class AuthenticatedGatewayService : Service() {
             val replaced = observedNetwork != null && network != null && observedNetwork != network
             observedNetwork = network
             val available = hasNetwork(network)
-            when (reconnect.networkChanged(available)) {
+            when (val action = reconnect.networkChanged(available)) {
                 DeviceReconnectPolicy.Action.WaitForNetwork -> {
                     generation += 1
                     cancelTimers()
@@ -468,12 +571,15 @@ class AuthenticatedGatewayService : Service() {
                     socket = null
                     activeGrant = null
                     awaitingEventId = null
+                    awaitingInboundId = null
+                    inboundSentAtNanos = 0L
                     AuthenticatedGatewayStatus.value = "Disconnected; waiting for network"
                     getSystemService(NotificationManager::class.java)
                         .notify(NOTIFICATION_ID, notification("Waiting for network"))
                 }
-                DeviceReconnectPolicy.Action.Connect -> {
+                is DeviceReconnectPolicy.Action.Connect -> {
                     retry?.cancel(false)
+                    check(action.pilotMode == DeviceReconnectPolicy.PilotMode.HEARTBEAT_ONLY)
                     openConnection(checkNotNull(endpoint), checkNotNull(approvedDevice))
                 }
                 DeviceReconnectPolicy.Action.NoChange -> {
@@ -494,6 +600,8 @@ class AuthenticatedGatewayService : Service() {
         socket = null
         activeGrant = null
         awaitingEventId = null
+        awaitingInboundId = null
+        inboundSentAtNanos = 0L
     }
 
     private fun cancelTimers() {
@@ -572,6 +680,7 @@ class AuthenticatedGatewayService : Service() {
         const val EXTRA_DEVICE_ID = "device_id"
         const val EXTRA_ALPHA_RECIPIENT = "alpha_recipient"
         const val EXTRA_ALPHA_SUBSCRIPTION_ID = "alpha_subscription_id"
+        const val EXTRA_INBOUND_UPLOAD = "inbound_upload"
         private const val CHANNEL = "authenticated_gateway"
         private const val NOTIFICATION_ID = 1002
         private const val MAX_FRAME_BYTES = 4096
