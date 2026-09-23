@@ -1,0 +1,83 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+"use strict";
+
+const state = document.getElementById("billing-state");
+const list = document.getElementById("subscriptions");
+const error = document.getElementById("billing-error");
+const checkout = document.getElementById("checkout");
+const portal = document.getElementById("portal");
+const refresh = document.getElementById("refresh");
+const checkoutKey = crypto.randomUUID();
+
+function csrfToken() {
+  const entry = document.cookie.split(";").map((part) => part.trim())
+    .find((part) => part.startsWith("__Host-zrotext_csrf="));
+  return entry ? entry.slice("__Host-zrotext_csrf=".length) : "";
+}
+
+async function loadStatus() {
+  error.textContent = "";
+  state.textContent = "Loading billing status…";
+  portal.disabled = true;
+  try {
+    const response = await fetch("/v1/billing/status", { credentials: "same-origin", cache: "no-store" });
+    if (!response.ok) throw new Error("Could not load billing status. Sign in again if your session expired.");
+    const result = await response.json();
+    if (result.mode !== "test") throw new Error("Unexpected billing mode.");
+    list.replaceChildren();
+    for (const subscription of result.subscriptions) {
+      const item = document.createElement("li");
+      const checked = new Date(subscription.reconciledAtUnix * 1000).toLocaleString();
+      item.textContent = `${subscription.stripeStatus} · ${subscription.recognizedTestPrice ? "recognized test price" : "unrecognized test price"} · checked ${checked}${subscription.reconciliationPending ? " · newer event pending" : ""}`;
+      list.append(item);
+    }
+    state.textContent = result.subscriptions.length
+      ? `Last reconciled provider snapshots. ${result.pendingReconciliations} pending reconciliation(s). No access is confirmed here.`
+      : `No reconciled subscription. ${result.pendingReconciliations} pending reconciliation(s). No access is confirmed here.`;
+    if (result.moreSubscriptions) {
+      const item = document.createElement("li");
+      item.textContent = "More subscriptions exist; this page displays the latest 20.";
+      list.append(item);
+    }
+    portal.disabled = !result.customerBound;
+  } catch (cause) {
+    state.textContent = "Billing status unavailable.";
+    error.textContent = cause.message;
+  }
+}
+
+async function openHosted(path) {
+  error.textContent = "";
+  const csrf = csrfToken();
+  if (!csrf) {
+    error.textContent = "Sign in again to continue.";
+    return;
+  }
+  checkout.disabled = true;
+  const portalWasEnabled = !portal.disabled;
+  portal.disabled = true;
+  try {
+    const headers = { "x-zrotext-csrf": csrf };
+    if (path === "checkout") headers["idempotency-key"] = checkoutKey;
+    const response = await fetch(`/v1/billing/${path}`, {
+      method: "POST", credentials: "same-origin", cache: "no-store", headers,
+    });
+    if (!response.ok) throw new Error("Could not open Stripe test billing. Refresh status and retry.");
+    const result = await response.json();
+    const destination = new URL(result.url);
+    const expectedHost = path === "checkout" ? "checkout.stripe.com" : "billing.stripe.com";
+    if (destination.protocol !== "https:" || destination.host !== expectedHost) {
+      throw new Error("Unexpected billing destination.");
+    }
+    window.location.assign(destination.href);
+  } catch (cause) {
+    error.textContent = cause.message;
+    checkout.disabled = false;
+    portal.disabled = !portalWasEnabled;
+  }
+}
+
+checkout.addEventListener("click", () => openHosted("checkout"));
+portal.addEventListener("click", () => openHosted("portal"));
+refresh.addEventListener("click", loadStatus);
+loadStatus();
