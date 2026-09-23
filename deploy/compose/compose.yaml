@@ -7,6 +7,8 @@ x-app: &app
   depends_on:
     db:
       condition: service_healthy
+    migrate:
+      condition: service_completed_successfully
   read_only: true
   security_opt: [no-new-privileges:true]
   cap_drop: [ALL]
@@ -21,13 +23,28 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
     volumes:
       - pgdata:/var/lib/postgresql
-      - ./init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U zrotext -d zrotext"]
       interval: 5s
       timeout: 3s
       retries: 12
     restart: unless-stopped
+    networks: [private]
+  migrate:
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    entrypoint: ["/usr/local/bin/zrotext-migrator"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
+      MIGRATIONS_DIR: /opt/zrotext/migrations
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    restart: "no"
     networks: [private]
   app:
     <<: *app

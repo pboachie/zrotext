@@ -53,6 +53,17 @@ pub struct AcceptOutcome {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MessageSnapshot {
+    pub account_id: Uuid,
+    pub message_id: Uuid,
+    pub device_id: Uuid,
+    pub state: MessageState,
+    pub state_version: i64,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionRecord {
     pub account_id: Uuid,
     pub device_id: Uuid,
@@ -104,6 +115,38 @@ impl<'a> DeliveryStore<'a> {
         Self { client }
     }
 
+    /// Every caller supplies the authenticated tenant ID; a cross-tenant ID
+    /// has the same result as an absent message.
+    pub async fn status(
+        &self,
+        account_id: Uuid,
+        message_id: Uuid,
+    ) -> Result<Option<MessageSnapshot>, StoreError> {
+        let row = self
+            .client
+            .query_opt(
+                "SELECT device_id,state,state_version, \
+             (extract(epoch FROM created_at)*1000)::bigint, \
+             (extract(epoch FROM updated_at)*1000)::bigint \
+             FROM messages WHERE account_id=$1 AND id=$2",
+                &[&account_id, &message_id],
+            )
+            .await?;
+        row.map(|row| {
+            Ok(MessageSnapshot {
+                account_id,
+                message_id,
+                device_id: row.get(0),
+                state: state_from_str(&row.get::<_, String>(1))
+                    .ok_or(StoreError::InvalidTransition)?,
+                state_version: row.get(2),
+                created_at_ms: row.get(3),
+                updated_at_ms: row.get(4),
+            })
+        })
+        .transpose()
+    }
+
     /// Inserts idempotency identity, message and job in one writer transaction.
     /// No HTTP 202 should be returned until this transaction commits.
     pub async fn accept(&mut self, input: NewMessage<'_>) -> Result<AcceptOutcome, StoreError> {
@@ -112,14 +155,26 @@ impl<'a> DeliveryStore<'a> {
         let recipient_digest = Sha256::digest(input.recipient_e164.as_bytes()).to_vec();
         let expiry = input.expires_at_ms as f64;
         let tx = self.client.transaction().await?;
-        let new_key = tx
+        let inserted_key = tx
             .query_opt(
                 "INSERT INTO idempotency_keys (account_id, key, request_digest, message_id, expires_at) \
                  VALUES ($1,$2,$3,$4,now() + interval '7 days') \
                  ON CONFLICT (account_id,key) DO NOTHING RETURNING message_id",
                 &[&input.account_id, &input.idempotency_key, &digest, &input.client_message_id],
             )
-            .await?;
+            .await;
+        let new_key = match inserted_key {
+            Ok(value) => value,
+            Err(error)
+                if error.as_db_error().is_some_and(|db| {
+                    db.code() == &SqlState::UNIQUE_VIOLATION
+                        && db.constraint() == Some("idempotency_message_id")
+                }) =>
+            {
+                return Err(StoreError::MessageIdConflict);
+            }
+            Err(error) => return Err(StoreError::Database(error)),
+        };
         if new_key.is_none() {
             let row = tx
                 .query_one(
@@ -282,6 +337,72 @@ impl<'a> DeliveryStore<'a> {
         .await?;
         tx.commit().await?;
         Ok(Some(claim))
+    }
+
+    /// A tenant may cancel while the queue still has proof that no execution
+    /// grant was issued. A claimed job remains cancellable before that grant.
+    pub async fn cancel(&mut self, account_id: Uuid, message_id: Uuid) -> Result<bool, StoreError> {
+        let tx = self.client.transaction().await?;
+        let job = tx.query_opt(
+            "SELECT grant_issued_at IS NULL FROM dispatch_jobs WHERE account_id=$1 AND message_id=$2 FOR UPDATE",
+            &[&account_id, &message_id],
+        ).await?;
+        let Some(job) = job else {
+            return Ok(false);
+        };
+        if !job.get::<_, bool>(0) {
+            return Err(StoreError::InvalidTransition);
+        }
+        let row = tx
+            .query_one(
+                "SELECT state FROM messages WHERE account_id=$1 AND id=$2 FOR UPDATE",
+                &[&account_id, &message_id],
+            )
+            .await?;
+        let current = state_from_row(&row)?;
+        current
+            .apply(Evidence::Cancel)
+            .map_err(|_| StoreError::InvalidTransition)?;
+        tx.execute(
+            "UPDATE messages SET state='cancelled',state_version=state_version+1,updated_at=now() WHERE account_id=$1 AND id=$2",
+            &[&account_id, &message_id],
+        ).await?;
+        tx.execute(
+            "UPDATE dispatch_jobs SET lease_owner=NULL,lease_until=NULL WHERE account_id=$1 AND message_id=$2",
+            &[&account_id, &message_id],
+        ).await?;
+        tx.commit().await?;
+        Ok(true)
+    }
+
+    /// Marks expired pre-grant jobs terminal. SKIP LOCKED bounds each sweep
+    /// without waiting on active claim/grant transactions.
+    pub async fn expire_due(&mut self, limit: i64) -> Result<u64, StoreError> {
+        if !(1..=1000).contains(&limit) {
+            return Err(StoreError::InvalidInput);
+        }
+        let tx = self.client.transaction().await?;
+        let rows = tx.query(
+            "SELECT j.account_id,j.message_id FROM dispatch_jobs j JOIN messages m ON m.id=j.message_id \
+             WHERE j.grant_issued_at IS NULL AND m.expires_at<=now() AND m.state IN ('queued','claimed') \
+             ORDER BY m.expires_at,j.message_id FOR UPDATE OF j SKIP LOCKED LIMIT $1",
+            &[&limit],
+        ).await?;
+        for row in &rows {
+            let account_id: Uuid = row.get(0);
+            let message_id: Uuid = row.get(1);
+            tx.execute(
+                "UPDATE messages SET state='expired',state_version=state_version+1,updated_at=now() \
+                 WHERE account_id=$1 AND id=$2 AND state IN ('queued','claimed') AND expires_at<=now()",
+                &[&account_id, &message_id],
+            ).await?;
+            tx.execute(
+                "UPDATE dispatch_jobs SET lease_owner=NULL,lease_until=NULL WHERE account_id=$1 AND message_id=$2",
+                &[&account_id, &message_id],
+            ).await?;
+        }
+        tx.commit().await?;
+        Ok(rows.len() as u64)
     }
 
     /// Grant transaction checks authority, session and worker generation. A
@@ -668,7 +789,7 @@ mod tests {
             .unwrap();
         client
             .batch_execute(include_str!(
-                "../../../deploy/compose/init/001_foundation.sql"
+                "../../../deploy/compose/migrations/001_foundation.sql"
             ))
             .await
             .unwrap();
@@ -724,6 +845,17 @@ mod tests {
             let mut store = DeliveryStore::new(&mut client);
             assert!(store.accept(input()).await.unwrap().created);
             assert!(!store.accept(input()).await.unwrap().created);
+            assert_eq!(
+                store.status(account, message).await.unwrap().unwrap().state,
+                MessageState::Queued
+            );
+            assert!(
+                store
+                    .status(other_account, message)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
             assert!(matches!(
                 store
                     .accept(NewMessage {
@@ -735,6 +867,15 @@ mod tests {
             ));
             assert!(matches!(
                 store
+                    .accept(NewMessage {
+                        idempotency_key: "different-key",
+                        ..input()
+                    })
+                    .await,
+                Err(StoreError::MessageIdConflict)
+            ));
+            assert!(matches!(
+                store
                     .connect_session(other_account, device, "a", "hub", 60)
                     .await,
                 Err(StoreError::NotFound)
@@ -743,6 +884,25 @@ mod tests {
                 .connect_session(account, device, "a", "hub", 60)
                 .await
                 .unwrap();
+            let (mut blocker, blocker_connection) =
+                tokio_postgres::connect(&url, tokio_postgres::NoTls)
+                    .await
+                    .unwrap();
+            tokio::spawn(async move { blocker_connection.await.unwrap() });
+            blocker
+                .batch_execute(&format!("SET search_path TO {schema}"))
+                .await
+                .unwrap();
+            let locked = blocker.transaction().await.unwrap();
+            locked
+                .query_one(
+                    "SELECT message_id FROM dispatch_jobs WHERE message_id=$1 FOR UPDATE",
+                    &[&message],
+                )
+                .await
+                .unwrap();
+            assert!(store.claim_due("blocked-worker").await.unwrap().is_none());
+            locked.rollback().await.unwrap();
             let claim = store.claim_due("worker-a").await.unwrap().unwrap();
             assert_eq!(claim.message_id, message);
             let attempt = Uuid::new_v4();
@@ -800,6 +960,13 @@ mod tests {
                     .await,
                 Err(StoreError::DeviceBusy)
             ));
+            assert!(matches!(
+                store.cancel(account, message).await,
+                Err(StoreError::InvalidTransition)
+            ));
+            assert!(!store.cancel(other_account, second_message).await.unwrap());
+            assert!(store.cancel(account, second_message).await.unwrap());
+            assert!(store.claim_due("worker-d").await.unwrap().is_none());
         }
         let second_device = Uuid::new_v4();
         client
@@ -883,7 +1050,38 @@ mod tests {
                     .await,
                 Err(StoreError::InvalidInput)
             ));
+            store
+                .accept(NewMessage {
+                    client_message_id: Uuid::from_u128(42),
+                    device_id: second_device,
+                    idempotency_key: "expires",
+                    ..input()
+                })
+                .await
+                .unwrap();
         }
+        let expiring_message = Uuid::from_u128(42);
+        client
+            .execute(
+                "UPDATE messages SET expires_at=now()-interval '1 second' WHERE id=$1",
+                &[&expiring_message],
+            )
+            .await
+            .unwrap();
+        {
+            let mut store = DeliveryStore::new(&mut client);
+            assert_eq!(store.expire_due(10).await.unwrap(), 1);
+            assert!(store.claim_due("worker-e").await.unwrap().is_none());
+        }
+        let state: String = client
+            .query_one(
+                "SELECT state FROM messages WHERE id=$1",
+                &[&expiring_message],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(state, "expired");
         client
             .batch_execute(&format!(
                 "SET search_path TO public; DROP SCHEMA {schema} CASCADE"

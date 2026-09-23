@@ -62,8 +62,8 @@ impl MessageState {
             (Submitted, DeliveryCallbackOk) => Delivered,
             (Submitted, DeliveryTimeout) => DeliveryUnknown,
             (DeliveryUnknown, DeliveryCallbackOk) => Delivered,
-            (Accepted | Queued, Cancel) => Cancelled,
-            (Accepted | Queued, Expire) => Expired,
+            (Accepted | Queued | Claimed, Cancel) => Cancelled,
+            (Accepted | Queued | Claimed, Expire) => Expired,
             _ => {
                 return Err(InvalidTransition {
                     from: self,
@@ -239,6 +239,11 @@ impl Authority {
         if !self.writer_available {
             return Err(Rejection::WriterUnavailable);
         }
+        if matches!(evidence, Evidence::Cancel | Evidence::Expire)
+            && self.grants.contains_key(&message_id)
+        {
+            return Err(Rejection::GrantAlreadyIssued);
+        }
         let state = self
             .messages
             .get(&message_id)
@@ -386,5 +391,23 @@ mod tests {
             .unwrap();
         assert_eq!(state, MessageState::Unknown);
         assert!(state.apply(Evidence::Claim).is_err());
+    }
+
+    #[test]
+    fn claimed_can_cancel_only_before_grant() {
+        assert_eq!(
+            MessageState::Claimed.apply(Evidence::Cancel),
+            Ok(MessageState::Cancelled)
+        );
+        let mut authority = Authority::new(1);
+        authority.accept(id(1), "key", "digest", id(2)).unwrap();
+        let session = authority.connect(id(3), "a", "hub", 0, 60).unwrap();
+        authority
+            .grant(&session, id(2), id(4), 1, "r", 0, 100)
+            .unwrap();
+        assert_eq!(
+            authority.event(id(2), Evidence::Cancel),
+            Err(Rejection::GrantAlreadyIssued)
+        );
     }
 }

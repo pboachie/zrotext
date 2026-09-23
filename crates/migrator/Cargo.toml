@@ -1,0 +1,12 @@
+[package]
+name = "zrotext-migrator"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+sha2 = "0.10.9"
+thiserror = "2.0.16"
+tokio = { version = "1.47.1", features = ["macros", "rt-multi-thread"] }
+tokio-postgres = "0.7.13"

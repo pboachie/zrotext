@@ -19,7 +19,7 @@ flowchart LR
   STRIPE[Stripe] -->|Verified billing events| APP
 ```
 
-One Rust binary: Axum/Tokio, SQLx/PostgreSQL, Askama templates, vendored HTMX for non-sensitive interactions, SSE metadata updates, structured redacted tracing. Keep API, device hub, dispatcher, and webhook worker as internal modules until load justifies separate processes. Rust stays on the server first; Android uses Kotlin, Compose, Room and the platform telephony APIs. Do not add UniFFI merely to match the old diagram.
+The current foundation uses an Axum/Tokio application binary with `tokio-postgres` for auth, enrollment and delivery transactions, plus a separate locked migration binary. The planned dashboard uses server-rendered templates, vendored HTMX for non-sensitive interactions, SSE metadata updates and structured redacted tracing. Keep API, device hub, dispatcher, and webhook worker as internal modules until load justifies separate processes. Rust stays on the server first; Android uses Kotlin, Compose, Room and the platform telephony APIs. Do not add UniFFI merely to match the old diagram.
 
 Version selection happens at scaffold time: pin a supported stable Rust toolchain, exact build lockfiles, PostgreSQL major, JDK, Android toolchain, and CI actions by immutable SHA. Record library maintenance, licenses, and known advisories. No Redis, S3, NATS or partitioning required for launch. Add them only with measured need: Redis for shared caches/rate limiting, S3 for MMS, partitions after query/storage evidence. Durable quotas and queue ownership always remain authoritative in PostgreSQL.
 
@@ -28,6 +28,8 @@ Source layout:
 ```text
 crates/domain/          # message states, IDs, limits, errors
 crates/server/          # API/auth/device hub/worker/billing/dashboard modules
+crates/delivery-store/  # PostgreSQL message/attempt/claim transactions
+crates/migrator/        # advisory-locked numbered schema migrations
 crates/device-sim/      # deterministic fault-injecting test client
 protocol/              # versioned JSON schemas, OpenAPI, shared test vectors
 android/               # Kotlin app, Room queue, telephony adapter

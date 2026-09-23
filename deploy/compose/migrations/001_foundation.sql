@@ -1,6 +1,7 @@
 -- SPDX-License-Identifier: AGPL-3.0-only
--- M0 authority shape. M1 will add tenant-safe message/attempt tables through
--- one locked expand/contract migration runner; Compose init is for new DBs.
+-- M0 authority shape. Applied by the locked migration runner on new databases.
+-- Older Compose volumes receive this exact version via --baseline-m0 after
+-- their schema and dispatch-disabled state pass the runner's shape check.
 CREATE TABLE deployment_authority (
     singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
     epoch bigint NOT NULL CHECK (epoch > 0),

@@ -20,3 +20,4 @@ hmac = "0.12.1"
 rand = "0.8.5"
 sha2 = "0.10.9"
 thiserror = "2.0.16"
+p256 = { version = "0.13.2", features = ["ecdsa", "pkcs8"] }

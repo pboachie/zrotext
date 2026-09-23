@@ -2,15 +2,15 @@
 
 **Your phone. Your number. Your SMS API.**
 
-Early implementation of an open-source Android SMS gateway with a planned managed service at the proposed `zrotext.com` domain.
+Early implementation of an open-source Android SMS gateway with a planned managed service at `zrotext.com`.
 
-**Status: M0 feasibility work in progress.** The Rust state simulator, two-hub local Compose foundation, and Android gateway-mode spike build locally. There is no working SMS send/receive gateway, verified real-phone delivery, published repository, purchased domain, deployed service, or security audit. The design preview uses sample data.
+**Status: M0 feasibility work in progress, with M1 foundation slices underway.** The Rust state simulator, migration-gated local Compose stack, auth/enrollment/delivery libraries, and Android gateway spike build locally. The public source repository is live and the domain is owned, but DNS and the service are not deployed. There is no working SMS send/receive gateway, verified carrier delivery, or security audit. The design preview uses sample data.
 
 ## Start implementation
 
 1. Read [implementation status](docs/implementation-status.md) for tested M0 evidence and open gates.
 2. For a later coding session, use [the implementation handoff](docs/AGENT-HANDOFF.md) and its continuation prompt. Supply the separate private operator brief as local context; keep it outside both repositories.
-3. Continue M0 (ZT-001–004) until the real-phone and restoreable hosting evidence exists. Do not start M1 from a socket-only result.
+3. Continue from the exact [implementation status](docs/implementation-status.md). M1 foundations may be built in parallel, but the real-phone and restoreable hosting gates remain open and no SMS service should be presented as live.
 
 The implementation agent reads the detailed plans. You do not need to work through every document before starting. Brand and product descriptions should stand on ZROtext's own features, with no competitor references or comparisons.
 
@@ -42,7 +42,7 @@ The visual reference belongs in the separate private `zrotext-ops` working folde
 
 The implementation agent should work in this workspace root. Do not create `phosphor/` or a nested `zrotext/` project.
 
-## Local M0 foundation
+## Local development foundation
 
 With Docker available, copy `.env.example` to `.env`, replace the example database password in both values with the same long random local secret, then run:
 
@@ -52,4 +52,4 @@ curl http://127.0.0.1:8080/healthz
 curl http://127.0.0.1:8080/readyz
 ```
 
-Add `--profile two-hub` before `up` to start a second local app instance on `127.0.0.1:8081`; both connect to one PostgreSQL writer. This is a test foundation with dispatch disabled, not a functioning SMS gateway or production hosting guide. The PostgreSQL data volume remains after `docker compose down`. See [M0 status](docs/implementation-status.md) for verified results and open gates.
+Add `--profile two-hub` before `up` to start a second local app instance on `127.0.0.1:8081`; both connect to one PostgreSQL writer. The `migrate` service applies numbered SQL before the API starts. Existing pre-migrator M0 volumes need the [documented baseline procedure](deploy/compose/README.md) after backup. This is a test foundation with dispatch disabled, not a functioning SMS gateway or production hosting guide. The PostgreSQL data volume remains after `docker compose down`. See [implementation status](docs/implementation-status.md) for verified results and open gates.
