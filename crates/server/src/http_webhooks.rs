@@ -39,6 +39,10 @@ pub fn router(state: WebhookHttpState) -> Router {
     Router::new()
         .route("/v1/webhooks", get(list_endpoints).post(create_endpoint))
         .route(
+            "/v1/inbound/messages/{message_id}/events",
+            get(list_inbound_events),
+        )
+        .route(
             "/v1/webhooks/{endpoint_id}/deliveries",
             get(list_deliveries),
         )
@@ -211,6 +215,119 @@ struct DeliveryView {
 struct HistoryResponse {
     deliveries: Vec<DeliveryView>,
     next_before: Option<Uuid>,
+}
+
+#[derive(Serialize)]
+struct InboundEventView {
+    event_id: Uuid,
+    device_id: Uuid,
+    attempt_id: Uuid,
+    classification: String,
+    observed_at_ms: i64,
+    received_at_ms: i64,
+    part_count: i16,
+    content_kind: String,
+}
+
+#[derive(Serialize)]
+struct InboundHistoryResponse {
+    events: Vec<InboundEventView>,
+    next_before: Option<Uuid>,
+}
+
+async fn list_inbound_events(
+    State(state): State<Arc<WebhookHttpState>>,
+    Path(message_id): Path<Uuid>,
+    Query(query): Query<HistoryQuery>,
+    headers: HeaderMap,
+) -> Response {
+    let Ok(client) = connect(&state).await else {
+        return EndpointError::Unavailable.into_response();
+    };
+    let principal = match owner(&client, &state, &headers, false).await {
+        Ok(principal) => principal,
+        Err(response) => return response,
+    };
+    match inbound_history(&client, principal.tenant.account_id(), message_id, query).await {
+        Ok(page) => Json(page).into_response(),
+        Err(error) => error.into_response(),
+    }
+}
+
+async fn inbound_history(
+    client: &Client,
+    account_id: Uuid,
+    message_id: Uuid,
+    query: HistoryQuery,
+) -> Result<InboundHistoryResponse, EndpointError> {
+    let limit = query.limit.unwrap_or(MAX_HISTORY_PAGE);
+    if !(1..=MAX_HISTORY_PAGE).contains(&limit) {
+        return Err(EndpointError::BadRequest);
+    }
+    let message = client
+        .query_opt(
+            "SELECT id FROM messages WHERE account_id=$1 AND id=$2",
+            &[&account_id, &message_id],
+        )
+        .await
+        .map_err(|_| EndpointError::Unavailable)?;
+    if message.is_none() {
+        return Err(EndpointError::NotFound);
+    }
+    let anchor: Option<(std::time::SystemTime, Uuid)> = match query.before {
+        Some(before) => {
+            let row = client.query_opt(
+                "SELECT received_at,id FROM inbound_events WHERE account_id=$1 AND message_id=$2 AND id=$3",
+                &[&account_id, &message_id, &before],
+            ).await.map_err(|_| EndpointError::Unavailable)?.ok_or(EndpointError::NotFound)?;
+            Some((row.get(0), row.get(1)))
+        }
+        None => None,
+    };
+    let anchor_time = anchor.as_ref().map(|(time, _)| *time);
+    let anchor_id = anchor.map(|(_, id)| id);
+    let rows = client
+        .query(
+            "SELECT id,device_id,attempt_id,classification, \
+         (extract(epoch FROM observed_at)*1000)::bigint, \
+         (extract(epoch FROM received_at)*1000)::bigint,part_count,content_kind \
+         FROM inbound_events WHERE account_id=$1 AND message_id=$2 \
+         AND ($3::timestamptz IS NULL OR (received_at,id)<($3,$4)) \
+         ORDER BY received_at DESC,id DESC LIMIT $5",
+            &[
+                &account_id,
+                &message_id,
+                &anchor_time,
+                &anchor_id,
+                &(i64::from(limit) + 1),
+            ],
+        )
+        .await
+        .map_err(|_| EndpointError::Unavailable)?;
+    let has_more = rows.len() > usize::from(limit);
+    let events: Vec<InboundEventView> = rows
+        .into_iter()
+        .take(usize::from(limit))
+        .map(|row| InboundEventView {
+            event_id: row.get(0),
+            device_id: row.get(1),
+            attempt_id: row.get(2),
+            classification: row.get(3),
+            observed_at_ms: row.get(4),
+            received_at_ms: row.get(5),
+            part_count: row.get(6),
+            content_kind: row.get(7),
+        })
+        .collect();
+    let next_before = if has_more {
+        events.last().map(|event| event.event_id)
+    } else {
+        None
+    };
+    Ok(InboundHistoryResponse {
+        events,
+        next_before,
+    })
 }
 
 async fn list_deliveries(
@@ -1601,6 +1718,7 @@ mod tests {
         assert_eq!(second["deliveries"][1]["delivery_id"], ids[3].to_string());
         assert_eq!(second["next_before"], Value::Null);
         let default_page = app
+            .clone()
             .oneshot(request(
                 Method::GET,
                 &path,
@@ -1617,6 +1735,157 @@ mod tests {
                 .len(),
             4
         );
+
+        let message_id: Uuid = admin.query_one(
+            "SELECT i.message_id FROM inbound_events i JOIN webhook_deliveries d ON d.event_id=i.id WHERE d.id=$1",
+            &[&ids[0]],
+        ).await.unwrap().get(0);
+        let foreign_message: Uuid = admin.query_one(
+            "SELECT i.message_id FROM inbound_events i JOIN webhook_deliveries d ON d.event_id=i.id WHERE d.id=$1",
+            &[&foreign_ids[0]],
+        ).await.unwrap().get(0);
+        let other_event: Uuid = admin
+            .query_one(
+                "SELECT event_id FROM webhook_deliveries WHERE id=$1",
+                &[&other_ids[0]],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        let foreign_event: Uuid = admin
+            .query_one(
+                "SELECT event_id FROM webhook_deliveries WHERE id=$1",
+                &[&foreign_ids[0]],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        let inbound_path = format!("/v1/inbound/messages/{message_id}/events");
+        let anonymous = app
+            .clone()
+            .oneshot(request(Method::GET, &inbound_path, json!({}), None, false))
+            .await
+            .unwrap();
+        assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
+        let foreign = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                &inbound_path,
+                json!({}),
+                Some((&sb.token, &sb.csrf_token)),
+                false,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(foreign.status(), StatusCode::NOT_FOUND);
+        let foreign_path = format!("/v1/inbound/messages/{foreign_message}/events");
+        let foreign = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                &foreign_path,
+                json!({}),
+                Some((&sa.token, &sa.csrf_token)),
+                false,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(foreign.status(), StatusCode::NOT_FOUND);
+        for suffix in [
+            "?limit=0".to_string(),
+            "?limit=21".to_string(),
+            "?before=bad".to_string(),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(request(
+                    Method::GET,
+                    &format!("{inbound_path}{suffix}"),
+                    json!({}),
+                    Some((&sa.token, &sa.csrf_token)),
+                    false,
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        }
+        for cursor in [other_event, foreign_event, Uuid::new_v4()] {
+            let response = app
+                .clone()
+                .oneshot(request(
+                    Method::GET,
+                    &format!("{inbound_path}?before={cursor}"),
+                    json!({}),
+                    Some((&sa.token, &sa.csrf_token)),
+                    false,
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        }
+        let inbound_first = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                &format!("{inbound_path}?limit=2"),
+                json!({}),
+                Some((&sa.token, &sa.csrf_token)),
+                false,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(inbound_first.status(), StatusCode::OK);
+        assert_eq!(inbound_first.headers()[header::CACHE_CONTROL], "no-store");
+        let inbound_text = String::from_utf8(
+            to_bytes(inbound_first.into_body(), 16384)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        for private in [
+            "private-message-body",
+            "+15551234567",
+            "content_ciphertext",
+            "signature_der",
+            "event_digest",
+            "callback_url",
+            "signing_secret",
+        ] {
+            assert!(
+                !inbound_text.contains(private),
+                "inbound history disclosed {private}"
+            );
+        }
+        let inbound_first: Value = serde_json::from_str(&inbound_text).unwrap();
+        let first_events = inbound_first["events"].as_array().unwrap();
+        assert_eq!(first_events.len(), 2);
+        assert_eq!(first_events[0]["classification"], "captured_local");
+        assert_eq!(first_events[0]["content_kind"], "opaque_pilot");
+        assert!(first_events[0]["received_at_ms"].is_number());
+        let cursor = inbound_first["next_before"].as_str().unwrap();
+        let inbound_second = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                &format!("{inbound_path}?limit=2&before={cursor}"),
+                json!({}),
+                Some((&sa.token, &sa.csrf_token)),
+                false,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(inbound_second.status(), StatusCode::OK);
+        let inbound_second = json_body(inbound_second).await;
+        let second_events = inbound_second["events"].as_array().unwrap();
+        assert_eq!(second_events.len(), 2);
+        assert_eq!(inbound_second["next_before"], Value::Null);
+        assert!(first_events.iter().all(|first| {
+            second_events
+                .iter()
+                .all(|second| first["event_id"] != second["event_id"])
+        }));
 
         admin
             .batch_execute(&format!(
