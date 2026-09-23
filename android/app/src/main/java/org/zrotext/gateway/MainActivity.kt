@@ -45,6 +45,7 @@ class MainActivity : ComponentActivity() {
     private var testToken by mutableStateOf("")
     private var deviceStreamEndpoint by mutableStateOf("")
     private var approvedDeviceId by mutableStateOf("")
+    private var alphaRecipient by mutableStateOf("")
     private var pairingOrigin by mutableStateOf("")
     private var pairingId by mutableStateOf("")
     private var pairingToken by mutableStateOf("")
@@ -75,7 +76,7 @@ class MainActivity : ComponentActivity() {
                 ) {
                     Text("ZROtext", style = MaterialTheme.typography.headlineLarge)
                     Text("Gateway mode spike", style = MaterialTheme.typography.titleMedium)
-                    Text("This gateway session tests SIM visibility and a live socket heartbeat. It does not send or receive SMS. The M1 radio adapter is not connected to this screen or socket.")
+                    Text("The M0 gateway button tests SIM visibility and a token socket heartbeat. That button does not send or receive SMS.")
                     Text("Status: ${GatewayStatus.value}; heartbeat acknowledgments this process: ${GatewayStatus.heartbeats}")
                     Button(onClick = { askPermissions() }) { Text("Grant gateway permissions") }
                     Text("Selected SIM: ${selectedSim?.toString() ?: "none"}")
@@ -111,7 +112,7 @@ class MainActivity : ComponentActivity() {
                     Text("Keep this dedicated phone plugged in for the screen-off test. Reopen the app after a stop or reboot; automatic recovery is not implemented in M0.")
                     HorizontalDivider()
                     Text("Authenticated device heartbeat", style = MaterialTheme.typography.titleMedium)
-                    Text("After owner approval, enter the approved device UUID and trusted WSS origin. This proves the phone's Keystore key and exchanges heartbeats only. It cannot send SMS.")
+                    Text("After owner approval, enter the approved device UUID and trusted WSS origin. The heartbeat button only proves the phone's Keystore key and exchanges heartbeats.")
                     Text("Status: ${AuthenticatedGatewayStatus.value}; acknowledgments this session: ${AuthenticatedGatewayStatus.heartbeats}")
                     OutlinedTextField(value = deviceStreamEndpoint, onValueChange = { deviceStreamEndpoint = it },
                         label = { Text("WSS device stream URL") })
@@ -132,6 +133,26 @@ class MainActivity : ComponentActivity() {
                         startService(Intent(this@MainActivity, AuthenticatedGatewayService::class.java)
                             .setAction(AuthenticatedGatewayService.ACTION_PAUSE))
                     }) { Text("Pause authenticated heartbeat") }
+                    HorizontalDivider()
+                    Text("One controlled synthetic SMS", style = MaterialTheme.typography.titleMedium)
+                    Text("Enter a recipient you control in +E.164 form. This private pilot can consume one grant per app installation. A valid writer ack can make one SMS call from the selected SIM; silence or an uncertain result is never retried.")
+                    OutlinedTextField(value = alphaRecipient, onValueChange = { alphaRecipient = it.trim() },
+                        label = { Text("Controlled recipient +E.164") })
+                    Button(onClick = {
+                        val sim = selectedSim
+                        if (sim == null || !alphaRecipient.matches(Regex("^\\+[1-9][0-9]{1,14}$"))) {
+                            AuthenticatedGatewayStatus.value = "Select an active SIM and enter a valid recipient"
+                        } else {
+                            stopService(Intent(this@MainActivity, GatewayService::class.java))
+                            val intent = Intent(this@MainActivity, AuthenticatedGatewayService::class.java)
+                                .putExtra(AuthenticatedGatewayService.EXTRA_URL, deviceStreamEndpoint)
+                                .putExtra(AuthenticatedGatewayService.EXTRA_DEVICE_ID, approvedDeviceId.trim())
+                                .putExtra(AuthenticatedGatewayService.EXTRA_ALPHA_RECIPIENT, alphaRecipient)
+                                .putExtra(AuthenticatedGatewayService.EXTRA_ALPHA_SUBSCRIPTION_ID, sim)
+                            ContextCompat.startForegroundService(this@MainActivity, intent)
+                            alphaRecipient = ""
+                        }
+                    }) { Text("Arm one synthetic SMS") }
                     HorizontalDivider()
                     Text("Device pairing", style = MaterialTheme.typography.titleMedium)
                     Text("Enter the one-use pairing ID and token from the owner account. The phone will prove possession of its Keystore key. Compare both values below with the browser before approving there.")

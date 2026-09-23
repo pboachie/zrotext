@@ -4,8 +4,9 @@ The authenticated [device stream](device-stream.md) can issue an experimental
 single-recipient grant only when the deployment explicitly enables the
 synthetic alpha runtime, account and recipient allowlists, and writer dispatch
 authority. This is for a controlled test message with a fixed body; it is not
-the public customer message protocol. The Android stream client does not yet
-consume these frames or call the radio adapter. No live send is implied.
+the public customer message protocol. The Android stream client has an opt-in
+one-attempt grant, evidence-outbox and radio path. No live WSS or carrier send
+has been verified.
 
 All frames are UTF-8 JSON with `v: 1`, exact field sets, and a 4 KiB limit.
 The authenticated socket determines the account and device. It never accepts
@@ -13,8 +14,8 @@ those identities from a radio event frame.
 
 ## One-shot phone readiness
 
-A heartbeat-only phone receives no grant. A future test client must require a
-local, deliberate one-send arm action and send this frame only after an
+A heartbeat-only phone receives no grant. The test client requires a
+local, deliberate one-send arm action and sends this frame only after an
 authenticated session and local recipient approval:
 
 ```json
@@ -43,10 +44,10 @@ grant fence, recipient allowlist, and fixed body immediately before sending.
 Only one unresolved grant can occupy a device. A second grant is paced at
 least 60 seconds after the previous one, including across reconnects.
 
-The phone must check the authenticated session epoch, device ID, positive
+The phone checks the authenticated session epoch, device ID, positive
 generation and deadline, digest, selected SIM, fixed body shape, and its own
-locally approved recipient before any radio call. A future client must persist
-the attempt ID before calling `SmsManager`. It must never retry a radio call
+locally approved recipient before any radio call. It persists the attempt ID
+and one-use radio start before calling `SmsManager`. It never retries a radio call
 for the same attempt after an ambiguous return or crash.
 
 ## Evidence and acknowledgement
@@ -60,7 +61,11 @@ hub acknowledges it:
 
 Allowed evidence values are `durable_submit_intent`, `proven_no_submit`,
 `sent_callback_ok`, `sent_callback_failed`, `delivery_callback_ok`,
-`delivery_timeout`, and `crash_without_callback`. Sent callback events also
+`delivery_timeout`, `crash_without_callback`, and `callback_conflict`. A
+contradictory callback emits one durable `callback_conflict` event after a
+writer-acknowledged submit intent. The writer records `unknown` and retains
+the device fence even if earlier evidence said `submitted` or `delivered`.
+Sent callback events also
 include zero-based `segment_index` and `segment_count` (1–6). No other event
 includes segment fields. The phone must reserve the attempt in its durable
 local journal, then receive an acknowledgement for `durable_submit_intent`
@@ -94,7 +99,9 @@ evidence on a submitting attempt. Both move the message and attempt to
 These are server-authored timeline events, not phone event values. A late sent
 callback may reconcile `unknown` to `submitted` or `failed`. Queued messages
 whose expiry passes before any grant become `expired` in the same recovery
-worker.
+worker. A `submitted` message without a delivery receipt becomes
+`delivery_unknown` after 24 hours; a later receipt can still resolve it to
+`delivered`.
 
 This extension does not yet provide inbound SMS, delivery-failure
 classification, sealed content, or a live tested send/reply path.
