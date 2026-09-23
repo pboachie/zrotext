@@ -28,11 +28,19 @@ pub enum StoreError {
     StaleFence,
     #[error("device has an unresolved radio operation")]
     DeviceBusy,
+    #[error("pending message queue is full")]
+    QueueFull,
     #[error("message state does not permit this evidence")]
     InvalidTransition,
     #[error("event ID was reused for different evidence")]
     EventIdConflict,
 }
+
+// Admission limits protect the single writer and keep a disconnected pilot
+// phone from accumulating an unbounded queue. These are operational safety
+// limits, not subscription entitlements.
+const MAX_PENDING_PER_DEVICE: i64 = 16;
+const MAX_PENDING_PER_ACCOUNT: i64 = 128;
 
 pub struct NewMessage<'a> {
     pub account_id: Uuid,
@@ -201,6 +209,27 @@ impl<'a> DeliveryStore<'a> {
                 message_id,
                 created: false,
             });
+        }
+
+        // Every new acceptance for this account takes the same row lock. The
+        // counts and insert are in one transaction, so parallel API instances
+        // cannot each observe one remaining slot and overfill the queue.
+        tx.query_one(
+            "SELECT id FROM accounts WHERE id=$1 FOR NO KEY UPDATE",
+            &[&input.account_id],
+        )
+        .await?;
+        let counts = tx
+            .query_one(
+                "SELECT COUNT(*) FILTER (WHERE device_id=$2), COUNT(*) FROM messages \
+             WHERE account_id=$1 AND state IN ('queued','claimed') AND expires_at>now()",
+                &[&input.account_id, &input.device_id],
+            )
+            .await?;
+        let device_pending: i64 = counts.get(0);
+        let account_pending: i64 = counts.get(1);
+        if device_pending >= MAX_PENDING_PER_DEVICE || account_pending >= MAX_PENDING_PER_ACCOUNT {
+            return Err(StoreError::QueueFull);
         }
 
         let created = tx
@@ -1032,6 +1061,204 @@ fn state_from_row(row: &Row) -> Result<MessageState, StoreError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn parallel_acceptance_respects_pending_queue_capacity() {
+        let Ok(url) = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL") else {
+            return;
+        };
+        let (client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let schema = format!("delivery_test_{}", Uuid::new_v4().simple());
+        client
+            .batch_execute(&format!(
+                "CREATE SCHEMA {schema}; SET search_path TO {schema}"
+            ))
+            .await
+            .unwrap();
+        for migration in [
+            include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
+            include_str!("../../../deploy/compose/migrations/002_auth.sql"),
+            include_str!("../../../deploy/compose/migrations/003_delivery.sql"),
+        ] {
+            client.batch_execute(migration).await.unwrap();
+        }
+        let account = Uuid::new_v4();
+        let device = Uuid::new_v4();
+        client
+            .execute("INSERT INTO accounts(id) VALUES($1)", &[&account])
+            .await
+            .unwrap();
+        client
+            .execute(
+                "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'queue phone')",
+                &[&device, &account],
+            )
+            .await
+            .unwrap();
+
+        // Independent connections represent competing API instances. Only one
+        // account-row lock holder can count and insert at a time.
+        let mut tasks = tokio::task::JoinSet::new();
+        for index in 0..32 {
+            let url = url.clone();
+            let schema = schema.clone();
+            tasks.spawn(async move {
+                let (mut client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+                    .await
+                    .unwrap();
+                tokio::spawn(async move { connection.await.unwrap() });
+                client
+                    .batch_execute(&format!("SET search_path TO {schema}"))
+                    .await
+                    .unwrap();
+                let id = Uuid::new_v4();
+                let key = format!("parallel-{index}");
+                let result = DeliveryStore::new(&mut client)
+                    .accept(NewMessage {
+                        account_id: account,
+                        client_message_id: id,
+                        device_id: device,
+                        idempotency_key: &key,
+                        recipient_e164: "+15551234567",
+                        synthetic_payload: b"test only",
+                        expires_at_ms: now_ms() + 300_000,
+                    })
+                    .await;
+                match result {
+                    Ok(outcome) => {
+                        assert!(outcome.created);
+                        Some((id, key))
+                    }
+                    Err(StoreError::QueueFull) => None,
+                    Err(error) => panic!("unexpected admission result: {error}"),
+                }
+            });
+        }
+        let mut accepted = Vec::new();
+        while let Some(result) = tasks.join_next().await {
+            if let Some(item) = result.unwrap() {
+                accepted.push(item);
+            }
+        }
+        assert_eq!(accepted.len(), MAX_PENDING_PER_DEVICE as usize);
+        let rows: i64 = client
+            .query_one(
+                "SELECT COUNT(*) FROM messages WHERE account_id=$1",
+                &[&account],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(rows, MAX_PENDING_PER_DEVICE);
+        // An exact replay still succeeds while the queue is full.
+        let (id, key) = &accepted[0];
+        let (mut replay_client, replay_connection) =
+            tokio_postgres::connect(&url, tokio_postgres::NoTls)
+                .await
+                .unwrap();
+        tokio::spawn(async move { replay_connection.await.unwrap() });
+        replay_client
+            .batch_execute(&format!("SET search_path TO {schema}"))
+            .await
+            .unwrap();
+        // The original request deadline is read from its committed row so
+        // the digest is identical to the first acceptance.
+        let expiry: i64 = replay_client
+            .query_one(
+                "SELECT (extract(epoch FROM expires_at)*1000)::bigint FROM messages WHERE id=$1",
+                &[id],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert!(
+            !DeliveryStore::new(&mut replay_client)
+                .accept(NewMessage {
+                    account_id: account,
+                    client_message_id: *id,
+                    device_id: device,
+                    idempotency_key: key,
+                    recipient_e164: "+15551234567",
+                    synthetic_payload: b"test only",
+                    expires_at_ms: expiry,
+                })
+                .await
+                .unwrap()
+                .created
+        );
+
+        // Fill other phones to the tenant-wide limit. A new device cannot
+        // bypass account admission, and cancellation returns one slot.
+        for ordinal in 0..7 {
+            let another_device = Uuid::new_v4();
+            client
+                .execute(
+                    "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'queue phone')",
+                    &[&another_device, &account],
+                )
+                .await
+                .unwrap();
+            for slot in 0..MAX_PENDING_PER_DEVICE {
+                let key = format!("account-{ordinal}-{slot}");
+                DeliveryStore::new(&mut replay_client)
+                    .accept(NewMessage {
+                        account_id: account,
+                        client_message_id: Uuid::new_v4(),
+                        device_id: another_device,
+                        idempotency_key: &key,
+                        recipient_e164: "+15551234567",
+                        synthetic_payload: b"test only",
+                        expires_at_ms: now_ms() + 300_000,
+                    })
+                    .await
+                    .unwrap();
+            }
+        }
+        let extra_device = Uuid::new_v4();
+        client
+            .execute(
+                "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'queue phone')",
+                &[&extra_device, &account],
+            )
+            .await
+            .unwrap();
+        let extra_id = Uuid::new_v4();
+        let extra = || NewMessage {
+            account_id: account,
+            client_message_id: extra_id,
+            device_id: extra_device,
+            idempotency_key: "account-full",
+            recipient_e164: "+15551234567",
+            synthetic_payload: b"test only",
+            expires_at_ms: now_ms() + 300_000,
+        };
+        assert!(matches!(
+            DeliveryStore::new(&mut replay_client).accept(extra()).await,
+            Err(StoreError::QueueFull)
+        ));
+        assert!(
+            DeliveryStore::new(&mut replay_client)
+                .cancel(account, *id)
+                .await
+                .unwrap()
+        );
+        assert!(
+            DeliveryStore::new(&mut replay_client)
+                .accept(extra())
+                .await
+                .unwrap()
+                .created
+        );
+        client
+            .batch_execute(&format!(
+                "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
+            ))
+            .await
+            .unwrap();
+    }
 
     #[tokio::test]
     async fn postgres_fences_unknown_and_tenant_idempotency() {

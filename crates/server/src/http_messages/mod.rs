@@ -81,6 +81,7 @@ enum MessageHttpError {
     Forbidden,
     NotFound,
     Conflict,
+    QueueFull,
     Unavailable,
 }
 
@@ -92,9 +93,17 @@ impl IntoResponse for MessageHttpError {
             Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden"),
             Self::NotFound => (StatusCode::NOT_FOUND, "not_found"),
             Self::Conflict => (StatusCode::CONFLICT, "conflict"),
+            Self::QueueFull => (StatusCode::TOO_MANY_REQUESTS, "queue_full"),
             Self::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
         };
-        (status, Json(ErrorBody { code })).into_response()
+        let mut response = (status, Json(ErrorBody { code })).into_response();
+        if status == StatusCode::TOO_MANY_REQUESTS {
+            response.headers_mut().insert(
+                header::RETRY_AFTER,
+                "60".parse().expect("static retry-after"),
+            );
+        }
+        response
     }
 }
 
@@ -123,6 +132,7 @@ fn map_store(error: StoreError) -> MessageHttpError {
             MessageHttpError::Unavailable
         }
         StoreError::DeviceBusy | StoreError::EventIdConflict => MessageHttpError::Conflict,
+        StoreError::QueueFull => MessageHttpError::QueueFull,
     }
 }
 
