@@ -451,20 +451,21 @@ async fn verify_email(
 ) -> Result<StatusCode, AuthHttpError> {
     require_origin(&headers, &state.canonical_origin)?;
     let mut client = connect(&state.database_url).await?;
+    // A caller can exhaust the anonymous invalid-code budget, but must not
+    // prevent the holder of a valid one-use code from completing signup.
+    if auth::verify_email(&mut client, &state.hasher, &body.token)
+        .await
+        .map_err(map_auth)?
+    {
+        return Ok(StatusCode::NO_CONTENT);
+    }
     if !abuse_limits::consume(&client, &state.hasher, Limit::Verify, None)
         .await
         .map_err(|_| AuthHttpError::Unavailable)?
     {
         return Err(AuthHttpError::TooManyRequests);
     }
-    if auth::verify_email(&mut client, &state.hasher, &body.token)
-        .await
-        .map_err(map_auth)?
-    {
-        Ok(StatusCode::NO_CONTENT)
-    } else {
-        Err(AuthHttpError::BadRequest)
-    }
+    Err(AuthHttpError::BadRequest)
 }
 
 #[derive(Deserialize)]
@@ -1219,6 +1220,12 @@ mod tests {
             ))
             .await
             .unwrap();
+        test_client
+            .batch_execute(include_str!(
+                "../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"
+            ))
+            .await
+            .unwrap();
         let capture = Arc::new(CaptureVerification(Mutex::new(None)));
         let state = AuthHttpState::new(
             url,
@@ -1602,6 +1609,115 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn valid_verification_survives_anonymous_invalid_code_exhaustion() {
+        let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
+            return;
+        };
+        let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let schema = format!("http_verify_test_{}", Uuid::new_v4().simple());
+        setup
+            .batch_execute(&format!("CREATE SCHEMA {schema}"))
+            .await
+            .unwrap();
+        let separator = if base_url.contains('?') { '&' } else { '?' };
+        let url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
+        let (mut client, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        for migration in [
+            include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+            include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+            include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
+            include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+        ] {
+            client.batch_execute(migration).await.unwrap();
+        }
+        let hasher = Arc::new(TokenHasher::new(vec![93; 32]).unwrap());
+        let signup = auth::register(
+            &mut client,
+            &hasher,
+            "verify-cap@example.test",
+            "correct horse battery",
+        )
+        .await
+        .unwrap();
+        let state = AuthHttpState::new(
+            url.clone(),
+            hasher,
+            "https://zrotext.example".to_owned(),
+            Arc::new(DisabledVerificationDispatcher),
+        )
+        .unwrap();
+        let a = router(state.clone());
+        let b = router(state);
+        for _ in 0..120 {
+            let response = a
+                .clone()
+                .oneshot(json_post(
+                    "/verify-email",
+                    serde_json::json!({"token":"invalid"}),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        }
+        let invalid = b
+            .clone()
+            .oneshot(json_post(
+                "/verify-email",
+                serde_json::json!({"token":"invalid"}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(invalid.status(), StatusCode::TOO_MANY_REQUESTS);
+        let mut wrong_origin = json_post(
+            "/verify-email",
+            serde_json::json!({"token":signup.verification_token}),
+        );
+        wrong_origin.headers_mut().insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://evil.example"),
+        );
+        assert_eq!(
+            b.clone().oneshot(wrong_origin).await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
+        let valid = b
+            .clone()
+            .oneshot(json_post(
+                "/verify-email",
+                serde_json::json!({"token":signup.verification_token}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(valid.status(), StatusCode::NO_CONTENT);
+        let replay = a
+            .oneshot(json_post(
+                "/verify-email",
+                serde_json::json!({"token":signup.verification_token}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(replay.status(), StatusCode::TOO_MANY_REQUESTS);
+        let row = client
+            .query_one(
+                "SELECT u.email_verified_at IS NOT NULL,
+                        (SELECT count(*) FROM email_verifications v
+                         WHERE v.user_id=u.id AND v.used_at IS NOT NULL)
+                 FROM users u WHERE u.id=$1",
+                &[&signup.user_id],
+            )
+            .await
+            .unwrap();
+        assert!(row.get::<_, bool>(0));
+        assert_eq!(row.get::<_, i64>(1), 1);
+        setup
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn postgres_http_mfa_never_sets_session_before_factor_and_limits_replay() {
         let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
             return;
@@ -1623,6 +1739,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
             include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
             include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
+            include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
         ] {
             client.batch_execute(migration).await.unwrap();
         }
