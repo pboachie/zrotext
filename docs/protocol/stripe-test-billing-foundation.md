@@ -50,9 +50,21 @@ only when enabled:
   already-bound customer, returns 404 otherwise, and returns the hosted Portal
   URL with `/billing` on `AUTH_ORIGIN` as the return path.
 
-Those three return paths are mounted as simple same-origin browser pages while
-hosted sessions are enabled. A return from Stripe is **not** proof of payment
-or an active entitlement; the pages say reconciliation is pending.
+Those return paths are mounted while hosted sessions are enabled. The success
+and cancel paths show simple informational pages. `/billing` requires a valid
+owner session and presents a test-mode billing dashboard. A return from Stripe
+is **not** proof of payment or an active entitlement.
+
+The owner-only `GET /v1/billing/status` reads the caller's own locally
+reconciled database rows. It reports whether a test customer is bound, the
+number of pending reconciliations, and up to 20 recent subscription snapshots
+with their Stripe status, recognized-price flag, pending flag, and reconciliation
+time. It omits account, customer, subscription, and price IDs. The dashboard
+loads this read-only route and uses the existing owner/CSRF-protected Checkout
+and Portal routes to open Stripe-hosted test pages. It does not turn these
+snapshots or browser redirects into an access decision. The dashboard and
+status route are absent unless both billing test mode and hosted sessions are
+enabled.
 
 The client cannot choose a customer, price, metadata, or return URL. Both
 session requests require empty bodies. Customer creation uses a tenant-scoped
@@ -64,8 +76,7 @@ request timeouts. Responses are capped at 32 KiB and must carry test-mode
 objects, the expected customer, and an HTTPS URL on the exact Stripe hosted
 domain. Successful responses use `Cache-Control: no-store`.
 
-This slice has no live Stripe test account exercise, hosted-session dashboard
-UI, price-to-quota policy, payment grace rules, downgrade
+This slice has no live Stripe test account exercise, price-to-quota policy, payment grace rules, downgrade
 handling, refund reconciliation, or operational alert for unbound/conflict
 events. Signature-secret rotation needs multi-secret verification before
 production. Complete those gates and review them independently before enabling

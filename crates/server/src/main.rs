@@ -29,6 +29,7 @@ use zrotext_server::{
     auth::TokenHasher,
     billing::{
         http::{self as billing_http, BillingHttpState},
+        owner as billing_owner,
         sessions::{self as billing_sessions, SessionState},
         worker::StripeTestWorker,
     },
@@ -235,9 +236,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "Stripe Checkout price must be in the recognized test prices".into(),
                     );
                 }
-                let sessions = SessionState::new(auth, secret_key, price_id)?;
+                let sessions = SessionState::new(auth.clone(), secret_key, price_id)?;
                 billing_routes = billing_routes.merge(billing_sessions::router(sessions));
-                app = app.merge(billing_sessions::return_router());
+                billing_routes = billing_routes.merge(billing_owner::status_router(auth.clone()));
+                app = app
+                    .merge(billing_sessions::return_router())
+                    .merge(billing_owner::page_router(auth));
             }
             _ => return Err("invalid STRIPE_TEST_HOSTED_SESSIONS_ENABLED".into()),
         }
