@@ -64,7 +64,7 @@ request timeouts. Responses are capped at 32 KiB and must carry test-mode
 objects, the expected customer, and an HTTPS URL on the exact Stripe hosted
 domain. Successful responses use `Cache-Control: no-store`.
 
-This slice has no live Stripe test account exercise, hosted-session dashboard
+This slice has no completed Stripe test Checkout, hosted-session dashboard
 UI, price-to-quota policy, payment grace rules, downgrade
 handling, refund reconciliation, or operational alert for unbound/conflict
 events. Signature-secret rotation needs multi-secret verification before
@@ -75,6 +75,17 @@ paid service. Tests use synthetic JSON shaped like Stripe's [Event](https://docs
 Stripe HTTP service and disposable PostgreSQL schema; they do not
 assert a successful Checkout, charge, failed payment, or refund in Stripe test
 mode.
+
+An explicit sandbox smoke test can be run with `ZT_AUTH_TEST_DATABASE_URL`,
+`ZT_STRIPE_TEST_SECRET_KEY`, and `ZT_STRIPE_TEST_PRICE_ID` set in the test
+process. Run `cargo test --locked -p zrotext-server
+real_stripe_sandbox_hosted_sessions_smoke -- --ignored`. It creates a
+disposable local PostgreSQL schema and a synthetic Stripe test Customer,
+Checkout Session, and Portal Session, checks that the customer is test-mode and
+tenant-bound, then removes the local schema. Stripe test objects remain in the
+sandbox for inspection. The test does not complete Checkout, pay an invoice,
+exercise a webhook destination, or change an entitlement. Keep keys and
+fixture IDs in private operator storage; never put them in the repository.
 
 References: [Stripe webhook signature and raw-body rules](https://docs.stripe.com/webhooks#verify-signature),
 [duplicate and unordered event guidance](https://docs.stripe.com/webhooks#event-ordering),

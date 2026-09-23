@@ -830,4 +830,127 @@ mod tests {
             .await
             .unwrap();
     }
+
+    #[tokio::test]
+    #[ignore = "creates test-mode Stripe Customer, Checkout, and Portal sessions; run explicitly"]
+    async fn real_stripe_sandbox_hosted_sessions_smoke() {
+        let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for an isolated PostgreSQL test database");
+        let secret_key = std::env::var("ZT_STRIPE_TEST_SECRET_KEY")
+            .expect("load a Stripe test secret into ZT_STRIPE_TEST_SECRET_KEY");
+        let price_id = std::env::var("ZT_STRIPE_TEST_PRICE_ID")
+            .expect("set ZT_STRIPE_TEST_PRICE_ID to a recurring sandbox price");
+        assert!(secret_key.starts_with("sk_test_"));
+        assert!(price_id.starts_with("price_"));
+
+        let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        let schema = format!("stripe_sandbox_smoke_{}", Uuid::new_v4().simple());
+        setup
+            .batch_execute(&format!("CREATE SCHEMA {schema}"))
+            .await
+            .unwrap();
+        let db_url = format!("{base_url}?options=-csearch_path%3D{schema}");
+        let (mut db, connection) = tokio_postgres::connect(&db_url, NoTls).await.unwrap();
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        for sql in [
+            include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
+            include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+            include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
+            include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
+            include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+            include_str!("../../../../deploy/compose/migrations/006_usage_metering.sql"),
+            include_str!(
+                "../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"
+            ),
+            include_str!("../../../../deploy/compose/migrations/008_stripe_billing_foundation.sql"),
+        ] {
+            db.batch_execute(sql).await.unwrap();
+        }
+        let hasher = Arc::new(auth::TokenHasher::new(vec![73; 32]).unwrap());
+        let email = format!("stripe-smoke-{}@example.test", Uuid::new_v4().simple());
+        let signup = auth::register(&mut db, &hasher, &email, "synthetic password 123")
+            .await
+            .unwrap();
+        auth::verify_email(&mut db, &hasher, &signup.verification_token)
+            .await
+            .unwrap();
+        let owner = auth::login(&db, &hasher, &email, "synthetic password 123")
+            .await
+            .unwrap();
+        let auth_state = AuthHttpState::new(
+            db_url,
+            hasher,
+            "https://zrotext.example".into(),
+            Arc::new(DisabledVerificationDispatcher),
+        )
+        .unwrap();
+        let app = router(SessionState::new(auth_state, secret_key.clone(), price_id).unwrap());
+
+        let checkout = app
+            .clone()
+            .oneshot(owner_request(
+                "/checkout",
+                &owner.token,
+                &owner.csrf_token,
+                true,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(checkout.status(), StatusCode::OK);
+        let checkout_body: Value =
+            serde_json::from_slice(&to_bytes(checkout.into_body(), 8192).await.unwrap()).unwrap();
+        assert!(hosted_url(&checkout_body["url"], "checkout.stripe.com").is_ok());
+
+        let customer_id = bound_customer(&db, signup.account_id)
+            .await
+            .unwrap()
+            .expect("Checkout must bind a sandbox customer");
+        let inspect = HttpClient::builder()
+            .no_proxy()
+            .https_only(true)
+            .redirect(redirect::Policy::none())
+            .retry(retry::never())
+            .timeout(Duration::from_secs(10))
+            .build()
+            .unwrap();
+        let response = inspect
+            .get(format!("{STRIPE_API}/v1/customers/{customer_id}"))
+            .bearer_auth(&secret_key)
+            .send()
+            .await
+            .unwrap();
+        assert!(response.status().is_success());
+        let customer: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert_eq!(customer["object"], "customer");
+        assert_eq!(customer["livemode"], false);
+        assert_eq!(
+            customer["metadata"]["account_id"],
+            signup.account_id.to_string()
+        );
+
+        let portal = app
+            .oneshot(owner_request(
+                "/portal",
+                &owner.token,
+                &owner.csrf_token,
+                true,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(portal.status(), StatusCode::OK);
+        let portal_body: Value =
+            serde_json::from_slice(&to_bytes(portal.into_body(), 8192).await.unwrap()).unwrap();
+        assert!(hosted_url(&portal_body["url"], "billing.stripe.com").is_ok());
+
+        drop(db);
+        setup
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .unwrap();
+    }
 }
