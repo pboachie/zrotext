@@ -658,13 +658,13 @@ mod tests {
             .unwrap();
         client
             .batch_execute(include_str!(
-                "../../../../deploy/compose/migrations/007_owner_mfa.sql"
+                "../../../../deploy/compose/migrations/013_owner_mfa.sql"
             ))
             .await
             .unwrap();
         client
             .batch_execute(include_str!(
-                "../../../../deploy/compose/migrations/008_owner_mfa_failure_budget.sql"
+                "../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"
             ))
             .await
             .unwrap();

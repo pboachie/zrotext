@@ -676,7 +676,7 @@ async fn device_test(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::{RngCore, rngs::OsRng};
+    use p256::elliptic_curve::rand_core::{OsRng, RngCore};
     use uuid::Uuid;
 
     #[tokio::test]
@@ -697,8 +697,8 @@ mod tests {
         tokio::spawn(async move { connection.await.unwrap() });
         for sql in [
             include_str!("../../../deploy/compose/migrations/002_auth.sql"),
-            include_str!("../../../deploy/compose/migrations/007_owner_mfa.sql"),
-            include_str!("../../../deploy/compose/migrations/008_owner_mfa_failure_budget.sql"),
+            include_str!("../../../deploy/compose/migrations/013_owner_mfa.sql"),
+            include_str!("../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
         ] {
             client.batch_execute(sql).await.unwrap();
         }

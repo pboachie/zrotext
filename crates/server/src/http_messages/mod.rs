@@ -480,8 +480,8 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
             include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
             include_str!("../../../../deploy/compose/migrations/006_usage_metering.sql"),
-            include_str!("../../../../deploy/compose/migrations/007_owner_mfa.sql"),
-            include_str!("../../../../deploy/compose/migrations/008_owner_mfa_failure_budget.sql"),
+            include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
+            include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
         ] {
             client.batch_execute(sql).await.unwrap();
         }

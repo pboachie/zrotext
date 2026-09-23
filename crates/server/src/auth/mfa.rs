@@ -8,7 +8,7 @@ use aes_gcm::{
     aead::{Aead, KeyInit, Payload},
 };
 use base64::Engine;
-use rand::{RngCore, rngs::OsRng};
+use p256::elliptic_curve::rand_core::{OsRng, RngCore};
 use std::time::{SystemTime, UNIX_EPOCH};
 use subtle::ConstantTimeEq;
 use tokio_postgres::{Client, Transaction};
@@ -49,9 +49,10 @@ impl MfaCipher {
         let cipher = Aes256Gcm::new_from_slice(&self.0[..]).map_err(|_| AuthError::Crypto)?;
         let mut nonce = [0u8; 12];
         OsRng.fill_bytes(&mut nonce);
+        let nonce_array = Nonce::try_from(nonce.as_slice()).map_err(|_| AuthError::Crypto)?;
         let ciphertext = cipher
             .encrypt(
-                Nonce::from_slice(&nonce),
+                &nonce_array,
                 Payload {
                     msg: secret,
                     aad: &Self::associated_data(account_id, user_id),
@@ -72,10 +73,11 @@ impl MfaCipher {
             return Err(AuthError::Crypto);
         }
         let cipher = Aes256Gcm::new_from_slice(&self.0[..]).map_err(|_| AuthError::Crypto)?;
+        let nonce = Nonce::try_from(nonce).map_err(|_| AuthError::Crypto)?;
         let plaintext = Zeroizing::new(
             cipher
                 .decrypt(
-                    Nonce::from_slice(nonce),
+                    &nonce,
                     Payload {
                         msg: ciphertext,
                         aad: &Self::associated_data(account_id, user_id),
@@ -638,7 +640,7 @@ mod tests {
             .unwrap();
         client
             .batch_execute(include_str!(
-                "../../../../deploy/compose/migrations/007_owner_mfa.sql"
+                "../../../../deploy/compose/migrations/013_owner_mfa.sql"
             ))
             .await
             .unwrap();
@@ -686,7 +688,7 @@ mod tests {
             .unwrap();
         client
             .batch_execute(include_str!(
-                "../../../../deploy/compose/migrations/008_owner_mfa_failure_budget.sql"
+                "../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"
             ))
             .await
             .unwrap();

@@ -933,6 +933,8 @@ mod tests {
             include_str!("../../../deploy/compose/migrations/006_usage_metering.sql"),
             include_str!("../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"),
             include_str!("../../../deploy/compose/migrations/009_webhook_manual_replay.sql"),
+            include_str!("../../../deploy/compose/migrations/013_owner_mfa.sql"),
+            include_str!("../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
         ] {
             admin.batch_execute(migration).await.unwrap();
         }
@@ -1395,6 +1397,8 @@ mod tests {
             include_str!("../../../deploy/compose/migrations/006_usage_metering.sql"),
             include_str!("../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"),
             include_str!("../../../deploy/compose/migrations/009_webhook_manual_replay.sql"),
+            include_str!("../../../deploy/compose/migrations/013_owner_mfa.sql"),
+            include_str!("../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
         ] {
             admin.batch_execute(migration).await.unwrap();
         }
@@ -1618,6 +1622,8 @@ mod tests {
             include_str!("../../../deploy/compose/migrations/006_usage_metering.sql"),
             include_str!("../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"),
             include_str!("../../../deploy/compose/migrations/009_webhook_manual_replay.sql"),
+            include_str!("../../../deploy/compose/migrations/013_owner_mfa.sql"),
+            include_str!("../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
         ] {
             admin.batch_execute(migration).await.unwrap();
         }
