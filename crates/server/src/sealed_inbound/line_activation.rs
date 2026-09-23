@@ -128,7 +128,7 @@ async fn owner_session_active(
              JOIN users u ON u.id=s.user_id \
              JOIN memberships m ON (m.account_id,m.user_id)=(s.account_id,s.user_id) \
              WHERE s.id=$1 AND s.account_id=$2 AND s.user_id=$3 \
-               AND s.revoked_at IS NULL AND s.expires_at>now() \
+               AND s.revoked_at IS NULL AND s.expires_at>clock_timestamp() \
                AND u.email_verified_at IS NOT NULL AND m.role='owner' \
              FOR SHARE OF s,u,m",
             &[
@@ -150,7 +150,24 @@ pub async fn issue_line_challenge(
     line_id: Uuid,
     device_id: Uuid,
 ) -> Result<LineChallenge, LineActivationError> {
-    if line_id.is_nil() || device_id.is_nil() {
+    issue_line_challenge_with_lifetime(
+        client,
+        principal,
+        line_id,
+        device_id,
+        CHALLENGE_LIFETIME_SECS,
+    )
+    .await
+}
+
+async fn issue_line_challenge_with_lifetime(
+    client: &mut Client,
+    principal: &SessionPrincipal,
+    line_id: Uuid,
+    device_id: Uuid,
+    lifetime_secs: i32,
+) -> Result<LineChallenge, LineActivationError> {
+    if line_id.is_nil() || device_id.is_nil() || lifetime_secs <= 0 {
         return Err(LineActivationError::InvalidInput);
     }
     let account_id = principal.tenant.account_id();
@@ -195,7 +212,7 @@ pub async fn issue_line_challenge(
     .await?;
     let Some(line) = tx
         .query_opt(
-            "SELECT state,current_binding_generation FROM phone_lines \
+            "SELECT state,last_issued_generation FROM phone_lines \
              WHERE account_id=$1 AND id=$2 FOR UPDATE",
             &[&account_id, &line_id],
         )
@@ -204,28 +221,35 @@ pub async fn issue_line_challenge(
         return Err(LineActivationError::Unavailable);
     };
     let state: String = line.get(0);
-    let current: i64 = line.get(1);
+    let issued: i64 = line.get(1);
     if state == "revoked" {
         return Err(LineActivationError::Unavailable);
     }
-    let generation = current
+    let generation = issued
         .checked_add(1)
         .ok_or(LineActivationError::Unavailable)?;
+    // A superseded pending challenge can never later activate. Preserve its
+    // revoked binding and challenge rows as generation/replay tombstones.
     tx.execute(
-        "INSERT INTO device_line_bindings(account_id,line_id,device_id,generation) \
-         VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING",
-        &[&account_id, &line_id, &device_id, &generation],
+        "UPDATE device_line_bindings SET state='revoked' \
+         WHERE account_id=$1 AND line_id=$2 AND state='pending'",
+        &[&account_id, &line_id],
     )
     .await?;
-    if tx
-        .query_opt(
-            "SELECT 1 FROM device_line_bindings WHERE account_id=$1 AND line_id=$2 \
-             AND device_id=$3 AND generation=$4 AND state='pending' FOR UPDATE",
+    tx.execute(
+        "UPDATE phone_lines SET last_issued_generation=$3 \
+         WHERE account_id=$1 AND id=$2",
+        &[&account_id, &line_id, &generation],
+    )
+    .await?;
+    let inserted = tx
+        .execute(
+            "INSERT INTO device_line_bindings(account_id,line_id,device_id,generation) \
+         VALUES($1,$2,$3,$4)",
             &[&account_id, &line_id, &device_id, &generation],
         )
-        .await?
-        .is_none()
-    {
+        .await?;
+    if inserted != 1 {
         return Err(LineActivationError::Unavailable);
     }
     let id = Uuid::new_v4();
@@ -234,7 +258,7 @@ pub async fn issue_line_challenge(
     tx.execute(
         "INSERT INTO line_activation_challenges \
          (id,account_id,line_id,device_id,generation,nonce_digest,expires_at) \
-         VALUES($1,$2,$3,$4,$5,$6,now()+($7::integer * interval '1 second'))",
+         VALUES($1,$2,$3,$4,$5,$6,clock_timestamp()+($7::integer * interval '1 second'))",
         &[
             &id,
             &account_id,
@@ -242,10 +266,13 @@ pub async fn issue_line_challenge(
             &device_id,
             &generation,
             &&nonce_digest[..],
-            &CHALLENGE_LIFETIME_SECS,
+            &lifetime_secs,
         ],
     )
     .await?;
+    if !owner_session_active(&tx, principal).await? {
+        return Err(LineActivationError::Unavailable);
+    }
     tx.commit().await?;
     Ok(LineChallenge {
         id,
@@ -296,7 +323,7 @@ pub async fn activate_line_binding(
     }
     let Some(line) = tx
         .query_opt(
-            "SELECT state,current_binding_generation FROM phone_lines \
+            "SELECT state,current_binding_generation,last_issued_generation FROM phone_lines \
              WHERE account_id=$1 AND id=$2 FOR UPDATE",
             &[&account_id, &line_id],
         )
@@ -306,7 +333,8 @@ pub async fn activate_line_binding(
     };
     let line_state: String = line.get(0);
     let current: i64 = line.get(1);
-    if line_state == "revoked" || current.checked_add(1) != Some(generation) {
+    let issued: i64 = line.get(2);
+    if line_state == "revoked" || current >= generation || issued != generation {
         return Err(LineActivationError::Unavailable);
     }
     if tx
@@ -322,7 +350,7 @@ pub async fn activate_line_binding(
                 "SELECT 1 FROM line_activation_challenges \
                  WHERE id=$1 AND account_id=$2 AND line_id=$3 AND device_id=$4 \
                    AND generation=$5 AND nonce_digest=$6 \
-                   AND consumed_at IS NULL AND expires_at>now() FOR UPDATE",
+                   AND consumed_at IS NULL AND expires_at>clock_timestamp() FOR UPDATE",
                 &[
                     &proof.challenge_id,
                     &account_id,
@@ -361,7 +389,7 @@ pub async fn activate_line_binding(
              JOIN deployment_authority p ON p.singleton=TRUE \
              WHERE s.account_id=$1 AND s.device_id=$2 AND s.site_id=$3 \
                AND s.instance_id=$4 AND s.connection_epoch=$5 \
-               AND s.deployment_epoch=$6 AND s.lease_until>now() \
+               AND s.deployment_epoch=$6 AND s.lease_until>clock_timestamp() \
                AND d.revoked_at IS NULL AND k.revoked_at IS NULL \
                AND t.enabled=TRUE AND t.draining=FALSE AND p.epoch=$6 \
                AND NOT pg_is_in_recovery() FOR SHARE OF s,d,k,t,p",
@@ -405,7 +433,7 @@ pub async fn activate_line_binding(
     )
     .await?;
     tx.execute(
-        "UPDATE device_line_bindings SET state='active',activated_at=now(), \
+        "UPDATE device_line_bindings SET state='active',activated_at=clock_timestamp(), \
          owner_approval_digest=$5,device_confirmation_digest=$6 \
          WHERE account_id=$1 AND line_id=$2 AND device_id=$3 \
            AND generation=$4 AND state='pending'",
@@ -420,16 +448,39 @@ pub async fn activate_line_binding(
     )
     .await?;
     tx.execute(
-        "UPDATE phone_lines SET state='active',approved_at=coalesce(approved_at,now()), \
+        "UPDATE phone_lines SET state='active',approved_at=coalesce(approved_at,clock_timestamp()), \
          current_binding_generation=$3 WHERE account_id=$1 AND id=$2",
         &[&account_id, &line_id, &generation],
     )
     .await?;
     tx.execute(
-        "UPDATE line_activation_challenges SET consumed_at=now() WHERE id=$1",
+        "UPDATE line_activation_challenges SET consumed_at=clock_timestamp() WHERE id=$1",
         &[&proof.challenge_id],
     )
     .await?;
+    // PostgreSQL now() is fixed at transaction start. Recheck *after* any
+    // row-lock wait and all updates; an expired challenge/session/lease must
+    // roll the whole transition back even if it was fresh on entry.
+    if tx
+        .query_opt(
+            "SELECT 1 FROM sessions o \
+             JOIN device_sessions s ON s.account_id=o.account_id \
+             JOIN line_activation_challenges c ON c.account_id=o.account_id \
+             WHERE o.id=$1 AND s.device_id=$2 AND c.id=$3 \
+               AND o.revoked_at IS NULL AND o.expires_at>clock_timestamp() \
+               AND s.lease_until>clock_timestamp() \
+               AND c.expires_at>clock_timestamp()",
+            &[
+                &principal.session_id,
+                &session.device_id,
+                &proof.challenge_id,
+            ],
+        )
+        .await?
+        .is_none()
+    {
+        return Err(LineActivationError::Unavailable);
+    }
     tx.commit().await?;
     Ok(())
 }

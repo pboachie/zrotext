@@ -3,6 +3,29 @@
 -- accepts activation proofs yet. A future signed-manifest/root-pin ceremony
 -- must establish an owner key before this transaction can be exposed.
 
+-- Keep an issuance high-water mark separate from the active generation. A
+-- lost/revoked pending device burns its generation without interrupting the
+-- current active binding. Its tombstone and challenge remain auditable.
+ALTER TABLE phone_lines ADD COLUMN last_issued_generation bigint NOT NULL DEFAULT 0
+    CHECK (last_issued_generation >= 0);
+UPDATE phone_lines SET last_issued_generation=current_binding_generation;
+ALTER TABLE phone_lines ADD CONSTRAINT phone_lines_issued_at_least_active
+    CHECK (last_issued_generation >= current_binding_generation);
+
+CREATE FUNCTION phone_line_issued_generation_guard() RETURNS trigger
+LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
+BEGIN
+    IF NEW.last_issued_generation < OLD.last_issued_generation THEN
+        RAISE EXCEPTION 'issued line generation cannot roll back'
+            USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER phone_line_issued_generation_before_update
+    BEFORE UPDATE ON phone_lines
+    FOR EACH ROW EXECUTE FUNCTION phone_line_issued_generation_guard();
+
 CREATE TABLE line_owner_approval_keys (
     account_id uuid NOT NULL REFERENCES accounts(id),
     fingerprint bytea NOT NULL CHECK (octet_length(fingerprint) = 32),

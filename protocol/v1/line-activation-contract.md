@@ -14,8 +14,11 @@ chooses an approved, unrevoked device. An authenticated owner session may
 prepare the next pending binding generation and receive a 32-byte random
 challenge nonce with a five-minute lifetime. The database stores only its
 SHA-256 digest. An existing active generation continues working until a new
-generation activates. Expired and consumed challenges cannot activate, and
-the stored challenge identity, expiry and consumption cannot be rolled back.
+generation activates. Reissuing after a lost or revoked pending device burns
+the abandoned generation, revokes its pending binding, and issues a higher
+generation to a replacement device; old active service remains in place.
+Expired and consumed challenges cannot activate, and the stored challenge
+identity, expiry and consumption cannot be rolled back.
 
 The transaction reads an active P-256 owner approval key from
 `line_owner_approval_keys`. That table has **no provisioning route**. Before
@@ -69,7 +72,10 @@ those rows in one PostgreSQL transaction, verifies both signatures, revokes
 the previous active binding, activates the pending generation, advances the
 line generation and consumes the challenge before commit. A stale hub session,
 revoked key/device, cross-account line, altered selected subscription, changed
-signature, expired nonce or replay does not activate a line.
+signature, expired nonce or replay does not activate a line. Security time
+checks use the wall clock after lock waits and are repeated immediately before
+commit; a lease, owner session or nonce that expires while waiting rolls the
+transition back.
 
 There is still no sealed-content route, full envelope parser/verifier,
 owner-root-pinned manifest, Android proof producer, ciphertext webhook, or

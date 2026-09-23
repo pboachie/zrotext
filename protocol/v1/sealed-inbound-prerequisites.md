@@ -72,6 +72,11 @@ physical SIM is present. The original digest columns remain audit anchors;
 direct SQL fixtures can still bypass application verification. No sealed
 content route or product claim follows.
 
+Migration 019 tracks the last **issued** generation separately from the
+currently active generation. A missing pending device can be superseded and
+its generation burned without interrupting the old active binding. A late
+proof for the superseded generation is rejected.
+
 ## Required next ingest gate
 
 Before any sealed route can write `sealed_inbound_events`, it must bound and

@@ -8,6 +8,7 @@ use p256::{
     elliptic_curve::rand_core::OsRng,
 };
 use std::path::Path;
+use tokio::time::{Duration, sleep};
 use tokio_postgres::NoTls;
 
 fn signatures(
@@ -441,9 +442,314 @@ async fn signed_activation_fences_owner_device_generation_and_replay() {
     assert!(!line_binding_ready(&db, moved, line, 1).await.unwrap());
     assert!(line_binding_ready(&db, moved, line, 2).await.unwrap());
 
+    // A generation held by a missing phone must not pin this line forever.
+    // Start an activation while the line row is locked, then let its nonce,
+    // owner session, and device lease expire during the wait.
+    let timed_login = login(&db, &hasher, "line-owner@example.test", "correct horse 123")
+        .await
+        .unwrap();
+    let (mut attempt_db, attempt_connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { attempt_connection.await.unwrap() });
+    attempt_db
+        .batch_execute(&format!("SET search_path TO {schema}"))
+        .await
+        .unwrap();
+    let timed_owner = authenticate_session(&attempt_db, &hasher, &timed_login.token)
+        .await
+        .unwrap();
+    let attempt_pid: i32 = attempt_db
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await
+        .unwrap()
+        .get(0);
+    let abandoned = issue_line_challenge_with_lifetime(&mut db, &principal, line, device, 5)
+        .await
+        .unwrap();
+    assert_eq!(abandoned.generation, 3);
+    let (abandoned_device_sig, abandoned_owner_sig) =
+        signatures(&abandoned, &device_key, &owner_key, 7);
+    db.execute(
+        "UPDATE sessions SET expires_at=clock_timestamp()+interval '5 seconds' WHERE id=$1",
+        &[&timed_owner.session_id],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "UPDATE device_sessions SET lease_until=clock_timestamp()+interval '5 seconds' \
+         WHERE account_id=$1 AND device_id=$2",
+        &[&owner.account_id, &device],
+    )
+    .await
+    .unwrap();
+    let (lock_db, lock_connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { lock_connection.await.unwrap() });
+    lock_db
+        .batch_execute(&format!("SET search_path TO {schema}; BEGIN"))
+        .await
+        .unwrap();
+    lock_db
+        .query_one(
+            "SELECT id FROM phone_lines WHERE id=$1 FOR UPDATE",
+            &[&line],
+        )
+        .await
+        .unwrap();
+    let blocked_activation = tokio::spawn(async move {
+        activate_line_binding(
+            &mut attempt_db,
+            &timed_owner,
+            moved,
+            line,
+            abandoned.generation,
+            proof(&abandoned, &abandoned_device_sig, &abandoned_owner_sig),
+        )
+        .await
+    });
+    let mut saw_lock_wait = false;
+    for _ in 0..40 {
+        let wait: Option<String> = lock_db
+            .query_one(
+                "SELECT wait_event_type FROM pg_stat_activity WHERE pid=$1",
+                &[&attempt_pid],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        if wait.as_deref() == Some("Lock") {
+            saw_lock_wait = true;
+            break;
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+    assert!(saw_lock_wait, "activation never reached the line lock");
+    sleep(Duration::from_secs(6)).await;
+    lock_db.batch_execute("COMMIT").await.unwrap();
+    assert!(matches!(
+        blocked_activation.await.unwrap(),
+        Err(LineActivationError::Unavailable)
+    ));
+    db.execute(
+        "UPDATE device_sessions SET lease_until=clock_timestamp()+interval '10 minutes' \
+         WHERE account_id=$1 AND device_id=$2",
+        &[&owner.account_id, &device],
+    )
+    .await
+    .unwrap();
+    let line_row = db
+        .query_one(
+            "SELECT current_binding_generation,last_issued_generation \
+             FROM phone_lines WHERE account_id=$1 AND id=$2",
+            &[&owner.account_id, &line],
+        )
+        .await
+        .unwrap();
+    assert_eq!(line_row.get::<_, i64>(0), 2);
+    assert_eq!(line_row.get::<_, i64>(1), 3);
+
+    let replacement = Uuid::new_v4();
+    let replacement_key = SigningKey::random(&mut OsRng);
+    let replacement_sec1 = replacement_key.verifying_key().to_encoded_point(false);
+    db.execute(
+        "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'replacement line device')",
+        &[&replacement, &owner.account_id],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO device_keys(device_id,account_id,signing_key_sec1,fingerprint) \
+         VALUES($1,$2,$3,$4)",
+        &[
+            &replacement,
+            &owner.account_id,
+            &replacement_sec1.as_bytes(),
+            &&digest(replacement_sec1.as_bytes())[..],
+        ],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO device_sessions(device_id,account_id,site_id,instance_id, \
+         connection_epoch,lease_until,deployment_epoch) \
+         VALUES($1,$2,'virtual-line-hub','replacement-hub',1,now()+interval '10 minutes',1)",
+        &[&replacement, &owner.account_id],
+    )
+    .await
+    .unwrap();
+    let replacement_session = InboundSession {
+        device_id: replacement,
+        instance_id: "replacement-hub",
+        connection_epoch: 1,
+        ..moved
+    };
+    let replacement_challenge = issue_line_challenge(&mut db, &principal, line, replacement)
+        .await
+        .unwrap();
+    assert_eq!(replacement_challenge.generation, 4);
+    let abandoned_state: String = db
+        .query_one(
+            "SELECT state FROM device_line_bindings WHERE account_id=$1 \
+             AND line_id=$2 AND generation=3",
+            &[&owner.account_id, &line],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(abandoned_state, "revoked");
+    let (replacement_device_sig, replacement_owner_sig) =
+        signatures(&replacement_challenge, &replacement_key, &owner_key, 11);
+    let mut replacement_proof = proof(
+        &replacement_challenge,
+        &replacement_device_sig,
+        &replacement_owner_sig,
+    );
+    replacement_proof.observation.selected_subscription_id = 11;
+    activate_line_binding(
+        &mut db,
+        &principal,
+        replacement_session,
+        line,
+        4,
+        replacement_proof,
+    )
+    .await
+    .unwrap();
+    assert!(!line_binding_ready(&db, moved, line, 2).await.unwrap());
+    assert!(
+        line_binding_ready(&db, replacement_session, line, 4)
+            .await
+            .unwrap()
+    );
+
+    // Moving back to the original device must also use a fresh generation.
+    let returned = issue_line_challenge(&mut db, &principal, line, device)
+        .await
+        .unwrap();
+    assert_eq!(returned.generation, 5);
+    let (returned_device_sig, returned_owner_sig) =
+        signatures(&returned, &device_key, &owner_key, 7);
+    activate_line_binding(
+        &mut db,
+        &principal,
+        moved,
+        line,
+        5,
+        proof(&returned, &returned_device_sig, &returned_owner_sig),
+    )
+    .await
+    .unwrap();
+    assert!(line_binding_ready(&db, moved, line, 5).await.unwrap());
+    assert!(
+        !line_binding_ready(&db, replacement_session, line, 4)
+            .await
+            .unwrap()
+    );
+
+    // Hold the *old active binding* after the initial time checks. The final
+    // wall-clock check must roll back the row updates after this late wait.
+    let late_login = login(&db, &hasher, "line-owner@example.test", "correct horse 123")
+        .await
+        .unwrap();
+    let (mut late_db, late_connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { late_connection.await.unwrap() });
+    late_db
+        .batch_execute(&format!("SET search_path TO {schema}"))
+        .await
+        .unwrap();
+    let late_owner = authenticate_session(&late_db, &hasher, &late_login.token)
+        .await
+        .unwrap();
+    let late_pid: i32 = late_db
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await
+        .unwrap()
+        .get(0);
+    let late = issue_line_challenge_with_lifetime(&mut db, &principal, line, device, 5)
+        .await
+        .unwrap();
+    assert_eq!(late.generation, 6);
+    let (late_device_sig, late_owner_sig) = signatures(&late, &device_key, &owner_key, 7);
+    db.execute(
+        "UPDATE sessions SET expires_at=clock_timestamp()+interval '5 seconds' WHERE id=$1",
+        &[&late_owner.session_id],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "UPDATE device_sessions SET lease_until=clock_timestamp()+interval '5 seconds' \
+         WHERE account_id=$1 AND device_id=$2",
+        &[&owner.account_id, &device],
+    )
+    .await
+    .unwrap();
+    lock_db.batch_execute("BEGIN").await.unwrap();
+    lock_db
+        .query_one(
+            "SELECT generation FROM device_line_bindings \
+             WHERE account_id=$1 AND line_id=$2 AND generation=5 FOR UPDATE",
+            &[&owner.account_id, &line],
+        )
+        .await
+        .unwrap();
+    let late_activation = tokio::spawn(async move {
+        activate_line_binding(
+            &mut late_db,
+            &late_owner,
+            moved,
+            line,
+            late.generation,
+            proof(&late, &late_device_sig, &late_owner_sig),
+        )
+        .await
+    });
+    let mut saw_late_wait = false;
+    for _ in 0..40 {
+        let wait: Option<String> = lock_db
+            .query_one(
+                "SELECT wait_event_type FROM pg_stat_activity WHERE pid=$1",
+                &[&late_pid],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        if wait.as_deref() == Some("Lock") {
+            saw_late_wait = true;
+            break;
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        saw_late_wait,
+        "activation never reached the old-binding lock"
+    );
+    sleep(Duration::from_secs(6)).await;
+    lock_db.batch_execute("COMMIT").await.unwrap();
+    assert!(matches!(
+        late_activation.await.unwrap(),
+        Err(LineActivationError::Unavailable)
+    ));
+    db.execute(
+        "UPDATE device_sessions SET lease_until=clock_timestamp()+interval '10 minutes' \
+         WHERE account_id=$1 AND device_id=$2",
+        &[&owner.account_id, &device],
+    )
+    .await
+    .unwrap();
+    assert!(line_binding_ready(&db, moved, line, 5).await.unwrap());
+    let failed_state: String = db
+        .query_one(
+            "SELECT state FROM device_line_bindings WHERE account_id=$1 \
+             AND line_id=$2 AND generation=6",
+            &[&owner.account_id, &line],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(failed_state, "pending");
+
     let blocked = issue_line_challenge(&mut db, &principal, line, device)
         .await
         .unwrap();
+    assert_eq!(blocked.generation, 7);
     let (blocked_device_sig, blocked_owner_sig) = signatures(&blocked, &device_key, &owner_key, 7);
     let alias_device = Uuid::new_v4();
     db.execute(
@@ -470,7 +776,7 @@ async fn signed_activation_fences_owner_device_generation_and_replay() {
             &principal,
             moved,
             line,
-            3,
+            blocked.generation,
             proof(&blocked, &blocked_device_sig, &blocked_owner_sig)
         )
         .await,
@@ -488,7 +794,7 @@ async fn signed_activation_fences_owner_device_generation_and_replay() {
             &principal,
             moved,
             line,
-            3,
+            blocked.generation,
             proof(&blocked, &blocked_device_sig, &blocked_owner_sig)
         )
         .await,
@@ -523,7 +829,7 @@ async fn signed_activation_fences_owner_device_generation_and_replay() {
             &principal,
             moved,
             line,
-            3,
+            blocked.generation,
             proof(&blocked, &alias_device_sig, &alias_owner_sig)
         )
         .await,
@@ -536,7 +842,7 @@ async fn signed_activation_fences_owner_device_generation_and_replay() {
     )
     .await
     .unwrap();
-    assert!(!line_binding_ready(&db, moved, line, 2).await.unwrap());
+    assert!(!line_binding_ready(&db, moved, line, 5).await.unwrap());
     assert!(matches!(
         issue_line_challenge(&mut db, &principal, line, device).await,
         Err(LineActivationError::Unavailable)
