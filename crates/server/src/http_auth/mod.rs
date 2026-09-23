@@ -1004,7 +1004,7 @@ mod tests {
     fn smtp_configuration_preserves_sender_identity_without_connecting() {
         let sender = SmtpVerificationDispatcher::new(
             "smtp.example.test",
-            587,
+            465,
             "user".to_owned(),
             "test-only-password".to_owned(),
             "notice@example.test",
