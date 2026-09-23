@@ -7,6 +7,7 @@ let nextDeviceCursor = null;
 let shownDeviceCount = 0;
 let nextKeyCursor = null;
 let shownKeyCount = 0;
+let ownerEpoch = 0;
 
 function message(id, value) {
   byId(id).textContent = value;
@@ -19,6 +20,7 @@ function csrfToken() {
 }
 
 async function api(path, method = "GET", body = undefined) {
+  const requestEpoch = ownerEpoch;
   const headers = {};
   if (body !== undefined) headers["content-type"] = "application/json";
   if ((method !== "GET" && path !== "/v1/auth/login") || path.startsWith("/v1/auth/api-keys")) {
@@ -30,10 +32,17 @@ async function api(path, method = "GET", body = undefined) {
     method, headers, credentials: "same-origin", cache: "no-store", redirect: "error",
     body: body === undefined ? undefined : JSON.stringify(body),
   });
+  if (response.status === 401) {
+    clearOwnerState();
+    message("global-status", path === "/v1/auth/login" ? "Sign in to manage devices." : "Your sign-in expired. Sign in again.");
+  }
+  if (requestEpoch !== ownerEpoch && response.ok) {
+    throw new Error("Your sign-in expired. Sign in again.");
+  }
   if (!response.ok) {
     const descriptions = {
       400: "Check the entered values and try again.",
-      401: "Your sign-in expired. Sign in again.",
+      401: path === "/v1/auth/login" ? "Email or password was not accepted." : "Your sign-in expired. Sign in again.",
       403: "This action was refused. Refresh the page and sign in again.",
       404: "The requested item was not found, expired, or is no longer available.",
       409: "This action conflicts with the current device state.",
@@ -66,6 +75,22 @@ function clearPairing() {
 function clearKeySecret() {
   byId("key-secret").textContent = "";
   byId("key-secret-panel").hidden = true;
+}
+
+function clearOwnerState() {
+  ownerEpoch += 1;
+  clearPairing();
+  clearKeySecret();
+  byId("device-list").replaceChildren();
+  byId("more-devices").hidden = true;
+  nextDeviceCursor = null;
+  shownDeviceCount = 0;
+  byId("key-list").replaceChildren();
+  byId("more-keys").hidden = true;
+  nextKeyCursor = null;
+  shownKeyCount = 0;
+  message("key-create-status", "");
+  showSignedIn(false);
 }
 
 function dateText(milliseconds) {
@@ -245,17 +270,7 @@ byId("login-form").addEventListener("submit", async (event) => {
 byId("logout").addEventListener("click", async () => {
   try {
     await api("/v1/auth/logout", "POST");
-    clearPairing();
-    clearKeySecret();
-    byId("device-list").replaceChildren();
-    byId("more-devices").hidden = true;
-    nextDeviceCursor = null;
-    shownDeviceCount = 0;
-    byId("key-list").replaceChildren();
-    byId("more-keys").hidden = true;
-    nextKeyCursor = null;
-    shownKeyCount = 0;
-    showSignedIn(false);
+    clearOwnerState();
     message("global-status", "Signed out.");
   } catch (error) {
     message("global-status", `Could not sign out. ${error.message}`);
