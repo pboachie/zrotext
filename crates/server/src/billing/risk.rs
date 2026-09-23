@@ -174,11 +174,6 @@ pub(super) async fn bind_charge_customer(
             &[&customer_id],
         )
         .await?;
-    let Some(bound) = bound else {
-        tx.commit().await?;
-        return Ok(false);
-    };
-    let account_id: Uuid = bound.get(0);
     let previous = tx.query_one(
         "SELECT e.stripe_customer_id,r.account_id FROM billing_risk_events r JOIN billing_events e USING(stripe_event_id) WHERE r.stripe_event_id=$1 FOR UPDATE OF r,e",
         &[&event_id],
@@ -190,6 +185,19 @@ pub(super) async fn bind_charge_customer(
     {
         return Err(BillingError::TenantConflict);
     }
+    let Some(bound) = bound else {
+        // Persist the current Charge's customer even before Checkout creates
+        // the trusted local binding. A later bind_customer can then attach a
+        // review-required event after this worker's retries are exhausted.
+        tx.execute(
+            "UPDATE billing_events SET stripe_customer_id=$2 WHERE stripe_event_id=$1 AND stripe_customer_id IS NULL",
+            &[&event_id, &customer_id],
+        )
+        .await?;
+        tx.commit().await?;
+        return Ok(false);
+    };
+    let account_id: Uuid = bound.get(0);
     let prior_account: Option<Uuid> = previous.get(1);
     if prior_account.is_some_and(|known| known != account_id) {
         return Err(BillingError::TenantConflict);

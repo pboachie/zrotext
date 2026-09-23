@@ -107,7 +107,10 @@ the local tenant. These payment reads pin Stripe API version
 `2025-07-30.basil`; the fixed Stripe API host, test key, no redirects, bounded
 response size and timeouts apply. A successful attribution appends a hold and
 marks the risk job held. Ten failed attempts leave it in `needs_review`; a
-known tenant stays blocked. Provider snapshots, a duplicate webhook, a late
+known tenant stays blocked. The current Charge's customer is recorded even if
+the local binding has not arrived; a later trusted binding attaches a pending
+or review-required risk to that tenant. Provider snapshots, a duplicate
+webhook, a late
 `charge.dispute.closed`, and active subscription re-reconciliation cannot
 silently clear a hold. An existing idempotent message replay still returns its
 original reservation.

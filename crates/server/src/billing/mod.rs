@@ -1022,6 +1022,40 @@ mod tests {
             .unwrap()
             .get(0);
         assert_eq!(count, 2);
+        let late = Uuid::new_v4();
+        db.execute("INSERT INTO accounts(id) VALUES($1)", &[&late])
+            .await
+            .unwrap();
+        let unbound = signed_test_event(br#"{"id":"evt_disputelate1","object":"event","livemode":false,"type":"charge.dispute.created","data":{"object":{"id":"du_late1","object":"dispute","charge":"ch_late1"}}}"#);
+        assert_eq!(
+            ingest(&mut db, &unbound).await.unwrap(),
+            IngestResult::Unbound
+        );
+        assert!(
+            !risk::bind_charge_customer(&mut db, "evt_disputelate1", "cus_late1")
+                .await
+                .unwrap()
+        );
+        db.execute(
+            "UPDATE billing_risk_events SET state='needs_review',failed_attempts=10 WHERE stripe_event_id='evt_disputelate1'",
+            &[],
+        )
+        .await
+        .unwrap();
+        bind_customer(&mut db, late, "cus_late1").await.unwrap();
+        let late_risk = db
+            .query_one(
+                "SELECT r.account_id,r.state,e.stripe_customer_id FROM billing_risk_events r JOIN billing_events e USING(stripe_event_id) WHERE r.stripe_event_id='evt_disputelate1'",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(late_risk.get::<_, Option<Uuid>>(0), Some(late));
+        assert_eq!(late_risk.get::<_, String>(1), "needs_review");
+        assert_eq!(
+            late_risk.get::<_, Option<String>>(2).as_deref(),
+            Some("cus_late1")
+        );
         let live = br#"{"id":"evt_live1","object":"event","livemode":true,"type":"charge.refunded","data":{"object":{"id":"ch_live1","object":"charge","customer":"cus_holda1","amount_refunded":50}}}"#;
         let mut mac = HmacSha256::new_from_slice(SECRET.as_bytes()).unwrap();
         mac.update(b"1750000000.");
