@@ -23,10 +23,13 @@ async function ownerPage() {
     return elements.get(id);
   };
   element("key-lifetime").value = "30";
-  const state = { unauthorized: false, pendingCreate: null, nextCreateResponse: null };
+  const state = { unauthorized: false, pendingCreate: null, nextCreateResponse: null, pendingDevices: null };
   const fetch = async (url, options) => {
     if (url === "/v1/auth/session") return response(200);
+    if (url === "/v1/auth/login") return response(204);
+    if (url === "/v1/auth/logout") return response(204);
     if (url === "/v1/enrollment/devices") {
+      if (state.pendingDevices) return state.pendingDevices;
       return state.unauthorized ? response(401) : response(200, { devices: [], next_cursor: null });
     }
     if (url === "/v1/owner/messages") {
@@ -99,4 +102,20 @@ test("a deferred create JSON body cannot restore a key after a 401", async () =>
   assert.equal(element("key-secret").textContent, "");
   assert.equal(element("key-secret-panel").hidden, true);
   assert.equal(element("owner-content").hidden, true);
+});
+
+test("an old 401 cannot clear a newer owner session", async () => {
+  const { element, state } = await ownerPage();
+  let resolveOld;
+  state.pendingDevices = new Promise((resolve) => { resolveOld = resolve; });
+  const oldRequest = element("refresh-devices").listeners.click();
+  await element("logout").listeners.click();
+  state.pendingDevices = null;
+  element("email").value = "owner@example.test";
+  element("password").value = "synthetic";
+  await element("login-form").listeners.submit({ preventDefault() {} });
+  assert.equal(element("owner-content").hidden, false);
+  resolveOld(response(401));
+  await oldRequest;
+  assert.equal(element("owner-content").hidden, false);
 });
