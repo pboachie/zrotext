@@ -107,7 +107,7 @@ The SQL is illustrative: preserve state/tenant constraints in the real transacti
 
 Default per-device pacing 5 seconds, one radio operation at a time, configurable upward or to a reviewed lower bound. Fair scheduling across accounts. Maximum 100 queued messages/device initially; reject with `DEVICE_QUEUE_FULL` rather than promise delivery outside the expiry window. Heartbeat target 30 seconds while active; offline indicator after 90 seconds, subject to the Android spike. Reconnect with capped exponential backoff/jitter and pending-event reconciliation. A socket reconnect is not a new send attempt.
 
-## Implemented M1 alpha account and enrollment routes
+## Implemented M1 alpha routes
 
 The server mounts these routes only when `AUTH_ORIGIN`, `AUTH_TOKEN_PEPPER_B64`, and
 `ENROLLMENT_TOKEN_PEPPER_B64` are configured. Registration is closed unless a
@@ -116,7 +116,7 @@ it does not authenticate the M0 heartbeat socket or authorize dispatch.
 
 | Method/path | Current contract |
 |---|---|
-| POST /v1/auth/register; POST /v1/auth/verify-email | Exact HTTPS Origin; verification code is sent through configured mail, never returned by HTTP |
+| POST /v1/auth/register; POST /v1/auth/verify-email; POST /v1/auth/resend-verification | Exact HTTPS Origin; verification code is queued in a durable outbox, never returned by HTTP; resend requires the password and uses a generic response |
 | POST /v1/auth/login; POST /v1/auth/logout; GET /v1/auth/session | Owner session with secure host-only cookie; logout requires Origin and CSRF proof |
 | POST /v1/auth/api-keys; DELETE /v1/auth/api-keys/{key_id} | Owner session, Origin and CSRF proof; token shown only at creation |
 | POST /v1/enrollment/pairings; GET /v1/enrollment/pairings/{pairing_id} | Owner creates or views a five-minute, one-use pairing |
@@ -124,6 +124,8 @@ it does not authenticate the M0 heartbeat socket or authorize dispatch.
 | POST /v1/enrollment/pairings/{pairing_id}/approve; POST /v1/enrollment/pairings/{pairing_id}/cancel | Owner compares code and fingerprint, then approves or cancels with CSRF proof |
 | POST /v1/enrollment/devices/{device_id}/challenge; POST /v1/enrollment/devices/authenticate | One-use device-key proof; no socket credential is issued |
 | DELETE /v1/enrollment/devices/{device_id} | Owner revokes a device with CSRF proof |
+| GET /v1/device-stream | Native WebSocket challenge-response with the enrolled P-256 key and writer-owned session epoch. A private synthetic grant/evidence extension is server-side only, disabled by default; the Android stream remains heartbeat-only. |
+| POST /v1/alpha/messages; GET /v1/alpha/messages/{id}; POST /v1/alpha/messages/{id}/cancel | Mounted only with explicit synthetic-alpha account and recipient allowlists. Bearer API key, tenant/device scope and idempotency are required. The server builds a fixed test body from a short case ID; no caller-supplied arbitrary plaintext or recipient appears in the response. This is separate from the planned sealed-content API. |
 
 ## Planned API v1 outline
 
@@ -136,7 +138,6 @@ The following routes remain design targets, not current server behavior.
 | GET /v1/messages | Cursor list; metadata filters; no server plaintext search |
 | POST /v1/messages/{id}/cancel | 409 once execution grant/submission makes cancellation uncertain |
 | GET /v1/devices | Health, SIM, queue, last event, supported capabilities |
-| GET /v1/device-stream | WebSocket upgrade followed by fresh challenge-response |
 | POST /v1/webhooks | Strict HTTPS URL and egress validation; scoped admin action |
 | GET /v1/usage | Quotas, reservations, refunds, reset times, clear units |
 | POST /v1/billing/checkout | Server chooses price; owner-only; idempotent |

@@ -7,8 +7,9 @@ license.workspace = true
 
 [dependencies]
 zrotext-domain = { path = "../domain" }
+zrotext-delivery-store = { path = "../delivery-store" }
 axum = { version = "0.8.6", features = ["ws"] }
-tokio = { version = "1.47.1", features = ["macros", "rt-multi-thread", "net", "signal", "sync"] }
+tokio = { version = "1.47.1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
 tokio-postgres = { version = "0.7.13", features = ["with-uuid-1"] }
 subtle = "2.6.1"
 serde.workspace = true
