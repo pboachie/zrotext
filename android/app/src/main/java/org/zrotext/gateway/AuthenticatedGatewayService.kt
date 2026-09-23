@@ -50,6 +50,8 @@ class AuthenticatedGatewayService : Service() {
     @Volatile private var generation = 0
     @Volatile private var lastAckAtNanos = 0L
     @Volatile private var awaitingEventId: String? = null
+    @Volatile private var awaitingInboundId: String? = null
+    @Volatile private var inboundSentAtNanos = 0L
     @Volatile private var activeGrant: AlphaGrantValidator.Grant? = null
 
     override fun onCreate() {
@@ -78,6 +80,12 @@ class AuthenticatedGatewayService : Service() {
             return START_NOT_STICKY
         }
         val armRequested = intent?.hasExtra(EXTRA_ALPHA_RECIPIENT) == true
+        val inboundUploadRequested = intent?.getBooleanExtra(EXTRA_INBOUND_UPLOAD, false) == true
+        if (armRequested && inboundUploadRequested) {
+            AuthenticatedGatewayStatus.value = "Choose one pilot mode at a time"
+            stopSelf()
+            return START_NOT_STICKY
+        }
         val armStartedAtNanos = System.nanoTime()
         val armRecipient = intent?.getStringExtra(EXTRA_ALPHA_RECIPIENT).orEmpty()
         val armSubscriptionId = intent?.getIntExtra(
@@ -107,6 +115,8 @@ class AuthenticatedGatewayService : Service() {
         cancelTimers()
         socket?.close(1000, "replaced")
         awaitingEventId = null
+        awaitingInboundId = null
+        inboundSentAtNanos = 0L
         activeGrant = null
         val keys = DeviceSigningKeyStore(applicationContext)
         val machine = DeviceStreamMachine(deviceId) { account, device, challenge, nonce ->
@@ -163,11 +173,19 @@ class AuthenticatedGatewayService : Service() {
                                 check(webSocket.send(ready.toString()))
                             }
                             AuthenticatedGatewayStatus.value =
-                                if (armRequested) "Armed for one synthetic grant" else "Authenticated heartbeat only"
+                                when {
+                                    armRequested -> "Armed for one synthetic grant"
+                                    inboundUploadRequested -> "Inbound metadata pilot active"
+                                    else -> "Authenticated heartbeat only"
+                                }
                             AuthenticatedGatewayStatus.heartbeats = 0
                             getSystemService(NotificationManager::class.java)
                                 .notify(NOTIFICATION_ID, notification(
-                                    if (armRequested) "Armed one-send alpha test" else "Authenticated heartbeat"))
+                                    when {
+                                        armRequested -> "Armed one-send alpha test"
+                                        inboundUploadRequested -> "Inbound metadata pilot"
+                                        else -> "Authenticated heartbeat"
+                                    }))
                             lastAckAtNanos = System.nanoTime()
                             heartbeat = scheduler.scheduleAtFixedRate({
                                 if (generation == currentGeneration) {
@@ -189,7 +207,12 @@ class AuthenticatedGatewayService : Service() {
                             }, 15, 15, TimeUnit.SECONDS)
                             eventPump = scheduler.scheduleAtFixedRate({
                                 if (generation == currentGeneration) {
-                                    pumpAlphaEvents(webSocket, machine, currentGeneration)
+                                    if (!inboundUploadRequested) {
+                                        pumpAlphaEvents(webSocket, machine, currentGeneration)
+                                    }
+                                    if (inboundUploadRequested) {
+                                        pumpInboundEvents(webSocket, machine, keys, currentGeneration)
+                                    }
                                 }
                             }, 0, 3, TimeUnit.SECONDS)
                         }
@@ -237,6 +260,16 @@ class AuthenticatedGatewayService : Service() {
                                 uuid(frame, "event_id").toString(), frame.getString("state"),
                                 frame.getBoolean("submit_permitted"))
                         }
+                        "inbound_event_ack" -> {
+                            check(inboundUploadRequested && machine.phase == DeviceStreamMachine.Phase.ACTIVE)
+                            requireFields(frame, setOf("v", "type", "event_id", "created", "queued_deliveries"))
+                            check(frame.opt("created") is Boolean)
+                            val deliveries = frame.opt("queued_deliveries")
+                            check((deliveries is Int || deliveries is Long) &&
+                                (deliveries as Number).toLong() >= 0)
+                            handleInboundAck(webSocket, currentGeneration,
+                                uuid(frame, "event_id").toString())
+                        }
                         else -> error("Unexpected device frame")
                     }
                 } catch (_: Exception) {
@@ -281,6 +314,62 @@ class AuthenticatedGatewayService : Service() {
                 }
                 awaitingEventId = event.eventId
                 if (!webSocket.send(frame.toString())) fail(webSocket, currentGeneration)
+            } catch (_: Exception) {
+                fail(webSocket, currentGeneration)
+            }
+        }
+    }
+
+    private fun pumpInboundEvents(webSocket: WebSocket, machine: DeviceStreamMachine,
+                                  keys: DeviceSigningKeyStore, currentGeneration: Int) {
+        JournalRuntime.io.execute {
+            if (generation != currentGeneration) return@execute
+            try {
+                val epoch = machine.heartbeatEpoch()
+                val accountId = machine.activeAccountId()
+                val deviceId = machine.activeDeviceId()
+                val dao = SmsJournalDatabase.get(applicationContext).attempts()
+                // The writer rejects observations older than seven days; leave old rows local.
+                val pending = dao.nextInboundUpload(System.currentTimeMillis() -
+                    TimeUnit.DAYS.toMillis(6)) ?: return@execute
+                if (awaitingInboundId != null && awaitingInboundId != pending.eventId) return@execute
+                if (awaitingInboundId == pending.eventId &&
+                    System.nanoTime() - inboundSentAtNanos < TimeUnit.SECONDS.toNanos(30)) return@execute
+                val event = dao.inboundByEventId(pending.eventId) ?: error("Missing inbound event")
+                check(event.classification == InboundClassification.CAPTURED_LOCAL)
+                val upload = if (pending.signatureDer == null) {
+                    val signature = keys.signInboundMetadata(accountId, deviceId, pending, event)
+                    check(signature.size in 8..80)
+                    check(dao.signInboundUpload(pending.eventId, accountId.toString(),
+                        deviceId.toString(), signature) == 1)
+                    dao.inboundUpload(pending.eventId) ?: error("Missing signed upload")
+                } else pending
+                check(upload.accountId == accountId.toString() &&
+                    upload.deviceId == deviceId.toString())
+                awaitingInboundId = upload.eventId
+                inboundSentAtNanos = System.nanoTime()
+                if (!webSocket.send(InboundUploadFrame.encode(epoch, upload, event))) {
+                    fail(webSocket, currentGeneration)
+                }
+            } catch (_: Exception) {
+                fail(webSocket, currentGeneration)
+            }
+        }
+    }
+
+    private fun handleInboundAck(webSocket: WebSocket, currentGeneration: Int, eventId: String) {
+        JournalRuntime.io.execute {
+            if (generation != currentGeneration) return@execute
+            try {
+                val dao = SmsJournalDatabase.get(applicationContext).attempts()
+                val upload = dao.inboundUpload(eventId) ?: error("Unknown inbound upload")
+                if (awaitingInboundId != eventId) {
+                    check(upload.acknowledgedAtMs != null)
+                    return@execute
+                }
+                check(upload.acknowledgedAtMs == null)
+                check(dao.acknowledgeInboundUpload(eventId, System.currentTimeMillis()) == 1)
+                awaitingInboundId = null
             } catch (_: Exception) {
                 fail(webSocket, currentGeneration)
             }
@@ -430,6 +519,7 @@ class AuthenticatedGatewayService : Service() {
         const val EXTRA_DEVICE_ID = "device_id"
         const val EXTRA_ALPHA_RECIPIENT = "alpha_recipient"
         const val EXTRA_ALPHA_SUBSCRIPTION_ID = "alpha_subscription_id"
+        const val EXTRA_INBOUND_UPLOAD = "inbound_upload"
         private const val CHANNEL = "authenticated_gateway"
         private const val NOTIFICATION_ID = 1002
         private const val MAX_FRAME_BYTES = 4096

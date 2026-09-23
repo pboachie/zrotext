@@ -35,3 +35,25 @@ epoch; release of an old socket cannot clear the newer lease. A drained,
 disabled, revoked, or writer-isolated hub closes its session. The phone stops
 its foreground heartbeat on protocol failure or timeout; automatic reconnect
 has not been implemented. Neither a session nor a heartbeat authorizes SMS.
+
+## Opt-in inbound metadata pilot (Android client)
+
+The Android app exposes a separate **Start inbound metadata pilot** action. It
+is off by default. The hub must separately enable `INBOUND_PILOT_ENABLED=true`.
+After authenticated session setup, the phone sends only previously captured
+`captured_local` events. It does not transmit the sender address, SMS body, PDU,
+or the local AES-GCM vault ciphertext. This pilot does not expose reply content
+to customers and has not passed a live WSS interoperability test.
+
+The client frame is
+`{"v":1,"type":"inbound_event","connection_epoch":1,"event_id":"UUID","sequence":1,"message_id":"UUID","attempt_id":"UUID","classification":"captured_local","observed_at_ms":1700000000000,"part_count":1,"signature_der":"BASE64URL_NO_PAD"}`.
+The enrolled P-256 key signs the `zrotext-inbound-v1` domain-separated bytes
+described by the server inbound foundation, with content kind 0 and SHA-256 of
+empty bytes. Room reserves a positive auto-incremented sequence for each
+captured event and persists its DER signature before the first send. One frame
+is outstanding at a time; it replays after 30 seconds without acknowledgment
+or immediately in a newly authenticated session. Only a matching
+`{"v":1,"type":"inbound_event_ack","event_id":"UUID","created":true,"queued_deliveries":0}`
+marks the row acknowledged locally. Observations older than six days remain
+local because the hub rejects them after seven days. Android never interprets
+this acknowledgment as authorization to send an SMS.
