@@ -140,10 +140,12 @@ class AttemptJournalRoomTest {
         dao.markUnsentReservations(20)
         assertEquals(AttemptState.NOT_SUBMITTED, dao.getAttempt(attempt)?.state)
         assertEquals(false, dao.acknowledgeAlphaIntent(intent, true, 30))
-        assertEquals(null, dao.nextAlphaEvent())
+        val proof = dao.nextAlphaEvent()!!
+        assertEquals("proven_no_submit", proof.evidence)
+        assertEquals(attempt, proof.attemptId)
         dao.recordCallback(attempt, 0, false, Activity.RESULT_OK, null, 40)
         assertEquals(AttemptState.UNKNOWN, dao.getAttempt(attempt)?.state)
-        assertEquals(null, dao.nextAlphaEvent())
+        assertEquals("callback_conflict", dao.nextAlphaEvent()?.evidence)
 
         val secondAttempt = "35019d46-ad54-4acd-a82e-06179feeb08a"
         val secondIntent = "94d2431f-e8d2-43f6-b953-d5b40d4e7883"
@@ -151,6 +153,45 @@ class AttemptJournalRoomTest {
         assertEquals(false, dao.acknowledgeAlphaIntent(secondIntent, false, 60))
         assertEquals(AttemptState.NOT_SUBMITTED, dao.getAttempt(secondAttempt)?.state)
         assertEquals(0, dao.markAcknowledgedNoRadio(secondAttempt, 61))
+    }
+
+    @Test fun preflightRefusalEmitsOneDurableNoRadioProof() {
+        val attempt = "014c67cf-0c53-4029-bf28-6d8ffcf1ca30"
+        val message = "52c1974b-8e10-4cf8-af5b-3191f489d38b"
+        val intent = "1e62a0b5-985e-4fc8-b5c0-8813d25f7e71"
+        dao.reserveAlpha(attempt, message, 3, 1, intent, 10)
+        assertTrue(dao.acknowledgeAlphaIntent(intent, true, 20))
+        assertEquals(1, dao.markAcknowledgedNoRadio(attempt, 21))
+        assertEquals(0, dao.markAcknowledgedNoRadio(attempt, 22))
+        val proof = dao.nextAlphaEvent()!!
+        assertEquals("proven_no_submit", proof.evidence)
+        assertEquals(attempt, proof.attemptId)
+        dao.acknowledgeAlphaEvent(proof.eventId, 23)
+
+        val secondAttempt = "7c7e7563-5dda-48b3-9522-3d102ba4bde6"
+        val secondIntent = "c9f38b2e-3042-4ab2-a593-8f09816da65c"
+        dao.reserveAlpha(secondAttempt, message, 3, 1, secondIntent, 30)
+        assertTrue(dao.acknowledgeAlphaIntent(secondIntent, true, 31))
+        assertEquals(1, dao.consumeRadioStart(secondAttempt, message, 3, 1, 32))
+        assertEquals(1, dao.markPreflightNoRadio(secondAttempt, 33))
+        assertEquals(0, dao.markPreflightNoRadio(secondAttempt, 34))
+        assertEquals("proven_no_submit", dao.nextAlphaEvent()?.evidence)
+        assertEquals(secondAttempt, dao.nextAlphaEvent()?.attemptId)
+    }
+
+    @Test fun replacedStreamRetiresUnacknowledgedIntentWithoutRadio() {
+        val attempt = "b7316512-822c-4241-b836-a586c7ad29cb"
+        val message = "8dc695de-1038-44b9-85fd-97b697265cc8"
+        val intent = "22bd3890-f075-468d-89cc-9fc4c137673d"
+        dao.reserveAlpha(attempt, message, 3, 1, intent, 10)
+        dao.retireOrphanedAlphaIntents(20)
+        assertEquals(AttemptState.NOT_SUBMITTED, dao.getAttempt(attempt)?.state)
+        assertEquals(20L, dao.getAlphaEvent(intent)?.acknowledgedAtMs)
+        val proof = dao.nextAlphaEvent()!!
+        assertEquals("proven_no_submit", proof.evidence)
+        dao.retireOrphanedAlphaIntents(21)
+        assertEquals(proof.eventId, dao.nextAlphaEvent()?.eventId)
+        assertEquals(0, dao.consumeRadioStart(attempt, message, 3, 1, 22))
     }
 
     @Test fun versionOneJournalMigratesWithoutDiscardingAttempt() {

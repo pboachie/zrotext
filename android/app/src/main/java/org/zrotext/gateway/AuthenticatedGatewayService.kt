@@ -395,9 +395,20 @@ class AuthenticatedGatewayService : Service() {
             if (generation != currentGeneration) return@execute
             try {
                 val epoch = machine.heartbeatEpoch()
-                val event = SmsJournalDatabase.get(applicationContext).attempts().nextAlphaEvent()
-                    ?: return@execute
-                if (awaitingEventId != null && awaitingEventId != event.eventId) return@execute
+                val dao = SmsJournalDatabase.get(applicationContext).attempts()
+                val grant = activeGrant
+                if (grant == null || grant.connectionEpoch != epoch ||
+                    System.currentTimeMillis() >= grant.expiresAtMs) {
+                    dao.retireOrphanedAlphaIntents(System.currentTimeMillis())
+                }
+                val event = dao.nextAlphaEvent() ?: return@execute
+                if (awaitingEventId != null && awaitingEventId != event.eventId) {
+                    // A contradictory callback can retract an unsent no-radio
+                    // proof. Do not let its retired ID block the conflict event.
+                    val awaiting = dao.getAlphaEvent(awaitingEventId!!)
+                    if (awaiting != null && awaiting.acknowledgedAtMs == null) return@execute
+                    awaitingEventId = null
+                }
                 val frame = JSONObject().put("v", 1).put("type", "radio_event")
                     .put("connection_epoch", epoch).put("event_id", event.eventId)
                     .put("message_id", event.messageId).put("attempt_id", event.attemptId)
