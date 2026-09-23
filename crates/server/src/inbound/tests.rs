@@ -1,6 +1,6 @@
 use super::*;
 use p256::ecdsa::{SigningKey, signature::Signer};
-use rand::rngs::OsRng;
+use p256::elliptic_curve::rand_core::OsRng;
 
 #[tokio::test]
 async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
@@ -342,7 +342,7 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
     };
     let next_sig: Signature = signing.sign(&signed_event_bytes(session, &next));
     let next_der = next_sig.to_der().as_bytes().to_vec();
-    assert!(
+    assert_eq!(
         ingest(
             &mut db,
             session,
@@ -352,8 +352,22 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
             }
         )
         .await
-        .unwrap()
-        .created
+        .unwrap(),
+        IngestOutcome {
+            created: true,
+            queued_deliveries: 1
+        }
+    );
+    // Make the due condition explicit instead of relying on nearly coincident
+    // insertion and claim transaction timestamps.
+    assert_eq!(
+        db.execute(
+            "UPDATE webhook_deliveries SET next_attempt_at=now()-interval '1 second' WHERE event_id=$1",
+            &[&next.event_id],
+        )
+        .await
+        .unwrap(),
+        1
     );
     let stored_size: i32 = db
         .query_one(

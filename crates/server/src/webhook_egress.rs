@@ -2,7 +2,7 @@
 //! A bounded HTTPS sender for ciphertext webhook bodies. The network firewall
 //! remains a required second SSRF boundary.
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use reqwest::{Url, redirect, retry};
 use sha2::Sha256;
 use std::{
