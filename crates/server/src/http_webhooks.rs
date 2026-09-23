@@ -20,7 +20,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use rand::{RngCore, rngs::OsRng};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
-use tokio_postgres::{Client, NoTls};
+use tokio_postgres::{Client, NoTls, error::SqlState};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
@@ -41,6 +41,10 @@ pub fn router(state: WebhookHttpState) -> Router {
         .route(
             "/v1/webhooks/{endpoint_id}/deliveries",
             get(list_deliveries),
+        )
+        .route(
+            "/v1/webhooks/{endpoint_id}/deliveries/{delivery_id}/replay",
+            post(replay_delivery),
         )
         .route("/v1/webhooks/{endpoint_id}/enable", post(enable_endpoint))
         .route("/v1/webhooks/{endpoint_id}/disable", post(disable_endpoint))
@@ -64,6 +68,8 @@ enum EndpointError {
     BadRequest,
     NotFound,
     Limit,
+    ReplayConflict,
+    ReplayLimit,
     Unavailable,
 }
 
@@ -73,6 +79,8 @@ impl IntoResponse for EndpointError {
             Self::BadRequest => (StatusCode::BAD_REQUEST, "invalid_webhook_endpoint"),
             Self::NotFound => (StatusCode::NOT_FOUND, "not_found"),
             Self::Limit => (StatusCode::CONFLICT, "endpoint_limit"),
+            Self::ReplayConflict => (StatusCode::CONFLICT, "replay_not_eligible"),
+            Self::ReplayLimit => (StatusCode::CONFLICT, "replay_limit"),
             Self::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
         };
         (status, Json(serde_json::json!({"code": code}))).into_response()
@@ -177,6 +185,7 @@ struct HistoryQuery {
 
 #[derive(Serialize)]
 struct AttemptView {
+    generation: i16,
     attempt_number: i16,
     started_at_ms: i64,
     completed_at_ms: Option<i64>,
@@ -189,6 +198,8 @@ struct DeliveryView {
     delivery_id: Uuid,
     event_id: Uuid,
     status: String,
+    generation: i16,
+    terminal_reason: Option<String>,
     attempt_count: i16,
     next_attempt_at_ms: Option<i64>,
     created_at_ms: i64,
@@ -260,7 +271,7 @@ async fn history(
     let anchor_id = anchor.map(|(_, id)| id);
     let rows = client
         .query(
-            "SELECT id,event_id,status,attempt_count, \
+            "SELECT id,event_id,status,generation,terminal_reason,attempt_count, \
              CASE WHEN status='pending' THEN (extract(epoch FROM next_attempt_at)*1000)::bigint END, \
              (extract(epoch FROM created_at)*1000)::bigint, \
              (extract(epoch FROM updated_at)*1000)::bigint \
@@ -279,10 +290,12 @@ async fn history(
             delivery_id: row.get(0),
             event_id: row.get(1),
             status: row.get(2),
-            attempt_count: row.get(3),
-            next_attempt_at_ms: row.get(4),
-            created_at_ms: row.get(5),
-            updated_at_ms: row.get(6),
+            generation: row.get(3),
+            terminal_reason: row.get(4),
+            attempt_count: row.get(5),
+            next_attempt_at_ms: row.get(6),
+            created_at_ms: row.get(7),
+            updated_at_ms: row.get(8),
             attempts: Vec::new(),
         })
         .collect();
@@ -303,12 +316,12 @@ async fn history(
             .collect();
         let attempts = client
             .query(
-                "SELECT a.delivery_id,a.attempt_number, \
+                "SELECT a.delivery_id,a.generation,a.attempt_number, \
                  (extract(epoch FROM a.started_at)*1000)::bigint, \
                  (extract(epoch FROM a.completed_at)*1000)::bigint,a.outcome,a.http_status \
                  FROM webhook_attempts a JOIN webhook_deliveries d ON d.id=a.delivery_id \
                  WHERE d.account_id=$1 AND d.endpoint_id=$2 AND a.delivery_id=ANY($3) \
-                 ORDER BY a.delivery_id,a.attempt_number",
+                 ORDER BY a.delivery_id,a.generation,a.attempt_number",
                 &[&account_id, &endpoint_id, &ids],
             )
             .await
@@ -317,11 +330,12 @@ async fn history(
             let id: Uuid = row.get(0);
             if let Some(&index) = by_id.get(&id) {
                 deliveries[index].attempts.push(AttemptView {
-                    attempt_number: row.get(1),
-                    started_at_ms: row.get(2),
-                    completed_at_ms: row.get(3),
-                    outcome: row.get(4),
-                    http_status: row.get(5),
+                    generation: row.get(1),
+                    attempt_number: row.get(2),
+                    started_at_ms: row.get(3),
+                    completed_at_ms: row.get(4),
+                    outcome: row.get(5),
+                    http_status: row.get(6),
                 });
             }
         }
@@ -329,6 +343,165 @@ async fn history(
     Ok(HistoryResponse {
         deliveries,
         next_before,
+    })
+}
+
+#[derive(Serialize)]
+struct ReplayResponse {
+    delivery_id: Uuid,
+    generation: i16,
+    created: bool,
+}
+
+async fn replay_delivery(
+    State(state): State<Arc<WebhookHttpState>>,
+    Path((endpoint_id, delivery_id)): Path<(Uuid, Uuid)>,
+    headers: HeaderMap,
+) -> Response {
+    let Ok(mut client) = connect(&state).await else {
+        return EndpointError::Unavailable.into_response();
+    };
+    let principal = match owner(&client, &state, &headers, true).await {
+        Ok(principal) => principal,
+        Err(response) => return response,
+    };
+    // A random request UUID is durable across HTTP retries and is never
+    // generated by the server on behalf of an ambiguous browser retry.
+    let request_id = headers
+        .get("idempotency-key")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| Uuid::parse_str(value).ok());
+    let Some(request_id) = request_id.filter(|id| id.get_version_num() == 4) else {
+        return EndpointError::BadRequest.into_response();
+    };
+    match replay(
+        &mut client,
+        principal.tenant.account_id(),
+        endpoint_id,
+        delivery_id,
+        request_id,
+    )
+    .await
+    {
+        Ok(result) => (StatusCode::ACCEPTED, Json(result)).into_response(),
+        Err(error) => error.into_response(),
+    }
+}
+
+async fn replay(
+    client: &mut Client,
+    account_id: Uuid,
+    endpoint_id: Uuid,
+    delivery_id: Uuid,
+    request_id: Uuid,
+) -> Result<ReplayResponse, EndpointError> {
+    let tx = client
+        .transaction()
+        .await
+        .map_err(|_| EndpointError::Unavailable)?;
+    // Match disable/rotation's lock order. A retired endpoint cannot gain a
+    // new queue item while one of those mutations is committing.
+    let endpoint = tx
+        .query_opt(
+            "SELECT enabled FROM webhook_endpoints WHERE account_id=$1 AND id=$2 FOR UPDATE",
+            &[&account_id, &endpoint_id],
+        )
+        .await
+        .map_err(|_| EndpointError::Unavailable)?
+        .ok_or(EndpointError::NotFound)?;
+    let enabled: bool = endpoint.get(0);
+    let delivery = tx
+        .query_opt(
+            "SELECT status,terminal_reason,generation,attempt_count,lease_owner,lease_until \
+             FROM webhook_deliveries WHERE account_id=$1 AND endpoint_id=$2 AND id=$3 FOR UPDATE",
+            &[&account_id, &endpoint_id, &delivery_id],
+        )
+        .await
+        .map_err(|_| EndpointError::Unavailable)?
+        .ok_or(EndpointError::NotFound)?;
+    let prior = tx
+        .query_opt(
+            "SELECT delivery_id,generation FROM webhook_replay_requests \
+             WHERE account_id=$1 AND request_id=$2",
+            &[&account_id, &request_id],
+        )
+        .await
+        .map_err(|_| EndpointError::Unavailable)?;
+    if let Some(prior) = prior {
+        let prior_delivery: Uuid = prior.get(0);
+        if prior_delivery != delivery_id {
+            return Err(EndpointError::ReplayConflict);
+        }
+        let generation = prior.get(1);
+        tx.commit().await.map_err(|_| EndpointError::Unavailable)?;
+        return Ok(ReplayResponse {
+            delivery_id,
+            generation,
+            created: false,
+        });
+    }
+    let status: String = delivery.get(0);
+    let reason: Option<String> = delivery.get(1);
+    let generation: i16 = delivery.get(2);
+    let attempt_count: i16 = delivery.get(3);
+    let lease_owner: Option<String> = delivery.get(4);
+    let lease_until: Option<std::time::SystemTime> = delivery.get(5);
+    if !enabled
+        || status != "dead"
+        || reason.as_deref() != Some("failed")
+        || attempt_count != 7
+        || lease_owner.is_some()
+        || lease_until.is_some()
+    {
+        return Err(EndpointError::ReplayConflict);
+    }
+    if generation >= 3 {
+        return Err(EndpointError::ReplayLimit);
+    }
+    // Require all seven prior attempts to be completed failures. The status
+    // flag alone is insufficient to authorize a replay after manual repair.
+    let evidence = tx
+        .query_one(
+            "SELECT count(*),coalesce(bool_and(completed_at IS NOT NULL AND \
+             outcome IN ('timeout','http_error','network_error')),false) \
+             FROM webhook_attempts WHERE delivery_id=$1 AND generation=$2",
+            &[&delivery_id, &generation],
+        )
+        .await
+        .map_err(|_| EndpointError::Unavailable)?;
+    let count: i64 = evidence.get(0);
+    let all_failed: bool = evidence.get(1);
+    if count != 7 || !all_failed {
+        return Err(EndpointError::ReplayConflict);
+    }
+    let new_generation = generation + 1;
+    let inserted = tx
+        .execute(
+            "INSERT INTO webhook_replay_requests(account_id,request_id,delivery_id,generation) \
+             VALUES($1,$2,$3,$4)",
+            &[&account_id, &request_id, &delivery_id, &new_generation],
+        )
+        .await;
+    match inserted {
+        Ok(1) => {}
+        Err(error) if error.code() == Some(&SqlState::UNIQUE_VIOLATION) => {
+            return Err(EndpointError::ReplayConflict);
+        }
+        _ => return Err(EndpointError::Unavailable),
+    }
+    tx.execute(
+        "UPDATE webhook_deliveries SET status='pending',terminal_reason=NULL, \
+         generation=$4,attempt_count=0,next_attempt_at=now(),updated_at=now() \
+         WHERE account_id=$1 AND endpoint_id=$2 AND id=$3",
+        &[&account_id, &endpoint_id, &delivery_id, &new_generation],
+    )
+    .await
+    .map_err(|_| EndpointError::Unavailable)?;
+    tx.commit().await.map_err(|_| EndpointError::Unavailable)?;
+    Ok(ReplayResponse {
+        delivery_id,
+        generation: new_generation,
+        created: true,
     })
 }
 
@@ -594,9 +767,20 @@ async fn retire(
     .await
     .map_err(|_| EndpointError::Unavailable)?;
     tx.execute(
-        "UPDATE webhook_deliveries SET status='dead',lease_owner=NULL,lease_until=NULL, \
+        "UPDATE webhook_deliveries SET status='dead',terminal_reason='retired', \
+         lease_owner=NULL,lease_until=NULL, \
          updated_at=now() WHERE account_id=$1 AND endpoint_id=$2 \
          AND status IN ('pending','leased')",
+        &[&principal.tenant.account_id(), &endpoint_id],
+    )
+    .await
+    .map_err(|_| EndpointError::Unavailable)?;
+    // A prior failed delivery may be replayed only while the endpoint remains
+    // enabled with its original signing secret. Disable/rotate retires it too.
+    tx.execute(
+        "UPDATE webhook_deliveries SET terminal_reason='retired',updated_at=now() \
+         WHERE account_id=$1 AND endpoint_id=$2 AND status='dead' \
+         AND terminal_reason='failed'",
         &[&principal.tenant.account_id(), &endpoint_id],
     )
     .await
@@ -642,7 +826,24 @@ mod tests {
     }
 
     async fn json_body(response: Response) -> Value {
-        serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap()
+        serde_json::from_slice(&to_bytes(response.into_body(), 65536).await.unwrap()).unwrap()
+    }
+
+    fn replay_request(
+        endpoint_id: Uuid,
+        delivery_id: Uuid,
+        key: Option<Uuid>,
+        session: Option<(&str, &str)>,
+        csrf: bool,
+    ) -> Request<Body> {
+        let uri = format!("/v1/webhooks/{endpoint_id}/deliveries/{delivery_id}/replay");
+        let mut request = request(Method::POST, &uri, json!({}), session, csrf);
+        if let Some(key) = key {
+            request
+                .headers_mut()
+                .insert("idempotency-key", key.to_string().parse().unwrap());
+        }
+        request
     }
 
     async fn history_fixture(
@@ -683,6 +884,507 @@ mod tests {
         ids
     }
 
+    async fn mark_exhausted_failure(admin: &Client, delivery_id: Uuid, generation: i16) {
+        admin
+            .execute(
+                "UPDATE webhook_deliveries SET status='dead',terminal_reason='failed', \
+                 generation=$2,attempt_count=7 WHERE id=$1",
+                &[&delivery_id, &generation],
+            )
+            .await
+            .unwrap();
+        for number in 1_i16..=7 {
+            admin
+                .execute(
+                    "INSERT INTO webhook_attempts(id,delivery_id,generation,attempt_number, \
+                     completed_at,outcome,http_status) VALUES($1,$2,$3,$4,now(),'http_error',500)",
+                    &[&Uuid::new_v4(), &delivery_id, &generation, &number],
+                )
+                .await
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn manual_replay_is_owner_scoped_csrf_protected_bounded_and_idempotent() {
+        let Ok(root_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
+            eprintln!("set ZT_AUTH_TEST_DATABASE_URL to run webhook replay database test");
+            return;
+        };
+        let (mut admin, connection) = tokio_postgres::connect(&root_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let schema = format!("webhook_replay_test_{}", Uuid::new_v4().simple());
+        admin
+            .batch_execute(&format!(
+                "CREATE SCHEMA {schema}; SET search_path TO {schema}"
+            ))
+            .await
+            .unwrap();
+        for migration in [
+            include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
+            include_str!("../../../deploy/compose/migrations/002_auth.sql"),
+            include_str!("../../../deploy/compose/migrations/003_delivery.sql"),
+            include_str!("../../../deploy/compose/migrations/004_enrollment.sql"),
+            include_str!("../../../deploy/compose/migrations/005_verification_outbox.sql"),
+            include_str!("../../../deploy/compose/migrations/006_usage_metering.sql"),
+            include_str!("../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"),
+            include_str!("../../../deploy/compose/migrations/008_webhook_manual_replay.sql"),
+        ] {
+            admin.batch_execute(migration).await.unwrap();
+        }
+        let hasher = Arc::new(TokenHasher::new(vec![39; 32]).unwrap());
+        let a = register(
+            &mut admin,
+            &hasher,
+            "replay-a@example.test",
+            "correct horse 123",
+        )
+        .await
+        .unwrap();
+        let b = register(
+            &mut admin,
+            &hasher,
+            "replay-b@example.test",
+            "correct horse 456",
+        )
+        .await
+        .unwrap();
+        verify_email(&mut admin, &hasher, &a.verification_token)
+            .await
+            .unwrap();
+        verify_email(&mut admin, &hasher, &b.verification_token)
+            .await
+            .unwrap();
+        let sa = login(
+            &admin,
+            &hasher,
+            "replay-a@example.test",
+            "correct horse 123",
+        )
+        .await
+        .unwrap();
+        let sb = login(
+            &admin,
+            &hasher,
+            "replay-b@example.test",
+            "correct horse 456",
+        )
+        .await
+        .unwrap();
+        let separator = if root_url.contains('?') { '&' } else { '?' };
+        let scoped_url = format!("{root_url}{separator}options=-csearch_path%3D{schema}");
+        let app = router(WebhookHttpState {
+            database_url: scoped_url.clone(),
+            auth_hasher: hasher,
+            canonical_origin: "https://test.example".into(),
+            vault: Arc::new(WebhookSecretVault::new(1, Zeroizing::new(vec![7_u8; 32])).unwrap()),
+        });
+        let endpoint = Uuid::new_v4();
+        let foreign_endpoint = Uuid::new_v4();
+        let ids = history_fixture(&admin, a.account_id, endpoint, 6).await;
+        let foreign_ids = history_fixture(&admin, b.account_id, foreign_endpoint, 1).await;
+        admin
+            .execute(
+                "UPDATE webhook_endpoints SET enabled=true, \
+                 callback_url='https://hooks.example.org/receive' WHERE id=$1",
+                &[&endpoint],
+            )
+            .await
+            .unwrap();
+        mark_exhausted_failure(&admin, ids[1], 1).await;
+        admin
+            .execute(
+                "UPDATE webhook_deliveries SET status='dead',terminal_reason='policy_rejected', \
+                 attempt_count=1 WHERE id=$1",
+                &[&ids[2]],
+            )
+            .await
+            .unwrap();
+        admin.execute("INSERT INTO webhook_attempts(id,delivery_id,attempt_number,completed_at,outcome) VALUES($1,$2,1,now(),'policy_rejected')", &[&Uuid::new_v4(), &ids[2]]).await.unwrap();
+        admin
+            .execute(
+                "UPDATE webhook_deliveries SET status='dead',terminal_reason='retired' WHERE id=$1",
+                &[&ids[3]],
+            )
+            .await
+            .unwrap();
+        admin
+            .execute(
+                "UPDATE webhook_deliveries SET status='leased',attempt_count=1, \
+                 lease_owner='fixture',lease_until=now()+interval '5 minutes' WHERE id=$1",
+                &[&ids[5]],
+            )
+            .await
+            .unwrap();
+        admin
+            .execute(
+                "INSERT INTO webhook_attempts(id,delivery_id,attempt_number) VALUES($1,$2,1)",
+                &[&Uuid::new_v4(), &ids[5]],
+            )
+            .await
+            .unwrap();
+        let key = Uuid::new_v4();
+        let anonymous = app
+            .clone()
+            .oneshot(replay_request(endpoint, ids[1], Some(key), None, true))
+            .await
+            .unwrap();
+        assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
+        let no_csrf = app
+            .clone()
+            .oneshot(replay_request(
+                endpoint,
+                ids[1],
+                Some(key),
+                Some((&sa.token, &sa.csrf_token)),
+                false,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(no_csrf.status(), StatusCode::FORBIDDEN);
+        let missing_key = app
+            .clone()
+            .oneshot(replay_request(
+                endpoint,
+                ids[1],
+                None,
+                Some((&sa.token, &sa.csrf_token)),
+                true,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(missing_key.status(), StatusCode::BAD_REQUEST);
+        let foreign = app
+            .clone()
+            .oneshot(replay_request(
+                endpoint,
+                ids[1],
+                Some(key),
+                Some((&sb.token, &sb.csrf_token)),
+                true,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(foreign.status(), StatusCode::NOT_FOUND);
+        let foreign_delivery = app
+            .clone()
+            .oneshot(replay_request(
+                foreign_endpoint,
+                foreign_ids[0],
+                Some(key),
+                Some((&sa.token, &sa.csrf_token)),
+                true,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(foreign_delivery.status(), StatusCode::NOT_FOUND);
+        for id in [ids[0], ids[2], ids[3], ids[4], ids[5]] {
+            let denied = app
+                .clone()
+                .oneshot(replay_request(
+                    endpoint,
+                    id,
+                    Some(Uuid::new_v4()),
+                    Some((&sa.token, &sa.csrf_token)),
+                    true,
+                ))
+                .await
+                .unwrap();
+            assert_eq!(
+                denied.status(),
+                StatusCode::CONFLICT,
+                "unexpected replay for {id}"
+            );
+        }
+
+        // Multiple independent database clients race the same owner request.
+        // Exactly one generation is created; every retry observes its result.
+        let mut tasks = tokio::task::JoinSet::new();
+        let target_delivery = ids[1];
+        for _ in 0..12 {
+            let url = scoped_url.clone();
+            tasks.spawn(async move {
+                let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+                tokio::spawn(async move { connection.await.unwrap() });
+                replay(&mut db, a.account_id, endpoint, target_delivery, key)
+                    .await
+                    .unwrap()
+            });
+        }
+        let mut created = 0;
+        while let Some(result) = tasks.join_next().await {
+            let result = result.unwrap();
+            assert_eq!(result.delivery_id, ids[1]);
+            assert_eq!(result.generation, 2);
+            created += usize::from(result.created);
+        }
+        assert_eq!(created, 1);
+        let count: i64 = admin
+            .query_one(
+                "SELECT count(*) FROM webhook_replay_requests WHERE delivery_id=$1",
+                &[&ids[1]],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(count, 1);
+        let history: i64 = admin
+            .query_one(
+                "SELECT count(*) FROM webhook_attempts WHERE delivery_id=$1 AND generation=1",
+                &[&ids[1]],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(history, 7);
+        let repeated = app
+            .clone()
+            .oneshot(replay_request(
+                endpoint,
+                ids[1],
+                Some(key),
+                Some((&sa.token, &sa.csrf_token)),
+                true,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(repeated.status(), StatusCode::ACCEPTED);
+        assert_eq!(json_body(repeated).await["created"], false);
+        let other_delivery_same_key = app
+            .clone()
+            .oneshot(replay_request(
+                endpoint,
+                ids[2],
+                Some(key),
+                Some((&sa.token, &sa.csrf_token)),
+                true,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(other_delivery_same_key.status(), StatusCode::CONFLICT);
+        admin
+            .execute(
+                "UPDATE webhook_deliveries SET next_attempt_at=now()+interval '1 day' WHERE id=$1",
+                &[&ids[4]],
+            )
+            .await
+            .unwrap();
+        for number in 1_i16..=7 {
+            if number > 1 {
+                admin.execute("UPDATE webhook_deliveries SET next_attempt_at=now()-interval '1 second' WHERE id=$1", &[&ids[1]]).await.unwrap();
+            }
+            let lease = crate::inbound::claim_webhook(&mut admin, "worker-replay")
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                (lease.delivery_id, lease.generation, lease.attempt_number),
+                (ids[1], 2, number)
+            );
+            if number == 1 {
+                let mut stale = lease.clone();
+                stale.generation = 1;
+                assert!(matches!(
+                    crate::inbound::load_webhook_payload(&admin, &stale).await,
+                    Err(crate::inbound::InboundError::StaleLease)
+                ));
+                assert!(matches!(
+                    crate::inbound::finish_webhook(
+                        &mut admin,
+                        &stale,
+                        crate::inbound::WebhookOutcome::Ack,
+                        Some(200)
+                    )
+                    .await,
+                    Err(crate::inbound::InboundError::StaleLease)
+                ));
+            }
+            crate::inbound::finish_webhook(
+                &mut admin,
+                &lease,
+                crate::inbound::WebhookOutcome::Timeout,
+                None,
+            )
+            .await
+            .unwrap();
+        }
+        let exhausted_generation: (String, Option<String>) = admin
+            .query_one(
+                "SELECT status,terminal_reason FROM webhook_deliveries WHERE id=$1",
+                &[&ids[1]],
+            )
+            .await
+            .map(|row| (row.get(0), row.get(1)))
+            .unwrap();
+        assert_eq!(exhausted_generation, ("dead".into(), Some("failed".into())));
+        let late_retry = app
+            .clone()
+            .oneshot(replay_request(
+                endpoint,
+                ids[1],
+                Some(key),
+                Some((&sa.token, &sa.csrf_token)),
+                true,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(late_retry.status(), StatusCode::ACCEPTED);
+        let late_retry = json_body(late_retry).await;
+        assert_eq!(late_retry["generation"], 2);
+        assert_eq!(late_retry["created"], false);
+        let second_key = Uuid::new_v4();
+        let second = app
+            .clone()
+            .oneshot(replay_request(
+                endpoint,
+                ids[1],
+                Some(second_key),
+                Some((&sa.token, &sa.csrf_token)),
+                true,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(second.status(), StatusCode::ACCEPTED);
+        assert_eq!(json_body(second).await["generation"], 3);
+        for number in 1_i16..=7 {
+            if number > 1 {
+                admin.execute("UPDATE webhook_deliveries SET next_attempt_at=now()-interval '1 second' WHERE id=$1", &[&ids[1]]).await.unwrap();
+            }
+            let lease = crate::inbound::claim_webhook(&mut admin, "worker-replay")
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                (lease.delivery_id, lease.generation, lease.attempt_number),
+                (ids[1], 3, number)
+            );
+            crate::inbound::finish_webhook(
+                &mut admin,
+                &lease,
+                crate::inbound::WebhookOutcome::Timeout,
+                None,
+            )
+            .await
+            .unwrap();
+        }
+        let exhausted = app
+            .clone()
+            .oneshot(replay_request(
+                endpoint,
+                ids[1],
+                Some(Uuid::new_v4()),
+                Some((&sa.token, &sa.csrf_token)),
+                true,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(exhausted.status(), StatusCode::CONFLICT);
+        assert_eq!(json_body(exhausted).await["code"], "replay_limit");
+        let page = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                &format!("/v1/webhooks/{endpoint}/deliveries"),
+                json!({}),
+                Some((&sa.token, &sa.csrf_token)),
+                false,
+            ))
+            .await
+            .unwrap();
+        let page = json_body(page).await;
+        let delivered = page["deliveries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["delivery_id"] == ids[1].to_string())
+            .unwrap();
+        assert_eq!(delivered["generation"], 3);
+        assert_eq!(delivered["attempts"].as_array().unwrap().len(), 21);
+        assert_eq!(delivered["attempts"][0]["generation"], 1);
+        assert_eq!(delivered["attempts"][20]["generation"], 3);
+
+        // Distinct request keys racing for one failed generation cannot both
+        // create a replay, even though neither is an idempotent retry.
+        mark_exhausted_failure(&admin, ids[4], 1).await;
+        let mut competing = tokio::task::JoinSet::new();
+        for competing_key in [Uuid::new_v4(), Uuid::new_v4()] {
+            let url = scoped_url.clone();
+            let competing_delivery = ids[4];
+            competing.spawn(async move {
+                let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+                tokio::spawn(async move { connection.await.unwrap() });
+                replay(
+                    &mut db,
+                    a.account_id,
+                    endpoint,
+                    competing_delivery,
+                    competing_key,
+                )
+                .await
+            });
+        }
+        let mut accepted = 0;
+        let mut rejected = 0;
+        while let Some(result) = competing.join_next().await {
+            match result.unwrap() {
+                Ok(result) if result.created && result.generation == 2 => accepted += 1,
+                Err(EndpointError::ReplayConflict) => rejected += 1,
+                _ => panic!("unexpected competing replay result"),
+            }
+        }
+        assert_eq!((accepted, rejected), (1, 1));
+        let competing_count: i64 = admin
+            .query_one(
+                "SELECT count(*) FROM webhook_replay_requests WHERE delivery_id=$1",
+                &[&ids[4]],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(competing_count, 1);
+
+        let disable = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                &format!("/v1/webhooks/{endpoint}/disable"),
+                json!({}),
+                Some((&sa.token, &sa.csrf_token)),
+                true,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(disable.status(), StatusCode::NO_CONTENT);
+        let retired_reason: String = admin
+            .query_one(
+                "SELECT terminal_reason FROM webhook_deliveries WHERE id=$1",
+                &[&ids[1]],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(retired_reason, "retired");
+        let after_disable = app
+            .clone()
+            .oneshot(replay_request(
+                endpoint,
+                ids[1],
+                Some(Uuid::new_v4()),
+                Some((&sa.token, &sa.csrf_token)),
+                true,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(after_disable.status(), StatusCode::CONFLICT);
+
+        admin
+            .batch_execute(&format!(
+                "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
+            ))
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn delivery_history_is_bounded_tenant_scoped_and_content_free() {
         let Ok(root_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
@@ -706,6 +1408,7 @@ mod tests {
             include_str!("../../../deploy/compose/migrations/005_verification_outbox.sql"),
             include_str!("../../../deploy/compose/migrations/006_usage_metering.sql"),
             include_str!("../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"),
+            include_str!("../../../deploy/compose/migrations/008_webhook_manual_replay.sql"),
         ] {
             admin.batch_execute(migration).await.unwrap();
         }
@@ -946,6 +1649,7 @@ mod tests {
             include_str!("../../../deploy/compose/migrations/005_verification_outbox.sql"),
             include_str!("../../../deploy/compose/migrations/006_usage_metering.sql"),
             include_str!("../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"),
+            include_str!("../../../deploy/compose/migrations/008_webhook_manual_replay.sql"),
         ] {
             admin.batch_execute(migration).await.unwrap();
         }

@@ -26,6 +26,7 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
         include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
         include_str!("../../../../deploy/compose/migrations/006_usage_metering.sql"),
         include_str!("../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"),
+        include_str!("../../../../deploy/compose/migrations/008_webhook_manual_replay.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }
