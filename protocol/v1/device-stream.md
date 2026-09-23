@@ -1,10 +1,12 @@
-# Device stream v1: authenticated heartbeat only
+# Device stream v1: authenticated session
 
 This is the implemented M1 phone-to-hub handshake. A production endpoint must
 use WSS. The current Android client requires a manually entered approved
 device UUID and a `wss://` URL ending in `/v1/device-stream`. No live WSS
-interoperability or carrier test has passed yet. This protocol has no grant,
-message, callback, inbound, or SMS frame.
+interoperability or carrier test has passed yet. A guarded server-side
+[synthetic-alpha extension](synthetic-alpha-stream.md) is in progress; the
+Android stream client currently implements heartbeat only. There is no live
+SMS or inbound path.
 
 1. Phone sends `{"v":1,"type":"hello","device_id":"UUID"}`.
 2. Hub returns `{"v":1,"type":"challenge","challenge_id":"UUID","account_id":"UUID","device_id":"UUID","nonce":"BASE64URL_NO_PAD"}`. The nonce is 32 random bytes.
