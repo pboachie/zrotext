@@ -19,6 +19,7 @@ import androidx.room.RoomDatabase
 import androidx.room.Transaction
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import java.util.UUID
 import java.util.concurrent.Executors
 
 /** A stable ID is reserved exactly once before any SmsManager call. No body or recipient is stored. */
@@ -30,7 +31,30 @@ data class SmsAttempt(
     val state: String,
     val createdAtMs: Long,
     val updatedAtMs: Long,
-    @ColumnInfo(defaultValue = "0") val evidenceConflict: Boolean = false
+    @ColumnInfo(defaultValue = "0") val evidenceConflict: Boolean = false,
+    @ColumnInfo(defaultValue = "NULL") val messageId: String? = null
+)
+
+/** One event ID and its exact payload stay in Room until the writer acknowledges them. */
+@Entity(
+    tableName = "alpha_radio_events",
+    foreignKeys = [ForeignKey(
+        entity = SmsAttempt::class,
+        parentColumns = ["attemptId"],
+        childColumns = ["attemptId"],
+        onDelete = ForeignKey.CASCADE
+    )],
+    indices = [Index("attemptId"), Index(value = ["acknowledgedAtMs", "observedAtMs"])]
+)
+data class AlphaRadioEvent(
+    @PrimaryKey val eventId: String,
+    val messageId: String,
+    val attemptId: String,
+    val evidence: String,
+    val observedAtMs: Long,
+    val segmentIndex: Int? = null,
+    val segmentCount: Int? = null,
+    val acknowledgedAtMs: Long? = null
 )
 
 @Entity(
@@ -60,6 +84,8 @@ internal object DeliveryStatus {
 
 /** Derivation uses callback evidence only; absence of a callback never proves no submission. */
 internal object AttemptState {
+    const val RESERVED = "reserved"
+    const val RADIO_STARTED = "radio_started"
     const val SUBMITTING = "submitting"
     const val UNKNOWN = "unknown"
     const val SUBMITTED = "submitted"
@@ -73,7 +99,7 @@ internal object AttemptState {
     fun fromEvidence(prior: String, segments: List<SmsSegment>): String {
         if (prior == NOT_SUBMITTED) return NOT_SUBMITTED
         if (segments.isEmpty() || segments.any { it.sentResultCode == null }) {
-            return if (prior == SUBMITTING) SUBMITTING else UNKNOWN
+            return if (prior == SUBMITTING || prior == RADIO_STARTED) SUBMITTING else UNKNOWN
         }
         val sent = segments.count { it.sentResultCode == Activity.RESULT_OK }
         if (sent == 0) return FAILED
@@ -112,6 +138,18 @@ abstract class SmsAttemptDao {
     @Insert(onConflict = OnConflictStrategy.ABORT)
     abstract fun insertSegments(segments: List<SmsSegment>)
 
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    abstract fun insertAlphaEvent(event: AlphaRadioEvent)
+
+    @Query("SELECT * FROM alpha_radio_events WHERE eventId = :eventId")
+    abstract fun getAlphaEvent(eventId: String): AlphaRadioEvent?
+
+    @Query("SELECT * FROM alpha_radio_events WHERE acknowledgedAtMs IS NULL ORDER BY rowid LIMIT 1")
+    abstract fun nextAlphaEvent(): AlphaRadioEvent?
+
+    @Query("UPDATE alpha_radio_events SET acknowledgedAtMs = :now WHERE eventId = :eventId AND acknowledgedAtMs IS NULL")
+    abstract fun acknowledgeAlphaEvent(eventId: String, now: Long): Int
+
     @Query("SELECT * FROM sms_attempts WHERE attemptId = :attemptId")
     abstract fun getAttempt(attemptId: String): SmsAttempt?
 
@@ -124,8 +162,24 @@ abstract class SmsAttemptDao {
     @Query("UPDATE sms_attempts SET state = :state, updatedAtMs = :now WHERE attemptId = :attemptId")
     abstract fun setState(attemptId: String, state: String, now: Long)
 
-    @Query("UPDATE sms_attempts SET state = 'unknown', evidenceConflict = 1, updatedAtMs = :now WHERE attemptId = :attemptId")
-    abstract fun markCallbackConflict(attemptId: String, now: Long)
+    @Query("UPDATE sms_attempts SET state = 'radio_started', updatedAtMs = :now WHERE attemptId = :attemptId AND messageId = :messageId AND subscriptionId = :subscriptionId AND segmentCount = :segmentCount AND state = 'submitting'")
+    abstract fun consumeRadioStart(attemptId: String, messageId: String, subscriptionId: Int,
+                                   segmentCount: Int, now: Long): Int
+
+    @Query("UPDATE sms_attempts SET state = 'not_submitted', updatedAtMs = :now WHERE attemptId = :attemptId AND state = 'submitting' AND messageId IS NOT NULL")
+    abstract fun markAcknowledgedNoRadio(attemptId: String, now: Long): Int
+
+    @Query("UPDATE sms_attempts SET state = 'unknown', evidenceConflict = 1, updatedAtMs = :now WHERE attemptId = :attemptId AND evidenceConflict = 0")
+    abstract fun markCallbackConflict(attemptId: String, now: Long): Int
+
+    /** Preserve the first conflict in the same transaction as the local unknown state. */
+    private fun recordConflict(attempt: SmsAttempt, now: Long) {
+        if (markCallbackConflict(attempt.attemptId, now) != 1) return
+        val messageId = attempt.messageId ?: return
+        if (attempt.state in listOf(AttemptState.RESERVED, AttemptState.NOT_SUBMITTED)) return
+        insertAlphaEvent(AlphaRadioEvent(UUID.randomUUID().toString(), messageId,
+            attempt.attemptId, "callback_conflict", now))
+    }
 
     @Query("UPDATE sms_segments SET sentResultCode = :result WHERE attemptId = :attemptId AND segmentIndex = :index AND sentResultCode IS NULL")
     abstract fun recordSent(attemptId: String, index: Int, result: Int): Int
@@ -133,10 +187,13 @@ abstract class SmsAttemptDao {
     @Query("UPDATE sms_segments SET deliveryResultCode = :result, deliveryStatus = :status WHERE attemptId = :attemptId AND segmentIndex = :index AND (deliveryStatus IS NULL OR (deliveryStatus = 2 AND :status != 2))")
     abstract fun recordDelivery(attemptId: String, index: Int, result: Int, status: Int): Int
 
-    @Query("UPDATE sms_attempts SET state = 'unknown', updatedAtMs = :now WHERE state = 'submitting'")
+    @Query("UPDATE sms_attempts SET state = 'unknown', updatedAtMs = :now WHERE state IN ('submitting','radio_started')")
     abstract fun markInterrupted(now: Long)
 
-    @Query("UPDATE sms_attempts SET state = 'unknown', updatedAtMs = :now WHERE attemptId = :attemptId AND state = 'submitting'")
+    @Query("UPDATE sms_attempts SET state = 'not_submitted', updatedAtMs = :now WHERE state = 'reserved'")
+    abstract fun markUnsentReservations(now: Long)
+
+    @Query("UPDATE sms_attempts SET state = 'unknown', updatedAtMs = :now WHERE attemptId = :attemptId AND state IN ('submitting','radio_started')")
     abstract fun markStalledSubmission(attemptId: String, now: Long)
 
     @Query("UPDATE sms_attempts SET state = 'delivery_unknown', updatedAtMs = :now WHERE state = 'submitted' AND updatedAtMs < :cutoff")
@@ -149,25 +206,58 @@ abstract class SmsAttemptDao {
         insertSegments((0 until segmentCount).map { SmsSegment(attemptId, it) })
     }
 
+    /** The submit intent is persisted in the same transaction as the no-radio reservation. */
+    @Transaction
+    open fun reserveAlpha(
+        attemptId: String, messageId: String, subscriptionId: Int,
+        segmentCount: Int, intentEventId: String, now: Long
+    ) {
+        require(segmentCount in 1..6)
+        require(listOf(attemptId, messageId, intentEventId).all {
+            runCatching { UUID.fromString(it).toString() == it }.getOrDefault(false)
+        })
+        insertAttempt(SmsAttempt(attemptId, subscriptionId, segmentCount,
+            AttemptState.RESERVED, now, now, messageId = messageId))
+        insertSegments((0 until segmentCount).map { SmsSegment(attemptId, it) })
+        insertAlphaEvent(AlphaRadioEvent(intentEventId, messageId, attemptId,
+            "durable_submit_intent", now))
+    }
+
+    /** A true ack can authorize this reservation only once in this process lifetime. */
+    @Transaction
+    open fun acknowledgeAlphaIntent(eventId: String, permitted: Boolean, now: Long): Boolean {
+        val event = getAlphaEvent(eventId) ?: return false
+        if (event.evidence != "durable_submit_intent" || event.acknowledgedAtMs != null) return false
+        val attempt = getAttempt(event.attemptId) ?: return false
+        if (attempt.state != AttemptState.RESERVED || attempt.messageId != event.messageId) {
+            acknowledgeAlphaEvent(eventId, now)
+            return false
+        }
+        if (acknowledgeAlphaEvent(eventId, now) != 1) return false
+        setState(event.attemptId,
+            if (permitted) AttemptState.SUBMITTING else AttemptState.NOT_SUBMITTED, now)
+        return permitted
+    }
+
     @Transaction
     open fun recordCallback(attemptId: String, index: Int, delivery: Boolean, result: Int, deliveryStatus: Int?, now: Long) {
         val attempt = getAttempt(attemptId) ?: return
         if (index !in 0 until attempt.segmentCount) return
         val segment = getSegment(attemptId, index) ?: run {
-            markCallbackConflict(attemptId, now)
+            recordConflict(attempt, now)
             return
         }
-        val impossibleCallback = attempt.state == AttemptState.NOT_SUBMITTED
+        val impossibleCallback = attempt.state == AttemptState.NOT_SUBMITTED || attempt.state == AttemptState.RESERVED
         val status = deliveryStatus ?: DeliveryStatus.UNVERIFIED
         val decision = if (delivery) CallbackEvidence.delivery(segment.deliveryStatus, status)
                        else CallbackEvidence.sent(segment.sentResultCode, result)
         when (decision) {
             CallbackEvidence.Decision.IGNORE -> {
-                if (impossibleCallback) markCallbackConflict(attemptId, now)
+                if (impossibleCallback) recordConflict(attempt, now)
                 return
             }
             CallbackEvidence.Decision.CONFLICT -> {
-                markCallbackConflict(attemptId, now)
+                recordConflict(attempt, now)
                 return
             }
             CallbackEvidence.Decision.STORE -> Unit
@@ -177,16 +267,26 @@ abstract class SmsAttemptDao {
         if (changed == 0) return // A replay cannot rewrite settled evidence.
         val segments = getSegments(attemptId)
         if (impossibleCallback || segments.size != attempt.segmentCount) {
-            markCallbackConflict(attemptId, now)
+            recordConflict(attempt, now)
             return
         }
-        setState(attemptId,
-            if (attempt.evidenceConflict) AttemptState.UNKNOWN
-            else AttemptState.fromEvidence(attempt.state, segments), now)
+        val nextState = if (attempt.evidenceConflict) AttemptState.UNKNOWN
+            else AttemptState.fromEvidence(attempt.state, segments)
+        if (!delivery && attempt.messageId != null && !attempt.evidenceConflict) {
+            insertAlphaEvent(AlphaRadioEvent(UUID.randomUUID().toString(), attempt.messageId,
+                attemptId, if (result == Activity.RESULT_OK) "sent_callback_ok" else "sent_callback_failed",
+                now, index, attempt.segmentCount))
+        }
+        if (attempt.messageId != null && nextState == AttemptState.DELIVERED &&
+            attempt.state != AttemptState.DELIVERED) {
+            insertAlphaEvent(AlphaRadioEvent(UUID.randomUUID().toString(), attempt.messageId,
+                attemptId, "delivery_callback_ok", now))
+        }
+        setState(attemptId, nextState, now)
     }
 }
 
-@Database(entities = [SmsAttempt::class, SmsSegment::class], version = 2, exportSchema = false)
+@Database(entities = [SmsAttempt::class, SmsSegment::class, AlphaRadioEvent::class], version = 3, exportSchema = false)
 abstract class SmsJournalDatabase : RoomDatabase() {
     abstract fun attempts(): SmsAttemptDao
 
@@ -196,12 +296,21 @@ abstract class SmsJournalDatabase : RoomDatabase() {
         fun get(context: Context): SmsJournalDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(
                 context.applicationContext, SmsJournalDatabase::class.java, "sms_attempts.db"
-            ).addMigrations(MIGRATION_1_2).build().also { instance = it }
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build().also { instance = it }
         }
 
         internal val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE sms_attempts ADD COLUMN evidenceConflict INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        internal val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE sms_attempts ADD COLUMN messageId TEXT DEFAULT NULL")
+                db.execSQL("CREATE TABLE IF NOT EXISTS alpha_radio_events (eventId TEXT NOT NULL PRIMARY KEY, messageId TEXT NOT NULL, attemptId TEXT NOT NULL, evidence TEXT NOT NULL, observedAtMs INTEGER NOT NULL, segmentIndex INTEGER, segmentCount INTEGER, acknowledgedAtMs INTEGER, FOREIGN KEY(attemptId) REFERENCES sms_attempts(attemptId) ON UPDATE NO ACTION ON DELETE CASCADE)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_alpha_radio_events_attemptId ON alpha_radio_events(attemptId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_alpha_radio_events_acknowledgedAtMs_observedAtMs ON alpha_radio_events(acknowledgedAtMs, observedAtMs)")
             }
         }
     }
@@ -221,6 +330,7 @@ class GatewayApplication : Application() {
             val now = System.currentTimeMillis()
             val dao = SmsJournalDatabase.get(app).attempts()
             dao.markInterrupted(now)
+            dao.markUnsentReservations(now)
             dao.markTimedOutDeliveries(now - DELIVERY_RECEIPT_TIMEOUT_MS, now)
         }
     }

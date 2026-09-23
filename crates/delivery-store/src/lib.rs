@@ -308,7 +308,7 @@ impl<'a> DeliveryStore<'a> {
     /// SKIP LOCKED lets independent workers claim distinct jobs from the same
     /// writer. Claim expiry can requeue only before any execution grant.
     pub async fn claim_due(&mut self, worker_id: &str) -> Result<Option<Claim>, StoreError> {
-        self.claim_due_inner(worker_id, None, None).await
+        self.claim_due_inner(worker_id, None, None, None).await
     }
 
     /// A connected phone's worker must only claim jobs for that authenticated
@@ -319,8 +319,26 @@ impl<'a> DeliveryStore<'a> {
         account_id: Uuid,
         device_id: Uuid,
     ) -> Result<Option<Claim>, StoreError> {
-        self.claim_due_inner(worker_id, Some(account_id), Some(device_id))
+        self.claim_due_inner(worker_id, Some(account_id), Some(device_id), None)
             .await
+    }
+
+    /// A one-shot phone readiness signal can narrow a claim to the exact
+    /// recipient digest approved locally on that phone.
+    pub async fn claim_due_for_device_and_recipient(
+        &mut self,
+        worker_id: &str,
+        account_id: Uuid,
+        device_id: Uuid,
+        recipient_digest: &[u8; 32],
+    ) -> Result<Option<Claim>, StoreError> {
+        self.claim_due_inner(
+            worker_id,
+            Some(account_id),
+            Some(device_id),
+            Some(recipient_digest.as_slice()),
+        )
+        .await
     }
 
     async fn claim_due_inner(
@@ -328,6 +346,7 @@ impl<'a> DeliveryStore<'a> {
         worker_id: &str,
         account_id: Option<Uuid>,
         device_id: Option<Uuid>,
+        recipient_digest: Option<&[u8]>,
     ) -> Result<Option<Claim>, StoreError> {
         if worker_id.is_empty() {
             return Err(StoreError::InvalidInput);
@@ -343,11 +362,12 @@ impl<'a> DeliveryStore<'a> {
                      AND d.revoked_at IS NULL \
                      AND ($2::uuid IS NULL OR j.account_id=$2) \
                      AND ($3::uuid IS NULL OR j.device_id=$3) \
+                     AND ($4::bytea IS NULL OR m.recipient_digest=$4) \
                    ORDER BY j.next_attempt_at,j.message_id FOR UPDATE OF j SKIP LOCKED LIMIT 1 \
                  ) UPDATE dispatch_jobs j SET lease_owner=$1,lease_until=now()+interval '30 seconds', \
                    generation=j.generation+1 FROM picked WHERE j.message_id=picked.message_id \
                  RETURNING j.account_id,j.message_id,j.device_id,j.generation",
-                &[&worker_id, &account_id, &device_id],
+                &[&worker_id, &account_id, &device_id, &recipient_digest],
             )
             .await?;
         let Some(row) = row else {
@@ -431,6 +451,127 @@ impl<'a> DeliveryStore<'a> {
             tx.execute(
                 "UPDATE dispatch_jobs SET lease_owner=NULL,lease_until=NULL WHERE account_id=$1 AND message_id=$2",
                 &[&account_id, &message_id],
+            ).await?;
+        }
+        tx.commit().await?;
+        Ok(rows.len() as u64)
+    }
+
+    /// Silence after a grant is ambiguous. Keep the device fence and mark the
+    /// attempt unknown for late evidence or an operator-led resolution.
+    /// Lock messages first, as radio evidence does, so callbacks and sweeps
+    /// serialize on the same state row.
+    pub async fn reconcile_silent_attempts(&mut self, limit: i64) -> Result<u64, StoreError> {
+        if !(1..=1000).contains(&limit) {
+            return Err(StoreError::InvalidInput);
+        }
+        let tx = self.client.transaction().await?;
+        let rows = tx
+            .query(
+                "SELECT m.account_id,m.id,a.id,m.state FROM messages m \
+             JOIN dispatch_fences f ON (f.account_id,f.message_id)=(m.account_id,m.id) \
+             JOIN message_attempts a ON a.id=f.attempt_id \
+             WHERE (m.state='claimed' AND f.outcome='granted' AND f.grant_expires_at<=now()) \
+                OR (m.state='submitting' AND f.outcome='submitting' \
+                    AND a.updated_at<=now()-interval '2 minutes') \
+             ORDER BY m.updated_at,m.id FOR UPDATE OF m SKIP LOCKED LIMIT $1",
+                &[&limit],
+            )
+            .await?;
+        for row in &rows {
+            let account_id: Uuid = row.get(0);
+            let message_id: Uuid = row.get(1);
+            let attempt_id: Uuid = row.get(2);
+            let current =
+                state_from_str(&row.get::<_, String>(3)).ok_or(StoreError::InvalidTransition)?;
+            let evidence = if current == MessageState::Claimed {
+                Evidence::GrantTimeout
+            } else {
+                Evidence::SentCallbackTimeout
+            };
+            let next = current
+                .apply(evidence)
+                .map_err(|_| StoreError::InvalidTransition)?;
+            let code = match evidence {
+                Evidence::GrantTimeout => "grant_timeout",
+                Evidence::SentCallbackTimeout => "sent_callback_timeout",
+                _ => unreachable!(),
+            };
+            let mut hash = Sha256::new();
+            hash.update(account_id.as_bytes());
+            hash.update(message_id.as_bytes());
+            hash.update(attempt_id.as_bytes());
+            hash.update(code.as_bytes());
+            let digest = hash.finalize().to_vec();
+            tx.execute(
+                "UPDATE messages SET state=$3,state_version=state_version+1,updated_at=now() \
+                 WHERE account_id=$1 AND id=$2",
+                &[&account_id, &message_id, &state_name(next)],
+            )
+            .await?;
+            tx.execute(
+                "UPDATE message_attempts SET status='unknown',updated_at=now() WHERE id=$1",
+                &[&attempt_id],
+            )
+            .await?;
+            tx.execute(
+                "UPDATE dispatch_fences SET outcome='unknown' WHERE attempt_id=$1",
+                &[&attempt_id],
+            )
+            .await?;
+            tx.execute(
+                "INSERT INTO message_events (id,account_id,message_id,attempt_id,evidence_code, \
+                 event_digest,observed_at,resulting_state) VALUES ($1,$2,$3,$4,$5,$6,now(),'unknown')",
+                &[&Uuid::new_v4(), &account_id, &message_id, &attempt_id, &code, &digest],
+            ).await?;
+        }
+        tx.commit().await?;
+        Ok(rows.len() as u64)
+    }
+
+    /// A sent callback proves carrier acceptance, not handset delivery. Close
+    /// an absent delivery receipt conservatively after 24 hours; late receipt
+    /// evidence can still move delivery_unknown to delivered.
+    pub async fn reconcile_delivery_timeouts(&mut self, limit: i64) -> Result<u64, StoreError> {
+        if !(1..=1000).contains(&limit) {
+            return Err(StoreError::InvalidInput);
+        }
+        let tx = self.client.transaction().await?;
+        let rows = tx
+            .query(
+                "SELECT m.account_id,m.id,a.id FROM messages m \
+             JOIN dispatch_fences f ON (f.account_id,f.message_id)=(m.account_id,m.id) \
+             JOIN message_attempts a ON a.id=f.attempt_id \
+             WHERE m.state='submitted' AND f.outcome='submitted' AND a.status='submitted' \
+               AND m.updated_at<=now()-interval '24 hours' \
+             ORDER BY m.updated_at,m.id FOR UPDATE OF m SKIP LOCKED LIMIT $1",
+                &[&limit],
+            )
+            .await?;
+        for row in &rows {
+            let account_id: Uuid = row.get(0);
+            let message_id: Uuid = row.get(1);
+            let attempt_id: Uuid = row.get(2);
+            let next = MessageState::Submitted
+                .apply(Evidence::DeliveryTimeout)
+                .map_err(|_| StoreError::InvalidTransition)?;
+            let mut hash = Sha256::new();
+            hash.update(account_id.as_bytes());
+            hash.update(message_id.as_bytes());
+            hash.update(attempt_id.as_bytes());
+            hash.update(b"delivery_timeout");
+            let digest = hash.finalize().to_vec();
+            tx.execute(
+                "UPDATE messages SET state=$3,state_version=state_version+1,updated_at=now() \
+                 WHERE account_id=$1 AND id=$2",
+                &[&account_id, &message_id, &state_name(next)],
+            )
+            .await?;
+            tx.execute(
+                "INSERT INTO message_events (id,account_id,message_id,attempt_id,evidence_code, \
+                 event_digest,observed_at,resulting_state) VALUES ($1,$2,$3,$4,'delivery_timeout',$5,now(),$6)",
+                &[&Uuid::new_v4(), &account_id, &message_id, &attempt_id, &digest,
+                  &state_name(next)],
             ).await?;
         }
         tx.commit().await?;
@@ -670,8 +811,34 @@ impl<'a> DeliveryStore<'a> {
         if attempt.is_none() {
             return Err(StoreError::StaleFence);
         }
+        if event.evidence != Evidence::CallbackConflict {
+            let conflicted: bool = tx.query_one(
+                "SELECT EXISTS(SELECT 1 FROM message_events WHERE attempt_id=$1 AND evidence_code='callback_conflict')",
+                &[&event.attempt_id],
+            ).await?.get(0);
+            if conflicted {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
         let next = match event.evidence {
+            Evidence::CallbackConflict => {
+                let intent: bool = tx.query_one(
+                    "SELECT EXISTS(SELECT 1 FROM message_events WHERE attempt_id=$1 AND evidence_code='durable_intent')",
+                    &[&event.attempt_id],
+                ).await?.get(0);
+                if !intent {
+                    return Err(StoreError::InvalidTransition);
+                }
+                current.apply(Evidence::CallbackConflict)
+            }
             Evidence::SentCallbackOk | Evidence::SentCallbackFailed => {
+                let intent: bool = tx.query_one(
+                    "SELECT EXISTS(SELECT 1 FROM message_events WHERE attempt_id=$1 AND evidence_code='durable_intent')",
+                    &[&event.attempt_id],
+                ).await?.get(0);
+                if !intent {
+                    return Err(StoreError::InvalidTransition);
+                }
                 let count = event.segment_count.ok_or(StoreError::InvalidInput)?;
                 let seen = tx.query_one(
                     "SELECT count(*)::integer, count(*) FILTER (WHERE evidence_code='sent_callback_ok')::integer, \
@@ -808,6 +975,7 @@ fn evidence_code(evidence: Evidence) -> Option<&'static str> {
         Evidence::DeliveryCallbackOk => "delivery_callback_ok",
         Evidence::DeliveryTimeout => "delivery_timeout",
         Evidence::CrashWithoutCallback => "crash_no_callback",
+        Evidence::CallbackConflict => "callback_conflict",
         _ => return None,
     })
 }
@@ -1091,9 +1259,10 @@ mod tests {
             )
             .await
             .unwrap();
+        let third_message = Uuid::new_v4();
+        let third_attempt = Uuid::new_v4();
         {
             let mut store = DeliveryStore::new(&mut client);
-            let third_message = Uuid::new_v4();
             store
                 .accept(NewMessage {
                     client_message_id: third_message,
@@ -1120,7 +1289,6 @@ mod tests {
                 .connect_session(account, second_device, "a", "hub", 60)
                 .await
                 .unwrap();
-            let third_attempt = Uuid::new_v4();
             store
                 .issue_grant(&third_claim, &third_session, third_attempt)
                 .await
@@ -1209,6 +1377,329 @@ mod tests {
             .unwrap()
             .get(0);
         assert_eq!(state, "expired");
+
+        assert_eq!(
+            DeliveryStore::new(&mut client)
+                .reconcile_delivery_timeouts(10)
+                .await
+                .unwrap(),
+            0
+        );
+        client
+            .execute(
+                "UPDATE messages SET updated_at=now()-interval '25 hours' WHERE id=$1",
+                &[&third_message],
+            )
+            .await
+            .unwrap();
+        {
+            let mut store = DeliveryStore::new(&mut client);
+            assert_eq!(store.reconcile_delivery_timeouts(10).await.unwrap(), 1);
+            assert_eq!(store.reconcile_delivery_timeouts(10).await.unwrap(), 0);
+            assert_eq!(
+                store
+                    .status(account, third_message)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .state,
+                MessageState::DeliveryUnknown
+            );
+            assert_eq!(
+                store
+                    .record_radio_event(RadioEvent {
+                        event_id: Uuid::new_v4(),
+                        account_id: account,
+                        device_id: second_device,
+                        message_id: third_message,
+                        attempt_id: third_attempt,
+                        evidence: Evidence::DeliveryCallbackOk,
+                        observed_at_ms: now_ms(),
+                        segment_index: None,
+                        segment_count: None,
+                    })
+                    .await
+                    .unwrap(),
+                MessageState::Delivered
+            );
+        }
+
+        let silent_grant_message = Uuid::new_v4();
+        let silent_grant_attempt = Uuid::new_v4();
+        {
+            let mut store = DeliveryStore::new(&mut client);
+            store
+                .accept(NewMessage {
+                    account_id: account,
+                    client_message_id: silent_grant_message,
+                    device_id: second_device,
+                    idempotency_key: "silent-grant",
+                    recipient_e164: "+15551234567",
+                    synthetic_payload: b"test only",
+                    expires_at_ms: expiry,
+                })
+                .await
+                .unwrap();
+            let claim = store
+                .claim_due_for_device("timeout-grant", account, second_device)
+                .await
+                .unwrap()
+                .unwrap();
+            let session = store
+                .connect_session(account, second_device, "a", "hub", 60)
+                .await
+                .unwrap();
+            store
+                .issue_grant(&claim, &session, silent_grant_attempt)
+                .await
+                .unwrap();
+            assert_eq!(store.reconcile_silent_attempts(10).await.unwrap(), 0);
+        }
+        client.execute(
+            "UPDATE dispatch_fences SET grant_expires_at=now()-interval '1 second' WHERE attempt_id=$1",
+            &[&silent_grant_attempt],
+        ).await.unwrap();
+        let (mut timeout_blocker, timeout_connection) =
+            tokio_postgres::connect(&url, tokio_postgres::NoTls)
+                .await
+                .unwrap();
+        tokio::spawn(async move { timeout_connection.await.unwrap() });
+        timeout_blocker
+            .batch_execute(&format!("SET search_path TO {schema}"))
+            .await
+            .unwrap();
+        let timeout_lock = timeout_blocker.transaction().await.unwrap();
+        timeout_lock
+            .query_one(
+                "SELECT id FROM messages WHERE id=$1 FOR UPDATE",
+                &[&silent_grant_message],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            DeliveryStore::new(&mut client)
+                .reconcile_silent_attempts(10)
+                .await
+                .unwrap(),
+            0
+        );
+        timeout_lock.rollback().await.unwrap();
+        {
+            let mut store = DeliveryStore::new(&mut client);
+            assert_eq!(store.reconcile_silent_attempts(10).await.unwrap(), 1);
+            assert_eq!(store.reconcile_silent_attempts(10).await.unwrap(), 0);
+            assert_eq!(
+                store
+                    .status(account, silent_grant_message)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .state,
+                MessageState::Unknown
+            );
+            store
+                .accept(NewMessage {
+                    account_id: account,
+                    client_message_id: Uuid::new_v4(),
+                    device_id: second_device,
+                    idempotency_key: "blocked-after-timeout",
+                    recipient_e164: "+15551234567",
+                    synthetic_payload: b"test only",
+                    expires_at_ms: expiry,
+                })
+                .await
+                .unwrap();
+            let blocked_claim = store
+                .claim_due_for_device("again", account, second_device)
+                .await
+                .unwrap()
+                .unwrap();
+            let new_session = store
+                .connect_session(account, second_device, "b", "hub", 60)
+                .await
+                .unwrap();
+            assert!(matches!(
+                store
+                    .issue_grant(&blocked_claim, &new_session, Uuid::new_v4())
+                    .await,
+                Err(StoreError::DeviceBusy)
+            ));
+            assert!(matches!(
+                store
+                    .record_radio_event(RadioEvent {
+                        event_id: Uuid::new_v4(),
+                        account_id: account,
+                        device_id: second_device,
+                        message_id: silent_grant_message,
+                        attempt_id: silent_grant_attempt,
+                        evidence: Evidence::SentCallbackOk,
+                        observed_at_ms: now_ms(),
+                        segment_index: Some(0),
+                        segment_count: Some(1),
+                    })
+                    .await,
+                Err(StoreError::InvalidTransition)
+            ));
+        }
+        let timeout_evidence: String = client
+            .query_one(
+                "SELECT evidence_code FROM message_events WHERE attempt_id=$1",
+                &[&silent_grant_attempt],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(timeout_evidence, "grant_timeout");
+
+        let timeout_device = Uuid::new_v4();
+        client.execute(
+            "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'callback timeout phone')",
+            &[&timeout_device, &account],
+        ).await.unwrap();
+        let silent_callback_message = Uuid::new_v4();
+        let silent_callback_attempt = Uuid::new_v4();
+        {
+            let mut store = DeliveryStore::new(&mut client);
+            store
+                .accept(NewMessage {
+                    account_id: account,
+                    client_message_id: silent_callback_message,
+                    device_id: timeout_device,
+                    idempotency_key: "silent-callback",
+                    recipient_e164: "+15551234567",
+                    synthetic_payload: b"test only",
+                    expires_at_ms: expiry,
+                })
+                .await
+                .unwrap();
+            let claim = store
+                .claim_due_for_device("timeout-callback", account, timeout_device)
+                .await
+                .unwrap()
+                .unwrap();
+            let session = store
+                .connect_session(account, timeout_device, "a", "hub", 60)
+                .await
+                .unwrap();
+            store
+                .issue_grant(&claim, &session, silent_callback_attempt)
+                .await
+                .unwrap();
+            store
+                .record_radio_event(RadioEvent {
+                    event_id: Uuid::new_v4(),
+                    account_id: account,
+                    device_id: timeout_device,
+                    message_id: silent_callback_message,
+                    attempt_id: silent_callback_attempt,
+                    evidence: Evidence::DurableSubmitIntent,
+                    observed_at_ms: now_ms(),
+                    segment_index: None,
+                    segment_count: None,
+                })
+                .await
+                .unwrap();
+        }
+        client
+            .execute(
+                "UPDATE message_attempts SET updated_at=now()-interval '3 minutes' WHERE id=$1",
+                &[&silent_callback_attempt],
+            )
+            .await
+            .unwrap();
+        {
+            let mut store = DeliveryStore::new(&mut client);
+            assert_eq!(store.reconcile_silent_attempts(10).await.unwrap(), 1);
+            assert_eq!(
+                store
+                    .status(account, silent_callback_message)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .state,
+                MessageState::Unknown
+            );
+            assert_eq!(
+                store
+                    .record_radio_event(RadioEvent {
+                        event_id: Uuid::new_v4(),
+                        account_id: account,
+                        device_id: timeout_device,
+                        message_id: silent_callback_message,
+                        attempt_id: silent_callback_attempt,
+                        evidence: Evidence::SentCallbackOk,
+                        observed_at_ms: now_ms(),
+                        segment_index: Some(0),
+                        segment_count: Some(1),
+                    })
+                    .await
+                    .unwrap(),
+                MessageState::Submitted
+            );
+        }
+        let timeout_evidence: String = client.query_one(
+            "SELECT evidence_code FROM message_events WHERE attempt_id=$1 AND evidence_code='sent_callback_timeout'",
+            &[&silent_callback_attempt],
+        ).await.unwrap().get(0);
+        assert_eq!(timeout_evidence, "sent_callback_timeout");
+        {
+            let mut store = DeliveryStore::new(&mut client);
+            assert_eq!(
+                store
+                    .record_radio_event(RadioEvent {
+                        event_id: Uuid::new_v4(),
+                        account_id: account,
+                        device_id: timeout_device,
+                        message_id: silent_callback_message,
+                        attempt_id: silent_callback_attempt,
+                        evidence: Evidence::DeliveryCallbackOk,
+                        observed_at_ms: now_ms(),
+                        segment_index: None,
+                        segment_count: None,
+                    })
+                    .await
+                    .unwrap(),
+                MessageState::Delivered
+            );
+            let conflict = RadioEvent {
+                event_id: Uuid::new_v4(),
+                account_id: account,
+                device_id: timeout_device,
+                message_id: silent_callback_message,
+                attempt_id: silent_callback_attempt,
+                evidence: Evidence::CallbackConflict,
+                observed_at_ms: now_ms(),
+                segment_index: None,
+                segment_count: None,
+            };
+            assert_eq!(
+                store.record_radio_event(conflict).await.unwrap(),
+                MessageState::Unknown
+            );
+            assert_eq!(
+                store.record_radio_event(conflict).await.unwrap(),
+                MessageState::Unknown
+            );
+            assert!(matches!(
+                store
+                    .record_radio_event(RadioEvent {
+                        event_id: Uuid::new_v4(),
+                        evidence: Evidence::DeliveryCallbackOk,
+                        ..conflict
+                    })
+                    .await,
+                Err(StoreError::InvalidTransition)
+            ));
+        }
+        let fence: String = client
+            .query_one(
+                "SELECT outcome FROM dispatch_fences WHERE attempt_id=$1",
+                &[&silent_callback_attempt],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(fence, "unknown");
         client
             .batch_execute(&format!(
                 "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
