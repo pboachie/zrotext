@@ -1,0 +1,25 @@
+name: Android dependency graph
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: write
+jobs:
+  gradle-dependencies:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
+      - name: Install Android SDK platform
+        run: sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0'
+      - name: Submit resolved Gradle dependencies
+        uses: gradle/actions/dependency-submission@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6
+        with:
+          build-root-directory: android
+          cache-provider: basic

@@ -1,6 +1,38 @@
 use super::*;
 use p256::ecdsa::{SigningKey, signature::Signer};
-use rand::rngs::OsRng;
+use p256::elliptic_curve::rand_core::OsRng;
+
+#[test]
+fn metadata_signature_bytes_match_android_pilot_vector() {
+    let session = InboundSession {
+        account_id: Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap(),
+        device_id: Uuid::parse_str("22222222-2222-4222-8222-222222222222").unwrap(),
+        site_id: "vector",
+        instance_id: "vector",
+        connection_epoch: 3,
+        deployment_epoch: 1,
+    };
+    let event = InboundEvent {
+        event_id: Uuid::parse_str("33333333-3333-4333-8333-333333333333").unwrap(),
+        sequence: 7,
+        message_id: Uuid::parse_str("44444444-4444-4444-8444-444444444444").unwrap(),
+        attempt_id: Uuid::parse_str("55555555-5555-4555-8555-555555555555").unwrap(),
+        classification: Classification::CapturedLocal,
+        observed_at_ms: 1_700_000_000_000,
+        part_count: 2,
+        content: Content::MetadataOnly,
+        signature_der: &[],
+    };
+    let digest = Sha256::digest(signed_event_bytes(session, &event));
+    let hex = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    assert_eq!(
+        hex,
+        "a5c16315ba6fdd194c57fcf9104f05ec7da26830c5cf784a962c4363b87dd199"
+    );
+}
 
 #[tokio::test]
 async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
@@ -197,6 +229,54 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
     assert_eq!(status, "succeeded");
     assert!(claim_webhook(&mut db, "worker-a").await.unwrap().is_none());
 
+    // Exercise the assembled worker without touching the network. A target
+    // rejected by local policy must consume one attempt and dead-letter it.
+    let policy_endpoint = Uuid::new_v4();
+    let policy_delivery = Uuid::new_v4();
+    let vault =
+        crate::webhook_worker::WebhookSecretVault::new(1, zeroize::Zeroizing::new(vec![7_u8; 32]))
+            .unwrap();
+    let encrypted = vault.seal(account, policy_endpoint, &[8_u8; 32]).unwrap();
+    db.execute(
+        "INSERT INTO webhook_endpoints(id,account_id,callback_url,signing_secret_ciphertext, \
+         signing_secret_key_version,enabled) VALUES($1,$2,'https://example.invalid/hook',$3,1,true)",
+        &[&policy_endpoint, &account, &encrypted],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO webhook_deliveries(id,account_id,endpoint_id,event_id) VALUES($1,$2,$3,$4)",
+        &[
+            &policy_delivery,
+            &account,
+            &policy_endpoint,
+            &signed.event_id,
+        ],
+    )
+    .await
+    .unwrap();
+    assert!(
+        crate::webhook_worker::dispatch_one(&mut db, &vault, "worker-policy")
+            .await
+            .unwrap()
+    );
+    let policy: (String, i16, String) = db
+        .query_one(
+            "SELECT d.status,d.attempt_count,a.outcome FROM webhook_deliveries d \
+             JOIN webhook_attempts a ON a.delivery_id=d.id WHERE d.id=$1",
+            &[&policy_delivery],
+        )
+        .await
+        .map(|row| (row.get(0), row.get(1), row.get(2)))
+        .unwrap();
+    assert_eq!(policy, ("dead".into(), 1, "policy_rejected".into()));
+    db.execute(
+        "UPDATE webhook_endpoints SET enabled=false WHERE id=$1",
+        &[&policy_endpoint],
+    )
+    .await
+    .unwrap();
+
     let changed = InboundEvent {
         part_count: 2,
         signature_der: &[],
@@ -294,7 +374,7 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
     };
     let next_sig: Signature = signing.sign(&signed_event_bytes(session, &next));
     let next_der = next_sig.to_der().as_bytes().to_vec();
-    assert!(
+    assert_eq!(
         ingest(
             &mut db,
             session,
@@ -304,8 +384,22 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
             }
         )
         .await
-        .unwrap()
-        .created
+        .unwrap(),
+        IngestOutcome {
+            created: true,
+            queued_deliveries: 1
+        }
+    );
+    // Make the due condition explicit instead of relying on nearly coincident
+    // insertion and claim transaction timestamps.
+    assert_eq!(
+        db.execute(
+            "UPDATE webhook_deliveries SET next_attempt_at=now()-interval '1 second' WHERE event_id=$1",
+            &[&next.event_id],
+        )
+        .await
+        .unwrap(),
+        1
     );
     let stored_size: i32 = db
         .query_one(

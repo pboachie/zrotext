@@ -2,7 +2,7 @@
 //! Test-mode Stripe event inbox. Events only request reconciliation; they never
 //! directly grant a plan or change a quota.
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -426,6 +426,15 @@ mod tests {
         }
     }
 
+    fn signed_header(timestamp: i64, mac: HmacSha256) -> String {
+        let digest = mac.finalize().into_bytes();
+        let hex = digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        format!("t={timestamp},v1={hex}")
+    }
+
     #[test]
     fn stripe_signature_uses_exact_raw_body_and_recency() {
         let event = verify_event(BODY, HEADER, SECRET, 1_750_000_000).unwrap();
@@ -462,7 +471,7 @@ mod tests {
         let mut mac = HmacSha256::new_from_slice(SECRET.as_bytes()).unwrap();
         mac.update(b"1750000000.");
         mac.update(&body);
-        let signed = format!("t=1750000000,v1={:x}", mac.finalize().into_bytes());
+        let signed = signed_header(1_750_000_000, mac);
         assert!(matches!(
             verify_event(&body, &signed, SECRET, 1_750_000_000),
             Err(BillingError::InvalidEvent)
@@ -475,7 +484,7 @@ mod tests {
         let mut mac = HmacSha256::new_from_slice(SECRET.as_bytes()).unwrap();
         mac.update(b"1750000000.");
         mac.update(body);
-        let signature = format!("t=1750000000,v1={:x}", mac.finalize().into_bytes());
+        let signature = signed_header(1_750_000_000, mac);
         let event = verify_event(body, &signature, SECRET, 1_750_000_000).unwrap();
         assert_eq!(event.object_id.as_deref(), Some("cs_test_fixture1"));
         assert_eq!(event.customer_id.as_deref(), Some("cus_fixture1"));
@@ -597,6 +606,122 @@ mod tests {
             ingest(&mut db, &cross).await.unwrap(),
             IngestResult::Conflict
         );
+        setup
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "reads two real Stripe test events and reconciles their current subscriptions; run explicitly"]
+    async fn real_stripe_test_events_reconcile_current_state() {
+        let database_url = env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set a disposable PostgreSQL test database URL");
+        let secret_key = env::var("ZT_STRIPE_TEST_SECRET_KEY")
+            .expect("set a Stripe test secret in the process environment");
+        let price_id = env::var("ZT_STRIPE_TEST_PRICE_ID").expect("set the test price ID");
+        let cases = [
+            (
+                env::var("ZT_STRIPE_TEST_PAID_EVENT_ID").expect("set the paid event ID"),
+                env::var("ZT_STRIPE_TEST_PAID_CUSTOMER_ID").expect("set the paid test customer ID"),
+                "invoice.paid",
+                "canceled",
+            ),
+            (
+                env::var("ZT_STRIPE_TEST_FAILED_EVENT_ID").expect("set the failed event ID"),
+                env::var("ZT_STRIPE_TEST_FAILED_CUSTOMER_ID")
+                    .expect("set the failed test customer ID"),
+                "invoice.payment_failed",
+                "incomplete_expired",
+            ),
+        ];
+        assert!(is_test_api_key(&secret_key));
+        valid_id(&price_id, "price_").unwrap();
+        let (setup, connection) = tokio_postgres::connect(&database_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let schema = format!("billing_real_test_{}", Uuid::new_v4().simple());
+        setup
+            .batch_execute(&format!("CREATE SCHEMA {schema}"))
+            .await
+            .unwrap();
+        let separator = if database_url.contains('?') { '&' } else { '?' };
+        let scoped_url = format!("{database_url}{separator}options=-csearch_path%3D{schema}");
+        let (mut db, connection) = tokio_postgres::connect(&scoped_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        for sql in [
+            include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
+            include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+            include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
+            include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
+            include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+            include_str!("../../../../deploy/compose/migrations/006_usage_metering.sql"),
+            include_str!(
+                "../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"
+            ),
+            include_str!("../../../../deploy/compose/migrations/008_stripe_billing_foundation.sql"),
+        ] {
+            db.batch_execute(sql).await.unwrap();
+        }
+        let http = reqwest::Client::builder()
+            .https_only(true)
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap();
+        let signing_secret = "whsec_local_test_event_fixture_20260923";
+        for (event_id, customer_id, expected_type, _) in &cases {
+            valid_id(event_id, "evt_").unwrap();
+            valid_id(customer_id, "cus_").unwrap();
+            let account_id = Uuid::new_v4();
+            db.execute("INSERT INTO accounts(id) VALUES($1)", &[&account_id])
+                .await
+                .unwrap();
+            bind_customer(&mut db, account_id, customer_id)
+                .await
+                .unwrap();
+            let response = http
+                .get(format!("https://api.stripe.com/v1/events/{event_id}"))
+                .bearer_auth(&secret_key)
+                .send()
+                .await
+                .unwrap();
+            assert!(response.status().is_success());
+            let body = response.bytes().await.unwrap();
+            assert!(body.len() <= MAX_BODY);
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64;
+            let mut mac = HmacSha256::new_from_slice(signing_secret.as_bytes()).unwrap();
+            mac.update(timestamp.to_string().as_bytes());
+            mac.update(b".");
+            mac.update(&body);
+            let signature = signed_header(timestamp, mac);
+            let event = verify_event(&body, &signature, signing_secret, timestamp).unwrap();
+            assert_eq!(event.event_type, *expected_type);
+            assert_eq!(event.customer_id.as_deref(), Some(customer_id.as_str()));
+            assert!(event.subscription_id.is_some());
+            assert_eq!(ingest(&mut db, &event).await.unwrap(), IngestResult::Queued);
+            assert_eq!(
+                ingest(&mut db, &event).await.unwrap(),
+                IngestResult::Duplicate
+            );
+        }
+        let worker = worker::StripeTestWorker::new(secret_key, vec![price_id]).unwrap();
+        assert!(worker.reconcile_one(&scoped_url).await.unwrap());
+        assert!(worker.reconcile_one(&scoped_url).await.unwrap());
+        assert!(!worker.reconcile_one(&scoped_url).await.unwrap());
+        for (_, customer_id, _, expected_status) in &cases {
+            let row = db
+                .query_one(
+                    "SELECT stripe_status,recognized_price FROM billing_subscriptions WHERE stripe_customer_id=$1",
+                    &[customer_id],
+                )
+                .await
+                .unwrap();
+            assert_eq!(row.get::<_, String>(0), *expected_status);
+            assert!(row.get::<_, bool>(1));
+        }
         setup
             .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
             .await
