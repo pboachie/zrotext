@@ -23,6 +23,8 @@ use std::{
 use subtle::ConstantTimeEq;
 use tokio::sync::Notify;
 use tokio_postgres::NoTls;
+use uuid::Uuid;
+use zeroize::Zeroizing;
 use zrotext_delivery_store::DeliveryStore;
 use zrotext_server::{
     alpha_policy::AlphaPolicy,
@@ -39,6 +41,9 @@ use zrotext_server::{
     },
     http_enrollment::{self, EnrollmentHttpState},
     http_messages::{self, MessagesHttpState},
+    http_webhooks::{self, WebhookHttpState},
+    owner_ui,
+    webhook_worker::{self, WebhookSecretVault},
 };
 
 #[derive(Clone)]
@@ -78,6 +83,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => return Err("invalid STRIPE_BILLING_TEST_ENABLED".into()),
     };
+    let (webhook_vault, webhook_delivery_enabled) = webhook_config()?;
+    let webhook_management_configured = webhook_vault.is_some();
     let alpha_policy = Arc::new(AlphaPolicy::parse(
         env::var("SYNTHETIC_ALPHA_ENABLED").ok().as_deref(),
         env::var("SYNTHETIC_ALPHA_ALLOWED_ACCOUNT_IDS")
@@ -91,6 +98,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "false" => false,
         "true" if alpha_policy.enabled() => true,
         _ => return Err("DISPATCH_ENABLED requires explicit synthetic alpha allowlists".into()),
+    };
+    let inbound_pilot_enabled = match env::var("INBOUND_PILOT_ENABLED").ok().as_deref() {
+        None | Some("false") => false,
+        Some("true") => true,
+        Some(_) => return Err("INBOUND_PILOT_ENABLED must be true or false".into()),
     };
     let config = Arc::new(Config {
         database_url: required("DATABASE_URL")?,
@@ -118,6 +130,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_state(config.clone());
     if let Some((auth_state, enrollment_state)) = account_routes(&config)? {
         ensure_local_site(&config).await?;
+        if let Some(vault) = webhook_vault {
+            let vault = Arc::new(vault);
+            app = app.merge(http_webhooks::router(WebhookHttpState {
+                database_url: config.database_url.clone(),
+                auth_hasher: auth_state.hasher.clone(),
+                canonical_origin: auth_state.canonical_origin.clone(),
+                vault: vault.clone(),
+            }));
+            if webhook_delivery_enabled {
+                let worker_database = config.database_url.clone();
+                let worker_draining = config.draining.clone();
+                let worker_notify = config.drain_notify.clone();
+                let worker_id = Uuid::new_v4().to_string();
+                tokio::spawn(async move {
+                    let mut checks = tokio::time::interval(Duration::from_secs(2));
+                    checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                    let mut unavailable_logged = false;
+                    loop {
+                        tokio::select! {
+                            _ = checks.tick() => {
+                                if worker_draining.load(Ordering::Acquire) { break; }
+                                let result = async {
+                                    let (mut client, connection) =
+                                        tokio_postgres::connect(&worker_database, NoTls).await
+                                            .map_err(|_| "webhook database unavailable")?;
+                                    tokio::spawn(async move { let _ = connection.await; });
+                                    webhook_worker::dispatch_one(&mut client, &vault, &worker_id).await
+                                        .map_err(|_| "webhook dispatch failed")
+                                }.await;
+                                match result {
+                                    Ok(_) => unavailable_logged = false,
+                                    Err(_) if !unavailable_logged => {
+                                        eprintln!("webhook delivery worker unavailable");
+                                        unavailable_logged = true;
+                                    }
+                                    Err(_) => {}
+                                }
+                            }
+                            _ = worker_notify.notified() => break,
+                        }
+                    }
+                });
+            }
+        }
         let mail_state = auth_state.clone();
         let message_hasher = auth_state.hasher.clone();
         let mail_draining = config.draining.clone();
@@ -185,12 +241,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             enrollment_hasher: enrollment_state.enrollment_hasher.clone(),
             alpha_policy: config.alpha_policy.clone(),
             dispatch_runtime_enabled: config.dispatch_runtime_enabled,
+            inbound_pilot_enabled,
             draining: config.draining.clone(),
             drain_notify: config.drain_notify.clone(),
         };
         app = app
             .nest("/v1/auth", http_auth::router(auth_state))
             .nest("/v1/enrollment", http_enrollment::router(enrollment_state))
+            .merge(owner_ui::router())
             .merge(device_socket::router(socket_state));
         if config.alpha_policy.enabled() {
             let message_state = MessagesHttpState::new(
@@ -200,8 +258,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             )?;
             app = app.nest("/v1/alpha", http_messages::router(message_state));
         }
-    } else if config.alpha_policy.enabled() {
-        return Err("synthetic alpha requires account and enrollment routes".into());
+    } else if config.alpha_policy.enabled()
+        || webhook_delivery_enabled
+        || webhook_management_configured
+        || inbound_pilot_enabled
+    {
+        return Err("account and enrollment routes are required for enabled features".into());
     }
     if let Some((endpoint_secret, worker)) = billing_test {
         let billing_database = config.database_url.clone();
@@ -245,6 +307,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_graceful_shutdown(shutdown_signal(config))
         .await?;
     Ok(())
+}
+
+fn webhook_config() -> Result<(Option<WebhookSecretVault>, bool), Box<dyn std::error::Error>> {
+    let delivery_enabled = match env::var("WEBHOOK_DELIVERY_ENABLED").ok().as_deref() {
+        None | Some("false") => false,
+        Some("true") => true,
+        Some(_) => return Err("WEBHOOK_DELIVERY_ENABLED must be true or false".into()),
+    };
+    let vault = match (env::var("WEBHOOK_KEK_VERSION"), env::var("WEBHOOK_KEK_B64")) {
+        (Err(env::VarError::NotPresent), Err(env::VarError::NotPresent)) if !delivery_enabled => {
+            None
+        }
+        (Ok(version), Ok(encoded)) => {
+            let version: i32 = version.parse()?;
+            let encoded = Zeroizing::new(encoded);
+            let decoded = Zeroizing::new(STANDARD.decode(encoded.as_bytes())?);
+            Some(WebhookSecretVault::new(version, decoded)?)
+        }
+        _ => {
+            return Err("WEBHOOK_KEK_VERSION and WEBHOOK_KEK_B64 must be supplied together".into());
+        }
+    };
+    Ok((vault, delivery_enabled))
 }
 
 fn account_routes(

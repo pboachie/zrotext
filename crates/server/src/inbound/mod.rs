@@ -290,7 +290,7 @@ pub async fn ingest(
         .execute(
             "INSERT INTO webhook_deliveries (id,account_id,endpoint_id,event_id) \
          SELECT gen_random_uuid(),account_id,id,$1 FROM webhook_endpoints \
-         WHERE account_id=$2 AND enabled=TRUE",
+         WHERE account_id=$2 AND enabled=TRUE FOR SHARE",
             &[&event.event_id, &session.account_id],
         )
         .await?;

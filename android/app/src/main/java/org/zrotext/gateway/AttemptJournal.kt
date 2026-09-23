@@ -4,9 +4,9 @@ package org.zrotext.gateway
 import android.app.Activity
 import android.app.Application
 import android.content.Context
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Database
-import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
@@ -56,6 +56,55 @@ data class AlphaRadioEvent(
     val segmentCount: Int? = null,
     val acknowledgedAtMs: Long? = null
 )
+
+/** The one locally approved sender/SIM window is bound to the durable alpha attempt. */
+@Entity(
+    tableName = "inbound_windows",
+    foreignKeys = [ForeignKey(
+        entity = SmsAttempt::class,
+        parentColumns = ["attemptId"], childColumns = ["attemptId"],
+        onDelete = ForeignKey.CASCADE
+    )],
+    indices = [Index("senderToken")]
+)
+data class InboundWindow(
+    @PrimaryKey val attemptId: String,
+    val messageId: String,
+    val senderToken: String,
+    val subscriptionId: Int,
+    val opensAtMs: Long,
+    val closesAtMs: Long
+)
+
+/** Only locally encrypted content is retained. Unverified evidence has no body. */
+@Entity(
+    tableName = "inbound_events",
+    foreignKeys = [ForeignKey(
+        entity = InboundWindow::class,
+        parentColumns = ["attemptId"], childColumns = ["attemptId"],
+        onDelete = ForeignKey.CASCADE
+    )],
+    indices = [Index("attemptId"), Index(value = ["dedupeToken"], unique = true)]
+)
+data class InboundEvent(
+    @PrimaryKey val eventId: String,
+    val attemptId: String,
+    val messageId: String,
+    val dedupeToken: String,
+    val observedSubscriptionId: Int?,
+    val receivedAtMs: Long,
+    val partCount: Int,
+    val classification: String,
+    val encryptedBody: ByteArray?,
+    val nonce: ByteArray?
+)
+
+internal object InboundClassification {
+    const val CAPTURED_LOCAL = "captured_local"
+    const val SIM_UNVERIFIED = "sim_unverified"
+    const val SEND_UNVERIFIED = "send_unverified"
+    const val ENCRYPTION_UNVERIFIED = "encryption_unverified"
+}
 
 @Entity(
     tableName = "sms_segments",
@@ -132,6 +181,55 @@ internal object CallbackEvidence {
 
 @Dao
 abstract class SmsAttemptDao {
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    abstract fun insertInboundWindow(window: InboundWindow)
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    abstract fun insertInboundEvent(event: InboundEvent): Long
+
+    @Query("SELECT * FROM inbound_windows WHERE senderToken = :senderToken AND opensAtMs <= :now AND closesAtMs > :now ORDER BY opensAtMs DESC LIMIT 2")
+    abstract fun activeInboundWindows(senderToken: String, now: Long): List<InboundWindow>
+
+    @Query("SELECT * FROM inbound_events WHERE dedupeToken = :dedupeToken LIMIT 1")
+    abstract fun inboundByDedupe(dedupeToken: String): InboundEvent?
+
+    @Query("SELECT * FROM inbound_events WHERE attemptId = :attemptId ORDER BY rowid")
+    abstract fun inboundForAttempt(attemptId: String): List<InboundEvent>
+
+    /** A duplicate broadcast cannot create another local event. Unknown SIM/send has no body. */
+    @Transaction
+    open fun recordInbound(
+        window: InboundWindow, dedupeToken: String, observedSubscriptionId: Int?,
+        partCount: Int, receivedAtMs: Long, encryptedBody: ByteArray?, nonce: ByteArray?
+    ): InboundEvent? {
+        if (partCount !in 1..6 || receivedAtMs < window.opensAtMs ||
+            receivedAtMs >= window.closesAtMs ||
+            activeInboundWindows(window.senderToken, receivedAtMs).singleOrNull()?.attemptId !=
+                window.attemptId) return null
+        if (observedSubscriptionId != null && observedSubscriptionId != window.subscriptionId) return null
+        inboundByDedupe(dedupeToken)?.let { return it }
+        val attempt = getAttempt(window.attemptId) ?: return null
+        val sent = attempt.state in setOf(AttemptState.SUBMITTED, AttemptState.DELIVERED,
+            AttemptState.DELIVERY_FAILED, AttemptState.DELIVERY_UNKNOWN) &&
+            !attempt.evidenceConflict && getSegments(attempt.attemptId).let { segments ->
+                segments.size == attempt.segmentCount &&
+                    segments.all { it.sentResultCode == Activity.RESULT_OK }
+            }
+        val classification = when {
+            observedSubscriptionId == null -> InboundClassification.SIM_UNVERIFIED
+            !sent -> InboundClassification.SEND_UNVERIFIED
+            encryptedBody == null || nonce?.size != 12 || encryptedBody.size < 16 ->
+                InboundClassification.ENCRYPTION_UNVERIFIED
+            else -> InboundClassification.CAPTURED_LOCAL
+        }
+        val event = InboundEvent(UUID.randomUUID().toString(), window.attemptId,
+            window.messageId, dedupeToken, observedSubscriptionId, receivedAtMs, partCount,
+            classification,
+            if (classification == InboundClassification.CAPTURED_LOCAL) encryptedBody else null,
+            if (classification == InboundClassification.CAPTURED_LOCAL) nonce else null)
+        return if (insertInboundEvent(event) != -1L) event else inboundByDedupe(dedupeToken)
+    }
+
     @Insert(onConflict = OnConflictStrategy.ABORT)
     abstract fun insertAttempt(attempt: SmsAttempt)
 
@@ -210,7 +308,8 @@ abstract class SmsAttemptDao {
     @Transaction
     open fun reserveAlpha(
         attemptId: String, messageId: String, subscriptionId: Int,
-        segmentCount: Int, intentEventId: String, now: Long
+        segmentCount: Int, intentEventId: String, now: Long,
+        approvedSenderToken: String? = null
     ) {
         require(segmentCount in 1..6)
         require(listOf(attemptId, messageId, intentEventId).all {
@@ -221,6 +320,11 @@ abstract class SmsAttemptDao {
         insertSegments((0 until segmentCount).map { SmsSegment(attemptId, it) })
         insertAlphaEvent(AlphaRadioEvent(intentEventId, messageId, attemptId,
             "durable_submit_intent", now))
+        if (approvedSenderToken != null) {
+            require(approvedSenderToken.matches(Regex("[0-9a-f]{64}")))
+            insertInboundWindow(InboundWindow(attemptId, messageId, approvedSenderToken,
+                subscriptionId, now, Math.addExact(now, INBOUND_PILOT_WINDOW_MS)))
+        }
     }
 
     /** A true ack can authorize this reservation only once in this process lifetime. */
@@ -286,7 +390,10 @@ abstract class SmsAttemptDao {
     }
 }
 
-@Database(entities = [SmsAttempt::class, SmsSegment::class, AlphaRadioEvent::class], version = 3, exportSchema = false)
+private const val INBOUND_PILOT_WINDOW_MS = 24L * 60 * 60 * 1000
+
+@Database(entities = [SmsAttempt::class, SmsSegment::class, AlphaRadioEvent::class,
+    InboundWindow::class, InboundEvent::class], version = 4, exportSchema = false)
 abstract class SmsJournalDatabase : RoomDatabase() {
     abstract fun attempts(): SmsAttemptDao
 
@@ -296,7 +403,7 @@ abstract class SmsJournalDatabase : RoomDatabase() {
         fun get(context: Context): SmsJournalDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(
                 context.applicationContext, SmsJournalDatabase::class.java, "sms_attempts.db"
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build().also { instance = it }
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build().also { instance = it }
         }
 
         internal val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -311,6 +418,16 @@ abstract class SmsJournalDatabase : RoomDatabase() {
                 db.execSQL("CREATE TABLE IF NOT EXISTS alpha_radio_events (eventId TEXT NOT NULL PRIMARY KEY, messageId TEXT NOT NULL, attemptId TEXT NOT NULL, evidence TEXT NOT NULL, observedAtMs INTEGER NOT NULL, segmentIndex INTEGER, segmentCount INTEGER, acknowledgedAtMs INTEGER, FOREIGN KEY(attemptId) REFERENCES sms_attempts(attemptId) ON UPDATE NO ACTION ON DELETE CASCADE)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_alpha_radio_events_attemptId ON alpha_radio_events(attemptId)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_alpha_radio_events_acknowledgedAtMs_observedAtMs ON alpha_radio_events(acknowledgedAtMs, observedAtMs)")
+            }
+        }
+
+        internal val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS inbound_windows (attemptId TEXT NOT NULL PRIMARY KEY, messageId TEXT NOT NULL, senderToken TEXT NOT NULL, subscriptionId INTEGER NOT NULL, opensAtMs INTEGER NOT NULL, closesAtMs INTEGER NOT NULL, FOREIGN KEY(attemptId) REFERENCES sms_attempts(attemptId) ON UPDATE NO ACTION ON DELETE CASCADE)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_inbound_windows_senderToken ON inbound_windows(senderToken)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS inbound_events (eventId TEXT NOT NULL PRIMARY KEY, attemptId TEXT NOT NULL, messageId TEXT NOT NULL, dedupeToken TEXT NOT NULL, observedSubscriptionId INTEGER, receivedAtMs INTEGER NOT NULL, partCount INTEGER NOT NULL, classification TEXT NOT NULL, encryptedBody BLOB, nonce BLOB, FOREIGN KEY(attemptId) REFERENCES inbound_windows(attemptId) ON UPDATE NO ACTION ON DELETE CASCADE)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_inbound_events_attemptId ON inbound_events(attemptId)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_inbound_events_dedupeToken ON inbound_events(dedupeToken)")
             }
         }
     }
