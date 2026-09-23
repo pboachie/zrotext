@@ -220,7 +220,9 @@ class AuthenticatedGatewayService : Service() {
                                     SmsJournalDatabase.get(applicationContext).attempts().reserveAlpha(
                                         grant.attemptId.toString(), grant.messageId.toString(),
                                         grant.subscriptionId, 1, UUID.randomUUID().toString(),
-                                        System.currentTimeMillis())
+                                        System.currentTimeMillis(),
+                                        InboundVault.token("sender-v1",
+                                            grant.recipientE164.toByteArray(Charsets.US_ASCII)))
                                     AuthenticatedGatewayStatus.value = "Grant reserved; waiting for writer ack"
                                     pumpAlphaEvents(webSocket, machine, currentGeneration)
                                 } catch (_: Exception) {
