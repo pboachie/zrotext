@@ -72,4 +72,15 @@ class DeviceReconnectPolicyTest {
             policy.lost(DeviceReconnectPolicy.Loss.AUTH_REJECTED, 2))
         assertEquals(DeviceReconnectPolicy.Action.Stop, policy.retryDue())
     }
+
+    @Test
+    fun jitterNeverExtendsRetryBeyondOneMinute() {
+        val policy = DeviceReconnectPolicy { 1.0 }
+        policy.start(true)
+        repeat(10) {
+            val delay = policy.lost(DeviceReconnectPolicy.Loss.TRANSPORT, it.toLong())
+            if (it == 9) assertEquals(DeviceReconnectPolicy.Action.RetryAfter(60_000), delay)
+            policy.retryDue()
+        }
+    }
 }

@@ -30,6 +30,7 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.json.JSONObject
+import java.io.IOException
 import java.net.URI
 import java.security.MessageDigest
 import java.util.UUID
@@ -303,7 +304,8 @@ class AuthenticatedGatewayService : Service() {
                 machine.close()
                 val trustedTransport = generateSequence(t as Throwable?) { it.cause }
                     .none { it is SSLException || it is java.security.cert.CertificateException }
-                val transport = trustedTransport && (response == null || response.code >= 500)
+                val transport = t is IOException && trustedTransport &&
+                    (response == null || response.code >= 500)
                 disconnect(currentGeneration, if (transport) DeviceReconnectPolicy.Loss.TRANSPORT
                     else DeviceReconnectPolicy.Loss.AUTH_REJECTED)
             }
