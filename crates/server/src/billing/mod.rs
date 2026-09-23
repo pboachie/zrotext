@@ -2,7 +2,7 @@
 //! Test-mode Stripe event inbox. Events only request reconciliation; they never
 //! directly grant a plan or change a quota.
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -686,6 +686,15 @@ mod tests {
         "t=1750000000,v0=0000,v1=17db9d23bf1f46a7db28382296af063cf65b36c77d80f154712e9f0803633536";
     const SECRET: &str = "whsec_testfixture1234567890";
 
+    fn signed_header(timestamp: i64, mac: HmacSha256) -> String {
+        let digest = mac.finalize().into_bytes();
+        let hex = digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        format!("t={timestamp},v1={hex}")
+    }
+
     #[test]
     fn stripe_signature_uses_exact_raw_body_and_recency() {
         let event = verify_event(BODY, HEADER, SECRET, 1_750_000_000).unwrap();
@@ -722,7 +731,7 @@ mod tests {
         let mut mac = HmacSha256::new_from_slice(SECRET.as_bytes()).unwrap();
         mac.update(b"1750000000.");
         mac.update(&body);
-        let signed = format!("t=1750000000,v1={:x}", mac.finalize().into_bytes());
+        let signed = signed_header(1_750_000_000, mac);
         assert!(matches!(
             verify_event(&body, &signed, SECRET, 1_750_000_000),
             Err(BillingError::InvalidEvent)
@@ -735,7 +744,7 @@ mod tests {
         let mut mac = HmacSha256::new_from_slice(SECRET.as_bytes()).unwrap();
         mac.update(b"1750000000.");
         mac.update(body);
-        let signature = format!("t=1750000000,v1={:x}", mac.finalize().into_bytes());
+        let signature = signed_header(1_750_000_000, mac);
         let event = verify_event(body, &signature, SECRET, 1_750_000_000).unwrap();
         assert_eq!(event.object_id.as_deref(), Some("cs_test_fixture1"));
         assert_eq!(event.customer_id.as_deref(), Some("cus_fixture1"));
@@ -773,7 +782,7 @@ mod tests {
         let mut mac = HmacSha256::new_from_slice(SECRET.as_bytes()).unwrap();
         mac.update(b"1750000000.");
         mac.update(body);
-        let signature = format!("t=1750000000,v1={:x}", mac.finalize().into_bytes());
+        let signature = signed_header(1_750_000_000, mac);
         verify_event(body, &signature, SECRET, 1_750_000_000).unwrap()
     }
 
@@ -787,7 +796,7 @@ mod tests {
         let mut mac = HmacSha256::new_from_slice(SECRET.as_bytes()).unwrap();
         mac.update(b"1750000000.");
         mac.update(zero);
-        let signature = format!("t=1750000000,v1={:x}", mac.finalize().into_bytes());
+        let signature = signed_header(1_750_000_000, mac);
         assert!(matches!(
             verify_event(zero, &signature, SECRET, 1_750_000_000),
             Err(BillingError::InvalidEvent)
@@ -821,8 +830,8 @@ mod tests {
                 "../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"
             ),
             include_str!("../../../../deploy/compose/migrations/008_stripe_billing_foundation.sql"),
-            include_str!("../../../../deploy/compose/migrations/009_billing_test_entitlement.sql"),
-            include_str!("../../../../deploy/compose/migrations/010_billing_payment_holds.sql"),
+            include_str!("../../../../deploy/compose/migrations/010_billing_test_entitlement.sql"),
+            include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
@@ -1060,7 +1069,7 @@ mod tests {
         let mut mac = HmacSha256::new_from_slice(SECRET.as_bytes()).unwrap();
         mac.update(b"1750000000.");
         mac.update(live);
-        let signed = format!("t=1750000000,v1={:x}", mac.finalize().into_bytes());
+        let signed = signed_header(1_750_000_000, mac);
         assert!(matches!(
             verify_event(live, &signed, SECRET, 1_750_000_000),
             Err(BillingError::InvalidEvent)
@@ -1098,8 +1107,8 @@ mod tests {
                 "../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"
             ),
             include_str!("../../../../deploy/compose/migrations/008_stripe_billing_foundation.sql"),
-            include_str!("../../../../deploy/compose/migrations/009_billing_test_entitlement.sql"),
-            include_str!("../../../../deploy/compose/migrations/010_billing_payment_holds.sql"),
+            include_str!("../../../../deploy/compose/migrations/010_billing_test_entitlement.sql"),
+            include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
@@ -1373,8 +1382,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(row.get::<_, i64>(0), 8);
-        // A rolling upgrade can temporarily have entitlement migration 009
-        // without risk migration 010. Disabling billing still clears its old
+        // A rolling upgrade can temporarily have entitlement migration 010
+        // without risk migration 011. Disabling billing still clears its old
         // allowance, while enabling billing requires both schemas.
         db.batch_execute("DROP TABLE billing_payment_holds,billing_risk_events")
             .await
@@ -1424,8 +1433,8 @@ mod tests {
                 "../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"
             ),
             include_str!("../../../../deploy/compose/migrations/008_stripe_billing_foundation.sql"),
-            include_str!("../../../../deploy/compose/migrations/009_billing_test_entitlement.sql"),
-            include_str!("../../../../deploy/compose/migrations/010_billing_payment_holds.sql"),
+            include_str!("../../../../deploy/compose/migrations/010_billing_test_entitlement.sql"),
+            include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
@@ -1569,8 +1578,8 @@ mod tests {
                 "../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"
             ),
             include_str!("../../../../deploy/compose/migrations/008_stripe_billing_foundation.sql"),
-            include_str!("../../../../deploy/compose/migrations/009_billing_test_entitlement.sql"),
-            include_str!("../../../../deploy/compose/migrations/010_billing_payment_holds.sql"),
+            include_str!("../../../../deploy/compose/migrations/010_billing_test_entitlement.sql"),
+            include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
@@ -1608,7 +1617,7 @@ mod tests {
             mac.update(timestamp.to_string().as_bytes());
             mac.update(b".");
             mac.update(&body);
-            let signature = format!("t={timestamp},v1={:x}", mac.finalize().into_bytes());
+            let signature = signed_header(timestamp, mac);
             let event = verify_event(&body, &signature, signing_secret, timestamp).unwrap();
             assert_eq!(event.event_type, *expected_type);
             assert_eq!(event.customer_id.as_deref(), Some(customer_id.as_str()));

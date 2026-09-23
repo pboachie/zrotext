@@ -1,12 +1,12 @@
 # Device stream v1: authenticated session
 
-This is the implemented M1 phone-to-hub handshake. A production endpoint must
-use WSS. The current Android client requires a manually entered approved
-device UUID and a `wss://` URL ending in `/v1/device-stream`. No live WSS
-interoperability or carrier test has passed yet. A guarded server-side
-[synthetic-alpha extension](synthetic-alpha-stream.md) is in progress; the
-Android client now has a manually armed private synthetic-alpha extension,
-but no live WSS, carrier SMS, or inbound path has been verified.
+This is the authenticated phone-to-hub handshake. A public endpoint must use
+WSS. The Android client requires an approved device UUID and a `wss://` URL
+ending in `/v1/device-stream`. A guarded
+[synthetic-alpha extension](synthetic-alpha-stream.md) supports controlled
+tests with an allowlisted device and recipient. A local, manually armed WSS
+session and one test SMS have been exercised on a dedicated Android phone;
+this does not establish unattended operation or general carrier support.
 
 1. Phone sends `{"v":1,"type":"hello","device_id":"UUID"}`.
 2. Hub returns `{"v":1,"type":"challenge","challenge_id":"UUID","account_id":"UUID","device_id":"UUID","nonce":"BASE64URL_NO_PAD"}`. The nonce is 32 random bytes.

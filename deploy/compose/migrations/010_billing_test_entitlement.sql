@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: AGPL-3.0-only
--- Test-mode Stripe price-to-outbound quota projection. Migration 009 is
--- reserved by this isolated stack; renumber when combined with webhook replay.
+-- Test-mode Stripe price-to-outbound quota projection. Requires webhook
+-- replay migration 009 to be applied first.
 
 ALTER TABLE usage_quota_policies
     ADD COLUMN source text NOT NULL DEFAULT 'operator'

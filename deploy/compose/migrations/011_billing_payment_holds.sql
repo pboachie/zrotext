@@ -1,6 +1,5 @@
 -- SPDX-License-Identifier: AGPL-3.0-only
--- Isolated test-mode payment-risk slice after entitlement migration 009.
--- Combined stack already uses 010 and 011; renumber this migration to 012.
+-- Test-mode payment-risk slice after entitlement migration 010.
 
 CREATE TABLE billing_risk_events (
     stripe_event_id text PRIMARY KEY REFERENCES billing_events(stripe_event_id),
