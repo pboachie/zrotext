@@ -37,7 +37,7 @@ protected[protected_len]
 body_nonce[12]
 body_ct_len:u32       = 17..32784
 body_ct[body_ct_len] = AES-GCM ciphertext || tag[16]
-wrap_count:u8        = 1..8
+wrap_count:u8        = 1..8 (outbound 2..8; inbound 1..7)
 wrap[wrap_count]     = role:u8 || key_id[32] || enc[65] || hpke_ct[48]
 signature[64]        = ECDSA P-256/SHA-256 r[32] || s[32]
 EOF                 # no trailing bytes
@@ -52,6 +52,8 @@ created_or_observed_ms:u64
 ```
 
 For `kind=01` append `expires_ms:u64 || intent:u8(=01 SEND_SMS) || peer_len:u8 || peer[peer_len]`. For `kind=02` append `event_id[16] || local_sequence:u64 || peer_len:u8 || peer[peer_len]`. Outbound `peer` is the destination; inbound `peer` is the observed sender. `line_id` is the account's registered, selected phone line identity and is separate from a mutable Android subscription index. Inbound content is emitted only after the device can identify this line unambiguously; otherwise it emits metadata-only evidence under a separate contract, never a guessed sealed SMS body.
+
+The common prefix is exactly **144 bytes**. With `peer_len` in `3..16`, `protected_len` must equal **`154 + peer_len`** for outbound (`157..170` bytes), or **`169 + peer_len`** for inbound (`172..185` bytes). A parser rejects every other length even if the outer envelope's byte count is internally consistent. The generic wrap grammar admits `1..8` records, but kind rules narrow this to **`2..8` outbound** and **`1..7` inbound**.
 
 `manifest_digest` is SHA-256 of the complete signed key manifest bytes. All UUIDs, line identity, sender key, recipient number, keyset version, intent, expiry and inbound event identity are therefore cryptographically bound. The account-scoped `message_id` is immutable for retries and is not the server's attempt ID. Inbound `event_id` plus `local_sequence` supports deduplication; exactly which durable phone journal allocates sequence numbers is a review item.
 
