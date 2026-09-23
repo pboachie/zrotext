@@ -74,6 +74,19 @@ pub struct PairingView {
     pub key_fingerprint: Option<String>,
 }
 
+pub struct OwnerDevice {
+    pub id: Uuid,
+    pub display_name: String,
+    pub revoked: bool,
+}
+
+pub struct OwnerDevicePage {
+    pub devices: Vec<OwnerDevice>,
+    pub next_cursor: Option<Uuid>,
+}
+
+const OWNER_DEVICE_PAGE_SIZE: usize = 50;
+
 pub struct DeviceChallenge {
     pub id: Uuid,
     pub account_id: Uuid,
@@ -306,6 +319,44 @@ pub async fn pairing_view(
             key_fingerprint: fingerprint.map(|b| fingerprint_string(&b)),
         }
     }))
+}
+
+/// List only devices enrolled into the authenticated owner's account. A
+/// revoked device remains visible so the UI never implies it disappeared.
+pub async fn list_owner_devices(
+    client: &Client,
+    principal: &SessionPrincipal,
+    before: Option<Uuid>,
+) -> Result<OwnerDevicePage, EnrollmentError> {
+    if !owner_session_active(client, principal).await? {
+        return Err(EnrollmentError::Unauthorized);
+    }
+    let rows = client
+        .query(
+            "SELECT d.id,d.display_name,(d.revoked_at IS NOT NULL OR k.revoked_at IS NOT NULL) AS revoked \
+             FROM devices d JOIN device_keys k ON (k.account_id,k.device_id)=(d.account_id,d.id) \
+             WHERE d.account_id=$1 AND ($2::uuid IS NULL OR (d.created_at,d.id) < \
+               (SELECT c.created_at,c.id FROM devices c JOIN device_keys ck \
+                ON (ck.account_id,ck.device_id)=(c.account_id,c.id) \
+                WHERE c.account_id=$1 AND c.id=$2)) \
+             ORDER BY d.created_at DESC,d.id DESC LIMIT $3",
+            &[&principal.tenant.account_id(), &before, &((OWNER_DEVICE_PAGE_SIZE + 1) as i64)],
+        )
+        .await?;
+    let has_more = rows.len() > OWNER_DEVICE_PAGE_SIZE;
+    let devices: Vec<_> = rows
+        .into_iter()
+        .take(OWNER_DEVICE_PAGE_SIZE)
+        .map(|row| OwnerDevice {
+            id: row.get(0),
+            display_name: row.get(1),
+            revoked: row.get(2),
+        })
+        .collect();
+    Ok(OwnerDevicePage {
+        next_cursor: has_more.then(|| devices.last().expect("page is nonempty").id),
+        devices,
+    })
 }
 
 /// The owner must compare both values as shown on the phone and in the browser.
