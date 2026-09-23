@@ -6,6 +6,7 @@ pub mod enrollment;
 pub mod http_auth;
 pub mod http_enrollment;
 pub mod http_messages;
+pub mod http_webhooks;
 pub mod inbound;
 pub mod webhook_egress;
 pub mod webhook_worker;
