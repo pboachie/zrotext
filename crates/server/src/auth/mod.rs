@@ -81,6 +81,22 @@ pub struct ApiKeyCredentials {
     pub public_prefix: String,
 }
 
+/// Safe to return to the owner dashboard: neither token nor verifier is read.
+pub struct ApiKeyMetadata {
+    pub id: Uuid,
+    pub public_prefix: String,
+    pub scopes: Vec<String>,
+    pub bound_device_id: Option<Uuid>,
+    pub created_at_ms: i64,
+    pub expires_at_ms: Option<i64>,
+    pub revoked_at_ms: Option<i64>,
+}
+
+pub struct ApiKeyPage {
+    pub keys: Vec<ApiKeyMetadata>,
+    pub next_cursor: Option<Uuid>,
+}
+
 /// Scope names are intentionally narrow. API keys do not unlock content.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum Scope {
@@ -159,9 +175,21 @@ impl SessionPrincipal {
         csrf_cookie: &str,
         csrf_header: &str,
     ) -> Result<(), AuthError> {
-        if !expected_origin.starts_with("https://")
-            || origin != expected_origin
-            || csrf_cookie.len() != csrf_header.len()
+        if !expected_origin.starts_with("https://") || origin != expected_origin {
+            return Err(AuthError::Forbidden);
+        }
+        self.require_csrf_token(hasher, csrf_cookie, csrf_header)
+    }
+
+    /// Read-only owner metadata requests carry the token in a custom header.
+    /// Browsers do not send Origin on ordinary same-origin GET requests.
+    pub fn require_csrf_token(
+        &self,
+        hasher: &TokenHasher,
+        csrf_cookie: &str,
+        csrf_header: &str,
+    ) -> Result<(), AuthError> {
+        if csrf_cookie.len() != csrf_header.len()
             || !bool::from(csrf_cookie.as_bytes().ct_eq(csrf_header.as_bytes()))
             || !valid_token(csrf_cookie, "ztc_")
         {
@@ -506,6 +534,62 @@ pub async fn revoke_api_key(
         )
         .await?
         == 1)
+}
+
+/// A stable, bounded owner-only list. The cursor must belong to this tenant;
+/// metadata reads never select token_hash or reveal the one-time secret.
+pub async fn list_api_keys(
+    client: &Client,
+    principal: &SessionPrincipal,
+    before: Option<Uuid>,
+) -> Result<ApiKeyPage, AuthError> {
+    let account_id = principal.tenant.account_id();
+    let cursor = if let Some(id) = before {
+        let row = client
+            .query_opt(
+                "SELECT created_at FROM api_keys WHERE account_id=$1 AND id=$2",
+                &[&account_id, &id],
+            )
+            .await?
+            .ok_or(AuthError::InvalidInput)?;
+        Some((id, row.get::<_, std::time::SystemTime>(0)))
+    } else {
+        None
+    };
+    let rows = client
+        .query(
+            "SELECT id,public_prefix,scopes,bound_device_id, \
+             (extract(epoch FROM created_at)*1000)::bigint, \
+             (extract(epoch FROM expires_at)*1000)::bigint, \
+             (extract(epoch FROM revoked_at)*1000)::bigint \
+             FROM api_keys WHERE account_id=$1 AND \
+             ($2::timestamptz IS NULL OR (created_at,id)<($2,$3)) \
+             ORDER BY created_at DESC,id DESC LIMIT 51",
+            &[
+                &account_id,
+                &cursor.map(|(_, at)| at),
+                &cursor.map(|(id, _)| id),
+            ],
+        )
+        .await?;
+    let has_more = rows.len() > 50;
+    let keys: Vec<_> = rows
+        .into_iter()
+        .take(50)
+        .map(|row| ApiKeyMetadata {
+            id: row.get(0),
+            public_prefix: row.get(1),
+            scopes: row.get(2),
+            bound_device_id: row.get(3),
+            created_at_ms: row.get(4),
+            expires_at_ms: row.get(5),
+            revoked_at_ms: row.get(6),
+        })
+        .collect();
+    Ok(ApiKeyPage {
+        next_cursor: has_more.then(|| keys.last().expect("nonempty page").id),
+        keys,
+    })
 }
 
 /// Pass these only over HTTPS. The session cookie is inaccessible to script;
