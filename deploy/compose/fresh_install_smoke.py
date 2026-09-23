@@ -67,12 +67,18 @@ def wait_for_endpoint(port, path, expected):
 
 
 def main():
-    # Compose gives shell variables precedence over --env-file. Do not allow a
-    # developer's live settings to override this generated, dispatch-off stack.
+    # Compose gives shell variables precedence over --env-file and imports
+    # bare environment keys from the shell. Do not pass live account, SMTP,
+    # or MFA settings into this disposable stack.
     for name in ("POSTGRES_PASSWORD", "DATABASE_URL", "APP_PORT", "SITE_ID",
                  "INSTANCE_ID", "DEPLOYMENT_EPOCH", "DISPATCH_ENABLED",
                  "SYNTHETIC_ALPHA_ENABLED", "M0_TEST_TOKEN", "COMPOSE_PROFILES",
-                 "COMPOSE_ENV_FILES", "COMPOSE_PROJECT_NAME", "COMPOSE_FILE"):
+                 "COMPOSE_ENV_FILES", "COMPOSE_PROJECT_NAME", "COMPOSE_FILE",
+                 "AUTH_ORIGIN", "AUTH_TOKEN_PEPPER_B64", "ENROLLMENT_TOKEN_PEPPER_B64",
+                 "SMTP_HOST", "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD",
+                 "SMTP_FROM", "SMTP_FROM_NAME", "SMTP_REPLY_TO",
+                 "MFA_ENCRYPTION_KEY_B64", "MFA_ENROLLMENT_ENABLED",
+                 "MFA_RECOVERY_ONLY"):
         os.environ.pop(name, None)
     ensure_local_docker()
     project = "zt-fresh-" + secrets.token_hex(8)
@@ -113,6 +119,12 @@ def main():
         run([*compose, "exec", "-T", "app", "sh", "-ec",
              'test "$DISPATCH_ENABLED" = false'],
             "dispatch-disabled check")
+        run([*compose, "exec", "-T", "app", "sh", "-ec",
+             'test -z "$AUTH_TOKEN_PEPPER_B64" && '
+             'test -z "$ENROLLMENT_TOKEN_PEPPER_B64" && '
+             'test -z "$SMTP_PASSWORD" && '
+             'test -z "$MFA_ENCRYPTION_KEY_B64"'],
+            "disposable credential isolation")
         database = summary(project, env_file)
         migrations = verify_ledger(database["ledger"])
         if database["tenants"] or database["messages"]:
