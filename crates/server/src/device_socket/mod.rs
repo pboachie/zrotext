@@ -342,18 +342,26 @@ async fn run_socket(mut socket: WebSocket, state: DeviceSocketState) {
     let mut last_grant_at: Option<Instant> = None;
     let mut alpha_ready: Option<([u8; 32], Instant)> = None;
     let mut alpha_ready_used = false;
+    // Enabled only for controlled local liveness probes. Emit one content-free
+    // marker per authenticated session, never a frame or device identifier.
+    let diagnostic = std::env::var("ZT_DEVICE_STREAM_DIAGNOSTIC").is_ok_and(|value| value == "1");
+    let mut close_reason = "other_stream_exit";
     loop {
         tokio::select! {
             message = receive_frame(&mut socket) => {
                 match message {
                     Some(ClientFrame::Heartbeat { v: 1 }) => {
                         if !renew_session(&client, session, &state).await.unwrap_or(false) {
+                            close_reason = "heartbeat_renew_failed_or_fenced";
                             break;
                         }
                         last_heartbeat = Instant::now();
                         if !send_frame(&mut socket, ServerFrame::HeartbeatAck {
                             v: 1, connection_epoch: session.connection_epoch,
-                        }).await { break; }
+                        }).await {
+                            close_reason = "heartbeat_ack_write_failed";
+                            break;
+                        }
                     }
                     Some(ClientFrame::AlphaReady { v: 1, connection_epoch, recipient_digest })
                         if connection_epoch == session.connection_epoch && !alpha_ready_used && state.dispatch_runtime_enabled =>
@@ -411,9 +419,14 @@ async fn run_socket(mut socket: WebSocket, state: DeviceSocketState) {
                 }
             }
             _ = checks.tick() => {
-                if last_heartbeat.elapsed() > HEARTBEAT_DEADLINE
-                    || !session_current(&client, session, &state).await.unwrap_or(false)
-                { break; }
+                if last_heartbeat.elapsed() > HEARTBEAT_DEADLINE {
+                    close_reason = "heartbeat_deadline";
+                    break;
+                }
+                if !session_current(&client, session, &state).await.unwrap_or(false) {
+                    close_reason = "session_check_failed_or_fenced";
+                    break;
+                }
             }
             _ = dispatch_checks.tick(), if alpha_ready.is_some() => {
                 if !session_current(&client, session, &state).await.unwrap_or(false) {
@@ -437,8 +450,18 @@ async fn run_socket(mut socket: WebSocket, state: DeviceSocketState) {
                     Err(_) => break,
                 }
             }
-            _ = state.drain_notify.notified() => break,
+            _ = state.drain_notify.notified() => {
+                close_reason = "site_drain";
+                break;
+            },
         }
+    }
+    if diagnostic {
+        eprintln!(
+            "ZTDeviceStream close_reason={close_reason} connection_epoch={} since_heartbeat_ms={}",
+            session.connection_epoch,
+            last_heartbeat.elapsed().as_millis()
+        );
     }
     let _ = release_session(&client, session).await;
     let _ = socket.send(Message::Close(None)).await;
