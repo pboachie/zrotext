@@ -602,9 +602,11 @@ pub async fn reconcile_snapshot_with_quotas(
         &[&account_id.to_string()],
     )
     .await?;
-    // Pairing approval takes the same account lock before counting devices.
+    // Pairing approval takes a conflicting account lock before counting devices.
+    // NO KEY UPDATE still serializes cap changes without blocking the account
+    // FK KEY SHARE acquired by verified billing ingress.
     tx.query_one(
-        "SELECT id FROM accounts WHERE id=$1 FOR UPDATE",
+        "SELECT id FROM accounts WHERE id=$1 FOR NO KEY UPDATE",
         &[&account_id],
     )
     .await?;
@@ -619,6 +621,15 @@ pub async fn reconcile_snapshot_with_quotas(
         && (quota_plans.is_empty() || quota_plans.iter().any(|plan| plan.device_limit.is_none()))
     {
         return Err(BillingError::InvalidEvent);
+    }
+    // Ingress, risk holds, and customer binding lock the customer before they
+    // queue a reconciliation. Take the same order before locking its row.
+    let binding = tx.query_opt(
+        "SELECT 1 FROM billing_customers WHERE account_id=$1 AND stripe_customer_id=$2 FOR SHARE",
+        &[&account_id, &snapshot.customer_id],
+    ).await?;
+    if binding.is_none() {
+        return Err(BillingError::TenantConflict);
     }
     let row = tx.query_opt(
         "SELECT stripe_customer_id,dirty_generation,processed_generation FROM billing_reconciliations WHERE stripe_subscription_id=$1 AND account_id=$2 FOR UPDATE",
@@ -927,6 +938,144 @@ mod tests {
             verify_event(zero, &signature, SECRET, 1_750_000_000),
             Err(BillingError::InvalidEvent)
         ));
+    }
+
+    #[tokio::test]
+    async fn reconciliation_locks_customer_before_queue_row_without_blocking_account_fk() {
+        let Ok(base_url) = env::var("ZT_AUTH_TEST_DATABASE_URL") else {
+            return;
+        };
+        let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let schema = format!("billing_lock_order_{}", Uuid::new_v4().simple());
+        setup
+            .batch_execute(&format!("CREATE SCHEMA {schema}"))
+            .await
+            .unwrap();
+        let separator = if base_url.contains('?') { '&' } else { '?' };
+        let scoped_url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
+        let (mut blocker_db, connection) =
+            tokio_postgres::connect(&scoped_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let (mut reconcile_db, connection) =
+            tokio_postgres::connect(&scoped_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let (probe, connection) = tokio_postgres::connect(&scoped_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        for sql in [
+            include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
+            include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+            include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
+            include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
+            include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+            include_str!("../../../../deploy/compose/migrations/006_usage_metering.sql"),
+            include_str!(
+                "../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"
+            ),
+            include_str!("../../../../deploy/compose/migrations/008_stripe_billing_foundation.sql"),
+            include_str!("../../../../deploy/compose/migrations/009_webhook_manual_replay.sql"),
+            include_str!("../../../../deploy/compose/migrations/010_billing_test_entitlement.sql"),
+            include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
+            include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
+        ] {
+            probe.batch_execute(sql).await.unwrap();
+        }
+        let account = Uuid::new_v4();
+        probe
+            .execute("INSERT INTO accounts(id) VALUES($1)", &[&account])
+            .await
+            .unwrap();
+        probe.execute(
+            "INSERT INTO billing_customers(account_id,stripe_customer_id) VALUES($1,'cus_lockorder1')",
+            &[&account],
+        ).await.unwrap();
+        probe.execute(
+            "INSERT INTO billing_reconciliations(stripe_subscription_id,account_id,stripe_customer_id) VALUES('sub_lockorder1',$1,'cus_lockorder1')",
+            &[&account],
+        ).await.unwrap();
+        let reconcile_pid: i32 = reconcile_db
+            .query_one("SELECT pg_backend_pid()", &[])
+            .await
+            .unwrap()
+            .get(0);
+        let blocker = blocker_db.transaction().await.unwrap();
+        let blocker_pid: i32 = blocker
+            .query_one("SELECT pg_backend_pid()", &[])
+            .await
+            .unwrap()
+            .get(0);
+        blocker
+            .query_one(
+                "SELECT account_id FROM billing_customers WHERE account_id=$1 FOR UPDATE",
+                &[&account],
+            )
+            .await
+            .unwrap();
+
+        let task = tokio::spawn(async move {
+            reconcile_snapshot(
+                &mut reconcile_db,
+                account,
+                &SubscriptionSnapshot {
+                    subscription_id: "sub_lockorder1".into(),
+                    customer_id: "cus_lockorder1".into(),
+                    status: "active".into(),
+                    price_id: None,
+                },
+                &[],
+                1,
+            )
+            .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let blockers: Vec<i32> = setup
+                    .query_one("SELECT pg_blocking_pids($1)", &[&reconcile_pid])
+                    .await
+                    .unwrap()
+                    .get(0);
+                if blockers.contains(&blocker_pid) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("reconciliation must wait on the held customer row");
+
+        // Both probes succeed only if reconciliation holds neither the old
+        // account UPDATE lock nor the queue row before the customer lock.
+        probe
+            .query_one(
+                "SELECT id FROM accounts WHERE id=$1 FOR KEY SHARE NOWAIT",
+                &[&account],
+            )
+            .await
+            .unwrap();
+        probe.query_one(
+            "SELECT stripe_subscription_id FROM billing_reconciliations WHERE stripe_subscription_id='sub_lockorder1' FOR UPDATE NOWAIT",
+            &[],
+        ).await.unwrap();
+        blocker.commit().await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), task)
+            .await
+            .expect("reconciliation should resume")
+            .unwrap()
+            .unwrap();
+        let processed: i64 = probe.query_one(
+            "SELECT processed_generation FROM billing_reconciliations WHERE stripe_subscription_id='sub_lockorder1'",
+            &[],
+        ).await.unwrap().get(0);
+        assert_eq!(processed, 1);
+        let status: String = probe.query_one(
+            "SELECT stripe_status FROM billing_subscriptions WHERE stripe_subscription_id='sub_lockorder1'",
+            &[],
+        ).await.unwrap().get(0);
+        assert_eq!(status, "active");
+        setup
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
