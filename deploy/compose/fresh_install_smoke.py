@@ -67,12 +67,18 @@ def wait_for_endpoint(port, path, expected):
 
 
 def main():
-    # Compose gives shell variables precedence over --env-file. Do not allow a
-    # developer's live settings to override this generated, dispatch-off stack.
+    # Compose gives shell variables precedence over --env-file and imports
+    # bare environment keys from the shell. Do not pass live account, SMTP,
+    # or MFA settings into this disposable stack.
     for name in ("POSTGRES_PASSWORD", "DATABASE_URL", "APP_PORT", "SITE_ID",
                  "INSTANCE_ID", "DEPLOYMENT_EPOCH", "DISPATCH_ENABLED",
                  "SYNTHETIC_ALPHA_ENABLED", "M0_TEST_TOKEN", "COMPOSE_PROFILES",
-                 "COMPOSE_ENV_FILES", "COMPOSE_PROJECT_NAME", "COMPOSE_FILE"):
+                 "COMPOSE_ENV_FILES", "COMPOSE_PROJECT_NAME", "COMPOSE_FILE",
+                 "AUTH_ORIGIN", "AUTH_TOKEN_PEPPER_B64", "ENROLLMENT_TOKEN_PEPPER_B64",
+                 "SMTP_HOST", "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD",
+                 "SMTP_FROM", "SMTP_FROM_NAME", "SMTP_REPLY_TO",
+                 "MFA_ENCRYPTION_KEY_B64", "MFA_ENROLLMENT_ENABLED",
+                 "MFA_RECOVERY_ONLY"):
         os.environ.pop(name, None)
     ensure_local_docker()
     project = "zt-fresh-" + secrets.token_hex(8)
@@ -82,19 +88,22 @@ def main():
     secret = secrets.token_hex(24)
     port = available_loopback_port()
     try:
-        env_file.write_text(
-            f"POSTGRES_PASSWORD={secret}\n"
-            f"DATABASE_URL=postgres://zrotext:{secret}@db:5432/zrotext\n"
-            f"APP_PORT={port}\n"
-            "SITE_ID=local-a\nINSTANCE_ID=api-1\nDEPLOYMENT_EPOCH=1\n"
-            "DISPATCH_ENABLED=false\nSYNTHETIC_ALPHA_ENABLED=false\n"
-            "M0_TEST_TOKEN=\n", encoding="utf-8",
-        )
-        if sys.platform != "win32":
-            env_file.chmod(0o600)
+        # The restore drill requires --env-file, but Compose gives the process
+        # environment precedence. Keep the random test password out of files.
+        with open(env_file, "x", encoding="utf-8",
+                  opener=lambda path, flags: os.open(path, flags, 0o600)) as output:
+            output.write("# Disposable smoke values are process-scoped.\n")
     except OSError:
         shutil.rmtree(directory)
         raise
+    os.environ.update({
+        "POSTGRES_PASSWORD": secret,
+        "DATABASE_URL": f"postgres://zrotext:{secret}@db:5432/zrotext",
+        "APP_PORT": str(port),
+        "SITE_ID": "local-a", "INSTANCE_ID": "api-1", "DEPLOYMENT_EPOCH": "1",
+        "DISPATCH_ENABLED": "false", "SYNTHETIC_ALPHA_ENABLED": "false",
+        "M0_TEST_TOKEN": "",
+    })
     compose = ["docker", "compose", "--project-name", project,
                "--env-file", str(env_file), "-f", str(COMPOSE)]
     started = False
@@ -110,6 +119,12 @@ def main():
         run([*compose, "exec", "-T", "app", "sh", "-ec",
              'test "$DISPATCH_ENABLED" = false'],
             "dispatch-disabled check")
+        run([*compose, "exec", "-T", "app", "sh", "-ec",
+             'test -z "$AUTH_TOKEN_PEPPER_B64" && '
+             'test -z "$ENROLLMENT_TOKEN_PEPPER_B64" && '
+             'test -z "$SMTP_PASSWORD" && '
+             'test -z "$MFA_ENCRYPTION_KEY_B64"'],
+            "disposable credential isolation")
         database = summary(project, env_file)
         migrations = verify_ledger(database["ledger"])
         if database["tenants"] or database["messages"]:
