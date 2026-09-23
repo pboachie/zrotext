@@ -58,7 +58,14 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
         include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
         include_str!("../../../../deploy/compose/migrations/006_usage_metering.sql"),
         include_str!("../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"),
+        include_str!("../../../../deploy/compose/migrations/008_stripe_billing_foundation.sql"),
         include_str!("../../../../deploy/compose/migrations/009_webhook_manual_replay.sql"),
+        include_str!("../../../../deploy/compose/migrations/010_billing_test_entitlement.sql"),
+        include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
+        include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
+        include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
+        include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
+        include_str!("../../../../deploy/compose/migrations/015_webhook_kek_commitments.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }
@@ -434,6 +441,39 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
         ingest(&mut db, session, &unverified_content).await,
         Err(InboundError::InvalidInput)
     ));
+    let key_lease = claim_webhook(&mut db, "worker-key").await.unwrap().unwrap();
+    defer_webhook_key_failure(&mut db, &key_lease)
+        .await
+        .unwrap();
+    let deferred = db
+        .query_one(
+            "SELECT status,attempt_count,key_failure_count FROM webhook_deliveries WHERE id=$1",
+            &[&key_lease.delivery_id],
+        )
+        .await
+        .unwrap();
+    assert_eq!(deferred.get::<_, String>(0), "pending");
+    assert_eq!(deferred.get::<_, i16>(1), 0);
+    assert_eq!(deferred.get::<_, i32>(2), 1);
+    let claim_records: i64 = db
+        .query_one(
+            "SELECT count(*) FROM webhook_attempts WHERE delivery_id=$1",
+            &[&key_lease.delivery_id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(claim_records, 0);
+    assert!(matches!(
+        defer_webhook_key_failure(&mut db, &key_lease).await,
+        Err(InboundError::StaleLease)
+    ));
+    db.execute(
+        "UPDATE webhook_deliveries SET next_attempt_at=now()-interval '1 second' WHERE id=$1",
+        &[&key_lease.delivery_id],
+    )
+    .await
+    .unwrap();
     let expiring_lease = claim_webhook(&mut db, "worker-c").await.unwrap().unwrap();
     db.execute(
         "UPDATE webhook_deliveries SET lease_until=now()-interval '1 second' WHERE id=$1",
