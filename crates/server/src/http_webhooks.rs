@@ -17,7 +17,7 @@ use axum::{
     routing::{get, post},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use rand::{RngCore, rngs::OsRng};
+use p256::elliptic_curve::rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
 use tokio_postgres::{Client, NoTls, error::SqlState};
@@ -928,7 +928,7 @@ mod tests {
             include_str!("../../../deploy/compose/migrations/005_verification_outbox.sql"),
             include_str!("../../../deploy/compose/migrations/006_usage_metering.sql"),
             include_str!("../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"),
-            include_str!("../../../deploy/compose/migrations/008_webhook_manual_replay.sql"),
+            include_str!("../../../deploy/compose/migrations/009_webhook_manual_replay.sql"),
         ] {
             admin.batch_execute(migration).await.unwrap();
         }
@@ -1408,7 +1408,7 @@ mod tests {
             include_str!("../../../deploy/compose/migrations/005_verification_outbox.sql"),
             include_str!("../../../deploy/compose/migrations/006_usage_metering.sql"),
             include_str!("../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"),
-            include_str!("../../../deploy/compose/migrations/008_webhook_manual_replay.sql"),
+            include_str!("../../../deploy/compose/migrations/009_webhook_manual_replay.sql"),
         ] {
             admin.batch_execute(migration).await.unwrap();
         }
@@ -1649,7 +1649,7 @@ mod tests {
             include_str!("../../../deploy/compose/migrations/005_verification_outbox.sql"),
             include_str!("../../../deploy/compose/migrations/006_usage_metering.sql"),
             include_str!("../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"),
-            include_str!("../../../deploy/compose/migrations/008_webhook_manual_replay.sql"),
+            include_str!("../../../deploy/compose/migrations/009_webhook_manual_replay.sql"),
         ] {
             admin.batch_execute(migration).await.unwrap();
         }
