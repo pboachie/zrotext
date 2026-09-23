@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Shared PostgreSQL request budgets for public auth and enrollment routes.
-//! Counts are spent before password hashing, verification lookup or pairing
-//! proof work. The database is the authority across hubs and processes.
+//! Counts are spent before password hashing or pairing proof work.
+//! Email verification permits live one-use codes through an indexed probe
+//! after its anonymous invalid-code budget is exhausted.
 
 use super::TokenHasher;
 use tokio_postgres::Client;
