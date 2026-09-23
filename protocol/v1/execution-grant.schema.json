@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zrotext.org/protocol/v1/execution-grant.schema.json",
+  "title": "ZROtext execution grant v1 (M0 metadata contract)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "message_id", "attempt_id", "device_id", "generation", "session_epoch", "deployment_epoch", "recipient_digest", "expires_at"],
+  "properties": {
+    "v": {"const": 1},
+    "message_id": {"type": "string", "format": "uuid"},
+    "attempt_id": {"type": "string", "format": "uuid"},
+    "device_id": {"type": "string", "format": "uuid"},
+    "generation": {"type": "integer", "minimum": 1},
+    "session_epoch": {"type": "integer", "minimum": 1},
+    "deployment_epoch": {"type": "integer", "minimum": 1},
+    "recipient_digest": {"type": "string", "description": "Digest of normalized recipient; never the number itself"},
+    "expires_at": {"type": "string", "format": "date-time"}
+  }
+}

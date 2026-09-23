@@ -1,0 +1,14 @@
+/target/
+/android/.gradle/
+/android/**/build/
+/android/local.properties
+/.env
+/.env.*
+!/.env.example
+*.apk
+*.aab
+*.jks
+*.keystore
+*.log
+.idea/
+.vscode/

@@ -1,0 +1,13 @@
+[workspace]
+members = ["crates/domain", "crates/server", "crates/device-sim"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.97.1"
+license = "AGPL-3.0-only"
+
+[workspace.dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+uuid = { version = "1.18.1", features = ["serde", "v4"] }

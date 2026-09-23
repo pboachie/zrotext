@@ -1,0 +1,7 @@
+# M0 hosting preflight: public summary
+
+Read-only inventory and capacity inspection of the private infrastructure project was performed on 2026-09-22 using its approved credential and SSH tooling. Operator-specific inventory, topology, and the detailed proposal are kept outside this repository. No VM, address, DNS entry, tunnel, service, or credential was changed.
+
+The existing host reports enough aggregate free memory and storage to consider the proposed **2 vCPU / 4 GB / 40–60 GB** pilot VM. That is a capacity snapshot, not deployment approval: sustained CPU pressure, disk latency, isolation, backup failure-domain independence, and restoreability still require measurement. A dedicated VM, distinct service identity and database, private database networking, restricted egress, separate tunnel/connector, and off-host encrypted backup are required before exposure. Site B requires an independent location and a separately reviewed quote; two VMs on one host do not satisfy it.
+
+The private proposal records candidate inventory reservations and exact intended changes, but no IDs or addresses are reserved yet. The budget still needs a concrete priced incremental estimate, including power, backup storage, monitoring, edge traffic, and a possible second-site connection. No paid provisioning is authorized by this preflight. The M0 hosting gate remains open until isolation and a disposable restore test are demonstrated.

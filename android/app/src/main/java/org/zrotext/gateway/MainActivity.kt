@@ -1,0 +1,118 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+package org.zrotext.gateway
+
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
+import android.os.Bundle
+import android.telephony.SubscriptionManager
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+
+object GatewayStatus {
+    var value by mutableStateOf("Paused")
+    var heartbeats by mutableIntStateOf(0)
+}
+
+class MainActivity : ComponentActivity() {
+    private var sims by mutableStateOf<List<Pair<Int, String>>>(emptyList())
+    private var selectedSim by mutableStateOf<Int?>(null)
+    private var endpoint by mutableStateOf("")
+    private var testToken by mutableStateOf("")
+    private val permissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        refreshSims()
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        refreshSims()
+        setContent {
+            MaterialTheme(colorScheme = darkColorScheme(
+                primary = Color(0xFFB6F36A),
+                onPrimary = Color(0xFF0B0F0C),
+                background = Color(0xFF0B0F0C),
+                surface = Color(0xFF111712),
+                onBackground = Color(0xFFF0F3E9),
+                onSurface = Color(0xFFF0F3E9)
+            )) {
+                Column(
+                    modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    Text("ZROtext", style = MaterialTheme.typography.headlineLarge)
+                    Text("Gateway mode spike", style = MaterialTheme.typography.titleMedium)
+                    Text("This build tests SIM visibility and a live socket heartbeat. It cannot send or receive SMS.")
+                    Text("Status: ${GatewayStatus.value}; heartbeat acknowledgments this process: ${GatewayStatus.heartbeats}")
+                    Button(onClick = { askPermissions() }) { Text("Grant gateway permissions") }
+                    Text("Selected SIM: ${selectedSim?.toString() ?: "none"}")
+                    sims.forEach { (id, label) ->
+                        Button(onClick = { selectedSim = id }) { Text(label) }
+                    }
+                    OutlinedTextField(value = endpoint, onValueChange = { endpoint = it }, label = { Text("WSS test endpoint") })
+                    OutlinedTextField(
+                        value = testToken,
+                        onValueChange = { testToken = it },
+                        label = { Text("Short-lived test token") },
+                        visualTransformation = PasswordVisualTransformation()
+                    )
+                    Button(onClick = {
+                        if (selectedSim == null) {
+                            GatewayStatus.value = "Select a SIM first"
+                        } else {
+                            val intent = Intent(this@MainActivity, GatewayService::class.java)
+                                .putExtra(GatewayService.EXTRA_URL, endpoint)
+                                .putExtra(GatewayService.EXTRA_TOKEN, testToken)
+                            ContextCompat.startForegroundService(this@MainActivity, intent)
+                            testToken = ""
+                        }
+                    }) { Text("Start visible gateway session") }
+                    Button(onClick = {
+                        startService(Intent(this@MainActivity, GatewayService::class.java).setAction(GatewayService.ACTION_PAUSE))
+                    }) { Text("Pause gateway") }
+                    Text("Keep this dedicated phone plugged in for the screen-off test. Reopen the app after a stop or reboot; automatic recovery is not implemented in M0.")
+                }
+            }
+        }
+    }
+
+    private fun askPermissions() {
+        val requested = mutableListOf(Manifest.permission.READ_PHONE_STATE, Manifest.permission.SEND_SMS, Manifest.permission.RECEIVE_SMS)
+        if (Build.VERSION.SDK_INT >= 33) requested += Manifest.permission.POST_NOTIFICATIONS
+        permissions.launch(requested.toTypedArray())
+    }
+
+    private fun refreshSims() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) {
+            sims = emptyList()
+            selectedSim = null
+            return
+        }
+        val manager = getSystemService(SubscriptionManager::class.java)
+        sims = (manager.activeSubscriptionInfoList ?: emptyList()).map { info ->
+            info.subscriptionId to "SIM ${info.simSlotIndex + 1}: ${info.displayName}"
+        }
+        if (sims.none { it.first == selectedSim }) selectedSim = null
+    }
+}

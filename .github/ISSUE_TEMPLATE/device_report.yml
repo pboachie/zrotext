@@ -1,0 +1,22 @@
+name: Device report
+description: Record a gateway compatibility observation
+body:
+  - type: input
+    id: model
+    attributes:
+      label: Device model and OS build
+    validations:
+      required: true
+  - type: textarea
+    id: settings
+    attributes:
+      label: Power, SIM, and permission settings
+  - type: textarea
+    id: timeline
+    attributes:
+      label: Synthetic test timeline and connection gaps
+    validations:
+      required: true
+  - type: markdown
+    attributes:
+      value: Remove numbers, message bodies, SIM identifiers, and account credentials before submitting.

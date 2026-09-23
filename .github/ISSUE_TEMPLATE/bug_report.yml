@@ -1,0 +1,24 @@
+name: Bug report
+description: Report a reproducible issue using synthetic data
+body:
+  - type: markdown
+    attributes:
+      value: Do not include credentials, real phone numbers, message bodies, or private network details.
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed behavior
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction with synthetic identifiers
+    validations:
+      required: true

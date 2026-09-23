@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zrotext.org/protocol/v1/message-event.schema.json",
+  "title": "ZROtext message event v1 (M0 metadata contract)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "event_id", "message_id", "attempt_id", "state", "observed_at", "device_id", "session_epoch", "deployment_epoch"],
+  "properties": {
+    "v": {"const": 1},
+    "event_id": {"type": "string", "format": "uuid"},
+    "message_id": {"type": "string", "format": "uuid"},
+    "attempt_id": {"type": "string", "format": "uuid"},
+    "device_id": {"type": "string", "format": "uuid"},
+    "session_epoch": {"type": "integer", "minimum": 1},
+    "deployment_epoch": {"type": "integer", "minimum": 1},
+    "state": {"enum": ["queued", "claimed", "submitting", "submitted", "delivered", "delivery_unknown", "unknown", "failed", "cancelled", "expired"]},
+    "observed_at": {"type": "string", "format": "date-time"},
+    "segment_index": {"type": "integer", "minimum": 0},
+    "segment_count": {"type": "integer", "minimum": 1, "maximum": 6},
+    "evidence_code": {"enum": ["durable_intent", "sent_callback_ok", "sent_callback_failed", "delivery_callback_ok", "delivery_timeout", "crash_no_callback", "proved_no_submit", "user_cancel", "expiry"]}
+  }
+}
