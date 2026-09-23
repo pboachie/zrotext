@@ -970,6 +970,240 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn lost_intent_ack_across_hubs_needs_no_radio_proof_before_regrant() {
+        let Ok(url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
+            return;
+        };
+        let (mut client, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let schema = format!("hub_recovery_test_{}", Uuid::new_v4().simple());
+        client
+            .batch_execute(&format!(
+                "CREATE SCHEMA {schema}; SET search_path TO {schema}"
+            ))
+            .await
+            .unwrap();
+        for sql in [
+            include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
+            include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+            include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
+            include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
+        ] {
+            client.batch_execute(sql).await.unwrap();
+        }
+        let account_id = Uuid::new_v4();
+        let device_id = Uuid::new_v4();
+        let message_id = Uuid::new_v4();
+        let recipient = "+15555550101";
+        let recipient_digest: [u8; 32] = Sha256::digest(recipient.as_bytes()).into();
+        let signing = SigningKey::random(&mut OsRng);
+        let sec1 = signing.verifying_key().to_encoded_point(false);
+        let fingerprint: [u8; 32] = Sha256::digest(sec1.as_bytes()).into();
+        client
+            .batch_execute("INSERT INTO sites(site_id) VALUES('site-a'),('site-b'); UPDATE deployment_authority SET dispatch_enabled=TRUE")
+            .await
+            .unwrap();
+        client
+            .execute("INSERT INTO accounts(id) VALUES($1)", &[&account_id])
+            .await
+            .unwrap();
+        client
+            .execute(
+                "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'Virtual phone')",
+                &[&device_id, &account_id],
+            )
+            .await
+            .unwrap();
+        client.execute(
+            "INSERT INTO device_keys(device_id,account_id,signing_key_sec1,fingerprint) VALUES($1,$2,$3,$4)",
+            &[&device_id, &account_id, &sec1.as_bytes(), &&fingerprint[..]],
+        ).await.unwrap();
+        let policy = Arc::new(
+            AlphaPolicy::parse(Some("true"), Some(&account_id.to_string()), Some(recipient))
+                .unwrap(),
+        );
+        let site_a = DeviceSocketState {
+            database_url: url,
+            site_id: "site-a".into(),
+            instance_id: "hub-a".into(),
+            deployment_epoch: 1,
+            enrollment_hasher: Arc::new(EnrollmentHasher::new(vec![77; 32]).unwrap()),
+            alpha_policy: policy,
+            dispatch_runtime_enabled: true,
+            inbound_pilot_enabled: false,
+            draining: Arc::new(AtomicBool::new(false)),
+            drain_notify: Arc::new(Notify::new()),
+        };
+        let site_b = DeviceSocketState {
+            site_id: "site-b".into(),
+            instance_id: "hub-b".into(),
+            ..site_a.clone()
+        };
+        let identity = AuthenticatedDevice {
+            account_id,
+            device_id,
+        };
+        let session_a = claim_session(&mut client, identity, &site_a)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(session_a.connection_epoch, 1);
+        let expiry = now_ms() + 600_000;
+        let input = || NewMessage {
+            account_id,
+            client_message_id: message_id,
+            device_id,
+            idempotency_key: "lost-intent-ack",
+            recipient_e164: recipient,
+            synthetic_payload: b"ZROtext synthetic test: lost_ack",
+            expires_at_ms: expiry,
+        };
+        DeliveryStore::new(&mut client)
+            .accept(input())
+            .await
+            .unwrap();
+        let first_grant = poll_synthetic_grant(&mut client, session_a, &site_a, &recipient_digest)
+            .await
+            .unwrap()
+            .unwrap();
+        let wire = serde_json::to_value(first_grant).unwrap();
+        let first_attempt = Uuid::parse_str(wire["attempt_id"].as_str().unwrap()).unwrap();
+        assert_eq!(wire["generation"], 1);
+
+        // The durable intent reached the writer, but its ACK did not reach the
+        // phone. A second hub takes the session; silence is still ambiguous.
+        let intent = RadioEvent {
+            event_id: Uuid::new_v4(),
+            account_id,
+            device_id,
+            message_id,
+            attempt_id: first_attempt,
+            evidence: Evidence::DurableSubmitIntent,
+            observed_at_ms: now_ms(),
+            segment_index: None,
+            segment_count: None,
+        };
+        assert_eq!(
+            DeliveryStore::new(&mut client)
+                .record_radio_event(intent)
+                .await
+                .unwrap(),
+            MessageState::Submitting
+        );
+        let session_b = claim_session(&mut client, identity, &site_b)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(session_b.connection_epoch, 2);
+        assert!(!session_current(&client, session_a, &site_a).await.unwrap());
+        assert!(session_current(&client, session_b, &site_b).await.unwrap());
+        assert!(
+            !grant_still_current(&client, session_b, message_id, first_attempt, &site_b)
+                .await
+                .unwrap()
+        );
+        client
+            .execute(
+                "UPDATE message_attempts SET updated_at=now()-interval '3 minutes' WHERE id=$1",
+                &[&first_attempt],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            DeliveryStore::new(&mut client)
+                .reconcile_silent_attempts(10)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            DeliveryStore::new(&mut client)
+                .status(account_id, message_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            MessageState::Unknown
+        );
+        assert!(
+            poll_synthetic_grant(&mut client, session_b, &site_b, &recipient_digest)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            !DeliveryStore::new(&mut client)
+                .accept(input())
+                .await
+                .unwrap()
+                .created
+        );
+        let before: (i64, i64) = {
+            let row = client.query_one(
+                "SELECT (SELECT count(*) FROM message_attempts WHERE message_id=$1), (SELECT count(*) FROM dispatch_fences WHERE message_id=$1)",
+                &[&message_id],
+            ).await.unwrap();
+            (row.get(0), row.get(1))
+        };
+        assert_eq!(before, (1, 1));
+
+        // The phone can prove the radio never started after the lost ACK.
+        // Only that evidence releases the old fence and permits a new attempt.
+        let no_radio = RadioEvent {
+            event_id: Uuid::new_v4(),
+            evidence: Evidence::ProvenNoSubmit,
+            ..intent
+        };
+        assert_eq!(
+            DeliveryStore::new(&mut client)
+                .record_radio_event(no_radio)
+                .await
+                .unwrap(),
+            MessageState::Queued
+        );
+        assert_eq!(
+            DeliveryStore::new(&mut client)
+                .record_radio_event(no_radio)
+                .await
+                .unwrap(),
+            MessageState::Queued
+        );
+        client
+            .execute(
+                "UPDATE message_attempts SET created_at=now()-interval '61 seconds' WHERE id=$1",
+                &[&first_attempt],
+            )
+            .await
+            .unwrap();
+        let second_grant = poll_synthetic_grant(&mut client, session_b, &site_b, &recipient_digest)
+            .await
+            .unwrap()
+            .unwrap();
+        let second_wire = serde_json::to_value(second_grant).unwrap();
+        assert_ne!(second_wire["attempt_id"], wire["attempt_id"]);
+        assert_eq!(second_wire["generation"], 2);
+        assert_eq!(second_wire["connection_epoch"], 2);
+        let row = client.query_one(
+            "SELECT (SELECT count(*) FROM message_attempts WHERE message_id=$1), (SELECT count(*) FROM dispatch_fences WHERE message_id=$1), (SELECT count(*) FROM message_events WHERE message_id=$1 AND evidence_code='proved_no_submit')",
+            &[&message_id],
+        ).await.unwrap();
+        assert_eq!(
+            (
+                row.get::<_, i64>(0),
+                row.get::<_, i64>(1),
+                row.get::<_, i64>(2)
+            ),
+            (2, 1, 1)
+        );
+        client
+            .batch_execute(&format!(
+                "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
+            ))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn writer_claim_replay_epoch_and_revocation() {
         let Ok(url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
             return;
