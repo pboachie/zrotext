@@ -9,7 +9,7 @@ use crate::auth::{
 };
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Path, Request, State},
+    extract::{DefaultBodyLimit, Path, Query, Request, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -191,7 +191,7 @@ pub fn router(state: AuthHttpState) -> Router {
         .route("/mfa/enroll", post(begin_mfa_enrollment))
         .route("/mfa/confirm", post(confirm_mfa_enrollment))
         .route("/mfa/disable", post(disable_mfa))
-        .route("/api-keys", post(create_api_key))
+        .route("/api-keys", get(list_api_keys).post(create_api_key))
         .route("/api-keys/{key_id}", delete(revoke_api_key))
         .layer(DefaultBodyLimit::max(16 * 1024))
         .layer(middleware::from_fn(no_store_response))
@@ -825,6 +825,86 @@ struct CreatedKeyBody {
     public_prefix: String,
 }
 
+#[derive(Deserialize)]
+struct KeyListQuery {
+    before: Option<Uuid>,
+}
+
+#[derive(Serialize)]
+struct KeyMetadataBody {
+    id: Uuid,
+    public_prefix: String,
+    scopes: Vec<String>,
+    bound_device_id: Option<Uuid>,
+    created_at_ms: i64,
+    expires_at_ms: Option<i64>,
+    revoked_at_ms: Option<i64>,
+    status: &'static str,
+}
+
+#[derive(Serialize)]
+struct KeyListBody {
+    keys: Vec<KeyMetadataBody>,
+    next_cursor: Option<Uuid>,
+}
+
+async fn list_api_keys(
+    State(state): State<Arc<AuthHttpState>>,
+    headers: HeaderMap,
+    Query(query): Query<KeyListQuery>,
+) -> Result<Json<KeyListBody>, AuthHttpError> {
+    let client = connect(&state.database_url).await?;
+    let owner = require_owner(
+        &client,
+        &state.hasher,
+        &state.canonical_origin,
+        &headers,
+        false,
+    )
+    .await?;
+    let csrf_cookie = cookie(&headers, CSRF_COOKIE).ok_or(AuthHttpError::Forbidden)?;
+    let csrf_header = headers
+        .get(CSRF_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .ok_or(AuthHttpError::Forbidden)?;
+    owner
+        .require_csrf_token(&state.hasher, csrf_cookie, csrf_header)
+        .map_err(map_auth)?;
+    let page = auth::list_api_keys(&client, &owner, query.before)
+        .await
+        .map_err(map_auth)?;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| AuthHttpError::Internal)?
+        .as_millis() as i64;
+    Ok(Json(KeyListBody {
+        keys: page
+            .keys
+            .into_iter()
+            .map(|key| {
+                let status = if key.revoked_at_ms.is_some() {
+                    "revoked"
+                } else if key.expires_at_ms.is_some_and(|expires| expires <= now_ms) {
+                    "expired"
+                } else {
+                    "active"
+                };
+                KeyMetadataBody {
+                    id: key.id,
+                    public_prefix: key.public_prefix,
+                    scopes: key.scopes,
+                    bound_device_id: key.bound_device_id,
+                    created_at_ms: key.created_at_ms,
+                    expires_at_ms: key.expires_at_ms,
+                    revoked_at_ms: key.revoked_at_ms,
+                    status,
+                }
+            })
+            .collect(),
+        next_cursor: page.next_cursor,
+    }))
+}
+
 fn parse_scope(value: &str) -> Option<Scope> {
     Some(match value {
         "messages:send" => Scope::MessagesSend,
@@ -966,6 +1046,21 @@ mod tests {
             let response = app.clone().oneshot(json_post(path, body)).await.unwrap();
             assert_eq!(response.status(), StatusCode::NOT_FOUND);
         }
+    }
+
+    fn key_list_request(
+        cookie_header: Option<&str>,
+        csrf: Option<&str>,
+        uri: &str,
+    ) -> Request<Body> {
+        let mut request = Request::builder().uri(uri);
+        if let Some(cookies) = cookie_header {
+            request = request.header(header::COOKIE, cookies);
+        }
+        if let Some(csrf) = csrf {
+            request = request.header(CSRF_HEADER, csrf);
+        }
+        request.body(Body::empty()).unwrap()
     }
 
     #[test]
@@ -1223,12 +1318,150 @@ mod tests {
             .insert(CSRF_HEADER, HeaderValue::from_str(csrf).unwrap());
         let response = app.clone().oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::CREATED);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
         let bytes = axum::body::to_bytes(response.into_body(), 16 * 1024)
             .await
             .unwrap();
         let key: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let key_id = key["id"].as_str().unwrap();
         assert!(key["token"].as_str().unwrap().starts_with("ztk_"));
+        let response = app
+            .clone()
+            .oneshot(key_list_request(None, None, "/api-keys"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        let response = app
+            .clone()
+            .oneshot(key_list_request(Some(&cookie_header), None, "/api-keys"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        let response = app
+            .clone()
+            .oneshot(key_list_request(
+                Some(&cookie_header),
+                Some("wrong"),
+                "/api-keys",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let response = app
+            .clone()
+            .oneshot(key_list_request(
+                Some(&cookie_header),
+                Some(csrf),
+                "/api-keys",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        let listed = axum::body::to_bytes(response.into_body(), 16 * 1024)
+            .await
+            .unwrap();
+        assert!(!String::from_utf8_lossy(&listed).contains("ztk_"));
+        assert!(!String::from_utf8_lossy(&listed).contains("token_hash"));
+        let listed: serde_json::Value = serde_json::from_slice(&listed).unwrap();
+        assert_eq!(listed["keys"].as_array().unwrap().len(), 1);
+        assert_eq!(listed["keys"][0]["id"], key["id"]);
+        assert_eq!(listed["keys"][0]["status"], "active");
+        assert_eq!(
+            listed["keys"][0]["scopes"],
+            serde_json::json!(["messages:read"])
+        );
+        assert!(listed["keys"][0].get("token").is_none());
+        test_client
+            .execute(
+                "UPDATE api_keys SET expires_at=now()-interval '1 second' WHERE id=$1",
+                &[&Uuid::parse_str(key_id).unwrap()],
+            )
+            .await
+            .unwrap();
+        let response = app
+            .clone()
+            .oneshot(key_list_request(
+                Some(&cookie_header),
+                Some(csrf),
+                "/api-keys",
+            ))
+            .await
+            .unwrap();
+        let listed: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 16 * 1024)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(listed["keys"][0]["status"], "expired");
+        let (mut outsider, connection) = tokio_postgres::connect(&state.database_url, NoTls)
+            .await
+            .unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let foreign_password = Uuid::new_v4().to_string();
+        let foreign = auth::register(
+            &mut outsider,
+            &state.hasher,
+            "foreign@example.test",
+            &foreign_password,
+        )
+        .await
+        .unwrap();
+        auth::verify_email(&mut outsider, &state.hasher, &foreign.verification_token)
+            .await
+            .unwrap();
+        let foreign_session = auth::login(
+            &outsider,
+            &state.hasher,
+            "foreign@example.test",
+            &foreign_password,
+        )
+        .await
+        .unwrap();
+        let foreign_owner =
+            auth::authenticate_session(&outsider, &state.hasher, &foreign_session.token)
+                .await
+                .unwrap();
+        let foreign_key = auth::create_api_key(
+            &outsider,
+            &state.hasher,
+            &foreign_owner,
+            &[Scope::MessagesRead],
+            None,
+            Some(30),
+        )
+        .await
+        .unwrap();
+        let response = app
+            .clone()
+            .oneshot(key_list_request(
+                Some(&cookie_header),
+                Some(csrf),
+                "/api-keys",
+            ))
+            .await
+            .unwrap();
+        let listed: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 16 * 1024)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(listed["keys"].as_array().unwrap().len(), 1);
+        assert_ne!(listed["keys"][0]["id"], foreign_key.id.to_string());
+        let response = app
+            .clone()
+            .oneshot(key_list_request(
+                Some(&cookie_header),
+                Some(csrf),
+                &format!("/api-keys?before={}", foreign_key.id),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let request = Request::builder()
             .method("DELETE")
             .uri(format!("/api-keys/{key_id}"))
@@ -1237,10 +1470,90 @@ mod tests {
             .header(CSRF_HEADER, csrf)
             .body(Body::empty())
             .unwrap();
-        assert_eq!(
-            app.clone().oneshot(request).await.unwrap().status(),
-            StatusCode::NO_CONTENT
-        );
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        let response = app
+            .clone()
+            .oneshot(key_list_request(
+                Some(&cookie_header),
+                Some(csrf),
+                "/api-keys",
+            ))
+            .await
+            .unwrap();
+        let listed: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 16 * 1024)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(listed["keys"][0]["status"], "revoked");
+        let owner = auth::authenticate_session(
+            &test_client,
+            &state.hasher,
+            cookies[0].split_once('=').unwrap().1,
+        )
+        .await
+        .unwrap();
+        for i in 0..52u8 {
+            let test_hash = rand::random::<[u8; 32]>();
+            test_client
+                .execute(
+                    "INSERT INTO api_keys(id,account_id,created_by_user_id,public_prefix,token_hash,scopes) VALUES($1,$2,$3,$4,$5,$6)",
+                    &[
+                        &Uuid::new_v4(),
+                        &owner.tenant.account_id(),
+                        &owner.user_id,
+                        &format!("paging{i:06}"),
+                        &&test_hash[..],
+                        &vec!["messages:read".to_owned()],
+                    ],
+                )
+                .await
+                .unwrap();
+        }
+        let response = app
+            .clone()
+            .oneshot(key_list_request(
+                Some(&cookie_header),
+                Some(csrf),
+                "/api-keys",
+            ))
+            .await
+            .unwrap();
+        let first: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 32 * 1024)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(first["keys"].as_array().unwrap().len(), 50);
+        let cursor = first["next_cursor"].as_str().unwrap();
+        let response = app
+            .clone()
+            .oneshot(key_list_request(
+                Some(&cookie_header),
+                Some(csrf),
+                &format!("/api-keys?before={cursor}"),
+            ))
+            .await
+            .unwrap();
+        let second: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 16 * 1024)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(second["keys"].as_array().unwrap().len(), 3);
+        assert_eq!(second["next_cursor"], serde_json::Value::Null);
+        assert!(!first["keys"].as_array().unwrap().iter().any(|key| {
+            second["keys"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|other| other["id"] == key["id"])
+        }));
         let request = Request::builder()
             .method("POST")
             .uri("/logout")

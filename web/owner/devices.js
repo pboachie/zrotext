@@ -8,6 +8,9 @@ let shownDeviceCount = 0;
 let nextMessageCursor = null;
 let shownMessageCount = 0;
 let pendingMfaChallenge = null;
+let nextKeyCursor = null;
+let shownKeyCount = 0;
+let ownerEpoch = 0;
 
 function message(id, value) {
   byId(id).textContent = value;
@@ -20,9 +23,11 @@ function csrfToken() {
 }
 
 async function api(path, method = "GET", body = undefined) {
+  const requestEpoch = ownerEpoch;
   const headers = {};
   if (body !== undefined) headers["content-type"] = "application/json";
-  if (method !== "GET" && path !== "/v1/auth/login" && path !== "/v1/auth/login/mfa") {
+  if ((method !== "GET" && path !== "/v1/auth/login" && path !== "/v1/auth/login/mfa")
+      || path.startsWith("/v1/auth/api-keys")) {
     const csrf = csrfToken();
     if (!csrf) throw new Error("Your sign-in expired. Sign in again.");
     headers["x-zrotext-csrf"] = csrf;
@@ -31,12 +36,21 @@ async function api(path, method = "GET", body = undefined) {
     method, headers, credentials: "same-origin", cache: "no-store", redirect: "error",
     body: body === undefined ? undefined : JSON.stringify(body),
   });
+  if (response.status === 401 && path !== "/v1/auth/login" && path !== "/v1/auth/login/mfa") {
+    clearOwnerState();
+    message("global-status", path === "/v1/auth/login" ? "Sign in to manage devices." : "Your sign-in expired. Sign in again.");
+  }
+  if (requestEpoch !== ownerEpoch && response.ok) {
+    throw new Error("Your sign-in expired. Sign in again.");
+  }
   if (!response.ok) {
     const descriptions = {
       400: "Check the entered values and try again.",
-      401: "Your sign-in expired. Sign in again.",
+      401: path === "/v1/auth/login" ? "Email or password was not accepted."
+        : path === "/v1/auth/login/mfa" ? "Code was not accepted. Try again."
+          : "Your sign-in expired. Sign in again.",
       403: "This action was refused. Refresh the page and sign in again.",
-      404: "The pairing or device was not found, expired, or is no longer available.",
+      404: "The requested item was not found, expired, or is no longer available.",
       409: "This action conflicts with the current device state.",
       413: "The request is too large.",
       429: "Too many requests. Wait before trying again.",
@@ -44,7 +58,12 @@ async function api(path, method = "GET", body = undefined) {
     };
     throw new Error(descriptions[response.status] || `Request failed (${response.status}).`);
   }
-  return response.status === 204 ? null : response.json();
+  if (response.status === 204) return null;
+  const result = await response.json();
+  if (requestEpoch !== ownerEpoch) {
+    throw new Error("Your sign-in expired. Sign in again.");
+  }
+  return result;
 }
 
 function showSignedIn(signedIn) {
@@ -67,7 +86,7 @@ async function completeSignIn() {
   showSignedIn(true);
   message("login-status", "");
   message("global-status", "Signed in.");
-  await Promise.all([loadDevices(), loadMessages()]);
+  await Promise.all([loadDevices(), loadMessages(), loadKeys()]);
 }
 
 function clearPairing() {
@@ -79,6 +98,96 @@ function clearPairing() {
     if ("value" in byId(id)) byId(id).value = "";
   }
   byId("compared").checked = false;
+}
+
+function clearKeySecret() {
+  byId("key-secret").textContent = "";
+  byId("key-secret-panel").hidden = true;
+}
+
+function clearOwnerState() {
+  ownerEpoch += 1;
+  clearMfaChallenge();
+  clearPairing();
+  clearKeySecret();
+  byId("device-list").replaceChildren();
+  byId("more-devices").hidden = true;
+  nextDeviceCursor = null;
+  shownDeviceCount = 0;
+  byId("message-list").replaceChildren();
+  byId("more-messages").hidden = true;
+  nextMessageCursor = null;
+  shownMessageCount = 0;
+  byId("key-list").replaceChildren();
+  byId("more-keys").hidden = true;
+  nextKeyCursor = null;
+  shownKeyCount = 0;
+  message("key-create-status", "");
+  showSignedIn(false);
+}
+
+function dateText(milliseconds) {
+  return milliseconds === null ? "Never" : new Date(milliseconds).toLocaleString();
+}
+
+async function loadKeys(reset = true) {
+  message("key-list-status", "Loading keys…");
+  if (reset) {
+    byId("key-list").replaceChildren();
+    byId("more-keys").hidden = true;
+    nextKeyCursor = null;
+    shownKeyCount = 0;
+  }
+  try {
+    const path = nextKeyCursor
+      ? `/v1/auth/api-keys?before=${encodeURIComponent(nextKeyCursor)}`
+      : "/v1/auth/api-keys";
+    const page = await api(path);
+    if (reset && page.keys.length === 0) {
+      message("key-list-status", "No API keys yet.");
+      return;
+    }
+    nextKeyCursor = page.next_cursor;
+    shownKeyCount += page.keys.length;
+    byId("more-keys").hidden = !nextKeyCursor;
+    message("key-list-status", `${shownKeyCount} key${shownKeyCount === 1 ? "" : "s"} shown${nextKeyCursor ? "; more available" : ""}. Revoked and expired keys stay visible.`);
+    for (const key of page.keys) {
+      const row = document.createElement("li");
+      const detail = document.createElement("div");
+      const prefix = document.createElement("strong");
+      const metadata = document.createElement("span");
+      prefix.textContent = `ztk_${key.public_prefix}…`;
+      metadata.textContent = ` ${key.status} · ${key.scopes.join(", ")} · created ${dateText(key.created_at_ms)} · expires ${dateText(key.expires_at_ms)}`;
+      detail.append(prefix, metadata);
+      if (key.bound_device_id) {
+        const device = document.createElement("code");
+        device.textContent = `Bound device: ${key.bound_device_id}`;
+        detail.append(device);
+      }
+      row.append(detail);
+      if (key.status !== "revoked") {
+        const revoke = document.createElement("button");
+        revoke.type = "button";
+        revoke.textContent = "Revoke";
+        revoke.setAttribute("aria-label", `Revoke API key ${key.public_prefix}`);
+        revoke.addEventListener("click", async () => {
+          if (!window.confirm(`Revoke API key ztk_${key.public_prefix}…? Requests using it will lose authorization.`)) return;
+          revoke.disabled = true;
+          try {
+            await api(`/v1/auth/api-keys/${encodeURIComponent(key.id)}`, "DELETE");
+            await loadKeys();
+          } catch (error) {
+            message("key-list-status", `Could not revoke key. ${error.message}`);
+            revoke.disabled = false;
+          }
+        });
+        row.append(revoke);
+      }
+      byId("key-list").append(row);
+    }
+  } catch (error) {
+    message("key-list-status", `Could not load keys. ${error.message}`);
+  }
 }
 
 async function loadDevices(reset = true) {
@@ -237,7 +346,7 @@ async function checkPairing() {
     byId("approve-form").hidden = true;
     // A 404 includes expiry, cancellation and exhaustion. Retire the
     // one-time token locally rather than presenting it as still usable.
-    if (error.message.startsWith("The pairing or device")) clearPairing();
+    if (error.message.startsWith("The requested item")) clearPairing();
   }
 }
 
@@ -298,17 +407,7 @@ byId("cancel-mfa").addEventListener("click", () => {
 byId("logout").addEventListener("click", async () => {
   try {
     await api("/v1/auth/logout", "POST");
-    clearMfaChallenge();
-    clearPairing();
-    byId("device-list").replaceChildren();
-    byId("more-devices").hidden = true;
-    nextDeviceCursor = null;
-    shownDeviceCount = 0;
-    byId("message-list").replaceChildren();
-    byId("more-messages").hidden = true;
-    nextMessageCursor = null;
-    shownMessageCount = 0;
-    showSignedIn(false);
+    clearOwnerState();
     message("global-status", "Signed out.");
   } catch (error) {
     message("global-status", `Could not sign out. ${error.message}`);
@@ -371,12 +470,40 @@ byId("refresh-devices").addEventListener("click", loadDevices);
 byId("more-devices").addEventListener("click", () => loadDevices(false));
 byId("refresh-messages").addEventListener("click", loadMessages);
 byId("more-messages").addEventListener("click", () => loadMessages(false));
+byId("refresh-keys").addEventListener("click", loadKeys);
+byId("more-keys").addEventListener("click", () => loadKeys(false));
+byId("dismiss-key-secret").addEventListener("click", clearKeySecret);
+window.addEventListener("pagehide", clearKeySecret);
+byId("key-create-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const createEpoch = ownerEpoch;
+  clearKeySecret();
+  const scopes = [...byId("key-create-form").querySelectorAll('input[name="scope"]:checked')]
+    .map((input) => input.value);
+  if (scopes.length === 0) {
+    message("key-create-status", "Choose at least one scope.");
+    return;
+  }
+  message("key-create-status", "Creating key…");
+  try {
+    const created = await api("/v1/auth/api-keys", "POST", {
+      scopes, lifetime_days: Number(byId("key-lifetime").value),
+    });
+    if (createEpoch !== ownerEpoch) return;
+    byId("key-secret").textContent = created.token;
+    byId("key-secret-panel").hidden = false;
+    message("key-create-status", "Key created. Copy it now; this is its only display.");
+    await loadKeys();
+  } catch (error) {
+    message("key-create-status", `Could not create key. ${error.message}`);
+  }
+});
 
 (async () => {
   try {
     await api("/v1/auth/session");
     showSignedIn(true);
-    await Promise.all([loadDevices(), loadMessages()]);
+    await Promise.all([loadDevices(), loadMessages(), loadKeys()]);
   } catch (error) {
     showSignedIn(false);
     message("global-status", error.message.startsWith("Your sign-in") ? "Sign in to manage devices." : `Could not verify session. ${error.message}`);
