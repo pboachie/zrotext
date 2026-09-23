@@ -149,7 +149,7 @@ fn parse_subscription(body: &[u8]) -> Result<SubscriptionSnapshot, BillingError>
     })
 }
 
-async fn claim(db: &mut Client) -> Result<Option<(Uuid, String, i64)>, BillingError> {
+pub(super) async fn claim(db: &mut Client) -> Result<Option<(Uuid, String, i64)>, BillingError> {
     let tx = db.transaction().await?;
     let row = tx.query_opt(
         "WITH target AS (SELECT stripe_subscription_id FROM billing_reconciliations WHERE dirty_generation>processed_generation AND next_attempt_at<=now() ORDER BY next_attempt_at,stripe_subscription_id FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE billing_reconciliations b SET next_attempt_at=now()+interval '30 seconds' FROM target WHERE b.stripe_subscription_id=target.stripe_subscription_id RETURNING b.account_id,b.stripe_subscription_id,b.dirty_generation",

@@ -505,6 +505,11 @@ mod tests {
         ));
         let row = db.query_one("SELECT dirty_generation,processed_generation FROM billing_reconciliations WHERE stripe_subscription_id='sub_fixture1'", &[]).await.unwrap();
         assert_eq!((row.get::<_, i64>(0), row.get::<_, i64>(1)), (1, 0));
+        assert_eq!(
+            worker::claim(&mut db).await.unwrap(),
+            Some((a, "sub_fixture1".into(), 1))
+        );
+        assert!(worker::claim(&mut db).await.unwrap().is_none());
         let mut newer = event.clone();
         newer.event_id = "evt_fixture2".into();
         assert_eq!(ingest(&mut db, &newer).await.unwrap(), IngestResult::Queued);
