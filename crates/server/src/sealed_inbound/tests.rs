@@ -283,6 +283,14 @@ async fn sealed_identity_requires_live_writer_and_active_same_tenant_line() {
         .await
         .unwrap_err();
     assert_eq!(resurrection.code(), Some(&SqlState::CHECK_VIOLATION));
+    let delete_tombstone = db
+        .execute(
+            "DELETE FROM device_line_bindings WHERE account_id=$1 AND line_id=$2",
+            &[&account, &line],
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(delete_tombstone.code(), Some(&SqlState::CHECK_VIOLATION));
 
     // A replacement SIM binding uses a new generation; the old one remains
     // rejected even though its historical inbound event still exists.
