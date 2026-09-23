@@ -43,10 +43,13 @@ async function ownerPage(mfaEnabled) {
     }
     if (url === "/v1/enrollment/devices") return response(200, { devices: [], next_cursor: null });
     if (url === "/v1/owner/messages") return response(200, { messages: [], next_cursor: null });
+    if (url === "/v1/auth/api-keys" && options.method === "GET") {
+      return response(200, { keys: [], next_cursor: null });
+    }
     throw new Error(`Unexpected request: ${url}`);
   };
-  globalThis.document = { cookie: "", getElementById: element };
-  globalThis.window = { location: { origin: "https://example.test" } };
+  globalThis.document = { cookie: "__Host-zrotext_csrf=ztc_synthetic", getElementById: element };
+  globalThis.window = { location: { origin: "https://example.test" }, addEventListener() {} };
   globalThis.fetch = fetch;
   delete require.cache[require.resolve("./devices.js")];
   require("./devices.js");
