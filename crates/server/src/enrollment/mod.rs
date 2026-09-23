@@ -5,12 +5,11 @@
 
 use crate::auth::SessionPrincipal;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, Mac, digest::KeyInit};
 use p256::{
     ecdsa::{Signature, VerifyingKey, signature::Verifier},
     pkcs8::DecodePublicKey,
 };
-use rand::{RngCore, rngs::OsRng};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use thiserror::Error;
@@ -88,14 +87,11 @@ pub struct AuthenticatedDevice {
 }
 
 fn random_bytes() -> [u8; 32] {
-    let mut bytes = [0u8; 32];
-    OsRng.fill_bytes(&mut bytes);
-    bytes
+    rand::random()
 }
 
 fn random_comparison_code() -> String {
-    let mut bytes = [0u8; 4];
-    OsRng.fill_bytes(&mut bytes);
+    let bytes: [u8; 4] = rand::random();
     format!("{:08}", u32::from_be_bytes(bytes) % 100_000_000)
 }
 
@@ -494,6 +490,7 @@ mod tests {
     use super::*;
     use crate::auth::{TokenHasher, authenticate_session, login, register, verify_email};
     use p256::ecdsa::{SigningKey, signature::Signer};
+    use p256::elliptic_curve::rand_core::OsRng;
     use p256::pkcs8::EncodePublicKey;
 
     #[test]

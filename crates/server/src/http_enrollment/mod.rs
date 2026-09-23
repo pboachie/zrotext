@@ -547,11 +547,11 @@ mod tests {
         body::{Body, to_bytes},
         http::{Method, Request},
     };
+    use p256::elliptic_curve::rand_core::OsRng;
     use p256::{
         ecdsa::{Signature, SigningKey, signature::Signer},
         pkcs8::EncodePublicKey,
     };
-    use rand::rngs::OsRng;
     use serde_json::{Value, json};
     use sha2::{Digest, Sha256};
     use tower::ServiceExt;

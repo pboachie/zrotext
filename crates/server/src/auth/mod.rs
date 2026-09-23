@@ -5,8 +5,7 @@
 
 use argon2::{Algorithm, Argon2, Params, PasswordHash, PasswordHasher, PasswordVerifier, Version};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use hmac::{Hmac, Mac};
-use rand::{RngCore, rngs::OsRng};
+use hmac::{Hmac, Mac, digest::KeyInit};
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
 use thiserror::Error;
@@ -198,8 +197,7 @@ impl ApiPrincipal {
 }
 
 fn random_token(prefix: &str) -> String {
-    let mut bytes = [0u8; 32];
-    OsRng.fill_bytes(&mut bytes);
+    let bytes: [u8; 32] = rand::random();
     format!("{prefix}{}", URL_SAFE_NO_PAD.encode(bytes))
 }
 
@@ -246,9 +244,8 @@ pub async fn register(
         return Err(AuthError::InvalidInput);
     }
     let email = normalize_email(email)?;
-    let salt = argon2::password_hash::SaltString::generate(&mut OsRng);
     let password_hash = password_engine()?
-        .hash_password(password.as_bytes(), &salt)
+        .hash_password(password.as_bytes())
         .map_err(|_| AuthError::Password)?
         .to_string();
     let account_id = Uuid::new_v4();
