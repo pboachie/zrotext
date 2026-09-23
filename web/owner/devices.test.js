@@ -30,7 +30,7 @@ async function ownerPage() {
   };
   element("key-lifetime").value = "30";
   const state = {
-    unauthorized: false, pendingCreate: null, pendingHistory: null,
+    unauthorized: false, pendingCreate: null, nextCreateResponse: null, pendingHistory: null,
     historyPages: [], historyRequests: [],
   };
   const fetch = async (url, options) => {
@@ -42,6 +42,7 @@ async function ownerPage() {
       return response(200, { keys: [], next_cursor: null });
     }
     if (url === "/v1/auth/api-keys" && options.method === "POST") {
+      if (state.nextCreateResponse) return state.nextCreateResponse;
       if (state.pendingCreate) return state.pendingCreate;
       return response(201, { id: "test-id", token: "ztk_synthetic-only", public_prefix: "synthetic" });
     }
@@ -153,4 +154,25 @@ test("inbound history rejects an oversized page and clears on 401 despite a late
   assert.equal(element("inbound-message-id").value, "");
   assert.equal(element("inbound-selected-id").textContent, "");
   assert.equal(element("inbound-event-list").children.length, 0);
+});
+
+test("a deferred create JSON body cannot restore a key after a 401", async () => {
+  const { element, state } = await ownerPage();
+  let resolveBody;
+  let bodyStarted;
+  const body = new Promise((resolve) => { resolveBody = resolve; });
+  const parsing = new Promise((resolve) => { bodyStarted = resolve; });
+  state.nextCreateResponse = {
+    status: 201, ok: true,
+    json() { bodyStarted(); return body; },
+  };
+  const create = element("key-create-form").listeners.submit({ preventDefault() {} });
+  await parsing;
+  state.unauthorized = true;
+  await element("refresh-devices").listeners.click();
+  resolveBody({ id: "test-id", token: "ztk_synthetic-only", public_prefix: "synthetic" });
+  await create;
+  assert.equal(element("key-secret").textContent, "");
+  assert.equal(element("key-secret-panel").hidden, true);
+  assert.equal(element("owner-content").hidden, true);
 });

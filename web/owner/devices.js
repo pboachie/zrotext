@@ -67,7 +67,12 @@ async function api(path, method = "GET", body = undefined) {
     };
     throw new Error(descriptions[response.status] || `Request failed (${response.status}).`);
   }
-  return response.status === 204 ? null : response.json();
+  if (response.status === 204) return null;
+  const result = await response.json();
+  if (requestEpoch !== ownerEpoch) {
+    throw new Error("Your sign-in expired. Sign in again.");
+  }
+  return result;
 }
 
 function showSignedIn(signedIn) {
@@ -442,6 +447,7 @@ byId("inbound-history-form").addEventListener("submit", async (event) => {
 byId("more-inbound-events").addEventListener("click", () => loadInboundEvents(false));
 byId("key-create-form").addEventListener("submit", async (event) => {
   event.preventDefault();
+  const createEpoch = ownerEpoch;
   clearKeySecret();
   const scopes = [...byId("key-create-form").querySelectorAll('input[name="scope"]:checked')]
     .map((input) => input.value);
@@ -454,6 +460,7 @@ byId("key-create-form").addEventListener("submit", async (event) => {
     const created = await api("/v1/auth/api-keys", "POST", {
       scopes, lifetime_days: Number(byId("key-lifetime").value),
     });
+    if (createEpoch !== ownerEpoch) return;
     byId("key-secret").textContent = created.token;
     byId("key-secret-panel").hidden = false;
     message("key-create-status", "Key created. Copy it now; this is its only display.");
