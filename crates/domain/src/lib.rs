@@ -36,6 +36,7 @@ pub enum Evidence {
     CrashWithoutCallback,
     GrantTimeout,
     SentCallbackTimeout,
+    CallbackConflict,
     Cancel,
     Expire,
 }
@@ -66,6 +67,10 @@ impl MessageState {
             (Submitted, DeliveryCallbackOk) => Delivered,
             (Submitted, DeliveryTimeout) => DeliveryUnknown,
             (DeliveryUnknown, DeliveryCallbackOk) => Delivered,
+            (
+                Submitting | Submitted | Delivered | DeliveryUnknown | Unknown | Failed,
+                CallbackConflict,
+            ) => Unknown,
             (Accepted | Queued | Claimed, Cancel) => Cancelled,
             (Accepted | Queued | Claimed, Expire) => Expired,
             _ => {
@@ -306,6 +311,24 @@ mod tests {
         assert_eq!(
             state.apply(Evidence::DeliveryTimeout),
             Ok(MessageState::DeliveryUnknown)
+        );
+    }
+
+    #[test]
+    fn contradictory_callback_retracts_delivery_claim_without_retry() {
+        assert_eq!(
+            MessageState::Delivered.apply(Evidence::CallbackConflict),
+            Ok(MessageState::Unknown)
+        );
+        assert_eq!(
+            MessageState::Failed.apply(Evidence::CallbackConflict),
+            Ok(MessageState::Unknown)
+        );
+        assert!(MessageState::Unknown.apply(Evidence::Claim).is_err());
+        assert!(
+            MessageState::Claimed
+                .apply(Evidence::CallbackConflict)
+                .is_err()
         );
     }
 

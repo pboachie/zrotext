@@ -529,6 +529,55 @@ impl<'a> DeliveryStore<'a> {
         Ok(rows.len() as u64)
     }
 
+    /// A sent callback proves carrier acceptance, not handset delivery. Close
+    /// an absent delivery receipt conservatively after 24 hours; late receipt
+    /// evidence can still move delivery_unknown to delivered.
+    pub async fn reconcile_delivery_timeouts(&mut self, limit: i64) -> Result<u64, StoreError> {
+        if !(1..=1000).contains(&limit) {
+            return Err(StoreError::InvalidInput);
+        }
+        let tx = self.client.transaction().await?;
+        let rows = tx
+            .query(
+                "SELECT m.account_id,m.id,a.id FROM messages m \
+             JOIN dispatch_fences f ON (f.account_id,f.message_id)=(m.account_id,m.id) \
+             JOIN message_attempts a ON a.id=f.attempt_id \
+             WHERE m.state='submitted' AND f.outcome='submitted' AND a.status='submitted' \
+               AND m.updated_at<=now()-interval '24 hours' \
+             ORDER BY m.updated_at,m.id FOR UPDATE OF m SKIP LOCKED LIMIT $1",
+                &[&limit],
+            )
+            .await?;
+        for row in &rows {
+            let account_id: Uuid = row.get(0);
+            let message_id: Uuid = row.get(1);
+            let attempt_id: Uuid = row.get(2);
+            let next = MessageState::Submitted
+                .apply(Evidence::DeliveryTimeout)
+                .map_err(|_| StoreError::InvalidTransition)?;
+            let mut hash = Sha256::new();
+            hash.update(account_id.as_bytes());
+            hash.update(message_id.as_bytes());
+            hash.update(attempt_id.as_bytes());
+            hash.update(b"delivery_timeout");
+            let digest = hash.finalize().to_vec();
+            tx.execute(
+                "UPDATE messages SET state=$3,state_version=state_version+1,updated_at=now() \
+                 WHERE account_id=$1 AND id=$2",
+                &[&account_id, &message_id, &state_name(next)],
+            )
+            .await?;
+            tx.execute(
+                "INSERT INTO message_events (id,account_id,message_id,attempt_id,evidence_code, \
+                 event_digest,observed_at,resulting_state) VALUES ($1,$2,$3,$4,'delivery_timeout',$5,now(),$6)",
+                &[&Uuid::new_v4(), &account_id, &message_id, &attempt_id, &digest,
+                  &state_name(next)],
+            ).await?;
+        }
+        tx.commit().await?;
+        Ok(rows.len() as u64)
+    }
+
     /// Grant transaction checks authority, session and worker generation. A
     /// unique active-device index closes races between different messages.
     pub async fn issue_grant(
@@ -762,7 +811,26 @@ impl<'a> DeliveryStore<'a> {
         if attempt.is_none() {
             return Err(StoreError::StaleFence);
         }
+        if event.evidence != Evidence::CallbackConflict {
+            let conflicted: bool = tx.query_one(
+                "SELECT EXISTS(SELECT 1 FROM message_events WHERE attempt_id=$1 AND evidence_code='callback_conflict')",
+                &[&event.attempt_id],
+            ).await?.get(0);
+            if conflicted {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
         let next = match event.evidence {
+            Evidence::CallbackConflict => {
+                let intent: bool = tx.query_one(
+                    "SELECT EXISTS(SELECT 1 FROM message_events WHERE attempt_id=$1 AND evidence_code='durable_intent')",
+                    &[&event.attempt_id],
+                ).await?.get(0);
+                if !intent {
+                    return Err(StoreError::InvalidTransition);
+                }
+                current.apply(Evidence::CallbackConflict)
+            }
             Evidence::SentCallbackOk | Evidence::SentCallbackFailed => {
                 let intent: bool = tx.query_one(
                     "SELECT EXISTS(SELECT 1 FROM message_events WHERE attempt_id=$1 AND evidence_code='durable_intent')",
@@ -907,6 +975,7 @@ fn evidence_code(evidence: Evidence) -> Option<&'static str> {
         Evidence::DeliveryCallbackOk => "delivery_callback_ok",
         Evidence::DeliveryTimeout => "delivery_timeout",
         Evidence::CrashWithoutCallback => "crash_no_callback",
+        Evidence::CallbackConflict => "callback_conflict",
         _ => return None,
     })
 }
@@ -1190,9 +1259,10 @@ mod tests {
             )
             .await
             .unwrap();
+        let third_message = Uuid::new_v4();
+        let third_attempt = Uuid::new_v4();
         {
             let mut store = DeliveryStore::new(&mut client);
-            let third_message = Uuid::new_v4();
             store
                 .accept(NewMessage {
                     client_message_id: third_message,
@@ -1219,7 +1289,6 @@ mod tests {
                 .connect_session(account, second_device, "a", "hub", 60)
                 .await
                 .unwrap();
-            let third_attempt = Uuid::new_v4();
             store
                 .issue_grant(&third_claim, &third_session, third_attempt)
                 .await
@@ -1308,6 +1377,52 @@ mod tests {
             .unwrap()
             .get(0);
         assert_eq!(state, "expired");
+
+        assert_eq!(
+            DeliveryStore::new(&mut client)
+                .reconcile_delivery_timeouts(10)
+                .await
+                .unwrap(),
+            0
+        );
+        client
+            .execute(
+                "UPDATE messages SET updated_at=now()-interval '25 hours' WHERE id=$1",
+                &[&third_message],
+            )
+            .await
+            .unwrap();
+        {
+            let mut store = DeliveryStore::new(&mut client);
+            assert_eq!(store.reconcile_delivery_timeouts(10).await.unwrap(), 1);
+            assert_eq!(store.reconcile_delivery_timeouts(10).await.unwrap(), 0);
+            assert_eq!(
+                store
+                    .status(account, third_message)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .state,
+                MessageState::DeliveryUnknown
+            );
+            assert_eq!(
+                store
+                    .record_radio_event(RadioEvent {
+                        event_id: Uuid::new_v4(),
+                        account_id: account,
+                        device_id: second_device,
+                        message_id: third_message,
+                        attempt_id: third_attempt,
+                        evidence: Evidence::DeliveryCallbackOk,
+                        observed_at_ms: now_ms(),
+                        segment_index: None,
+                        segment_count: None,
+                    })
+                    .await
+                    .unwrap(),
+                MessageState::Delivered
+            );
+        }
 
         let silent_grant_message = Uuid::new_v4();
         let silent_grant_attempt = Uuid::new_v4();
@@ -1527,6 +1642,64 @@ mod tests {
             &[&silent_callback_attempt],
         ).await.unwrap().get(0);
         assert_eq!(timeout_evidence, "sent_callback_timeout");
+        {
+            let mut store = DeliveryStore::new(&mut client);
+            assert_eq!(
+                store
+                    .record_radio_event(RadioEvent {
+                        event_id: Uuid::new_v4(),
+                        account_id: account,
+                        device_id: timeout_device,
+                        message_id: silent_callback_message,
+                        attempt_id: silent_callback_attempt,
+                        evidence: Evidence::DeliveryCallbackOk,
+                        observed_at_ms: now_ms(),
+                        segment_index: None,
+                        segment_count: None,
+                    })
+                    .await
+                    .unwrap(),
+                MessageState::Delivered
+            );
+            let conflict = RadioEvent {
+                event_id: Uuid::new_v4(),
+                account_id: account,
+                device_id: timeout_device,
+                message_id: silent_callback_message,
+                attempt_id: silent_callback_attempt,
+                evidence: Evidence::CallbackConflict,
+                observed_at_ms: now_ms(),
+                segment_index: None,
+                segment_count: None,
+            };
+            assert_eq!(
+                store.record_radio_event(conflict).await.unwrap(),
+                MessageState::Unknown
+            );
+            assert_eq!(
+                store.record_radio_event(conflict).await.unwrap(),
+                MessageState::Unknown
+            );
+            assert!(matches!(
+                store
+                    .record_radio_event(RadioEvent {
+                        event_id: Uuid::new_v4(),
+                        evidence: Evidence::DeliveryCallbackOk,
+                        ..conflict
+                    })
+                    .await,
+                Err(StoreError::InvalidTransition)
+            ));
+        }
+        let fence: String = client
+            .query_one(
+                "SELECT outcome FROM dispatch_fences WHERE attempt_id=$1",
+                &[&silent_callback_attempt],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(fence, "unknown");
         client
             .batch_execute(&format!(
                 "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
