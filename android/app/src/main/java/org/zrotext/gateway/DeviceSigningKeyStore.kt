@@ -75,6 +75,10 @@ class DeviceSigningKeyStore(
     fun signDeviceChallenge(accountId: UUID, deviceId: UUID, challengeId: UUID, nonce: ByteArray): ByteArray =
         sign(EnrollmentProof.deviceAuthBytes(accountId, deviceId, challengeId, nonce))
 
+    internal fun signInboundMetadata(accountId: UUID, deviceId: UUID, upload: InboundUpload,
+                                     event: InboundEvent): ByteArray =
+        sign(InboundUploadFrame.signedBytes(accountId, deviceId, upload, event))
+
     private fun sign(payload: ByteArray): ByteArray = Signature.getInstance("SHA256withECDSA").run {
         initSign(privateKey())
         update(payload)

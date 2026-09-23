@@ -42,6 +42,12 @@ This is a self-host example, not a production migration procedure. The
 deployment plan must add a protected TLS connection and backup/restore proof
 before an internet-facing launch.
 
+The application image also includes `zrotext-webhook-kek-rewrap` for a staged
+operational webhook encryption-key change. Follow the
+[KEK rotation procedure](../../docs/WEBHOOK-KEK-ROTATION.md); the local self-host
+example does not configure webhook delivery or supply the required private
+keys.
+
 ## Disposable logical restore rehearsal
 
 With an existing Compose database and its private `.env` file, quiesce all
