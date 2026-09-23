@@ -1,9 +1,21 @@
-# Contributing
+# Contributing to ZROtext
 
-ZROtext application changes are contributed under `AGPL-3.0-only`. Future SDKs will have a separate permissive license and must not copy application implementation code. Preserve copyright and license notices on reused material and identify its source in the change.
+Thanks for helping improve ZROtext. Application code is licensed under `AGPL-3.0-only`; see [LICENSE](LICENSE). Contributions remain yours under that license. Do not copy code, assets, or documentation from another project without checking its license and recording attribution.
 
-Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` before a Rust change. Android changes should build with the checked-in Gradle wrapper and include the device model and OS when behavior depends on telephony or background execution. A simulator pass is not evidence of delivered SMS.
+## Before you start
 
-Every commit must include a Developer Certificate of Origin sign-off line. Add it with `git commit -s`. By signing off, you certify the contribution under the [DCO](DCO) and the component's license. Contributions retain their authors' copyright. Protocol, authentication, and billing changes require a second human reviewer before release.
+- Search existing issues and discussions. Open an issue for a bug or a discussion for a proposed feature or design change, so maintainers can help settle scope before you invest in a large patch.
+- For a security vulnerability, use [GitHub's private vulnerability reporting](https://github.com/pboachie/zrotext/security/advisories/new). Do not open a public issue.
+- Use synthetic phone numbers and message content in tests and examples. Never post credentials, real message bodies, phone numbers, device identifiers, or private infrastructure details.
 
-Do not submit message bodies, phone numbers, credentials, private infrastructure details, or device logs containing them in issues or pull requests. Use synthetic test identifiers.
+## Submit a change
+
+1. Fork the repository and create a branch from `main`.
+2. Keep the change focused. Add tests when behavior changes and update relevant documentation.
+3. Run the checks for the part you changed. Rust: `cargo fmt --all --check`, `cargo clippy --locked --workspace --all-targets -- -D warnings`, and `cargo test --locked --workspace`. Android: `cd android` followed by `./gradlew :app:lintDebug :app:testDebugUnitTest :app:assembleDebug --no-daemon`. On Windows, use `gradlew.bat`.
+4. Sign off each commit with `git commit -s`. This adds a `Signed-off-by:` line and certifies the [Developer Certificate of Origin](DCO). Use your own name and email; they will be public.
+5. Open a pull request against `main` using the template. Explain the behavior, tests, and any deployment or compatibility impact. Link the relevant issue.
+
+CI runs Rust and Android checks on pull requests. A maintainer reviews code and may request changes. Do not merge while required checks fail or review comments are unresolved. Protocol, authentication, privacy, and billing changes need a second human reviewer before release. If you need a device to verify SMS behavior, say so in the PR; an emulator build does not prove carrier delivery.
+
+The public repository contains application code and public development documentation. Keep production credentials, customer data, billing operations, and private marketing material out of it.
