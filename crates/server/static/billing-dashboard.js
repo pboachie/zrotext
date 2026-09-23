@@ -3,6 +3,7 @@
 
 const state = document.getElementById("billing-state");
 const deviceCapStatus = document.getElementById("device-cap-status");
+const manageDevices = document.getElementById("manage-devices");
 const list = document.getElementById("subscriptions");
 const error = document.getElementById("billing-error");
 const checkout = document.getElementById("checkout");
@@ -20,6 +21,7 @@ async function loadStatus() {
   error.textContent = "";
   state.textContent = "Loading billing status…";
   deviceCapStatus.textContent = "";
+  manageDevices.hidden = true;
   portal.disabled = true;
   try {
     const response = await fetch("/v1/billing/status", { credentials: "same-origin", cache: "no-store" });
@@ -41,10 +43,11 @@ async function loadStatus() {
       deviceCapStatus.textContent = "Device limit not yet available. New enrollment is currently blocked.";
     } else if (capacity && Number.isSafeInteger(capacity.limit) && Number.isSafeInteger(capacity.active)) {
       deviceCapStatus.textContent = capacity.overLimit
-        ? `${capacity.active} devices enrolled; plan limit ${capacity.limit}. Existing devices keep working. New enrollment is blocked until you revoke devices or change plan.`
+        ? `${capacity.active} devices enrolled; plan limit ${capacity.limit}. Existing devices keep working. Choose which devices to revoke; new enrollment remains blocked at or above the limit.`
         : capacity.enrollmentBlocked
           ? `${capacity.active} devices enrolled; plan limit ${capacity.limit}. New enrollment is currently blocked.`
           : `${capacity.active} devices enrolled; plan limit ${capacity.limit}.`;
+      manageDevices.hidden = !capacity.enrollmentBlocked;
     }
     if (result.moreSubscriptions) {
       const item = document.createElement("li");
@@ -55,6 +58,7 @@ async function loadStatus() {
   } catch (cause) {
     state.textContent = "Billing status unavailable.";
     deviceCapStatus.textContent = "";
+    manageDevices.hidden = true;
     error.textContent = cause.message;
   }
 }

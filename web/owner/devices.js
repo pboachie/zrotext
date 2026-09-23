@@ -80,7 +80,9 @@ async function api(path, method = "GET", body = undefined) {
       429: "Too many requests. Wait before trying again.",
       503: "The service is unavailable. Try again later.",
     };
-    throw new Error(descriptions[response.status] || `Request failed (${response.status}).`);
+    const error = new Error(descriptions[response.status] || `Request failed (${response.status}).`);
+    error.status = response.status;
+    throw error;
   }
   if (response.status === 204) return null;
   const result = await response.json();
@@ -110,11 +112,12 @@ async function completeSignIn() {
   showSignedIn(true);
   message("login-status", "");
   message("global-status", "Signed in.");
-  await Promise.all([loadDevices(), loadMessages(), loadKeys(), loadWebhookEndpoints()]);
+  await Promise.all([loadDevices(), loadDeviceCapacity(), loadMessages(), loadKeys(), loadWebhookEndpoints()]);
 }
 
 function clearPairing() {
   activePairingId = null;
+  byId("pair-cap-devices-link").hidden = true;
   byId("pair-ticket").hidden = true;
   byId("approve-form").hidden = true;
   for (const id of ["pair-id", "pair-token", "browser-code", "browser-fingerprint", "phone-code", "phone-fingerprint"]) {
@@ -176,6 +179,8 @@ function clearOwnerState() {
   clearInboundHistory();
   clearWebhookEndpoints();
   byId("device-list").replaceChildren();
+  byId("device-cap-prompt").hidden = true;
+  message("device-cap-prompt", "");
   byId("more-devices").hidden = true;
   nextDeviceCursor = null;
   shownDeviceCount = 0;
@@ -411,6 +416,31 @@ async function loadKeys(reset = true) {
   }
 }
 
+async function loadDeviceCapacity() {
+  const prompt = byId("device-cap-prompt");
+  prompt.hidden = true;
+  prompt.textContent = "";
+  try {
+    const result = await api("/v1/billing/status");
+    const capacity = result.deviceCapacity;
+    if (result.mode !== "test" || !capacity ||
+        !Number.isSafeInteger(capacity.limit) || capacity.limit < 0 ||
+        !Number.isSafeInteger(capacity.active) || capacity.active < 0) return;
+    if (capacity.overLimit) {
+      prompt.textContent = `${capacity.active} active devices exceed your plan limit of ${capacity.limit}. Choose which devices to revoke below. Existing devices continue working until you revoke them; no device is removed automatically. A new pairing requires available plan capacity.`;
+    } else if (capacity.enrollmentBlocked) {
+      prompt.textContent = capacity.limit === 0
+        ? "Your current plan allows no devices. No device is removed automatically; a new pairing requires a plan with capacity."
+        : `${capacity.active} active devices have reached your plan limit of ${capacity.limit}. Choose a device below to revoke before approving a replacement. No device is removed automatically.`;
+    }
+    prompt.hidden = !prompt.textContent;
+  } catch (_error) {
+    // Billing may be disabled; keep device management available on its own.
+    prompt.hidden = true;
+    prompt.textContent = "";
+  }
+}
+
 async function loadDevices(reset = true) {
   message("device-status", "Loading devices…");
   if (reset) {
@@ -454,7 +484,7 @@ async function loadDevices(reset = true) {
           revoke.disabled = true;
           try {
             await api(`/v1/enrollment/devices/${encodeURIComponent(device.device_id)}`, "DELETE");
-            await loadDevices();
+            await Promise.all([loadDevices(), loadDeviceCapacity()]);
           } catch (error) {
             message("device-status", error.message);
             revoke.disabled = false;
@@ -679,6 +709,7 @@ byId("approve-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   if (!activePairingId || !byId("compared").checked) return;
   message("pair-status", "Approving device…");
+  byId("pair-cap-devices-link").hidden = true;
   try {
     const result = await api(`/v1/enrollment/pairings/${encodeURIComponent(activePairingId)}/approve`, "POST", {
       comparison_code: byId("phone-code").value,
@@ -687,13 +718,19 @@ byId("approve-form").addEventListener("submit", async (event) => {
     message("approved-result", `Approved device UUID: ${result.device_id}`);
     message("pair-status", "Pairing complete. Enter this UUID on the phone for its authenticated gateway connection.");
     clearPairing();
-    await loadDevices();
+    await Promise.all([loadDevices(), loadDeviceCapacity()]);
   } catch (error) {
-    message("pair-status", `Approval failed. ${error.message} Check the phone values. Repeated mismatches lock this pairing.`);
+    if (error.status === 409) {
+      message("pair-status", "Device limit reached. Existing devices keep working. Choose which device to revoke below, then retry when your plan has available capacity. Nothing was removed automatically.");
+      byId("pair-cap-devices-link").hidden = false;
+      await loadDeviceCapacity();
+    } else {
+      message("pair-status", `Approval failed. ${error.message} Check the phone values. Repeated mismatches lock this pairing.`);
+    }
   }
 });
 
-byId("refresh-devices").addEventListener("click", loadDevices);
+byId("refresh-devices").addEventListener("click", () => Promise.all([loadDevices(), loadDeviceCapacity()]));
 byId("more-devices").addEventListener("click", () => loadDevices(false));
 byId("refresh-messages").addEventListener("click", loadMessages);
 byId("more-messages").addEventListener("click", () => loadMessages(false));
@@ -757,7 +794,7 @@ byId("key-create-form").addEventListener("submit", async (event) => {
   try {
     await api("/v1/auth/session");
     showSignedIn(true);
-    await Promise.all([loadDevices(), loadMessages(), loadKeys(), loadWebhookEndpoints()]);
+    await Promise.all([loadDevices(), loadDeviceCapacity(), loadMessages(), loadKeys(), loadWebhookEndpoints()]);
   } catch (error) {
     showSignedIn(false);
     message("global-status", error.message.startsWith("Your sign-in") ? "Sign in to manage devices." : `Could not verify session. ${error.message}`);
