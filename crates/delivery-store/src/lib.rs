@@ -925,6 +925,16 @@ impl<'a> DeliveryStore<'a> {
             }
         }
         if event.evidence == Evidence::ProvenNoSubmit {
+            // A fresh event ID from a previously released attempt must never
+            // requeue a newer grant for the same message.
+            let active_fence: bool = tx.query_one(
+                "SELECT EXISTS(SELECT 1 FROM dispatch_fences WHERE attempt_id=$1 AND account_id=$2 \
+                 AND message_id=$3 AND device_id=$4)",
+                &[&event.attempt_id, &event.account_id, &event.message_id, &event.device_id],
+            ).await?.get(0);
+            if !active_fence {
+                return Err(StoreError::StaleFence);
+            }
             // The phone's durable no-radio proof may arrive after the writer's
             // silent-attempt timeout. Never release a fence once any radio
             // callback or contradictory evidence was recorded for this attempt.
@@ -2241,7 +2251,7 @@ mod tests {
                 store
                     .record_radio_event(proof_event(Evidence::ProvenNoSubmit, Uuid::new_v4()))
                     .await,
-                Err(StoreError::InvalidTransition)
+                Err(StoreError::StaleFence)
             ));
             let replay_claim = store
                 .claim_due_for_device("proof-retry", account, proof_device)
@@ -2259,6 +2269,21 @@ mod tests {
                     .issue_grant(&replay_claim, &fresh_session, fresh_attempt)
                     .await
                     .is_ok()
+            );
+            assert!(matches!(
+                store
+                    .record_radio_event(proof_event(Evidence::ProvenNoSubmit, Uuid::new_v4()))
+                    .await,
+                Err(StoreError::StaleFence)
+            ));
+            assert_eq!(
+                store
+                    .status(account, proof_message)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .state,
+                MessageState::Claimed
             );
             let fresh_event = |evidence, event_id| RadioEvent {
                 attempt_id: fresh_attempt,
