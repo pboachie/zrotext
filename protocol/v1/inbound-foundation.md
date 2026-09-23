@@ -1,11 +1,6 @@
-# Inbound pilot storage contract (ZT-008 foundation)
+# Inbound storage contract
 
-This describes a store API, **not an enabled device frame or public route**. The
-Android inbound pilot in PR #25 keeps reply bodies in the phone's local vault;
-it does not upload them. An opt-in device-stream frame carries signed metadata
-only; Android upload and a customer-decryptable sealed envelope remain separate
-gates. Owner endpoint management is described in `webhook-endpoints.md`.
-The webhook sender is disabled by default. Synthetic/consented test content only.
+This describes the inbound store API. The Android local vault keeps reply bodies on the phone; an opt-in device-stream frame carries signed metadata only. A customer-decryptable sealed envelope is a separate proposed format. Owner endpoint management is described in [webhook-endpoints.md](webhook-endpoints.md). The webhook sender is disabled by default; use synthetic or consented test content.
 
 `inbound::ingest` accepts an event only through an enrolled device's current
 writer session. It checks the tenant/device, site and instance, connection and
@@ -84,7 +79,4 @@ letter; unavailable DNS/transport and other HTTP statuses follow the bounded
 retry schedule. The sender needs an independent network egress firewall in a
 deployment; application validation alone is not a complete SSRF boundary.
 
-Owner endpoint creation, listing, enable/disable and secret rotation are
-described in `webhook-endpoints.md`. Manual replay, Android upload frame and
-customer-decryptable sealed-content protocol remain separate gates before
-public inbound/webhook use.
+Owner endpoint creation, listing, enable/disable and secret rotation are described in [webhook-endpoints.md](webhook-endpoints.md). Manual replay, Android upload and sealed content have separate contracts and implementation paths.
