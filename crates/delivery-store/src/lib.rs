@@ -92,6 +92,7 @@ pub struct GrantRecord {
     pub session_epoch: i64,
     pub deployment_epoch: i64,
     pub recipient_digest: Vec<u8>,
+    pub expires_at_ms: i64,
 }
 
 /// Private synthetic-alpha content released only after a current execution
@@ -514,22 +515,26 @@ impl<'a> DeliveryStore<'a> {
               &claim.generation, &session.epoch, &deployment_epoch],
         )
         .await?;
-        let inserted = tx.execute(
+        let inserted = tx.query_one(
             "INSERT INTO dispatch_fences (message_id,account_id,device_id,attempt_id,generation,session_epoch, \
               deployment_epoch,recipient_digest,grant_expires_at,outcome) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,now()+interval '30 seconds','granted')",
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,now()+interval '30 seconds','granted') \
+             RETURNING (extract(epoch FROM grant_expires_at)*1000)::bigint",
             &[&claim.message_id, &claim.account_id, &claim.device_id, &attempt_id,
               &claim.generation, &session.epoch, &deployment_epoch, &recipient_digest],
         ).await;
-        if let Err(error) = inserted {
-            if error.as_db_error().is_some_and(|db| {
-                db.code() == &SqlState::UNIQUE_VIOLATION
-                    && db.constraint() == Some("dispatch_fences_active_device")
-            }) {
-                return Err(StoreError::DeviceBusy);
+        let inserted = match inserted {
+            Ok(row) => row,
+            Err(error) => {
+                if error.as_db_error().is_some_and(|db| {
+                    db.code() == &SqlState::UNIQUE_VIOLATION
+                        && db.constraint() == Some("dispatch_fences_active_device")
+                }) {
+                    return Err(StoreError::DeviceBusy);
+                }
+                return Err(StoreError::Database(error));
             }
-            return Err(StoreError::Database(error));
-        }
+        };
         tx.execute(
             "UPDATE dispatch_jobs SET grant_issued_at=now() WHERE message_id=$1",
             &[&claim.message_id],
@@ -545,6 +550,7 @@ impl<'a> DeliveryStore<'a> {
             session_epoch: session.epoch,
             deployment_epoch,
             recipient_digest,
+            expires_at_ms: inserted.get(0),
         })
     }
 

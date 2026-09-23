@@ -15,6 +15,8 @@ class AttemptStateTest {
         assertEquals(AttemptState.UNKNOWN, AttemptState.fromEvidence(AttemptState.UNKNOWN, evidence))
         assertEquals(AttemptState.UNKNOWN, AttemptState.fromEvidence(AttemptState.UNKNOWN,
             listOf(segment(0, Activity.RESULT_OK), segment(1, null))))
+        assertEquals(AttemptState.NOT_SUBMITTED,
+            AttemptState.fromEvidence(AttemptState.NOT_SUBMITTED, evidence))
     }
 
     @Test fun segmentCallbacksDistinguishSubmissionDeliveryAndPartialFailure() {
@@ -29,5 +31,7 @@ class AttemptStateTest {
             listOf(segment(0, ok, ok, DeliveryStatus.RECEIVED), segment(1, ok, ok, DeliveryStatus.FAILED))))
         assertEquals(AttemptState.SUBMITTED, AttemptState.fromEvidence(AttemptState.SUBMITTED,
             listOf(segment(0, ok, ok, DeliveryStatus.UNVERIFIED))))
+        assertEquals(AttemptState.UNKNOWN, AttemptState.fromEvidence(AttemptState.UNKNOWN,
+            listOf(segment(0, ok, ok, DeliveryStatus.RECEIVED), segment(1, null))))
     }
 }

@@ -24,6 +24,7 @@ use subtle::ConstantTimeEq;
 use tokio::sync::Notify;
 use tokio_postgres::NoTls;
 use zrotext_server::{
+    alpha_policy::AlphaPolicy,
     auth::TokenHasher,
     device_socket::{self, DeviceSocketState},
     enrollment::EnrollmentHasher,
@@ -32,6 +33,7 @@ use zrotext_server::{
         VerificationDispatcher,
     },
     http_enrollment::{self, EnrollmentHttpState},
+    http_messages::{self, MessagesHttpState},
 };
 
 #[derive(Clone)]
@@ -41,6 +43,8 @@ struct Config {
     instance_id: String,
     deployment_epoch: i64,
     m0_test_token: Option<String>,
+    alpha_policy: Arc<AlphaPolicy>,
+    dispatch_runtime_enabled: bool,
     draining: Arc<AtomicBool>,
     drain_notify: Arc<Notify>,
 }
@@ -52,9 +56,20 @@ struct Health {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    if required("DISPATCH_ENABLED")? != "false" {
-        return Err("No SMS dispatcher is wired; DISPATCH_ENABLED must be false".into());
-    }
+    let alpha_policy = Arc::new(AlphaPolicy::parse(
+        env::var("SYNTHETIC_ALPHA_ENABLED").ok().as_deref(),
+        env::var("SYNTHETIC_ALPHA_ALLOWED_ACCOUNT_IDS")
+            .ok()
+            .as_deref(),
+        env::var("SYNTHETIC_ALPHA_ALLOWED_RECIPIENTS")
+            .ok()
+            .as_deref(),
+    )?);
+    let dispatch_runtime_enabled = match required("DISPATCH_ENABLED")?.as_str() {
+        "false" => false,
+        "true" if alpha_policy.enabled() => true,
+        _ => return Err("DISPATCH_ENABLED requires explicit synthetic alpha allowlists".into()),
+    };
     let config = Arc::new(Config {
         database_url: required("DATABASE_URL")?,
         site_id: required("SITE_ID")?,
@@ -63,6 +78,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         m0_test_token: env::var("M0_TEST_TOKEN")
             .ok()
             .filter(|token| token.len() >= 32),
+        alpha_policy,
+        dispatch_runtime_enabled,
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),
     });
@@ -80,6 +97,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some((auth_state, enrollment_state)) = account_routes(&config)? {
         ensure_local_site(&config).await?;
         let mail_state = auth_state.clone();
+        let message_hasher = auth_state.hasher.clone();
         let mail_draining = config.draining.clone();
         let mail_drain_notify = config.drain_notify.clone();
         tokio::spawn(async move {
@@ -109,6 +127,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             instance_id: config.instance_id.clone(),
             deployment_epoch: config.deployment_epoch,
             enrollment_hasher: enrollment_state.enrollment_hasher.clone(),
+            alpha_policy: config.alpha_policy.clone(),
+            dispatch_runtime_enabled: config.dispatch_runtime_enabled,
             draining: config.draining.clone(),
             drain_notify: config.drain_notify.clone(),
         };
@@ -116,6 +136,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .nest("/v1/auth", http_auth::router(auth_state))
             .nest("/v1/enrollment", http_enrollment::router(enrollment_state))
             .merge(device_socket::router(socket_state));
+        if config.alpha_policy.enabled() {
+            let message_state = MessagesHttpState::new(
+                config.database_url.clone(),
+                message_hasher,
+                config.alpha_policy.clone(),
+            )?;
+            app = app.nest("/v1/alpha", http_messages::router(message_state));
+        }
+    } else if config.alpha_policy.enabled() {
+        return Err("synthetic alpha requires account and enrollment routes".into());
     }
     eprintln!(
         "zrotext site={} instance={} listening={bind}",
@@ -384,6 +414,8 @@ mod tests {
             instance_id: "test-hub".into(),
             deployment_epoch: 1,
             m0_test_token: None,
+            alpha_policy: Arc::new(AlphaPolicy::parse(None, None, None).unwrap()),
+            dispatch_runtime_enabled: false,
             draining: Arc::new(AtomicBool::new(false)),
             drain_notify: Arc::new(Notify::new()),
         };
