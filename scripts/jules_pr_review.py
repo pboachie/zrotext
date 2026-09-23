@@ -123,16 +123,16 @@ def recent_feedback(number: int, github_token: str) -> str:
     reviews = pages(f"/pulls/{number}/reviews", github_token)[-20:]
     entries = []
     for item in issue:
-        body = item.get("body", "")
+        body = item.get("body") or ""
         if body and not START.search(body) and not RESULT.search(body) and not command(body):
             entries.append({"kind": "conversation", "author": item.get("user", {}).get("login"),
                             "body": body[:1800]})
     for item in inline:
         entries.append({"kind": "inline", "author": item.get("user", {}).get("login"),
                         "path": item.get("path"), "line": item.get("line") or item.get("original_line"),
-                        "body": item.get("body", "")[:1800]})
+                        "body": (item.get("body") or "")[:1800]})
     for item in reviews:
-        body = item.get("body", "")
+        body = item.get("body") or ""
         if body and not RESULT.search(body):
             entries.append({"kind": "review", "author": item.get("user", {}).get("login"),
                             "body": body[:1800]})
@@ -166,7 +166,7 @@ def start_review(number: int, mode: str, trigger: str, github_token: str,
         return
     sha = pr["head"]["sha"]
     existing = pages(f"/issues/{number}/comments", github_token)
-    if any(from_actions(item) and (match := START.search(item.get("body", ""))) and
+    if any(from_actions(item) and (match := START.search(item.get("body") or "")) and
            match.group(2) == sha and match.group(3) == mode and match.group(4) == trigger
            for item in existing):
         print(f"PR #{number} already has this Jules request.")
@@ -217,11 +217,11 @@ def poll_reviews(github_token: str, jules_key: str) -> None:
         completed = {match.group(1)
                      for item in [*comments, *reviews]
                      if from_actions(item) and
-                     (match := RESULT.search(item.get("body", "")))}
+                     (match := RESULT.search(item.get("body") or ""))}
         for item in comments:
             if not from_actions(item):
                 continue
-            match = START.search(item.get("body", ""))
+            match = START.search(item.get("body") or "")
             if not match:
                 continue
             session, sha, mode, _ = match.groups()
