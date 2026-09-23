@@ -26,3 +26,5 @@ Use a short-lived test token entered locally; the app does not persist it. Set `
 | Other OEM / OS version — future support expansion | pending | unverified | unverified | unverified | unverified | unverified | unverified |
 
 The deterministic two-hub simulator passed the ambiguous-submit and writer-isolation scenario on 2026-09-22: one modeled radio call, final `unknown`, replacement grant and isolated write rejected. This is software fault evidence only; no emulator or simulator result fills a hardware column above.
+
+A Pixel 8 Android 16/API 36 AVD was available as a simulated substitute. Its P-256 Keystore and Room journal instrumentation tests passed (2/2), followed by three M0 loopback WSS heartbeat acknowledgments in 60.698 seconds. The AVD test did not assert screen-off behavior and had no carrier path. It does not establish Pixel hardware behavior or SMS delivery.
