@@ -2,7 +2,7 @@
 //! Opt-in, test-mode Stripe-hosted Checkout and Customer Portal handoff.
 //! Browser input never selects a Stripe customer, price, or return URL.
 
-use super::{bind_customer, valid_id};
+use super::{bind_customer, is_test_api_key, valid_id};
 use crate::http_auth::{self, AuthHttpError, AuthHttpState};
 use axum::{
     Json, Router,
@@ -40,7 +40,7 @@ impl SessionState {
         secret_key: String,
         checkout_price_id: String,
     ) -> Result<Self, &'static str> {
-        if !secret_key.starts_with("sk_test_") || secret_key.len() < 16 {
+        if !is_test_api_key(&secret_key) {
             return Err("Stripe hosted sessions require a test-mode key");
         }
         if valid_id(&checkout_price_id, "price_").is_err() {
@@ -675,7 +675,7 @@ mod tests {
         .unwrap();
         let mut state = SessionState::new(
             auth_state,
-            "sk_test_fixture123456".into(),
+            "rk_test_fixture123456".into(),
             "price_fixture1".into(),
         )
         .unwrap();
@@ -687,7 +687,7 @@ mod tests {
                 .timeout(Duration::from_secs(3))
                 .build()
                 .unwrap(),
-            secret_key: "sk_test_fixture123456".into(),
+            secret_key: "rk_test_fixture123456".into(),
             api_base: format!("http://{address}"),
         });
         let app = router(state);
@@ -837,10 +837,10 @@ mod tests {
         let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
             .expect("set ZT_AUTH_TEST_DATABASE_URL for an isolated PostgreSQL test database");
         let secret_key = std::env::var("ZT_STRIPE_TEST_SECRET_KEY")
-            .expect("load a Stripe test secret into ZT_STRIPE_TEST_SECRET_KEY");
+            .expect("load a Stripe test-mode API key into ZT_STRIPE_TEST_SECRET_KEY");
         let price_id = std::env::var("ZT_STRIPE_TEST_PRICE_ID")
             .expect("set ZT_STRIPE_TEST_PRICE_ID to a recurring sandbox price");
-        assert!(secret_key.starts_with("sk_test_"));
+        assert!(is_test_api_key(&secret_key));
         assert!(price_id.starts_with("price_"));
 
         let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
