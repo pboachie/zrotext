@@ -32,13 +32,14 @@ async function ownerPage() {
   const state = {
     unauthorized: false, pendingCreate: null, nextCreateResponse: null, pendingHistory: null,
     historyPages: [], historyRequests: [], webhookPages: [], webhookRequests: [], pendingWebhook: null,
-    endpoints: [], pendingEndpoints: null,
+    endpoints: [], pendingEndpoints: null, pendingDevices: null,
   };
   const fetch = async (url, options) => {
     if (url === "/v1/auth/session") return response(200);
     if (url === "/v1/auth/login") return response(204);
     if (url === "/v1/auth/logout") return response(204);
     if (url === "/v1/enrollment/devices") {
+      if (state.pendingDevices) return state.pendingDevices;
       return state.unauthorized ? response(401) : response(200, { devices: [], next_cursor: null });
     }
     if (url === "/v1/owner/messages") return response(200, { messages: [], next_cursor: null });
@@ -321,4 +322,20 @@ test("a late 401 from an old webhook request cannot clear a newer sign-in", asyn
   await oldRequest;
   assert.equal(element("owner-content").hidden, false);
   assert.equal(element("webhook-endpoint").disabled, false);
+});
+
+test("an old device 401 cannot clear a newer owner session", async () => {
+  const { element, state } = await ownerPage();
+  let resolveOld;
+  state.pendingDevices = new Promise((resolve) => { resolveOld = resolve; });
+  const oldRequest = element("refresh-devices").listeners.click();
+  await element("logout").listeners.click();
+  state.pendingDevices = null;
+  element("email").value = "owner@example.test";
+  element("password").value = "synthetic";
+  await element("login-form").listeners.submit({ preventDefault() {} });
+  assert.equal(element("owner-content").hidden, false);
+  resolveOld(response(401));
+  await oldRequest;
+  assert.equal(element("owner-content").hidden, false);
 });

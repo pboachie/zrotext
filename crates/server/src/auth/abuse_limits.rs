@@ -38,10 +38,10 @@ impl Limit {
     }
 }
 
-/// Each increment is an atomic UPSERT guarded by the row lock. A narrow
-/// subject cap is checked first so repeated attacks on one identifier cannot
-/// consume the shared route budget. `subject` must already be normalized by
-/// the caller; HMAC hides it from the database.
+/// Charge the subject and route together. A rejected route charge rolls back
+/// the subject write so distinct rejected identifiers cannot grow the table.
+/// `subject` must already be normalized by the caller; HMAC hides it from the
+/// database.
 pub async fn consume(
     client: &Client,
     hasher: &TokenHasher,
@@ -49,38 +49,27 @@ pub async fn consume(
     subject: Option<&str>,
 ) -> Result<bool, tokio_postgres::Error> {
     let (scope, global_max, global_seconds, subject_policy) = limit.policy();
-    if let (Some(subject), Some((subject_max, subject_seconds))) = (subject, subject_policy) {
-        let subject_hash = hasher.digest(format!("abuse-subject-{scope}-v1").as_bytes(), subject);
-        if !increment(client, scope, &subject_hash, subject_max, subject_seconds).await? {
-            return Ok(false);
-        }
-    }
+    let subject_hash = subject
+        .zip(subject_policy)
+        .map(|(subject, _)| hasher.digest(format!("abuse-subject-{scope}-v1").as_bytes(), subject));
     let global_hash = hasher.digest(b"abuse-global-v1", scope);
-    increment(client, scope, &global_hash, global_max, global_seconds).await
-}
-
-async fn increment(
-    client: &Client,
-    scope: &str,
-    hash: &[u8; 32],
-    maximum: i32,
-    window_seconds: i32,
-) -> Result<bool, tokio_postgres::Error> {
-    Ok(client
-        .query_opt(
-            "INSERT INTO auth_abuse_counters(scope,subject_hash,window_started_at,attempts,updated_at)
-             VALUES($1,$2,clock_timestamp(),1,clock_timestamp())
-             ON CONFLICT(scope,subject_hash) DO UPDATE SET
-                 window_started_at=CASE WHEN auth_abuse_counters.window_started_at <= clock_timestamp()-make_interval(secs => $4::integer) THEN clock_timestamp() ELSE auth_abuse_counters.window_started_at END,
-                 attempts=CASE WHEN auth_abuse_counters.window_started_at <= clock_timestamp()-make_interval(secs => $4::integer) THEN 1 ELSE auth_abuse_counters.attempts+1 END,
-                 updated_at=clock_timestamp()
-             WHERE auth_abuse_counters.window_started_at <= clock_timestamp()-make_interval(secs => $4::integer)
-                OR auth_abuse_counters.attempts < $3
-             RETURNING attempts",
-            &[&scope, &&hash[..], &maximum, &window_seconds],
+    let (subject_max, subject_seconds) = subject_policy.unwrap_or((0, 0));
+    let subject_bytes: Option<&[u8]> = subject_hash.as_ref().map(|hash| &hash[..]);
+    let row = client
+        .query_one(
+            "SELECT auth_abuse_consume($1,$2,$3,$4,$5,$6,$7)",
+            &[
+                &scope,
+                &&global_hash[..],
+                &subject_bytes,
+                &global_max,
+                &global_seconds,
+                &subject_max,
+                &subject_seconds,
+            ],
         )
-        .await?
-        .is_some())
+        .await?;
+    Ok(row.get(0))
 }
 
 /// Bounded cleanup; safe for concurrent workers due to SKIP LOCKED.
@@ -89,8 +78,14 @@ pub async fn prune(client: &Client) -> Result<u64, tokio_postgres::Error> {
         .execute(
             "WITH stale AS (
                 SELECT scope,subject_hash FROM auth_abuse_counters
-                WHERE updated_at < now()-interval '25 hours'
-                ORDER BY updated_at LIMIT 500 FOR UPDATE SKIP LOCKED
+                WHERE updated_at < now() - CASE scope
+                    WHEN 'registration' THEN interval '25 hours'
+                    WHEN 'login' THEN interval '16 minutes'
+                    WHEN 'resend' THEN interval '16 minutes'
+                    WHEN 'mfa_manage' THEN interval '16 minutes'
+                    WHEN 'mfa_challenge' THEN interval '6 minutes'
+                    ELSE interval '2 minutes' END
+                ORDER BY updated_at LIMIT 5000 FOR UPDATE SKIP LOCKED
              ) DELETE FROM auth_abuse_counters a USING stale s
              WHERE a.scope=s.scope AND a.subject_hash=s.subject_hash",
             &[],
@@ -126,6 +121,11 @@ mod tests {
         tokio::spawn(async move { connection.await.unwrap() });
         a.batch_execute(include_str!(
             "../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"
+        ))
+        .await
+        .unwrap();
+        a.batch_execute(include_str!(
+            "../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"
         ))
         .await
         .unwrap();
@@ -208,6 +208,95 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(prune(&b).await.unwrap(), 5);
+        setup
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn exhausted_route_does_not_store_rejected_unique_subjects() {
+        let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
+            return;
+        };
+        let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let schema = format!("abuse_test_{}", Uuid::new_v4().simple());
+        setup
+            .batch_execute(&format!("CREATE SCHEMA {schema}"))
+            .await
+            .unwrap();
+        let separator = if base_url.contains('?') { '&' } else { '?' };
+        let url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
+        let (a, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let (b, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        for migration in [
+            include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
+            include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+        ] {
+            a.batch_execute(migration).await.unwrap();
+        }
+        let a = Arc::new(a);
+        let b = Arc::new(b);
+        let hasher = Arc::new(TokenHasher::new(vec![92; 32]).unwrap());
+        let global_hash = hasher.digest(b"abuse-global-v1", "pair_claim");
+        a.execute(
+            "INSERT INTO auth_abuse_counters(scope,subject_hash,window_started_at,attempts,updated_at)
+             VALUES('pair_claim',$1,now(),299,now())",
+            &[&&global_hash[..]],
+        )
+        .await
+        .unwrap();
+        let mut tasks = Vec::new();
+        for index in 0..32 {
+            let client = if index % 2 == 0 { a.clone() } else { b.clone() };
+            let hasher = hasher.clone();
+            tasks.push(tokio::spawn(async move {
+                consume(
+                    &client,
+                    &hasher,
+                    Limit::PairClaim,
+                    Some(&format!("unique-{index}")),
+                )
+                .await
+                .unwrap()
+            }));
+        }
+        let mut accepted = 0;
+        for task in tasks {
+            accepted += usize::from(task.await.unwrap());
+        }
+        assert_eq!(accepted, 1);
+        for index in 32..96 {
+            assert!(
+                !consume(
+                    &a,
+                    &hasher,
+                    Limit::PairClaim,
+                    Some(&format!("unique-{index}")),
+                )
+                .await
+                .unwrap()
+            );
+        }
+        let row = a
+            .query_one(
+                "SELECT count(*), max(attempts) FROM auth_abuse_counters WHERE scope='pair_claim'",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(row.get::<_, i64>(0), 2); // global and the one admitted subject
+        assert_eq!(row.get::<_, i32>(1), 300);
+        a.execute(
+            "UPDATE auth_abuse_counters SET updated_at=now()-interval '3 minutes'",
+            &[],
+        )
+        .await
+        .unwrap();
+        assert_eq!(prune(&b).await.unwrap(), 2);
         setup
             .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
             .await
