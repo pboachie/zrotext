@@ -27,6 +27,8 @@ pub enum EnrollmentError {
     Unavailable,
     #[error("device unauthorized")]
     Unauthorized,
+    #[error("active-device plan cap reached")]
+    DeviceLimitReached,
     #[error("enrollment storage failed")]
     Database(#[from] tokio_postgres::Error),
 }
@@ -368,6 +370,12 @@ pub async fn approve_pairing(
         return Err(EnrollmentError::Unauthorized);
     }
     let tx = client.transaction().await?;
+    // Serialize approvals and subscription cap changes for this account.
+    tx.query_one(
+        "SELECT id FROM accounts WHERE id=$1 FOR UPDATE",
+        &[&principal.tenant.account_id()],
+    )
+    .await?;
     let row = tx.query_opt(
         "SELECT display_name,comparison_code,key_fingerprint,signing_key_sec1 FROM pairing_requests WHERE id=$1 AND account_id=$2 AND proof_verified_at IS NOT NULL AND approved_at IS NULL AND cancelled_at IS NULL AND expires_at>now() AND approval_failures<5 FOR UPDATE",
         &[&pairing_id, &principal.tenant.account_id()],
@@ -394,6 +402,44 @@ pub async fn approve_pairing(
         .await?;
         tx.commit().await?;
         return Err(EnrollmentError::Unavailable);
+    }
+    let device_caps_enabled: bool = tx
+        .query_one(
+            "SELECT enabled FROM billing_device_cap_config WHERE singleton=true",
+            &[],
+        )
+        .await?
+        .get(0);
+    if device_caps_enabled {
+        if let Some(cap) = tx
+            .query_opt(
+                "SELECT limit_devices FROM billing_device_caps WHERE account_id=$1",
+                &[&principal.tenant.account_id()],
+            )
+            .await?
+        {
+            let pending = tx
+            .query_opt(
+                "SELECT 1 FROM billing_reconciliations WHERE account_id=$1 AND dirty_generation>processed_generation LIMIT 1",
+                &[&principal.tenant.account_id()],
+            )
+            .await?
+            .is_some();
+            let active: i64 = tx
+                .query_one(
+                    "SELECT count(*) FROM devices WHERE account_id=$1 AND revoked_at IS NULL",
+                    &[&principal.tenant.account_id()],
+                )
+                .await?
+                .get(0);
+            if pending || active >= cap.get::<_, i64>(0) {
+                return Err(EnrollmentError::DeviceLimitReached);
+            }
+        } else {
+            // A cap-enabled account waits for its first provider projection.
+            // This includes accounts that have not yet bound a customer.
+            return Err(EnrollmentError::DeviceLimitReached);
+        }
     }
     let device_id = Uuid::new_v4();
     let display_name: String = row.get(0);
@@ -540,6 +586,7 @@ pub async fn revoke_device(
 mod tests {
     use super::*;
     use crate::auth::{TokenHasher, authenticate_session, login, register, verify_email};
+    use crate::billing::{self, SubscriptionSnapshot};
     use p256::ecdsa::{SigningKey, signature::Signer};
     use p256::elliptic_curve::rand_core::OsRng;
     use p256::pkcs8::EncodePublicKey;
@@ -592,8 +639,17 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
             include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
             include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+            include_str!("../../../../deploy/compose/migrations/006_usage_metering.sql"),
+            include_str!(
+                "../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"
+            ),
+            include_str!("../../../../deploy/compose/migrations/008_stripe_billing_foundation.sql"),
+            include_str!("../../../../deploy/compose/migrations/009_webhook_manual_replay.sql"),
+            include_str!("../../../../deploy/compose/migrations/010_billing_test_entitlement.sql"),
+            include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
             include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
             include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
+            include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
         ] {
             client.batch_execute(sql).await.unwrap();
         }
@@ -897,6 +953,332 @@ mod tests {
             .batch_execute(&format!(
                 "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
             ))
+            .await
+            .unwrap();
+    }
+
+    async fn proven_pairing(
+        db: &mut Client,
+        hasher: &EnrollmentHasher,
+        principal: &SessionPrincipal,
+    ) -> (Uuid, String, String, SigningKey) {
+        let signing = SigningKey::random(&mut OsRng);
+        let spki = signing.verifying_key().to_public_key_der().unwrap();
+        let ticket = create_pairing(db, hasher, principal, "Virtual phone")
+            .await
+            .unwrap();
+        let claimed = claim_pairing(db, hasher, ticket.id, &ticket.token, spki.as_bytes())
+            .await
+            .unwrap();
+        let (_, _, fingerprint) = parse_public_key(spki.as_bytes()).unwrap();
+        let proof: Signature = signing.sign(&enrollment_challenge_bytes(
+            principal.tenant.account_id(),
+            ticket.id,
+            &fingerprint,
+            &claimed.challenge_nonce,
+        ));
+        assert!(
+            prove_pairing_key(
+                db,
+                hasher,
+                ticket.id,
+                &claimed.challenge_nonce,
+                proof.to_der().as_bytes(),
+            )
+            .await
+            .unwrap()
+        );
+        (
+            ticket.id,
+            claimed.comparison_code,
+            claimed.key_fingerprint,
+            signing,
+        )
+    }
+
+    #[tokio::test]
+    async fn postgres_device_cap_downgrade_grandfathers_and_serializes_approval() {
+        let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
+            return;
+        };
+        let (setup, connection) = tokio_postgres::connect(&base_url, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let schema = format!("device_cap_test_{}", Uuid::new_v4().simple());
+        setup
+            .batch_execute(&format!("CREATE SCHEMA {schema}"))
+            .await
+            .unwrap();
+        let separator = if base_url.contains('?') { '&' } else { '?' };
+        let scoped_url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
+        let (mut db, connection) = tokio_postgres::connect(&scoped_url, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        for sql in [
+            include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
+            include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+            include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
+            include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
+            include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+            include_str!("../../../../deploy/compose/migrations/006_usage_metering.sql"),
+            include_str!(
+                "../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"
+            ),
+            include_str!("../../../../deploy/compose/migrations/008_stripe_billing_foundation.sql"),
+            include_str!("../../../../deploy/compose/migrations/009_webhook_manual_replay.sql"),
+            include_str!("../../../../deploy/compose/migrations/010_billing_test_entitlement.sql"),
+            include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
+            include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
+            include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
+            include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
+            include_str!("../../../../deploy/compose/migrations/015_webhook_kek_commitments.sql"),
+            include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+            include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
+        ] {
+            db.batch_execute(sql).await.unwrap();
+        }
+        let auth_hasher = TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap();
+        let enrollment_hasher = EnrollmentHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap();
+        let password = Uuid::new_v4().to_string();
+        let owner = register(&mut db, &auth_hasher, "cap-owner@example.test", &password)
+            .await
+            .unwrap();
+        verify_email(&mut db, &auth_hasher, &owner.verification_token)
+            .await
+            .unwrap();
+        let session = login(&db, &auth_hasher, "cap-owner@example.test", &password)
+            .await
+            .unwrap();
+        let principal = authenticate_session(&db, &auth_hasher, &session.token)
+            .await
+            .unwrap();
+        billing::reset_test_quotas_on_start(&scoped_url, true, true)
+            .await
+            .unwrap();
+        let initial = proven_pairing(&mut db, &enrollment_hasher, &principal).await;
+        assert!(matches!(
+            approve_pairing(&mut db, &principal, initial.0, &initial.1, &initial.2).await,
+            Err(EnrollmentError::DeviceLimitReached)
+        ));
+        billing::bind_customer(&mut db, owner.account_id, "cus_captest1")
+            .await
+            .unwrap();
+        assert!(matches!(
+            approve_pairing(&mut db, &principal, initial.0, &initial.1, &initial.2).await,
+            Err(EnrollmentError::DeviceLimitReached)
+        ));
+        db.execute(
+            "INSERT INTO billing_reconciliations(stripe_subscription_id,account_id,stripe_customer_id) VALUES('sub_captest1',$1,'cus_captest1')",
+            &[&owner.account_id],
+        )
+        .await
+        .unwrap();
+        let prices = vec!["price_basic1".to_owned(), "price_plus1".to_owned()];
+        let plans =
+            billing::parse_test_quota_plans("price_basic1:1:1,price_plus1:3:2", &prices).unwrap();
+        let plus = SubscriptionSnapshot {
+            subscription_id: "sub_captest1".into(),
+            customer_id: "cus_captest1".into(),
+            status: "active".into(),
+            price_id: Some("price_plus1".into()),
+        };
+        billing::reconcile_snapshot_with_quotas(
+            &mut db,
+            owner.account_id,
+            &plus,
+            &prices,
+            &plans,
+            1,
+        )
+        .await
+        .unwrap();
+        let mut enrolled = Vec::new();
+        let mut initial = Some(initial);
+        for index in 0..2 {
+            let (pairing, code, fingerprint, signing) = if index == 0 {
+                initial.take().unwrap()
+            } else {
+                proven_pairing(&mut db, &enrollment_hasher, &principal).await
+            };
+            let device = approve_pairing(&mut db, &principal, pairing, &code, &fingerprint)
+                .await
+                .unwrap();
+            enrolled.push((device, signing));
+        }
+        db.execute(
+            "UPDATE billing_reconciliations SET dirty_generation=2 WHERE stripe_subscription_id='sub_captest1'",
+            &[],
+        )
+        .await
+        .unwrap();
+        assert!(
+            billing::reconcile_snapshot_with_quotas(
+                &mut db,
+                owner.account_id,
+                &plus,
+                &prices,
+                &[],
+                2,
+            )
+            .await
+            .is_err()
+        );
+        let processed: i64 = db
+            .query_one(
+                "SELECT processed_generation FROM billing_reconciliations WHERE stripe_subscription_id='sub_captest1'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(processed, 1);
+        let basic = SubscriptionSnapshot {
+            price_id: Some("price_basic1".into()),
+            ..plus
+        };
+        billing::reconcile_snapshot_with_quotas(
+            &mut db,
+            owner.account_id,
+            &basic,
+            &prices,
+            &plans,
+            2,
+        )
+        .await
+        .unwrap();
+        let row = db.query_one(
+            "SELECT c.limit_devices,(SELECT count(*) FROM devices WHERE account_id=$1 AND revoked_at IS NULL) FROM billing_device_caps c WHERE c.account_id=$1",
+            &[&owner.account_id],
+        ).await.unwrap();
+        assert_eq!((row.get::<_, i64>(0), row.get::<_, i64>(1)), (1, 2));
+        let audit = db.query_one(
+            "SELECT previous_limit_devices,limit_devices,reason FROM billing_device_cap_audit WHERE account_id=$1 ORDER BY id DESC LIMIT 1",
+            &[&owner.account_id],
+        ).await.unwrap();
+        assert_eq!(
+            (
+                audit.get::<_, Option<i64>>(0),
+                audit.get::<_, i64>(1),
+                audit.get::<_, String>(2)
+            ),
+            (Some(2), 1, "active".into())
+        );
+        for (device, signing) in &enrolled {
+            let challenge = issue_device_challenge(&db, &enrollment_hasher, *device)
+                .await
+                .unwrap();
+            let signature: Signature = signing.sign(&device_challenge_bytes(&challenge));
+            let identity = authenticate_device_challenge(
+                &mut db,
+                &enrollment_hasher,
+                &challenge,
+                signature.to_der().as_bytes(),
+            )
+            .await
+            .unwrap();
+            assert!(device_still_active(&db, identity).await.unwrap());
+        }
+        let (pending, code, fingerprint, _) =
+            proven_pairing(&mut db, &enrollment_hasher, &principal).await;
+        assert!(matches!(
+            approve_pairing(&mut db, &principal, pending, &code, &fingerprint).await,
+            Err(EnrollmentError::DeviceLimitReached)
+        ));
+        assert!(
+            revoke_device(&mut db, &principal, enrolled[0].0)
+                .await
+                .unwrap()
+        );
+        assert!(matches!(
+            approve_pairing(&mut db, &principal, pending, &code, &fingerprint).await,
+            Err(EnrollmentError::DeviceLimitReached)
+        ));
+        assert!(
+            revoke_device(&mut db, &principal, enrolled[1].0)
+                .await
+                .unwrap()
+        );
+        let (mut second, connection) = tokio_postgres::connect(&scoped_url, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let (other, other_code, other_fingerprint, _) =
+            proven_pairing(&mut db, &enrollment_hasher, &principal).await;
+        let barrier = tokio::sync::Barrier::new(2);
+        let (first_result, second_result) = tokio::join!(
+            async {
+                barrier.wait().await;
+                approve_pairing(&mut db, &principal, pending, &code, &fingerprint).await
+            },
+            async {
+                barrier.wait().await;
+                approve_pairing(
+                    &mut second,
+                    &principal,
+                    other,
+                    &other_code,
+                    &other_fingerprint,
+                )
+                .await
+            }
+        );
+        assert_eq!(first_result.is_ok() as u8 + second_result.is_ok() as u8, 1);
+        assert!(
+            matches!(first_result, Err(EnrollmentError::DeviceLimitReached))
+                || matches!(second_result, Err(EnrollmentError::DeviceLimitReached))
+        );
+        let active: i64 = db
+            .query_one(
+                "SELECT count(*) FROM devices WHERE account_id=$1 AND revoked_at IS NULL",
+                &[&owner.account_id],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(active, 1);
+        assert!(
+            billing::reset_test_quotas_on_start(&scoped_url, true, false)
+                .await
+                .is_err()
+        );
+        let row = db
+            .query_one(
+                "SELECT enabled,(SELECT limit_devices FROM billing_device_caps WHERE account_id=$1) FROM billing_device_cap_config WHERE singleton=true",
+                &[&owner.account_id],
+            )
+            .await
+            .unwrap();
+        assert_eq!((row.get::<_, bool>(0), row.get::<_, i64>(1)), (true, 1));
+        let generations = db
+            .query_one(
+                "SELECT dirty_generation,processed_generation FROM billing_reconciliations WHERE stripe_subscription_id='sub_captest1'",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            (generations.get::<_, i64>(0), generations.get::<_, i64>(1)),
+            (2, 2)
+        );
+        let (blocked, blocked_code, blocked_fingerprint, _) =
+            proven_pairing(&mut db, &enrollment_hasher, &principal).await;
+        assert!(matches!(
+            approve_pairing(
+                &mut db,
+                &principal,
+                blocked,
+                &blocked_code,
+                &blocked_fingerprint
+            )
+            .await,
+            Err(EnrollmentError::DeviceLimitReached)
+        ));
+        drop(second);
+        drop(db);
+        setup
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
             .await
             .unwrap();
     }
