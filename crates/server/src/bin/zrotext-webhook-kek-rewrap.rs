@@ -65,10 +65,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         println!("endpoints requiring rewrap: {before}");
         return Ok(());
     }
-    let mut changed = 0_u64;
     loop {
         let batch = rewrap_endpoint_secrets(&mut db, &vault, 100).await?;
-        changed += batch;
         if batch == 0 {
             break;
         }
@@ -83,6 +81,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if remaining != 0 {
         return Err(format!("{remaining} endpoints still require rewrap; retry").into());
     }
-    println!("rewrapped {changed} endpoint signing secrets to key version {active_version}");
+    println!("endpoint signing-secret rewrap complete for key version {active_version}");
     Ok(())
 }

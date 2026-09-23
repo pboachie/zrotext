@@ -34,9 +34,9 @@ delivery start. These checks must pass on both sites during each stage.
    key commitments and decrypts every stored endpoint, then reports the count
    requiring rewrap. Run `--apply` only after this succeeds. The command holds
    one advisory lock, rewraps at most 100 rows per transaction, and reports
-   only counts and the new version. An unknown version or unauthentic
-   ciphertext stops the run without changing its current batch. It never
-   sends webhooks.
+   completion without logging processed rows or key material. An unknown
+   version or unauthentic ciphertext stops the run without changing its
+   current batch. It never sends webhooks.
 5. Run `--check` again and require zero remaining rows. Inspect the database
    and app health on both sites. Retain the old secondary key until all
    old-active processes and in-flight leases have drained; then remove the
