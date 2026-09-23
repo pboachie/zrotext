@@ -22,6 +22,14 @@ def main() -> int:
         print("Release tags must be annotated.", file=sys.stderr)
         return 1
     commit = subprocess.check_output(["git", "rev-parse", f"{ref}^{{commit}}"], text=True).strip()
+    checkout = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    if checkout != commit:
+        print("Checked-out source differs from the release tag commit.", file=sys.stderr)
+        return 1
+    event_commit = os.environ.get("GITHUB_SHA", "")
+    if os.environ.get("GITHUB_ACTIONS") == "true" and event_commit != commit:
+        print("Release event commit differs from the release tag commit.", file=sys.stderr)
+        return 1
     if subprocess.run(["git", "merge-base", "--is-ancestor", commit, "origin/main"], check=False).returncode:
         print("Release tag must point to a commit on main.", file=sys.stderr)
         return 1
