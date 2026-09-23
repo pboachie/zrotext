@@ -55,7 +55,7 @@ impl MessageState {
             (Accepted, Enqueue) => Queued,
             (Queued, Claim) => Claimed,
             (Claimed, DurableSubmitIntent) => Submitting,
-            (Claimed, ProvenNoSubmit) => Queued,
+            (Claimed | Submitting | Unknown, ProvenNoSubmit) => Queued,
             (Submitting, SentCallbackOk) => Submitted,
             (Submitting, SentCallbackFailed) => Failed,
             (Submitting, PartialSentCallbacks) => Unknown,
@@ -68,7 +68,8 @@ impl MessageState {
             (Submitted, DeliveryTimeout) => DeliveryUnknown,
             (DeliveryUnknown, DeliveryCallbackOk) => Delivered,
             (
-                Submitting | Submitted | Delivered | DeliveryUnknown | Unknown | Failed,
+                Queued | Claimed | Submitting | Submitted | Delivered | DeliveryUnknown | Unknown
+                | Failed,
                 CallbackConflict,
             ) => Unknown,
             (Accepted | Queued | Claimed, Cancel) => Cancelled,
@@ -302,6 +303,36 @@ mod tests {
     }
 
     #[test]
+    fn durable_no_radio_proof_releases_an_ambiguous_attempt_once() {
+        let mut authority = Authority::new(7);
+        let message = authority.accept(id(11), "key", "digest", id(12)).unwrap();
+        let session = authority.connect(id(13), "a", "hub-a", 0, 60).unwrap();
+        authority
+            .grant(&session, message, id(14), 1, "recipient-hash", 0, 100)
+            .unwrap();
+        authority
+            .event(message, Evidence::DurableSubmitIntent)
+            .unwrap();
+        authority
+            .event(message, Evidence::CrashWithoutCallback)
+            .unwrap();
+        assert_eq!(
+            authority.event(message, Evidence::ProvenNoSubmit),
+            Ok(MessageState::Queued)
+        );
+        assert_eq!(
+            authority.event(message, Evidence::ProvenNoSubmit),
+            Err(Rejection::InvalidState)
+        );
+        let fresh = authority.connect(id(13), "b", "hub-b", 10, 60).unwrap();
+        assert!(
+            authority
+                .grant(&fresh, message, id(15), 2, "recipient-hash", 10, 100)
+                .is_ok()
+        );
+    }
+
+    #[test]
     fn callback_after_unknown_reconciles_without_retry() {
         let state = MessageState::Submitting
             .apply(Evidence::CrashWithoutCallback)
@@ -325,10 +356,9 @@ mod tests {
             Ok(MessageState::Unknown)
         );
         assert!(MessageState::Unknown.apply(Evidence::Claim).is_err());
-        assert!(
-            MessageState::Claimed
-                .apply(Evidence::CallbackConflict)
-                .is_err()
+        assert_eq!(
+            MessageState::Claimed.apply(Evidence::CallbackConflict),
+            Ok(MessageState::Unknown)
         );
     }
 
@@ -338,10 +368,13 @@ mod tests {
             MessageState::Claimed.apply(Evidence::ProvenNoSubmit),
             Ok(MessageState::Queued)
         );
-        assert!(
-            MessageState::Submitting
-                .apply(Evidence::ProvenNoSubmit)
-                .is_err()
+        assert_eq!(
+            MessageState::Submitting.apply(Evidence::ProvenNoSubmit),
+            Ok(MessageState::Queued)
+        );
+        assert_eq!(
+            MessageState::Unknown.apply(Evidence::ProvenNoSubmit),
+            Ok(MessageState::Queued)
         );
     }
 
