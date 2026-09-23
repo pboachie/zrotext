@@ -109,7 +109,9 @@ fn owner_error(error: EnrollmentError) -> Response {
         EnrollmentError::Unavailable => StatusCode::NOT_FOUND,
         EnrollmentError::Unauthorized => StatusCode::UNAUTHORIZED,
         EnrollmentError::DeviceLimitReached => StatusCode::CONFLICT,
-        EnrollmentError::Database(_) => StatusCode::SERVICE_UNAVAILABLE,
+        EnrollmentError::AuthorityUnavailable | EnrollmentError::Database(_) => {
+            StatusCode::SERVICE_UNAVAILABLE
+        }
     }
     .into_response()
 }
@@ -117,7 +119,9 @@ fn owner_error(error: EnrollmentError) -> Response {
 fn public_error(error: EnrollmentError) -> Response {
     match error {
         EnrollmentError::InvalidInput => StatusCode::BAD_REQUEST,
-        EnrollmentError::Database(_) => StatusCode::SERVICE_UNAVAILABLE,
+        EnrollmentError::AuthorityUnavailable | EnrollmentError::Database(_) => {
+            StatusCode::SERVICE_UNAVAILABLE
+        }
         EnrollmentError::Unavailable
         | EnrollmentError::Unauthorized
         | EnrollmentError::DeviceLimitReached => StatusCode::NOT_FOUND,
@@ -550,6 +554,7 @@ struct OwnerDeviceResponse {
     device_id: Uuid,
     display_name: String,
     revoked: bool,
+    active_socket_lease: bool,
 }
 
 #[derive(Deserialize)]
@@ -592,6 +597,7 @@ async fn list_devices(
                     device_id: device.id,
                     display_name: device.display_name,
                     revoked: device.revoked,
+                    active_socket_lease: device.active_socket_lease,
                 })
                 .collect::<Vec<_>>(),
             next_cursor: page.next_cursor,
@@ -885,7 +891,86 @@ mod tests {
         );
         assert_eq!(owner_devices["devices"][0]["display_name"], "Phone");
         assert_eq!(owner_devices["devices"][0]["revoked"], false);
+        assert_eq!(owner_devices["devices"][0]["active_socket_lease"], false);
         assert_eq!(owner_devices["next_cursor"], Value::Null);
+        // A lease is written only after device proof. Its owner view follows
+        // the writer's site and deployment fences, without asserting radio.
+        admin
+            .batch_execute("INSERT INTO sites(site_id) VALUES('hub-a'),('hub-b')")
+            .await
+            .unwrap();
+        admin.execute(
+            "INSERT INTO device_sessions(device_id,account_id,site_id,instance_id,connection_epoch,lease_until,deployment_epoch) VALUES($1,$2,'hub-a','instance-a',1,now()+interval '90 seconds',1)",
+            &[&device_id, &a.account_id],
+        ).await.unwrap();
+        let status = |token: &str, csrf: &str| {
+            request(Method::GET, "/devices", json!({}), Some((token, csrf)))
+        };
+        let active = json_response(
+            app.clone()
+                .oneshot(status(&sa.token, &sa.csrf_token))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(active["devices"][0]["active_socket_lease"], true);
+        for readiness in ["sms_ready", "sim_ready", "radio_ready"] {
+            assert!(active["devices"][0].get(readiness).is_none());
+        }
+        let other_tenant_active = json_response(
+            app.clone()
+                .oneshot(status(&sb.token, &sb.csrf_token))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            other_tenant_active,
+            json!({"devices":[],"next_cursor":null})
+        );
+        admin.execute("UPDATE device_sessions SET lease_until=now()-interval '1 second' WHERE device_id=$1", &[&device_id]).await.unwrap();
+        let expired = json_response(
+            app.clone()
+                .oneshot(status(&sa.token, &sa.csrf_token))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(expired["devices"][0]["active_socket_lease"], false);
+        admin.execute("UPDATE device_sessions SET site_id='hub-b',instance_id='instance-b',connection_epoch=2,lease_until=now()+interval '90 seconds' WHERE device_id=$1", &[&device_id]).await.unwrap();
+        let reconnected = json_response(
+            app.clone()
+                .oneshot(status(&sa.token, &sa.csrf_token))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(reconnected["devices"][0]["active_socket_lease"], true);
+        admin
+            .batch_execute("UPDATE deployment_authority SET epoch=2")
+            .await
+            .unwrap();
+        let stale_epoch = json_response(
+            app.clone()
+                .oneshot(status(&sa.token, &sa.csrf_token))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(stale_epoch["devices"][0]["active_socket_lease"], false);
+        admin.batch_execute("UPDATE deployment_authority SET epoch=1; UPDATE sites SET draining=TRUE WHERE site_id='hub-b'").await.unwrap();
+        let draining = json_response(
+            app.clone()
+                .oneshot(status(&sa.token, &sa.csrf_token))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(draining["devices"][0]["active_socket_lease"], false);
+        admin
+            .batch_execute("UPDATE sites SET draining=FALSE WHERE site_id='hub-b'")
+            .await
+            .unwrap();
         let other_tenant_devices = app
             .clone()
             .oneshot(request(
@@ -982,10 +1067,9 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert_eq!(
-            json_response(revoked_list).await["devices"][0]["revoked"],
-            true
-        );
+        let revoked_device = json_response(revoked_list).await;
+        assert_eq!(revoked_device["devices"][0]["revoked"], true);
+        assert_eq!(revoked_device["devices"][0]["active_socket_lease"], false);
 
         // Listing stays bounded and the cursor cannot cross tenant scope.
         let sec1 = signing.verifying_key().to_encoded_point(false);
