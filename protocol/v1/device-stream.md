@@ -2,11 +2,15 @@
 
 This is the implemented M1 phone-to-hub handshake. A production endpoint must
 use WSS. The current Android client requires a manually entered approved
-device UUID and a `wss://` URL ending in `/v1/device-stream`. No live WSS
-interoperability or carrier test has passed yet. A guarded server-side
-[synthetic-alpha extension](synthetic-alpha-stream.md) is in progress; the
-Android client now has a manually armed private synthetic-alpha extension,
-but no live WSS, carrier SMS, or inbound path has been verified.
+device UUID and a `wss://` URL ending in `/v1/device-stream`. Authenticated
+WSS interoperability passed on a dedicated Samsung through a disposable
+loopback TLS fixture, including a safe proxy transport-close/reconnect and
+terminal device-revocation probe. A guarded server-side
+[synthetic-alpha extension](synthetic-alpha-stream.md) and a manually armed
+Android extension completed one separately authorized outbound synthetic SMS
+with positive sent and delivery callbacks. This does not establish production
+TLS, reliable background transport, an inbound reply, or an inbound-upload
+end-to-end path; see [implementation status](../../docs/implementation-status.md).
 
 1. Phone sends `{"v":1,"type":"hello","device_id":"UUID"}`.
 2. Hub returns `{"v":1,"type":"challenge","challenge_id":"UUID","account_id":"UUID","device_id":"UUID","nonce":"BASE64URL_NO_PAD"}`. The nonce is 32 random bytes.
@@ -33,8 +37,16 @@ The hub checks session status against PostgreSQL on every heartbeat and at
 most 10 seconds between heartbeats. A new valid connection fences the older
 epoch; release of an old socket cannot clear the newer lease. A drained,
 disabled, revoked, or writer-isolated hub closes its session. The phone stops
-its foreground heartbeat on protocol failure or timeout; automatic reconnect
-has not been implemented. Neither a session nor a heartbeat authorizes SMS.
+its foreground heartbeat on authentication, trust, or protocol rejection.
+While the manually started foreground service remains alive, transport loss,
+an established session's close, or a heartbeat timeout can retry with bounded
+backoff and a fresh challenge proof and epoch. A manual synthetic-SMS arm or
+inbound-upload opt-in is consumed before retry; a reconnect is heartbeat-only.
+Pause, force-stop, service/process stop, and reboot do not self-start the
+client. A Samsung loopback proxy-close/reconnect probe passed, but subsequent
+120-second unplugged screen-off windows did not meet stable heartbeat liveness,
+including with the app's Battery UI verified Unrestricted. Neither a session
+nor a heartbeat authorizes SMS.
 
 ## Opt-in inbound metadata pilot (Android client)
 

@@ -45,3 +45,22 @@ live HTTPS/WSS pairing, owner approval UI, Android reconnect behavior,
 verification dead-letter operations, distributed rate limits, MFA, and real
 carrier tests remain gates. Sealed-content protocol and independent review
 remain separate M2 work.
+
+## 2026-09-23 implementation and hardware evidence addendum
+
+The heartbeat-only and unverified-test statements above record the scope at
+acceptance; they are not current completion claims. Subsequent M1 candidates
+added a manually armed synthetic-alpha stream, an opt-in inbound-metadata
+pilot, and authenticated Android transport reconnect while the foreground
+service remains running. A dedicated Samsung completed authenticated WSS over
+a disposable loopback TLS fixture, including a host-local proxy close followed
+by fresh device proof, and a separate test stopped after device revocation.
+One separately authorized outbound synthetic SMS produced positive carrier
+sent and delivery callbacks. These results do not validate production TLS,
+general carrier reliability, an inbound reply, or inbound-upload delivery.
+
+Unplugged Samsung screen-off heartbeat windows later failed the stable
+liveness criterion, including a run with the app's Battery UI verified
+Unrestricted. Network handoff, reboot recovery, 24-hour idle, other physical
+phones, and the broader M0/M1 gates remain open. Exact evidence and limits are
+in [implementation status](../implementation-status.md).
