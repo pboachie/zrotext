@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and verify a signed, non-published Android release candidate."""
+"""Build an unsigned APK; sign and verify locally outside public Actions."""
 
 import argparse
 import hashlib
