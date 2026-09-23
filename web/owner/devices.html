@@ -106,6 +106,17 @@
         <ol id="inbound-event-list"></ol>
         <button id="more-inbound-events" type="button" class="quiet" hidden>Load more events</button>
       </section>
+
+      <section aria-labelledby="webhook-history-title">
+        <div class="section-head"><h2 id="webhook-history-title">Webhook delivery history</h2><button id="refresh-webhook-endpoints" type="button" class="quiet">Refresh endpoints</button></div>
+        <p>Choose an endpoint to inspect delivery and attempt metadata. This view does not show callback URLs, secrets, payloads or response bodies.</p>
+        <p id="webhook-endpoint-status" role="status" aria-live="polite"></p>
+        <label for="webhook-endpoint">Endpoint</label>
+        <select id="webhook-endpoint" disabled><option value="">Choose an endpoint</option></select>
+        <p id="webhook-history-status" role="status" aria-live="polite"></p>
+        <ol id="webhook-delivery-list"></ol>
+        <button id="more-webhook-deliveries" type="button" class="quiet" hidden>Load more deliveries</button>
+      </section>
     </div>
   </main>
 </body>

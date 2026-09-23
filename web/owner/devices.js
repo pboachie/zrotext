@@ -12,7 +12,16 @@ let selectedInboundMessageId = null;
 let nextInboundCursor = null;
 let shownInboundCount = 0;
 let inboundLoadGeneration = 0;
+let selectedWebhookEndpointId = null;
+let nextWebhookCursor = null;
+let shownWebhookCount = 0;
+let webhookLoadGeneration = 0;
+let endpointLoadGeneration = 0;
+let availableWebhookEndpointIds = new Set();
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const webhookStatusLabels = Object.freeze({ pending: "Pending", leased: "In progress", succeeded: "Succeeded", dead: "Stopped" });
+const webhookReasonLabels = Object.freeze({ failed: "Attempts exhausted", policy_rejected: "Policy rejected", retired: "Retired", legacy: "Legacy failure" });
+const webhookOutcomeLabels = Object.freeze({ ack: "Acknowledged", timeout: "Timed out", http_error: "HTTP error", network_error: "Network error", policy_rejected: "Policy rejected" });
 const inboundClassificationLabels = Object.freeze({
   captured_local: "Captured locally",
   sim_unverified: "SIM unverified",
@@ -111,11 +120,37 @@ function clearInboundHistory() {
   message("inbound-history-status", "");
 }
 
+function clearWebhookHistory() {
+  webhookLoadGeneration += 1;
+  selectedWebhookEndpointId = null;
+  nextWebhookCursor = null;
+  shownWebhookCount = 0;
+  byId("webhook-delivery-list").replaceChildren();
+  byId("more-webhook-deliveries").hidden = true;
+  byId("more-webhook-deliveries").disabled = false;
+  message("webhook-history-status", "");
+}
+
+function clearWebhookEndpoints() {
+  endpointLoadGeneration += 1;
+  availableWebhookEndpointIds = new Set();
+  clearWebhookHistory();
+  byId("webhook-endpoint").replaceChildren();
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "Choose an endpoint";
+  byId("webhook-endpoint").append(placeholder);
+  byId("webhook-endpoint").value = "";
+  byId("webhook-endpoint").disabled = true;
+  message("webhook-endpoint-status", "");
+}
+
 function clearOwnerState() {
   ownerEpoch += 1;
   clearPairing();
   clearKeySecret();
   clearInboundHistory();
+  clearWebhookEndpoints();
   byId("device-list").replaceChildren();
   byId("more-devices").hidden = true;
   nextDeviceCursor = null;
@@ -136,6 +171,105 @@ function inboundDateText(milliseconds) {
   const date = new Date(milliseconds);
   return Number.isSafeInteger(milliseconds) && Number.isFinite(date.getTime())
     ? date.toLocaleString() : "Unknown time";
+}
+
+function validWebhookPage(page, cursor) {
+  return page && Array.isArray(page.deliveries) && page.deliveries.length <= 20 &&
+    (page.next_before === null || (uuidPattern.test(page.next_before) && page.next_before !== cursor &&
+      page.deliveries.length > 0 && page.next_before === page.deliveries[page.deliveries.length - 1].delivery_id)) &&
+    page.deliveries.every((delivery) => uuidPattern.test(delivery.delivery_id) &&
+      uuidPattern.test(delivery.event_id) &&
+      Object.hasOwn(webhookStatusLabels, delivery.status) &&
+      Number.isInteger(delivery.generation) && delivery.generation >= 1 && delivery.generation <= 3 &&
+      Number.isInteger(delivery.attempt_count) && delivery.attempt_count >= 0 && delivery.attempt_count <= 7 &&
+      Number.isSafeInteger(delivery.created_at_ms) && Number.isSafeInteger(delivery.updated_at_ms) &&
+      (delivery.next_attempt_at_ms === null || Number.isSafeInteger(delivery.next_attempt_at_ms)) &&
+      (delivery.terminal_reason === null || Object.hasOwn(webhookReasonLabels, delivery.terminal_reason)) &&
+      Array.isArray(delivery.attempts) && delivery.attempts.length <= 21 &&
+      delivery.attempts.every((attempt) => Number.isInteger(attempt.generation) &&
+        attempt.generation >= 1 && attempt.generation <= 3 &&
+        Number.isInteger(attempt.attempt_number) && attempt.attempt_number >= 1 && attempt.attempt_number <= 7 &&
+        Number.isSafeInteger(attempt.started_at_ms) &&
+        (attempt.completed_at_ms === null || Number.isSafeInteger(attempt.completed_at_ms)) &&
+        (attempt.outcome === null || Object.hasOwn(webhookOutcomeLabels, attempt.outcome)) &&
+        (attempt.http_status === null || (Number.isInteger(attempt.http_status) && attempt.http_status >= 100 && attempt.http_status <= 599))));
+}
+
+function showWebhookDelivery(delivery) {
+  const row = document.createElement("li");
+  const heading = document.createElement("strong");
+  const detail = document.createElement("span");
+  const attempts = document.createElement("ol");
+  heading.textContent = `${webhookStatusLabels[delivery.status]} · delivery ${delivery.delivery_id}`;
+  detail.textContent = `Event ${delivery.event_id} · generation ${delivery.generation} · ${delivery.attempt_count} current attempt${delivery.attempt_count === 1 ? "" : "s"} · created ${inboundDateText(delivery.created_at_ms)} · updated ${inboundDateText(delivery.updated_at_ms)}${delivery.next_attempt_at_ms === null ? "" : ` · next attempt ${inboundDateText(delivery.next_attempt_at_ms)}`}${delivery.terminal_reason === null ? "" : ` · ${webhookReasonLabels[delivery.terminal_reason]}`}`;
+  for (const attempt of delivery.attempts) {
+    const item = document.createElement("li");
+    item.textContent = `Generation ${attempt.generation}, attempt ${attempt.attempt_number}: ${attempt.outcome === null ? "In progress" : webhookOutcomeLabels[attempt.outcome]} · started ${inboundDateText(attempt.started_at_ms)} · ${attempt.completed_at_ms === null ? "not completed" : `completed ${inboundDateText(attempt.completed_at_ms)}`}${attempt.http_status === null ? "" : ` · HTTP ${attempt.http_status}`}`;
+    attempts.append(item);
+  }
+  row.append(heading, detail, attempts);
+  byId("webhook-delivery-list").append(row);
+}
+
+async function loadWebhookEndpoints() {
+  clearWebhookEndpoints();
+  const requestEpoch = ownerEpoch;
+  const generation = endpointLoadGeneration;
+  message("webhook-endpoint-status", "Loading endpoints…");
+  try {
+    const page = await api("/v1/webhooks");
+    if (requestEpoch !== ownerEpoch || generation !== endpointLoadGeneration) return;
+    if (!page || !Array.isArray(page.endpoints) || page.endpoints.length > 8 ||
+        !page.endpoints.every((endpoint) => uuidPattern.test(endpoint.endpoint_id))) {
+      throw new Error("The endpoint response was invalid.");
+    }
+    for (const endpoint of page.endpoints) {
+      availableWebhookEndpointIds.add(endpoint.endpoint_id);
+      const option = document.createElement("option");
+      option.value = endpoint.endpoint_id;
+      option.textContent = `Endpoint ${endpoint.endpoint_id}`;
+      byId("webhook-endpoint").append(option);
+    }
+    byId("webhook-endpoint").disabled = page.endpoints.length === 0;
+    message("webhook-endpoint-status", page.endpoints.length === 0 ? "No webhook endpoints yet." : `${page.endpoints.length} endpoint${page.endpoints.length === 1 ? "" : "s"} available.`);
+  } catch (error) {
+    if (requestEpoch !== ownerEpoch || generation !== endpointLoadGeneration) return;
+    message("webhook-endpoint-status", `Could not load endpoints. ${error.message}`);
+  }
+}
+
+async function loadWebhookDeliveries(reset = true) {
+  if (!selectedWebhookEndpointId || (!reset && !nextWebhookCursor)) return;
+  const endpointId = selectedWebhookEndpointId;
+  const cursor = reset ? null : nextWebhookCursor;
+  const requestEpoch = ownerEpoch;
+  const generation = ++webhookLoadGeneration;
+  const moreButton = byId("more-webhook-deliveries");
+  moreButton.disabled = true;
+  message("webhook-history-status", "Loading deliveries…");
+  if (reset) {
+    byId("webhook-delivery-list").replaceChildren();
+    moreButton.hidden = true;
+    nextWebhookCursor = null;
+    shownWebhookCount = 0;
+  }
+  try {
+    const path = `/v1/webhooks/${encodeURIComponent(endpointId)}/deliveries?limit=20${cursor ? `&before=${encodeURIComponent(cursor)}` : ""}`;
+    const page = await api(path);
+    if (requestEpoch !== ownerEpoch || generation !== webhookLoadGeneration || endpointId !== selectedWebhookEndpointId) return;
+    if (!validWebhookPage(page, cursor)) throw new Error("The delivery response was invalid.");
+    for (const delivery of page.deliveries) showWebhookDelivery(delivery);
+    shownWebhookCount += page.deliveries.length;
+    nextWebhookCursor = page.next_before;
+    moreButton.hidden = !nextWebhookCursor;
+    moreButton.disabled = false;
+    message("webhook-history-status", shownWebhookCount === 0 ? "No deliveries recorded for this endpoint." :
+      `${shownWebhookCount} deliver${shownWebhookCount === 1 ? "y" : "ies"} shown${nextWebhookCursor ? "; more available" : ""}.`);
+  } catch (error) {
+    if (requestEpoch !== ownerEpoch || generation !== webhookLoadGeneration || endpointId !== selectedWebhookEndpointId) return;
+    moreButton.disabled = false;
+    message("webhook-history-status", `Could not load deliveries. ${error.message}`);
+  }
 }
 
 function showInboundEvent(event) {
@@ -354,6 +488,7 @@ byId("login-form").addEventListener("submit", async (event) => {
     message("global-status", "Signed in.");
     await loadDevices();
     await loadKeys();
+    await loadWebhookEndpoints();
   } catch (error) {
     message("login-status", `Sign-in failed. ${error.message}`);
   }
@@ -445,6 +580,15 @@ byId("inbound-history-form").addEventListener("submit", async (event) => {
   await loadInboundEvents();
 });
 byId("more-inbound-events").addEventListener("click", () => loadInboundEvents(false));
+byId("refresh-webhook-endpoints").addEventListener("click", loadWebhookEndpoints);
+byId("webhook-endpoint").addEventListener("change", async () => {
+  const endpointId = byId("webhook-endpoint").value;
+  clearWebhookHistory();
+  if (!availableWebhookEndpointIds.has(endpointId)) return;
+  selectedWebhookEndpointId = endpointId;
+  await loadWebhookDeliveries();
+});
+byId("more-webhook-deliveries").addEventListener("click", () => loadWebhookDeliveries(false));
 byId("key-create-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const createEpoch = ownerEpoch;
@@ -476,6 +620,7 @@ byId("key-create-form").addEventListener("submit", async (event) => {
     showSignedIn(true);
     await loadDevices();
     await loadKeys();
+    await loadWebhookEndpoints();
   } catch (error) {
     showSignedIn(false);
     message("global-status", error.message.startsWith("Your sign-in") ? "Sign in to manage devices." : `Could not verify session. ${error.message}`);

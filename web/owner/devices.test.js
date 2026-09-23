@@ -31,10 +31,12 @@ async function ownerPage() {
   element("key-lifetime").value = "30";
   const state = {
     unauthorized: false, pendingCreate: null, nextCreateResponse: null, pendingHistory: null,
-    historyPages: [], historyRequests: [],
+    historyPages: [], historyRequests: [], webhookPages: [], webhookRequests: [], pendingWebhook: null,
+    endpoints: [], pendingEndpoints: null,
   };
   const fetch = async (url, options) => {
     if (url === "/v1/auth/session") return response(200);
+    if (url === "/v1/auth/logout") return response(204);
     if (url === "/v1/enrollment/devices") {
       return state.unauthorized ? response(401) : response(200, { devices: [], next_cursor: null });
     }
@@ -51,6 +53,16 @@ async function ownerPage() {
       if (state.pendingHistory) return state.pendingHistory;
       return response(200, state.historyPages.shift() || { events: [], next_before: null });
     }
+    if (url === "/v1/webhooks") {
+      if (state.pendingEndpoints) return state.pendingEndpoints;
+      return state.unauthorized ? response(401) : response(200, { endpoints: state.endpoints });
+    }
+    if (url.startsWith("/v1/webhooks/")) {
+      state.webhookRequests.push({ url, options });
+      if (state.pendingWebhook) return state.pendingWebhook;
+      return state.unauthorized ? response(401) : response(200,
+        state.webhookPages.shift() || { deliveries: [], next_before: null });
+    }
     throw new Error(`Unexpected request: ${url}`);
   };
   vm.runInNewContext(source, {
@@ -61,6 +73,26 @@ async function ownerPage() {
   await new Promise(setImmediate);
   await new Promise(setImmediate);
   return { element, state };
+}
+
+const endpointId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const otherEndpointId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+const deliveryId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+const nextDeliveryId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+const eventId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+
+function delivery(id = deliveryId) {
+  return {
+    delivery_id: id, event_id: eventId, status: "dead", generation: 2,
+    terminal_reason: "failed", attempt_count: 1, next_attempt_at_ms: null,
+    created_at_ms: 0, updated_at_ms: 1000,
+    attempts: [{ generation: 1, attempt_number: 1, started_at_ms: 0,
+      completed_at_ms: 1000, outcome: "http_error", http_status: 500 },
+    { generation: 2, attempt_number: 1, started_at_ms: 2000,
+      completed_at_ms: null, outcome: null, http_status: null }],
+    callback_url: "PRIVATE_URL", signing_secret_b64url: "PRIVATE_SECRET",
+    payload: "PRIVATE_PAYLOAD", response_body: "PRIVATE_RESPONSE",
+  };
 }
 
 function visibleText(element) {
@@ -175,4 +207,95 @@ test("a deferred create JSON body cannot restore a key after a 401", async () =>
   assert.equal(element("key-secret").textContent, "");
   assert.equal(element("key-secret-panel").hidden, true);
   assert.equal(element("owner-content").hidden, true);
+});
+
+test("webhook history selects a listed endpoint, pages 20 at a time, and renders metadata only", async () => {
+  const { element, state } = await ownerPage();
+  assert.equal(state.webhookRequests.length, 0);
+  state.endpoints = [{ endpoint_id: endpointId, callback_url: "PRIVATE_URL", enabled: true }];
+  await element("refresh-webhook-endpoints").listeners.click();
+  assert.equal(visibleText(element("webhook-endpoint")).includes("PRIVATE_URL"), false);
+  state.webhookPages.push({ deliveries: [delivery()], next_before: deliveryId });
+  state.webhookPages.push({ deliveries: [delivery(nextDeliveryId)], next_before: null });
+  element("webhook-endpoint").value = endpointId;
+  await element("webhook-endpoint").listeners.change();
+  assert.equal(state.webhookRequests[0].url, `/v1/webhooks/${endpointId}/deliveries?limit=20`);
+  assert.equal(state.webhookRequests[0].options.method, "GET");
+  assert.equal(state.webhookRequests[0].options.credentials, "same-origin");
+  assert.equal(element("more-webhook-deliveries").hidden, false);
+  const shown = visibleText(element("webhook-delivery-list"));
+  assert.match(shown, /Attempts exhausted/);
+  assert.match(shown, /Generation 1, attempt 1: HTTP error/);
+  assert.match(shown, /Generation 2, attempt 1: In progress/);
+  for (const forbidden of ["PRIVATE_URL", "PRIVATE_SECRET", "PRIVATE_PAYLOAD", "PRIVATE_RESPONSE"]) {
+    assert.equal(shown.includes(forbidden), false);
+  }
+  await element("more-webhook-deliveries").listeners.click();
+  assert.equal(state.webhookRequests[1].url, `/v1/webhooks/${endpointId}/deliveries?limit=20&before=${deliveryId}`);
+  assert.equal(element("webhook-delivery-list").children.length, 2);
+  assert.equal(element("more-webhook-deliveries").hidden, true);
+});
+
+test("webhook history ignores a late response after endpoint change or sign-out", async () => {
+  const { element, state } = await ownerPage();
+  state.endpoints = [{ endpoint_id: endpointId }, { endpoint_id: otherEndpointId }];
+  await element("refresh-webhook-endpoints").listeners.click();
+  let resolveFirst;
+  state.pendingWebhook = new Promise((resolve) => { resolveFirst = resolve; });
+  element("webhook-endpoint").value = endpointId;
+  const first = element("webhook-endpoint").listeners.change();
+  state.pendingWebhook = null;
+  element("webhook-endpoint").value = otherEndpointId;
+  const second = element("webhook-endpoint").listeners.change();
+  resolveFirst(response(200, { deliveries: [delivery()], next_before: null }));
+  await Promise.all([first, second]);
+  assert.equal(element("webhook-delivery-list").children.length, 0);
+  assert.equal(state.webhookRequests[1].url, `/v1/webhooks/${otherEndpointId}/deliveries?limit=20`);
+
+  let resolveLate;
+  state.pendingWebhook = new Promise((resolve) => { resolveLate = resolve; });
+  const late = element("webhook-endpoint").listeners.change();
+  state.unauthorized = true;
+  await element("refresh-devices").listeners.click();
+  resolveLate(response(200, { deliveries: [delivery()], next_before: null }));
+  await late;
+  assert.equal(element("owner-content").hidden, true);
+  assert.equal(element("webhook-endpoint").value, "");
+  assert.equal(element("webhook-delivery-list").children.length, 0);
+});
+
+test("webhook history rejects oversized pages and does not follow an invalid cursor", async () => {
+  const { element, state } = await ownerPage();
+  state.endpoints = [{ endpoint_id: endpointId }];
+  await element("refresh-webhook-endpoints").listeners.click();
+  state.webhookPages.push({ deliveries: Array.from({ length: 21 }, () => delivery()), next_before: null });
+  element("webhook-endpoint").value = endpointId;
+  await element("webhook-endpoint").listeners.change();
+  assert.equal(element("webhook-delivery-list").children.length, 0);
+  assert.match(element("webhook-history-status").textContent, /invalid/);
+  state.webhookPages.push({ deliveries: [delivery()], next_before: otherEndpointId });
+  await element("webhook-endpoint").listeners.change();
+  assert.equal(element("more-webhook-deliveries").hidden, true);
+  assert.equal(state.webhookRequests.length, 2);
+});
+
+test("sign-out clears the selected webhook endpoint and a deferred response cannot restore it", async () => {
+  const { element, state } = await ownerPage();
+  state.endpoints = [{ endpoint_id: endpointId }];
+  await element("refresh-webhook-endpoints").listeners.click();
+  let resolveBody;
+  let parsingStarted;
+  const body = new Promise((resolve) => { resolveBody = resolve; });
+  const parsing = new Promise((resolve) => { parsingStarted = resolve; });
+  state.pendingWebhook = response(200);
+  state.pendingWebhook.json = () => { parsingStarted(); return body; };
+  element("webhook-endpoint").value = endpointId;
+  const pending = element("webhook-endpoint").listeners.change();
+  await parsing;
+  await element("logout").listeners.click();
+  resolveBody({ deliveries: [delivery()], next_before: null });
+  await pending;
+  assert.equal(element("owner-content").hidden, true);
+  assert.equal(element("webhook-endpoint").value, "");
+  assert.equal(element("webhook-delivery-list").children.length, 0);
 });
