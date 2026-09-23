@@ -9,3 +9,5 @@ Every event carries stable client message ID, attempt ID, device ID, session epo
 [inbound-foundation.md](inbound-foundation.md) defines the signed inbound storage and outbox contract. Optional inbound frames and webhook delivery have separate configuration and contracts.
 
 [sealed-inbound-prerequisites.md](sealed-inbound-prerequisites.md) records the separate event identity and default-closed line-binding storage foundation for future sealed inbound content. It exposes no sealed-content route.
+
+[line-activation-contract.md](line-activation-contract.md) defines an internal, challenge-bound, dual-signature generation transition. It is not wired to a transport or a trusted owner-key bootstrap.

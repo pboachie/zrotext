@@ -7,6 +7,8 @@ use crate::inbound::InboundSession;
 use tokio_postgres::Client;
 use uuid::Uuid;
 
+pub mod line_activation;
+
 /// Checks the current writer session and a line binding marked active with
 /// both evidence digest fields. A future route must verify those enrollment
 /// proofs and additionally verify the complete owner-signed
