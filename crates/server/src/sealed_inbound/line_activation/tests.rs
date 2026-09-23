@@ -125,6 +125,160 @@ fn transcript_is_role_separated_and_rejects_ambiguous_or_old_android() {
 }
 
 #[tokio::test]
+async fn migration_preserves_pending_generation_high_water_mark() {
+    let Ok(url) = std::env::var("ZT_INBOUND_TEST_DATABASE_URL") else {
+        eprintln!("set ZT_INBOUND_TEST_DATABASE_URL for line activation database test");
+        return;
+    };
+    let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let schema = format!("line_upgrade_{}", Uuid::new_v4().simple());
+    db.batch_execute(&format!(
+        "CREATE SCHEMA {schema}; SET search_path TO {schema}"
+    ))
+    .await
+    .unwrap();
+    let migration_dir =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/compose/migrations");
+    let mut migrations: Vec<_> = std::fs::read_dir(&migration_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "sql"))
+        .collect();
+    migrations.sort();
+    for path in migrations.iter().filter(|path| {
+        path.file_name()
+            .is_some_and(|name| name.to_string_lossy().as_ref() < "019_")
+    }) {
+        db.batch_execute(&std::fs::read_to_string(path).unwrap())
+            .await
+            .unwrap();
+    }
+    let hasher = TokenHasher::new(vec![7; 32]).unwrap();
+    let owner = register(
+        &mut db,
+        &hasher,
+        "upgrade-line-owner@example.test",
+        "correct horse 123",
+    )
+    .await
+    .unwrap();
+    verify_email(&mut db, &hasher, &owner.verification_token)
+        .await
+        .unwrap();
+    let login = login(
+        &db,
+        &hasher,
+        "upgrade-line-owner@example.test",
+        "correct horse 123",
+    )
+    .await
+    .unwrap();
+    let principal = authenticate_session(&db, &hasher, &login.token)
+        .await
+        .unwrap();
+    let line = Uuid::new_v4();
+    let lost_device = Uuid::new_v4();
+    let replacement_device = Uuid::new_v4();
+    db.execute(
+        "INSERT INTO devices(id,account_id,display_name) VALUES
+         ($1,$3,'lost virtual device'),($2,$3,'replacement virtual device')",
+        &[&lost_device, &replacement_device, &owner.account_id],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO phone_lines(id,account_id,state,approved_at,current_binding_generation)
+         VALUES($1,$2,'active',clock_timestamp(),2)",
+        &[&line, &owner.account_id],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO device_line_bindings
+         (account_id,line_id,device_id,generation,state,owner_approval_digest,
+          device_confirmation_digest,activated_at)
+         VALUES($1,$2,$3,2,'active',decode(repeat('11',32),'hex'),
+                decode(repeat('22',32),'hex'),clock_timestamp())",
+        &[&owner.account_id, &line, &lost_device],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO device_line_bindings(account_id,line_id,device_id,generation)
+         VALUES($1,$2,$3,3)",
+        &[&owner.account_id, &line, &lost_device],
+    )
+    .await
+    .unwrap();
+    let migration_019 = migration_dir.join("019_line_activation_contract.sql");
+    db.batch_execute(&std::fs::read_to_string(migration_019).unwrap())
+        .await
+        .unwrap();
+    let issued: i64 = db
+        .query_one(
+            "SELECT last_issued_generation FROM phone_lines WHERE account_id=$1 AND id=$2",
+            &[&owner.account_id, &line],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(issued, 3);
+    db.execute(
+        "UPDATE devices SET revoked_at=clock_timestamp() WHERE account_id=$1 AND id=$2",
+        &[&owner.account_id, &lost_device],
+    )
+    .await
+    .unwrap();
+    let owner_key = SigningKey::random(&mut OsRng);
+    let owner_sec1 = owner_key.verifying_key().to_encoded_point(false);
+    db.execute(
+        "INSERT INTO line_owner_approval_keys(account_id,fingerprint,signing_key_sec1)
+         VALUES($1,$2,$3)",
+        &[
+            &owner.account_id,
+            &&digest(owner_sec1.as_bytes())[..],
+            &owner_sec1.as_bytes(),
+        ],
+    )
+    .await
+    .unwrap();
+    let replacement_key = SigningKey::random(&mut OsRng);
+    let replacement_sec1 = replacement_key.verifying_key().to_encoded_point(false);
+    db.execute(
+        "INSERT INTO device_keys(device_id,account_id,signing_key_sec1,fingerprint)
+         VALUES($1,$2,$3,$4)",
+        &[
+            &replacement_device,
+            &owner.account_id,
+            &replacement_sec1.as_bytes(),
+            &&digest(replacement_sec1.as_bytes())[..],
+        ],
+    )
+    .await
+    .unwrap();
+    let challenge = issue_line_challenge(&mut db, &principal, line, replacement_device)
+        .await
+        .unwrap();
+    assert_eq!(challenge.generation, 4);
+    let rows = db
+        .query(
+            "SELECT generation,state FROM device_line_bindings
+             WHERE account_id=$1 AND line_id=$2 ORDER BY generation",
+            &[&owner.account_id, &line],
+        )
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0].get::<_, i64>(0), 2);
+    assert_eq!(rows[0].get::<_, String>(1), "active");
+    assert_eq!(rows[1].get::<_, i64>(0), 3);
+    assert_eq!(rows[1].get::<_, String>(1), "revoked");
+    assert_eq!(rows[2].get::<_, i64>(0), 4);
+    assert_eq!(rows[2].get::<_, String>(1), "pending");
+}
+
+#[tokio::test]
 async fn signed_activation_fences_owner_device_generation_and_replay() {
     let Ok(url) = std::env::var("ZT_INBOUND_TEST_DATABASE_URL") else {
         eprintln!("set ZT_INBOUND_TEST_DATABASE_URL for line activation database test");

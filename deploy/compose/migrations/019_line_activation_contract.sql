@@ -8,7 +8,15 @@
 -- current active binding. Its tombstone and challenge remain auditable.
 ALTER TABLE phone_lines ADD COLUMN last_issued_generation bigint NOT NULL DEFAULT 0
     CHECK (last_issued_generation >= 0);
-UPDATE phone_lines SET last_issued_generation=current_binding_generation;
+-- Migration 018 allowed a pending replacement above the active generation.
+-- Its immutable binding row has already burned that generation, even when the
+-- device is lost before migration 019 introduces challenge issuance.
+UPDATE phone_lines AS l
+SET last_issued_generation=GREATEST(
+    l.current_binding_generation,
+    COALESCE((SELECT MAX(b.generation) FROM device_line_bindings AS b
+              WHERE b.account_id=l.account_id AND b.line_id=l.id), 0)
+);
 ALTER TABLE phone_lines ADD CONSTRAINT phone_lines_issued_at_least_active
     CHECK (last_issued_generation >= current_binding_generation);
 
