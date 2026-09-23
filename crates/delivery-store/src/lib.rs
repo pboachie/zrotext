@@ -1078,12 +1078,21 @@ mod tests {
             ))
             .await
             .unwrap();
-        for migration in [
-            include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
-            include_str!("../../../deploy/compose/migrations/002_auth.sql"),
-            include_str!("../../../deploy/compose/migrations/003_delivery.sql"),
-        ] {
-            client.batch_execute(migration).await.unwrap();
+        // Apply the checkout's complete numbered schema. This admission test
+        // also runs after later migrations add accept-time metering writes.
+        let migrations_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../deploy/compose/migrations");
+        let mut migration_paths = std::fs::read_dir(migrations_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().and_then(std::ffi::OsStr::to_str) == Some("sql"))
+            .collect::<Vec<_>>();
+        migration_paths.sort();
+        for path in migration_paths {
+            client
+                .batch_execute(&std::fs::read_to_string(path).unwrap())
+                .await
+                .unwrap();
         }
         let account = Uuid::new_v4();
         let device = Uuid::new_v4();
