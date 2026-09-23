@@ -1638,11 +1638,12 @@ mod tests {
             client.batch_execute(migration).await.unwrap();
         }
         let hasher = Arc::new(TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
+        let test_password = Uuid::new_v4().to_string();
         let signup = auth::register(
             &mut client,
             &hasher,
             "verify-cap@example.test",
-            "correct horse battery",
+            &test_password,
         )
         .await
         .unwrap();
