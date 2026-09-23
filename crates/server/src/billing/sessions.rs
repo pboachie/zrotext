@@ -104,7 +104,6 @@ pub fn return_router() -> Router {
     Router::new()
         .route("/billing/success", get(checkout_return))
         .route("/billing/cancel", get(cancel_return))
-        .route("/billing", get(portal_return))
 }
 
 fn return_page(title: &'static str, message: &'static str) -> Response {
@@ -130,13 +129,6 @@ async fn cancel_return() -> Response {
     return_page(
         "Checkout canceled",
         "The Checkout flow was canceled. No subscription or access change is confirmed by this page.",
-    )
-}
-
-async fn portal_return() -> Response {
-    return_page(
-        "Billing status",
-        "Billing changes can take time to reconcile. This page does not confirm payment, subscription status, or access.",
     )
 }
 
@@ -572,7 +564,7 @@ mod tests {
 
     #[tokio::test]
     async fn stripe_return_destinations_are_concrete_and_do_not_claim_access() {
-        for path in ["/billing/success", "/billing/cancel", "/billing"] {
+        for path in ["/billing/success", "/billing/cancel"] {
             let response = return_router()
                 .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
                 .await
