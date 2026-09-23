@@ -11,5 +11,6 @@ pub mod http_owner_messages;
 pub mod http_webhooks;
 pub mod inbound;
 pub mod owner_ui;
+pub mod sealed_inbound;
 pub mod webhook_egress;
 pub mod webhook_worker;
