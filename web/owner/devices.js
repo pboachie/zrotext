@@ -107,7 +107,7 @@ async function loadKeys(reset = true) {
         detail.append(device);
       }
       row.append(detail);
-      if (key.status === "active") {
+      if (key.status !== "revoked") {
         const revoke = document.createElement("button");
         revoke.type = "button";
         revoke.textContent = "Revoke";
