@@ -82,16 +82,18 @@ def main():
     secret = secrets.token_hex(24)
     port = available_loopback_port()
     try:
-        env_file.write_text(
-            f"POSTGRES_PASSWORD={secret}\n"
-            f"DATABASE_URL=postgres://zrotext:{secret}@db:5432/zrotext\n"
-            f"APP_PORT={port}\n"
-            "SITE_ID=local-a\nINSTANCE_ID=api-1\nDEPLOYMENT_EPOCH=1\n"
-            "DISPATCH_ENABLED=false\nSYNTHETIC_ALPHA_ENABLED=false\n"
-            "M0_TEST_TOKEN=\n", encoding="utf-8",
-        )
-        if sys.platform != "win32":
-            env_file.chmod(0o600)
+        # Compose requires an env file. Create it exclusively with private
+        # permissions from the first write; chmod after write leaves a window.
+        with open(env_file, "x", encoding="utf-8",
+                  opener=lambda path, flags: os.open(path, flags, 0o600)) as output:
+            output.write(
+                f"POSTGRES_PASSWORD={secret}\n"
+                f"DATABASE_URL=postgres://zrotext:{secret}@db:5432/zrotext\n"
+                f"APP_PORT={port}\n"
+                "SITE_ID=local-a\nINSTANCE_ID=api-1\nDEPLOYMENT_EPOCH=1\n"
+                "DISPATCH_ENABLED=false\nSYNTHETIC_ALPHA_ENABLED=false\n"
+                "M0_TEST_TOKEN=\n",
+            )
     except OSError:
         shutil.rmtree(directory)
         raise
