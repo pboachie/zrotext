@@ -33,6 +33,7 @@ code { font-size: .9rem; }
 #message-list ol { padding-left: 1.5rem; }
 #message-list ol li { padding: .25rem 0; }
 #message-list time { color: #465c66; }
+.message-uncertain { border-left: 3px solid #9a5b10; padding: .45rem .65rem; margin: .5rem 0; font-weight: 600; }
 #key-secret-panel { border: 1px solid #8198a2; border-radius: .3rem; padding: .8rem; margin-bottom: 1rem; }
 #key-secret-panel button { margin-top: .8rem; }
 [hidden] { display: none !important; }

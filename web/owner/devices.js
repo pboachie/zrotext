@@ -509,6 +509,12 @@ async function loadMessages(reset = true) {
       const createdDate = new Date(item.created_at_ms);
       if (!Number.isNaN(createdDate.getTime())) created.dateTime = createdDate.toISOString();
       row.append(state, id, device, created);
+      if (item.state === "unknown") {
+        const warning = document.createElement("p");
+        warning.className = "message-uncertain";
+        warning.textContent = "Outcome unknown. The phone may have sent this SMS. Sending a new message could duplicate it.";
+        row.append(warning);
+      }
       const details = document.createElement("details");
       const summary = document.createElement("summary");
       summary.textContent = `Writer events (${item.events.length}${item.events_truncated ? " most recent" : ""})`;

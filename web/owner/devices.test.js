@@ -27,7 +27,7 @@ async function ownerPage() {
   const state = {
     unauthorized: false, pendingCreate: null, nextCreateResponse: null, pendingHistory: null,
     historyPages: [], historyRequests: [], webhookPages: [], webhookRequests: [], pendingWebhook: null,
-    endpoints: [], pendingEndpoints: null, pendingDevices: null,
+    endpoints: [], pendingEndpoints: null, pendingDevices: null, messages: [],
   };
   const fetch = async (url, options) => {
     if (url === "/v1/auth/session") return response(200);
@@ -37,7 +37,7 @@ async function ownerPage() {
       if (state.pendingDevices) return state.pendingDevices;
       return state.unauthorized ? response(401) : response(200, { devices: [], next_cursor: null });
     }
-    if (url === "/v1/owner/messages") return response(200, { messages: [], next_cursor: null });
+    if (url === "/v1/owner/messages") return response(200, { messages: state.messages, next_cursor: null });
     if (url === "/v1/auth/api-keys" && options.method === "GET") {
       return response(200, { keys: [], next_cursor: null });
     }
@@ -333,4 +333,21 @@ test("an old device 401 cannot clear a newer owner session", async () => {
   resolveOld(response(401));
   await oldRequest;
   assert.equal(element("owner-content").hidden, false);
+});
+
+test("unknown message state warns that a new send may duplicate it", async () => {
+  const { element, state } = await ownerPage();
+  const base = {
+    message_id: "message-test", device_id: "device-test",
+    created_at_ms: 1_800_000_000_000, events: [], events_truncated: false,
+  };
+  state.messages = [
+    { ...base, state: "unknown" },
+    { ...base, message_id: "delivered-test", state: "delivered" },
+  ];
+  await element("refresh-messages").listeners.click();
+  const [uncertain, delivered] = element("message-list").children;
+  assert.match(uncertain.children.find((child) => child.className === "message-uncertain").textContent,
+    /may have sent.*could duplicate/);
+  assert.equal(delivered.children.some((child) => child.className === "message-uncertain"), false);
 });
