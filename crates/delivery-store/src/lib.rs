@@ -529,6 +529,55 @@ impl<'a> DeliveryStore<'a> {
         Ok(rows.len() as u64)
     }
 
+    /// A sent callback proves carrier acceptance, not handset delivery. Close
+    /// an absent delivery receipt conservatively after 24 hours; late receipt
+    /// evidence can still move delivery_unknown to delivered.
+    pub async fn reconcile_delivery_timeouts(&mut self, limit: i64) -> Result<u64, StoreError> {
+        if !(1..=1000).contains(&limit) {
+            return Err(StoreError::InvalidInput);
+        }
+        let tx = self.client.transaction().await?;
+        let rows = tx
+            .query(
+                "SELECT m.account_id,m.id,a.id FROM messages m \
+             JOIN dispatch_fences f ON (f.account_id,f.message_id)=(m.account_id,m.id) \
+             JOIN message_attempts a ON a.id=f.attempt_id \
+             WHERE m.state='submitted' AND f.outcome='submitted' AND a.status='submitted' \
+               AND m.updated_at<=now()-interval '24 hours' \
+             ORDER BY m.updated_at,m.id FOR UPDATE OF m SKIP LOCKED LIMIT $1",
+                &[&limit],
+            )
+            .await?;
+        for row in &rows {
+            let account_id: Uuid = row.get(0);
+            let message_id: Uuid = row.get(1);
+            let attempt_id: Uuid = row.get(2);
+            let next = MessageState::Submitted
+                .apply(Evidence::DeliveryTimeout)
+                .map_err(|_| StoreError::InvalidTransition)?;
+            let mut hash = Sha256::new();
+            hash.update(account_id.as_bytes());
+            hash.update(message_id.as_bytes());
+            hash.update(attempt_id.as_bytes());
+            hash.update(b"delivery_timeout");
+            let digest = hash.finalize().to_vec();
+            tx.execute(
+                "UPDATE messages SET state=$3,state_version=state_version+1,updated_at=now() \
+                 WHERE account_id=$1 AND id=$2",
+                &[&account_id, &message_id, &state_name(next)],
+            )
+            .await?;
+            tx.execute(
+                "INSERT INTO message_events (id,account_id,message_id,attempt_id,evidence_code, \
+                 event_digest,observed_at,resulting_state) VALUES ($1,$2,$3,$4,'delivery_timeout',$5,now(),$6)",
+                &[&Uuid::new_v4(), &account_id, &message_id, &attempt_id, &digest,
+                  &state_name(next)],
+            ).await?;
+        }
+        tx.commit().await?;
+        Ok(rows.len() as u64)
+    }
+
     /// Grant transaction checks authority, session and worker generation. A
     /// unique active-device index closes races between different messages.
     pub async fn issue_grant(
@@ -1190,9 +1239,10 @@ mod tests {
             )
             .await
             .unwrap();
+        let third_message = Uuid::new_v4();
+        let third_attempt = Uuid::new_v4();
         {
             let mut store = DeliveryStore::new(&mut client);
-            let third_message = Uuid::new_v4();
             store
                 .accept(NewMessage {
                     client_message_id: third_message,
@@ -1219,7 +1269,6 @@ mod tests {
                 .connect_session(account, second_device, "a", "hub", 60)
                 .await
                 .unwrap();
-            let third_attempt = Uuid::new_v4();
             store
                 .issue_grant(&third_claim, &third_session, third_attempt)
                 .await
@@ -1308,6 +1357,52 @@ mod tests {
             .unwrap()
             .get(0);
         assert_eq!(state, "expired");
+
+        assert_eq!(
+            DeliveryStore::new(&mut client)
+                .reconcile_delivery_timeouts(10)
+                .await
+                .unwrap(),
+            0
+        );
+        client
+            .execute(
+                "UPDATE messages SET updated_at=now()-interval '25 hours' WHERE id=$1",
+                &[&third_message],
+            )
+            .await
+            .unwrap();
+        {
+            let mut store = DeliveryStore::new(&mut client);
+            assert_eq!(store.reconcile_delivery_timeouts(10).await.unwrap(), 1);
+            assert_eq!(store.reconcile_delivery_timeouts(10).await.unwrap(), 0);
+            assert_eq!(
+                store
+                    .status(account, third_message)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .state,
+                MessageState::DeliveryUnknown
+            );
+            assert_eq!(
+                store
+                    .record_radio_event(RadioEvent {
+                        event_id: Uuid::new_v4(),
+                        account_id: account,
+                        device_id: second_device,
+                        message_id: third_message,
+                        attempt_id: third_attempt,
+                        evidence: Evidence::DeliveryCallbackOk,
+                        observed_at_ms: now_ms(),
+                        segment_index: None,
+                        segment_count: None,
+                    })
+                    .await
+                    .unwrap(),
+                MessageState::Delivered
+            );
+        }
 
         let silent_grant_message = Uuid::new_v4();
         let silent_grant_attempt = Uuid::new_v4();

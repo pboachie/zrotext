@@ -85,6 +85,7 @@ internal object DeliveryStatus {
 /** Derivation uses callback evidence only; absence of a callback never proves no submission. */
 internal object AttemptState {
     const val RESERVED = "reserved"
+    const val RADIO_STARTED = "radio_started"
     const val SUBMITTING = "submitting"
     const val UNKNOWN = "unknown"
     const val SUBMITTED = "submitted"
@@ -98,7 +99,7 @@ internal object AttemptState {
     fun fromEvidence(prior: String, segments: List<SmsSegment>): String {
         if (prior == NOT_SUBMITTED) return NOT_SUBMITTED
         if (segments.isEmpty() || segments.any { it.sentResultCode == null }) {
-            return if (prior == SUBMITTING) SUBMITTING else UNKNOWN
+            return if (prior == SUBMITTING || prior == RADIO_STARTED) SUBMITTING else UNKNOWN
         }
         val sent = segments.count { it.sentResultCode == Activity.RESULT_OK }
         if (sent == 0) return FAILED
@@ -143,7 +144,7 @@ abstract class SmsAttemptDao {
     @Query("SELECT * FROM alpha_radio_events WHERE eventId = :eventId")
     abstract fun getAlphaEvent(eventId: String): AlphaRadioEvent?
 
-    @Query("SELECT * FROM alpha_radio_events WHERE acknowledgedAtMs IS NULL ORDER BY observedAtMs,eventId LIMIT 1")
+    @Query("SELECT * FROM alpha_radio_events WHERE acknowledgedAtMs IS NULL ORDER BY rowid LIMIT 1")
     abstract fun nextAlphaEvent(): AlphaRadioEvent?
 
     @Query("UPDATE alpha_radio_events SET acknowledgedAtMs = :now WHERE eventId = :eventId AND acknowledgedAtMs IS NULL")
@@ -161,6 +162,13 @@ abstract class SmsAttemptDao {
     @Query("UPDATE sms_attempts SET state = :state, updatedAtMs = :now WHERE attemptId = :attemptId")
     abstract fun setState(attemptId: String, state: String, now: Long)
 
+    @Query("UPDATE sms_attempts SET state = 'radio_started', updatedAtMs = :now WHERE attemptId = :attemptId AND messageId = :messageId AND subscriptionId = :subscriptionId AND segmentCount = :segmentCount AND state = 'submitting'")
+    abstract fun consumeRadioStart(attemptId: String, messageId: String, subscriptionId: Int,
+                                   segmentCount: Int, now: Long): Int
+
+    @Query("UPDATE sms_attempts SET state = 'not_submitted', updatedAtMs = :now WHERE attemptId = :attemptId AND state = 'submitting' AND messageId IS NOT NULL")
+    abstract fun markAcknowledgedNoRadio(attemptId: String, now: Long): Int
+
     @Query("UPDATE sms_attempts SET state = 'unknown', evidenceConflict = 1, updatedAtMs = :now WHERE attemptId = :attemptId")
     abstract fun markCallbackConflict(attemptId: String, now: Long)
 
@@ -170,13 +178,13 @@ abstract class SmsAttemptDao {
     @Query("UPDATE sms_segments SET deliveryResultCode = :result, deliveryStatus = :status WHERE attemptId = :attemptId AND segmentIndex = :index AND (deliveryStatus IS NULL OR (deliveryStatus = 2 AND :status != 2))")
     abstract fun recordDelivery(attemptId: String, index: Int, result: Int, status: Int): Int
 
-    @Query("UPDATE sms_attempts SET state = 'unknown', updatedAtMs = :now WHERE state = 'submitting'")
+    @Query("UPDATE sms_attempts SET state = 'unknown', updatedAtMs = :now WHERE state IN ('submitting','radio_started')")
     abstract fun markInterrupted(now: Long)
 
     @Query("UPDATE sms_attempts SET state = 'not_submitted', updatedAtMs = :now WHERE state = 'reserved'")
     abstract fun markUnsentReservations(now: Long)
 
-    @Query("UPDATE sms_attempts SET state = 'unknown', updatedAtMs = :now WHERE attemptId = :attemptId AND state = 'submitting'")
+    @Query("UPDATE sms_attempts SET state = 'unknown', updatedAtMs = :now WHERE attemptId = :attemptId AND state IN ('submitting','radio_started')")
     abstract fun markStalledSubmission(attemptId: String, now: Long)
 
     @Query("UPDATE sms_attempts SET state = 'delivery_unknown', updatedAtMs = :now WHERE state = 'submitted' AND updatedAtMs < :cutoff")
@@ -253,14 +261,19 @@ abstract class SmsAttemptDao {
             markCallbackConflict(attemptId, now)
             return
         }
+        val nextState = if (attempt.evidenceConflict) AttemptState.UNKNOWN
+            else AttemptState.fromEvidence(attempt.state, segments)
         if (!delivery && attempt.messageId != null) {
             insertAlphaEvent(AlphaRadioEvent(UUID.randomUUID().toString(), attempt.messageId,
                 attemptId, if (result == Activity.RESULT_OK) "sent_callback_ok" else "sent_callback_failed",
                 now, index, attempt.segmentCount))
         }
-        setState(attemptId,
-            if (attempt.evidenceConflict) AttemptState.UNKNOWN
-            else AttemptState.fromEvidence(attempt.state, segments), now)
+        if (attempt.messageId != null && nextState == AttemptState.DELIVERED &&
+            attempt.state != AttemptState.DELIVERED) {
+            insertAlphaEvent(AlphaRadioEvent(UUID.randomUUID().toString(), attempt.messageId,
+                attemptId, "delivery_callback_ok", now))
+        }
+        setState(attemptId, nextState, now)
     }
 }
 

@@ -102,9 +102,14 @@ class AttemptJournalRoomTest {
         assertThrows(RuntimeException::class.java) { dao.reserveAlpha(attempt, message, 3, 1, intent, 11) }
         assertTrue(dao.acknowledgeAlphaIntent(intent, true, 20))
         assertEquals(AttemptState.SUBMITTING, dao.getAttempt(attempt)?.state)
+        assertEquals(1, dao.consumeRadioStart(attempt, message, 3, 1, 21))
+        assertEquals(AttemptState.RADIO_STARTED, dao.getAttempt(attempt)?.state)
+        assertEquals(0, dao.consumeRadioStart(attempt, message, 3, 1, 22))
+        assertEquals(0, dao.markAcknowledgedNoRadio(attempt, 23))
         assertEquals(null, dao.nextAlphaEvent())
         assertEquals(false, dao.acknowledgeAlphaIntent(intent, true, 21))
         dao.recordCallback(attempt, 0, false, Activity.RESULT_OK, null, 30)
+        dao.recordCallback(attempt, 0, true, Activity.RESULT_OK, DeliveryStatus.RECEIVED, 30)
         val callback = dao.nextAlphaEvent()!!
         assertEquals(message, callback.messageId)
         assertEquals("sent_callback_ok", callback.evidence)
@@ -113,7 +118,11 @@ class AttemptJournalRoomTest {
         dao.recordCallback(attempt, 0, false, Activity.RESULT_OK, null, 31)
         assertEquals(callback.eventId, dao.nextAlphaEvent()?.eventId)
         dao.acknowledgeAlphaEvent(callback.eventId, 40)
-        assertEquals(null, dao.nextAlphaEvent())
+        val delivery = dao.nextAlphaEvent()!!
+        assertEquals("delivery_callback_ok", delivery.evidence)
+        assertEquals(null, delivery.segmentIndex)
+        dao.recordCallback(attempt, 0, true, Activity.RESULT_OK, DeliveryStatus.RECEIVED, 51)
+        assertEquals(delivery.eventId, dao.nextAlphaEvent()?.eventId)
     }
 
     @Test fun restartAndDeniedAckCannotAuthorizeRadio() {
@@ -134,6 +143,7 @@ class AttemptJournalRoomTest {
         dao.reserveAlpha(secondAttempt, message, 3, 1, secondIntent, 50)
         assertEquals(false, dao.acknowledgeAlphaIntent(secondIntent, false, 60))
         assertEquals(AttemptState.NOT_SUBMITTED, dao.getAttempt(secondAttempt)?.state)
+        assertEquals(0, dao.markAcknowledgedNoRadio(secondAttempt, 61))
     }
 
     @Test fun versionOneJournalMigratesWithoutDiscardingAttempt() {

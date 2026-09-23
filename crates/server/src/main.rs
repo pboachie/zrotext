@@ -140,6 +140,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let mut store = DeliveryStore::new(&mut client);
                             store.expire_due(100).await?;
                             store.reconcile_silent_attempts(100).await?;
+                            store.reconcile_delivery_timeouts(100).await?;
                             Ok::<(), zrotext_delivery_store::StoreError>(())
                         }.await;
                         match result {

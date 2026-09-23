@@ -13,35 +13,38 @@ import android.telephony.SmsManager
 import android.telephony.SmsMessage
 import android.telephony.SubscriptionManager
 import androidx.core.content.ContextCompat
-import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 /**
- * Local radio boundary for a future grant-validated dispatcher. Nothing in the M0 socket/UI calls it.
- * A caller must provide a stable attempt ID and a consciously selected subscription ID.
+ * Local radio boundary. A writer-acknowledged Room reservation must be consumed durably
+ * before this can make one SmsManager call. The old reserve-and-send entry point is removed.
  */
 internal object SmsAttemptAdapter {
-    enum class StartResult { NOT_STARTED, ALREADY_RESERVED, JOURNAL_ERROR, RESERVED_NOT_SENT, CALL_RETURNED, UNKNOWN }
+    enum class StartResult { NOT_STARTED, ALREADY_CONSUMED, JOURNAL_ERROR, RESERVED_NOT_SENT, CALL_RETURNED, UNKNOWN }
 
-    fun submit(
+    fun sendAuthorized(
         context: Context,
-        attemptId: String,
-        subscriptionId: Int,
-        destination: String,
-        body: String,
+        grant: AlphaGrantValidator.Grant,
+        isSessionCurrent: () -> Boolean,
         finished: (StartResult) -> Unit
     ) {
         val app = context.applicationContext
         JournalRuntime.io.execute {
-            finished(submitOnJournalThread(app, attemptId, subscriptionId, destination, body))
+            val result = sendOnJournalThread(app, grant, isSessionCurrent)
+            if (result == StartResult.NOT_STARTED) {
+                runCatching { SmsJournalDatabase.get(app).attempts()
+                    .markAcknowledgedNoRadio(grant.attemptId.toString(), System.currentTimeMillis()) }
+            }
+            finished(result)
         }
     }
 
-    private fun submitOnJournalThread(
-        context: Context, attemptId: String, subscriptionId: Int, destination: String, body: String
+    private fun sendOnJournalThread(
+        context: Context, grant: AlphaGrantValidator.Grant, isSessionCurrent: () -> Boolean
     ): StartResult {
-        if (runCatching { UUID.fromString(attemptId) }.isFailure ||
-            !destination.matches(Regex("^\\+[1-9][0-9]{1,14}$")) || body.isBlank() ||
+        val attemptId = grant.attemptId.toString()
+        val subscriptionId = grant.subscriptionId
+        if (!isSessionCurrent() || System.currentTimeMillis() >= grant.expiresAtMs ||
             !hasSelectedSim(context, subscriptionId)) return StartResult.NOT_STARTED
 
         // Never fall back to the default SIM. A missing or changed SIM is a preflight refusal.
@@ -52,7 +55,7 @@ internal object SmsAttemptAdapter {
         } catch (_: RuntimeException) {
             return StartResult.NOT_STARTED
         }
-        val parts = try { manager.divideMessage(body) } catch (_: RuntimeException) { return StartResult.NOT_STARTED }
+        val parts = try { manager.divideMessage(grant.body) } catch (_: RuntimeException) { return StartResult.NOT_STARTED }
         if (parts.isEmpty() || parts.size > MAX_SEGMENTS) return StartResult.NOT_STARTED
         val sent = ArrayList<PendingIntent>(parts.size)
         val delivered = ArrayList<PendingIntent>(parts.size)
@@ -67,15 +70,28 @@ internal object SmsAttemptAdapter {
 
         val dao = try { SmsJournalDatabase.get(context).attempts() }
                   catch (_: RuntimeException) { return StartResult.JOURNAL_ERROR }
-        try {
-            if (dao.getAttempt(attemptId) != null) return StartResult.ALREADY_RESERVED
+        // The writer ack changed Room from reserved to submitting. This single conditional
+        // update consumes that authorization before any possible radio invocation.
+        if (!isSessionCurrent() || System.currentTimeMillis() >= grant.expiresAtMs ||
+            !hasSelectedSim(context, subscriptionId)) return StartResult.NOT_STARTED
+        val consumed = try {
+            dao.consumeRadioStart(attemptId, grant.messageId.toString(), subscriptionId,
+                parts.size, System.currentTimeMillis())
         } catch (_: RuntimeException) {
             return StartResult.JOURNAL_ERROR
         }
-        try {
-            dao.reserve(attemptId, subscriptionId, parts.size, System.currentTimeMillis())
-        } catch (_: RuntimeException) {
-            return StartResult.JOURNAL_ERROR
+        if (consumed != 1) return StartResult.ALREADY_CONSUMED
+
+        // Recheck after the durable one-use boundary. No call is made if the SIM or grant
+        // changed in that interval, and the reservation cannot be consumed again.
+        if (!isSessionCurrent() || System.currentTimeMillis() >= grant.expiresAtMs ||
+            !hasSelectedSim(context, subscriptionId)) {
+            return try {
+                dao.setState(attemptId, AttemptState.NOT_SUBMITTED, System.currentTimeMillis())
+                StartResult.RESERVED_NOT_SENT
+            } catch (_: RuntimeException) {
+                StartResult.UNKNOWN
+            }
         }
 
         // Best effort while this process lives; startup reconciliation covers process death/reboot.
@@ -85,23 +101,12 @@ internal object SmsAttemptAdapter {
             }
         }, SENT_CALLBACK_TIMEOUT_MINUTES, TimeUnit.MINUTES)
 
-        // This check happens after the durable intent but before the radio boundary. If it
-        // refuses, persist that no SmsManager send call occurred for this attempt.
-        if (!hasSelectedSim(context, subscriptionId)) {
-            return try {
-                dao.setState(attemptId, AttemptState.NOT_SUBMITTED, System.currentTimeMillis())
-                StartResult.RESERVED_NOT_SENT
-            } catch (_: RuntimeException) {
-                StartResult.UNKNOWN // No call occurred, but the durable record may still say submitting.
-            }
-        }
-
         // There is intentionally no retry around this call. A throw may follow a partial radio action.
         return try {
             if (parts.size == 1) {
-                manager.sendTextMessage(destination, null, parts[0], sent[0], delivered[0])
+                manager.sendTextMessage(grant.recipientE164, null, parts[0], sent[0], delivered[0])
             } else {
-                manager.sendMultipartTextMessage(destination, null, parts, sent, delivered)
+                manager.sendMultipartTextMessage(grant.recipientE164, null, parts, sent, delivered)
             }
             StartResult.CALL_RETURNED // Call return is not a sent or delivery acknowledgment.
         } catch (_: RuntimeException) {
@@ -113,6 +118,8 @@ internal object SmsAttemptAdapter {
     private fun hasSelectedSim(context: Context, subscriptionId: Int): Boolean {
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.SEND_SMS) != PackageManager.PERMISSION_GRANTED ||
             ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) return false
+        if (context.getSharedPreferences("gateway_selection", Context.MODE_PRIVATE)
+                .getInt("subscription_id", SubscriptionManager.INVALID_SUBSCRIPTION_ID) != subscriptionId) return false
         return try {
             val ids = context.getSystemService(SubscriptionManager::class.java)
                 .activeSubscriptionInfoList.orEmpty().map { it.subscriptionId }
