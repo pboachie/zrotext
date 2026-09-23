@@ -87,6 +87,23 @@ CREATE TRIGGER device_line_binding_state_before_update
     BEFORE UPDATE ON device_line_bindings
     FOR EACH ROW EXECUTE FUNCTION device_line_binding_state_guard();
 
+-- Keep generation and revocation tombstones even when no event references a
+-- binding yet. Deleting then recreating an old generation would bypass the
+-- monotonic state guards.
+CREATE FUNCTION line_registry_forbid_delete() RETURNS trigger
+LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
+BEGIN
+    RAISE EXCEPTION 'phone line and binding tombstones are immutable'
+        USING ERRCODE = '23514';
+END;
+$$;
+CREATE TRIGGER phone_line_before_delete
+    BEFORE DELETE ON phone_lines
+    FOR EACH ROW EXECUTE FUNCTION line_registry_forbid_delete();
+CREATE TRIGGER device_line_binding_before_delete
+    BEFORE DELETE ON device_line_bindings
+    FOR EACH ROW EXECUTE FUNCTION line_registry_forbid_delete();
+
 -- A received SMS has its own event identity. It has no outbound message or
 -- attempt FK: M1 inbound_events retains that distinct reply-correlation rule.
 -- Only a future, cryptographically verifying sealed ingest may insert here.

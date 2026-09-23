@@ -10,7 +10,10 @@ use uuid::Uuid;
 /// Checks the current writer session and a line binding marked active with
 /// both evidence digest fields. A future route must verify those enrollment
 /// proofs and additionally verify the complete owner-signed
-/// manifest and exact device-signed sealed envelope before storage.
+/// manifest and exact device-signed sealed envelope before storage. The
+/// caller must keep this preflight and its insert in one transaction, or
+/// recheck the session in the insert transaction; the insert trigger checks
+/// active line state but not the session epoch.
 pub async fn line_binding_ready(
     client: &Client,
     session: InboundSession<'_>,
