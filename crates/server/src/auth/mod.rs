@@ -325,8 +325,29 @@ pub async fn register(
     })
 }
 
-/// Consumes the challenge once. The caller supplies this token in a POST body,
-/// never as a query parameter, to avoid history/referrer leakage.
+/// Cheap indexed probe for a live code after the anonymous invalid-code
+/// budget is exhausted. This never consumes a code or opens a transaction.
+pub async fn verification_token_is_live(
+    client: &Client,
+    hasher: &TokenHasher,
+    token: &str,
+) -> Result<bool, AuthError> {
+    if !valid_token(token, "ztv_") {
+        return Ok(false);
+    }
+    let hash = hasher.digest(b"email-verification-v1", token);
+    let row = client
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM email_verifications
+             WHERE token_hash=$1 AND used_at IS NULL AND expires_at>now())",
+            &[&&hash[..]],
+        )
+        .await?;
+    Ok(row.get(0))
+}
+
+/// Atomically consumes a live verification code. The caller supplies this
+/// token in a POST body, never as a query parameter, to avoid referrer leakage.
 pub async fn verify_email(
     client: &mut Client,
     hasher: &TokenHasher,

@@ -451,21 +451,26 @@ async fn verify_email(
 ) -> Result<StatusCode, AuthHttpError> {
     require_origin(&headers, &state.canonical_origin)?;
     let mut client = connect(&state.database_url).await?;
-    // A caller can exhaust the anonymous invalid-code budget, but must not
-    // prevent the holder of a valid one-use code from completing signup.
+    let budget_available = abuse_limits::consume(&client, &state.hasher, Limit::Verify, None)
+        .await
+        .map_err(|_| AuthHttpError::Unavailable)?;
+    if !budget_available
+        && !auth::verification_token_is_live(&client, &state.hasher, &body.token)
+            .await
+            .map_err(map_auth)?
+    {
+        return Err(AuthHttpError::TooManyRequests);
+    }
     if auth::verify_email(&mut client, &state.hasher, &body.token)
         .await
         .map_err(map_auth)?
     {
-        return Ok(StatusCode::NO_CONTENT);
+        Ok(StatusCode::NO_CONTENT)
+    } else if budget_available {
+        Err(AuthHttpError::BadRequest)
+    } else {
+        Err(AuthHttpError::TooManyRequests)
     }
-    if !abuse_limits::consume(&client, &state.hasher, Limit::Verify, None)
-        .await
-        .map_err(|_| AuthHttpError::Unavailable)?
-    {
-        return Err(AuthHttpError::TooManyRequests);
-    }
-    Err(AuthHttpError::BadRequest)
 }
 
 #[derive(Deserialize)]
@@ -1649,7 +1654,7 @@ mod tests {
         )
         .unwrap();
         let a = router(state.clone());
-        let b = router(state);
+        let b = router(state.clone());
         for _ in 0..120 {
             let response = a
                 .clone()
@@ -1661,11 +1666,19 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         }
+        let mut wrong_code = signup.verification_token.clone();
+        let last = wrong_code.pop().unwrap();
+        wrong_code.push(if last == 'A' { 'Q' } else { 'A' });
+        assert!(
+            !auth::verification_token_is_live(&client, &state.hasher, &wrong_code)
+                .await
+                .unwrap()
+        );
         let invalid = b
             .clone()
             .oneshot(json_post(
                 "/verify-email",
-                serde_json::json!({"token":"invalid"}),
+                serde_json::json!({"token":wrong_code}),
             ))
             .await
             .unwrap();
