@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Test-mode subscription reconciliation against Stripe's current API state.
 
-use super::{BillingError, SubscriptionSnapshot, is_test_api_key, reconcile_snapshot, valid_id};
+use super::{
+    BillingError, SubscriptionSnapshot, TestQuotaPlan, is_test_api_key,
+    reconcile_snapshot_with_quotas, risk, valid_id,
+};
 use reqwest::{Client as HttpClient, redirect, retry};
 use serde_json::Value;
 use std::time::Duration;
@@ -12,15 +15,27 @@ pub struct StripeTestWorker {
     http: HttpClient,
     secret_key: String,
     recognized_prices: Vec<String>,
+    quota_plans: Vec<TestQuotaPlan>,
 }
 
 impl StripeTestWorker {
     pub fn new(secret_key: String, recognized_prices: Vec<String>) -> Result<Self, &'static str> {
+        Self::new_with_quotas(secret_key, recognized_prices, Vec::new())
+    }
+
+    pub fn new_with_quotas(
+        secret_key: String,
+        recognized_prices: Vec<String>,
+        quota_plans: Vec<TestQuotaPlan>,
+    ) -> Result<Self, &'static str> {
         if !is_test_api_key(&secret_key)
             || recognized_prices.is_empty()
             || recognized_prices
                 .iter()
                 .any(|id| valid_id(id, "price_").is_err())
+            || quota_plans
+                .iter()
+                .any(|plan| plan.outbound_limit <= 0 || !recognized_prices.contains(&plan.price_id))
         {
             return Err("invalid Stripe test configuration");
         }
@@ -37,6 +52,7 @@ impl StripeTestWorker {
             http,
             secret_key,
             recognized_prices,
+            quota_plans,
         })
     }
 
@@ -51,11 +67,12 @@ impl StripeTestWorker {
         let fetched = self.fetch_subscription(&subscription_id).await;
         match fetched {
             Ok(snapshot) if snapshot.subscription_id == subscription_id => {
-                if let Err(error) = reconcile_snapshot(
+                if let Err(error) = reconcile_snapshot_with_quotas(
                     &mut db,
                     account_id,
                     &snapshot,
                     &self.recognized_prices,
+                    &self.quota_plans,
                     generation,
                 )
                 .await
@@ -70,6 +87,52 @@ impl StripeTestWorker {
             }
         }
         Ok(true)
+    }
+
+    /// One bounded payment-risk job per tick. A known customer's queued risk
+    /// blocks new metered reservations while the provider chain is resolved.
+    pub async fn reconcile_risk_one(&self, database_url: &str) -> Result<bool, BillingError> {
+        let (mut db, connection) = tokio_postgres::connect(database_url, NoTls).await?;
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        let Some((event_id, charge_id, kind)) = risk::claim(&mut db).await? else {
+            return Ok(false);
+        };
+        let result = async {
+            let charge = risk::fetch_charge(&self.http, &self.secret_key, &charge_id).await?;
+            if !risk::bind_charge_customer(&mut db, &event_id, &charge.customer_id).await? {
+                return Err(BillingError::InvalidEvent);
+            }
+            if kind == "refund" && charge.amount_refunded == 0 {
+                return Err(BillingError::InvalidEvent);
+            }
+            let subscription =
+                risk::fetch_invoice_subscription(&self.http, &self.secret_key, &charge).await?;
+            risk::apply_hold(
+                &mut db,
+                &event_id,
+                &charge_id,
+                &charge.customer_id,
+                &subscription,
+                &kind,
+            )
+            .await
+        }
+        .await;
+        match result {
+            Ok(()) => Ok(true),
+            Err(error) => {
+                risk::backoff(&db, &event_id).await?;
+                if matches!(error, BillingError::Database(_)) {
+                    Err(error)
+                } else {
+                    // A provider read, unresolved binding or attribution
+                    // failure is retained for retry and later review.
+                    Ok(true)
+                }
+            }
+        }
     }
 
     async fn fetch_subscription(

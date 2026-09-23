@@ -31,7 +31,7 @@ use zrotext_server::{
     auth::TokenHasher,
     billing::{
         http::{self as billing_http, BillingHttpState},
-        owner as billing_owner,
+        owner as billing_owner, parse_test_quota_plans, reset_test_quotas_on_start,
         sessions::{self as billing_sessions, SessionState},
         worker::StripeTestWorker,
     },
@@ -81,8 +81,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .map(str::trim)
                 .map(str::to_owned)
                 .collect();
+            let plans = parse_test_quota_plans(
+                &env::var("STRIPE_TEST_QUOTA_PLANS").unwrap_or_default(),
+                &prices,
+            )?;
             let secret_key = required("STRIPE_TEST_SECRET_KEY")?;
-            let worker = StripeTestWorker::new(secret_key.clone(), prices.clone())?;
+            let worker =
+                StripeTestWorker::new_with_quotas(secret_key.clone(), prices.clone(), plans)?;
             Some((endpoint_secret, worker, secret_key, prices))
         }
         _ => return Err("invalid STRIPE_BILLING_TEST_ENABLED".into()),
@@ -140,10 +145,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/readyz", get(ready))
         .route("/m0/device-test", get(device_test))
         .with_state(config.clone());
+    let mut quotas_reset = false;
     let mut billing_auth_state = None;
     if let Some((auth_state, enrollment_state)) = account_routes(&config)? {
         billing_auth_state = Some(auth_state.clone());
         ensure_local_site(&config).await?;
+        reset_test_quotas_on_start(&config.database_url, billing_test.is_some()).await?;
+        quotas_reset = true;
         if let Some(vault) = webhook_vault {
             let vault = Arc::new(vault);
             app = app.merge(http_webhooks::router(WebhookHttpState {
@@ -287,6 +295,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if let Some((endpoint_secret, worker, secret_key, prices)) = billing_test {
         let billing_database = config.database_url.clone();
+        if !quotas_reset {
+            reset_test_quotas_on_start(&billing_database, true).await?;
+        }
         let mut billing_routes = billing_http::router(BillingHttpState {
             database_url: billing_database.clone(),
             endpoint_secret,
@@ -329,6 +340,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             Ok(_) => unavailable_logged = false,
                             Err(_) if !unavailable_logged => {
                                 eprintln!("Stripe test reconciliation unavailable");
+                                unavailable_logged = true;
+                            }
+                            Err(_) => {}
+                        }
+                        match worker.reconcile_risk_one(&billing_database).await {
+                            Ok(_) => unavailable_logged = false,
+                            Err(_) if !unavailable_logged => {
+                                eprintln!("Stripe test payment-risk reconciliation unavailable");
                                 unavailable_logged = true;
                             }
                             Err(_) => {}
