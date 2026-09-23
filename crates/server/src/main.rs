@@ -35,6 +35,7 @@ use zrotext_server::{
     },
     http_enrollment::{self, EnrollmentHttpState},
     http_messages::{self, MessagesHttpState},
+    owner_ui,
 };
 
 #[derive(Clone)]
@@ -170,6 +171,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         app = app
             .nest("/v1/auth", http_auth::router(auth_state))
             .nest("/v1/enrollment", http_enrollment::router(enrollment_state))
+            .merge(owner_ui::router())
             .merge(device_socket::router(socket_state));
         if config.alpha_policy.enabled() {
             let message_state = MessagesHttpState::new(
