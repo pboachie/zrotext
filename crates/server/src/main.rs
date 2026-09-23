@@ -341,6 +341,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 config.database_url.clone(),
                 message_hasher,
                 config.alpha_policy.clone(),
+                billing_test.is_some(),
             )?;
             app = app.nest("/v1/alpha", http_messages::router(message_state));
         }

@@ -46,6 +46,9 @@ pub enum StoreError {
 enum MeteringTime {
     Unmetered,
     Database,
+    Alpha {
+        billing_enabled: bool,
+    },
     #[cfg(test)]
     UnixMillis(i64),
 }
@@ -194,6 +197,19 @@ impl<'a> DeliveryStore<'a> {
         self.accept_inner(input, MeteringTime::Database).await
     }
 
+    /// Private alpha admission follows the runtime billing gate and any
+    /// customer binding already persisted by an earlier billing run. The
+    /// Binding lookup and acceptance share one transaction. Bound tenants lock
+    /// the customer row before the account row to match billing ingress.
+    pub async fn accept_alpha(
+        &mut self,
+        input: NewMessage<'_>,
+        billing_enabled: bool,
+    ) -> Result<AcceptOutcome, StoreError> {
+        self.accept_inner(input, MeteringTime::Alpha { billing_enabled })
+            .await
+    }
+
     #[cfg(test)]
     async fn accept_metered_at(
         &mut self,
@@ -211,10 +227,52 @@ impl<'a> DeliveryStore<'a> {
     ) -> Result<AcceptOutcome, StoreError> {
         validate_message(&input)?;
         let digest = request_digest(&input);
-        let require_reservation = !matches!(metering, MeteringTime::Unmetered);
         let recipient_digest = Sha256::digest(input.recipient_e164.as_bytes()).to_vec();
         let expiry = input.expires_at_ms as f64;
         let tx = self.client.transaction().await?;
+        let require_reservation = if let MeteringTime::Alpha { billing_enabled } = metering {
+            // Billing ingress locks an existing customer row before taking
+            // account-related FK locks. Follow that order for a bound tenant.
+            let bound = tx
+                .query_opt(
+                    "SELECT 1 FROM billing_customers WHERE account_id=$1 FOR SHARE",
+                    &[&input.account_id],
+                )
+                .await?
+                .is_some();
+            if bound {
+                tx.query_one(
+                    "SELECT id FROM accounts WHERE id=$1 FOR NO KEY UPDATE",
+                    &[&input.account_id],
+                )
+                .await?;
+                true
+            } else {
+                // The stronger lock conflicts with a concurrent new binding's
+                // FK KEY SHARE. Recheck after acquiring it; if the binding won
+                // the race, abort and let a later request use child-first order.
+                // This recheck must not lock the customer: risk ingress may
+                // already hold it and need an account FK KEY SHARE lock.
+                tx.query_one(
+                    "SELECT id FROM accounts WHERE id=$1 FOR UPDATE",
+                    &[&input.account_id],
+                )
+                .await?;
+                if tx
+                    .query_opt(
+                        "SELECT 1 FROM billing_customers WHERE account_id=$1",
+                        &[&input.account_id],
+                    )
+                    .await?
+                    .is_some()
+                {
+                    return Err(StoreError::QuotaNotConfigured);
+                }
+                billing_enabled
+            }
+        } else {
+            !matches!(metering, MeteringTime::Unmetered)
+        };
         let inserted_key = tx
             .query_opt(
                 "INSERT INTO idempotency_keys (account_id, key, request_digest, message_id, expires_at) \
@@ -247,7 +305,14 @@ impl<'a> DeliveryStore<'a> {
                 return Err(StoreError::IdempotencyConflict);
             }
             let message_id: Uuid = row.get(0);
-            if require_reservation && !reservation_exists(&tx, input.account_id, message_id).await?
+            // An exact alpha replay can predate the account's billing binding.
+            // It creates no new message or radio work, so preserve the original
+            // result without retroactively requiring a usage reservation. A
+            // different key for that message still follows the collision guard
+            // below; ordinary metered acceptance retains its reservation check.
+            if require_reservation
+                && !matches!(metering, MeteringTime::Alpha { .. })
+                && !reservation_exists(&tx, input.account_id, message_id).await?
             {
                 return Err(StoreError::IdempotencyConflict);
             }
@@ -261,11 +326,13 @@ impl<'a> DeliveryStore<'a> {
         // Every new acceptance for this account takes the same row lock. The
         // counts and insert are in one transaction, so parallel API instances
         // cannot each observe one remaining slot and overfill the queue.
-        tx.query_one(
-            "SELECT id FROM accounts WHERE id=$1 FOR NO KEY UPDATE",
-            &[&input.account_id],
-        )
-        .await?;
+        if !matches!(metering, MeteringTime::Alpha { .. }) {
+            tx.query_one(
+                "SELECT id FROM accounts WHERE id=$1 FOR NO KEY UPDATE",
+                &[&input.account_id],
+            )
+            .await?;
+        }
         let counts = tx
             .query_one(
                 "SELECT COUNT(*) FILTER (WHERE device_id=$2), COUNT(*) FROM messages \
@@ -316,6 +383,10 @@ impl<'a> DeliveryStore<'a> {
             MeteringTime::Database => {
                 reserve_outbound(&tx, input.account_id, input.client_message_id, None).await?
             }
+            MeteringTime::Alpha { .. } if require_reservation => {
+                reserve_outbound(&tx, input.account_id, input.client_message_id, None).await?
+            }
+            MeteringTime::Alpha { .. } => {}
             #[cfg(test)]
             MeteringTime::UnixMillis(unix_ms) => {
                 reserve_outbound(
@@ -1292,6 +1363,149 @@ fn state_from_row(row: &Row) -> Result<MessageState, StoreError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn exact_alpha_replay_survives_customer_binding_without_new_work() {
+        let Ok(url) = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL") else {
+            eprintln!("set ZT_DELIVERY_TEST_DATABASE_URL for alpha replay database test");
+            return;
+        };
+        let (mut client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let schema = format!("alpha_replay_{}", Uuid::new_v4().simple());
+        client
+            .batch_execute(&format!(
+                "CREATE SCHEMA {schema}; SET search_path TO {schema}"
+            ))
+            .await
+            .unwrap();
+        let migrations_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../deploy/compose/migrations");
+        let mut migration_paths = std::fs::read_dir(migrations_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().and_then(std::ffi::OsStr::to_str) == Some("sql"))
+            .collect::<Vec<_>>();
+        migration_paths.sort();
+        for path in migration_paths {
+            client
+                .batch_execute(&std::fs::read_to_string(path).unwrap())
+                .await
+                .unwrap();
+        }
+        let account = Uuid::new_v4();
+        let device = Uuid::new_v4();
+        let message = Uuid::new_v4();
+        let expiry = now_ms() + 300_000;
+        client
+            .execute("INSERT INTO accounts(id) VALUES($1)", &[&account])
+            .await
+            .unwrap();
+        client
+            .execute(
+                "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'virtual phone')",
+                &[&device, &account],
+            )
+            .await
+            .unwrap();
+        let input = || NewMessage {
+            account_id: account,
+            client_message_id: message,
+            device_id: device,
+            idempotency_key: "before-binding",
+            recipient_e164: "+15551234567",
+            synthetic_payload: b"fixture",
+            expires_at_ms: expiry,
+        };
+        assert!(
+            DeliveryStore::new(&mut client)
+                .accept_alpha(input(), false)
+                .await
+                .unwrap()
+                .created
+        );
+        client
+            .execute(
+                "INSERT INTO billing_customers(account_id,stripe_customer_id) \
+                 VALUES($1,'cus_alphareplayfixture')",
+                &[&account],
+            )
+            .await
+            .unwrap();
+        for billing_enabled in [false, true] {
+            let replay = DeliveryStore::new(&mut client)
+                .accept_alpha(input(), billing_enabled)
+                .await
+                .unwrap();
+            assert_eq!(replay.message_id, message);
+            assert!(!replay.created);
+        }
+        assert!(matches!(
+            DeliveryStore::new(&mut client)
+                .accept_alpha(
+                    NewMessage {
+                        synthetic_payload: b"changed",
+                        ..input()
+                    },
+                    false,
+                )
+                .await,
+            Err(StoreError::IdempotencyConflict)
+        ));
+        assert!(matches!(
+            DeliveryStore::new(&mut client)
+                .accept_alpha(
+                    NewMessage {
+                        idempotency_key: "alternate-key",
+                        ..input()
+                    },
+                    false,
+                )
+                .await,
+            Err(StoreError::MessageIdConflict | StoreError::IdempotencyConflict)
+        ));
+        assert!(matches!(
+            DeliveryStore::new(&mut client)
+                .accept_alpha(
+                    NewMessage {
+                        client_message_id: Uuid::new_v4(),
+                        idempotency_key: "new-work",
+                        ..input()
+                    },
+                    false,
+                )
+                .await,
+            Err(StoreError::QuotaNotConfigured)
+        ));
+        for table in ["messages", "dispatch_jobs", "idempotency_keys"] {
+            let count: i64 = client
+                .query_one(
+                    &format!("SELECT count(*) FROM {table} WHERE account_id=$1"),
+                    &[&account],
+                )
+                .await
+                .unwrap()
+                .get(0);
+            assert_eq!(count, 1, "{table} count changed after replay");
+        }
+        let reservations: i64 = client
+            .query_one(
+                "SELECT count(*) FROM usage_ledger WHERE account_id=$1",
+                &[&account],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(reservations, 0);
+        client
+            .batch_execute(&format!(
+                "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
+            ))
+            .await
+            .unwrap();
+    }
 
     #[tokio::test]
     async fn parallel_acceptance_respects_pending_queue_capacity() {

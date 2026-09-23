@@ -34,6 +34,7 @@ pub struct MessagesHttpState {
     database_url: String,
     hasher: Arc<TokenHasher>,
     policy: Arc<AlphaPolicy>,
+    metered: bool,
 }
 
 impl MessagesHttpState {
@@ -43,6 +44,7 @@ impl MessagesHttpState {
         database_url: String,
         hasher: Arc<TokenHasher>,
         policy: Arc<AlphaPolicy>,
+        metered: bool,
     ) -> Result<Self, &'static str> {
         if database_url.is_empty() {
             return Err("message database URL is required");
@@ -51,6 +53,7 @@ impl MessagesHttpState {
             database_url,
             hasher,
             policy,
+            metered,
         })
     }
 }
@@ -266,16 +269,18 @@ async fn accept(
         return Err(MessageHttpError::NotFound);
     }
     let synthetic_body = format!("ZROtext synthetic test: {}", body.test_case_id);
-    let outcome = DeliveryStore::new(&mut client)
-        .accept(NewMessage {
-            account_id,
-            client_message_id: body.client_message_id,
-            device_id: body.device_id,
-            idempotency_key: key,
-            recipient_e164: &body.recipient_e164,
-            synthetic_payload: synthetic_body.as_bytes(),
-            expires_at_ms: body.expires_at_ms,
-        })
+    let input = NewMessage {
+        account_id,
+        client_message_id: body.client_message_id,
+        device_id: body.device_id,
+        idempotency_key: key,
+        recipient_e164: &body.recipient_e164,
+        synthetic_payload: synthetic_body.as_bytes(),
+        expires_at_ms: body.expires_at_ms,
+    };
+    let mut store = DeliveryStore::new(&mut client);
+    let outcome = store
+        .accept_alpha(input, state.metered)
         .await
         .map_err(map_store)?;
     Ok((
@@ -478,10 +483,22 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
             include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
             include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
+            include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
             include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
             include_str!("../../../../deploy/compose/migrations/006_usage_metering.sql"),
+            include_str!(
+                "../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"
+            ),
+            include_str!("../../../../deploy/compose/migrations/008_stripe_billing_foundation.sql"),
+            include_str!("../../../../deploy/compose/migrations/009_webhook_manual_replay.sql"),
+            include_str!("../../../../deploy/compose/migrations/010_billing_test_entitlement.sql"),
+            include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
+            include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
             include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
             include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
+            include_str!("../../../../deploy/compose/migrations/015_webhook_kek_commitments.sql"),
+            include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+            include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
         ] {
             client.batch_execute(sql).await.unwrap();
         }
@@ -498,7 +515,8 @@ mod tests {
             )
             .unwrap(),
         );
-        let app = router(MessagesHttpState::new(url.clone(), hasher.clone(), policy).unwrap());
+        let app =
+            router(MessagesHttpState::new(url.clone(), hasher.clone(), policy, false).unwrap());
         let message_id = Uuid::new_v4();
         let input = serde_json::json!({
             "client_message_id":message_id,
@@ -664,11 +682,411 @@ mod tests {
                 .status(),
             StatusCode::NOT_FOUND
         );
+        let (metered_account, metered_device, metered_send, _, _) =
+            owner(&mut client, &hasher, "owner-metered@example.test").await;
+        client
+            .execute(
+                "INSERT INTO usage_quota_policies(account_id,metric,limit_units,source) VALUES($1,'outbound_message',0,'stripe_test')",
+                &[&metered_account],
+            )
+            .await
+            .unwrap();
+        let metered_policy = Arc::new(
+            AlphaPolicy::parse(
+                Some("true"),
+                Some(&metered_account.to_string()),
+                Some("+15555550101"),
+            )
+            .unwrap(),
+        );
+        let metered = router(
+            MessagesHttpState::new(url.clone(), hasher.clone(), metered_policy.clone(), true)
+                .unwrap(),
+        );
+        let metered_input = serde_json::json!({
+            "client_message_id":Uuid::new_v4(),
+            "device_id":metered_device,
+            "recipient_e164":"+15555550101",
+            "test_case_id":"empty_quota",
+            "expires_at_ms":now_ms().unwrap()+600_000
+        });
+        let response = metered
+            .oneshot(post(
+                "/messages",
+                &metered_send,
+                "metered-zero",
+                metered_input,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers()[header::RETRY_AFTER], "60");
+        let body = to_bytes(response.into_body(), 2048).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&body).unwrap()["code"],
+            "quota_exceeded"
+        );
+        let counts: Vec<i64> = client
+            .query_one(
+                "SELECT (SELECT count(*) FROM messages WHERE account_id=$1),
+                        (SELECT count(*) FROM dispatch_jobs WHERE account_id=$1),
+                        (SELECT count(*) FROM idempotency_keys WHERE account_id=$1),
+                        (SELECT count(*) FROM usage_ledger WHERE account_id=$1)",
+                &[&metered_account],
+            )
+            .await
+            .map(|row| (0..4).map(|index| row.get(index)).collect())
+            .unwrap();
+        assert_eq!(counts, vec![0, 0, 0, 0]);
+        client
+            .execute(
+                "INSERT INTO billing_customers(account_id,stripe_customer_id) VALUES($1,'cus_persistedtest')",
+                &[&metered_account],
+            )
+            .await
+            .unwrap();
+        let billing_off = router(
+            MessagesHttpState::new(url.clone(), hasher.clone(), metered_policy, false).unwrap(),
+        );
+        let restart_input = serde_json::json!({
+            "client_message_id":Uuid::new_v4(),
+            "device_id":metered_device,
+            "recipient_e164":"+15555550101",
+            "test_case_id":"billing_off",
+            "expires_at_ms":now_ms().unwrap()+600_000
+        });
+        let response = billing_off
+            .clone()
+            .oneshot(post(
+                "/messages",
+                &metered_send,
+                "billed-after-restart",
+                restart_input,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = to_bytes(response.into_body(), 2048).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&body).unwrap()["code"],
+            "unavailable"
+        );
+        let row = client
+            .query_one(
+                "SELECT (SELECT count(*) FROM messages WHERE account_id=$1),
+                        (SELECT count(*) FROM dispatch_jobs WHERE account_id=$1),
+                        (SELECT count(*) FROM idempotency_keys WHERE account_id=$1),
+                        (SELECT count(*) FROM usage_ledger WHERE account_id=$1)",
+                &[&metered_account],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            (0..4)
+                .map(|index| row.get::<_, i64>(index))
+                .collect::<Vec<_>>(),
+            vec![0; 4]
+        );
+        // Billing ingress holds the customer before inserting a risk event.
+        // Admission must wait on that customer without holding an account lock
+        // that would block the event's account FK KEY SHARE lock.
+        let (mut ingress, ingress_connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+        tokio::spawn(async move { ingress_connection.await.unwrap() });
+        let risk_ingress = ingress.transaction().await.unwrap();
+        let ingress_pid: i32 = risk_ingress
+            .query_one("SELECT pg_backend_pid()", &[])
+            .await
+            .unwrap()
+            .get(0);
+        risk_ingress
+            .query_one(
+                "SELECT account_id FROM billing_customers WHERE account_id=$1 FOR UPDATE",
+                &[&metered_account],
+            )
+            .await
+            .unwrap();
+        let risk_input = serde_json::json!({
+            "client_message_id":Uuid::new_v4(),
+            "device_id":metered_device,
+            "recipient_e164":"+15555550101",
+            "test_case_id":"risk_ingress",
+            "expires_at_ms":now_ms().unwrap()+600_000
+        });
+        let risk_send = metered_send.clone();
+        let mut admission = tokio::spawn(async move {
+            billing_off
+                .oneshot(post("/messages", &risk_send, "risk-ingress", risk_input))
+                .await
+                .unwrap()
+        });
+        let mut waiting_on_customer = false;
+        for _ in 0..200 {
+            let blocked: i64 = client
+                .query_one(
+                    "SELECT count(*) FROM pg_stat_activity
+                     WHERE query LIKE '%SELECT 1 FROM billing_customers WHERE account_id=$1 FOR SHARE%'
+                       AND wait_event_type='Lock'
+                       AND $1 = ANY(pg_blocking_pids(pid))",
+                    &[&ingress_pid],
+                )
+                .await
+                .unwrap()
+                .get(0);
+            if blocked > 0 {
+                waiting_on_customer = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        assert!(
+            waiting_on_customer,
+            "alpha did not wait on the customer lock"
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(10), &mut admission)
+                .await
+                .is_err()
+        );
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            risk_ingress.execute(
+                "INSERT INTO billing_events(stripe_event_id,event_type,account_id,body_sha256,disposition) \
+                 VALUES('evt_lockrisk1','charge.dispute.created',$1,decode(repeat('ab',32),'hex'),'queued')",
+                &[&metered_account],
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        risk_ingress
+            .execute(
+                "INSERT INTO billing_risk_events(stripe_event_id,stripe_charge_id,risk_kind,account_id) \
+                 VALUES('evt_lockrisk1','ch_lockrisk1','dispute',$1)",
+                &[&metered_account],
+            )
+            .await
+            .unwrap();
+        risk_ingress.commit().await.unwrap();
+        let response = tokio::time::timeout(std::time::Duration::from_secs(5), admission)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let risk_counts = client
+            .query_one(
+                "SELECT (SELECT count(*) FROM messages WHERE account_id=$1),
+                        (SELECT count(*) FROM dispatch_jobs WHERE account_id=$1),
+                        (SELECT count(*) FROM idempotency_keys WHERE account_id=$1),
+                        (SELECT count(*) FROM usage_ledger WHERE account_id=$1)",
+                &[&metered_account],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            (0..4)
+                .map(|index| risk_counts.get::<_, i64>(index))
+                .collect::<Vec<_>>(),
+            vec![0; 4]
+        );
+        let (active_account, active_device, active_send, _, _) =
+            owner(&mut client, &hasher, "owner-active@example.test").await;
+        client
+            .execute(
+                "INSERT INTO usage_quota_policies(account_id,metric,limit_units,source) VALUES($1,'outbound_message',1,'stripe_test')",
+                &[&active_account],
+            )
+            .await
+            .unwrap();
+        let active_policy = Arc::new(
+            AlphaPolicy::parse(
+                Some("true"),
+                Some(&active_account.to_string()),
+                Some("+15555550101"),
+            )
+            .unwrap(),
+        );
+        let active_app = router(
+            MessagesHttpState::new(url.clone(), hasher.clone(), active_policy, true).unwrap(),
+        );
+        let active_input = serde_json::json!({
+            "client_message_id":Uuid::new_v4(),
+            "device_id":active_device,
+            "recipient_e164":"+15555550101",
+            "test_case_id":"active_quota",
+            "expires_at_ms":now_ms().unwrap()+600_000
+        });
+        assert_eq!(
+            active_app
+                .oneshot(post(
+                    "/messages",
+                    &active_send,
+                    "active-quota",
+                    active_input
+                ))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::ACCEPTED
+        );
+        let active_counts = client
+            .query_one(
+                "SELECT (SELECT count(*) FROM messages WHERE account_id=$1),
+                        (SELECT count(*) FROM dispatch_jobs WHERE account_id=$1),
+                        (SELECT count(*) FROM idempotency_keys WHERE account_id=$1),
+                        (SELECT count(*) FROM usage_ledger WHERE account_id=$1 AND entry_kind='reserve')",
+                &[&active_account],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            (0..4)
+                .map(|index| active_counts.get::<_, i64>(index))
+                .collect::<Vec<_>>(),
+            vec![1; 4]
+        );
+        let (race_account, race_device, race_send, _, _) =
+            owner(&mut client, &hasher, "owner-race@example.test").await;
+        // Let admission observe no binding, then stop it on the account lock.
+        // A new binding can commit while this KEY SHARE guard is held.
+        let (mut account_blocker, blocker_connection) =
+            tokio_postgres::connect(&url, NoTls).await.unwrap();
+        tokio::spawn(async move { blocker_connection.await.unwrap() });
+        let account_guard = account_blocker.transaction().await.unwrap();
+        let blocker_pid: i32 = account_guard
+            .query_one("SELECT pg_backend_pid()", &[])
+            .await
+            .unwrap()
+            .get(0);
+        account_guard
+            .query_one(
+                "SELECT id FROM accounts WHERE id=$1 FOR KEY SHARE",
+                &[&race_account],
+            )
+            .await
+            .unwrap();
+        let (mut binder, binder_connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+        tokio::spawn(async move { binder_connection.await.unwrap() });
+        let binding = binder.transaction().await.unwrap();
+        binding
+            .query_one(
+                "SELECT id FROM accounts WHERE id=$1 FOR KEY SHARE",
+                &[&race_account],
+            )
+            .await
+            .unwrap();
+        let race_policy = Arc::new(
+            AlphaPolicy::parse(
+                Some("true"),
+                Some(&race_account.to_string()),
+                Some("+15555550101"),
+            )
+            .unwrap(),
+        );
+        let race_app = router(
+            MessagesHttpState::new(url.clone(), hasher.clone(), race_policy, false).unwrap(),
+        );
+        let race_input = serde_json::json!({
+            "client_message_id":Uuid::new_v4(),
+            "device_id":race_device,
+            "recipient_e164":"+15555550101",
+            "test_case_id":"binding_race",
+            "expires_at_ms":now_ms().unwrap()+600_000
+        });
+        let request = tokio::spawn(async move {
+            race_app
+                .oneshot(post("/messages", &race_send, "binding-race", race_input))
+                .await
+                .unwrap()
+        });
+        let mut waiting_on_account = false;
+        for _ in 0..200 {
+            let blocked: i64 = client
+                .query_one(
+                    "SELECT count(*) FROM pg_stat_activity
+                     WHERE query LIKE '%SELECT id FROM accounts WHERE id=$1 FOR UPDATE%'
+                       AND wait_event_type='Lock'
+                       AND $1 = ANY(pg_blocking_pids(pid))",
+                    &[&blocker_pid],
+                )
+                .await
+                .unwrap()
+                .get(0);
+            if blocked > 0 {
+                waiting_on_account = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        assert!(waiting_on_account, "alpha did not wait on the account lock");
+        binding
+            .execute(
+                "INSERT INTO billing_customers(account_id,stripe_customer_id) VALUES($1,'cus_racetest')",
+                &[&race_account],
+            )
+            .await
+            .unwrap();
+        binding.commit().await.unwrap();
+        let (mut race_risk, risk_connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+        tokio::spawn(async move { risk_connection.await.unwrap() });
+        let risk_tx = race_risk.transaction().await.unwrap();
+        risk_tx
+            .query_one(
+                "SELECT account_id FROM billing_customers WHERE account_id=$1 FOR UPDATE",
+                &[&race_account],
+            )
+            .await
+            .unwrap();
+        account_guard.commit().await.unwrap();
+        // The account lock fences further binding inserts. A plain MVCC
+        // recheck can see the committed binding while risk ingress holds the
+        // customer; a locking recheck would wait on the risk transaction.
+        let response = tokio::time::timeout(std::time::Duration::from_secs(5), request)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            risk_tx.execute(
+                "INSERT INTO billing_events(stripe_event_id,event_type,account_id,body_sha256,disposition) \
+                 VALUES('evt_bindrisk1','charge.dispute.created',$1,decode(repeat('cd',32),'hex'),'queued')",
+                &[&race_account],
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        risk_tx
+            .execute(
+                "INSERT INTO billing_risk_events(stripe_event_id,stripe_charge_id,risk_kind,account_id) \
+                 VALUES('evt_bindrisk1','ch_bindrisk1','dispute',$1)",
+                &[&race_account],
+            )
+            .await
+            .unwrap();
+        risk_tx.commit().await.unwrap();
+        let race_counts = client
+            .query_one(
+                "SELECT (SELECT count(*) FROM messages WHERE account_id=$1),
+                        (SELECT count(*) FROM dispatch_jobs WHERE account_id=$1),
+                        (SELECT count(*) FROM idempotency_keys WHERE account_id=$1),
+                        (SELECT count(*) FROM usage_ledger WHERE account_id=$1)",
+                &[&race_account],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            (0..4)
+                .map(|index| race_counts.get::<_, i64>(index))
+                .collect::<Vec<_>>(),
+            vec![0; 4]
+        );
         let disabled = router(
             MessagesHttpState::new(
                 url,
                 hasher,
                 Arc::new(AlphaPolicy::parse(None, None, None).unwrap()),
+                false,
             )
             .unwrap(),
         );
