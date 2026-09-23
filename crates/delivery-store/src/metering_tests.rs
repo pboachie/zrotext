@@ -37,7 +37,14 @@ impl TestDb {
             include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
             include_str!("../../../deploy/compose/migrations/002_auth.sql"),
             include_str!("../../../deploy/compose/migrations/003_delivery.sql"),
+            include_str!("../../../deploy/compose/migrations/004_enrollment.sql"),
+            include_str!("../../../deploy/compose/migrations/005_verification_outbox.sql"),
             include_str!("../../../deploy/compose/migrations/006_usage_metering.sql"),
+            include_str!("../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"),
+            include_str!("../../../deploy/compose/migrations/008_stripe_billing_foundation.sql"),
+            include_str!("../../../deploy/compose/migrations/009_webhook_manual_replay.sql"),
+            include_str!("../../../deploy/compose/migrations/010_billing_test_entitlement.sql"),
+            include_str!("../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
         ] {
             client.batch_execute(migration).await.unwrap();
         }
