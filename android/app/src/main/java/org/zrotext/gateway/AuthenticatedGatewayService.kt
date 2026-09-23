@@ -29,6 +29,7 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import okio.ByteString
 import org.json.JSONObject
 import java.io.IOException
 import java.net.URI
@@ -291,6 +292,10 @@ class AuthenticatedGatewayService : Service() {
                 } catch (_: Exception) {
                     fail(webSocket, currentGeneration)
                 }
+            }
+
+            override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+                disconnect(currentGeneration, DeviceReconnectPolicy.Loss.PROTOCOL_REJECTED)
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
