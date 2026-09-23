@@ -1,7 +1,6 @@
-# ADR 0002: M1 account, enrollment, and heartbeat foundations
+# ADR 0002: Account, enrollment, and heartbeat foundations
 
-Status: accepted for M1 alpha foundations, 2026-09-22. This decision does
-not declare M0 or M1 complete, enable SMS dispatch, or approve sealed content.
+Status: accepted, 2026-09-22. This decision describes the account and device connection foundation; later protocol extensions are documented separately.
 
 ## Account and verification
 
@@ -38,10 +37,7 @@ remains separate. No grant, radio adapter, or inbound handler is connected.
 
 ## Migration and limits
 
-The locked migrator applies numbered migrations 001–005 on a fresh schema.
-An old M0 volume still requires backup and explicit shape-checked baseline
-before applying later migrations. Production database TLS, restore drill,
-live HTTPS/WSS pairing, owner approval UI, Android reconnect behavior,
-verification dead-letter operations, distributed rate limits, MFA, and real
-carrier tests remain gates. Sealed-content protocol and independent review
-remain separate M2 work.
+The locked migrator applies numbered migrations on a fresh schema.
+An older pre-migration volume requires backup and an explicit shape-checked baseline
+before applying later migrations. The [device-stream contract](../../protocol/v1/device-stream.md)
+and current server code describe subsequent connection behavior.

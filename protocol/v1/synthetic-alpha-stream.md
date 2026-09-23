@@ -1,12 +1,13 @@
-# Private synthetic-alpha stream extension (in progress)
+# Controlled-test stream extension
 
 The authenticated [device stream](device-stream.md) can issue an experimental
 single-recipient grant only when the deployment explicitly enables the
 synthetic alpha runtime, account and recipient allowlists, and writer dispatch
 authority. This is for a controlled test message with a fixed body; it is not
 the public customer message protocol. The Android stream client has an opt-in
-one-attempt grant, evidence-outbox and radio path. No live WSS or carrier send
-has been verified.
+one-attempt grant, evidence-outbox and radio path. A local WSS session and one
+authorized test SMS have been exercised on a dedicated Android phone; this
+does not establish unattended operation or general carrier support.
 
 All frames are UTF-8 JSON with `v: 1`, exact field sets, and a 4 KiB limit.
 The authenticated socket determines the account and device. It never accepts

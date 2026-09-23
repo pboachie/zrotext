@@ -1,17 +1,17 @@
 # Security and sealed-content design brief
 
-**Status: proposed protocol for expert review, not an audited cryptosystem.** Security is a launch gate. This brief deliberately separates requirements from implementation choices still needing verification.
+This document describes a proposed sealed-content protocol. It is not an implemented or audited cryptosystem. The design separates intended protections from choices still under discussion.
 
 ## Claims and trust boundaries
 
-| Statement | Status / allowed use |
+| Statement | Technical qualification |
 |---|---|
 | Open-source Android SMS gateway | Product category; implemented behavior must match public source |
 | Encrypted connection / encryption at rest | Does not imply the service cannot read messages |
-| Bodies encrypted on client before cloud upload | Use only after sealed path and leakage tests pass |
-| Cloud routes sealed content and visible metadata | Intended reviewed-launch claim |
-| End-to-end encrypted SMS | **Do not claim**; the SMS radio/carrier/recipient path is conventional plaintext |
-| We can never read your messages / zero knowledge | **Do not claim**; endpoints, served browser code, metadata and key-directory trust need qualifications |
+| Bodies encrypted on client before cloud upload | Proposed sealed-content path; not a current service feature |
+| Cloud routes sealed content and visible metadata | Proposed routing model |
+| End-to-end encrypted SMS | The SMS radio/carrier/recipient path remains conventional plaintext |
+| We can never read your messages / zero knowledge | Endpoints, served browser code, metadata and key-directory trust limit such a claim |
 | No Google message-content transit | Do not generalize into no third-party transit; the edge provider is also a processor |
 
 Protected against in sealed mode: passive database/backup theft of bodies, accidental relay plaintext logging, a relay operator reading stored bodies without client keys, replayed device commands/events, and cross-account access. Not guaranteed: endpoint compromise, malicious updates/browser JavaScript, carrier interception, recipient access, availability, metadata secrecy, or retrospective revocation of already decrypted content. Server compromise can deny/reorder messages; preventing forged sends requires client signatures and authenticated enrollment, not HPKE alone.
@@ -55,7 +55,7 @@ Phone receives plaintext SMS, normalizes multipart events, and encrypts once to 
 
 Customer automation must decrypt in the customer's runtime using the SDK. Provide a local connector recipe; a plain Zapier webhook does not magically decrypt HPKE. Webhook HMAC proves relay authenticity, while the device event signature preserves source authentication for reviewers able to verify it.
 
-STOP/START handling occurs on the phone for configured launch-language keywords and creates an authenticated suppression metadata event without uploading body plaintext. Local suppression applies immediately; relay blocks future sends after the event. Normalize recipient numbers consistently. Do not promise full regulatory compliance from keyword matching. Handle alternative withdrawal requests through the customer/operator workflow and publish a reachable abuse contact.
+STOP/START handling occurs on the phone for configured opt-out keywords and creates an authenticated suppression metadata event without uploading body plaintext. Local suppression applies immediately; relay blocks future sends after the event. Normalize recipient numbers consistently. Keyword matching alone does not address every opt-out request; provide a reachable abuse contact.
 
 ## Recovery, rotation and revocation
 
@@ -80,12 +80,10 @@ Use tenant-isolation tests, untrusted-input size limits, structured phone parsin
 
 Ephemeral/RAM-only mode is deferred. A later mode must specify process restart loss, swap/core-dump behavior, retries, device retention, logging, and TTL deletion; disabling Redis persistence alone does not prove RAM-only operation. Default short retention is deliverable without making a stronger promise.
 
-## Required review and adversarial tests
+## Protocol questions and test cases
 
-Protocol review must resolve concrete suite/library support, canonical encoding, sender signature roles, trust-root bootstrap, key-directory substitution, manifest rollback/freshness, key rotation, recovery, nonce reuse, chosen-ciphertext handling, multipart semantics and device time skew. A protocol implementation cannot certify its own design.
+Open protocol questions include concrete suite/library support, canonical encoding, sender signature roles, trust-root bootstrap, key-directory substitution, manifest rollback/freshness, key rotation, recovery, nonce reuse, chosen-ciphertext handling, multipart semantics and device time skew.
 
 Test altered AAD, wrong recipient/account/device, old manifests, revoked keys, duplicated command/event, nonce misuse vectors, truncated/oversized envelopes, invalid points, malformed HPKE inputs, signature forgery, cross-tenant object IDs, CSRF, redirect/DNS-rebinding SSRF, and billing event replay/out-of-order delivery. Use published known-answer vectors and differential interoperability among browser, TypeScript SDK and Android.
 
 Seed synthetic canary message bodies, run a full send/reply/backup/error cycle, and scan relay database, logs, traces, analytics, dumps and webhook envelopes for those plaintext canaries. This verifies a useful property; it is not proof against every malicious operator or client compromise.
-
-Paid public launch requires independent web/API and crypto reviews with remediated high-severity findings, a published scope/date/limitations summary, a real recovery drill, and a documented incident/reporting process. No audit badge before that evidence exists.
