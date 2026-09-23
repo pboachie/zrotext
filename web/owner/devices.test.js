@@ -36,6 +36,7 @@ async function ownerPage() {
   };
   const fetch = async (url, options) => {
     if (url === "/v1/auth/session") return response(200);
+    if (url === "/v1/auth/login") return response(200);
     if (url === "/v1/auth/logout") return response(204);
     if (url === "/v1/enrollment/devices") {
       return state.unauthorized ? response(401) : response(200, { devices: [], next_cursor: null });
@@ -298,4 +299,23 @@ test("sign-out clears the selected webhook endpoint and a deferred response cann
   assert.equal(element("owner-content").hidden, true);
   assert.equal(element("webhook-endpoint").value, "");
   assert.equal(element("webhook-delivery-list").children.length, 0);
+});
+
+test("a late 401 from an old webhook request cannot clear a newer sign-in", async () => {
+  const { element, state } = await ownerPage();
+  state.endpoints = [{ endpoint_id: endpointId }];
+  await element("refresh-webhook-endpoints").listeners.click();
+  let resolveOld;
+  state.pendingWebhook = new Promise((resolve) => { resolveOld = resolve; });
+  element("webhook-endpoint").value = endpointId;
+  const oldRequest = element("webhook-endpoint").listeners.change();
+  await element("logout").listeners.click();
+  element("email").value = "owner@example.test";
+  element("password").value = "synthetic";
+  await element("login-form").listeners.submit({ preventDefault() {} });
+  assert.equal(element("owner-content").hidden, false);
+  resolveOld(response(401));
+  await oldRequest;
+  assert.equal(element("owner-content").hidden, false);
+  assert.equal(element("webhook-endpoint").disabled, false);
 });

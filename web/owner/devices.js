@@ -56,12 +56,12 @@ async function api(path, method = "GET", body = undefined) {
     method, headers, credentials: "same-origin", cache: "no-store", redirect: "error",
     body: body === undefined ? undefined : JSON.stringify(body),
   });
+  if (requestEpoch !== ownerEpoch) {
+    throw new Error("Your sign-in expired. Sign in again.");
+  }
   if (response.status === 401) {
     clearOwnerState();
     message("global-status", path === "/v1/auth/login" ? "Sign in to manage devices." : "Your sign-in expired. Sign in again.");
-  }
-  if (requestEpoch !== ownerEpoch && response.ok) {
-    throw new Error("Your sign-in expired. Sign in again.");
   }
   if (!response.ok) {
     const descriptions = {
