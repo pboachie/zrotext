@@ -41,6 +41,7 @@ const MAX_FRAME_BYTES: usize = 4096;
 const MAX_DEVICE_SOCKETS: usize = 128;
 const DISPATCH_POLL_SECONDS: u64 = 5;
 const MIN_SECONDS_BETWEEN_GRANTS: u64 = 60;
+const ALPHA_READY_SECONDS: u64 = 300;
 static DEVICE_SOCKET_SLOTS: LazyLock<Arc<Semaphore>> =
     LazyLock::new(|| Arc::new(Semaphore::new(MAX_DEVICE_SOCKETS)));
 
@@ -80,6 +81,12 @@ enum ClientFrame {
     },
     #[serde(rename = "heartbeat")]
     Heartbeat { v: u8 },
+    #[serde(rename = "alpha_ready")]
+    AlphaReady {
+        v: u8,
+        connection_epoch: i64,
+        recipient_digest: String,
+    },
     #[serde(rename = "radio_event")]
     RadioEvent {
         v: u8,
@@ -331,6 +338,8 @@ async fn run_socket(mut socket: WebSocket, state: DeviceSocketState) {
     dispatch_checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     dispatch_checks.tick().await;
     let mut last_grant_at: Option<Instant> = None;
+    let mut alpha_ready: Option<([u8; 32], Instant)> = None;
+    let mut alpha_ready_used = false;
     loop {
         tokio::select! {
             message = receive_frame(&mut socket) => {
@@ -343,6 +352,18 @@ async fn run_socket(mut socket: WebSocket, state: DeviceSocketState) {
                         if !send_frame(&mut socket, ServerFrame::HeartbeatAck {
                             v: 1, connection_epoch: session.connection_epoch,
                         }).await { break; }
+                    }
+                    Some(ClientFrame::AlphaReady { v: 1, connection_epoch, recipient_digest })
+                        if connection_epoch == session.connection_epoch && !alpha_ready_used && state.dispatch_runtime_enabled =>
+                    {
+                        let Ok(bytes) = URL_SAFE_NO_PAD.decode(recipient_digest.as_bytes()) else { break; };
+                        let Ok(digest): Result<[u8; 32], _> = bytes.try_into() else { break; };
+                        if URL_SAFE_NO_PAD.encode(digest) != recipient_digest
+                            || !state.alpha_policy.allows_recipient_digest(session.account_id, &digest)
+                            || !session_current(&client, session, &state).await.unwrap_or(false)
+                        { break; }
+                        alpha_ready = Some((digest, Instant::now()));
+                        alpha_ready_used = true;
                     }
                     Some(ClientFrame::RadioEvent {
                         v: 1, connection_epoch, event_id, message_id, attempt_id,
@@ -392,15 +413,21 @@ async fn run_socket(mut socket: WebSocket, state: DeviceSocketState) {
                     || !session_current(&client, session, &state).await.unwrap_or(false)
                 { break; }
             }
-            _ = dispatch_checks.tick(), if state.dispatch_runtime_enabled => {
+            _ = dispatch_checks.tick(), if alpha_ready.is_some() => {
                 if !session_current(&client, session, &state).await.unwrap_or(false) {
                     break;
+                }
+                let Some((recipient_digest, armed_at)) = alpha_ready else { continue; };
+                if armed_at.elapsed() > Duration::from_secs(ALPHA_READY_SECONDS) {
+                    alpha_ready = None;
+                    continue;
                 }
                 if last_grant_at.is_some_and(|at| at.elapsed() < Duration::from_secs(MIN_SECONDS_BETWEEN_GRANTS)) {
                     continue;
                 }
-                match poll_synthetic_grant(&mut client, session, &state).await {
+                match poll_synthetic_grant(&mut client, session, &state, &recipient_digest).await {
                     Ok(Some(frame)) => {
+                        alpha_ready = None;
                         if !send_frame(&mut socket, frame).await { break; }
                         last_grant_at = Some(Instant::now());
                     }
@@ -492,8 +519,13 @@ async fn poll_synthetic_grant(
     client: &mut Client,
     session: DeviceSession,
     state: &DeviceSocketState,
+    recipient_digest: &[u8; 32],
 ) -> Result<Option<ServerFrame>, StoreError> {
-    if !state.dispatch_runtime_enabled || !state.alpha_policy.allows_account(session.account_id) {
+    if !state.dispatch_runtime_enabled
+        || !state
+            .alpha_policy
+            .allows_recipient_digest(session.account_id, recipient_digest)
+    {
         return Ok(None);
     }
     let enabled = client
@@ -532,7 +564,12 @@ async fn poll_synthetic_grant(
         state.instance_id, session.device_id, session.connection_epoch
     );
     let Some(claim) = DeliveryStore::new(client)
-        .claim_due_for_device(&worker_id, session.account_id, session.device_id)
+        .claim_due_for_device_and_recipient(
+            &worker_id,
+            session.account_id,
+            session.device_id,
+            recipient_digest,
+        )
         .await?
     else {
         return Ok(None);
@@ -570,6 +607,7 @@ async fn poll_synthetic_grant(
     if !state
         .alpha_policy
         .allows(session.account_id, &payload.recipient_e164)
+        || grant.recipient_digest.as_slice() != recipient_digest
         || !synthetic_body_is_fixed(&payload.body)
         || grant.expires_at_ms <= now_ms()
     {
@@ -742,6 +780,21 @@ mod tests {
                 "type":"heartbeat_ack", "v":1, "connection_epoch":7
             })
         );
+        let ready = serde_json::json!({
+            "type":"alpha_ready", "v":1, "connection_epoch":7,
+            "recipient_digest":URL_SAFE_NO_PAD.encode([8u8; 32])
+        });
+        assert!(matches!(
+            serde_json::from_value::<ClientFrame>(ready.clone()),
+            Ok(ClientFrame::AlphaReady {
+                v: 1,
+                connection_epoch: 7,
+                ..
+            })
+        ));
+        let mut extra_ready = ready;
+        extra_ready["send_count"] = serde_json::json!(2);
+        assert!(serde_json::from_value::<ClientFrame>(extra_ready).is_err());
         let event_id = Uuid::new_v4();
         let message_id = Uuid::new_v4();
         let attempt_id = Uuid::new_v4();
@@ -987,8 +1040,9 @@ mod tests {
             })
             .await
             .unwrap();
+        let approved_digest: [u8; 32] = Sha256::digest(b"+15555550101").into();
         assert!(
-            poll_synthetic_grant(&mut client, second_session, &state)
+            poll_synthetic_grant(&mut client, second_session, &state, &approved_digest)
                 .await
                 .unwrap()
                 .is_none()
@@ -1006,7 +1060,7 @@ mod tests {
             ..state.clone()
         };
         assert!(
-            poll_synthetic_grant(&mut client, second_session, &alpha_state)
+            poll_synthetic_grant(&mut client, second_session, &alpha_state, &approved_digest)
                 .await
                 .unwrap()
                 .is_none()
@@ -1015,10 +1069,11 @@ mod tests {
             .execute("UPDATE deployment_authority SET dispatch_enabled=TRUE", &[])
             .await
             .unwrap();
-        let grant = poll_synthetic_grant(&mut client, second_session, &alpha_state)
-            .await
-            .unwrap()
-            .unwrap();
+        let grant =
+            poll_synthetic_grant(&mut client, second_session, &alpha_state, &approved_digest)
+                .await
+                .unwrap()
+                .unwrap();
         let wire = serde_json::to_value(grant).unwrap();
         assert_eq!(wire["type"], "synthetic_grant");
         assert_eq!(wire["message_id"], message_id.to_string());
@@ -1131,7 +1186,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            poll_synthetic_grant(&mut client, second_session, &alpha_state)
+            poll_synthetic_grant(&mut client, second_session, &alpha_state, &approved_digest)
                 .await
                 .unwrap()
                 .is_none()
@@ -1146,7 +1201,7 @@ mod tests {
             MessageState::Queued
         );
 
-        // A queued row cannot escape a changed recipient policy at grant time.
+        // A recipient outside the one-shot phone digest remains queued.
         let other_device = Uuid::new_v4();
         let other_message = Uuid::new_v4();
         client
@@ -1187,7 +1242,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            poll_synthetic_grant(&mut client, other_session, &alpha_state)
+            poll_synthetic_grant(&mut client, other_session, &alpha_state, &approved_digest)
                 .await
                 .unwrap()
                 .is_none()
@@ -1199,7 +1254,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .state,
-            MessageState::Cancelled
+            MessageState::Queued
         );
 
         // Two distinct, valid reconnection proofs may race on different hubs.

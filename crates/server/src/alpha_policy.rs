@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Explicitly scoped synthetic-content test traffic. Never use for customer messages.
 
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use uuid::Uuid;
 
@@ -75,6 +76,14 @@ impl AlphaPolicy {
     pub fn allows_account(&self, account_id: Uuid) -> bool {
         self.enabled && self.allowed_accounts.contains(&account_id)
     }
+
+    pub fn allows_recipient_digest(&self, account_id: Uuid, digest: &[u8; 32]) -> bool {
+        self.allows_account(account_id)
+            && self
+                .allowed_recipients
+                .iter()
+                .any(|recipient| Sha256::digest(recipient.as_bytes()).as_slice() == digest)
+    }
 }
 
 #[cfg(test)]
@@ -99,6 +108,9 @@ mod tests {
         )
         .unwrap();
         assert!(policy.allows(account, "+15555550101"));
+        let approved_digest: [u8; 32] = Sha256::digest(b"+15555550101").into();
+        assert!(policy.allows_recipient_digest(account, &approved_digest));
+        assert!(!policy.allows_recipient_digest(Uuid::new_v4(), &approved_digest));
         assert!(!policy.allows(account, "+15555550102"));
         assert!(!policy.allows(Uuid::new_v4(), "+15555550101"));
         assert!(AlphaPolicy::parse(Some("true"), None, Some("+15555550101")).is_err());
