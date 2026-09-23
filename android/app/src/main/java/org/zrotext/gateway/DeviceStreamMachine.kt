@@ -22,6 +22,7 @@ internal class DeviceStreamMachine(
         private set
     var connectionEpoch: Long? = null
         private set
+    private var accountId: UUID? = null
     var acknowledgments: Int = 0
         private set
 
@@ -38,6 +39,7 @@ internal class DeviceStreamMachine(
         check(receivedDeviceId == deviceId && nonce.size == 32) { "Challenge identity mismatch" }
         val signature = signer(accountId, deviceId, challengeId, nonce.copyOf())
         check(signature.size in 8..80) { "Invalid signature length" }
+        this.accountId = accountId
         phase = Phase.PROOF_SENT
         return Proof(challengeId, accountId, deviceId, nonce.copyOf(), signature)
     }
@@ -58,6 +60,18 @@ internal class DeviceStreamMachine(
     }
 
     @Synchronized
+    fun activeAccountId(): UUID {
+        check(phase == Phase.ACTIVE) { "No authenticated session" }
+        return checkNotNull(accountId)
+    }
+
+    @Synchronized
+    fun activeDeviceId(): UUID {
+        check(phase == Phase.ACTIVE) { "No authenticated session" }
+        return deviceId
+    }
+
+    @Synchronized
     fun heartbeatAck(epoch: Long): Int {
         check(phase == Phase.ACTIVE && connectionEpoch == epoch) { "Stale heartbeat" }
         acknowledgments += 1
@@ -68,5 +82,6 @@ internal class DeviceStreamMachine(
     fun close() {
         phase = Phase.CLOSED
         connectionEpoch = null
+        accountId = null
     }
 }

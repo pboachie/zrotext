@@ -133,6 +133,15 @@ class MainActivity : ComponentActivity() {
                         startService(Intent(this@MainActivity, AuthenticatedGatewayService::class.java)
                             .setAction(AuthenticatedGatewayService.ACTION_PAUSE))
                     }) { Text("Pause authenticated heartbeat") }
+                    Text("Inbound pilot: explicitly start a device session that uploads signed metadata for locally captured, consented replies. The sender number and SMS body stay on this phone.")
+                    Button(onClick = {
+                        stopService(Intent(this@MainActivity, GatewayService::class.java))
+                        val intent = Intent(this@MainActivity, AuthenticatedGatewayService::class.java)
+                            .putExtra(AuthenticatedGatewayService.EXTRA_URL, deviceStreamEndpoint)
+                            .putExtra(AuthenticatedGatewayService.EXTRA_DEVICE_ID, approvedDeviceId.trim())
+                            .putExtra(AuthenticatedGatewayService.EXTRA_INBOUND_UPLOAD, true)
+                        ContextCompat.startForegroundService(this@MainActivity, intent)
+                    }) { Text("Start inbound metadata pilot") }
                     HorizontalDivider()
                     Text("Controlled SMS test", style = MaterialTheme.typography.titleMedium)
                     Text("Enter a recipient you control in +E.164 form. This test allows one send per app installation. A confirmed grant can send one SMS from the selected SIM; an uncertain result is never retried automatically.")
