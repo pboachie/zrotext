@@ -142,6 +142,7 @@ pub struct AuthHttpState {
     pub dispatcher: Arc<dyn VerificationDispatcher>,
     pub hash_limit: Arc<Semaphore>,
     pub mfa_cipher: Option<Arc<MfaCipher>>,
+    pub mfa_enrollment_enabled: bool,
 }
 
 impl AuthHttpState {
@@ -162,11 +163,17 @@ impl AuthHttpState {
             // Argon2id uses 64 MiB per operation. Limit concurrent hashes.
             hash_limit: Arc::new(Semaphore::new(2)),
             mfa_cipher: None,
+            mfa_enrollment_enabled: false,
         })
     }
 
     pub fn with_mfa_cipher(mut self, cipher: Arc<MfaCipher>) -> Self {
         self.mfa_cipher = Some(cipher);
+        self
+    }
+
+    pub fn with_mfa_enrollment_enabled(mut self) -> Self {
+        self.mfa_enrollment_enabled = true;
         self
     }
 }
@@ -658,6 +665,9 @@ async fn begin_mfa_enrollment(
     headers: HeaderMap,
     Json(body): Json<MfaEnrollBody>,
 ) -> Result<Response, AuthHttpError> {
+    if !state.mfa_enrollment_enabled {
+        return Err(AuthHttpError::NotFound);
+    }
     let cipher = state
         .mfa_cipher
         .as_ref()
@@ -704,6 +714,9 @@ async fn confirm_mfa_enrollment(
     headers: HeaderMap,
     Json(body): Json<MfaCodeBody>,
 ) -> Result<Response, AuthHttpError> {
+    if !state.mfa_enrollment_enabled {
+        return Err(AuthHttpError::NotFound);
+    }
     let cipher = state
         .mfa_cipher
         .as_ref()
@@ -935,6 +948,25 @@ mod tests {
             .headers_mut()
             .insert(CSRF_HEADER, HeaderValue::from_str(csrf).unwrap());
         request
+    }
+
+    #[tokio::test]
+    async fn mfa_enrollment_is_off_by_default() {
+        let state = AuthHttpState::new(
+            "postgres://unused".to_owned(),
+            Arc::new(TokenHasher::new(vec![7; 32]).unwrap()),
+            "https://zrotext.example".to_owned(),
+            Arc::new(DisabledVerificationDispatcher),
+        )
+        .unwrap();
+        let app = router(state);
+        for (path, body) in [
+            ("/mfa/enroll", serde_json::json!({"password":"unused"})),
+            ("/mfa/confirm", serde_json::json!({"code":"000000"})),
+        ] {
+            let response = app.clone().oneshot(json_post(path, body)).await.unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        }
     }
 
     #[test]
@@ -1307,7 +1339,8 @@ mod tests {
             Arc::new(DisabledVerificationDispatcher),
         )
         .unwrap()
-        .with_mfa_cipher(Arc::new(MfaCipher::new(key).unwrap()));
+        .with_mfa_cipher(Arc::new(MfaCipher::new(key).unwrap()))
+        .with_mfa_enrollment_enabled();
         let app = router(state);
         let response = app
             .clone()

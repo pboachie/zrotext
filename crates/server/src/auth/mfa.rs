@@ -93,6 +93,42 @@ impl MfaCipher {
     }
 }
 
+/// Called before account routes are mounted. Every enabled secret must open
+/// under this site's key; a missing or mismatched key fails startup. Recovery
+/// mode is an explicit operator override and performs no TOTP decryption.
+pub async fn validate_runtime_key(
+    client: &Client,
+    cipher: Option<&MfaCipher>,
+    recovery_only: bool,
+) -> Result<(), AuthError> {
+    if recovery_only {
+        return Ok(());
+    }
+    let mut after = Uuid::nil();
+    loop {
+        let rows = client
+            .query(
+                "SELECT account_id,user_id,secret_nonce,secret_ciphertext FROM owner_mfa WHERE enabled_at IS NOT NULL AND account_id>$1 ORDER BY account_id LIMIT 128",
+                &[&after],
+            )
+            .await?;
+        if rows.is_empty() {
+            return Ok(());
+        }
+        for row in &rows {
+            let account_id: Uuid = row.get(0);
+            let user_id: Uuid = row.get(1);
+            cipher.ok_or(AuthError::Crypto)?.open(
+                account_id,
+                user_id,
+                &row.get::<_, Vec<u8>>(2),
+                &row.get::<_, Vec<u8>>(3),
+            )?;
+            after = account_id;
+        }
+    }
+}
+
 pub struct Enrollment {
     pub secret_base32: String,
     pub provisioning_uri: String,
@@ -612,6 +648,7 @@ mod tests {
             .unwrap()
             .get(0);
         assert_eq!(flags, 0);
+        assert!(validate_runtime_key(&client, None, false).await.is_ok());
         assert!(
             auth::verify_email(&mut client, &hasher, &a.verification_token)
                 .await
@@ -782,6 +819,23 @@ mod tests {
         let _ = confirm_enrollment(&mut client, &cipher, &hasher, &pb, &b_code)
             .await
             .unwrap();
+        assert!(
+            validate_runtime_key(&client, Some(&cipher), false)
+                .await
+                .is_ok()
+        );
+        assert!(matches!(
+            validate_runtime_key(&client, None, false).await,
+            Err(AuthError::Crypto)
+        ));
+        let mut wrong_key = vec![0u8; 32];
+        OsRng.fill_bytes(&mut wrong_key);
+        let wrong_cipher = MfaCipher::new(wrong_key).unwrap();
+        assert!(matches!(
+            validate_runtime_key(&client, Some(&wrong_cipher), false).await,
+            Err(AuthError::Crypto)
+        ));
+        assert!(validate_runtime_key(&client, None, true).await.is_ok());
         let b_challenge = begin_login_challenge(&client, &hasher, b.account_id, b.user_id)
             .await
             .unwrap();

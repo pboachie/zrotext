@@ -56,6 +56,8 @@ services:
       DISPATCH_ENABLED: "false"
       M0_TEST_TOKEN: ${M0_TEST_TOKEN:-}
       MFA_ENCRYPTION_KEY_B64: ${MFA_ENCRYPTION_KEY_B64:-}
+      MFA_ENROLLMENT_ENABLED: ${MFA_ENROLLMENT_ENABLED:-false}
+      MFA_RECOVERY_ONLY: ${MFA_RECOVERY_ONLY:-false}
     ports:
       - "127.0.0.1:8080:8080"
   app_b:
@@ -69,6 +71,8 @@ services:
       DISPATCH_ENABLED: "false"
       M0_TEST_TOKEN: ${M0_TEST_TOKEN:-}
       MFA_ENCRYPTION_KEY_B64: ${MFA_ENCRYPTION_KEY_B64:-}
+      MFA_ENROLLMENT_ENABLED: ${MFA_ENROLLMENT_ENABLED:-false}
+      MFA_RECOVERY_ONLY: ${MFA_RECOVERY_ONLY:-false}
     ports:
       - "127.0.0.1:8081:8080"
 volumes:
