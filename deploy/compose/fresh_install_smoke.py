@@ -33,6 +33,7 @@ COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 TAG = re.compile(r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\."
                  r"(?:0|[1-9][0-9]*)(?:-rc\.[1-9][0-9]*)?\Z")
 SOURCE = "https://github.com/pboachie/zrotext"
+STAGED_IMAGE = "zrotext-release-smoke:local"
 
 
 def validate_image_args(image_ref, source_commit, source_tag):
@@ -49,8 +50,15 @@ def validate_image_args(image_ref, source_commit, source_tag):
 
 
 def inspect_release_image(image_ref, source_commit, source_tag):
-    run(["docker", "pull", image_ref], "immutable image pull", timeout=600)
-    raw = run(["docker", "image", "inspect", image_ref, "--format",
+    raw = run(["docker", "image", "inspect", STAGED_IMAGE, "--format",
+               "{{json .RepoDigests}}"], "staged image digests")
+    try:
+        repo_digests = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        raise DrillError("staged image digests are invalid") from exc
+    if not isinstance(repo_digests, list) or image_ref not in repo_digests:
+        raise DrillError("staged image does not match selected digest")
+    raw = run(["docker", "image", "inspect", STAGED_IMAGE, "--format",
                "{{json .Config.Labels}}"], "release image labels")
     try:
         labels = json.loads(raw)
@@ -63,7 +71,7 @@ def inspect_release_image(image_ref, source_commit, source_tag):
         labels.get("org.opencontainers.image.licenses") != "AGPL-3.0-only",
     )):
         raise DrillError("release image source labels differ from selected release")
-    image_id = run(["docker", "image", "inspect", image_ref, "--format",
+    image_id = run(["docker", "image", "inspect", STAGED_IMAGE, "--format",
                     "{{.Id}}"], "release image ID").strip()
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
         raise DrillError("release image ID is invalid")
@@ -185,8 +193,8 @@ def main():
                                              args.source_tag)
             override = directory / "release-image.yaml"
             override.write_text(json.dumps({"services": {
-                "app": {"image": args.image_ref},
-                "migrate": {"image": args.image_ref},
+                "app": {"image": STAGED_IMAGE},
+                "migrate": {"image": STAGED_IMAGE},
             }}), encoding="utf-8")
             compose.extend(("-f", str(override)))
         started = True

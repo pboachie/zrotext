@@ -10,13 +10,16 @@ For a release image, pass its immutable digest plus the expected public source
 identity:
 
 ```sh
+docker pull ghcr.io/pboachie/zrotext@sha256:<digest>
+docker tag ghcr.io/pboachie/zrotext@sha256:<digest> zrotext-release-smoke:local
 python3 deploy/compose/fresh_install_smoke.py \
   --image-ref ghcr.io/pboachie/zrotext@sha256:<digest> \
   --source-commit <full-commit-sha> --source-tag v0.1.0-rc.1
 ```
 
-This mode pulls the digest, checks its source labels, and verifies that both the
-migrator and API containers ran that exact image before checking migrations,
+This mode checks that the staged local alias has the requested repository digest
+and source labels, then verifies that both the migrator and API containers ran
+that same image before checking migrations,
 health, readiness, dispatch isolation, and logical restore. The release-image
 workflow runs it before attesting or writing a promotion receipt. A failed
 smoke may leave the uniquely tagged image in GHCR, but no reviewed receipt is

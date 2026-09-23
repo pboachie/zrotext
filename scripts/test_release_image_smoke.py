@@ -37,8 +37,15 @@ class ReleaseImageSmokeTest(unittest.TestCase):
             "org.opencontainers.image.version": TAG,
             "org.opencontainers.image.licenses": "AGPL-3.0-only",
         }
-        with patch.object(smoke, "run", side_effect=["", json.dumps(labels)]):
+        with patch.object(smoke, "run", side_effect=[json.dumps([IMAGE]),
+                                                    json.dumps(labels)]):
             with self.assertRaisesRegex(smoke.DrillError, "source labels"):
+                smoke.inspect_release_image(IMAGE, COMMIT, TAG)
+
+    def test_rejects_staged_image_without_selected_digest(self):
+        with patch.object(smoke, "run", return_value=json.dumps([
+                "ghcr.io/pboachie/zrotext@sha256:" + "e" * 64])):
+            with self.assertRaisesRegex(smoke.DrillError, "selected digest"):
                 smoke.inspect_release_image(IMAGE, COMMIT, TAG)
 
     def test_requires_both_containers_to_run_selected_image(self):
