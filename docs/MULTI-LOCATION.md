@@ -113,6 +113,8 @@ Route 100 requests with a configurable 90/10 weight and verify aggregate behavio
 
 Run `cargo run --locked -p zrotext-device-sim` for a deterministic two-hub matrix covering dropped acceptance/result acknowledgments, writer loss with paused dispatch, stale hub sessions, and lease expiry/reconnect. Its JSON timelines assert one shared writer, no blind regrant of an ambiguous message, and at most one modeled radio call per stable message. This pure model does not simulate PostgreSQL promotion, network packet loss, Android radio behavior, or geographic failure; those require separate integration and device tests.
 
+The PostgreSQL-backed server regression `device_socket::tests::lost_intent_ack_across_hubs_needs_no_radio_proof_before_regrant` exercises a synthetic grant on hub A, a lost durable-intent ACK, hub B taking the device session, an unknown timeout that retains the fence, and a durable no-radio proof before a new attempt. Run it with `ZT_AUTH_TEST_DATABASE_URL` pointed at a disposable PostgreSQL database. It tests writer and socket grant logic without Android, a carrier, network packet loss, or database promotion.
+
 Assert: quota and idempotency remain globally consistent; no concurrent radio submission for the same stable message ID; accepted unknowns are surfaced; a site without writer authority issues no new grants; replica lag is visible; failover never enables two writers; both sides of an ambiguous submission cannot retry independently. Capture packet timelines and state-event histories from the simulator, then repeat relevant cases with two real phones.
 
 HTTP origin failover, device reconnect, and database recovery depend on the chosen network and replication setup. Document measured behavior for each deployment.
