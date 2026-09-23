@@ -11,9 +11,26 @@ All frames are UTF-8 JSON with `v: 1`, exact field sets, and a 4 KiB limit.
 The authenticated socket determines the account and device. It never accepts
 those identities from a radio event frame.
 
+## One-shot phone readiness
+
+A heartbeat-only phone receives no grant. A future test client must require a
+local, deliberate one-send arm action and send this frame only after an
+authenticated session and local recipient approval:
+
+```json
+{"v":1,"type":"alpha_ready","connection_epoch":1,"recipient_digest":"BASE64URL_NO_PAD_SHA256"}
+```
+
+The digest is SHA-256 of the exact locally approved E.164 recipient. The hub
+checks the current session and account/recipient allowlists. It consumes this
+readiness on the first grant and will not accept a second readiness frame on
+that socket. If no matching queued message arrives within five minutes, the
+readiness expires and a fresh, manually armed session is required.
+
 ## Grant
 
-After a current session and writer-owned claim, the hub may send:
+After one-shot readiness, a current session, and a writer-owned claim for the
+matching recipient digest, the hub may send:
 
 ```json
 {"v":1,"type":"synthetic_grant","message_id":"UUID","attempt_id":"UUID","device_id":"UUID","generation":1,"connection_epoch":1,"deployment_epoch":1,"recipient_digest":"BASE64URL_NO_PAD_SHA256","expires_at_ms":0,"recipient_e164":"+15555550101","body":"ZROtext synthetic test: case_1"}
