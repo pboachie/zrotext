@@ -197,6 +197,54 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
     assert_eq!(status, "succeeded");
     assert!(claim_webhook(&mut db, "worker-a").await.unwrap().is_none());
 
+    // Exercise the assembled worker without touching the network. A target
+    // rejected by local policy must consume one attempt and dead-letter it.
+    let policy_endpoint = Uuid::new_v4();
+    let policy_delivery = Uuid::new_v4();
+    let vault =
+        crate::webhook_worker::WebhookSecretVault::new(1, zeroize::Zeroizing::new(vec![7_u8; 32]))
+            .unwrap();
+    let encrypted = vault.seal(account, policy_endpoint, &[8_u8; 32]).unwrap();
+    db.execute(
+        "INSERT INTO webhook_endpoints(id,account_id,callback_url,signing_secret_ciphertext, \
+         signing_secret_key_version,enabled) VALUES($1,$2,'https://example.invalid/hook',$3,1,true)",
+        &[&policy_endpoint, &account, &encrypted],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO webhook_deliveries(id,account_id,endpoint_id,event_id) VALUES($1,$2,$3,$4)",
+        &[
+            &policy_delivery,
+            &account,
+            &policy_endpoint,
+            &signed.event_id,
+        ],
+    )
+    .await
+    .unwrap();
+    assert!(
+        crate::webhook_worker::dispatch_one(&mut db, &vault, "worker-policy")
+            .await
+            .unwrap()
+    );
+    let policy: (String, i16, String) = db
+        .query_one(
+            "SELECT d.status,d.attempt_count,a.outcome FROM webhook_deliveries d \
+             JOIN webhook_attempts a ON a.delivery_id=d.id WHERE d.id=$1",
+            &[&policy_delivery],
+        )
+        .await
+        .map(|row| (row.get(0), row.get(1), row.get(2)))
+        .unwrap();
+    assert_eq!(policy, ("dead".into(), 1, "policy_rejected".into()));
+    db.execute(
+        "UPDATE webhook_endpoints SET enabled=false WHERE id=$1",
+        &[&policy_endpoint],
+    )
+    .await
+    .unwrap();
+
     let changed = InboundEvent {
         part_count: 2,
         signature_der: &[],
