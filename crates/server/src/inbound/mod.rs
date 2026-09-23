@@ -308,6 +308,7 @@ pub struct WebhookLease {
     pub endpoint_id: Uuid,
     pub event_id: Uuid,
     pub attempt_id: Uuid,
+    pub generation: i16,
     pub attempt_number: i16,
     pub worker_id: String,
 }
@@ -345,13 +346,14 @@ pub async fn load_webhook_payload(
          (e.account_id,e.id)=(d.account_id,d.endpoint_id) \
          JOIN inbound_events i ON (i.account_id,i.id)=(d.account_id,d.event_id) \
          WHERE d.id=$1 AND d.account_id=$2 AND d.endpoint_id=$3 AND d.event_id=$4 \
-         AND d.status='leased' AND d.attempt_count=$5 AND d.lease_owner=$6 \
+         AND d.status='leased' AND d.generation=$5 AND d.attempt_count=$6 AND d.lease_owner=$7 \
          AND d.lease_until>now() AND e.enabled=TRUE",
             &[
                 &lease.delivery_id,
                 &lease.account_id,
                 &lease.endpoint_id,
                 &lease.event_id,
+                &lease.generation,
                 &lease.attempt_number,
                 &lease.worker_id,
             ],
@@ -417,7 +419,7 @@ pub async fn claim_webhook(
     let tx = client.transaction().await?;
     let expired = tx
         .query(
-            "SELECT id,attempt_count FROM webhook_deliveries \
+            "SELECT id,generation,attempt_count FROM webhook_deliveries \
          WHERE status='leased' AND lease_until<=now() \
          ORDER BY lease_until,id FOR UPDATE SKIP LOCKED LIMIT 100",
             &[],
@@ -425,11 +427,12 @@ pub async fn claim_webhook(
         .await?;
     for row in expired {
         let delivery_id: Uuid = row.get(0);
-        let attempts: i16 = row.get(1);
+        let generation: i16 = row.get(1);
+        let attempts: i16 = row.get(2);
         tx.execute(
             "UPDATE webhook_attempts SET completed_at=now(),outcome='timeout' \
-             WHERE delivery_id=$1 AND attempt_number=$2 AND completed_at IS NULL",
-            &[&delivery_id, &attempts],
+             WHERE delivery_id=$1 AND generation=$2 AND attempt_number=$3 AND completed_at IS NULL",
+            &[&delivery_id, &generation, &attempts],
         )
         .await?;
         if let Some(delay) = retry_delay(attempts) {
@@ -442,8 +445,8 @@ pub async fn claim_webhook(
             .await?;
         } else {
             tx.execute(
-                "UPDATE webhook_deliveries SET status='dead',lease_owner=NULL, \
-                 lease_until=NULL,updated_at=now() WHERE id=$1",
+                "UPDATE webhook_deliveries SET status='dead',terminal_reason='failed', \
+                 lease_owner=NULL,lease_until=NULL,updated_at=now() WHERE id=$1",
                 &[&delivery_id],
             )
             .await?;
@@ -451,7 +454,7 @@ pub async fn claim_webhook(
     }
     let row = tx
         .query_opt(
-            "SELECT d.id,d.account_id,d.endpoint_id,d.event_id,d.attempt_count \
+            "SELECT d.id,d.account_id,d.endpoint_id,d.event_id,d.generation,d.attempt_count \
          FROM webhook_deliveries d JOIN webhook_endpoints e ON \
          (e.account_id,e.id)=(d.account_id,d.endpoint_id) \
          WHERE d.status='pending' AND d.next_attempt_at<=now() AND \
@@ -468,7 +471,8 @@ pub async fn claim_webhook(
     let account_id: Uuid = row.get(1);
     let endpoint_id: Uuid = row.get(2);
     let event_id: Uuid = row.get(3);
-    let attempt_number: i16 = row.get::<_, i16>(4) + 1;
+    let generation: i16 = row.get(4);
+    let attempt_number: i16 = row.get::<_, i16>(5) + 1;
     let attempt_id = Uuid::new_v4();
     tx.execute(
         "UPDATE webhook_deliveries SET status='leased',attempt_count=$2,lease_owner=$3, \
@@ -477,8 +481,8 @@ pub async fn claim_webhook(
     )
     .await?;
     tx.execute(
-        "INSERT INTO webhook_attempts(id,delivery_id,attempt_number) VALUES($1,$2,$3)",
-        &[&attempt_id, &delivery_id, &attempt_number],
+        "INSERT INTO webhook_attempts(id,delivery_id,generation,attempt_number) VALUES($1,$2,$3,$4)",
+        &[&attempt_id, &delivery_id, &generation, &attempt_number],
     )
     .await?;
     tx.commit().await?;
@@ -488,6 +492,7 @@ pub async fn claim_webhook(
         endpoint_id,
         event_id,
         attempt_id,
+        generation,
         attempt_number,
         worker_id: worker_id.to_owned(),
     }))
@@ -516,7 +521,7 @@ pub async fn finish_webhook(
     let tx = client.transaction().await?;
     let row = tx
         .query_opt(
-            "SELECT status,attempt_count,lease_owner,coalesce(lease_until>now(),false) \
+            "SELECT status,generation,attempt_count,lease_owner,coalesce(lease_until>now(),false) \
          FROM webhook_deliveries WHERE id=$1 AND account_id=$2 AND endpoint_id=$3 \
          AND event_id=$4 FOR UPDATE",
             &[
@@ -529,10 +534,12 @@ pub async fn finish_webhook(
         .await?
         .ok_or(InboundError::StaleLease)?;
     let status: String = row.get(0);
-    let attempts: i16 = row.get(1);
-    let owner: Option<String> = row.get(2);
-    let active: bool = row.get(3);
+    let generation: i16 = row.get(1);
+    let attempts: i16 = row.get(2);
+    let owner: Option<String> = row.get(3);
+    let active: bool = row.get(4);
     if status != "leased"
+        || generation != lease.generation
         || attempts != lease.attempt_number
         || owner.as_deref() != Some(&lease.worker_id)
         || !active
@@ -542,12 +549,13 @@ pub async fn finish_webhook(
     let completed = tx
         .execute(
             "UPDATE webhook_attempts SET completed_at=now(),outcome=$2,http_status=$3 \
-         WHERE id=$1 AND delivery_id=$4 AND attempt_number=$5 AND completed_at IS NULL",
+         WHERE id=$1 AND delivery_id=$4 AND generation=$5 AND attempt_number=$6 AND completed_at IS NULL",
             &[
                 &lease.attempt_id,
                 &outcome.as_str(),
                 &http_status,
                 &lease.delivery_id,
+                &lease.generation,
                 &lease.attempt_number,
             ],
         )
@@ -566,8 +574,8 @@ pub async fn finish_webhook(
         }
         (WebhookOutcome::PolicyRejected, _) => {
             tx.execute(
-                "UPDATE webhook_deliveries SET status='dead',lease_owner=NULL, \
-                 lease_until=NULL,updated_at=now() WHERE id=$1",
+                "UPDATE webhook_deliveries SET status='dead',terminal_reason='policy_rejected', \
+                 lease_owner=NULL,lease_until=NULL,updated_at=now() WHERE id=$1",
                 &[&lease.delivery_id],
             )
             .await?;
@@ -583,13 +591,74 @@ pub async fn finish_webhook(
         }
         (_, None) => {
             tx.execute(
-                "UPDATE webhook_deliveries SET status='dead',lease_owner=NULL, \
-                 lease_until=NULL,updated_at=now() WHERE id=$1",
+                "UPDATE webhook_deliveries SET status='dead',terminal_reason='failed', \
+                 lease_owner=NULL,lease_until=NULL,updated_at=now() WHERE id=$1",
                 &[&lease.delivery_id],
             )
             .await?;
         }
     }
+    tx.commit().await?;
+    Ok(())
+}
+
+/// A KEK/version/ciphertext failure happens before network I/O. Return this
+/// delivery to the queue without consuming one of its seven send attempts.
+/// The separate failure counter leaves an operator-visible repair signal.
+pub async fn defer_webhook_key_failure(
+    client: &mut Client,
+    lease: &WebhookLease,
+) -> Result<(), InboundError> {
+    let tx = client.transaction().await?;
+    let row = tx
+        .query_opt(
+            "SELECT status,generation,attempt_count,lease_owner,coalesce(lease_until>now(),false) \
+             FROM webhook_deliveries WHERE id=$1 AND account_id=$2 AND endpoint_id=$3 \
+             AND event_id=$4 FOR UPDATE",
+            &[
+                &lease.delivery_id,
+                &lease.account_id,
+                &lease.endpoint_id,
+                &lease.event_id,
+            ],
+        )
+        .await?
+        .ok_or(InboundError::StaleLease)?;
+    let status: String = row.get(0);
+    let generation: i16 = row.get(1);
+    let attempts: i16 = row.get(2);
+    let owner: Option<String> = row.get(3);
+    let active: bool = row.get(4);
+    if status != "leased"
+        || generation != lease.generation
+        || attempts != lease.attempt_number
+        || owner.as_deref() != Some(&lease.worker_id)
+        || !active
+    {
+        return Err(InboundError::StaleLease);
+    }
+    let removed = tx
+        .execute(
+            "DELETE FROM webhook_attempts WHERE id=$1 AND delivery_id=$2 AND generation=$3 \
+             AND attempt_number=$4 AND completed_at IS NULL",
+            &[
+                &lease.attempt_id,
+                &lease.delivery_id,
+                &lease.generation,
+                &lease.attempt_number,
+            ],
+        )
+        .await?;
+    if removed != 1 {
+        return Err(InboundError::StaleLease);
+    }
+    tx.execute(
+        "UPDATE webhook_deliveries SET status='pending',attempt_count=attempt_count-1, \
+         key_failure_count=key_failure_count+1,lease_owner=NULL,lease_until=NULL, \
+         next_attempt_at=now()+interval '5 minutes',updated_at=now() WHERE id=$1",
+        &[&lease.delivery_id],
+    )
+    .await?;
     tx.commit().await?;
     Ok(())
 }
