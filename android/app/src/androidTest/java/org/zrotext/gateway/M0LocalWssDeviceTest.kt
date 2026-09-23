@@ -14,12 +14,14 @@ import org.junit.runner.RunWith
 /** Opt-in hardware probe. Pass m0TestToken only while a private loopback writer is running. */
 @RunWith(AndroidJUnit4::class)
 class M0LocalWssDeviceTest {
-    @Test fun threeHeartbeatsOverPrivateLoopbackTls() {
-        val token = InstrumentationRegistry.getArguments().getString("m0TestToken")
+    @Test fun heartbeatProbeOverPrivateLoopbackTls() {
+        val args = InstrumentationRegistry.getArguments()
+        val token = args.getString("m0TestToken")
         assumeTrue("requires a private local M0 server", !token.isNullOrBlank())
         val app = InstrumentationRegistry.getInstrumentation().targetContext
-        val requireScreenOff = InstrumentationRegistry.getArguments()
-            .getString("m0RequireScreenOff") == "true"
+        val requireScreenOff = args.getString("m0RequireScreenOff") == "true"
+        val requiredAcks = args.getString("m0RequiredAcks")?.toIntOrNull()
+            ?.takeIf { it in 3..20 } ?: 3
         val power = app.getSystemService(PowerManager::class.java)
         GatewayStatus.heartbeats = 0
         val start = Intent(app, GatewayService::class.java)
@@ -27,10 +29,10 @@ class M0LocalWssDeviceTest {
             .putExtra(GatewayService.EXTRA_TOKEN, token)
         try {
             ContextCompat.startForegroundService(app, start)
-            val deadline = System.currentTimeMillis() + 75_000
+            val deadline = System.currentTimeMillis() + requiredAcks * 30_000L + 15_000L
             var sampledAcks = 0
             var screenOffAcks = 0
-            while (System.currentTimeMillis() < deadline && GatewayStatus.heartbeats < 3) {
+            while (System.currentTimeMillis() < deadline && GatewayStatus.heartbeats < requiredAcks) {
                 val current = GatewayStatus.heartbeats
                 if (current > sampledAcks) {
                     if (!power.isInteractive) screenOffAcks += current - sampledAcks
@@ -42,12 +44,12 @@ class M0LocalWssDeviceTest {
                 screenOffAcks += GatewayStatus.heartbeats - sampledAcks
             }
             assertTrue(
-                "expected 3 M0 heartbeat acknowledgments; ${GatewayStatus.value}: ${GatewayStatus.heartbeats}",
-                GatewayStatus.heartbeats >= 3
+                "expected $requiredAcks M0 heartbeat acknowledgments; ${GatewayStatus.value}: ${GatewayStatus.heartbeats}",
+                GatewayStatus.heartbeats >= requiredAcks
             )
             if (requireScreenOff) {
-                assertTrue("expected 3 heartbeat acks while the display was non-interactive; got $screenOffAcks",
-                    screenOffAcks >= 3)
+                assertTrue("expected $requiredAcks heartbeat acks while the display was non-interactive; got $screenOffAcks",
+                    screenOffAcks >= requiredAcks)
             }
         } finally {
             app.stopService(Intent(app, GatewayService::class.java))
