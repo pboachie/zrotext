@@ -5,6 +5,8 @@ const byId = (id) => document.getElementById(id);
 let activePairingId = null;
 let nextDeviceCursor = null;
 let shownDeviceCount = 0;
+let nextMessageCursor = null;
+let shownMessageCount = 0;
 
 function message(id, value) {
   byId(id).textContent = value;
@@ -119,6 +121,73 @@ async function loadDevices(reset = true) {
   }
 }
 
+function localTime(milliseconds) {
+  const date = new Date(milliseconds);
+  return Number.isFinite(milliseconds) && !Number.isNaN(date.getTime())
+    ? date.toLocaleString() : "Time unavailable";
+}
+
+async function loadMessages(reset = true) {
+  message("message-status", "Loading message states…");
+  if (reset) {
+    byId("message-list").replaceChildren();
+    byId("more-messages").hidden = true;
+    nextMessageCursor = null;
+    shownMessageCount = 0;
+  }
+  try {
+    const path = nextMessageCursor
+      ? `/v1/owner/messages?before=${encodeURIComponent(nextMessageCursor)}`
+      : "/v1/owner/messages";
+    const page = await api(path);
+    if (reset && page.messages.length === 0) {
+      message("message-status", "No synthetic pilot messages yet.");
+      return;
+    }
+    nextMessageCursor = page.next_cursor;
+    shownMessageCount += page.messages.length;
+    byId("more-messages").hidden = !nextMessageCursor;
+    message("message-status", `${shownMessageCount} message${shownMessageCount === 1 ? "" : "s"} shown${nextMessageCursor ? "; more available" : ""}.`);
+    for (const item of page.messages) {
+      const row = document.createElement("li");
+      const state = document.createElement("strong");
+      const id = document.createElement("code");
+      const device = document.createElement("span");
+      const created = document.createElement("time");
+      state.textContent = item.state.replaceAll("_", " ");
+      id.textContent = item.message_id;
+      device.textContent = `Gateway ${item.device_id}`;
+      created.textContent = ` · Created ${localTime(item.created_at_ms)}`;
+      const createdDate = new Date(item.created_at_ms);
+      if (!Number.isNaN(createdDate.getTime())) created.dateTime = createdDate.toISOString();
+      row.append(state, id, device, created);
+      const details = document.createElement("details");
+      const summary = document.createElement("summary");
+      summary.textContent = `Writer events (${item.events.length}${item.events_truncated ? " most recent" : ""})`;
+      details.append(summary);
+      if (item.events.length === 0) {
+        const none = document.createElement("p");
+        none.textContent = "No writer event has been recorded yet.";
+        details.append(none);
+      } else {
+        const list = document.createElement("ol");
+        for (const event of item.events) {
+          const entry = document.createElement("li");
+          const segment = event.segment_index === null || event.segment_count === null
+            ? "" : ` · segment ${event.segment_index + 1}/${event.segment_count}`;
+          entry.textContent = `${localTime(event.received_at_ms)} · ${event.evidence.replaceAll("_", " ")} → ${event.resulting_state.replaceAll("_", " ")}${segment}`;
+          list.append(entry);
+        }
+        details.append(list);
+      }
+      row.append(details);
+      byId("message-list").append(row);
+    }
+  } catch (error) {
+    message("message-status", `Could not load messages. ${error.message}`);
+  }
+}
+
 async function checkPairing() {
   if (!activePairingId) return;
   const pairingId = activePairingId;
@@ -164,7 +233,7 @@ byId("login-form").addEventListener("submit", async (event) => {
     showSignedIn(true);
     message("login-status", "");
     message("global-status", "Signed in.");
-    await loadDevices();
+    await Promise.all([loadDevices(), loadMessages()]);
   } catch (error) {
     message("login-status", `Sign-in failed. ${error.message}`);
   }
@@ -178,6 +247,10 @@ byId("logout").addEventListener("click", async () => {
     byId("more-devices").hidden = true;
     nextDeviceCursor = null;
     shownDeviceCount = 0;
+    byId("message-list").replaceChildren();
+    byId("more-messages").hidden = true;
+    nextMessageCursor = null;
+    shownMessageCount = 0;
     showSignedIn(false);
     message("global-status", "Signed out.");
   } catch (error) {
@@ -239,12 +312,14 @@ byId("approve-form").addEventListener("submit", async (event) => {
 
 byId("refresh-devices").addEventListener("click", loadDevices);
 byId("more-devices").addEventListener("click", () => loadDevices(false));
+byId("refresh-messages").addEventListener("click", loadMessages);
+byId("more-messages").addEventListener("click", () => loadMessages(false));
 
 (async () => {
   try {
     await api("/v1/auth/session");
     showSignedIn(true);
-    await loadDevices();
+    await Promise.all([loadDevices(), loadMessages()]);
   } catch (error) {
     showSignedIn(false);
     message("global-status", error.message.startsWith("Your sign-in") ? "Sign in to manage devices." : `Could not verify session. ${error.message}`);
