@@ -25,6 +25,10 @@
             android:name=".GatewayService"
             android:exported="false"
             android:foregroundServiceType="remoteMessaging" />
+        <service
+            android:name=".AuthenticatedGatewayService"
+            android:exported="false"
+            android:foregroundServiceType="remoteMessaging" />
         <receiver android:name=".SmsCallbackReceiver" android:exported="false" />
     </application>
 </manifest>

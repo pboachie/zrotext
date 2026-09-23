@@ -17,6 +17,11 @@ const SESSION_DAYS: i32 = 14;
 const VERIFICATION_HOURS: i32 = 24;
 const MAX_EMAIL_BYTES: usize = 254;
 
+mod verification_outbox;
+pub use verification_outbox::{
+    VerificationMail, ack_verification_mail, claim_verification_mail, request_verification_resend,
+};
+
 #[derive(Debug, Error)]
 pub enum AuthError {
     #[error("invalid input")]
@@ -59,7 +64,8 @@ impl TokenHasher {
 pub struct Signup {
     pub account_id: Uuid,
     pub user_id: Uuid,
-    /// Deliver out of band. Never place this value in logs or URLs.
+    /// Compatibility for internal tests. Delivery reconstructs this code from
+    /// the challenge ID and operational pepper; never log or put it in a URL.
     pub verification_token: String,
 }
 
@@ -197,6 +203,11 @@ fn random_token(prefix: &str) -> String {
     format!("{prefix}{}", URL_SAFE_NO_PAD.encode(bytes))
 }
 
+fn verification_token_for_id(hasher: &TokenHasher, id: Uuid) -> String {
+    let secret = hasher.digest(b"email-verification-issue-v1", &id.to_string());
+    format!("ztv_{}", URL_SAFE_NO_PAD.encode(secret))
+}
+
 fn valid_token(token: &str, prefix: &str) -> bool {
     token
         .strip_prefix(prefix)
@@ -242,7 +253,8 @@ pub async fn register(
         .to_string();
     let account_id = Uuid::new_v4();
     let user_id = Uuid::new_v4();
-    let verification_token = random_token("ztv_");
+    let verification_id = Uuid::new_v4();
+    let verification_token = verification_token_for_id(hasher, verification_id);
     let token_hash = hasher.digest(b"email-verification-v1", &verification_token);
     let transaction = client.transaction().await?;
     transaction
@@ -263,7 +275,13 @@ pub async fn register(
     transaction
         .execute(
             "INSERT INTO email_verifications(id,account_id,user_id,token_hash,expires_at) VALUES($1,$2,$3,$4,now()+($5::integer * interval '1 hour'))",
-            &[&Uuid::new_v4(), &account_id, &user_id, &&token_hash[..], &VERIFICATION_HOURS],
+            &[&verification_id, &account_id, &user_id, &&token_hash[..], &VERIFICATION_HOURS],
+        )
+        .await?;
+    transaction
+        .execute(
+            "INSERT INTO verification_mail_outbox(verification_id) VALUES($1)",
+            &[&verification_id],
         )
         .await?;
     transaction.commit().await?;
@@ -288,15 +306,21 @@ pub async fn verify_email(
     let tx = client.transaction().await?;
     let row = tx
         .query_opt(
-            "UPDATE email_verifications SET used_at=now() WHERE token_hash=$1 AND used_at IS NULL AND expires_at>now() RETURNING user_id",
+            "UPDATE email_verifications SET used_at=now() WHERE token_hash=$1 AND used_at IS NULL AND expires_at>now() RETURNING id,user_id",
             &[&&hash[..]],
         )
         .await?;
     if let Some(row) = row {
-        let user_id: Uuid = row.get(0);
+        let verification_id: Uuid = row.get(0);
+        let user_id: Uuid = row.get(1);
         tx.execute(
             "UPDATE users SET email_verified_at=COALESCE(email_verified_at,now()) WHERE id=$1",
             &[&user_id],
+        )
+        .await?;
+        tx.execute(
+            "UPDATE verification_mail_outbox SET canceled_at=now(),lease_id=NULL,leased_until=NULL WHERE verification_id=$1 AND canceled_at IS NULL",
+            &[&verification_id],
         )
         .await?;
         tx.commit().await?;
@@ -606,6 +630,12 @@ mod tests {
         client
             .batch_execute(include_str!(
                 "../../../../deploy/compose/migrations/002_auth.sql"
+            ))
+            .await
+            .unwrap();
+        client
+            .batch_execute(include_str!(
+                "../../../../deploy/compose/migrations/005_verification_outbox.sql"
             ))
             .await
             .unwrap();

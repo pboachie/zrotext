@@ -18,12 +18,14 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
+    time::Duration,
 };
 use subtle::ConstantTimeEq;
 use tokio::sync::Notify;
 use tokio_postgres::NoTls;
 use zrotext_server::{
     auth::TokenHasher,
+    device_socket::{self, DeviceSocketState},
     enrollment::EnrollmentHasher,
     http_auth::{
         self, AuthHttpState, DisabledVerificationDispatcher, SmtpVerificationDispatcher,
@@ -32,14 +34,15 @@ use zrotext_server::{
     http_enrollment::{self, EnrollmentHttpState},
 };
 
+#[derive(Clone)]
 struct Config {
     database_url: String,
     site_id: String,
     instance_id: String,
     deployment_epoch: i64,
     m0_test_token: Option<String>,
-    draining: AtomicBool,
-    drain_notify: Notify,
+    draining: Arc<AtomicBool>,
+    drain_notify: Arc<Notify>,
 }
 
 #[derive(Serialize)]
@@ -50,7 +53,7 @@ struct Health {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if required("DISPATCH_ENABLED")? != "false" {
-        return Err("M0 contains no dispatcher; DISPATCH_ENABLED must be false".into());
+        return Err("No SMS dispatcher is wired; DISPATCH_ENABLED must be false".into());
     }
     let config = Arc::new(Config {
         database_url: required("DATABASE_URL")?,
@@ -60,8 +63,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         m0_test_token: env::var("M0_TEST_TOKEN")
             .ok()
             .filter(|token| token.len() >= 32),
-        draining: AtomicBool::new(false),
-        drain_notify: Notify::new(),
+        draining: Arc::new(AtomicBool::new(false)),
+        drain_notify: Arc::new(Notify::new()),
     });
     let bind: SocketAddr = env::var("BIND_ADDR")
         .unwrap_or_else(|_| "0.0.0.0:8080".to_owned())
@@ -75,12 +78,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/m0/device-test", get(device_test))
         .with_state(config.clone());
     if let Some((auth_state, enrollment_state)) = account_routes(&config)? {
+        ensure_local_site(&config).await?;
+        let mail_state = auth_state.clone();
+        let mail_draining = config.draining.clone();
+        let mail_drain_notify = config.drain_notify.clone();
+        tokio::spawn(async move {
+            let mut checks = tokio::time::interval(Duration::from_secs(5));
+            checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut unavailable_logged = false;
+            loop {
+                tokio::select! {
+                    _ = checks.tick() => {
+                        if mail_draining.load(Ordering::Acquire) { break; }
+                        match http_auth::dispatch_one_verification(&mail_state).await {
+                            Ok(_) => unavailable_logged = false,
+                            Err(_) if !unavailable_logged => {
+                                eprintln!("verification delivery worker unavailable");
+                                unavailable_logged = true;
+                            }
+                            Err(_) => {}
+                        }
+                    }
+                    _ = mail_drain_notify.notified() => break,
+                }
+            }
+        });
+        let socket_state = DeviceSocketState {
+            database_url: config.database_url.clone(),
+            site_id: config.site_id.clone(),
+            instance_id: config.instance_id.clone(),
+            deployment_epoch: config.deployment_epoch,
+            enrollment_hasher: enrollment_state.enrollment_hasher.clone(),
+            draining: config.draining.clone(),
+            drain_notify: config.drain_notify.clone(),
+        };
         app = app
             .nest("/v1/auth", http_auth::router(auth_state))
-            .nest("/v1/enrollment", http_enrollment::router(enrollment_state));
+            .nest("/v1/enrollment", http_enrollment::router(enrollment_state))
+            .merge(device_socket::router(socket_state));
     }
     eprintln!(
-        "zrotext M0 site={} instance={} listening={bind}",
+        "zrotext site={} instance={} listening={bind}",
         config.site_id, config.instance_id
     );
     let listener = tokio::net::TcpListener::bind(bind).await?;
@@ -150,6 +188,35 @@ fn account_routes(
     Ok(Some((auth_state, enrollment_state)))
 }
 
+/// A configured M1 site registers once on a fresh writer. An operator-disabled
+/// or draining existing site is never re-enabled by application startup.
+async fn ensure_local_site(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
+    let (client, connection) = tokio_postgres::connect(&config.database_url, NoTls)
+        .await
+        .map_err(|_| "site registration unavailable")?;
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    client
+        .execute(
+            "INSERT INTO sites(site_id) VALUES($1) ON CONFLICT(site_id) DO NOTHING",
+            &[&config.site_id],
+        )
+        .await
+        .map_err(|_| "site registration unavailable")?;
+    let site = client
+        .query_one(
+            "SELECT enabled,draining FROM sites WHERE site_id=$1",
+            &[&config.site_id],
+        )
+        .await
+        .map_err(|_| "site registration unavailable")?;
+    if !site.get::<_, bool>(0) || site.get::<_, bool>(1) {
+        return Err("configured site is disabled or draining".into());
+    }
+    Ok(())
+}
+
 async fn shutdown_signal(config: Arc<Config>) {
     #[cfg(unix)]
     {
@@ -199,9 +266,18 @@ async fn ready(
                 }
             });
             client
-                .query_one("SELECT NOT pg_is_in_recovery(), epoch FROM deployment_authority WHERE singleton = TRUE", &[])
+                .query_one(
+                    "SELECT NOT pg_is_in_recovery(), epoch, \
+                    COALESCE((SELECT enabled AND NOT draining FROM sites WHERE site_id=$1),TRUE) \
+                    FROM deployment_authority WHERE singleton = TRUE",
+                    &[&config.site_id],
+                )
                 .await
-                .map(|row| row.get::<_, bool>(0) && row.get::<_, i64>(1) == config.deployment_epoch)
+                .map(|row| {
+                    row.get::<_, bool>(0)
+                        && row.get::<_, i64>(1) == config.deployment_epoch
+                        && row.get::<_, bool>(2)
+                })
                 .unwrap_or(false)
         }
         Err(_) => false,
@@ -274,4 +350,64 @@ async fn device_test(
             }
         })
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+
+    #[tokio::test]
+    async fn configured_site_registers_once_and_disabled_site_fails_closed() {
+        let Ok(base_url) = env::var("ZT_AUTH_TEST_DATABASE_URL") else {
+            return;
+        };
+        let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let schema = format!("site_test_{}", Uuid::new_v4().simple());
+        setup
+            .batch_execute(&format!("CREATE SCHEMA {schema}"))
+            .await
+            .unwrap();
+        let database_url = format!("{base_url}?options=-csearch_path%3D{schema}");
+        let (client, connection) = tokio_postgres::connect(&database_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        client
+            .batch_execute(include_str!(
+                "../../../deploy/compose/migrations/001_foundation.sql"
+            ))
+            .await
+            .unwrap();
+        let config = Config {
+            database_url,
+            site_id: "local-test".into(),
+            instance_id: "test-hub".into(),
+            deployment_epoch: 1,
+            m0_test_token: None,
+            draining: Arc::new(AtomicBool::new(false)),
+            drain_notify: Arc::new(Notify::new()),
+        };
+        ensure_local_site(&config).await.unwrap();
+        ensure_local_site(&config).await.unwrap();
+        assert_eq!(
+            ready(State(Arc::new(config.clone()))).await.0,
+            StatusCode::OK
+        );
+        client
+            .execute(
+                "UPDATE sites SET enabled=FALSE WHERE site_id='local-test'",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert!(ensure_local_site(&config).await.is_err());
+        assert_eq!(
+            ready(State(Arc::new(config))).await.0,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        setup
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .unwrap();
+    }
 }
