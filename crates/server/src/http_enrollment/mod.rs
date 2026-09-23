@@ -677,6 +677,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
             include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
             include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
+            include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
         ] {
             admin.batch_execute(sql).await.unwrap();
         }
