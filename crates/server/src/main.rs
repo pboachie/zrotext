@@ -29,6 +29,7 @@ use zrotext_server::{
     auth::TokenHasher,
     billing::{
         http::{self as billing_http, BillingHttpState},
+        sessions::{self as billing_sessions, SessionState},
         worker::StripeTestWorker,
     },
     device_socket::{self, DeviceSocketState},
@@ -68,16 +69,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if !endpoint_secret.starts_with("whsec_") || endpoint_secret.len() < 16 {
                 return Err("invalid Stripe test webhook secret".into());
             }
-            let prices = required("STRIPE_TEST_PRICE_IDS")?
+            let prices: Vec<String> = required("STRIPE_TEST_PRICE_IDS")?
                 .split(',')
                 .map(str::trim)
                 .map(str::to_owned)
                 .collect();
-            let worker = StripeTestWorker::new(required("STRIPE_TEST_SECRET_KEY")?, prices)?;
-            Some((endpoint_secret, worker))
+            let secret_key = required("STRIPE_TEST_SECRET_KEY")?;
+            let worker = StripeTestWorker::new(secret_key.clone(), prices.clone())?;
+            Some((endpoint_secret, worker, secret_key, prices))
         }
         _ => return Err("invalid STRIPE_BILLING_TEST_ENABLED".into()),
     };
+    if billing_test.is_none()
+        && env::var("STRIPE_TEST_HOSTED_SESSIONS_ENABLED")
+            .ok()
+            .as_deref()
+            == Some("true")
+    {
+        return Err("Stripe hosted sessions require STRIPE_BILLING_TEST_ENABLED=true".into());
+    }
     let alpha_policy = Arc::new(AlphaPolicy::parse(
         env::var("SYNTHETIC_ALPHA_ENABLED").ok().as_deref(),
         env::var("SYNTHETIC_ALPHA_ALLOWED_ACCOUNT_IDS")
@@ -116,7 +126,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/readyz", get(ready))
         .route("/m0/device-test", get(device_test))
         .with_state(config.clone());
+    let mut billing_auth_state = None;
     if let Some((auth_state, enrollment_state)) = account_routes(&config)? {
+        billing_auth_state = Some(auth_state.clone());
         ensure_local_site(&config).await?;
         let mail_state = auth_state.clone();
         let message_hasher = auth_state.hasher.clone();
@@ -203,15 +215,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else if config.alpha_policy.enabled() {
         return Err("synthetic alpha requires account and enrollment routes".into());
     }
-    if let Some((endpoint_secret, worker)) = billing_test {
+    if let Some((endpoint_secret, worker, secret_key, prices)) = billing_test {
         let billing_database = config.database_url.clone();
-        app = app.nest(
-            "/v1/billing",
-            billing_http::router(BillingHttpState {
-                database_url: billing_database.clone(),
-                endpoint_secret,
-            }),
-        );
+        let mut billing_routes = billing_http::router(BillingHttpState {
+            database_url: billing_database.clone(),
+            endpoint_secret,
+        });
+        match env::var("STRIPE_TEST_HOSTED_SESSIONS_ENABLED")
+            .ok()
+            .as_deref()
+        {
+            None | Some("false") => {}
+            Some("true") => {
+                let auth =
+                    billing_auth_state.ok_or("Stripe hosted sessions require account routes")?;
+                let price_id = required("STRIPE_TEST_CHECKOUT_PRICE_ID")?;
+                if !prices.contains(&price_id) {
+                    return Err(
+                        "Stripe Checkout price must be in the recognized test prices".into(),
+                    );
+                }
+                let sessions = SessionState::new(auth, secret_key, price_id)?;
+                billing_routes = billing_routes.merge(billing_sessions::router(sessions));
+            }
+            _ => return Err("invalid STRIPE_TEST_HOSTED_SESSIONS_ENABLED".into()),
+        }
+        app = app.nest("/v1/billing", billing_routes);
         let billing_draining = config.draining.clone();
         let billing_notify = config.drain_notify.clone();
         tokio::spawn(async move {

@@ -10,6 +10,7 @@ use tokio_postgres::{Client, Transaction};
 use uuid::Uuid;
 
 pub mod http;
+pub mod sessions;
 pub mod worker;
 
 type HmacSha256 = Hmac<Sha256>;
