@@ -3,6 +3,9 @@ package org.zrotext.gateway
 
 import org.junit.Assert.assertEquals
 import org.junit.Test
+import java.io.EOFException
+import javax.net.ssl.SSLException
+import javax.net.ssl.SSLHandshakeException
 
 class DeviceReconnectPolicyTest {
     private val heartbeat = DeviceReconnectPolicy.Action.Connect(DeviceReconnectPolicy.PilotMode.HEARTBEAT_ONLY)
@@ -103,5 +106,33 @@ class DeviceReconnectPolicyTest {
             assertEquals(DeviceReconnectPolicy.Action.WaitForNetwork, offline.start(false, mode))
             assertEquals(heartbeat, offline.networkChanged(true))
         }
+    }
+}
+
+class DeviceDisconnectClassifierTest {
+    @Test
+    fun abruptTlsTruncationAndClosedActiveStreamRetry() {
+        assertEquals(DeviceReconnectPolicy.Loss.TRANSPORT,
+            DeviceDisconnectClassifier.failed(SSLException("stream truncated"), null))
+        assertEquals(DeviceReconnectPolicy.Loss.TRANSPORT,
+            DeviceDisconnectClassifier.failed(SSLHandshakeException("connection closed").apply {
+                initCause(EOFException())
+            }, null))
+        assertEquals(DeviceReconnectPolicy.Loss.TRANSPORT,
+            DeviceDisconnectClassifier.failed(EOFException(), 503))
+        assertEquals(DeviceReconnectPolicy.Loss.ACTIVE_CLOSE,
+            DeviceDisconnectClassifier.closed(1005, true))
+        assertEquals(DeviceReconnectPolicy.Loss.AUTH_REJECTED,
+            DeviceDisconnectClassifier.closed(1005, false))
+    }
+
+    @Test
+    fun tlsTrustHttpRejectionAndPolicyCloseStop() {
+        assertEquals(DeviceReconnectPolicy.Loss.AUTH_REJECTED,
+            DeviceDisconnectClassifier.failed(SSLHandshakeException("untrusted peer"), null))
+        assertEquals(DeviceReconnectPolicy.Loss.AUTH_REJECTED,
+            DeviceDisconnectClassifier.failed(EOFException(), 403))
+        assertEquals(DeviceReconnectPolicy.Loss.AUTH_REJECTED,
+            DeviceDisconnectClassifier.closed(1008, true))
     }
 }

@@ -18,6 +18,7 @@ import android.os.IBinder
 import android.os.SystemClock
 import android.telephony.SubscriptionManager
 import android.util.Base64
+import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -31,19 +32,18 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
 import org.json.JSONObject
-import java.io.IOException
 import java.net.URI
 import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
-import javax.net.ssl.SSLException
 import kotlin.random.Random
 
 object AuthenticatedGatewayStatus {
     var value by mutableStateOf("Paused")
     var heartbeats by mutableIntStateOf(0)
+    var authenticatedSessions by mutableIntStateOf(0)
 }
 
 /** Authenticated heartbeat and one manually armed, private synthetic-alpha attempt. */
@@ -241,6 +241,7 @@ class AuthenticatedGatewayService : Service() {
                                     else -> "Authenticated heartbeat only"
                                 }
                             AuthenticatedGatewayStatus.heartbeats = 0
+                            AuthenticatedGatewayStatus.authenticatedSessions += 1
                             getSystemService(NotificationManager::class.java)
                                 .notify(NOTIFICATION_ID, notification(
                                     when {
@@ -343,21 +344,25 @@ class AuthenticatedGatewayService : Service() {
                 disconnect(currentGeneration, DeviceReconnectPolicy.Loss.PROTOCOL_REJECTED)
             }
 
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                val authenticated = machine.phase == DeviceStreamMachine.Phase.ACTIVE
+                Log.i("ZTReconnect", "stream closing code=$code authenticated=$authenticated")
+                machine.close()
+                disconnect(currentGeneration, DeviceDisconnectClassifier.closed(code, authenticated))
+            }
+
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 val authenticated = machine.phase == DeviceStreamMachine.Phase.ACTIVE
+                Log.i("ZTReconnect", "stream closed code=$code authenticated=$authenticated")
                 machine.close()
-                disconnect(currentGeneration, if (authenticated && code in listOf(1000, 1001, 1012, 1013))
-                    DeviceReconnectPolicy.Loss.ACTIVE_CLOSE else DeviceReconnectPolicy.Loss.AUTH_REJECTED)
+                disconnect(currentGeneration, DeviceDisconnectClassifier.closed(code, authenticated))
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                Log.i("ZTReconnect", "stream failed error=${t.javaClass.simpleName} " +
+                    "cause=${t.cause?.javaClass?.simpleName} http=${response?.code}")
                 machine.close()
-                val trustedTransport = generateSequence(t as Throwable?) { it.cause }
-                    .none { it is SSLException || it is java.security.cert.CertificateException }
-                val transport = t is IOException && trustedTransport &&
-                    (response == null || response.code >= 500)
-                disconnect(currentGeneration, if (transport) DeviceReconnectPolicy.Loss.TRANSPORT
-                    else DeviceReconnectPolicy.Loss.AUTH_REJECTED)
+                disconnect(currentGeneration, DeviceDisconnectClassifier.failed(t, response?.code))
             }
         })
     }
@@ -510,6 +515,7 @@ class AuthenticatedGatewayService : Service() {
     @Synchronized
     private fun disconnect(currentGeneration: Int, reason: DeviceReconnectPolicy.Loss) {
         if (generation != currentGeneration) return
+        Log.i("ZTReconnect", "disconnect reason=$reason")
         generation += 1 // Fence queued callbacks, grants and radio authorization before any retry.
         cancelTimers()
         socket?.cancel()
