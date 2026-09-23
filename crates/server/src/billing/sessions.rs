@@ -9,12 +9,13 @@ use axum::{
     extract::{DefaultBodyLimit, Request, State},
     http::{HeaderMap, header},
     middleware::{self, Next},
-    response::Response,
-    routing::post,
+    response::{Html, IntoResponse, Response},
+    routing::{get, post},
 };
 use reqwest::{Client as HttpClient, redirect, retry};
 use serde::Serialize;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::{sync::Arc, time::Duration};
 use tokio_postgres::{Client, NoTls};
 use uuid::Uuid;
@@ -96,6 +97,48 @@ pub fn router(state: SessionState) -> Router {
         .with_state(Arc::new(state))
 }
 
+/// Fixed browser destinations used by Stripe redirects. They deliberately
+/// report no subscription status; only verified event reconciliation can do so.
+pub fn return_router() -> Router {
+    Router::new()
+        .route("/billing/success", get(checkout_return))
+        .route("/billing/cancel", get(cancel_return))
+        .route("/billing", get(portal_return))
+}
+
+fn return_page(title: &'static str, message: &'static str) -> Response {
+    (
+        [
+            ("cache-control", "no-store"),
+            ("referrer-policy", "no-referrer"),
+            ("content-security-policy", "default-src 'none'; base-uri 'none'; form-action 'none'"),
+            ("x-content-type-options", "nosniff"),
+        ],
+        Html(format!("<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><title>{title}</title><main><h1>{title}</h1><p>{message}</p><p><a href=\"/billing\">Billing status</a></p></main></html>")),
+    ).into_response()
+}
+
+async fn checkout_return() -> Response {
+    return_page(
+        "Checkout returned",
+        "Stripe returned you to ZROtext. Your subscription and access remain pending until the server verifies and reconciles billing events.",
+    )
+}
+
+async fn cancel_return() -> Response {
+    return_page(
+        "Checkout canceled",
+        "The Checkout flow was canceled. No subscription or access change is confirmed by this page.",
+    )
+}
+
+async fn portal_return() -> Response {
+    return_page(
+        "Billing status",
+        "Billing changes can take time to reconcile. This page does not confirm payment, subscription status, or access.",
+    )
+}
+
 async fn no_store_response(request: Request, next: Next) -> Response {
     let mut response = next.run(request).await;
     response
@@ -123,7 +166,13 @@ async fn checkout(
     )
     .await?;
     let account_id = owner.tenant.account_id();
-    let retry_key = checkout_retry_key(&headers, account_id)?;
+    let retry_key = checkout_retry_key(
+        &headers,
+        account_id,
+        &state.checkout_price_id,
+        &state.success_url,
+        &state.cancel_url,
+    )?;
     let customer_id = match bound_customer(&db, account_id).await? {
         Some(id) => id,
         None => {
@@ -175,7 +224,13 @@ async fn portal(
     Ok(Json(SessionUrl { url }))
 }
 
-fn checkout_retry_key(headers: &HeaderMap, account_id: Uuid) -> Result<String, AuthHttpError> {
+fn checkout_retry_key(
+    headers: &HeaderMap,
+    account_id: Uuid,
+    price_id: &str,
+    success_url: &str,
+    cancel_url: &str,
+) -> Result<String, AuthHttpError> {
     let value = headers
         .get("idempotency-key")
         .and_then(|v| v.to_str().ok())
@@ -184,7 +239,17 @@ fn checkout_retry_key(headers: &HeaderMap, account_id: Uuid) -> Result<String, A
     if uuid.get_version_num() != 4 || uuid.to_string() != value {
         return Err(AuthHttpError::BadRequest);
     }
-    Ok(format!("zt-checkout-v1-{account_id}-{uuid}"))
+    let mut digest = Sha256::new();
+    digest.update(b"zt-checkout-profile-v1\0");
+    for value in [price_id, success_url, cancel_url] {
+        digest.update(value.as_bytes());
+        digest.update(b"\0");
+    }
+    let profile = digest.finalize()[..16]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Ok(format!("zt-checkout-v2-{account_id}-{profile}-{uuid}"))
 }
 
 async fn connect(database_url: &str) -> Result<Client, AuthHttpError> {
@@ -463,14 +528,57 @@ mod tests {
             assert!(hosted_url(&Value::String(url.into()), "checkout.stripe.com").is_err());
         }
         let mut headers = HeaderMap::new();
-        assert!(checkout_retry_key(&headers, Uuid::new_v4()).is_err());
+        let account_id = Uuid::new_v4();
+        let key = |headers: &HeaderMap, price: &str| {
+            checkout_retry_key(
+                headers,
+                account_id,
+                price,
+                "https://zrotext.example/billing/success",
+                "https://zrotext.example/billing/cancel",
+            )
+        };
+        assert!(key(&headers, "price_fixture1").is_err());
         headers.insert("idempotency-key", "123".parse().unwrap());
-        assert!(checkout_retry_key(&headers, Uuid::new_v4()).is_err());
+        assert!(key(&headers, "price_fixture1").is_err());
         headers.insert(
             "idempotency-key",
             Uuid::new_v4().to_string().parse().unwrap(),
         );
-        assert!(checkout_retry_key(&headers, Uuid::new_v4()).is_ok());
+        let first = key(&headers, "price_fixture1").unwrap();
+        assert_eq!(first, key(&headers, "price_fixture1").unwrap());
+        assert_ne!(first, key(&headers, "price_fixture2").unwrap());
+        assert_ne!(
+            first,
+            checkout_retry_key(
+                &headers,
+                account_id,
+                "price_fixture1",
+                "https://zrotext.example/new-success",
+                "https://zrotext.example/billing/cancel",
+            )
+            .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn stripe_return_destinations_are_concrete_and_do_not_claim_access() {
+        for path in ["/billing/success", "/billing/cancel", "/billing"] {
+            let response = return_router()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+            let body = to_bytes(response.into_body(), 2048).await.unwrap();
+            let page = std::str::from_utf8(&body).unwrap();
+            assert!(page.contains("billing") || page.contains("Billing"));
+            assert!(
+                page.contains("pending")
+                    || page.contains("not confirm")
+                    || page.contains("No subscription")
+            );
+        }
     }
 
     #[tokio::test]
@@ -495,7 +603,13 @@ mod tests {
         for sql in [
             include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
             include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+            include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
+            include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
             include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+            include_str!("../../../../deploy/compose/migrations/006_usage_metering.sql"),
+            include_str!(
+                "../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"
+            ),
             include_str!("../../../../deploy/compose/migrations/008_stripe_billing_foundation.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
@@ -680,7 +794,7 @@ mod tests {
                 .2
                 .as_deref()
                 .unwrap()
-                .starts_with(&format!("zt-checkout-v1-{}-", signup.account_id))
+                .starts_with(&format!("zt-checkout-v2-{}-", signup.account_id))
         );
         assert_eq!(calls[2].0, "portal");
         assert!(

@@ -237,6 +237,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 let sessions = SessionState::new(auth, secret_key, price_id)?;
                 billing_routes = billing_routes.merge(billing_sessions::router(sessions));
+                app = app.merge(billing_sessions::return_router());
             }
             _ => return Err("invalid STRIPE_TEST_HOSTED_SESSIONS_ENABLED".into()),
         }
