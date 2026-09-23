@@ -6,7 +6,9 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use std::{env, error::Error};
 use tokio_postgres::NoTls;
 use zeroize::Zeroizing;
-use zrotext_server::webhook_worker::{WebhookSecretVault, rewrap_endpoint_secrets};
+use zrotext_server::webhook_worker::{
+    WebhookSecretVault, check_runtime_keys, rewrap_endpoint_secrets,
+};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -40,6 +42,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if !locked {
         return Err("another webhook key rewrap is running".into());
     }
+    check_runtime_keys(&mut db, &vault).await?;
     let unknown: i64 = db
         .query_one(
             "SELECT count(*) FROM webhook_endpoints

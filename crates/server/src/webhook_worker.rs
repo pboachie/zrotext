@@ -7,9 +7,12 @@ use aes_gcm::{
     aead::{Aead, Generate, KeyInit, Payload},
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
+use hmac::{Hmac, Mac, digest::KeyInit as HmacKeyInit};
 use serde_json::json;
+use sha2::Sha256;
+use subtle::ConstantTimeEq;
 use thiserror::Error;
-use tokio_postgres::Client;
+use tokio_postgres::{Client, Transaction};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
@@ -97,6 +100,17 @@ impl WebhookSecretVault {
         self.secondary.as_ref().map(|(version, _)| *version)
     }
 
+    fn keys(&self) -> Vec<(i32, &[u8; 32])> {
+        let mut keys = vec![(self.version, &*self.key)];
+        if let Some((version, key)) = &self.secondary {
+            keys.push((*version, &**key));
+        }
+        // Old-active and new-active sites must acquire row locks in the same
+        // order during a rolling deployment.
+        keys.sort_by_key(|(version, _)| *version);
+        keys
+    }
+
     /// The authenticated context prevents moving a ciphertext to another
     /// tenant, endpoint or key version.
     pub fn seal(
@@ -169,6 +183,96 @@ impl WebhookSecretVault {
         }
         Ok(Zeroizing::new(plaintext))
     }
+}
+
+fn key_commitment(key: &[u8; 32]) -> [u8; 32] {
+    let mut mac = <Hmac<Sha256> as HmacKeyInit>::new_from_slice(key)
+        .expect("a 32-byte webhook KEK is a valid HMAC key");
+    mac.update(b"zrotext-webhook-kek-commitment-v1");
+    mac.finalize().into_bytes().into()
+}
+
+async fn check_key_commitments(
+    tx: &Transaction<'_>,
+    vault: &WebhookSecretVault,
+    register_missing: bool,
+) -> Result<(), RewrapError> {
+    for (version, key) in vault.keys() {
+        let commitment = key_commitment(key);
+        if register_missing {
+            tx.execute(
+                "INSERT INTO webhook_kek_commitments(key_version,commitment) VALUES($1,$2) ON CONFLICT(key_version) DO NOTHING",
+                &[&version, &&commitment[..]],
+            )
+            .await?;
+        }
+        let row = tx
+            .query_opt(
+                "SELECT commitment FROM webhook_kek_commitments WHERE key_version=$1 FOR UPDATE",
+                &[&version],
+            )
+            .await?
+            .ok_or(WorkerError::Secret)?;
+        let stored: Vec<u8> = row.get(0);
+        if stored.len() != commitment.len()
+            || !bool::from(stored.as_slice().ct_eq(commitment.as_slice()))
+        {
+            return Err(WorkerError::Secret.into());
+        }
+    }
+    Ok(())
+}
+
+async fn check_endpoint_secrets(
+    tx: &Transaction<'_>,
+    vault: &WebhookSecretVault,
+) -> Result<(), RewrapError> {
+    let mut after = Uuid::nil();
+    loop {
+        let rows = tx
+            .query(
+                "SELECT id,account_id,signing_secret_key_version,signing_secret_ciphertext FROM webhook_endpoints WHERE id>$1 ORDER BY id LIMIT 128",
+                &[&after],
+            )
+            .await?;
+        if rows.is_empty() {
+            return Ok(());
+        }
+        for row in &rows {
+            let endpoint_id: Uuid = row.get(0);
+            let account_id: Uuid = row.get(1);
+            let version: i32 = row.get(2);
+            let ciphertext: Vec<u8> = row.get(3);
+            vault.open(account_id, endpoint_id, version, &ciphertext)?;
+            after = endpoint_id;
+        }
+    }
+}
+
+/// Called before mounting webhook management or starting delivery. The
+/// commitment transaction rolls back if any stored endpoint cannot open.
+pub async fn validate_runtime_keys(
+    client: &mut Client,
+    vault: &WebhookSecretVault,
+) -> Result<(), RewrapError> {
+    let tx = client.transaction().await?;
+    check_key_commitments(&tx, vault, true).await?;
+    check_endpoint_secrets(&tx, vault).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Read-only operator preflight. Both configured key versions must already
+/// have been registered by an application site.
+pub async fn check_runtime_keys(
+    client: &mut Client,
+    vault: &WebhookSecretVault,
+) -> Result<(), RewrapError> {
+    let tx = client.transaction().await?;
+    check_key_commitments(&tx, vault, false).await?;
+    check_endpoint_secrets(&tx, vault).await?;
+    tx.commit().await?;
+    Ok(())
 }
 
 /// Re-encrypt one bounded batch with the active KEK while preserving the
@@ -263,6 +367,10 @@ pub async fn dispatch_one(
             (WebhookOutcome::HttpError, Some(response.status as i16))
         }
         Ok(_) => (WebhookOutcome::NetworkError, None),
+        Err(DispatchError::KeyUnavailable) => {
+            inbound::defer_webhook_key_failure(client, &lease).await?;
+            return Err(WorkerError::Secret);
+        }
         Err(DispatchError::Policy) => (WebhookOutcome::PolicyRejected, None),
         Err(DispatchError::Network) => (WebhookOutcome::NetworkError, None),
     };
@@ -271,6 +379,7 @@ pub async fn dispatch_one(
 }
 
 enum DispatchError {
+    KeyUnavailable,
     Policy,
     Network,
 }
@@ -287,7 +396,7 @@ async fn dispatch_payload(
             payload.signing_secret_key_version,
             &payload.encrypted_signing_secret,
         )
-        .map_err(|_| DispatchError::Policy)?;
+        .map_err(|_| DispatchError::KeyUnavailable)?;
     let body = event_body(lease, payload).map_err(|_| DispatchError::Policy)?;
     webhook_egress::post_signed(&payload.callback_url, &body, &secret)
         .await
@@ -304,14 +413,16 @@ mod tests {
 
     #[test]
     fn endpoint_secret_is_bound_to_tenant_endpoint_and_key_version() {
-        let vault = WebhookSecretVault::new(7, Zeroizing::new(vec![3; 32])).unwrap();
+        let key = rand::random::<[u8; 32]>();
+        let secret = rand::random::<[u8; 32]>();
+        let vault = WebhookSecretVault::new(7, Zeroizing::new(key.to_vec())).unwrap();
         let account = Uuid::new_v4();
         let endpoint = Uuid::new_v4();
-        let sealed = vault.seal(account, endpoint, &[9; 32]).unwrap();
-        assert_ne!(&sealed[1 + NONCE_BYTES..1 + NONCE_BYTES + 32], &[9; 32]);
+        let sealed = vault.seal(account, endpoint, &secret).unwrap();
+        assert_ne!(&sealed[1 + NONCE_BYTES..1 + NONCE_BYTES + 32], &secret);
         assert_eq!(
             &*vault.open(account, endpoint, 7, &sealed).unwrap(),
-            &[9; 32]
+            &secret
         );
         assert!(vault.open(Uuid::new_v4(), endpoint, 7, &sealed).is_err());
         assert!(vault.open(account, Uuid::new_v4(), 7, &sealed).is_err());
@@ -323,41 +434,52 @@ mod tests {
 
     #[test]
     fn secondary_key_can_read_but_only_active_key_seals() {
-        let old = WebhookSecretVault::new(7, Zeroizing::new(vec![3; 32])).unwrap();
+        let old_key = rand::random::<[u8; 32]>();
+        let new_key = rand::random::<[u8; 32]>();
+        let secret = rand::random::<[u8; 32]>();
+        let old = WebhookSecretVault::new(7, Zeroizing::new(old_key.to_vec())).unwrap();
         let rotated = WebhookSecretVault::with_secondary(
             8,
-            Zeroizing::new(vec![4; 32]),
-            Some((7, Zeroizing::new(vec![3; 32]))),
+            Zeroizing::new(new_key.to_vec()),
+            Some((7, Zeroizing::new(old_key.to_vec()))),
         )
         .unwrap();
+        assert_eq!(
+            rotated.keys().iter().map(|(v, _)| *v).collect::<Vec<_>>(),
+            vec![7, 8]
+        );
         let account = Uuid::new_v4();
         let endpoint = Uuid::new_v4();
-        let old_ciphertext = old.seal(account, endpoint, &[9; 32]).unwrap();
+        let old_ciphertext = old.seal(account, endpoint, &secret).unwrap();
         assert_eq!(
             &*rotated.open(account, endpoint, 7, &old_ciphertext).unwrap(),
-            &[9; 32]
+            &secret
         );
-        let new_ciphertext = rotated.seal(account, endpoint, &[9; 32]).unwrap();
+        let new_ciphertext = rotated.seal(account, endpoint, &secret).unwrap();
         assert_eq!(
             &*rotated.open(account, endpoint, 8, &new_ciphertext).unwrap(),
-            &[9; 32]
+            &secret
         );
         let staged = WebhookSecretVault::with_secondary(
             7,
-            Zeroizing::new(vec![3; 32]),
-            Some((8, Zeroizing::new(vec![4; 32]))),
+            Zeroizing::new(old_key.to_vec()),
+            Some((8, Zeroizing::new(new_key.to_vec()))),
         )
         .unwrap();
         assert_eq!(
+            staged.keys().iter().map(|(v, _)| *v).collect::<Vec<_>>(),
+            vec![7, 8]
+        );
+        assert_eq!(
             &*staged.open(account, endpoint, 8, &new_ciphertext).unwrap(),
-            &[9; 32]
+            &secret
         );
         assert!(old.open(account, endpoint, 8, &new_ciphertext).is_err());
         assert!(
             WebhookSecretVault::with_secondary(
                 8,
-                Zeroizing::new(vec![4; 32]),
-                Some((7, Zeroizing::new(vec![4; 32])))
+                Zeroizing::new(new_key.to_vec()),
+                Some((7, Zeroizing::new(new_key.to_vec())))
             )
             .is_err()
         );
@@ -387,6 +509,7 @@ mod tests {
             include_str!("../../../deploy/compose/migrations/005_verification_outbox.sql"),
             include_str!("../../../deploy/compose/migrations/006_usage_metering.sql"),
             include_str!("../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"),
+            include_str!("../../../deploy/compose/migrations/015_webhook_kek_commitments.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
@@ -395,18 +518,34 @@ mod tests {
         db.execute("INSERT INTO accounts(id) VALUES($1)", &[&account])
             .await
             .unwrap();
-        let old = WebhookSecretVault::new(7, Zeroizing::new(vec![3; 32])).unwrap();
+        let old_key = rand::random::<[u8; 32]>();
+        let new_key = rand::random::<[u8; 32]>();
+        let secret = rand::random::<[u8; 32]>();
+        let old = WebhookSecretVault::new(7, Zeroizing::new(old_key.to_vec())).unwrap();
         let rotated = WebhookSecretVault::with_secondary(
             8,
-            Zeroizing::new(vec![4; 32]),
-            Some((7, Zeroizing::new(vec![3; 32]))),
+            Zeroizing::new(new_key.to_vec()),
+            Some((7, Zeroizing::new(old_key.to_vec()))),
         )
         .unwrap();
-        let old_ciphertext = old.seal(account, endpoint, &[9; 32]).unwrap();
+        validate_runtime_keys(&mut db, &old).await.unwrap();
+        let mut wrong_key = old_key;
+        wrong_key[0] ^= 1;
+        let wrong_same_version =
+            WebhookSecretVault::new(7, Zeroizing::new(wrong_key.to_vec())).unwrap();
+        assert!(
+            validate_runtime_keys(&mut db, &wrong_same_version)
+                .await
+                .is_err()
+        );
+        check_runtime_keys(&mut db, &old).await.unwrap();
+        let old_ciphertext = old.seal(account, endpoint, &secret).unwrap();
         db.execute(
             "INSERT INTO webhook_endpoints(id,account_id,callback_url,signing_secret_ciphertext,signing_secret_key_version) VALUES($1,$2,'https://example.test/hook',$3,7)",
             &[&endpoint, &account, &old_ciphertext],
         ).await.unwrap();
+        validate_runtime_keys(&mut db, &rotated).await.unwrap();
+        check_runtime_keys(&mut db, &rotated).await.unwrap();
         assert_eq!(
             rewrap_endpoint_secrets(&mut db, &rotated, 100)
                 .await
@@ -423,12 +562,13 @@ mod tests {
         let new_ciphertext: Vec<u8> = row.get(0);
         assert_ne!(new_ciphertext, old_ciphertext);
         assert_eq!(row.get::<_, i32>(1), 8);
-        let active_only = WebhookSecretVault::new(8, Zeroizing::new(vec![4; 32])).unwrap();
+        let active_only = WebhookSecretVault::new(8, Zeroizing::new(new_key.to_vec())).unwrap();
+        validate_runtime_keys(&mut db, &active_only).await.unwrap();
         assert_eq!(
             &*active_only
                 .open(account, endpoint, 8, &new_ciphertext)
                 .unwrap(),
-            &[9; 32]
+            &secret
         );
 
         let unknown_endpoint = Uuid::new_v4();
@@ -444,6 +584,29 @@ mod tests {
         let row = db.query_one("SELECT signing_secret_ciphertext,signing_secret_key_version FROM webhook_endpoints WHERE id=$1", &[&unknown_endpoint]).await.unwrap();
         assert_eq!(row.get::<_, Vec<u8>>(0), old_ciphertext);
         assert_eq!(row.get::<_, i32>(1), 99);
+        assert!(check_runtime_keys(&mut db, &rotated).await.is_err());
+        db.execute(
+            "DELETE FROM webhook_endpoints WHERE id=$1",
+            &[&unknown_endpoint],
+        )
+        .await
+        .unwrap();
+        let mut corrupt = new_ciphertext.clone();
+        *corrupt.last_mut().unwrap() ^= 1;
+        db.execute(
+            "UPDATE webhook_endpoints SET signing_secret_ciphertext=$2 WHERE id=$1",
+            &[&endpoint, &corrupt],
+        )
+        .await
+        .unwrap();
+        assert!(check_runtime_keys(&mut db, &rotated).await.is_err());
+        db.execute(
+            "UPDATE webhook_endpoints SET signing_secret_ciphertext=$2 WHERE id=$1",
+            &[&endpoint, &new_ciphertext],
+        )
+        .await
+        .unwrap();
+        check_runtime_keys(&mut db, &rotated).await.unwrap();
         setup
             .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
             .await

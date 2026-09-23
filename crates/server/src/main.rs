@@ -158,6 +158,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             config.mfa_recovery_only,
         )
         .await?;
+        if let Some(vault) = webhook_vault.as_ref() {
+            let (mut key_db, key_connection) =
+                tokio_postgres::connect(&config.database_url, NoTls).await?;
+            tokio::spawn(async move {
+                let _ = key_connection.await;
+            });
+            webhook_worker::validate_runtime_keys(&mut key_db, vault).await?;
+        }
         ensure_local_site(&config).await?;
         reset_test_quotas_on_start(&config.database_url, billing_test.is_some()).await?;
         quotas_reset = true;

@@ -12,6 +12,10 @@ both keys must be different 32-byte values encoded in standard base64. New
 endpoints and owner signing-secret rotations always use the active key. A
 stored endpoint can be read with either configured version. Unknown versions
 and failed authentication cannot send a webhook or enable an endpoint.
+Migration 015 records a keyed commitment for each version. Startup rejects a
+site whose bytes disagree with an already registered version, even when no
+endpoints exist. It also opens every stored endpoint before webhook routes or
+delivery start. These checks must pass on both sites during each stage.
 
 ## Coordinated two-site change
 
@@ -25,10 +29,14 @@ and failed authentication cannot send a webhook or enable an endpoint.
    Confirm every old-active process has drained. Endpoint creation and owner
    signing-secret rotation now write the new version.
 4. Run `zrotext-webhook-kek-rewrap --check` with `DATABASE_URL` and the same
-   active/secondary key variables. Then run `--apply`. The command holds one
-   advisory lock, rewraps at most 100 rows per transaction, and reports only
-   counts and the new version. An unknown version or unauthentic ciphertext
-   stops the run without changing its current batch. It never sends webhooks.
+   active/secondary key variables. The check is read-only and requires both
+   versions to have been registered by application startup. It validates the
+   key commitments and decrypts every stored endpoint, then reports the count
+   requiring rewrap. Run `--apply` only after this succeeds. The command holds
+   one advisory lock, rewraps at most 100 rows per transaction, and reports
+   only counts and the new version. An unknown version or unauthentic
+   ciphertext stops the run without changing its current batch. It never
+   sends webhooks.
 5. Run `--check` again and require zero remaining rows. Inspect the database
    and app health on both sites. Retain the old secondary key until all
    old-active processes and in-flight leases have drained; then remove the
@@ -42,4 +50,7 @@ row when it gets a lease. An already loaded in-flight payload may still use
 the old ciphertext during rollout, so both versions must remain readable on
 all sites until the drain is complete. If a site cannot read the active
 version, leave delivery disabled there and restore the staged key ring before
-resuming it. Do not delete the old KEK based solely on the CLI count.
+resuming it. A later key-open failure defers the delivery for five minutes
+without using a send attempt; `webhook_deliveries.key_failure_count` records
+repeated failures for operator repair. Do not delete the old KEK based solely
+on the CLI count.
