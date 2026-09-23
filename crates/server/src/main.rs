@@ -333,9 +333,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             app = app.nest("/v1/alpha", http_messages::router(message_state));
         }
     } else if config.alpha_policy.enabled()
+        || inbound_pilot_enabled
         || webhook_delivery_enabled
         || webhook_management_configured
-        || inbound_pilot_enabled
     {
         return Err("account and enrollment routes are required for enabled features".into());
     }
