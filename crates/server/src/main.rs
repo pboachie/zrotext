@@ -9,6 +9,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
+use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::Serialize;
 use std::{
     env,
@@ -21,6 +22,15 @@ use std::{
 use subtle::ConstantTimeEq;
 use tokio::sync::Notify;
 use tokio_postgres::NoTls;
+use zrotext_server::{
+    auth::TokenHasher,
+    enrollment::EnrollmentHasher,
+    http_auth::{
+        self, AuthHttpState, DisabledVerificationDispatcher, SmtpVerificationDispatcher,
+        VerificationDispatcher,
+    },
+    http_enrollment::{self, EnrollmentHttpState},
+};
 
 struct Config {
     database_url: String,
@@ -56,7 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bind: SocketAddr = env::var("BIND_ADDR")
         .unwrap_or_else(|_| "0.0.0.0:8080".to_owned())
         .parse()?;
-    let app = Router::new()
+    let mut app = Router::new()
         .route(
             "/healthz",
             get(|| async { Json(Health { status: "live" }) }),
@@ -64,6 +74,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/readyz", get(ready))
         .route("/m0/device-test", get(device_test))
         .with_state(config.clone());
+    if let Some((auth_state, enrollment_state)) = account_routes(&config)? {
+        app = app
+            .nest("/v1/auth", http_auth::router(auth_state))
+            .nest("/v1/enrollment", http_enrollment::router(enrollment_state));
+    }
     eprintln!(
         "zrotext M0 site={} instance={} listening={bind}",
         config.site_id, config.instance_id
@@ -73,6 +88,66 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_graceful_shutdown(shutdown_signal(config))
         .await?;
     Ok(())
+}
+
+fn account_routes(
+    config: &Config,
+) -> Result<Option<(AuthHttpState, EnrollmentHttpState)>, Box<dyn std::error::Error>> {
+    let origin = env::var("AUTH_ORIGIN").ok();
+    let auth_pepper = env::var("AUTH_TOKEN_PEPPER_B64").ok();
+    let enrollment_pepper = env::var("ENROLLMENT_TOKEN_PEPPER_B64").ok();
+    if origin.is_none() && auth_pepper.is_none() && enrollment_pepper.is_none() {
+        return Ok(None);
+    }
+    let origin = origin.ok_or("AUTH_ORIGIN is required when account routes are enabled")?;
+    let auth_pepper = auth_pepper.ok_or("AUTH_TOKEN_PEPPER_B64 is required for account routes")?;
+    let enrollment_pepper =
+        enrollment_pepper.ok_or("ENROLLMENT_TOKEN_PEPPER_B64 is required for enrollment routes")?;
+    let auth_pepper = STANDARD
+        .decode(auth_pepper)
+        .map_err(|_| "AUTH_TOKEN_PEPPER_B64 must be valid base64")?;
+    let enrollment_pepper = STANDARD
+        .decode(enrollment_pepper)
+        .map_err(|_| "ENROLLMENT_TOKEN_PEPPER_B64 must be valid base64")?;
+    let auth_hasher = Arc::new(
+        TokenHasher::new(auth_pepper)
+            .map_err(|_| "AUTH_TOKEN_PEPPER_B64 must decode to at least 32 bytes")?,
+    );
+    let enrollment_hasher = Arc::new(
+        EnrollmentHasher::new(enrollment_pepper)
+            .map_err(|_| "ENROLLMENT_TOKEN_PEPPER_B64 must decode to at least 32 bytes")?,
+    );
+    let dispatcher: Arc<dyn VerificationDispatcher> = match env::var("SMTP_HOST") {
+        Ok(host) => {
+            let port: u16 = required("SMTP_PORT")?
+                .parse()
+                .map_err(|_| "SMTP_PORT must be a valid port")?;
+            Arc::new(SmtpVerificationDispatcher::new(
+                &host,
+                port,
+                required("SMTP_USERNAME")?,
+                required("SMTP_PASSWORD")?,
+                &required("SMTP_FROM")?,
+                env::var("SMTP_FROM_NAME").ok().as_deref(),
+                env::var("SMTP_REPLY_TO").ok().as_deref(),
+            )?)
+        }
+        Err(env::VarError::NotPresent) => Arc::new(DisabledVerificationDispatcher),
+        Err(_) => return Err("SMTP_HOST must be valid UTF-8".into()),
+    };
+    let auth_state = AuthHttpState::new(
+        config.database_url.clone(),
+        auth_hasher.clone(),
+        origin.clone(),
+        dispatcher,
+    )?;
+    let enrollment_state = EnrollmentHttpState::new(
+        config.database_url.clone(),
+        auth_hasher,
+        enrollment_hasher,
+        origin,
+    );
+    Ok(Some((auth_state, enrollment_state)))
 }
 
 async fn shutdown_signal(config: Arc<Config>) {

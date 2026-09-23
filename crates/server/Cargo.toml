@@ -21,3 +21,7 @@ rand = "0.8.5"
 sha2 = "0.10.9"
 thiserror = "2.0.16"
 p256 = { version = "0.13.2", features = ["ecdsa", "pkcs8"] }
+lettre = { version = "0.11.23", default-features = false, features = ["builder", "smtp-transport", "tokio1-rustls-tls"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

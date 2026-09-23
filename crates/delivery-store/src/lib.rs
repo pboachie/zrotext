@@ -94,10 +94,18 @@ pub struct GrantRecord {
     pub recipient_digest: Vec<u8>,
 }
 
+/// Private synthetic-alpha content released only after a current execution
+/// grant is checked again. Never log this value or expose it on a public API.
+pub struct SyntheticExecutionPayload {
+    pub recipient_e164: String,
+    pub body: String,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RadioEvent {
     pub event_id: Uuid,
     pub account_id: Uuid,
+    pub device_id: Uuid,
     pub message_id: Uuid,
     pub attempt_id: Uuid,
     pub evidence: Evidence,
@@ -299,6 +307,27 @@ impl<'a> DeliveryStore<'a> {
     /// SKIP LOCKED lets independent workers claim distinct jobs from the same
     /// writer. Claim expiry can requeue only before any execution grant.
     pub async fn claim_due(&mut self, worker_id: &str) -> Result<Option<Claim>, StoreError> {
+        self.claim_due_inner(worker_id, None, None).await
+    }
+
+    /// A connected phone's worker must only claim jobs for that authenticated
+    /// tenant/device pair; offline phones cannot be consumed by its socket.
+    pub async fn claim_due_for_device(
+        &mut self,
+        worker_id: &str,
+        account_id: Uuid,
+        device_id: Uuid,
+    ) -> Result<Option<Claim>, StoreError> {
+        self.claim_due_inner(worker_id, Some(account_id), Some(device_id))
+            .await
+    }
+
+    async fn claim_due_inner(
+        &mut self,
+        worker_id: &str,
+        account_id: Option<Uuid>,
+        device_id: Option<Uuid>,
+    ) -> Result<Option<Claim>, StoreError> {
         if worker_id.is_empty() {
             return Err(StoreError::InvalidInput);
         }
@@ -311,11 +340,13 @@ impl<'a> DeliveryStore<'a> {
                    WHERE j.next_attempt_at<=now() AND (j.lease_until IS NULL OR j.lease_until<now()) \
                      AND j.grant_issued_at IS NULL AND m.state IN ('queued','claimed') AND m.expires_at>now() \
                      AND d.revoked_at IS NULL \
+                     AND ($2::uuid IS NULL OR j.account_id=$2) \
+                     AND ($3::uuid IS NULL OR j.device_id=$3) \
                    ORDER BY j.next_attempt_at,j.message_id FOR UPDATE OF j SKIP LOCKED LIMIT 1 \
                  ) UPDATE dispatch_jobs j SET lease_owner=$1,lease_until=now()+interval '30 seconds', \
                    generation=j.generation+1 FROM picked WHERE j.message_id=picked.message_id \
                  RETURNING j.account_id,j.message_id,j.device_id,j.generation",
-                &[&worker_id],
+                &[&worker_id, &account_id, &device_id],
             )
             .await?;
         let Some(row) = row else {
@@ -517,6 +548,62 @@ impl<'a> DeliveryStore<'a> {
         })
     }
 
+    pub async fn synthetic_payload_for_grant(
+        &self,
+        grant: &GrantRecord,
+        session: &SessionRecord,
+    ) -> Result<SyntheticExecutionPayload, StoreError> {
+        if grant.account_id != session.account_id
+            || grant.device_id != session.device_id
+            || grant.session_epoch != session.epoch
+            || grant.deployment_epoch != session.deployment_epoch
+        {
+            return Err(StoreError::StaleFence);
+        }
+        let row = self.client.query_opt(
+            "SELECT m.recipient_e164,m.transport_payload,m.recipient_digest,m.transport_mode, \
+              m.expires_at>now(),m.state, f.grant_expires_at>now(),f.outcome, \
+              s.lease_until>now(),s.site_id,s.instance_id, \
+              d.revoked_at IS NULL, a.epoch,a.dispatch_enabled, st.enabled,st.draining \
+             FROM dispatch_fences f JOIN messages m ON (m.account_id,m.id)=(f.account_id,f.message_id) \
+              JOIN devices d ON (d.account_id,d.id)=(f.account_id,f.device_id) \
+              JOIN device_sessions s ON (s.account_id,s.device_id)=(f.account_id,f.device_id) \
+              JOIN sites st ON st.site_id=s.site_id \
+              CROSS JOIN deployment_authority a \
+             WHERE f.account_id=$1 AND f.message_id=$2 AND f.device_id=$3 AND f.attempt_id=$4 \
+              AND f.generation=$5 AND f.session_epoch=$6 AND f.deployment_epoch=$7 \
+              AND s.connection_epoch=$6 AND s.deployment_epoch=$7 AND a.singleton=TRUE",
+            &[&grant.account_id, &grant.message_id, &grant.device_id, &grant.attempt_id,
+              &grant.generation, &grant.session_epoch, &grant.deployment_epoch],
+        ).await?.ok_or(StoreError::StaleFence)?;
+        let recipient: String = row.get(0);
+        let body_bytes: Vec<u8> = row.get(1);
+        let recipient_digest: Vec<u8> = row.get(2);
+        if recipient_digest != grant.recipient_digest
+            || recipient_digest != Sha256::digest(recipient.as_bytes()).as_slice()
+            || row.get::<_, String>(3) != "synthetic_alpha"
+            || !row.get::<_, bool>(4)
+            || row.get::<_, String>(5) != "claimed"
+            || !row.get::<_, bool>(6)
+            || row.get::<_, String>(7) != "granted"
+            || !row.get::<_, bool>(8)
+            || row.get::<_, String>(9) != session.site_id
+            || row.get::<_, String>(10) != session.instance_id
+            || !row.get::<_, bool>(11)
+            || row.get::<_, i64>(12) != grant.deployment_epoch
+            || !row.get::<_, bool>(13)
+            || !row.get::<_, bool>(14)
+            || row.get::<_, bool>(15)
+        {
+            return Err(StoreError::StaleFence);
+        }
+        let body = String::from_utf8(body_bytes).map_err(|_| StoreError::InvalidInput)?;
+        Ok(SyntheticExecutionPayload {
+            recipient_e164: recipient,
+            body,
+        })
+    }
+
     /// Evidence may arrive after a hub move. It is bound to the original
     /// attempt rather than the current session, so late callbacks reconcile.
     pub async fn record_radio_event(
@@ -570,8 +657,8 @@ impl<'a> DeliveryStore<'a> {
         }
         let attempt = tx
             .query_opt(
-                "SELECT id FROM message_attempts WHERE id=$1 AND account_id=$2 AND message_id=$3 FOR UPDATE",
-                &[&event.attempt_id, &event.account_id, &event.message_id],
+                "SELECT id FROM message_attempts WHERE id=$1 AND account_id=$2 AND message_id=$3 AND device_id=$4 FOR UPDATE",
+                &[&event.attempt_id, &event.account_id, &event.message_id, &event.device_id],
             )
             .await?;
         if attempt.is_none() {
@@ -664,6 +751,7 @@ fn validate_message(input: &NewMessage<'_>) -> Result<(), StoreError> {
         || input.idempotency_key.len() > 128
         || input.synthetic_payload.is_empty()
         || input.synthetic_payload.len() > 32768
+        || std::str::from_utf8(input.synthetic_payload).is_err()
         || input.expires_at_ms <= now_ms()
     {
         return Err(StoreError::InvalidInput);
@@ -694,6 +782,7 @@ fn request_digest(input: &NewMessage<'_>) -> Vec<u8> {
 fn radio_event_digest(event: &RadioEvent, code: &str) -> Vec<u8> {
     let mut hash = Sha256::new();
     hash.update(event.account_id.as_bytes());
+    hash.update(event.device_id.as_bytes());
     hash.update(event.message_id.as_bytes());
     hash.update(event.attempt_id.as_bytes());
     hash.update(code.as_bytes());
@@ -906,10 +995,17 @@ mod tests {
             let claim = store.claim_due("worker-a").await.unwrap().unwrap();
             assert_eq!(claim.message_id, message);
             let attempt = Uuid::new_v4();
-            store.issue_grant(&claim, &session, attempt).await.unwrap();
+            let grant = store.issue_grant(&claim, &session, attempt).await.unwrap();
+            let payload = store
+                .synthetic_payload_for_grant(&grant, &session)
+                .await
+                .unwrap();
+            assert_eq!(payload.recipient_e164, "+15551234567");
+            assert_eq!(payload.body, "test only");
             let event = |evidence, event_id| RadioEvent {
                 event_id,
                 account_id: account,
+                device_id: device,
                 message_id: message,
                 attempt_id: attempt,
                 evidence,
@@ -917,6 +1013,15 @@ mod tests {
                 segment_index: None,
                 segment_count: None,
             };
+            assert!(matches!(
+                store
+                    .record_radio_event(RadioEvent {
+                        device_id: Uuid::new_v4(),
+                        ..event(Evidence::DurableSubmitIntent, Uuid::new_v4())
+                    })
+                    .await,
+                Err(StoreError::StaleFence)
+            ));
             assert_eq!(
                 store
                     .record_radio_event(event(Evidence::DurableSubmitIntent, Uuid::new_v4()))
@@ -936,6 +1041,10 @@ mod tests {
                 .connect_session(account, device, "b", "hub-b", 60)
                 .await
                 .unwrap();
+            assert!(matches!(
+                store.synthetic_payload_for_grant(&grant, &session).await,
+                Err(StoreError::StaleFence)
+            ));
             assert!(matches!(
                 store
                     .issue_grant(&claim, &new_session, Uuid::new_v4())
@@ -988,7 +1097,18 @@ mod tests {
                 })
                 .await
                 .unwrap();
-            let third_claim = store.claim_due("worker-c").await.unwrap().unwrap();
+            assert!(
+                store
+                    .claim_due_for_device("wrong-tenant", other_account, second_device)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            let third_claim = store
+                .claim_due_for_device("worker-c", account, second_device)
+                .await
+                .unwrap()
+                .unwrap();
             assert_eq!(third_claim.message_id, third_message);
             let third_session = store
                 .connect_session(account, second_device, "a", "hub", 60)
@@ -1002,6 +1122,7 @@ mod tests {
             let multipart = |evidence, index, event_id| RadioEvent {
                 event_id,
                 account_id: account,
+                device_id: second_device,
                 message_id: third_message,
                 attempt_id: third_attempt,
                 evidence,

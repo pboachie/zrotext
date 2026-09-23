@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.OutlinedTextField
@@ -30,6 +31,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import java.util.concurrent.Executors
 
 object GatewayStatus {
     var value by mutableStateOf("Paused")
@@ -41,6 +43,14 @@ class MainActivity : ComponentActivity() {
     private var selectedSim by mutableStateOf<Int?>(null)
     private var endpoint by mutableStateOf("")
     private var testToken by mutableStateOf("")
+    private var pairingOrigin by mutableStateOf("")
+    private var pairingId by mutableStateOf("")
+    private var pairingToken by mutableStateOf("")
+    private var pairingStatus by mutableStateOf("Not paired")
+    private var comparisonCode by mutableStateOf("")
+    private var signingFingerprint by mutableStateOf("")
+    private var signingSecurity by mutableStateOf("")
+    private val pairingWorker = Executors.newSingleThreadExecutor()
     private val permissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         refreshSims()
     }
@@ -96,6 +106,57 @@ class MainActivity : ComponentActivity() {
                         startService(Intent(this@MainActivity, GatewayService::class.java).setAction(GatewayService.ACTION_PAUSE))
                     }) { Text("Pause gateway") }
                     Text("Keep this dedicated phone plugged in for the screen-off test. Reopen the app after a stop or reboot; automatic recovery is not implemented in M0.")
+                    HorizontalDivider()
+                    Text("Device pairing", style = MaterialTheme.typography.titleMedium)
+                    Text("Enter the one-use pairing ID and token from the owner account. The phone will prove possession of its Keystore key. Compare both values below with the browser before approving there.")
+                    OutlinedTextField(value = pairingOrigin, onValueChange = { pairingOrigin = it },
+                        label = { Text("HTTPS server origin") })
+                    OutlinedTextField(value = pairingId, onValueChange = { pairingId = it },
+                        label = { Text("Pairing ID") })
+                    OutlinedTextField(value = pairingToken, onValueChange = { pairingToken = it },
+                        label = { Text("One-use pairing token") }, visualTransformation = PasswordVisualTransformation())
+                    Button(onClick = { beginPairing() }) { Text("Claim pairing and prove key") }
+                    Text("Pairing status: $pairingStatus")
+                    if (comparisonCode.isNotEmpty()) {
+                        Text("Comparison code: $comparisonCode")
+                        Text("Key fingerprint: $signingFingerprint")
+                        Text("Key protection: $signingSecurity")
+                        Text("Approve only when the browser shows the same code and fingerprint. This screen does not authorize SMS or establish a device session.")
+                    }
+                }
+            }
+        }
+    }
+
+    override fun onDestroy() {
+        pairingWorker.shutdownNow()
+        super.onDestroy()
+    }
+
+    private fun beginPairing() {
+        val origin = pairingOrigin
+        val id = pairingId
+        val token = pairingToken
+        pairingToken = ""
+        pairingStatus = "Claiming and proving key"
+        comparisonCode = ""
+        signingFingerprint = ""
+        signingSecurity = ""
+        pairingWorker.execute {
+            try {
+                val result = PairingClient(DeviceSigningKeyStore(applicationContext))
+                    .claimAndProve(origin, id, token)
+                runOnUiThread {
+                    if (isDestroyed) return@runOnUiThread
+                    comparisonCode = result.comparisonCode
+                    signingFingerprint = result.fingerprintHex
+                    signingSecurity = result.keySecurity.name +
+                        if (result.strongBoxFallbackOnCreation == true) " (StrongBox unavailable; fallback used)" else ""
+                    pairingStatus = "Key proof accepted; waiting for owner approval"
+                }
+            } catch (_: Exception) {
+                runOnUiThread {
+                    if (!isDestroyed) pairingStatus = "Pairing did not finish. Start a new one-use pairing if the token was claimed."
                 }
             }
         }

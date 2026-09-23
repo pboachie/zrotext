@@ -1,0 +1,856 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+//! Browser-facing account routes. All cookie-authenticated writes require an
+//! exact, configured HTTPS Origin and the double-submit CSRF token.
+
+use crate::auth::{self, AuthError, Scope, SessionPrincipal, TokenHasher};
+use axum::{
+    Json, Router,
+    extract::{DefaultBodyLimit, Path, Request, State},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
+    routing::{delete, get, post},
+};
+use lettre::{
+    AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
+    transport::smtp::authentication::Credentials,
+};
+use serde::{Deserialize, Serialize};
+use std::{future::Future, pin::Pin, sync::Arc};
+use tokio::sync::Semaphore;
+use tokio_postgres::{Client, NoTls};
+use uuid::Uuid;
+
+const SESSION_COOKIE: &str = "__Host-zrotext_session";
+const CSRF_COOKIE: &str = "__Host-zrotext_csrf";
+const CSRF_HEADER: &str = "x-zrotext-csrf";
+
+/// A deployment supplies a reviewed mail transport here. The default server
+/// deliberately keeps registration closed until that transport is configured.
+/// Implementations must not log the token or place it in a URL.
+pub trait VerificationDispatcher: Send + Sync {
+    fn ready(&self) -> bool;
+    fn dispatch<'a>(
+        &'a self,
+        email: &'a str,
+        token: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ()>> + Send + 'a>>;
+}
+
+pub struct DisabledVerificationDispatcher;
+
+impl VerificationDispatcher for DisabledVerificationDispatcher {
+    fn ready(&self) -> bool {
+        false
+    }
+
+    fn dispatch<'a>(
+        &'a self,
+        _email: &'a str,
+        _token: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ()>> + Send + 'a>> {
+        Box::pin(async { Err(()) })
+    }
+}
+
+/// TLS-only SMTP delivery. Configuration is loaded by the runtime from a
+/// secret store or environment; values are never included in errors or logs.
+pub struct SmtpVerificationDispatcher {
+    from: lettre::message::Mailbox,
+    reply_to: Option<lettre::message::Mailbox>,
+    transport: AsyncSmtpTransport<Tokio1Executor>,
+}
+
+impl SmtpVerificationDispatcher {
+    pub fn new(
+        host: &str,
+        port: u16,
+        username: String,
+        password: String,
+        from: &str,
+        from_name: Option<&str>,
+        reply_to: Option<&str>,
+    ) -> Result<Self, &'static str> {
+        if host.is_empty() || host.contains('/') || username.is_empty() || password.is_empty() {
+            return Err("invalid SMTP configuration");
+        }
+        let mut from: lettre::message::Mailbox = from.parse().map_err(|_| "invalid SMTP sender")?;
+        if let Some(name) = from_name {
+            if name.is_empty() || name.len() > 100 || name.chars().any(char::is_control) {
+                return Err("invalid SMTP sender name");
+            }
+            from.name = Some(name.to_owned());
+        }
+        let reply_to = reply_to
+            .map(|value| value.parse().map_err(|_| "invalid SMTP Reply-To"))
+            .transpose()?;
+        let credentials = Credentials::new(username, password);
+        let transport = if port == 465 {
+            AsyncSmtpTransport::<Tokio1Executor>::relay(host).map_err(|_| "invalid SMTP relay")?
+        } else {
+            AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host)
+                .map_err(|_| "invalid SMTP relay")?
+        }
+        .port(port)
+        .credentials(credentials)
+        .build();
+        Ok(Self {
+            from,
+            reply_to,
+            transport,
+        })
+    }
+}
+
+impl VerificationDispatcher for SmtpVerificationDispatcher {
+    fn ready(&self) -> bool {
+        true
+    }
+
+    fn dispatch<'a>(
+        &'a self,
+        email: &'a str,
+        token: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ()>> + Send + 'a>> {
+        Box::pin(async move {
+            let recipient = email.parse().map_err(|_| ())?;
+            let mut builder = Message::builder().from(self.from.clone()).to(recipient);
+            if let Some(reply_to) = &self.reply_to {
+                builder = builder.reply_to(reply_to.clone());
+            }
+            let message = builder
+                .subject("Verify your ZROtext email")
+                .body(format!(
+                    "Your ZROtext email verification code is:\n\n{token}\n\nEnter this code in the ZROtext verification form. It expires in 24 hours.\n"
+                ))
+                .map_err(|_| ())?;
+            self.transport.send(message).await.map_err(|_| ())?;
+            Ok(())
+        })
+    }
+}
+
+#[derive(Clone)]
+pub struct AuthHttpState {
+    pub database_url: String,
+    pub hasher: Arc<TokenHasher>,
+    pub canonical_origin: String,
+    pub dispatcher: Arc<dyn VerificationDispatcher>,
+    pub hash_limit: Arc<Semaphore>,
+}
+
+impl AuthHttpState {
+    pub fn new(
+        database_url: String,
+        hasher: Arc<TokenHasher>,
+        canonical_origin: String,
+        dispatcher: Arc<dyn VerificationDispatcher>,
+    ) -> Result<Self, &'static str> {
+        if !valid_canonical_origin(&canonical_origin) {
+            return Err("AUTH_ORIGIN must be a canonical HTTPS origin");
+        }
+        Ok(Self {
+            database_url,
+            hasher,
+            canonical_origin,
+            dispatcher,
+            // Argon2id uses 64 MiB per operation. Limit concurrent hashes.
+            hash_limit: Arc::new(Semaphore::new(2)),
+        })
+    }
+}
+
+pub fn router(state: AuthHttpState) -> Router {
+    Router::new()
+        .route("/register", post(register))
+        .route("/verify-email", post(verify_email))
+        .route("/login", post(login))
+        .route("/logout", post(logout))
+        .route("/session", get(session))
+        .route("/api-keys", post(create_api_key))
+        .route("/api-keys/{key_id}", delete(revoke_api_key))
+        .layer(DefaultBodyLimit::max(16 * 1024))
+        .layer(middleware::from_fn(no_store_response))
+        .with_state(Arc::new(state))
+}
+
+async fn no_store_response(request: Request, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    no_store(&mut response);
+    response
+}
+
+#[derive(Debug)]
+pub enum AuthHttpError {
+    BadRequest,
+    Unauthorized,
+    Forbidden,
+    NotFound,
+    TooManyRequests,
+    Unavailable,
+    Internal,
+}
+
+impl IntoResponse for AuthHttpError {
+    fn into_response(self) -> Response {
+        let (status, code) = match self {
+            Self::BadRequest => (StatusCode::BAD_REQUEST, "invalid_request"),
+            Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized"),
+            Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden"),
+            Self::NotFound => (StatusCode::NOT_FOUND, "not_found"),
+            Self::TooManyRequests => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
+            Self::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+            Self::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "internal_error"),
+        };
+        (
+            status,
+            [(header::CACHE_CONTROL, "no-store")],
+            Json(ErrorBody { code }),
+        )
+            .into_response()
+    }
+}
+
+#[derive(Serialize)]
+struct ErrorBody {
+    code: &'static str,
+}
+
+fn map_auth(error: AuthError) -> AuthHttpError {
+    match error {
+        AuthError::InvalidInput => AuthHttpError::BadRequest,
+        AuthError::InvalidCredentials | AuthError::Unauthorized => AuthHttpError::Unauthorized,
+        AuthError::EmailNotVerified | AuthError::Forbidden => AuthHttpError::Forbidden,
+        AuthError::Database(_) => AuthHttpError::Unavailable,
+        AuthError::Password => AuthHttpError::Internal,
+    }
+}
+
+async fn connect(database_url: &str) -> Result<Client, AuthHttpError> {
+    let (client, connection) = tokio_postgres::connect(database_url, NoTls)
+        .await
+        .map_err(|_| AuthHttpError::Unavailable)?;
+    tokio::spawn(async move {
+        // Connection errors contain deployment details; do not log them here.
+        let _ = connection.await;
+    });
+    Ok(client)
+}
+
+fn valid_canonical_origin(origin: &str) -> bool {
+    let Some(host) = origin.strip_prefix("https://") else {
+        return false;
+    };
+    !host.is_empty()
+        && !host.contains('/')
+        && !host.contains('?')
+        && !host.contains('#')
+        && !host.contains('@')
+        && !host.chars().any(char::is_whitespace)
+        && !host.ends_with(':')
+}
+
+fn require_origin(headers: &HeaderMap, expected: &str) -> Result<(), AuthHttpError> {
+    if headers
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        == Some(expected)
+    {
+        Ok(())
+    } else {
+        Err(AuthHttpError::Forbidden)
+    }
+}
+
+fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|line| line.to_str().ok())
+        .flat_map(|line| line.split(';'))
+        .filter_map(|part| part.trim().split_once('='))
+        .find_map(|(key, value)| (key == name).then_some(value))
+}
+
+/// Shared by account and enrollment HTTP handlers. `mutation=true` enforces
+/// the exact Origin and CSRF header/cookie, in addition to the session cookie.
+pub async fn require_owner(
+    client: &Client,
+    hasher: &TokenHasher,
+    canonical_origin: &str,
+    headers: &HeaderMap,
+    mutation: bool,
+) -> Result<SessionPrincipal, AuthHttpError> {
+    let token = cookie(headers, SESSION_COOKIE).ok_or(AuthHttpError::Unauthorized)?;
+    let principal = auth::authenticate_session(client, hasher, token)
+        .await
+        .map_err(map_auth)?;
+    if mutation {
+        let origin = headers
+            .get(header::ORIGIN)
+            .and_then(|value| value.to_str().ok())
+            .ok_or(AuthHttpError::Forbidden)?;
+        let csrf_cookie = cookie(headers, CSRF_COOKIE).ok_or(AuthHttpError::Forbidden)?;
+        let csrf_header = headers
+            .get(CSRF_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .ok_or(AuthHttpError::Forbidden)?;
+        principal
+            .require_csrf(hasher, origin, canonical_origin, csrf_cookie, csrf_header)
+            .map_err(map_auth)?;
+    }
+    Ok(principal)
+}
+
+#[derive(Deserialize)]
+struct RegisterBody {
+    email: String,
+    password: String,
+}
+
+async fn register(
+    State(state): State<Arc<AuthHttpState>>,
+    headers: HeaderMap,
+    Json(body): Json<RegisterBody>,
+) -> Result<StatusCode, AuthHttpError> {
+    require_origin(&headers, &state.canonical_origin)?;
+    if !state.dispatcher.ready() {
+        return Err(AuthHttpError::Unavailable);
+    }
+    let _permit = state
+        .hash_limit
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| AuthHttpError::TooManyRequests)?;
+    let mut client = connect(&state.database_url).await?;
+    let signup = match auth::register(&mut client, &state.hasher, &body.email, &body.password).await
+    {
+        Ok(signup) => signup,
+        // Avoid leaking whether this address is already registered.
+        Err(AuthError::Database(ref error))
+            if error.code() == Some(&tokio_postgres::error::SqlState::UNIQUE_VIOLATION) =>
+        {
+            return Ok(StatusCode::ACCEPTED);
+        }
+        Err(error) => return Err(map_auth(error)),
+    };
+    if state
+        .dispatcher
+        .dispatch(&body.email, &signup.verification_token)
+        .await
+        .is_err()
+    {
+        // The SMTP result can be ambiguous after acceptance. Never delete a
+        // possibly verified account; a durable resend path is still needed.
+        return Err(AuthHttpError::Unavailable);
+    }
+    Ok(StatusCode::ACCEPTED)
+}
+
+#[derive(Deserialize)]
+struct VerifyBody {
+    token: String,
+}
+
+async fn verify_email(
+    State(state): State<Arc<AuthHttpState>>,
+    headers: HeaderMap,
+    Json(body): Json<VerifyBody>,
+) -> Result<StatusCode, AuthHttpError> {
+    require_origin(&headers, &state.canonical_origin)?;
+    let mut client = connect(&state.database_url).await?;
+    if auth::verify_email(&mut client, &state.hasher, &body.token)
+        .await
+        .map_err(map_auth)?
+    {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(AuthHttpError::BadRequest)
+    }
+}
+
+#[derive(Deserialize)]
+struct LoginBody {
+    email: String,
+    password: String,
+}
+
+async fn login(
+    State(state): State<Arc<AuthHttpState>>,
+    headers: HeaderMap,
+    Json(body): Json<LoginBody>,
+) -> Result<Response, AuthHttpError> {
+    require_origin(&headers, &state.canonical_origin)?;
+    let _permit = state
+        .hash_limit
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| AuthHttpError::TooManyRequests)?;
+    let client = connect(&state.database_url).await?;
+    let credentials = auth::login(&client, &state.hasher, &body.email, &body.password)
+        .await
+        .map_err(map_auth)?;
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    for value in auth::session_cookies(&credentials) {
+        response.headers_mut().append(
+            header::SET_COOKIE,
+            HeaderValue::from_str(&value).map_err(|_| AuthHttpError::Internal)?,
+        );
+    }
+    no_store(&mut response);
+    Ok(response)
+}
+
+fn no_store(response: &mut Response) {
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+}
+
+#[derive(Serialize)]
+struct SessionBody {
+    account_id: Uuid,
+    user_id: Uuid,
+    session_id: Uuid,
+}
+
+async fn session(
+    State(state): State<Arc<AuthHttpState>>,
+    headers: HeaderMap,
+) -> Result<Response, AuthHttpError> {
+    let client = connect(&state.database_url).await?;
+    let owner = require_owner(
+        &client,
+        &state.hasher,
+        &state.canonical_origin,
+        &headers,
+        false,
+    )
+    .await?;
+    let mut response = Json(SessionBody {
+        account_id: owner.tenant.account_id(),
+        user_id: owner.user_id,
+        session_id: owner.session_id,
+    })
+    .into_response();
+    no_store(&mut response);
+    Ok(response)
+}
+
+async fn logout(
+    State(state): State<Arc<AuthHttpState>>,
+    headers: HeaderMap,
+) -> Result<Response, AuthHttpError> {
+    let client = connect(&state.database_url).await?;
+    let owner = require_owner(
+        &client,
+        &state.hasher,
+        &state.canonical_origin,
+        &headers,
+        true,
+    )
+    .await?;
+    auth::revoke_session(&client, &owner, owner.session_id)
+        .await
+        .map_err(map_auth)?;
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    for name in [SESSION_COOKIE, CSRF_COOKIE] {
+        response.headers_mut().append(
+            header::SET_COOKIE,
+            HeaderValue::from_str(&format!(
+                "{name}=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0"
+            ))
+            .map_err(|_| AuthHttpError::Internal)?,
+        );
+    }
+    no_store(&mut response);
+    Ok(response)
+}
+
+#[derive(Deserialize)]
+struct CreateKeyBody {
+    scopes: Vec<String>,
+    bound_device_id: Option<Uuid>,
+    lifetime_days: Option<i32>,
+}
+
+#[derive(Serialize)]
+struct CreatedKeyBody {
+    id: Uuid,
+    token: String,
+    public_prefix: String,
+}
+
+fn parse_scope(value: &str) -> Option<Scope> {
+    Some(match value {
+        "messages:send" => Scope::MessagesSend,
+        "messages:read" => Scope::MessagesRead,
+        "devices:read" => Scope::DevicesRead,
+        "devices:manage" => Scope::DevicesManage,
+        "webhooks:read" => Scope::WebhooksRead,
+        "webhooks:manage" => Scope::WebhooksManage,
+        "billing:read" => Scope::BillingRead,
+        _ => return None,
+    })
+}
+
+async fn create_api_key(
+    State(state): State<Arc<AuthHttpState>>,
+    headers: HeaderMap,
+    Json(body): Json<CreateKeyBody>,
+) -> Result<Response, AuthHttpError> {
+    let scopes = body
+        .scopes
+        .iter()
+        .map(|name| parse_scope(name).ok_or(AuthHttpError::BadRequest))
+        .collect::<Result<Vec<_>, _>>()?;
+    let client = connect(&state.database_url).await?;
+    let owner = require_owner(
+        &client,
+        &state.hasher,
+        &state.canonical_origin,
+        &headers,
+        true,
+    )
+    .await?;
+    let key = auth::create_api_key(
+        &client,
+        &state.hasher,
+        &owner,
+        &scopes,
+        body.bound_device_id,
+        body.lifetime_days,
+    )
+    .await
+    .map_err(map_auth)?;
+    let mut response = (
+        StatusCode::CREATED,
+        Json(CreatedKeyBody {
+            id: key.id,
+            token: key.token,
+            public_prefix: key.public_prefix,
+        }),
+    )
+        .into_response();
+    no_store(&mut response);
+    Ok(response)
+}
+
+async fn revoke_api_key(
+    State(state): State<Arc<AuthHttpState>>,
+    Path(key_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<StatusCode, AuthHttpError> {
+    let client = connect(&state.database_url).await?;
+    let owner = require_owner(
+        &client,
+        &state.hasher,
+        &state.canonical_origin,
+        &headers,
+        true,
+    )
+    .await?;
+    if auth::revoke_api_key(&client, &owner, key_id)
+        .await
+        .map_err(map_auth)?
+    {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(AuthHttpError::NotFound)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{body::Body, http::Request};
+    use std::sync::Mutex;
+    use tower::ServiceExt;
+
+    struct CaptureVerification(Mutex<Option<String>>);
+
+    impl VerificationDispatcher for CaptureVerification {
+        fn ready(&self) -> bool {
+            true
+        }
+
+        fn dispatch<'a>(
+            &'a self,
+            _email: &'a str,
+            token: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<(), ()>> + Send + 'a>> {
+            *self.0.lock().unwrap() = Some(token.to_owned());
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    fn json_post(uri: &str, body: serde_json::Value) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header(header::ORIGIN, "https://zrotext.example")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    #[test]
+    fn canonical_origin_and_cookie_parsing_are_strict() {
+        assert!(valid_canonical_origin("https://zrotext.example"));
+        assert!(!valid_canonical_origin("http://zrotext.example"));
+        assert!(!valid_canonical_origin("https://zrotext.example/path"));
+        assert!(!valid_canonical_origin("https://a@zrotext.example"));
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_static("other=1; __Host-zrotext_session=zts_abc"),
+        );
+        assert_eq!(cookie(&headers, SESSION_COOKIE), Some("zts_abc"));
+        assert_eq!(cookie(&headers, CSRF_COOKIE), None);
+    }
+
+    #[test]
+    fn unauthenticated_writes_require_exact_origin() {
+        let mut headers = HeaderMap::new();
+        assert!(require_origin(&headers, "https://zrotext.example").is_err());
+        headers.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://evil.example"),
+        );
+        assert!(require_origin(&headers, "https://zrotext.example").is_err());
+        headers.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://zrotext.example"),
+        );
+        assert!(require_origin(&headers, "https://zrotext.example").is_ok());
+    }
+
+    #[test]
+    fn smtp_configuration_preserves_sender_identity_without_connecting() {
+        let sender = SmtpVerificationDispatcher::new(
+            "smtp.example.test",
+            587,
+            "user".to_owned(),
+            "test-only-password".to_owned(),
+            "notice@example.test",
+            Some("ZROtext"),
+            Some("support@example.test"),
+        )
+        .unwrap();
+        assert_eq!(sender.from.name.as_deref(), Some("ZROtext"));
+        assert_eq!(
+            sender.reply_to.unwrap().email.to_string(),
+            "support@example.test"
+        );
+        assert!(
+            SmtpVerificationDispatcher::new(
+                "smtp.example.test",
+                587,
+                "user".to_owned(),
+                "test-only-password".to_owned(),
+                "notice@example.test",
+                Some("bad\nname"),
+                None,
+            )
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn registration_fails_closed_without_delivery_and_never_returns_token() {
+        let state = AuthHttpState::new(
+            "postgres://unused".to_owned(),
+            Arc::new(TokenHasher::new(vec![7; 32]).unwrap()),
+            "https://zrotext.example".to_owned(),
+            Arc::new(DisabledVerificationDispatcher),
+        )
+        .unwrap();
+        let request = Request::builder()
+            .method("POST")
+            .uri("/register")
+            .header(header::ORIGIN, "https://zrotext.example")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"email":"owner@example.test","password":"correct horse 123"}"#,
+            ))
+            .unwrap();
+        let response = router(state).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        let body = axum::body::to_bytes(response.into_body(), 16 * 1024)
+            .await
+            .unwrap();
+        assert!(!String::from_utf8_lossy(&body).contains("ztv_"));
+    }
+
+    #[tokio::test]
+    async fn login_rejects_cross_origin_before_password_work() {
+        let state = AuthHttpState::new(
+            "postgres://unused".to_owned(),
+            Arc::new(TokenHasher::new(vec![7; 32]).unwrap()),
+            "https://zrotext.example".to_owned(),
+            Arc::new(DisabledVerificationDispatcher),
+        )
+        .unwrap();
+        let request = Request::builder()
+            .method("POST")
+            .uri("/login")
+            .header(header::ORIGIN, "https://evil.example")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"email":"owner@example.test","password":"correct horse 123"}"#,
+            ))
+            .unwrap();
+        let response = router(state).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn postgres_http_account_lifecycle_enforces_csrf_and_revocation() {
+        let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
+            return;
+        };
+        let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let schema = format!("http_auth_test_{}", Uuid::new_v4().simple());
+        setup
+            .batch_execute(&format!("CREATE SCHEMA {schema}"))
+            .await
+            .unwrap();
+        let url = format!("{base_url}?options=-csearch_path%3D{schema}");
+        let (test_client, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        test_client
+            .batch_execute(include_str!(
+                "../../../../deploy/compose/migrations/002_auth.sql"
+            ))
+            .await
+            .unwrap();
+        let capture = Arc::new(CaptureVerification(Mutex::new(None)));
+        let state = AuthHttpState::new(
+            url,
+            Arc::new(TokenHasher::new(vec![42; 32]).unwrap()),
+            "https://zrotext.example".to_owned(),
+            capture.clone(),
+        )
+        .unwrap();
+        let app = router(state);
+        let response = app
+            .clone()
+            .oneshot(json_post(
+                "/register",
+                serde_json::json!({"email":"owner@example.test","password":"correct horse 123"}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let token = capture.0.lock().unwrap().take().unwrap();
+        let response = app
+            .clone()
+            .oneshot(json_post(
+                "/verify-email",
+                serde_json::json!({"token":token}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        let response = app
+            .clone()
+            .oneshot(json_post(
+                "/login",
+                serde_json::json!({"email":"owner@example.test","password":"correct horse 123"}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        let cookies = response
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .map(|value| {
+                value
+                    .to_str()
+                    .unwrap()
+                    .split(';')
+                    .next()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(cookies.len(), 2);
+        let cookie_header = cookies.join("; ");
+        let csrf = cookies[1].split_once('=').unwrap().1;
+        let session_request = Request::builder()
+            .uri("/session")
+            .header(header::COOKIE, &cookie_header)
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(session_request).await.unwrap().status(),
+            StatusCode::OK
+        );
+        let body = serde_json::json!({"scopes":["messages:read"],"lifetime_days":30});
+        let mut request = json_post("/api-keys", body.clone());
+        request.headers_mut().insert(
+            header::COOKIE,
+            HeaderValue::from_str(&cookie_header).unwrap(),
+        );
+        assert_eq!(
+            app.clone().oneshot(request).await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
+        let mut request = json_post("/api-keys", body);
+        request.headers_mut().insert(
+            header::COOKIE,
+            HeaderValue::from_str(&cookie_header).unwrap(),
+        );
+        request
+            .headers_mut()
+            .insert(CSRF_HEADER, HeaderValue::from_str(csrf).unwrap());
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let bytes = axum::body::to_bytes(response.into_body(), 16 * 1024)
+            .await
+            .unwrap();
+        let key: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let key_id = key["id"].as_str().unwrap();
+        assert!(key["token"].as_str().unwrap().starts_with("ztk_"));
+        let request = Request::builder()
+            .method("DELETE")
+            .uri(format!("/api-keys/{key_id}"))
+            .header(header::ORIGIN, "https://zrotext.example")
+            .header(header::COOKIE, &cookie_header)
+            .header(CSRF_HEADER, csrf)
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(request).await.unwrap().status(),
+            StatusCode::NO_CONTENT
+        );
+        let request = Request::builder()
+            .method("POST")
+            .uri("/logout")
+            .header(header::ORIGIN, "https://zrotext.example")
+            .header(header::COOKIE, &cookie_header)
+            .header(CSRF_HEADER, csrf)
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(request).await.unwrap().status(),
+            StatusCode::NO_CONTENT
+        );
+        let request = Request::builder()
+            .uri("/session")
+            .header(header::COOKIE, &cookie_header)
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.oneshot(request).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+        setup
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .unwrap();
+    }
+}
