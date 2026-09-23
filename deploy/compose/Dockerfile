@@ -3,6 +3,7 @@ FROM rust:1.97.1-bookworm AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates ./crates
+COPY web/owner ./web/owner
 RUN cargo build --locked --release -p zrotext-server -p zrotext-migrator
 
 FROM debian:bookworm-slim

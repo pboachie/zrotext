@@ -34,7 +34,8 @@ use zrotext_server::{
     },
     billing::{
         http::{self as billing_http, BillingHttpState},
-        parse_test_quota_plans, reset_test_quotas_on_start,
+        owner as billing_owner, parse_test_quota_plans, reset_test_quotas_on_start,
+        sessions::{self as billing_sessions, SessionState},
         worker::StripeTestWorker,
     },
     device_socket::{self, DeviceSocketState},
@@ -89,15 +90,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &env::var("STRIPE_TEST_QUOTA_PLANS").unwrap_or_default(),
                 &prices,
             )?;
-            let worker = StripeTestWorker::new_with_quotas(
-                required("STRIPE_TEST_SECRET_KEY")?,
-                prices,
-                plans,
-            )?;
-            Some((endpoint_secret, worker))
+            let secret_key = required("STRIPE_TEST_SECRET_KEY")?;
+            let worker =
+                StripeTestWorker::new_with_quotas(secret_key.clone(), prices.clone(), plans)?;
+            Some((endpoint_secret, worker, secret_key, prices))
         }
         _ => return Err("invalid STRIPE_BILLING_TEST_ENABLED".into()),
     };
+    if billing_test.is_none()
+        && env::var("STRIPE_TEST_HOSTED_SESSIONS_ENABLED")
+            .ok()
+            .as_deref()
+            == Some("true")
+    {
+        return Err("Stripe hosted sessions require STRIPE_BILLING_TEST_ENABLED=true".into());
+    }
     let (webhook_vault, webhook_delivery_enabled) = webhook_config()?;
     let webhook_management_configured = webhook_vault.is_some();
     let alpha_policy = Arc::new(AlphaPolicy::parse(
@@ -151,7 +158,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/m0/device-test", get(device_test))
         .with_state(config.clone());
     let mut quotas_reset = false;
+    let mut billing_auth_state = None;
     if let Some((auth_state, enrollment_state)) = account_routes(&config)? {
+        billing_auth_state = Some(auth_state.clone());
         ensure_mfa_startup(
             &config.database_url,
             auth_state.mfa_cipher.as_deref(),
@@ -330,18 +339,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         return Err("account and enrollment routes are required for enabled features".into());
     }
-    if let Some((endpoint_secret, worker)) = billing_test {
+    if let Some((endpoint_secret, worker, secret_key, prices)) = billing_test {
         let billing_database = config.database_url.clone();
         if !quotas_reset {
             reset_test_quotas_on_start(&billing_database, true).await?;
         }
-        app = app.nest(
-            "/v1/billing",
-            billing_http::router(BillingHttpState {
-                database_url: billing_database.clone(),
-                endpoint_secret,
-            }),
-        );
+        let mut billing_routes = billing_http::router(BillingHttpState {
+            database_url: billing_database.clone(),
+            endpoint_secret,
+        });
+        match env::var("STRIPE_TEST_HOSTED_SESSIONS_ENABLED")
+            .ok()
+            .as_deref()
+        {
+            None | Some("false") => {}
+            Some("true") => {
+                let auth =
+                    billing_auth_state.ok_or("Stripe hosted sessions require account routes")?;
+                let price_id = required("STRIPE_TEST_CHECKOUT_PRICE_ID")?;
+                if !prices.contains(&price_id) {
+                    return Err(
+                        "Stripe Checkout price must be in the recognized test prices".into(),
+                    );
+                }
+                let sessions = SessionState::new(auth.clone(), secret_key, price_id)?;
+                billing_routes = billing_routes.merge(billing_sessions::router(sessions));
+                billing_routes = billing_routes.merge(billing_owner::status_router(auth.clone()));
+                app = app
+                    .merge(billing_sessions::return_router())
+                    .merge(billing_owner::page_router(auth));
+            }
+            _ => return Err("invalid STRIPE_TEST_HOSTED_SESSIONS_ENABLED".into()),
+        }
+        app = app.nest("/v1/billing", billing_routes);
         let billing_draining = config.draining.clone();
         let billing_notify = config.drain_notify.clone();
         tokio::spawn(async move {

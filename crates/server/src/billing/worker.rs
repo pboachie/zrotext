@@ -2,8 +2,8 @@
 //! Test-mode subscription reconciliation against Stripe's current API state.
 
 use super::{
-    BillingError, SubscriptionSnapshot, TestQuotaPlan, reconcile_snapshot_with_quotas, risk,
-    valid_id,
+    BillingError, SubscriptionSnapshot, TestQuotaPlan, is_test_api_key,
+    reconcile_snapshot_with_quotas, risk, valid_id,
 };
 use reqwest::{Client as HttpClient, redirect, retry};
 use serde_json::Value;
@@ -28,8 +28,7 @@ impl StripeTestWorker {
         recognized_prices: Vec<String>,
         quota_plans: Vec<TestQuotaPlan>,
     ) -> Result<Self, &'static str> {
-        if !secret_key.starts_with("sk_test_")
-            || secret_key.len() < 16
+        if !is_test_api_key(&secret_key)
             || recognized_prices.is_empty()
             || recognized_prices
                 .iter()
@@ -233,6 +232,20 @@ async fn backoff(db: &Client, subscription_id: &str, generation: i64) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worker_accepts_restricted_test_key_but_rejects_live_keys() {
+        assert!(
+            StripeTestWorker::new(
+                "rk_test_fixture123456".into(),
+                vec!["price_fixture1".into()]
+            )
+            .is_ok()
+        );
+        for key in ["rk_live_fixture123456", "sk_live_fixture123456"] {
+            assert!(StripeTestWorker::new(key.into(), vec!["price_fixture1".into()]).is_err());
+        }
+    }
 
     #[test]
     fn parses_current_test_subscription_shape() {
