@@ -1637,7 +1637,7 @@ mod tests {
         ] {
             client.batch_execute(migration).await.unwrap();
         }
-        let hasher = Arc::new(TokenHasher::new(vec![93; 32]).unwrap());
+        let hasher = Arc::new(TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
         let signup = auth::register(
             &mut client,
             &hasher,
