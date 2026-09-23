@@ -59,6 +59,7 @@ The stack runs database migrations before the API starts. Dispatch is disabled b
 - [Roadmap](docs/ROADMAP.md)
 - [Self-hosting](docs/SELF-HOSTING.md)
 - [Android development and testing](docs/ANDROID-TESTING.md)
+- [Release and version tags](docs/RELEASING.md)
 
 ## Contributing
 
