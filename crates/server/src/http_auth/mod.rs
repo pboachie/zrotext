@@ -908,7 +908,6 @@ async fn revoke_api_key(
 mod tests {
     use super::*;
     use axum::{body::Body, http::Request};
-    use p256::elliptic_curve::rand_core::{OsRng, RngCore};
     use std::sync::Mutex;
     use tower::ServiceExt;
 
@@ -1314,24 +1313,18 @@ mod tests {
         ] {
             client.batch_execute(migration).await.unwrap();
         }
-        let mut pepper = vec![0u8; 32];
-        OsRng.fill_bytes(&mut pepper);
-        let hasher = Arc::new(TokenHasher::new(pepper).unwrap());
-        let signup = auth::register(
-            &mut client,
-            &hasher,
-            "mfa@example.test",
-            "mfa owner password",
-        )
-        .await
-        .unwrap();
+        let hasher = Arc::new(TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
+        let password = Uuid::new_v4().to_string();
+        let wrong_password = Uuid::new_v4().to_string();
+        let signup = auth::register(&mut client, &hasher, "mfa@example.test", &password)
+            .await
+            .unwrap();
         assert!(
             auth::verify_email(&mut client, &hasher, &signup.verification_token)
                 .await
                 .unwrap()
         );
-        let mut key = vec![0u8; 32];
-        OsRng.fill_bytes(&mut key);
+        let key = rand::random::<[u8; 32]>().to_vec();
         let state = AuthHttpState::new(
             url.clone(),
             hasher.clone(),
@@ -1346,7 +1339,7 @@ mod tests {
             .clone()
             .oneshot(json_post(
                 "/login",
-                serde_json::json!({"email":"mfa@example.test","password":"mfa owner password"}),
+                serde_json::json!({"email":"mfa@example.test","password":password.as_str()}),
             ))
             .await
             .unwrap();
@@ -1364,7 +1357,7 @@ mod tests {
             .clone()
             .oneshot(json_post(
                 "/mfa/enroll",
-                serde_json::json!({"password":"mfa owner password"}),
+                serde_json::json!({"password":password.as_str()}),
             ))
             .await
             .unwrap();
@@ -1373,7 +1366,7 @@ mod tests {
             .clone()
             .oneshot(owner_post(
                 "/mfa/enroll",
-                serde_json::json!({"password":"wrong password"}),
+                serde_json::json!({"password":wrong_password.as_str()}),
                 &cookie_header,
                 csrf,
             ))
@@ -1384,7 +1377,7 @@ mod tests {
             .clone()
             .oneshot(owner_post(
                 "/mfa/enroll",
-                serde_json::json!({"password":"mfa owner password"}),
+                serde_json::json!({"password":password.as_str()}),
                 &cookie_header,
                 csrf,
             ))
@@ -1449,7 +1442,7 @@ mod tests {
             .clone()
             .oneshot(json_post(
                 "/login",
-                serde_json::json!({"email":"mfa@example.test","password":"mfa owner password"}),
+                serde_json::json!({"email":"mfa@example.test","password":password.as_str()}),
             ))
             .await
             .unwrap();
@@ -1514,7 +1507,7 @@ mod tests {
             .clone()
             .oneshot(json_post(
                 "/login",
-                serde_json::json!({"email":"mfa@example.test","password":"mfa owner password"}),
+                serde_json::json!({"email":"mfa@example.test","password":password.as_str()}),
             ))
             .await
             .unwrap();
@@ -1550,7 +1543,7 @@ mod tests {
             .clone()
             .oneshot(json_post(
                 "/login",
-                serde_json::json!({"email":"mfa@example.test","password":"mfa owner password"}),
+                serde_json::json!({"email":"mfa@example.test","password":password.as_str()}),
             ))
             .await
             .unwrap();
@@ -1575,7 +1568,7 @@ mod tests {
             .clone()
             .oneshot(owner_post(
                 "/mfa/disable",
-                serde_json::json!({"password":"mfa owner password","code":recovery_disable}),
+                serde_json::json!({"password":password.as_str(),"code":recovery_disable}),
                 &cookie_header,
                 csrf,
             ))
@@ -1602,7 +1595,7 @@ mod tests {
             .clone()
             .oneshot(json_post(
                 "/login",
-                serde_json::json!({"email":"mfa@example.test","password":"mfa owner password"}),
+                serde_json::json!({"email":"mfa@example.test","password":password.as_str()}),
             ))
             .await
             .unwrap();
@@ -1637,7 +1630,7 @@ mod tests {
             .clone()
             .oneshot(owner_post(
                 "/mfa/disable",
-                serde_json::json!({"password":"mfa owner password","code":"zrc_AAAAAAAAAAAAAAAAAAAAAA"}),
+                serde_json::json!({"password":password.as_str(),"code":"zrc_AAAAAAAAAAAAAAAAAAAAAA"}),
                 &cookie_header,
                 csrf,
             ))
@@ -1657,7 +1650,7 @@ mod tests {
             .clone()
             .oneshot(owner_post(
                 "/mfa/disable",
-                serde_json::json!({"password":"mfa owner password","code":recovery_disable}),
+                serde_json::json!({"password":password.as_str(),"code":recovery_disable}),
                 &cookie_header,
                 csrf,
             ))
@@ -1667,7 +1660,7 @@ mod tests {
         let response = no_key_app
             .oneshot(json_post(
                 "/login",
-                serde_json::json!({"email":"mfa@example.test","password":"mfa owner password"}),
+                serde_json::json!({"email":"mfa@example.test","password":password.as_str()}),
             ))
             .await
             .unwrap();

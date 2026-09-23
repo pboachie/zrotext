@@ -680,8 +680,9 @@ mod tests {
         ] {
             admin.batch_execute(sql).await.unwrap();
         }
-        let auth_hasher = Arc::new(TokenHasher::new(vec![31; 32]).unwrap());
-        let enrollment_hasher = Arc::new(EnrollmentHasher::new(vec![37; 32]).unwrap());
+        let auth_hasher = Arc::new(TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
+        let enrollment_hasher =
+            Arc::new(EnrollmentHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
         let a = register(
             &mut admin,
             &auth_hasher,
@@ -724,7 +725,7 @@ mod tests {
         let scoped_url = format!("{root_url}{separator}options=-csearch_path%3D{schema}");
         let app = router(EnrollmentHttpState::new(
             scoped_url,
-            auth_hasher,
+            auth_hasher.clone(),
             enrollment_hasher,
             "https://test.example".into(),
         ));
@@ -1041,7 +1042,7 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
 
-        let gate_hasher = TokenHasher::new(vec![31; 32]).unwrap();
+        let gate_hasher = auth_hasher.clone();
         for _ in 0..19 {
             assert!(
                 abuse_limits::consume(

@@ -626,16 +626,15 @@ mod tests {
         ] {
             client.batch_execute(migration).await.unwrap();
         }
-        let mut pepper = vec![0u8; 32];
-        OsRng.fill_bytes(&mut pepper);
-        let hasher = TokenHasher::new(pepper).unwrap();
-        let mut key = vec![0u8; 32];
-        OsRng.fill_bytes(&mut key);
-        let cipher = MfaCipher::new(key).unwrap();
-        let a = auth::register(&mut client, &hasher, "a@example.test", "owner password a")
+        let hasher = TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap();
+        let cipher = MfaCipher::new(rand::random::<[u8; 32]>().to_vec()).unwrap();
+        let password_a = Uuid::new_v4().to_string();
+        let password_b = Uuid::new_v4().to_string();
+        let wrong_password = Uuid::new_v4().to_string();
+        let a = auth::register(&mut client, &hasher, "a@example.test", &password_a)
             .await
             .unwrap();
-        let b = auth::register(&mut client, &hasher, "b@example.test", "owner password b")
+        let b = auth::register(&mut client, &hasher, "b@example.test", &password_b)
             .await
             .unwrap();
         client
@@ -661,10 +660,10 @@ mod tests {
                 .await
                 .unwrap()
         );
-        let sa = auth::login(&client, &hasher, "a@example.test", "owner password a")
+        let sa = auth::login(&client, &hasher, "a@example.test", &password_a)
             .await
             .unwrap();
-        let sb = auth::login(&client, &hasher, "b@example.test", "owner password b")
+        let sb = auth::login(&client, &hasher, "b@example.test", &password_b)
             .await
             .unwrap();
         let pa = auth::authenticate_session(&client, &hasher, &sa.token)
@@ -674,16 +673,16 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(
-            begin_enrollment(&mut client, &cipher, &pa, "wrong password").await,
+            begin_enrollment(&mut client, &cipher, &pa, &wrong_password).await,
             Err(AuthError::InvalidCredentials)
         ));
-        let secondary = auth::login(&client, &hasher, "a@example.test", "owner password a")
+        let secondary = auth::login(&client, &hasher, "a@example.test", &password_a)
             .await
             .unwrap();
         let secondary_owner = auth::authenticate_session(&client, &hasher, &secondary.token)
             .await
             .unwrap();
-        let pending = begin_enrollment(&mut client, &cipher, &secondary_owner, "owner password a")
+        let pending = begin_enrollment(&mut client, &cipher, &secondary_owner, &password_a)
             .await
             .unwrap();
         client
@@ -726,7 +725,7 @@ mod tests {
             .await,
             Err(AuthError::Unauthorized)
         ));
-        let ea = begin_enrollment(&mut client, &cipher, &pa, "owner password a")
+        let ea = begin_enrollment(&mut client, &cipher, &pa, &password_a)
             .await
             .unwrap();
         assert!(ea.provisioning_uri.starts_with("otpauth://totp/"));
@@ -756,7 +755,7 @@ mod tests {
             .get(0);
         assert_eq!(count, 1);
         assert!(matches!(
-            auth::login(&client, &hasher, "a@example.test", "owner password a").await,
+            auth::login(&client, &hasher, "a@example.test", &password_a).await,
             Err(AuthError::MfaRequired { .. })
         ));
         let count: i64 = client
@@ -808,7 +807,7 @@ mod tests {
             .await,
             Err(AuthError::Unauthorized)
         ));
-        let b_enrollment = begin_enrollment(&mut client, &cipher, &pb, "owner password b")
+        let b_enrollment = begin_enrollment(&mut client, &cipher, &pb, &password_b)
             .await
             .unwrap();
         let b_secret = Secret::try_from_base32(&b_enrollment.secret_base32).unwrap();
@@ -925,7 +924,7 @@ mod tests {
                 Some(&cipher),
                 &hasher,
                 &recovered_principal,
-                "wrong password",
+                &wrong_password,
                 &recovery.codes[1]
             )
             .await,
@@ -937,7 +936,7 @@ mod tests {
                 None,
                 &hasher,
                 &recovered_principal,
-                "owner password a",
+                &password_a,
                 &recovery.codes[1]
             )
             .await,
@@ -957,7 +956,7 @@ mod tests {
                     None,
                     &hasher,
                     &recovered_principal,
-                    "owner password a",
+                    &password_a,
                     "zrc_AAAAAAAAAAAAAAAAAAAAAA"
                 )
                 .await,
@@ -987,7 +986,7 @@ mod tests {
             None,
             &hasher,
             &recovered_principal,
-            "owner password a",
+            &password_a,
             &recovery.codes[1],
         )
         .await
@@ -1008,7 +1007,7 @@ mod tests {
             .await,
             Err(AuthError::Unauthorized)
         ));
-        let password_only = auth::login(&client, &hasher, "a@example.test", "owner password a")
+        let password_only = auth::login(&client, &hasher, "a@example.test", &password_a)
             .await
             .unwrap();
         assert!(
