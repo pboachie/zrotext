@@ -4,7 +4,7 @@
 
 Display name: **ZROtext**, pronounced “zero text.” Wordmark: heavier `ZRO`, regular `text`, no separating underscore. Domain, repository, CLI and package identifiers remain lowercase `zrotext`. Tagline: **Your phone. Your number. Your SMS API.** Secondary message: **Run it yourself, or let us keep it running.** The slashed-Z mark is a simple original SVG built as an editable UI asset. It is a proposed identity, not a trademark clearance.
 
-Keep the supplied plan's phosphor/terminal influence through dark green surfaces, monospace labels, connection states and lime accents. Use contemporary readable typography for prose and product controls. No CRT flicker, boot delay, scanline overlay on text, or sound on send. Avoid implying that retro visuals provide security.
+The visual direction uses dark green surfaces, monospace labels, connection states and lime accents. Use contemporary readable typography for prose and product controls. No CRT flicker, boot delay, scanline overlay on text, or sound on send. Avoid implying that retro visuals provide security.
 
 | Token | Value | Use |
 |---|---|---|
@@ -34,16 +34,14 @@ Additional production screens: account login/MFA, recovery kit confirmation, pai
 
 Sealed dashboard rules: fetch metadata and ciphertext; decrypt locally; render messages as plain text; never send decrypted content through HTMX forms or analytics; server search only metadata. Keep a clear vault-locked state, local-search limit, and explicit export sensitivity prompt.
 
-## Deliverable assets
+## Reference assets
 
-Application design requirements are documented here; marketing prototypes are maintained separately.
+- [ZROtext mark](assets/zrotext-mark.svg): editable SVG used in the README.
+- [Android app concept](assets/android-app-concept.png): browser-rendered phone artwork with the planned gateway interface.
+- [Fleet console concept](assets/fleet-console-concept.png): sample account, devices and message activity.
+- [Two-location concept](assets/two-location-concept.png): sample routing and database-authority view.
 
-- `marketing/preview/assets/mark.svg`: original editable UI logo mark.
-- `marketing/preview/assets/android-app-phone.png`: browser-rendered phone artwork using the actual Android concept UI and ZROtext wordmark. This is the selected hero.
-- Use an Android app screen on the phone graphic rather than an abstract relay illustration.
-- `marketing/preview/index.html`, `style.css`, `app.js`: interactive visual reference with sample data and no dependencies.
-- `marketing/preview/architecture.html`: interactive two-location concept and failure behavior.
-- `marketing/preview/screenshots/`: browser captures of the locally running reference. These are not Android hardware screenshots or production evidence.
+These are design references with sample data. They are not Android hardware captures or production evidence. The interactive marketing prototype is maintained separately.
 
 Actual implementation screenshots at M5: public landing desktop/mobile; onboarding with a consented test phone; fleet healthy/offline; successful submitted and unknown timelines; real received test reply; masked API-key creation; webhook success/failure; quota limit; billing test mode; recovery warning; Android connected/paused/permission-error; dual-site origin drain with evidence. Remove personal numbers, email addresses, device identifiers, tokens and hidden overlays before publishing.
 
