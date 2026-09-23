@@ -226,7 +226,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let abuse_draining = config.draining.clone();
         let abuse_drain_notify = config.drain_notify.clone();
         tokio::spawn(async move {
-            let mut checks = tokio::time::interval(Duration::from_secs(300));
+            let mut checks = tokio::time::interval(Duration::from_secs(60));
             checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 tokio::select! {
@@ -333,9 +333,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             app = app.nest("/v1/alpha", http_messages::router(message_state));
         }
     } else if config.alpha_policy.enabled()
+        || inbound_pilot_enabled
         || webhook_delivery_enabled
         || webhook_management_configured
-        || inbound_pilot_enabled
     {
         return Err("account and enrollment routes are required for enabled features".into());
     }
