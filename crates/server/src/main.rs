@@ -23,6 +23,7 @@ use std::{
 use subtle::ConstantTimeEq;
 use tokio::sync::Notify;
 use tokio_postgres::NoTls;
+use zrotext_delivery_store::DeliveryStore;
 use zrotext_server::{
     alpha_policy::AlphaPolicy,
     auth::TokenHasher,
@@ -118,6 +119,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     _ = mail_drain_notify.notified() => break,
+                }
+            }
+        });
+        let recovery_database = config.database_url.clone();
+        let recovery_draining = config.draining.clone();
+        let recovery_drain_notify = config.drain_notify.clone();
+        tokio::spawn(async move {
+            let mut checks = tokio::time::interval(Duration::from_secs(15));
+            checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut unavailable_logged = false;
+            loop {
+                tokio::select! {
+                    _ = checks.tick() => {
+                        if recovery_draining.load(Ordering::Acquire) { break; }
+                        let result = async {
+                            let (mut client, connection) =
+                                tokio_postgres::connect(&recovery_database, NoTls).await?;
+                            tokio::spawn(async move { let _ = connection.await; });
+                            let mut store = DeliveryStore::new(&mut client);
+                            store.expire_due(100).await?;
+                            store.reconcile_silent_attempts(100).await?;
+                            Ok::<(), zrotext_delivery_store::StoreError>(())
+                        }.await;
+                        match result {
+                            Ok(()) => unavailable_logged = false,
+                            Err(_) if !unavailable_logged => {
+                                eprintln!("delivery recovery worker unavailable");
+                                unavailable_logged = true;
+                            }
+                            Err(_) => {}
+                        }
+                    }
+                    _ = recovery_drain_notify.notified() => break,
                 }
             }
         });
