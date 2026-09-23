@@ -16,7 +16,7 @@ use lettre::{
     transport::smtp::authentication::Credentials,
 };
 use serde::{Deserialize, Serialize};
-use std::{future::Future, pin::Pin, sync::Arc};
+use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 use tokio::sync::Semaphore;
 use tokio_postgres::{Client, NoTls};
 use uuid::Uuid;
@@ -163,6 +163,7 @@ impl AuthHttpState {
 pub fn router(state: AuthHttpState) -> Router {
     Router::new()
         .route("/register", post(register))
+        .route("/resend-verification", post(resend_verification))
         .route("/verify-email", post(verify_email))
         .route("/login", post(login))
         .route("/logout", post(logout))
@@ -323,9 +324,8 @@ async fn register(
         .try_acquire_owned()
         .map_err(|_| AuthHttpError::TooManyRequests)?;
     let mut client = connect(&state.database_url).await?;
-    let signup = match auth::register(&mut client, &state.hasher, &body.email, &body.password).await
-    {
-        Ok(signup) => signup,
+    match auth::register(&mut client, &state.hasher, &body.email, &body.password).await {
+        Ok(_) => {}
         // Avoid leaking whether this address is already registered.
         Err(AuthError::Database(ref error))
             if error.code() == Some(&tokio_postgres::error::SqlState::UNIQUE_VIOLATION) =>
@@ -333,18 +333,64 @@ async fn register(
             return Ok(StatusCode::ACCEPTED);
         }
         Err(error) => return Err(map_auth(error)),
-    };
-    if state
-        .dispatcher
-        .dispatch(&body.email, &signup.verification_token)
-        .await
-        .is_err()
-    {
-        // The SMTP result can be ambiguous after acceptance. Never delete a
-        // possibly verified account; a durable resend path is still needed.
-        return Err(AuthHttpError::Unavailable);
     }
     Ok(StatusCode::ACCEPTED)
+}
+
+#[derive(Deserialize)]
+struct ResendBody {
+    email: String,
+    password: String,
+}
+
+async fn resend_verification(
+    State(state): State<Arc<AuthHttpState>>,
+    headers: HeaderMap,
+    Json(body): Json<ResendBody>,
+) -> Result<StatusCode, AuthHttpError> {
+    require_origin(&headers, &state.canonical_origin)?;
+    if !state.dispatcher.ready() {
+        return Err(AuthHttpError::Unavailable);
+    }
+    let _permit = state
+        .hash_limit
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| AuthHttpError::TooManyRequests)?;
+    let mut client = connect(&state.database_url).await?;
+    // Valid, unknown, verified and throttled accounts all have the same
+    // outward result. No code or account-existence signal enters the body.
+    let _ =
+        auth::request_verification_resend(&mut client, &state.hasher, &body.email, &body.password)
+            .await
+            .map_err(map_auth)?;
+    Ok(StatusCode::ACCEPTED)
+}
+
+/// Run from a periodic background task at every API site. The outbox claim
+/// makes concurrent polling safe; this routine performs at most one send.
+/// SMTP acceptance can be ambiguous, so failed claims retry at least once.
+pub async fn dispatch_one_verification(state: &AuthHttpState) -> Result<bool, AuthHttpError> {
+    if !state.dispatcher.ready() {
+        return Ok(false);
+    }
+    let mut client = connect(&state.database_url).await?;
+    let Some(mail) = auth::claim_verification_mail(&mut client, &state.hasher)
+        .await
+        .map_err(map_auth)?
+    else {
+        return Ok(false);
+    };
+    let delivered = tokio::time::timeout(
+        Duration::from_secs(30),
+        state.dispatcher.dispatch(&mail.email, &mail.token),
+    )
+    .await
+    .is_ok_and(|result| result.is_ok());
+    let _ = auth::ack_verification_mail(&client, &mail, delivered)
+        .await
+        .map_err(map_auth)?;
+    Ok(true)
 }
 
 #[derive(Deserialize)]
@@ -726,6 +772,12 @@ mod tests {
             ))
             .await
             .unwrap();
+        test_client
+            .batch_execute(include_str!(
+                "../../../../deploy/compose/migrations/005_verification_outbox.sql"
+            ))
+            .await
+            .unwrap();
         let capture = Arc::new(CaptureVerification(Mutex::new(None)));
         let state = AuthHttpState::new(
             url,
@@ -734,7 +786,7 @@ mod tests {
             capture.clone(),
         )
         .unwrap();
-        let app = router(state);
+        let app = router(state.clone());
         let response = app
             .clone()
             .oneshot(json_post(
@@ -744,6 +796,22 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::ACCEPTED);
+        for (email, password) in [
+            ("unknown@example.test", "correct horse 123"),
+            ("owner@example.test", "wrong password"),
+            ("owner@example.test", "correct horse 123"),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(json_post(
+                    "/resend-verification",
+                    serde_json::json!({"email":email,"password":password}),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::ACCEPTED);
+        }
+        assert!(dispatch_one_verification(&state).await.unwrap());
         let token = capture.0.lock().unwrap().take().unwrap();
         let response = app
             .clone()
