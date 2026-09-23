@@ -1,11 +1,16 @@
 use super::*;
 use tokio_postgres::{NoTls, error::SqlState};
 
-async fn insert_event(
-    db: &tokio_postgres::Client,
+#[derive(Clone, Copy)]
+struct TestIdentity {
     account: Uuid,
     device: Uuid,
     line: Uuid,
+}
+
+async fn insert_event(
+    db: &tokio_postgres::Client,
+    identity: TestIdentity,
     generation: i64,
     id: Uuid,
     sequence: i64,
@@ -17,9 +22,9 @@ async fn insert_event(
          VALUES($1,$2,$3,$4,$5,$6,now(),1,$7,$8)",
         &[
             &id,
-            &account,
-            &device,
-            &line,
+            &identity.account,
+            &identity.device,
+            &identity.line,
             &generation,
             &sequence,
             &bytes,
@@ -70,6 +75,11 @@ async fn sealed_identity_requires_live_writer_and_active_same_tenant_line() {
     let other_account = Uuid::new_v4();
     let device = Uuid::new_v4();
     let line = Uuid::new_v4();
+    let identity = TestIdentity {
+        account,
+        device,
+        line,
+    };
     db.execute(
         "INSERT INTO accounts(id) VALUES($1),($2)",
         &[&account, &other_account],
@@ -195,7 +205,7 @@ async fn sealed_identity_requires_live_writer_and_active_same_tenant_line() {
     let event_id = Uuid::new_v4();
     let mut envelope = vec![0_u8; 426];
     envelope[..6].copy_from_slice(&[0x5a, 0x54, 0x53, 0x45, 1, 2]);
-    let pending = insert_event(&db, account, device, line, 1, event_id, 1, &envelope)
+    let pending = insert_event(&db, identity, 1, event_id, 1, &envelope)
         .await
         .unwrap_err();
     assert_eq!(pending.code(), Some(&SqlState::CHECK_VIOLATION));
@@ -234,7 +244,7 @@ async fn sealed_identity_requires_live_writer_and_active_same_tenant_line() {
         .unwrap()
         .get(0);
     assert_eq!(outbound_count, 0);
-    insert_event(&db, account, device, line, 1, event_id, 1, &envelope)
+    insert_event(&db, identity, 1, event_id, 1, &envelope)
         .await
         .unwrap();
     let altered_event = db
@@ -245,22 +255,13 @@ async fn sealed_identity_requires_live_writer_and_active_same_tenant_line() {
         .await
         .unwrap_err();
     assert_eq!(altered_event.code(), Some(&SqlState::CHECK_VIOLATION));
-    let replay = insert_event(&db, account, device, line, 1, Uuid::new_v4(), 1, &envelope)
+    let replay = insert_event(&db, identity, 1, Uuid::new_v4(), 1, &envelope)
         .await
         .unwrap_err();
     assert_eq!(replay.code(), Some(&SqlState::UNIQUE_VIOLATION));
-    let plaintext = insert_event(
-        &db,
-        account,
-        device,
-        line,
-        1,
-        Uuid::new_v4(),
-        2,
-        b"plain reply text",
-    )
-    .await
-    .unwrap_err();
+    let plaintext = insert_event(&db, identity, 1, Uuid::new_v4(), 2, b"plain reply text")
+        .await
+        .unwrap_err();
     assert_eq!(plaintext.code(), Some(&SqlState::CHECK_VIOLATION));
 
     db.execute(
@@ -270,7 +271,7 @@ async fn sealed_identity_requires_live_writer_and_active_same_tenant_line() {
     .await
     .unwrap();
     assert!(!line_binding_ready(&db, session, line, 1).await.unwrap());
-    let revoked = insert_event(&db, account, device, line, 1, Uuid::new_v4(), 2, &envelope)
+    let revoked = insert_event(&db, identity, 1, Uuid::new_v4(), 2, &envelope)
         .await
         .unwrap_err();
     assert_eq!(revoked.code(), Some(&SqlState::CHECK_VIOLATION));
@@ -317,11 +318,11 @@ async fn sealed_identity_requires_live_writer_and_active_same_tenant_line() {
     .unwrap();
     assert!(!line_binding_ready(&db, session, line, 1).await.unwrap());
     assert!(line_binding_ready(&db, session, line, 2).await.unwrap());
-    let old_generation = insert_event(&db, account, device, line, 1, Uuid::new_v4(), 2, &envelope)
+    let old_generation = insert_event(&db, identity, 1, Uuid::new_v4(), 2, &envelope)
         .await
         .unwrap_err();
     assert_eq!(old_generation.code(), Some(&SqlState::CHECK_VIOLATION));
-    insert_event(&db, account, device, line, 2, Uuid::new_v4(), 2, &envelope)
+    insert_event(&db, identity, 2, Uuid::new_v4(), 2, &envelope)
         .await
         .unwrap();
 
@@ -332,7 +333,7 @@ async fn sealed_identity_requires_live_writer_and_active_same_tenant_line() {
     .await
     .unwrap();
     assert!(!line_binding_ready(&db, session, line, 2).await.unwrap());
-    let disabled = insert_event(&db, account, device, line, 2, Uuid::new_v4(), 3, &envelope)
+    let disabled = insert_event(&db, identity, 2, Uuid::new_v4(), 3, &envelope)
         .await
         .unwrap_err();
     assert_eq!(disabled.code(), Some(&SqlState::CHECK_VIOLATION));
