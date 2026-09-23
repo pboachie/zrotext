@@ -1,6 +1,7 @@
 """Offline checks for Jules workflow routing and trust boundaries."""
 
 import unittest
+from unittest.mock import patch
 
 import jules_pr_review as review
 
@@ -62,6 +63,40 @@ class ReviewRoutingTests(unittest.TestCase):
         self.assertEqual(review.safe_session_url({"url": "https://jules.google.com/session/123"}),
                          "https://jules.google.com/session/123")
         self.assertEqual(review.safe_session_url({"url": "https://jules.google.com.evil.test/"}), "")
+
+    def test_completed_review_posts_on_exact_commit_with_null_existing_body(self):
+        posted = []
+        start = {"user": {"login": "github-actions[bot]"},
+                 "body": (f"<!-- zrotext-jules-start:v1 session=sessions/123 head={SHA} "
+                          "mode=review trigger=comment-7 -->")}
+
+        def fake_pages(path, _token):
+            return {
+                "/pulls?state=open": [{"number": 74}],
+                "/issues/74/comments": [start],
+                "/pulls/74/reviews": [{"user": {"login": "pboachie"}, "body": None}],
+            }[path]
+
+        def fake_request(url, **kwargs):
+            if url == f"{review.JULES}/sessions/123":
+                return {"state": "COMPLETED", "url": "https://jules.google.com/session/123"}
+            if url == f"{review.GITHUB}/pulls/74" and kwargs.get("method", "GET") == "GET":
+                return pull_request()
+            if url.startswith(f"{review.JULES}/sessions/123/activities?"):
+                return {"activities": [{"agentMessaged": {"agentMessage": "No findings."}}]}
+            if url == f"{review.GITHUB}/pulls/74/reviews" and kwargs["method"] == "POST":
+                posted.append(kwargs["payload"])
+                return {}
+            raise AssertionError(url)
+
+        with patch.object(review, "pages", side_effect=fake_pages), \
+             patch.object(review, "request_json", side_effect=fake_request):
+            review.poll_reviews("github-test", "jules-test")
+
+        self.assertEqual(len(posted), 1)
+        self.assertEqual(posted[0]["event"], "COMMENT")
+        self.assertEqual(posted[0]["commit_id"], SHA)
+        self.assertIn("No findings.", posted[0]["body"])
 
 
 if __name__ == "__main__":
