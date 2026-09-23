@@ -516,6 +516,17 @@ async fn poll_synthetic_grant(
     if active {
         return Ok(None);
     }
+    let recently_granted: bool = client
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM message_attempts WHERE account_id=$1 AND device_id=$2 \
+             AND created_at>now()-interval '60 seconds')",
+            &[&session.account_id, &session.device_id],
+        )
+        .await?
+        .get(0);
+    if recently_granted {
+        return Ok(None);
+    }
     let worker_id = format!(
         "{}:{}:{}",
         state.instance_id, session.device_id, session.connection_epoch
@@ -1089,11 +1100,50 @@ mod tests {
             .await
             .unwrap()
         );
+        assert_eq!(
+            DeliveryStore::new(&mut client)
+                .record_radio_event(RadioEvent {
+                    event_id: Uuid::new_v4(),
+                    account_id,
+                    device_id,
+                    message_id,
+                    attempt_id,
+                    evidence: Evidence::SentCallbackOk,
+                    observed_at_ms: now_ms(),
+                    segment_index: Some(0),
+                    segment_count: Some(1),
+                })
+                .await
+                .unwrap(),
+            MessageState::Submitted
+        );
+        let next_message = Uuid::new_v4();
+        DeliveryStore::new(&mut client)
+            .accept(NewMessage {
+                account_id,
+                client_message_id: next_message,
+                device_id,
+                idempotency_key: "socket-synthetic-next-case",
+                recipient_e164: "+15555550101",
+                synthetic_payload: b"ZROtext synthetic test: next_case",
+                expires_at_ms: now_ms() + 10 * 60 * 1000,
+            })
+            .await
+            .unwrap();
         assert!(
             poll_synthetic_grant(&mut client, second_session, &alpha_state)
                 .await
                 .unwrap()
                 .is_none()
+        );
+        assert_eq!(
+            DeliveryStore::new(&mut client)
+                .status(account_id, next_message)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            MessageState::Queued
         );
 
         // A queued row cannot escape a changed recipient policy at grant time.

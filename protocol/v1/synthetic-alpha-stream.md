@@ -24,7 +24,7 @@ message expiry. The digest is SHA-256 of the exact E.164 recipient bytes. The
 server checks the current deployment epoch, site, session lease, device,
 grant fence, recipient allowlist, and fixed body immediately before sending.
 Only one unresolved grant can occupy a device. A second grant is paced at
-least 60 seconds after the previous one on the same socket.
+least 60 seconds after the previous one, including across reconnects.
 
 The phone must check the authenticated session epoch, device ID, positive
 generation and deadline, digest, selected SIM, fixed body shape, and its own
