@@ -86,5 +86,15 @@ is rejected. An expired grant, socket loss, or absent callback never permits
 an automatic second radio attempt. The server keeps an unresolved grant fenced
 for reconciliation rather than treating silence as proof of no submission.
 
+The writer's recovery sweep records `grant_timeout` when no submit intent
+arrives before the 30-second grant deadline. It records
+`sent_callback_timeout` after two minutes without further sent-callback
+evidence on a submitting attempt. Both move the message and attempt to
+`unknown`, retain the device fence, and never authorize another radio call.
+These are server-authored timeline events, not phone event values. A late sent
+callback may reconcile `unknown` to `submitted` or `failed`. Queued messages
+whose expiry passes before any grant become `expired` in the same recovery
+worker.
+
 This extension does not yet provide inbound SMS, delivery-failure
 classification, sealed content, or a live tested send/reply path.
