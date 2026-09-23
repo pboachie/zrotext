@@ -25,6 +25,13 @@ code { font-size: .9rem; }
 #device-list { padding: 0; list-style: none; }
 #device-list li { border-top: 1px solid #d7e0e3; padding: .8rem 0; display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
 #device-list code { display: block; overflow-wrap: anywhere; }
+#message-list { padding: 0; list-style: none; }
+#message-list > li { border-top: 1px solid #d7e0e3; padding: .8rem 0; }
+#message-list code { display: block; overflow-wrap: anywhere; }
+#message-list details { margin-top: .4rem; }
+#message-list ol { padding-left: 1.5rem; }
+#message-list ol li { padding: .25rem 0; }
+#message-list time { color: #465c66; }
 [hidden] { display: none !important; }
-@media (prefers-color-scheme: dark) { body { background: #0d171c; color: #e7f0f2; } section { background: #192a31; border-color: #425861; } .eyebrow { color: #adcad4; } input { background: #14232c; color: #e7f0f2; border-color: #879ea7; } button { background: #bde4ee; color: #102029; border-color: #bde4ee; } button.quiet { color: #bde4ee; } #device-list li { border-color: #425861; } }
+@media (prefers-color-scheme: dark) { body { background: #0d171c; color: #e7f0f2; } section { background: #192a31; border-color: #425861; } .eyebrow, #message-list time { color: #adcad4; } input { background: #14232c; color: #e7f0f2; border-color: #879ea7; } button { background: #bde4ee; color: #102029; border-color: #bde4ee; } button.quiet { color: #bde4ee; } #device-list li, #message-list > li { border-color: #425861; } }
 @media (max-width: 35rem) { dl { grid-template-columns: 1fr; } .section-head, #device-list li { align-items: flex-start; } }
