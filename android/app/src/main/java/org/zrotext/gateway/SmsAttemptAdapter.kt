@@ -14,13 +14,14 @@ import android.telephony.SmsMessage
 import android.telephony.SubscriptionManager
 import androidx.core.content.ContextCompat
 import java.util.UUID
+import java.util.concurrent.TimeUnit
 
 /**
  * Local radio boundary for a future grant-validated dispatcher. Nothing in the M0 socket/UI calls it.
  * A caller must provide a stable attempt ID and a consciously selected subscription ID.
  */
 internal object SmsAttemptAdapter {
-    enum class StartResult { NOT_STARTED, ALREADY_RESERVED, JOURNAL_ERROR, CALL_RETURNED, UNKNOWN }
+    enum class StartResult { NOT_STARTED, ALREADY_RESERVED, JOURNAL_ERROR, RESERVED_NOT_SENT, CALL_RETURNED, UNKNOWN }
 
     fun submit(
         context: Context,
@@ -41,19 +42,9 @@ internal object SmsAttemptAdapter {
     ): StartResult {
         if (runCatching { UUID.fromString(attemptId) }.isFailure ||
             !destination.matches(Regex("^\\+[1-9][0-9]{1,14}$")) || body.isBlank() ||
-            ContextCompat.checkSelfPermission(context, Manifest.permission.SEND_SMS) != PackageManager.PERMISSION_GRANTED ||
-            ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED ||
-            subscriptionId < 0) return StartResult.NOT_STARTED
+            !hasSelectedSim(context, subscriptionId)) return StartResult.NOT_STARTED
 
         // Never fall back to the default SIM. A missing or changed SIM is a preflight refusal.
-        val active = try {
-            context.getSystemService(SubscriptionManager::class.java)
-                .activeSubscriptionInfoList.orEmpty().any { it.subscriptionId == subscriptionId }
-        } catch (_: SecurityException) {
-            false
-        }
-        if (!active) return StartResult.NOT_STARTED
-
         val manager = try {
             if (Build.VERSION.SDK_INT >= 31) context.getSystemService(SmsManager::class.java)
                 .createForSubscriptionId(subscriptionId)
@@ -74,12 +65,35 @@ internal object SmsAttemptAdapter {
             return StartResult.NOT_STARTED
         }
 
-        val dao = SmsJournalDatabase.get(context).attempts()
-        if (dao.getAttempt(attemptId) != null) return StartResult.ALREADY_RESERVED
+        val dao = try { SmsJournalDatabase.get(context).attempts() }
+                  catch (_: RuntimeException) { return StartResult.JOURNAL_ERROR }
+        try {
+            if (dao.getAttempt(attemptId) != null) return StartResult.ALREADY_RESERVED
+        } catch (_: RuntimeException) {
+            return StartResult.JOURNAL_ERROR
+        }
         try {
             dao.reserve(attemptId, subscriptionId, parts.size, System.currentTimeMillis())
         } catch (_: RuntimeException) {
             return StartResult.JOURNAL_ERROR
+        }
+
+        // Best effort while this process lives; startup reconciliation covers process death/reboot.
+        JournalRuntime.timeouts.schedule({
+            JournalRuntime.io.execute {
+                dao.markStalledSubmission(attemptId, System.currentTimeMillis())
+            }
+        }, SENT_CALLBACK_TIMEOUT_MINUTES, TimeUnit.MINUTES)
+
+        // This check happens after the durable intent but before the radio boundary. If it
+        // refuses, persist that no SmsManager send call occurred for this attempt.
+        if (!hasSelectedSim(context, subscriptionId)) {
+            return try {
+                dao.setState(attemptId, AttemptState.NOT_SUBMITTED, System.currentTimeMillis())
+                StartResult.RESERVED_NOT_SENT
+            } catch (_: RuntimeException) {
+                StartResult.UNKNOWN // No call occurred, but the durable record may still say submitting.
+            }
         }
 
         // There is intentionally no retry around this call. A throw may follow a partial radio action.
@@ -91,8 +105,20 @@ internal object SmsAttemptAdapter {
             }
             StartResult.CALL_RETURNED // Call return is not a sent or delivery acknowledgment.
         } catch (_: RuntimeException) {
-            dao.setState(attemptId, AttemptState.UNKNOWN, System.currentTimeMillis())
+            runCatching { dao.setState(attemptId, AttemptState.UNKNOWN, System.currentTimeMillis()) }
             StartResult.UNKNOWN
+        }
+    }
+
+    private fun hasSelectedSim(context: Context, subscriptionId: Int): Boolean {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.SEND_SMS) != PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) return false
+        return try {
+            val ids = context.getSystemService(SubscriptionManager::class.java)
+                .activeSubscriptionInfoList.orEmpty().map { it.subscriptionId }
+            SimSelection.isActive(subscriptionId, ids)
+        } catch (_: RuntimeException) {
+            false
         }
     }
 
@@ -113,6 +139,12 @@ internal object SmsAttemptAdapter {
     }
 
     private const val MAX_SEGMENTS = 6
+    private const val SENT_CALLBACK_TIMEOUT_MINUTES = 2L
+}
+
+internal object SimSelection {
+    fun isActive(selectedId: Int, activeIds: Collection<Int>): Boolean =
+        selectedId >= 0 && activeIds.contains(selectedId)
 }
 
 /** Explicit, non-exported callbacks persist the result code once per segment. */

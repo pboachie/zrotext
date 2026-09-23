@@ -6,6 +6,7 @@ import android.app.Application
 import android.content.Context
 import androidx.room.Dao
 import androidx.room.Database
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
@@ -16,6 +17,8 @@ import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.Transaction
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import java.util.concurrent.Executors
 
 /** A stable ID is reserved exactly once before any SmsManager call. No body or recipient is stored. */
@@ -26,7 +29,8 @@ data class SmsAttempt(
     val segmentCount: Int,
     val state: String,
     val createdAtMs: Long,
-    val updatedAtMs: Long
+    val updatedAtMs: Long,
+    @ColumnInfo(defaultValue = "0") val evidenceConflict: Boolean = false
 )
 
 @Entity(
@@ -64,8 +68,10 @@ internal object AttemptState {
     const val DELIVERY_UNKNOWN = "delivery_unknown"
     const val FAILED = "failed"
     const val PARTIAL_FAILURE = "partial_failure"
+    const val NOT_SUBMITTED = "not_submitted"
 
     fun fromEvidence(prior: String, segments: List<SmsSegment>): String {
+        if (prior == NOT_SUBMITTED) return NOT_SUBMITTED
         if (segments.isEmpty() || segments.any { it.sentResultCode == null }) {
             return if (prior == SUBMITTING) SUBMITTING else UNKNOWN
         }
@@ -77,6 +83,24 @@ internal object AttemptState {
         }
         if (segments.all { it.deliveryStatus == DeliveryStatus.RECEIVED }) return DELIVERED
         return if (prior == DELIVERY_UNKNOWN) DELIVERY_UNKNOWN else SUBMITTED
+    }
+}
+
+/** A callback may be replayed, or a later status report may resolve an unverified one. */
+internal object CallbackEvidence {
+    enum class Decision { STORE, IGNORE, CONFLICT }
+
+    fun sent(previous: Int?, incoming: Int): Decision = when {
+        previous == null -> Decision.STORE
+        previous == incoming -> Decision.IGNORE
+        else -> Decision.CONFLICT
+    }
+
+    fun delivery(previous: Int?, incoming: Int): Decision = when {
+        previous == null -> Decision.STORE
+        previous == DeliveryStatus.UNVERIFIED && incoming != DeliveryStatus.UNVERIFIED -> Decision.STORE
+        previous != DeliveryStatus.UNVERIFIED && incoming != DeliveryStatus.UNVERIFIED && previous != incoming -> Decision.CONFLICT
+        else -> Decision.IGNORE
     }
 }
 
@@ -94,8 +118,14 @@ abstract class SmsAttemptDao {
     @Query("SELECT * FROM sms_segments WHERE attemptId = :attemptId ORDER BY segmentIndex")
     abstract fun getSegments(attemptId: String): List<SmsSegment>
 
+    @Query("SELECT * FROM sms_segments WHERE attemptId = :attemptId AND segmentIndex = :index")
+    abstract fun getSegment(attemptId: String, index: Int): SmsSegment?
+
     @Query("UPDATE sms_attempts SET state = :state, updatedAtMs = :now WHERE attemptId = :attemptId")
     abstract fun setState(attemptId: String, state: String, now: Long)
+
+    @Query("UPDATE sms_attempts SET state = 'unknown', evidenceConflict = 1, updatedAtMs = :now WHERE attemptId = :attemptId")
+    abstract fun markCallbackConflict(attemptId: String, now: Long)
 
     @Query("UPDATE sms_segments SET sentResultCode = :result WHERE attemptId = :attemptId AND segmentIndex = :index AND sentResultCode IS NULL")
     abstract fun recordSent(attemptId: String, index: Int, result: Int): Int
@@ -106,11 +136,15 @@ abstract class SmsAttemptDao {
     @Query("UPDATE sms_attempts SET state = 'unknown', updatedAtMs = :now WHERE state = 'submitting'")
     abstract fun markInterrupted(now: Long)
 
+    @Query("UPDATE sms_attempts SET state = 'unknown', updatedAtMs = :now WHERE attemptId = :attemptId AND state = 'submitting'")
+    abstract fun markStalledSubmission(attemptId: String, now: Long)
+
     @Query("UPDATE sms_attempts SET state = 'delivery_unknown', updatedAtMs = :now WHERE state = 'submitted' AND updatedAtMs < :cutoff")
     abstract fun markTimedOutDeliveries(cutoff: Long, now: Long)
 
     @Transaction
     open fun reserve(attemptId: String, subscriptionId: Int, segmentCount: Int, now: Long) {
+        require(segmentCount in 1..6)
         insertAttempt(SmsAttempt(attemptId, subscriptionId, segmentCount, AttemptState.SUBMITTING, now, now))
         insertSegments((0 until segmentCount).map { SmsSegment(attemptId, it) })
     }
@@ -119,14 +153,40 @@ abstract class SmsAttemptDao {
     open fun recordCallback(attemptId: String, index: Int, delivery: Boolean, result: Int, deliveryStatus: Int?, now: Long) {
         val attempt = getAttempt(attemptId) ?: return
         if (index !in 0 until attempt.segmentCount) return
-        val changed = if (delivery) recordDelivery(attemptId, index, result, deliveryStatus ?: DeliveryStatus.UNVERIFIED)
+        val segment = getSegment(attemptId, index) ?: run {
+            markCallbackConflict(attemptId, now)
+            return
+        }
+        val impossibleCallback = attempt.state == AttemptState.NOT_SUBMITTED
+        val status = deliveryStatus ?: DeliveryStatus.UNVERIFIED
+        val decision = if (delivery) CallbackEvidence.delivery(segment.deliveryStatus, status)
+                       else CallbackEvidence.sent(segment.sentResultCode, result)
+        when (decision) {
+            CallbackEvidence.Decision.IGNORE -> {
+                if (impossibleCallback) markCallbackConflict(attemptId, now)
+                return
+            }
+            CallbackEvidence.Decision.CONFLICT -> {
+                markCallbackConflict(attemptId, now)
+                return
+            }
+            CallbackEvidence.Decision.STORE -> Unit
+        }
+        val changed = if (delivery) recordDelivery(attemptId, index, result, status)
                       else recordSent(attemptId, index, result)
         if (changed == 0) return // A replay cannot rewrite settled evidence.
-        setState(attemptId, AttemptState.fromEvidence(attempt.state, getSegments(attemptId)), now)
+        val segments = getSegments(attemptId)
+        if (impossibleCallback || segments.size != attempt.segmentCount) {
+            markCallbackConflict(attemptId, now)
+            return
+        }
+        setState(attemptId,
+            if (attempt.evidenceConflict) AttemptState.UNKNOWN
+            else AttemptState.fromEvidence(attempt.state, segments), now)
     }
 }
 
-@Database(entities = [SmsAttempt::class, SmsSegment::class], version = 1, exportSchema = false)
+@Database(entities = [SmsAttempt::class, SmsSegment::class], version = 2, exportSchema = false)
 abstract class SmsJournalDatabase : RoomDatabase() {
     abstract fun attempts(): SmsAttemptDao
 
@@ -136,7 +196,13 @@ abstract class SmsJournalDatabase : RoomDatabase() {
         fun get(context: Context): SmsJournalDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(
                 context.applicationContext, SmsJournalDatabase::class.java, "sms_attempts.db"
-            ).build().also { instance = it }
+            ).addMigrations(MIGRATION_1_2).build().also { instance = it }
+        }
+
+        internal val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE sms_attempts ADD COLUMN evidenceConflict INTEGER NOT NULL DEFAULT 0")
+            }
         }
     }
 }
@@ -144,6 +210,7 @@ abstract class SmsJournalDatabase : RoomDatabase() {
 /** Serializes restart reconciliation, submit intents, and callback writes off the main thread. */
 internal object JournalRuntime {
     val io = Executors.newSingleThreadExecutor()
+    val timeouts = Executors.newSingleThreadScheduledExecutor()
 }
 
 class GatewayApplication : Application() {
