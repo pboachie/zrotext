@@ -17,7 +17,7 @@ use axum::{
     routing::{get, post},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use rand::{RngCore, rngs::OsRng};
+use p256::elliptic_curve::rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio_postgres::{Client, NoTls};

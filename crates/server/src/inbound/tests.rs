@@ -1,6 +1,38 @@
 use super::*;
 use p256::ecdsa::{SigningKey, signature::Signer};
-use rand::rngs::OsRng;
+use p256::elliptic_curve::rand_core::OsRng;
+
+#[test]
+fn metadata_signature_bytes_match_android_pilot_vector() {
+    let session = InboundSession {
+        account_id: Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap(),
+        device_id: Uuid::parse_str("22222222-2222-4222-8222-222222222222").unwrap(),
+        site_id: "vector",
+        instance_id: "vector",
+        connection_epoch: 3,
+        deployment_epoch: 1,
+    };
+    let event = InboundEvent {
+        event_id: Uuid::parse_str("33333333-3333-4333-8333-333333333333").unwrap(),
+        sequence: 7,
+        message_id: Uuid::parse_str("44444444-4444-4444-8444-444444444444").unwrap(),
+        attempt_id: Uuid::parse_str("55555555-5555-4555-8555-555555555555").unwrap(),
+        classification: Classification::CapturedLocal,
+        observed_at_ms: 1_700_000_000_000,
+        part_count: 2,
+        content: Content::MetadataOnly,
+        signature_der: &[],
+    };
+    let digest = Sha256::digest(signed_event_bytes(session, &event));
+    let hex = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    assert_eq!(
+        hex,
+        "a5c16315ba6fdd194c57fcf9104f05ec7da26830c5cf784a962c4363b87dd199"
+    );
+}
 
 #[tokio::test]
 async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
@@ -342,7 +374,7 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
     };
     let next_sig: Signature = signing.sign(&signed_event_bytes(session, &next));
     let next_der = next_sig.to_der().as_bytes().to_vec();
-    assert!(
+    assert_eq!(
         ingest(
             &mut db,
             session,
@@ -352,8 +384,22 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
             }
         )
         .await
-        .unwrap()
-        .created
+        .unwrap(),
+        IngestOutcome {
+            created: true,
+            queued_deliveries: 1
+        }
+    );
+    // Make the due condition explicit instead of relying on nearly coincident
+    // insertion and claim transaction timestamps.
+    assert_eq!(
+        db.execute(
+            "UPDATE webhook_deliveries SET next_attempt_at=now()-interval '1 second' WHERE event_id=$1",
+            &[&next.event_id],
+        )
+        .await
+        .unwrap(),
+        1
     );
     let stored_size: i32 = db
         .query_one(

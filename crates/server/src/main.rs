@@ -38,6 +38,7 @@ use zrotext_server::{
     http_enrollment::{self, EnrollmentHttpState},
     http_messages::{self, MessagesHttpState},
     http_webhooks::{self, WebhookHttpState},
+    owner_ui,
     webhook_worker::{self, WebhookSecretVault},
 };
 
@@ -76,6 +77,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "false" => false,
         "true" if alpha_policy.enabled() => true,
         _ => return Err("DISPATCH_ENABLED requires explicit synthetic alpha allowlists".into()),
+    };
+    let inbound_pilot_enabled = match env::var("INBOUND_PILOT_ENABLED").ok().as_deref() {
+        None | Some("false") => false,
+        Some("true") => true,
+        Some(_) => return Err("INBOUND_PILOT_ENABLED must be true or false".into()),
     };
     let config = Arc::new(Config {
         database_url: required("DATABASE_URL")?,
@@ -214,12 +220,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             enrollment_hasher: enrollment_state.enrollment_hasher.clone(),
             alpha_policy: config.alpha_policy.clone(),
             dispatch_runtime_enabled: config.dispatch_runtime_enabled,
+            inbound_pilot_enabled,
             draining: config.draining.clone(),
             drain_notify: config.drain_notify.clone(),
         };
         app = app
             .nest("/v1/auth", http_auth::router(auth_state))
             .nest("/v1/enrollment", http_enrollment::router(enrollment_state))
+            .merge(owner_ui::router())
             .merge(device_socket::router(socket_state));
         if config.alpha_policy.enabled() {
             let message_state = MessagesHttpState::new(
@@ -232,8 +240,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else if config.alpha_policy.enabled()
         || webhook_delivery_enabled
         || webhook_management_configured
+        || inbound_pilot_enabled
     {
-        return Err("account routes are required for enabled features".into());
+        return Err("account and enrollment routes are required for enabled features".into());
     }
     eprintln!(
         "zrotext site={} instance={} listening={bind}",

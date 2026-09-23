@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Devices · ZROtext</title>
+  <link rel="stylesheet" href="/owner/devices.css">
+  <script defer src="/owner/devices.js"></script>
+</head>
+<body>
+  <main>
+    <header>
+      <div><p class="eyebrow">ZROtext owner account</p><h1>Devices</h1></div>
+      <button id="logout" type="button" hidden>Sign out</button>
+    </header>
+    <p id="global-status" role="status" aria-live="polite"></p>
+
+    <section id="sign-in" hidden aria-labelledby="sign-in-title">
+      <h2 id="sign-in-title">Sign in</h2>
+      <p>Use your verified owner account to manage gateway devices.</p>
+      <form id="login-form">
+        <label for="email">Email</label><input id="email" name="email" type="email" autocomplete="username" required>
+        <label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required>
+        <button type="submit">Sign in</button>
+      </form>
+      <p id="login-status" role="status" aria-live="polite"></p>
+    </section>
+
+    <div id="owner-content" hidden>
+      <section aria-labelledby="pair-title">
+        <h2 id="pair-title">Pair a phone</h2>
+        <p>Create a five-minute, one-use ticket. Enter the server origin, ID and token in the gateway app. The token is shown only now and stays on this page until you finish or leave.</p>
+        <form id="create-form">
+          <label for="display-name">Phone name</label>
+          <input id="display-name" name="display_name" maxlength="64" autocomplete="off" required>
+          <button type="submit">Create pairing</button>
+        </form>
+        <p id="pair-status" role="status" aria-live="polite"></p>
+        <div id="pair-ticket" hidden>
+          <dl>
+            <dt>Server origin</dt><dd><code id="server-origin"></code></dd>
+            <dt>Pairing ID</dt><dd><code id="pair-id"></code></dd>
+            <dt>One-use token</dt><dd><code id="pair-token"></code></dd>
+          </dl>
+          <p>Do not send the token in a link. If you leave this page, create a new pairing.</p>
+          <div class="actions">
+            <button id="check-proof" type="button">Check phone proof</button>
+            <button id="cancel-pairing" type="button" class="quiet">Cancel pairing</button>
+          </div>
+        </div>
+        <form id="approve-form" hidden>
+          <h3>Compare with the phone</h3>
+          <p>The phone has proved its key. Read both values on the phone and compare them with these browser values. Type the phone's values below to approve.</p>
+          <dl>
+            <dt>Browser comparison code</dt><dd><code id="browser-code"></code></dd>
+            <dt>Browser key fingerprint</dt><dd><code id="browser-fingerprint" class="fingerprint"></code></dd>
+          </dl>
+          <label for="phone-code">Code shown on phone</label>
+          <input id="phone-code" inputmode="numeric" pattern="[0-9]{8}" minlength="8" maxlength="8" autocomplete="off" required>
+          <label for="phone-fingerprint">Fingerprint shown on phone</label>
+          <input id="phone-fingerprint" class="fingerprint" pattern="[A-Fa-f0-9]{64}" minlength="64" maxlength="64" autocomplete="off" spellcheck="false" required>
+          <label class="check"><input id="compared" type="checkbox" required> I compared both values on the phone and in this browser.</label>
+          <button type="submit">Approve device</button>
+        </form>
+        <p id="approved-result" role="status" aria-live="polite"></p>
+      </section>
+
+      <section aria-labelledby="devices-title">
+        <div class="section-head"><h2 id="devices-title">Approved devices</h2><button id="refresh-devices" type="button" class="quiet">Refresh</button></div>
+        <p id="device-status" role="status" aria-live="polite"></p>
+        <ul id="device-list"></ul>
+        <button id="more-devices" type="button" class="quiet" hidden>Load more devices</button>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

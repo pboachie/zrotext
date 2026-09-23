@@ -8,5 +8,6 @@ pub mod http_enrollment;
 pub mod http_messages;
 pub mod http_webhooks;
 pub mod inbound;
+pub mod owner_ui;
 pub mod webhook_egress;
 pub mod webhook_worker;
