@@ -471,7 +471,7 @@ async function loadDevices(reset = true) {
       const state = document.createElement("span");
       name.textContent = device.display_name;
       id.textContent = device.device_id;
-      state.textContent = device.revoked ? "Revoked" : "Approved";
+      state.textContent = device.revoked ? "Revoked" : "Approved for connection · live status unavailable";
       detail.append(name, id, state);
       row.append(detail);
       if (!device.revoked) {
@@ -716,7 +716,7 @@ byId("approve-form").addEventListener("submit", async (event) => {
       key_fingerprint: byId("phone-fingerprint").value.toUpperCase(),
     });
     message("approved-result", `Approved device UUID: ${result.device_id}`);
-    message("pair-status", "Pairing complete. Enter this UUID on the phone for its authenticated gateway connection.");
+    message("pair-status", "Pairing complete. Enter this UUID on the phone, then start its gateway connection. Approval does not confirm the phone is connected or ready to send.");
     clearPairing();
     await Promise.all([loadDevices(), loadDeviceCapacity()]);
   } catch (error) {

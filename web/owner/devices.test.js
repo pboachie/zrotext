@@ -366,6 +366,20 @@ test("unknown message state warns that a new send may duplicate it", async () =>
   assert.equal(delivered.children.some((child) => child.className === "message-uncertain"), false);
 });
 
+test("device authorization is not presented as a live connection", async () => {
+  const { element, state } = await ownerPage();
+  state.devices = [
+    { device_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", display_name: "Phone A", revoked: false },
+    { device_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", display_name: "Phone B", revoked: true },
+  ];
+  await element("refresh-devices").listeners.click();
+  const [approved, revoked] = element("device-list").children;
+  assert.match(visibleText(approved), /Approved for connection · live status unavailable/);
+  assert.doesNotMatch(visibleText(approved), /Connected|Ready to send/);
+  assert.match(visibleText(revoked), /Revoked/);
+  assert.doesNotMatch(visibleText(revoked), /Approved for connection/);
+});
+
 test("downgrade asks the owner to choose devices and never revokes one automatically", async () => {
   const { element, state } = await ownerPage();
   state.billingCapacity = { limit: 1, active: 2, overLimit: true, enrollmentBlocked: true };
