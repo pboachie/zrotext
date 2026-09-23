@@ -56,7 +56,7 @@ services:
       DISPATCH_ENABLED: "false"
       M0_TEST_TOKEN: ${M0_TEST_TOKEN:-}
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:${APP_PORT:-8080}:8080"
   app_b:
     <<: *app
     profiles: [two-hub]
