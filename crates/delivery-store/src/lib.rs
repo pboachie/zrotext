@@ -38,6 +38,8 @@ pub enum StoreError {
     QuotaNotConfigured,
     #[error("outbound quota is exhausted")]
     QuotaExceeded,
+    #[error("billing payment requires review")]
+    PaymentHold,
 }
 
 #[derive(Clone, Copy)]
@@ -1034,15 +1036,52 @@ async fn reserve_outbound(
     message_id: Uuid,
     at_unix_ms: Option<i64>,
 ) -> Result<(), StoreError> {
+    // Hold the tenant binding while checking pending payment risk, subscription
+    // reconciliation, and policy. Risk ingestion locks the same customer row.
+    let billed = tx
+        .query_opt(
+            "SELECT 1 FROM billing_customers WHERE account_id=$1 FOR SHARE",
+            &[&account_id],
+        )
+        .await?
+        .is_some();
+    if billed {
+        if tx
+            .query_opt(
+                "SELECT 1 FROM billing_risk_events WHERE account_id=$1 AND state IN ('queued','held','needs_review') LIMIT 1 FOR SHARE",
+                &[&account_id],
+            )
+            .await?
+            .is_some()
+        {
+            return Err(StoreError::PaymentHold);
+        }
+        let rows = tx
+            .query(
+                "SELECT dirty_generation,processed_generation FROM billing_reconciliations WHERE account_id=$1 FOR SHARE",
+                &[&account_id],
+            )
+            .await?;
+        if rows.is_empty()
+            || rows
+                .iter()
+                .any(|row| row.get::<_, i64>(0) != row.get::<_, i64>(1))
+        {
+            return Err(StoreError::QuotaNotConfigured);
+        }
+    }
     let policy = tx
         .query_opt(
-            "SELECT limit_units FROM usage_quota_policies \
+            "SELECT limit_units,source FROM usage_quota_policies \
              WHERE account_id=$1 AND metric='outbound_message' FOR SHARE",
             &[&account_id],
         )
         .await?
         .ok_or(StoreError::QuotaNotConfigured)?;
     let limit: i64 = policy.get(0);
+    if billed && policy.get::<_, String>(1) != "stripe_test" {
+        return Err(StoreError::QuotaNotConfigured);
+    }
     let period_start: String = tx
         .query_one(
             "SELECT date_trunc('month', COALESCE(to_timestamp($1::bigint::double precision / 1000), \

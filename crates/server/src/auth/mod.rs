@@ -16,6 +16,8 @@ const SESSION_DAYS: i32 = 14;
 const VERIFICATION_HOURS: i32 = 24;
 const MAX_EMAIL_BYTES: usize = 254;
 
+pub mod abuse_limits;
+pub mod mfa;
 mod verification_outbox;
 pub use verification_outbox::{
     VerificationMail, ack_verification_mail, claim_verification_mail, request_verification_resend,
@@ -37,6 +39,12 @@ pub enum AuthError {
     Database(#[from] tokio_postgres::Error),
     #[error("password hashing failed")]
     Password,
+    #[error("second factor required")]
+    MfaRequired { account_id: Uuid, user_id: Uuid },
+    #[error("authentication cryptography failed")]
+    Crypto,
+    #[error("authentication rate limit exceeded")]
+    RateLimited,
 }
 
 /// This pepper must be generated once, backed up, and shared across API sites.
@@ -220,7 +228,7 @@ fn password_engine() -> Result<Argon2<'static>, AuthError> {
     Ok(Argon2::new(Algorithm::Argon2id, Version::V0x13, params))
 }
 
-fn normalize_email(email: &str) -> Result<String, AuthError> {
+pub(crate) fn normalize_email(email: &str) -> Result<String, AuthError> {
     let email = email.trim().to_ascii_lowercase();
     if email.len() < 3
         || email.len() > MAX_EMAIL_BYTES
@@ -337,7 +345,7 @@ pub async fn login(
     let email = normalize_email(email).map_err(|_| AuthError::InvalidCredentials)?;
     let row = client
         .query_opt(
-            "SELECT u.id,m.account_id,u.password_hash,u.email_verified_at IS NOT NULL FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE u.email=$1 AND a.disabled_at IS NULL",
+            "SELECT u.id,m.account_id,u.password_hash,u.email_verified_at IS NOT NULL,u.mfa_enabled FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE u.email=$1 AND a.disabled_at IS NULL",
             &[&email],
         )
         .await?;
@@ -354,17 +362,29 @@ pub async fn login(
     if !row.get::<_, bool>(3) {
         return Err(AuthError::EmailNotVerified);
     }
+    if row.get::<_, bool>(4) {
+        return Err(AuthError::MfaRequired {
+            account_id,
+            user_id,
+        });
+    }
     let token = random_token("zts_");
     let csrf_token = random_token("ztc_");
     let token_hash = hasher.digest(b"session-v1", &token);
     let csrf_hash = hasher.digest(b"csrf-v1", &csrf_token);
     let id = Uuid::new_v4();
-    client
+    let inserted = client
         .execute(
-            "INSERT INTO sessions(id,account_id,user_id,token_hash,csrf_hash,expires_at) VALUES($1,$2,$3,$4,$5,now()+($6::integer * interval '1 day'))",
+            "INSERT INTO sessions(id,account_id,user_id,token_hash,csrf_hash,expires_at) SELECT $1,$2,$3,$4,$5,now()+($6::integer * interval '1 day') FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE u.id=$3 AND m.account_id=$2 AND NOT u.mfa_enabled AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL FOR UPDATE OF u",
             &[&id, &account_id, &user_id, &&token_hash[..], &&csrf_hash[..], &SESSION_DAYS],
         )
         .await?;
+    if inserted != 1 {
+        return Err(AuthError::MfaRequired {
+            account_id,
+            user_id,
+        });
+    }
     Ok(SessionCredentials {
         id,
         token,
@@ -633,6 +653,18 @@ mod tests {
         client
             .batch_execute(include_str!(
                 "../../../../deploy/compose/migrations/005_verification_outbox.sql"
+            ))
+            .await
+            .unwrap();
+        client
+            .batch_execute(include_str!(
+                "../../../../deploy/compose/migrations/013_owner_mfa.sql"
+            ))
+            .await
+            .unwrap();
+        client
+            .batch_execute(include_str!(
+                "../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"
             ))
             .await
             .unwrap();
