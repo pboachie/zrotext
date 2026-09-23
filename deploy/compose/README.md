@@ -6,6 +6,24 @@ its own local credentials and Compose project, chooses an available loopback
 port, and removes its containers and database volume afterward. It does not
 read the repository `.env` or enable message dispatch.
 
+For a release image, pass its immutable digest plus the expected public source
+identity:
+
+```sh
+python3 deploy/compose/fresh_install_smoke.py \
+  --image-ref ghcr.io/pboachie/zrotext@sha256:<digest> \
+  --source-commit <full-commit-sha> --source-tag v0.1.0-rc.1
+```
+
+This mode pulls the digest, checks its source labels, and verifies that both the
+migrator and API containers ran that exact image before checking migrations,
+health, readiness, dispatch isolation, and logical restore. The release-image
+workflow runs it before attesting or writing a promotion receipt. A failed
+smoke may leave the uniquely tagged image in GHCR, but no reviewed receipt is
+produced. The script does not verify a registry attestation or authorize
+production promotion; follow the release verification steps in
+[RELEASING.md](../../docs/RELEASING.md).
+
 Set `APP_PORT` in `.env` if port 8080 is occupied for the normal local setup;
 the documented health endpoints then use that port.
 
