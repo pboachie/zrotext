@@ -342,15 +342,18 @@ async fn run_socket(mut socket: WebSocket, state: DeviceSocketState) {
     let mut last_grant_at: Option<Instant> = None;
     let mut alpha_ready: Option<([u8; 32], Instant)> = None;
     let mut alpha_ready_used = false;
-    // Enabled only for controlled local liveness probes. Emit one content-free
-    // marker per authenticated session, never a frame or device identifier.
+    // Enabled only for controlled local liveness probes. Emit bounded,
+    // content-free timing and exit markers, never frames or device IDs.
     let diagnostic = std::env::var("ZT_DEVICE_STREAM_DIAGNOSTIC").is_ok_and(|value| value == "1");
+    let mut diagnostic_heartbeats = 0;
     let mut close_reason = "other_stream_exit";
     loop {
         tokio::select! {
             message = receive_frame(&mut socket) => {
                 match message {
                     Some(ClientFrame::Heartbeat { v: 1 }) => {
+                        let received_at = Instant::now();
+                        let since_prior_accepted_ms = received_at.duration_since(last_heartbeat).as_millis();
                         if !renew_session(&client, session, &state).await.unwrap_or(false) {
                             close_reason = "heartbeat_renew_failed_or_fenced";
                             break;
@@ -361,6 +364,15 @@ async fn run_socket(mut socket: WebSocket, state: DeviceSocketState) {
                         }).await {
                             close_reason = "heartbeat_ack_write_failed";
                             break;
+                        }
+                        if diagnostic && diagnostic_heartbeats < 256 {
+                            eprintln!(
+                                "ZTDeviceStream heartbeat_ack connection_epoch={} since_prior_accepted_ms={} handling_ms={}",
+                                session.connection_epoch,
+                                since_prior_accepted_ms,
+                                received_at.elapsed().as_millis()
+                            );
+                            diagnostic_heartbeats += 1;
                         }
                     }
                     Some(ClientFrame::AlphaReady { v: 1, connection_epoch, recipient_digest })
