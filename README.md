@@ -1,10 +1,17 @@
-# ZROtext
-
-**Your phone. Your number. Your SMS API.**
+<p align="center"><img src="docs/assets/zrotext-mark.svg" alt="ZROtext mark" width="64"></p>
+<h1 align="center">ZROtext</h1>
+<p align="center"><strong>Your phone. Your number. Your SMS API.</strong></p>
+<p align="center">
+  <a href="https://github.com/pboachie/zrotext/actions/workflows/ci.yml"><img src="https://github.com/pboachie/zrotext/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0--only-blue" alt="AGPL-3.0-only license"></a>
+  <a href="docs/implementation-status.md"><img src="https://img.shields.io/badge/status-in%20development-b6f36a?labelColor=253021" alt="Status: in development"></a>
+  <a href="CONTRIBUTING.md"><img src="https://img.shields.io/badge/contributions-welcome-6f9b4b" alt="Contributions welcome"></a>
+</p>
 
 ZROtext is an open-source Android SMS gateway. It is designed to connect a dedicated Android phone and its SIM to an API for sending, receiving, and tracking SMS. You can run the gateway yourself; a managed hosting service is planned.
 
-[![CI](https://github.com/pboachie/zrotext/actions/workflows/ci.yml/badge.svg)](https://github.com/pboachie/zrotext/actions/workflows/ci.yml) [![License: AGPL-3.0-only](https://img.shields.io/badge/License-AGPL--3.0--only-blue.svg)](LICENSE)
+<p align="center"><img src="docs/assets/android-app-concept.png" alt="ZROtext Android gateway app design concept with sample status and message counts" width="360"></p>
+<p align="center"><sub>Android app design concept · sample data · not a live connection</sub></p>
 
 ## Project status
 
@@ -19,6 +26,27 @@ ZROtext is in active development. The repository includes a Rust server foundati
 - **Two-location architecture.** The design supports routing API and device connections across sites while keeping one authoritative database writer and fenced device ownership.
 
 These are product goals; check the [current implementation record](docs/implementation-status.md) before relying on a capability.
+
+## Roadmap
+
+| Milestone | What it covers | Status |
+|---|---|---|
+| Foundation and device validation | Local stack, accounts, enrollment, Android behavior on supported hardware | In progress |
+| Send and receive SMS | Durable queue, phone connection, truthful delivery states, inbound events and webhooks | In progress |
+| Content security | Reviewed sealed-content protocol, client support and recovery | Planned |
+| Self-host and managed beta | Setup guide, dashboard, release artifacts, backup and restore | Planned |
+| Billing and release | Metering, subscriptions, support and operational readiness | Planned |
+| Two-location operation | Traffic steering, fenced device ownership and tested failover | Designed; deployment pending |
+
+The [detailed roadmap](docs/IMPLEMENTATION.md) describes acceptance evidence for each milestone. Milestones have no promised release dates.
+
+## Design preview
+
+These interface studies use synthetic devices, messages and traffic. Click an image to inspect it at full size.
+
+| Fleet console concept | Two-location routing concept |
+|:---:|:---:|
+| <a href="docs/assets/fleet-console-concept.png"><img src="docs/assets/fleet-console-concept.png" alt="Fleet console concept with sample device health and message activity" width="620"></a> | <a href="docs/assets/two-location-concept.png"><img src="docs/assets/two-location-concept.png" alt="Two-location routing concept with one authoritative database writer" width="620"></a> |
 
 ## Run the development stack
 

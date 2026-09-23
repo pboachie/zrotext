@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Authenticated, heartbeat-only device stream. No message or radio commands.
 
-use crate::enrollment::{self, AuthenticatedDevice, EnrollmentHasher};
+use crate::{
+    alpha_policy::AlphaPolicy,
+    enrollment::{self, AuthenticatedDevice, EnrollmentHasher},
+};
 use axum::{
     Router,
     extract::{
@@ -19,7 +22,7 @@ use std::{
         Arc, LazyLock,
         atomic::{AtomicBool, Ordering},
     },
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
     sync::{Notify, Semaphore},
@@ -27,6 +30,8 @@ use tokio::{
 };
 use tokio_postgres::{Client, NoTls};
 use uuid::Uuid;
+use zrotext_delivery_store::{DeliveryStore, GrantRecord, RadioEvent, SessionRecord, StoreError};
+use zrotext_domain::{Evidence, MessageState};
 
 const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
 const HEARTBEAT_SECONDS: u64 = 30;
@@ -34,6 +39,9 @@ const HEARTBEAT_DEADLINE: Duration = Duration::from_secs(45);
 const SESSION_LEASE_SECONDS: i32 = 90;
 const MAX_FRAME_BYTES: usize = 4096;
 const MAX_DEVICE_SOCKETS: usize = 128;
+const DISPATCH_POLL_SECONDS: u64 = 5;
+const MIN_SECONDS_BETWEEN_GRANTS: u64 = 60;
+const ALPHA_READY_SECONDS: u64 = 300;
 static DEVICE_SOCKET_SLOTS: LazyLock<Arc<Semaphore>> =
     LazyLock::new(|| Arc::new(Semaphore::new(MAX_DEVICE_SOCKETS)));
 
@@ -44,6 +52,8 @@ pub struct DeviceSocketState {
     pub instance_id: String,
     pub deployment_epoch: i64,
     pub enrollment_hasher: Arc<EnrollmentHasher>,
+    pub alpha_policy: Arc<AlphaPolicy>,
+    pub dispatch_runtime_enabled: bool,
     pub draining: Arc<AtomicBool>,
     pub drain_notify: Arc<Notify>,
 }
@@ -71,6 +81,54 @@ enum ClientFrame {
     },
     #[serde(rename = "heartbeat")]
     Heartbeat { v: u8 },
+    #[serde(rename = "alpha_ready")]
+    AlphaReady {
+        v: u8,
+        connection_epoch: i64,
+        recipient_digest: String,
+    },
+    #[serde(rename = "radio_event")]
+    RadioEvent {
+        v: u8,
+        connection_epoch: i64,
+        event_id: Uuid,
+        message_id: Uuid,
+        attempt_id: Uuid,
+        evidence: RadioEvidence,
+        observed_at_ms: i64,
+        #[serde(default)]
+        segment_index: Option<i32>,
+        #[serde(default)]
+        segment_count: Option<i32>,
+    },
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum RadioEvidence {
+    DurableSubmitIntent,
+    ProvenNoSubmit,
+    SentCallbackOk,
+    SentCallbackFailed,
+    DeliveryCallbackOk,
+    DeliveryTimeout,
+    CrashWithoutCallback,
+    CallbackConflict,
+}
+
+impl From<RadioEvidence> for Evidence {
+    fn from(value: RadioEvidence) -> Self {
+        match value {
+            RadioEvidence::DurableSubmitIntent => Self::DurableSubmitIntent,
+            RadioEvidence::ProvenNoSubmit => Self::ProvenNoSubmit,
+            RadioEvidence::SentCallbackOk => Self::SentCallbackOk,
+            RadioEvidence::SentCallbackFailed => Self::SentCallbackFailed,
+            RadioEvidence::DeliveryCallbackOk => Self::DeliveryCallbackOk,
+            RadioEvidence::DeliveryTimeout => Self::DeliveryTimeout,
+            RadioEvidence::CrashWithoutCallback => Self::CrashWithoutCallback,
+            RadioEvidence::CallbackConflict => Self::CallbackConflict,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -92,6 +150,27 @@ enum ServerFrame {
     },
     #[serde(rename = "heartbeat_ack")]
     HeartbeatAck { v: u8, connection_epoch: i64 },
+    #[serde(rename = "synthetic_grant")]
+    SyntheticGrant {
+        v: u8,
+        message_id: Uuid,
+        attempt_id: Uuid,
+        device_id: Uuid,
+        generation: i64,
+        connection_epoch: i64,
+        deployment_epoch: i64,
+        recipient_digest: String,
+        expires_at_ms: i64,
+        recipient_e164: String,
+        body: String,
+    },
+    #[serde(rename = "radio_event_ack")]
+    RadioEventAck {
+        v: u8,
+        event_id: Uuid,
+        state: MessageState,
+        submit_permitted: bool,
+    },
 }
 
 /// Mount at `/v1/device-stream`. Deploy behind TLS/WSS; this route accepts
@@ -153,7 +232,7 @@ async fn send_frame(socket: &mut WebSocket, frame: ServerFrame) -> bool {
     let Ok(json) = serde_json::to_string(&frame) else {
         return false;
     };
-    socket.send(Message::Text(json.into())).await.is_ok()
+    json.len() <= MAX_FRAME_BYTES && socket.send(Message::Text(json.into())).await.is_ok()
 }
 
 async fn run_socket(mut socket: WebSocket, state: DeviceSocketState) {
@@ -257,6 +336,12 @@ async fn run_socket(mut socket: WebSocket, state: DeviceSocketState) {
     let mut last_heartbeat = Instant::now();
     let mut checks = interval(Duration::from_secs(10));
     checks.tick().await;
+    let mut dispatch_checks = interval(Duration::from_secs(DISPATCH_POLL_SECONDS));
+    dispatch_checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    dispatch_checks.tick().await;
+    let mut last_grant_at: Option<Instant> = None;
+    let mut alpha_ready: Option<([u8; 32], Instant)> = None;
+    let mut alpha_ready_used = false;
     loop {
         tokio::select! {
             message = receive_frame(&mut socket) => {
@@ -270,6 +355,58 @@ async fn run_socket(mut socket: WebSocket, state: DeviceSocketState) {
                             v: 1, connection_epoch: session.connection_epoch,
                         }).await { break; }
                     }
+                    Some(ClientFrame::AlphaReady { v: 1, connection_epoch, recipient_digest })
+                        if connection_epoch == session.connection_epoch && !alpha_ready_used && state.dispatch_runtime_enabled =>
+                    {
+                        let Ok(bytes) = URL_SAFE_NO_PAD.decode(recipient_digest.as_bytes()) else { break; };
+                        let Ok(digest): Result<[u8; 32], _> = bytes.try_into() else { break; };
+                        if URL_SAFE_NO_PAD.encode(digest) != recipient_digest
+                            || !state.alpha_policy.allows_recipient_digest(session.account_id, &digest)
+                            || !session_current(&client, session, &state).await.unwrap_or(false)
+                        { break; }
+                        alpha_ready = Some((digest, Instant::now()));
+                        alpha_ready_used = true;
+                    }
+                    Some(ClientFrame::RadioEvent {
+                        v: 1, connection_epoch, event_id, message_id, attempt_id,
+                        evidence, observed_at_ms, segment_index, segment_count,
+                    }) if connection_epoch == session.connection_epoch => {
+                        if !session_current(&client, session, &state).await.unwrap_or(false) {
+                            break;
+                        }
+                        if matches!(evidence, RadioEvidence::DurableSubmitIntent)
+                            && !grant_still_current(&client, session, message_id, attempt_id, &state)
+                                .await
+                                .unwrap_or(false)
+                            && !previous_submit_intent(&client, session, event_id, message_id, attempt_id)
+                                .await
+                                .unwrap_or(false)
+                        {
+                            break;
+                        }
+                        let event = RadioEvent {
+                            event_id,
+                            account_id: session.account_id,
+                            device_id: session.device_id,
+                            message_id,
+                            attempt_id,
+                            evidence: evidence.into(),
+                            observed_at_ms,
+                            segment_index,
+                            segment_count,
+                        };
+                        let mut store = DeliveryStore::new(&mut client);
+                        let Ok(next) = store.record_radio_event(event).await else {
+                            break;
+                        };
+                        let submit_permitted = matches!(evidence, RadioEvidence::DurableSubmitIntent)
+                            && grant_still_current(&client, session, message_id, attempt_id, &state)
+                                .await
+                                .unwrap_or(false);
+                        if !send_frame(&mut socket, ServerFrame::RadioEventAck {
+                            v: 1, event_id, state: next, submit_permitted,
+                        }).await { break; }
+                    }
                     _ => break,
                 }
             }
@@ -278,11 +415,233 @@ async fn run_socket(mut socket: WebSocket, state: DeviceSocketState) {
                     || !session_current(&client, session, &state).await.unwrap_or(false)
                 { break; }
             }
+            _ = dispatch_checks.tick(), if alpha_ready.is_some() => {
+                if !session_current(&client, session, &state).await.unwrap_or(false) {
+                    break;
+                }
+                let Some((recipient_digest, armed_at)) = alpha_ready else { continue; };
+                if armed_at.elapsed() > Duration::from_secs(ALPHA_READY_SECONDS) {
+                    alpha_ready = None;
+                    continue;
+                }
+                if last_grant_at.is_some_and(|at| at.elapsed() < Duration::from_secs(MIN_SECONDS_BETWEEN_GRANTS)) {
+                    continue;
+                }
+                match poll_synthetic_grant(&mut client, session, &state, &recipient_digest).await {
+                    Ok(Some(frame)) => {
+                        alpha_ready = None;
+                        if !send_frame(&mut socket, frame).await { break; }
+                        last_grant_at = Some(Instant::now());
+                    }
+                    Ok(None) => {}
+                    Err(_) => break,
+                }
+            }
             _ = state.drain_notify.notified() => break,
         }
     }
     let _ = release_session(&client, session).await;
     let _ = socket.send(Message::Close(None)).await;
+}
+
+fn synthetic_body_is_fixed(body: &str) -> bool {
+    let Some(id) = body.strip_prefix("ZROtext synthetic test: ") else {
+        return false;
+    };
+    (1..=32).contains(&id.len())
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
+fn store_session(session: DeviceSession, state: &DeviceSocketState) -> SessionRecord {
+    SessionRecord {
+        account_id: session.account_id,
+        device_id: session.device_id,
+        site_id: state.site_id.clone(),
+        instance_id: state.instance_id.clone(),
+        epoch: session.connection_epoch,
+        deployment_epoch: state.deployment_epoch,
+    }
+}
+
+async fn grant_still_current(
+    client: &Client,
+    session: DeviceSession,
+    message_id: Uuid,
+    attempt_id: Uuid,
+    state: &DeviceSocketState,
+) -> Result<bool, tokio_postgres::Error> {
+    Ok(client
+        .query_opt(
+            "SELECT 1 FROM dispatch_fences f JOIN deployment_authority a ON a.singleton=TRUE \
+         WHERE f.account_id=$1 AND f.device_id=$2 AND f.message_id=$3 AND f.attempt_id=$4 \
+         AND f.session_epoch=$5 AND f.deployment_epoch=$6 AND f.grant_expires_at>now() \
+         AND f.outcome IN ('granted','submitting') AND a.epoch=$6 AND a.dispatch_enabled=TRUE",
+            &[
+                &session.account_id,
+                &session.device_id,
+                &message_id,
+                &attempt_id,
+                &session.connection_epoch,
+                &state.deployment_epoch,
+            ],
+        )
+        .await?
+        .is_some())
+}
+
+async fn previous_submit_intent(
+    client: &Client,
+    session: DeviceSession,
+    event_id: Uuid,
+    message_id: Uuid,
+    attempt_id: Uuid,
+) -> Result<bool, tokio_postgres::Error> {
+    Ok(client
+        .query_opt(
+            "SELECT 1 FROM message_events e JOIN message_attempts a ON a.id=e.attempt_id \
+         WHERE e.id=$1 AND e.account_id=$2 AND e.message_id=$3 AND e.attempt_id=$4 \
+         AND a.device_id=$5 AND e.evidence_code='durable_intent'",
+            &[
+                &event_id,
+                &session.account_id,
+                &message_id,
+                &attempt_id,
+                &session.device_id,
+            ],
+        )
+        .await?
+        .is_some())
+}
+
+/// Claim only for this authenticated device and issue at most one fenced grant.
+/// A failed frame send leaves the grant unresolved; reconnect never retries it.
+async fn poll_synthetic_grant(
+    client: &mut Client,
+    session: DeviceSession,
+    state: &DeviceSocketState,
+    recipient_digest: &[u8; 32],
+) -> Result<Option<ServerFrame>, StoreError> {
+    if !state.dispatch_runtime_enabled
+        || !state
+            .alpha_policy
+            .allows_recipient_digest(session.account_id, recipient_digest)
+    {
+        return Ok(None);
+    }
+    let enabled = client
+        .query_opt(
+            "SELECT dispatch_enabled FROM deployment_authority WHERE singleton=TRUE AND epoch=$1",
+            &[&state.deployment_epoch],
+        )
+        .await?
+        .is_some_and(|row| row.get::<_, bool>(0));
+    if !enabled {
+        return Ok(None);
+    }
+    let active: bool = client
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM dispatch_fences WHERE account_id=$1 AND device_id=$2 AND outcome IN ('granted','submitting','unknown'))",
+            &[&session.account_id, &session.device_id],
+        )
+        .await?
+        .get(0);
+    if active {
+        return Ok(None);
+    }
+    let recently_granted: bool = client
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM message_attempts WHERE account_id=$1 AND device_id=$2 \
+             AND created_at>now()-interval '60 seconds')",
+            &[&session.account_id, &session.device_id],
+        )
+        .await?
+        .get(0);
+    if recently_granted {
+        return Ok(None);
+    }
+    let worker_id = format!(
+        "{}:{}:{}",
+        state.instance_id, session.device_id, session.connection_epoch
+    );
+    let Some(claim) = DeliveryStore::new(client)
+        .claim_due_for_device_and_recipient(
+            &worker_id,
+            session.account_id,
+            session.device_id,
+            recipient_digest,
+        )
+        .await?
+    else {
+        return Ok(None);
+    };
+    let queued = client
+        .query_opt(
+            "SELECT recipient_e164,transport_payload,transport_mode FROM messages \
+             WHERE account_id=$1 AND id=$2 AND device_id=$3 AND state='claimed' AND expires_at>now()",
+            &[&claim.account_id, &claim.message_id, &claim.device_id],
+        )
+        .await?
+        .ok_or(StoreError::StaleFence)?;
+    let recipient: String = queued.get(0);
+    let body_bytes: Vec<u8> = queued.get(1);
+    let mode: String = queued.get(2);
+    let permitted = mode == "synthetic_alpha"
+        && state.alpha_policy.allows(claim.account_id, &recipient)
+        && String::from_utf8(body_bytes)
+            .as_deref()
+            .is_ok_and(synthetic_body_is_fixed);
+    if !permitted {
+        DeliveryStore::new(client)
+            .cancel(claim.account_id, claim.message_id)
+            .await?;
+        return Ok(None);
+    }
+    let mut store = DeliveryStore::new(client);
+    let record = store_session(session, state);
+    let grant = match store.issue_grant(&claim, &record, Uuid::new_v4()).await {
+        Ok(grant) => grant,
+        Err(StoreError::DeviceBusy | StoreError::DispatchDisabled) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let payload = store.synthetic_payload_for_grant(&grant, &record).await?;
+    if !state
+        .alpha_policy
+        .allows(session.account_id, &payload.recipient_e164)
+        || grant.recipient_digest.as_slice() != recipient_digest
+        || !synthetic_body_is_fixed(&payload.body)
+        || grant.expires_at_ms <= now_ms()
+    {
+        return Err(StoreError::InvalidInput);
+    }
+    Ok(Some(grant_frame(
+        grant,
+        payload.recipient_e164,
+        payload.body,
+    )))
+}
+
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_millis() as i64)
+}
+
+fn grant_frame(grant: GrantRecord, recipient_e164: String, body: String) -> ServerFrame {
+    ServerFrame::SyntheticGrant {
+        v: 1,
+        message_id: grant.message_id,
+        attempt_id: grant.attempt_id,
+        device_id: grant.device_id,
+        generation: grant.generation,
+        connection_epoch: grant.session_epoch,
+        deployment_epoch: grant.deployment_epoch,
+        recipient_digest: URL_SAFE_NO_PAD.encode(grant.recipient_digest),
+        expires_at_ms: grant.expires_at_ms,
+        recipient_e164,
+        body,
+    }
 }
 
 /// Compare-and-swap through the writer. A new proof increments the persistent
@@ -377,6 +736,7 @@ mod tests {
     use p256::ecdsa::{Signature, SigningKey, signature::Signer};
     use rand::rngs::OsRng;
     use sha2::{Digest, Sha256};
+    use zrotext_delivery_store::NewMessage;
 
     #[test]
     fn wire_v1_uses_only_documented_fields() {
@@ -420,6 +780,55 @@ mod tests {
             ack,
             serde_json::json!({
                 "type":"heartbeat_ack", "v":1, "connection_epoch":7
+            })
+        );
+        let ready = serde_json::json!({
+            "type":"alpha_ready", "v":1, "connection_epoch":7,
+            "recipient_digest":URL_SAFE_NO_PAD.encode([8u8; 32])
+        });
+        assert!(matches!(
+            serde_json::from_value::<ClientFrame>(ready.clone()),
+            Ok(ClientFrame::AlphaReady {
+                v: 1,
+                connection_epoch: 7,
+                ..
+            })
+        ));
+        let mut extra_ready = ready;
+        extra_ready["send_count"] = serde_json::json!(2);
+        assert!(serde_json::from_value::<ClientFrame>(extra_ready).is_err());
+        let event_id = Uuid::new_v4();
+        let message_id = Uuid::new_v4();
+        let attempt_id = Uuid::new_v4();
+        let event = serde_json::json!({
+            "type":"radio_event", "v":1, "connection_epoch":7,
+            "event_id":event_id, "message_id":message_id,
+            "attempt_id":attempt_id, "evidence":"durable_submit_intent",
+            "observed_at_ms":1
+        });
+        assert!(matches!(
+            serde_json::from_value::<ClientFrame>(event.clone()),
+            Ok(ClientFrame::RadioEvent {
+                v: 1,
+                connection_epoch: 7,
+                evidence: RadioEvidence::DurableSubmitIntent,
+                ..
+            })
+        ));
+        let mut extra = event;
+        extra["unreviewed_field"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<ClientFrame>(extra).is_err());
+        assert_eq!(
+            serde_json::to_value(ServerFrame::RadioEventAck {
+                v: 1,
+                event_id,
+                state: MessageState::Submitting,
+                submit_permitted: true,
+            })
+            .unwrap(),
+            serde_json::json!({
+                "type":"radio_event_ack", "v":1, "event_id":event_id,
+                "state":"submitting", "submit_permitted":true
             })
         );
     }
@@ -480,6 +889,8 @@ mod tests {
             instance_id: "test-hub".into(),
             deployment_epoch: 1,
             enrollment_hasher: hasher.clone(),
+            alpha_policy: Arc::new(AlphaPolicy::parse(None, None, None).unwrap()),
+            dispatch_runtime_enabled: false,
             draining: Arc::new(AtomicBool::new(false)),
             drain_notify: Arc::new(Notify::new()),
         };
@@ -616,6 +1027,236 @@ mod tests {
             renew_session(&client, second_session, &state)
                 .await
                 .unwrap()
+        );
+
+        let message_id = Uuid::new_v4();
+        DeliveryStore::new(&mut client)
+            .accept(NewMessage {
+                account_id,
+                client_message_id: message_id,
+                device_id,
+                idempotency_key: "socket-synthetic-case",
+                recipient_e164: "+15555550101",
+                synthetic_payload: b"ZROtext synthetic test: socket_case",
+                expires_at_ms: now_ms() + 10 * 60 * 1000,
+            })
+            .await
+            .unwrap();
+        let approved_digest: [u8; 32] = Sha256::digest(b"+15555550101").into();
+        assert!(
+            poll_synthetic_grant(&mut client, second_session, &state, &approved_digest)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let alpha_state = DeviceSocketState {
+            alpha_policy: Arc::new(
+                AlphaPolicy::parse(
+                    Some("true"),
+                    Some(&account_id.to_string()),
+                    Some("+15555550101"),
+                )
+                .unwrap(),
+            ),
+            dispatch_runtime_enabled: true,
+            ..state.clone()
+        };
+        assert!(
+            poll_synthetic_grant(&mut client, second_session, &alpha_state, &approved_digest)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        client
+            .execute("UPDATE deployment_authority SET dispatch_enabled=TRUE", &[])
+            .await
+            .unwrap();
+        let grant =
+            poll_synthetic_grant(&mut client, second_session, &alpha_state, &approved_digest)
+                .await
+                .unwrap()
+                .unwrap();
+        let wire = serde_json::to_value(grant).unwrap();
+        assert_eq!(wire["type"], "synthetic_grant");
+        assert_eq!(wire["message_id"], message_id.to_string());
+        assert_eq!(wire["recipient_e164"], "+15555550101");
+        assert_eq!(wire["body"], "ZROtext synthetic test: socket_case");
+        let attempt_id = Uuid::parse_str(wire["attempt_id"].as_str().unwrap()).unwrap();
+        assert!(
+            grant_still_current(
+                &client,
+                second_session,
+                message_id,
+                attempt_id,
+                &alpha_state
+            )
+            .await
+            .unwrap()
+        );
+        let event_id = Uuid::new_v4();
+        let intent = RadioEvent {
+            event_id,
+            account_id,
+            device_id,
+            message_id,
+            attempt_id,
+            evidence: Evidence::DurableSubmitIntent,
+            observed_at_ms: now_ms(),
+            segment_index: None,
+            segment_count: None,
+        };
+        assert_eq!(
+            DeliveryStore::new(&mut client)
+                .record_radio_event(intent)
+                .await
+                .unwrap(),
+            MessageState::Submitting
+        );
+        assert!(
+            grant_still_current(
+                &client,
+                second_session,
+                message_id,
+                attempt_id,
+                &alpha_state
+            )
+            .await
+            .unwrap()
+        );
+        client
+            .execute(
+                "UPDATE dispatch_fences SET grant_expires_at=now()-interval '1 second' WHERE attempt_id=$1",
+                &[&attempt_id],
+            )
+            .await
+            .unwrap();
+        assert!(
+            !grant_still_current(
+                &client,
+                second_session,
+                message_id,
+                attempt_id,
+                &alpha_state
+            )
+            .await
+            .unwrap()
+        );
+        assert!(
+            previous_submit_intent(&client, second_session, event_id, message_id, attempt_id)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !previous_submit_intent(
+                &client,
+                second_session,
+                Uuid::new_v4(),
+                message_id,
+                attempt_id
+            )
+            .await
+            .unwrap()
+        );
+        assert_eq!(
+            DeliveryStore::new(&mut client)
+                .record_radio_event(RadioEvent {
+                    event_id: Uuid::new_v4(),
+                    account_id,
+                    device_id,
+                    message_id,
+                    attempt_id,
+                    evidence: Evidence::SentCallbackOk,
+                    observed_at_ms: now_ms(),
+                    segment_index: Some(0),
+                    segment_count: Some(1),
+                })
+                .await
+                .unwrap(),
+            MessageState::Submitted
+        );
+        let next_message = Uuid::new_v4();
+        DeliveryStore::new(&mut client)
+            .accept(NewMessage {
+                account_id,
+                client_message_id: next_message,
+                device_id,
+                idempotency_key: "socket-synthetic-next-case",
+                recipient_e164: "+15555550101",
+                synthetic_payload: b"ZROtext synthetic test: next_case",
+                expires_at_ms: now_ms() + 10 * 60 * 1000,
+            })
+            .await
+            .unwrap();
+        assert!(
+            poll_synthetic_grant(&mut client, second_session, &alpha_state, &approved_digest)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            DeliveryStore::new(&mut client)
+                .status(account_id, next_message)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            MessageState::Queued
+        );
+
+        // A recipient outside the one-shot phone digest remains queued.
+        let other_device = Uuid::new_v4();
+        let other_message = Uuid::new_v4();
+        client
+            .execute(
+                "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'Other phone')",
+                &[&other_device, &account_id],
+            )
+            .await
+            .unwrap();
+        client
+            .execute(
+                "INSERT INTO device_keys(device_id,account_id,signing_key_sec1,fingerprint) VALUES($1,$2,$3,$4)",
+                &[&other_device, &account_id, &sec1.as_bytes(), &&fingerprint[..]],
+            )
+            .await
+            .unwrap();
+        let other_session = claim_session(
+            &mut client,
+            AuthenticatedDevice {
+                account_id,
+                device_id: other_device,
+            },
+            &alpha_state,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        DeliveryStore::new(&mut client)
+            .accept(NewMessage {
+                account_id,
+                client_message_id: other_message,
+                device_id: other_device,
+                idempotency_key: "revoked-recipient-case",
+                recipient_e164: "+15555550102",
+                synthetic_payload: b"ZROtext synthetic test: stale_policy",
+                expires_at_ms: now_ms() + 10 * 60 * 1000,
+            })
+            .await
+            .unwrap();
+        assert!(
+            poll_synthetic_grant(&mut client, other_session, &alpha_state, &approved_digest)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            DeliveryStore::new(&mut client)
+                .status(account_id, other_message)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            MessageState::Queued
         );
 
         // Two distinct, valid reconnection proofs may race on different hubs.

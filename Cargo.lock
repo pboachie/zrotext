@@ -2114,5 +2114,6 @@ dependencies = [
  "tokio-postgres",
  "tower",
  "uuid",
+ "zrotext-delivery-store",
  "zrotext-domain",
 ]
