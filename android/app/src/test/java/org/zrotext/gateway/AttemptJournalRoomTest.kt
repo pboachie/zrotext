@@ -123,6 +123,13 @@ class AttemptJournalRoomTest {
         assertEquals(null, delivery.segmentIndex)
         dao.recordCallback(attempt, 0, true, Activity.RESULT_OK, DeliveryStatus.RECEIVED, 51)
         assertEquals(delivery.eventId, dao.nextAlphaEvent()?.eventId)
+        dao.acknowledgeAlphaEvent(delivery.eventId, 52)
+        dao.recordCallback(attempt, 0, true, Activity.RESULT_OK, DeliveryStatus.FAILED, 53)
+        val conflict = dao.nextAlphaEvent()!!
+        assertEquals("callback_conflict", conflict.evidence)
+        assertEquals(AttemptState.UNKNOWN, dao.getAttempt(attempt)?.state)
+        dao.recordCallback(attempt, 0, true, Activity.RESULT_OK, DeliveryStatus.FAILED, 54)
+        assertEquals(conflict.eventId, dao.nextAlphaEvent()?.eventId)
     }
 
     @Test fun restartAndDeniedAckCannotAuthorizeRadio() {

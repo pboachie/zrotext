@@ -113,6 +113,7 @@ enum RadioEvidence {
     DeliveryCallbackOk,
     DeliveryTimeout,
     CrashWithoutCallback,
+    CallbackConflict,
 }
 
 impl From<RadioEvidence> for Evidence {
@@ -125,6 +126,7 @@ impl From<RadioEvidence> for Evidence {
             RadioEvidence::DeliveryCallbackOk => Self::DeliveryCallbackOk,
             RadioEvidence::DeliveryTimeout => Self::DeliveryTimeout,
             RadioEvidence::CrashWithoutCallback => Self::CrashWithoutCallback,
+            RadioEvidence::CallbackConflict => Self::CallbackConflict,
         }
     }
 }

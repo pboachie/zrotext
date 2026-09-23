@@ -61,7 +61,11 @@ hub acknowledges it:
 
 Allowed evidence values are `durable_submit_intent`, `proven_no_submit`,
 `sent_callback_ok`, `sent_callback_failed`, `delivery_callback_ok`,
-`delivery_timeout`, and `crash_without_callback`. Sent callback events also
+`delivery_timeout`, `crash_without_callback`, and `callback_conflict`. A
+contradictory callback emits one durable `callback_conflict` event after a
+writer-acknowledged submit intent. The writer records `unknown` and retains
+the device fence even if earlier evidence said `submitted` or `delivered`.
+Sent callback events also
 include zero-based `segment_index` and `segment_count` (1–6). No other event
 includes segment fields. The phone must reserve the attempt in its durable
 local journal, then receive an acknowledgement for `durable_submit_intent`

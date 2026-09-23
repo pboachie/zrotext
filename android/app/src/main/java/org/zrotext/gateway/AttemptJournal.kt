@@ -169,8 +169,17 @@ abstract class SmsAttemptDao {
     @Query("UPDATE sms_attempts SET state = 'not_submitted', updatedAtMs = :now WHERE attemptId = :attemptId AND state = 'submitting' AND messageId IS NOT NULL")
     abstract fun markAcknowledgedNoRadio(attemptId: String, now: Long): Int
 
-    @Query("UPDATE sms_attempts SET state = 'unknown', evidenceConflict = 1, updatedAtMs = :now WHERE attemptId = :attemptId")
-    abstract fun markCallbackConflict(attemptId: String, now: Long)
+    @Query("UPDATE sms_attempts SET state = 'unknown', evidenceConflict = 1, updatedAtMs = :now WHERE attemptId = :attemptId AND evidenceConflict = 0")
+    abstract fun markCallbackConflict(attemptId: String, now: Long): Int
+
+    /** Preserve the first conflict in the same transaction as the local unknown state. */
+    private fun recordConflict(attempt: SmsAttempt, now: Long) {
+        if (markCallbackConflict(attempt.attemptId, now) != 1) return
+        val messageId = attempt.messageId ?: return
+        if (attempt.state in listOf(AttemptState.RESERVED, AttemptState.NOT_SUBMITTED)) return
+        insertAlphaEvent(AlphaRadioEvent(UUID.randomUUID().toString(), messageId,
+            attempt.attemptId, "callback_conflict", now))
+    }
 
     @Query("UPDATE sms_segments SET sentResultCode = :result WHERE attemptId = :attemptId AND segmentIndex = :index AND sentResultCode IS NULL")
     abstract fun recordSent(attemptId: String, index: Int, result: Int): Int
@@ -235,7 +244,7 @@ abstract class SmsAttemptDao {
         val attempt = getAttempt(attemptId) ?: return
         if (index !in 0 until attempt.segmentCount) return
         val segment = getSegment(attemptId, index) ?: run {
-            markCallbackConflict(attemptId, now)
+            recordConflict(attempt, now)
             return
         }
         val impossibleCallback = attempt.state == AttemptState.NOT_SUBMITTED || attempt.state == AttemptState.RESERVED
@@ -244,11 +253,11 @@ abstract class SmsAttemptDao {
                        else CallbackEvidence.sent(segment.sentResultCode, result)
         when (decision) {
             CallbackEvidence.Decision.IGNORE -> {
-                if (impossibleCallback) markCallbackConflict(attemptId, now)
+                if (impossibleCallback) recordConflict(attempt, now)
                 return
             }
             CallbackEvidence.Decision.CONFLICT -> {
-                markCallbackConflict(attemptId, now)
+                recordConflict(attempt, now)
                 return
             }
             CallbackEvidence.Decision.STORE -> Unit
@@ -258,12 +267,12 @@ abstract class SmsAttemptDao {
         if (changed == 0) return // A replay cannot rewrite settled evidence.
         val segments = getSegments(attemptId)
         if (impossibleCallback || segments.size != attempt.segmentCount) {
-            markCallbackConflict(attemptId, now)
+            recordConflict(attempt, now)
             return
         }
         val nextState = if (attempt.evidenceConflict) AttemptState.UNKNOWN
             else AttemptState.fromEvidence(attempt.state, segments)
-        if (!delivery && attempt.messageId != null) {
+        if (!delivery && attempt.messageId != null && !attempt.evidenceConflict) {
             insertAlphaEvent(AlphaRadioEvent(UUID.randomUUID().toString(), attempt.messageId,
                 attemptId, if (result == Activity.RESULT_OK) "sent_callback_ok" else "sent_callback_failed",
                 now, index, attempt.segmentCount))

@@ -811,7 +811,26 @@ impl<'a> DeliveryStore<'a> {
         if attempt.is_none() {
             return Err(StoreError::StaleFence);
         }
+        if event.evidence != Evidence::CallbackConflict {
+            let conflicted: bool = tx.query_one(
+                "SELECT EXISTS(SELECT 1 FROM message_events WHERE attempt_id=$1 AND evidence_code='callback_conflict')",
+                &[&event.attempt_id],
+            ).await?.get(0);
+            if conflicted {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
         let next = match event.evidence {
+            Evidence::CallbackConflict => {
+                let intent: bool = tx.query_one(
+                    "SELECT EXISTS(SELECT 1 FROM message_events WHERE attempt_id=$1 AND evidence_code='durable_intent')",
+                    &[&event.attempt_id],
+                ).await?.get(0);
+                if !intent {
+                    return Err(StoreError::InvalidTransition);
+                }
+                current.apply(Evidence::CallbackConflict)
+            }
             Evidence::SentCallbackOk | Evidence::SentCallbackFailed => {
                 let intent: bool = tx.query_one(
                     "SELECT EXISTS(SELECT 1 FROM message_events WHERE attempt_id=$1 AND evidence_code='durable_intent')",
@@ -956,6 +975,7 @@ fn evidence_code(evidence: Evidence) -> Option<&'static str> {
         Evidence::DeliveryCallbackOk => "delivery_callback_ok",
         Evidence::DeliveryTimeout => "delivery_timeout",
         Evidence::CrashWithoutCallback => "crash_no_callback",
+        Evidence::CallbackConflict => "callback_conflict",
         _ => return None,
     })
 }
@@ -1622,6 +1642,64 @@ mod tests {
             &[&silent_callback_attempt],
         ).await.unwrap().get(0);
         assert_eq!(timeout_evidence, "sent_callback_timeout");
+        {
+            let mut store = DeliveryStore::new(&mut client);
+            assert_eq!(
+                store
+                    .record_radio_event(RadioEvent {
+                        event_id: Uuid::new_v4(),
+                        account_id: account,
+                        device_id: timeout_device,
+                        message_id: silent_callback_message,
+                        attempt_id: silent_callback_attempt,
+                        evidence: Evidence::DeliveryCallbackOk,
+                        observed_at_ms: now_ms(),
+                        segment_index: None,
+                        segment_count: None,
+                    })
+                    .await
+                    .unwrap(),
+                MessageState::Delivered
+            );
+            let conflict = RadioEvent {
+                event_id: Uuid::new_v4(),
+                account_id: account,
+                device_id: timeout_device,
+                message_id: silent_callback_message,
+                attempt_id: silent_callback_attempt,
+                evidence: Evidence::CallbackConflict,
+                observed_at_ms: now_ms(),
+                segment_index: None,
+                segment_count: None,
+            };
+            assert_eq!(
+                store.record_radio_event(conflict).await.unwrap(),
+                MessageState::Unknown
+            );
+            assert_eq!(
+                store.record_radio_event(conflict).await.unwrap(),
+                MessageState::Unknown
+            );
+            assert!(matches!(
+                store
+                    .record_radio_event(RadioEvent {
+                        event_id: Uuid::new_v4(),
+                        evidence: Evidence::DeliveryCallbackOk,
+                        ..conflict
+                    })
+                    .await,
+                Err(StoreError::InvalidTransition)
+            ));
+        }
+        let fence: String = client
+            .query_one(
+                "SELECT outcome FROM dispatch_fences WHERE attempt_id=$1",
+                &[&silent_callback_attempt],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(fence, "unknown");
         client
             .batch_execute(&format!(
                 "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
