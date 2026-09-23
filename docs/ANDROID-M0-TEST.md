@@ -22,7 +22,7 @@ Use a short-lived test token entered locally; the app does not persist it. Set `
 
 | Device / OS build | Carrier / SIM | Screen off + charging | Unplugged / Doze | Network switch | Force-stop / reboot | 24 h gap | SMS round trip |
 |---|---|---|---|---|---|---|---|
-| Samsung SM-S928U / Android 16 API 36 — APK launch, permissions, one SIM and selection verified | SIM identity private; one controlled send with positive sent/delivery callbacks | 3 M0 WSS heartbeat acks in 60.571 s with display non-interactive and AC charging; short run only | unverified | unverified | unverified | unverified | one outbound synthetic callback trail passed; inbound reply unverified |
+| Samsung SM-S928U / Android 16 API 36 — APK launch, permissions, one SIM and selection verified | SIM identity private; one controlled send with positive sent/delivery callbacks | 3 M0 WSS heartbeat acks in 60.571 s with display non-interactive and AC charging; short run only | two unplugged screen-off attempts stopped when the display woke within 22 s; sustained battery idle unverified | unverified | unverified | unverified | one outbound synthetic callback trail passed; inbound reply unverified |
 | Other OEM / OS version — future support expansion | pending | unverified | unverified | unverified | unverified | unverified | unverified |
 
 The deterministic two-hub simulator passed the ambiguous-submit and writer-isolation scenario on 2026-09-22: one modeled radio call, final `unknown`, replacement grant and isolated write rejected. This is software fault evidence only; no emulator or simulator result fills a hardware column above.
