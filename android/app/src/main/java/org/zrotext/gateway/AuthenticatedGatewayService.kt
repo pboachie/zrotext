@@ -10,8 +10,12 @@ import android.app.Service
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.IBinder
+import android.os.SystemClock
 import android.telephony.SubscriptionManager
 import android.util.Base64
 import androidx.compose.runtime.getValue
@@ -32,6 +36,8 @@ import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
+import javax.net.ssl.SSLException
+import kotlin.random.Random
 
 object AuthenticatedGatewayStatus {
     var value by mutableStateOf("Paused")
@@ -47,6 +53,16 @@ class AuthenticatedGatewayService : Service() {
     private var watchdog: ScheduledFuture<*>? = null
     private var handshakeDeadline: ScheduledFuture<*>? = null
     private var eventPump: ScheduledFuture<*>? = null
+    private var retry: ScheduledFuture<*>? = null
+    private val reconnect = DeviceReconnectPolicy { Random.nextDouble() }
+    private var endpoint: String? = null
+    private var approvedDevice: UUID? = null
+    private lateinit var connectivity: ConnectivityManager
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) = refreshNetwork()
+        override fun onLost(network: Network) = refreshNetwork()
+        override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) = refreshNetwork()
+    }
     @Volatile private var generation = 0
     @Volatile private var lastAckAtNanos = 0L
     @Volatile private var awaitingEventId: String? = null
@@ -57,10 +73,14 @@ class AuthenticatedGatewayService : Service() {
         getSystemService(NotificationManager::class.java).createNotificationChannel(
             NotificationChannel(CHANNEL, "Authenticated device heartbeat", NotificationManager.IMPORTANCE_LOW)
         )
+        connectivity = getSystemService(ConnectivityManager::class.java)
+        connectivity.registerDefaultNetworkCallback(networkCallback)
     }
 
+    @Synchronized
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_PAUSE) {
+            halt()
             AuthenticatedGatewayStatus.value = "Paused"
             stopSelf()
             return START_NOT_STICKY
@@ -73,6 +93,7 @@ class AuthenticatedGatewayService : Service() {
             null
         }
         if (!validUrl(url) || deviceId == null) {
+            halt()
             AuthenticatedGatewayStatus.value = "Set a WSS device stream and approved device ID"
             stopSelf()
             return START_NOT_STICKY
@@ -91,6 +112,7 @@ class AuthenticatedGatewayService : Service() {
                 selected != armSubscriptionId ||
                 !SimSelection.isActive(armSubscriptionId, active) ||
                 getSharedPreferences("alpha_pilot", MODE_PRIVATE).getBoolean("attempt_used", false)) {
+                halt()
                 AuthenticatedGatewayStatus.value = "Alpha arm refused: check recipient, SIM and unused test attempt"
                 stopSelf()
                 return START_NOT_STICKY
@@ -102,10 +124,31 @@ class AuthenticatedGatewayService : Service() {
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
+        endpoint = url
+        approvedDevice = deviceId
+        retry?.cancel(false)
+        when (reconnect.start(hasNetwork())) {
+            DeviceReconnectPolicy.Action.Connect -> openConnection(
+                url, deviceId, armRequested, armRecipient, armSubscriptionId, armStartedAtNanos)
+            DeviceReconnectPolicy.Action.WaitForNetwork ->
+                AuthenticatedGatewayStatus.value = "Waiting for network"
+            else -> error("Unexpected reconnect start")
+        }
+        return START_NOT_STICKY
+    }
+
+    @Synchronized
+    private fun openConnection(
+        url: String, deviceId: UUID, armRequested: Boolean = false,
+        armRecipient: String = "", armSubscriptionId: Int = SubscriptionManager.INVALID_SUBSCRIPTION_ID,
+        armStartedAtNanos: Long = 0L
+    ) {
         generation += 1
         val currentGeneration = generation
         cancelTimers()
-        socket?.close(1000, "replaced")
+        socket?.cancel()
+        socket = null
+        retry?.cancel(false)
         awaitingEventId = null
         activeGrant = null
         val keys = DeviceSigningKeyStore(applicationContext)
@@ -118,7 +161,8 @@ class AuthenticatedGatewayService : Service() {
                 if (generation != currentGeneration) return
                 val hello = JSONObject().put("v", 1).put("type", "hello")
                     .put("device_id", machine.helloDeviceId().toString())
-                if (!webSocket.send(hello.toString())) return fail(webSocket, currentGeneration)
+                if (!webSocket.send(hello.toString()))
+                    return disconnect(currentGeneration, DeviceReconnectPolicy.Loss.TRANSPORT)
                 AuthenticatedGatewayStatus.value = "Waiting for device challenge"
                 deadline(webSocket, currentGeneration)
             }
@@ -144,7 +188,8 @@ class AuthenticatedGatewayService : Service() {
                                 .put("device_id", proof.deviceId.toString())
                                 .put("nonce", encode(proof.nonce))
                                 .put("signature_der", encode(proof.signatureDer))
-                            check(webSocket.send(reply.toString()))
+                            if (!webSocket.send(reply.toString()))
+                                return disconnect(currentGeneration, DeviceReconnectPolicy.Loss.TRANSPORT)
                             AuthenticatedGatewayStatus.value = "Proving enrolled device key"
                             deadline(webSocket, currentGeneration)
                         }
@@ -154,13 +199,18 @@ class AuthenticatedGatewayService : Service() {
                             val epoch = frame.getLong("connection_epoch")
                             val seconds = frame.getInt("heartbeat_seconds")
                             machine.session(epoch, seconds)
+                            synchronized(this@AuthenticatedGatewayService) {
+                                if (generation != currentGeneration) return
+                                reconnect.authenticated(SystemClock.elapsedRealtime())
+                            }
                             handshakeDeadline?.cancel(false)
                             if (armRequested) {
                                 val digest = encode(MessageDigest.getInstance("SHA-256")
                                     .digest(armRecipient.toByteArray(Charsets.UTF_8)))
                                 val ready = JSONObject().put("v", 1).put("type", "alpha_ready")
                                     .put("connection_epoch", epoch).put("recipient_digest", digest)
-                                check(webSocket.send(ready.toString()))
+                                if (!webSocket.send(ready.toString()))
+                                    return disconnect(currentGeneration, DeviceReconnectPolicy.Loss.TRANSPORT)
                             }
                             AuthenticatedGatewayStatus.value =
                                 if (armRequested) "Armed for one synthetic grant" else "Authenticated heartbeat only"
@@ -174,7 +224,7 @@ class AuthenticatedGatewayService : Service() {
                                     try {
                                         machine.heartbeatEpoch()
                                         if (!webSocket.send("{\"v\":1,\"type\":\"heartbeat\"}")) {
-                                            fail(webSocket, currentGeneration)
+                                            disconnect(currentGeneration, DeviceReconnectPolicy.Loss.TRANSPORT)
                                         }
                                     } catch (_: IllegalStateException) {
                                         fail(webSocket, currentGeneration)
@@ -184,7 +234,7 @@ class AuthenticatedGatewayService : Service() {
                             watchdog = scheduler.scheduleAtFixedRate({
                                 if (generation == currentGeneration &&
                                     System.nanoTime() - lastAckAtNanos > TimeUnit.SECONDS.toNanos(90)) {
-                                    fail(webSocket, currentGeneration)
+                                    disconnect(currentGeneration, DeviceReconnectPolicy.Loss.TRANSPORT)
                                 }
                             }, 15, 15, TimeUnit.SECONDS)
                             eventPump = scheduler.scheduleAtFixedRate({
@@ -243,22 +293,21 @@ class AuthenticatedGatewayService : Service() {
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                val authenticated = machine.phase == DeviceStreamMachine.Phase.ACTIVE
                 machine.close()
-                if (generation == currentGeneration) {
-                    AuthenticatedGatewayStatus.value = "Device stream disconnected ($code)"
-                    stopSelf()
-                }
+                disconnect(currentGeneration, if (authenticated && code in listOf(1000, 1001, 1012, 1013))
+                    DeviceReconnectPolicy.Loss.ACTIVE_CLOSE else DeviceReconnectPolicy.Loss.AUTH_REJECTED)
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 machine.close()
-                if (generation == currentGeneration) {
-                    AuthenticatedGatewayStatus.value = "Device stream failed; reopen gateway mode"
-                    stopSelf()
-                }
+                val trustedTransport = generateSequence(t as Throwable?) { it.cause }
+                    .none { it is SSLException || it is java.security.cert.CertificateException }
+                val transport = trustedTransport && (response == null || response.code >= 500)
+                disconnect(currentGeneration, if (transport) DeviceReconnectPolicy.Loss.TRANSPORT
+                    else DeviceReconnectPolicy.Loss.AUTH_REJECTED)
             }
         })
-        return START_NOT_STICKY
     }
 
     private fun pumpAlphaEvents(webSocket: WebSocket, machine: DeviceStreamMachine, currentGeneration: Int) {
@@ -278,7 +327,8 @@ class AuthenticatedGatewayService : Service() {
                         .put("segment_count", event.segmentCount)
                 }
                 awaitingEventId = event.eventId
-                if (!webSocket.send(frame.toString())) fail(webSocket, currentGeneration)
+                if (!webSocket.send(frame.toString()))
+                    disconnect(currentGeneration, DeviceReconnectPolicy.Loss.TRANSPORT)
             } catch (_: Exception) {
                 fail(webSocket, currentGeneration)
             }
@@ -341,15 +391,92 @@ class AuthenticatedGatewayService : Service() {
     private fun deadline(webSocket: WebSocket, currentGeneration: Int) {
         handshakeDeadline?.cancel(false)
         handshakeDeadline = scheduler.schedule({
-            if (generation == currentGeneration) fail(webSocket, currentGeneration)
+            disconnect(currentGeneration, DeviceReconnectPolicy.Loss.TRANSPORT)
         }, 10, TimeUnit.SECONDS)
     }
 
     private fun fail(webSocket: WebSocket, currentGeneration: Int) {
+        disconnect(currentGeneration, DeviceReconnectPolicy.Loss.PROTOCOL_REJECTED)
+    }
+
+    @Synchronized
+    private fun disconnect(currentGeneration: Int, reason: DeviceReconnectPolicy.Loss) {
         if (generation != currentGeneration) return
-        webSocket.close(1008, "Device stream rejected")
-        AuthenticatedGatewayStatus.value = "Device stream rejected or timed out"
-        stopSelf()
+        generation += 1 // Fence queued callbacks, grants and radio authorization before any retry.
+        cancelTimers()
+        socket?.cancel()
+        socket = null
+        activeGrant = null
+        awaitingEventId = null
+        when (val action = reconnect.lost(reason, SystemClock.elapsedRealtime())) {
+            is DeviceReconnectPolicy.Action.RetryAfter -> {
+                AuthenticatedGatewayStatus.value = "Disconnected; retrying device proof"
+                getSystemService(NotificationManager::class.java)
+                    .notify(NOTIFICATION_ID, notification("Reconnecting after transport loss"))
+                retry?.cancel(false)
+                retry = scheduler.schedule({
+                    synchronized(this) {
+                        if (reconnect.retryDue() == DeviceReconnectPolicy.Action.Connect) {
+                            val url = endpoint
+                            val device = approvedDevice
+                            if (url != null && device != null) openConnection(url, device)
+                        }
+                    }
+                }, action.milliseconds, TimeUnit.MILLISECONDS)
+            }
+            DeviceReconnectPolicy.Action.WaitForNetwork -> {
+                AuthenticatedGatewayStatus.value = "Disconnected; waiting for network"
+                getSystemService(NotificationManager::class.java)
+                    .notify(NOTIFICATION_ID, notification("Waiting for network"))
+            }
+            DeviceReconnectPolicy.Action.Stop -> {
+                AuthenticatedGatewayStatus.value = "Device proof or protocol rejected; restart manually"
+                stopSelf()
+            }
+            else -> Unit
+        }
+    }
+
+    private fun hasNetwork(): Boolean {
+        val active = connectivity.activeNetwork ?: return false
+        return connectivity.getNetworkCapabilities(active)
+            ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+    }
+
+    private fun refreshNetwork() {
+        synchronized(this) {
+            if (endpoint == null || approvedDevice == null) return
+            when (reconnect.networkChanged(hasNetwork())) {
+                DeviceReconnectPolicy.Action.WaitForNetwork -> {
+                    generation += 1
+                    cancelTimers()
+                    retry?.cancel(false)
+                    socket?.cancel()
+                    socket = null
+                    activeGrant = null
+                    awaitingEventId = null
+                    AuthenticatedGatewayStatus.value = "Disconnected; waiting for network"
+                    getSystemService(NotificationManager::class.java)
+                        .notify(NOTIFICATION_ID, notification("Waiting for network"))
+                }
+                DeviceReconnectPolicy.Action.Connect -> {
+                    retry?.cancel(false)
+                    openConnection(checkNotNull(endpoint), checkNotNull(approvedDevice))
+                }
+                else -> Unit
+            }
+        }
+    }
+
+    private fun halt() {
+        reconnect.pause()
+        generation += 1
+        cancelTimers()
+        retry?.cancel(false)
+        socket?.cancel()
+        socket = null
+        activeGrant = null
+        awaitingEventId = null
     }
 
     private fun cancelTimers() {
@@ -359,10 +486,10 @@ class AuthenticatedGatewayService : Service() {
         eventPump?.cancel(false)
     }
 
+    @Synchronized
     override fun onDestroy() {
-        generation += 1
-        cancelTimers()
-        socket?.close(1000, "paused")
+        halt()
+        connectivity.unregisterNetworkCallback(networkCallback)
         client.dispatcher.executorService.shutdown()
         scheduler.shutdownNow()
         super.onDestroy()
