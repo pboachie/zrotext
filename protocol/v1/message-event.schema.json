@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://zrotext.org/protocol/v1/message-event.schema.json",
-  "title": "ZROtext message event v1 (M0 metadata contract)",
+  "title": "ZROtext message event v1 metadata contract",
   "type": "object",
   "additionalProperties": false,
   "required": ["v", "event_id", "message_id", "attempt_id", "state", "observed_at", "device_id", "session_epoch", "deployment_epoch"],

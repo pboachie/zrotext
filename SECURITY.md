@@ -4,4 +4,4 @@ Please report suspected vulnerabilities through [GitHub private vulnerability re
 
 For sensitive questions that are not vulnerabilities, contact `support@elydb.com` and put “ZROtext” in the subject. Do not file security reports as public issues or discussions.
 
-Maintainers will acknowledge and triage reports privately, coordinate a fix and disclosure with the reporter, and publish an advisory when appropriate. There is no guaranteed response or remediation time at this stage. The current implementation status and supported behavior are described in [README.md](README.md) and [docs/implementation-status.md](docs/implementation-status.md).
+Maintainers triage reports privately, coordinate a fix and disclosure with the reporter, and publish an advisory when appropriate. For current capabilities, see the [README](README.md) and release notes.

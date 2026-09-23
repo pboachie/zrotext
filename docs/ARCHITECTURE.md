@@ -1,8 +1,8 @@
 # Architecture and contracts
 
-Proposed design. Start small; the contracts below are acceptance criteria for implementation, not existing endpoints.
+This document describes the gateway architecture and protocol direction. Sections marked as proposed are design references; check the code and releases for implemented behavior.
 
-**Required extension:** [MULTI-LOCATION.md](MULTI-LOCATION.md) defines two-site API/hub operation, load balancing, database authority and device-session fencing. Its site-aware config, schema and simulator contracts belong in M0/M1; the second physical deployment follows operational readiness. The diagram below shows the initial single-site runtime.
+[MULTI-LOCATION.md](MULTI-LOCATION.md) defines two-site API/hub operation, load balancing, database authority and device-session fencing. The diagram below shows a single-site runtime.
 
 ## Runtime
 
@@ -10,7 +10,7 @@ Proposed design. Start small; the contracts below are acceptance criteria for im
 flowchart LR
   SDK[Customer app / local SDK] -->|HTTPS: metadata + sealed body| EDGE[Cloudflare / TLS edge]
   WEB[Dashboard + client crypto] --> EDGE
-  EDGE --> APP[Rust application on dedicated PVE VM]
+  EDGE --> APP[Rust application]
   APP <--> PG[(Private PostgreSQL)]
   PHONE[Kotlin Android gateway] <-->|WSS: authenticated claims and events| APP
   PHONE -->|Conventional SMS| CARRIER[Mobile carrier]
@@ -21,7 +21,7 @@ flowchart LR
 
 The current foundation uses an Axum/Tokio application binary with `tokio-postgres` for auth, enrollment and delivery transactions, plus a separate locked migration binary. The planned dashboard uses server-rendered templates, vendored HTMX for non-sensitive interactions, SSE metadata updates and structured redacted tracing. Keep API, device hub, dispatcher, and webhook worker as internal modules until load justifies separate processes. Rust stays on the server first; Android uses Kotlin, Compose, Room and the platform telephony APIs. Do not add UniFFI merely to match the old diagram.
 
-Version selection happens at scaffold time: pin a supported stable Rust toolchain, exact build lockfiles, PostgreSQL major, JDK, Android toolchain, and CI actions by immutable SHA. Record library maintenance, licenses, and known advisories. No Redis, S3, NATS or partitioning required for launch. Add them only with measured need: Redis for shared caches/rate limiting, S3 for MMS, partitions after query/storage evidence. Durable quotas and queue ownership always remain authoritative in PostgreSQL.
+Toolchain and dependency pins are recorded in [DEPENDENCIES.md](DEPENDENCIES.md). Redis, S3, NATS and partitioning are not required by this design; add them only for a demonstrated need. Durable quotas and queue ownership remain authoritative in PostgreSQL.
 
 Source layout:
 
@@ -41,7 +41,7 @@ docs/                  # architecture, threat model, runbooks
 docs/design/           # public application design specs; marketing source separate
 ```
 
-Authentication and encryption are separate. Use a maintained auth implementation: password + tuned Argon2id and verified email, secure HttpOnly SameSite cookies, CSRF protection, session revocation, MFA before paid launch. TLS protects authentication; it does not make passwords invisible to the server. Store server auth secrets independently of content keys. Content vault unlock uses a separate randomly generated recovery/unlock secret initially; login reset cannot recover content. OPAQUE is a later ADR, not an unreviewed substitution during a milestone.
+Authentication and encryption are separate. The account design uses password verification, verified email, secure HttpOnly SameSite cookies, CSRF protection, session revocation and MFA. TLS protects authentication; it does not make passwords invisible to the server. Store server auth secrets independently of content keys. Content vault unlock uses a separate randomly generated recovery/unlock secret; login reset cannot recover content. OPAQUE would require a separate protocol decision and migration.
 
 ## Schema boundaries
 
@@ -117,14 +117,14 @@ RETURNING j.*;
 
 The SQL is illustrative: preserve state/tenant constraints in the real transaction and test concurrent claimers. PostgreSQL does not support the old plan's bare `UPDATE ... ORDER BY ... LIMIT ... SKIP LOCKED` syntax. [SELECT locking](https://www.postgresql.org/docs/current/sql-select.html)
 
-Default per-device pacing 5 seconds, one radio operation at a time, configurable upward or to a reviewed lower bound. Fair scheduling across accounts. Maximum 100 queued messages/device initially; reject with `DEVICE_QUEUE_FULL` rather than promise delivery outside the expiry window. Heartbeat target 30 seconds while active; offline indicator after 90 seconds, subject to the Android spike. Reconnect with capped exponential backoff/jitter and pending-event reconciliation. A socket reconnect is not a new send attempt.
+Dispatch must pace each device, allow one radio operation at a time, and bound each account's and device's live queue. An overfull queue rejects new work with retry guidance. The device stream uses periodic heartbeats and reconnects with bounded backoff and event reconciliation. A socket reconnect is not a new send attempt. Current limits are defined in server code and migrations.
 
-## Implemented M1 alpha routes
+## Account and device routes
 
 The server mounts these routes only when `AUTH_ORIGIN`, `AUTH_TOKEN_PEPPER_B64`, and
 `ENROLLMENT_TOKEN_PEPPER_B64` are configured. Registration is closed unless a
-verification mail transport is configured. Device proof acknowledges the key;
-it does not authenticate the M0 heartbeat socket or authorize dispatch.
+verification mail transport is configured. Device proof establishes an enrolled
+identity for the authenticated device stream.
 
 | Method/path | Current contract |
 |---|---|
@@ -138,7 +138,7 @@ it does not authenticate the M0 heartbeat socket or authorize dispatch.
 | DELETE /v1/enrollment/devices/{device_id} | Owner revokes a device with CSRF proof |
 | GET /v1/enrollment/devices?before={device_id} | Owner-only cursor page of enrolled device UUIDs, names and revocation status; tenant scoped and no-store |
 | GET /owner/devices | Same-origin owner sign-in and enrollment page; manual code and fingerprint comparison, CSRF-protected writes, no pairing token in a URL |
-| GET /v1/device-stream | Native WebSocket challenge-response with the enrolled P-256 key and writer-owned session epoch. A private synthetic grant/evidence extension is server-side only, disabled by default and requires a one-shot phone readiness frame tied to an allowlisted recipient digest; the Android stream remains heartbeat-only. |
+| GET /v1/device-stream | Native WebSocket challenge-response with the enrolled P-256 key and writer-owned session epoch. An opt-in controlled-test extension requires a one-shot phone readiness frame and an allowlisted recipient digest. |
 | POST /v1/alpha/messages; GET /v1/alpha/messages/{id}; POST /v1/alpha/messages/{id}/cancel | Mounted only with explicit synthetic-alpha account and recipient allowlists. Bearer API key, tenant/device scope and idempotency are required. The server builds a fixed test body from a short case ID; no caller-supplied arbitrary plaintext or recipient appears in the response. This is separate from the planned sealed-content API. |
 
 ## Planned API v1 outline
@@ -181,11 +181,11 @@ The SDK accepts readable message text in the customer's process and encrypts it 
 
 ## Android acceptance surface
 
-User-initiated gateway mode, persistent visible notification with Pause, explicit SMS permissions, optional default-SMS role only if implementing the required messaging UI, pairing approval, SIM selection, local history/queue, foreground/background state and diagnostics. Min SDK proposal 28; target latest required SDK at release. Verify current target/store deadlines then; do not target an obsolete SDK to avoid platform restrictions.
+User-initiated gateway mode, persistent visible notification with Pause, explicit SMS permissions, optional default-SMS role only if implementing the required messaging UI, pairing approval, SIM selection, local history/queue, foreground/background state and diagnostics. The current Android SDK levels are pinned in [the app build](../android/app/build.gradle.kts).
 
 Use P-256 device signing keys in Android Keystore, with capability-tested StrongBox preference and explicit fallback metadata. Content encryption keys are distinct. Android documents a limited StrongBox algorithm set; portable Ed25519 hardware storage cannot be assumed. [Keystore](https://developer.android.com/privacy-and-security/keystore)
 
-M0 must choose a legitimate foreground-service type and distribution model from actual platform rules. `dataSync` is not a perpetual-connection loophole on modern Android. Periodic WorkManager is recovery work, not a real-time heartbeat. APK sideloading does not remove operating-system restrictions. Start with dedicated, plugged-in devices and signed APK releases; treat Play approval as a separate gate. If the no-FCM design cannot meet reliability on the tested matrix, document and decide between a narrower supported deployment or optional wake-only push carrying no content. Never silently add FCM or claim third-party-free transit through a CDN. [Timeouts](https://developer.android.com/develop/background-work/services/fgs/timeout) · [WorkManager](https://developer.android.com/develop/background-work/background-tasks/persistent/getting-started/define-work) · [Play permissions](https://support.google.com/googleplay/android-developer/answer/10208820)
+Android background execution depends on platform and device policy. `dataSync` is not a perpetual-connection loophole on modern Android. Periodic WorkManager is recovery work, not a real-time heartbeat. APK sideloading does not remove operating-system restrictions. The gateway targets dedicated devices; any wake-only push option would carry no message content. [Timeouts](https://developer.android.com/develop/background-work/services/fgs/timeout) · [WorkManager](https://developer.android.com/develop/background-work/background-tasks/persistent/getting-started/define-work) · [Play permissions](https://support.google.com/googleplay/android-developer/answer/10208820)
 
 ## Webhooks, billing, operations
 
@@ -193,4 +193,4 @@ Webhook stable event ID, creation timestamp, delivery timestamp, attempt ID, cip
 
 Stripe Checkout and hosted Customer Portal; signed raw-body events, unique event records, reconciliation jobs, and test-mode lifecycle tests. Server-side price allowlist; no client-controlled entitlement flags. [Stripe webhooks](https://docs.stripe.com/webhooks)
 
-Pilot targets, to measure on the proposed 2-vCPU/4-GB VM: 50 accepted requests/sec for 10 minutes with 100 simulated devices; p95 API acknowledgment <250 ms and p95 online dispatch <1 s excluding radio/carrier latency. Distinguish synthetic sockets, actual connected phones, and end-recipient delivery. Do not make the old 1,000-RPS/10,000-socket numbers a v1 release gate.
+Performance measurements should distinguish synthetic sockets, actual connected phones, and end-recipient delivery. API acknowledgment and online dispatch exclude radio and carrier latency.

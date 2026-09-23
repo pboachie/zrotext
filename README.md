@@ -4,7 +4,6 @@
 <p align="center">
   <a href="https://github.com/pboachie/zrotext/actions/workflows/ci.yml"><img src="https://github.com/pboachie/zrotext/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0--only-blue" alt="AGPL-3.0-only license"></a>
-  <a href="docs/implementation-status.md"><img src="https://img.shields.io/badge/status-in%20development-b6f36a?labelColor=253021" alt="Status: in development"></a>
   <a href="CONTRIBUTING.md"><img src="https://img.shields.io/badge/contributions-welcome-6f9b4b" alt="Contributions welcome"></a>
 </p>
 
@@ -15,7 +14,7 @@ ZROtext is an open-source Android SMS gateway. It is designed to connect a dedic
 
 ## Project status
 
-ZROtext is in active development. The repository includes a Rust server foundation, PostgreSQL migrations, a delivery simulator, and an Android app prototype. The end-to-end SMS path is not yet complete or verified on a carrier, and the local stack is for development rather than production traffic. The [development roadmap](docs/IMPLEMENTATION.md) and [implementation record](docs/implementation-status.md) distinguish working code from planned features.
+ZROtext is in active development. The repository includes a Rust server, PostgreSQL migrations, a delivery simulator, and an Android app. The local stack is for development. Some phone and billing flows are limited to controlled tests; a hosted SMS service is not available. See the [roadmap](docs/ROADMAP.md) for planned product work.
 
 ## How it is designed
 
@@ -25,20 +24,11 @@ ZROtext is in active development. The repository includes a Rust server foundati
 - **Managed option.** Hosted accounts, device monitoring, backups, upgrades, and billing are planned as an operated service built from the public application source.
 - **Two-location architecture.** The design supports routing API and device connections across sites while keeping one authoritative database writer and fenced device ownership.
 
-These are product goals; check the [current implementation record](docs/implementation-status.md) before relying on a capability.
+The architecture describes intended behavior. Check the current code and release notes before relying on a capability.
 
 ## Roadmap
 
-| Milestone | What it covers | Status |
-|---|---|---|
-| Foundation and device validation | Local stack, accounts, enrollment, Android behavior on supported hardware | In progress |
-| Send and receive SMS | Durable queue, phone connection, truthful delivery states, inbound events and webhooks | In progress |
-| Content security | Reviewed sealed-content protocol, client support and recovery | Planned |
-| Self-host and managed beta | Setup guide, dashboard, release artifacts, backup and restore | Planned |
-| Billing and release | Metering, subscriptions, support and operational readiness | Planned |
-| Two-location operation | Traffic steering, fenced device ownership and tested failover | Designed; deployment pending |
-
-The [detailed roadmap](docs/IMPLEMENTATION.md) describes acceptance evidence for each milestone. Milestones have no promised release dates.
+The [roadmap](docs/ROADMAP.md) covers gateway messaging, self-hosting, account tools, and multi-location support. It has no promised release dates.
 
 ## Design preview
 
@@ -66,8 +56,9 @@ The stack runs database migrations before the API starts. Dispatch is disabled b
 - [Architecture and API contracts](docs/ARCHITECTURE.md)
 - [Two-location routing and failover design](docs/MULTI-LOCATION.md)
 - [Security design](docs/SECURITY-DESIGN.md)
-- [Development roadmap](docs/IMPLEMENTATION.md)
-- [Current implementation record](docs/implementation-status.md)
+- [Roadmap](docs/ROADMAP.md)
+- [Self-hosting](docs/SELF-HOSTING.md)
+- [Android development and testing](docs/ANDROID-TESTING.md)
 
 ## Contributing
 

@@ -11,13 +11,13 @@ flowchart TB
   C[API clients / dashboard / Android phones] --> E[Stable public hostnames + global traffic steering]
   E -->|health + weighted routing| A
   E -->|health + weighted routing| B
-  subgraph A[Location A — PVE]
+  subgraph A[Location A]
     AA[API + device hub + workers]
-    AP[(PostgreSQL: primary initially / standby later)]
+    AP[(PostgreSQL: primary or standby)]
   end
-  subgraph B[Location B — independent provider]
+  subgraph B[Location B]
     BA[API + device hub + workers]
-    BP[(PostgreSQL: standby initially / preferred primary after cutover)]
+    BP[(PostgreSQL: standby or primary after cutover)]
   end
   AA <-->|Private authenticated network| BA
   AP <-->|One-way WAL from current primary| BP
@@ -29,20 +29,20 @@ flowchart TB
 
 Diagram shows role options, not two writable databases. The same Rust image runs all roles via explicit configuration; separate API/hub/worker processes only when needed. No required cross-region Kubernetes cluster. Each location can use Compose independently. Keep all application behavior public and deployment identifiers private.
 
-## Delivery stages
+## Deployment modes
 
-| Stage | Location A | Location B | Steering / authority |
+| Mode | Location A | Location B | Steering / authority |
 |---|---|---|---|
-| P0: single site | PVE API/hub/workers + writer | Absent | Single origin, portable site-aware contracts |
-| P1: second site commissioned | PVE remains writer; active API/hub | Active API/hub + warm standby | Start 100/0, then 90/10 canary; all writes to PVE writer |
-| P2: planned authority move | Active API/hub + standby | Active API/hub + writer | Prefer remote, e.g. 20/80 if measured capacity permits |
-| P3: mature automatic failover | Active services + DB member | Active services + DB member | Independent quorum/fencing, rehearsed promotion; optional stricter sync mode |
+| Single site | API/hub/workers + writer | Absent | One origin and one writer |
+| Two sites | API/hub/workers + writer | API/hub + standby | Weighted traffic; both sites use the same writer |
+| Authority moved | API/hub + standby | API/hub/workers + writer | Traffic weights follow capacity and writer location |
+| Automatic failover | Active services + DB member | Active services + DB member | Requires independent quorum and fencing |
 
-Weights are configuration examples, not measured capacity recommendations. Start with primary/fallback routing and manual DB promotion; enable simultaneous traffic after the two-site failure suite passes. Retain PVE as a useful standby/hub after migration; the move does not require abandoning the original location.
+Weights are configuration examples, not measured capacity recommendations. Primary/fallback routing and manual DB promotion are the simpler operating mode. Both locations can remain useful after authority moves.
 
 ## HTTP routing and device connections
 
-Stable `api.zrotext.com` and `app.zrotext.com` (proposed names). Cloudflare Load Balancing with a pool per location fits the existing edge/tunnel pattern; compare current plan and request/monitor charges before purchase. A self-hosted HAProxy/Envoy ingress is an alternative but a single ingress VPS adds a failure point; DNS-only failover is slower and does not move established sockets. Cloudflare documents health, pool and steering policies separately. [Traffic steering](https://developers.cloudflare.com/load-balancing/understand-basics/traffic-steering/)
+Stable API and app hostnames can route to either location. A managed load balancer with a pool per location is one option; HAProxy or Envoy can also steer traffic, but a single ingress host adds a failure point. DNS-only failover is slower and does not move established sockets. [Cloudflare traffic steering](https://developers.cloudflare.com/load-balancing/understand-basics/traffic-steering/) describes one implementation.
 
 First implementation supports health-based failover plus configurable weights. Geo/latency selection can follow measurement: a local API instance still pays the WAN round-trip to the writer, so “nearest API” does not guarantee lower acknowledgment latency. Account/device quotas remain global. Use capacity weights, queue lag and admission control to avoid sending all traffic into an overwhelmed fallback. A stale/offline destination returns bounded 503/429 with retry guidance, never a false 202.
 
@@ -97,9 +97,9 @@ The former primary rejoins only as a reseeded/rewound replica after timeline and
 | Stripe event delivered twice/sites switch | Healthy site receives event | Unique event ID + reconcile current subscription on writer |
 | Both hubs think they own same phone | DB CAS and phone epoch reject stale owner | Existing ambiguous submission remains unknown |
 
-## Data and deployment additions required now
+## Site-aware contracts
 
-- Config: `SITE_ID`, `INSTANCE_ID`, writer DSN, site endpoint registry, allowed deployment mode, graceful drain, explicit dispatch enable/fence input. Never hard-code PVE as primary.
+- Config: `SITE_ID`, `INSTANCE_ID`, writer DSN, site endpoint registry, allowed deployment mode, graceful drain, explicit dispatch enable/fence input. Never hard-code one location as primary.
 - Schema: `sites`, `device_sessions` epoch/lease, device preferred-site hint, global client message UUID and idempotency uniqueness, attempt generation, current deployment epoch, worker leases. Operational epoch must be anchored to external authority when automatic failover is introduced.
 - Pure routing/health policy module and injectable site/clock dependencies in tests. Structured event fields include site/instance/epoch; no phone numbers or content in metric labels.
 - Two-site local Compose simulation profile: API/hub A and B against one writer; optional standby profile for recovery tests. This does not spend on a second real site or prove geographic resilience.
@@ -107,10 +107,10 @@ The former primary rejoins only as a reseeded/rewound replica after timeline and
 - Secret/key distribution includes independent site operational credentials, shared session verification ring, preserved account public roots and sealed vaults; backups and encryption remain portable. Auth rotation/deletion propagation is safety-critical.
 - Future MMS objects need multi-site reachable encrypted storage, replication checks and attachment retention semantics before MMS HA can be claimed.
 
-## Acceptance suite before dual-site traffic
+## Failure scenarios
 
 Route 100 requests with a configurable 90/10 weight and verify aggregate behavior without requiring exact per-request distribution. Kill either frontend, drain a hub, move one phone between hubs, drop ACKs, sever the private link, introduce stale session epochs, replay Stripe/webhooks, delay replica WAL, fill standby disk, simulate primary loss, fence/reseed old primary and perform a controlled failback.
 
 Assert: quota and idempotency remain globally consistent; no concurrent radio submission for the same stable message ID; accepted unknowns are surfaced; a site without writer authority issues no new grants; replica lag is visible; failover never enables two writers; both sides of an ambiguous submission cannot retry independently. Capture packet timelines and state-event histories from the simulator, then repeat relevant cases with two real phones.
 
-Set measured targets only after rehearsal: HTTP origin failover goal <60 seconds; device reconnect goal <90 seconds under normal network recovery; initial manual database recovery goal ≤4 hours; RPO depends on selected replication mode and observed state. These are test goals, not launch guarantees. Add cloud LB/monitor, VPN, standby storage, WAL egress, backup and any quorum-member cost to the deployment quote.
+HTTP origin failover, device reconnect, and database recovery depend on the chosen network and replication setup. Document measured behavior for each deployment.

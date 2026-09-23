@@ -141,7 +141,7 @@ async function loadMessages(reset = true) {
       : "/v1/owner/messages";
     const page = await api(path);
     if (reset && page.messages.length === 0) {
-      message("message-status", "No synthetic pilot messages yet.");
+      message("message-status", "No messages yet.");
       return;
     }
     nextMessageCursor = page.next_cursor;
