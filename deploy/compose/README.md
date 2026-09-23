@@ -71,4 +71,4 @@ The pre/post comparison detects ordinary concurrent writes but cannot prove a
 quiescent snapshot if rows change and counts return to the same values. Keep
 writers stopped for this drill. This local test does not establish off-site
 recovery, encrypted archival, a measured RPO/RTO, or safe production
-re-enablement of dispatch after a real restore; those remain deployment gates.
+re-enablement of dispatch after a real restore.
