@@ -54,8 +54,9 @@ Those three return paths are mounted as simple same-origin browser pages while
 hosted sessions are enabled. A return from Stripe is **not** proof of payment
 or an active entitlement; the pages say reconciliation is pending.
 
-The client cannot choose a customer, price, metadata, or return URL. Customer
-creation uses a tenant-scoped Stripe idempotency key; Checkout uses the scoped
+The client cannot choose a customer, price, metadata, or return URL. Both
+session requests require empty bodies. Customer creation uses a tenant-scoped
+Stripe idempotency key; Checkout uses the scoped
 UUIDv4 key supplied by the owner browser plus a stable digest of the configured
 price and return URLs. The Stripe API host is fixed, with
 no proxy, redirect, or automatic HTTP retry and 3-second connect/10-second

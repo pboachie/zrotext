@@ -6,6 +6,7 @@ use super::{bind_customer, valid_id};
 use crate::http_auth::{self, AuthHttpError, AuthHttpState};
 use axum::{
     Json, Router,
+    body::Bytes,
     extract::{DefaultBodyLimit, Request, State},
     http::{HeaderMap, header},
     middleware::{self, Next},
@@ -155,7 +156,11 @@ struct SessionUrl {
 async fn checkout(
     State(state): State<Arc<SessionState>>,
     headers: HeaderMap,
+    body: Bytes,
 ) -> Result<Json<SessionUrl>, AuthHttpError> {
+    if !body.is_empty() {
+        return Err(AuthHttpError::BadRequest);
+    }
     let db = connect(&state.auth.database_url).await?;
     let owner = http_auth::require_owner(
         &db,
@@ -204,7 +209,11 @@ async fn checkout(
 async fn portal(
     State(state): State<Arc<SessionState>>,
     headers: HeaderMap,
+    body: Bytes,
 ) -> Result<Json<SessionUrl>, AuthHttpError> {
+    if !body.is_empty() {
+        return Err(AuthHttpError::BadRequest);
+    }
     let db = connect(&state.auth.database_url).await?;
     let owner = http_auth::require_owner(
         &db,
@@ -703,6 +712,18 @@ mod tests {
                 .unwrap()
                 .status(),
             StatusCode::FORBIDDEN
+        );
+        assert!(mock.calls.lock().unwrap().is_empty());
+        let mut with_client_price =
+            owner_request("/checkout", &owner.token, &owner.csrf_token, true);
+        *with_client_price.body_mut() = Body::from(r#"{"price":"price_other"}"#);
+        assert_eq!(
+            app.clone()
+                .oneshot(with_client_price)
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::BAD_REQUEST
         );
         assert!(mock.calls.lock().unwrap().is_empty());
         let checkout_response = app
