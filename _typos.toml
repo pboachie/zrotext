@@ -1,0 +1,3 @@
+[default.extend-words]
+BA = "BA" # Backup Active in the two-location design.
+fo = "fo" # Windows whoami /fo output-format switch.
