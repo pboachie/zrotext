@@ -2,6 +2,7 @@
 "use strict";
 
 const state = document.getElementById("billing-state");
+const deviceCapStatus = document.getElementById("device-cap-status");
 const list = document.getElementById("subscriptions");
 const error = document.getElementById("billing-error");
 const checkout = document.getElementById("checkout");
@@ -18,6 +19,7 @@ function csrfToken() {
 async function loadStatus() {
   error.textContent = "";
   state.textContent = "Loading billing status…";
+  deviceCapStatus.textContent = "";
   portal.disabled = true;
   try {
     const response = await fetch("/v1/billing/status", { credentials: "same-origin", cache: "no-store" });
@@ -34,6 +36,16 @@ async function loadStatus() {
     state.textContent = result.subscriptions.length
       ? `Last reconciled provider snapshots. ${result.pendingReconciliations} pending reconciliation(s). No access is confirmed here.`
       : `No reconciled subscription. ${result.pendingReconciliations} pending reconciliation(s). No access is confirmed here.`;
+    const capacity = result.deviceCapacity;
+    if (capacity && capacity.limit === null && capacity.enrollmentBlocked) {
+      deviceCapStatus.textContent = "Device limit not yet available. New enrollment is currently blocked.";
+    } else if (capacity && Number.isSafeInteger(capacity.limit) && Number.isSafeInteger(capacity.active)) {
+      deviceCapStatus.textContent = capacity.overLimit
+        ? `${capacity.active} devices enrolled; plan limit ${capacity.limit}. Existing devices keep working. New enrollment is blocked until you revoke devices or change plan.`
+        : capacity.enrollmentBlocked
+          ? `${capacity.active} devices enrolled; plan limit ${capacity.limit}. New enrollment is currently blocked.`
+          : `${capacity.active} devices enrolled; plan limit ${capacity.limit}.`;
+    }
     if (result.moreSubscriptions) {
       const item = document.createElement("li");
       item.textContent = "More subscriptions exist; this page displays the latest 20.";
@@ -42,6 +54,7 @@ async function loadStatus() {
     portal.disabled = !result.customerBound;
   } catch (cause) {
     state.textContent = "Billing status unavailable.";
+    deviceCapStatus.textContent = "";
     error.textContent = cause.message;
   }
 }
