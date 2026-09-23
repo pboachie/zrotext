@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Test-mode subscription reconciliation against Stripe's current API state.
 
-use super::{BillingError, SubscriptionSnapshot, reconcile_snapshot, valid_id};
+use super::{
+    BillingError, SubscriptionSnapshot, TestQuotaPlan, reconcile_snapshot_with_quotas, valid_id,
+};
 use reqwest::{Client as HttpClient, redirect, retry};
 use serde_json::Value;
 use std::time::Duration;
@@ -12,16 +14,28 @@ pub struct StripeTestWorker {
     http: HttpClient,
     secret_key: String,
     recognized_prices: Vec<String>,
+    quota_plans: Vec<TestQuotaPlan>,
 }
 
 impl StripeTestWorker {
     pub fn new(secret_key: String, recognized_prices: Vec<String>) -> Result<Self, &'static str> {
+        Self::new_with_quotas(secret_key, recognized_prices, Vec::new())
+    }
+
+    pub fn new_with_quotas(
+        secret_key: String,
+        recognized_prices: Vec<String>,
+        quota_plans: Vec<TestQuotaPlan>,
+    ) -> Result<Self, &'static str> {
         if !secret_key.starts_with("sk_test_")
             || secret_key.len() < 16
             || recognized_prices.is_empty()
             || recognized_prices
                 .iter()
                 .any(|id| valid_id(id, "price_").is_err())
+            || quota_plans
+                .iter()
+                .any(|plan| plan.outbound_limit <= 0 || !recognized_prices.contains(&plan.price_id))
         {
             return Err("invalid Stripe test configuration");
         }
@@ -38,6 +52,7 @@ impl StripeTestWorker {
             http,
             secret_key,
             recognized_prices,
+            quota_plans,
         })
     }
 
@@ -52,11 +67,12 @@ impl StripeTestWorker {
         let fetched = self.fetch_subscription(&subscription_id).await;
         match fetched {
             Ok(snapshot) if snapshot.subscription_id == subscription_id => {
-                if let Err(error) = reconcile_snapshot(
+                if let Err(error) = reconcile_snapshot_with_quotas(
                     &mut db,
                     account_id,
                     &snapshot,
                     &self.recognized_prices,
+                    &self.quota_plans,
                     generation,
                 )
                 .await

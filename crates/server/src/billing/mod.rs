@@ -339,6 +339,92 @@ pub struct SubscriptionSnapshot {
     pub price_id: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TestQuotaPlan {
+    pub price_id: String,
+    pub outbound_limit: i64,
+}
+
+/// Explicit test-mode price mapping. No price ID or limit comes from Checkout
+/// request data or a webhook body.
+pub fn parse_test_quota_plans(
+    value: &str,
+    recognized_prices: &[String],
+) -> Result<Vec<TestQuotaPlan>, &'static str> {
+    if value.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut plans = Vec::new();
+    for entry in value.split(',') {
+        let (price_id, limit) = entry
+            .trim()
+            .split_once(':')
+            .ok_or("invalid Stripe test quota plan")?;
+        valid_id(price_id, "price_").map_err(|_| "invalid Stripe test quota plan")?;
+        if !recognized_prices.iter().any(|known| known == price_id)
+            || plans
+                .iter()
+                .any(|plan: &TestQuotaPlan| plan.price_id == price_id)
+        {
+            return Err("invalid Stripe test quota plan");
+        }
+        let outbound_limit: i64 = limit
+            .parse()
+            .map_err(|_| "invalid Stripe test quota plan")?;
+        if outbound_limit <= 0 {
+            return Err("invalid Stripe test quota plan");
+        }
+        plans.push(TestQuotaPlan {
+            price_id: price_id.to_owned(),
+            outbound_limit,
+        });
+    }
+    Ok(plans)
+}
+
+/// Startup always drops previously projected test allowances and requests a
+/// fresh provider read. A changed or removed local price mapping cannot keep
+/// granting the old limit after restart.
+pub async fn reset_test_quotas_on_start(
+    database_url: &str,
+    require_schema: bool,
+) -> Result<(), BillingError> {
+    let (mut db, connection) = tokio_postgres::connect(database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    let available: bool = db
+        .query_one("SELECT to_regclass('billing_quota_audit') IS NOT NULL", &[])
+        .await?
+        .get(0);
+    if !available {
+        return if require_schema {
+            Err(BillingError::InvalidEvent)
+        } else {
+            Ok(())
+        };
+    }
+    let tx = db.transaction().await?;
+    tx.execute(
+        "UPDATE billing_reconciliations SET dirty_generation=dirty_generation+1,next_attempt_at=now(),updated_at=now()",
+        &[],
+    ).await?;
+    tx.execute(
+        "INSERT INTO billing_quota_audit(account_id,reconciliation_generation,previous_limit_units,limit_units,reason) SELECT account_id,0,limit_units,0,'startup_reset' FROM usage_quota_policies WHERE source='stripe_test' AND limit_units<>0",
+        &[],
+    ).await?;
+    tx.execute(
+        "UPDATE usage_quota_policies SET limit_units=0,updated_at=now() WHERE source='stripe_test' AND limit_units<>0",
+        &[],
+    ).await?;
+    tx.execute(
+        "UPDATE usage_periods u SET limit_units=0 FROM usage_quota_policies p WHERE u.account_id=p.account_id AND u.metric='outbound_message' AND p.metric='outbound_message' AND p.source='stripe_test' AND u.period_start=date_trunc('month',transaction_timestamp() AT TIME ZONE 'UTC')::date",
+        &[],
+    ).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
 /// Apply a freshly fetched Stripe subscription after checking both provider
 /// IDs against the tenant binding. Event payloads never enter this path.
 pub async fn reconcile_snapshot(
@@ -348,9 +434,36 @@ pub async fn reconcile_snapshot(
     recognized_prices: &[String],
     expected_generation: i64,
 ) -> Result<(), BillingError> {
+    reconcile_snapshot_with_quotas(
+        client,
+        account_id,
+        snapshot,
+        recognized_prices,
+        &[],
+        expected_generation,
+    )
+    .await
+}
+
+pub async fn reconcile_snapshot_with_quotas(
+    client: &mut Client,
+    account_id: Uuid,
+    snapshot: &SubscriptionSnapshot,
+    recognized_prices: &[String],
+    quota_plans: &[TestQuotaPlan],
+    expected_generation: i64,
+) -> Result<(), BillingError> {
     valid_id(&snapshot.subscription_id, "sub_")?;
     valid_id(&snapshot.customer_id, "cus_")?;
+    if let Some(price_id) = &snapshot.price_id {
+        valid_id(price_id, "price_")?;
+    }
     let tx = client.transaction().await?;
+    tx.query_one(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1, 2))",
+        &[&account_id.to_string()],
+    )
+    .await?;
     let row = tx.query_opt(
         "SELECT stripe_customer_id,dirty_generation,processed_generation FROM billing_reconciliations WHERE stripe_subscription_id=$1 AND account_id=$2 FOR UPDATE",
         &[&snapshot.subscription_id, &account_id],
@@ -390,7 +503,84 @@ pub async fn reconcile_snapshot(
         "UPDATE billing_reconciliations SET processed_generation=$3,failed_attempts=0,updated_at=now() WHERE stripe_subscription_id=$1 AND account_id=$2",
         &[&snapshot.subscription_id, &account_id, &expected_generation],
     ).await?;
+    if !quota_plans.is_empty() {
+        project_test_quota(
+            &tx,
+            account_id,
+            &snapshot.subscription_id,
+            expected_generation,
+            quota_plans,
+        )
+        .await?;
+    }
     tx.commit().await?;
+    Ok(())
+}
+
+async fn project_test_quota(
+    tx: &Transaction<'_>,
+    account_id: Uuid,
+    changed_subscription: &str,
+    generation: i64,
+    plans: &[TestQuotaPlan],
+) -> Result<(), BillingError> {
+    let rows = tx.query(
+        "SELECT stripe_status,stripe_price_id,recognized_price FROM billing_subscriptions WHERE account_id=$1",
+        &[&account_id],
+    ).await?;
+    // Other nonterminal subscriptions make the account ambiguous. Terminal
+    // historical subscriptions do not block a newly active one.
+    let nonterminal: Vec<_> = rows
+        .iter()
+        .filter(|row| {
+            let status: String = row.get(0);
+            !matches!(status.as_str(), "canceled" | "incomplete_expired")
+        })
+        .collect();
+    let (limit, reason) = if nonterminal.len() == 1 {
+        let row = nonterminal[0];
+        let status: String = row.get(0);
+        let price: Option<String> = row.get(1);
+        let recognized: bool = row.get(2);
+        if status == "active" && recognized {
+            if let Some(plan) = plans
+                .iter()
+                .find(|plan| price.as_deref() == Some(&plan.price_id))
+            {
+                (plan.outbound_limit, "active")
+            } else {
+                (0, "unmapped")
+            }
+        } else {
+            (0, "inactive")
+        }
+    } else if nonterminal.is_empty() {
+        (0, "inactive")
+    } else {
+        (0, "ambiguous")
+    };
+    let previous = tx.query_opt(
+        "SELECT limit_units,source FROM usage_quota_policies WHERE account_id=$1 AND metric='outbound_message' FOR UPDATE",
+        &[&account_id],
+    ).await?;
+    let changed = previous.as_ref().is_none_or(|row| {
+        row.get::<_, i64>(0) != limit || row.get::<_, String>(1) != "stripe_test"
+    });
+    if changed {
+        tx.execute(
+            "INSERT INTO usage_quota_policies(account_id,metric,limit_units,source) VALUES($1,'outbound_message',$2,'stripe_test') ON CONFLICT(account_id,metric) DO UPDATE SET limit_units=EXCLUDED.limit_units,source='stripe_test',updated_at=now()",
+            &[&account_id, &limit],
+        ).await?;
+        tx.execute(
+            "UPDATE usage_periods SET limit_units=$2 WHERE account_id=$1 AND metric='outbound_message' AND period_start=date_trunc('month',transaction_timestamp() AT TIME ZONE 'UTC')::date",
+            &[&account_id, &limit],
+        ).await?;
+        let prior: Option<i64> = previous.map(|row| row.get(0));
+        tx.execute(
+            "INSERT INTO billing_quota_audit(account_id,stripe_subscription_id,reconciliation_generation,previous_limit_units,limit_units,reason) VALUES($1,$2,$3,$4,$5,$6)",
+            &[&account_id, &changed_subscription, &generation, &prior, &limit, &reason],
+        ).await?;
+    }
     Ok(())
 }
 
@@ -399,6 +589,7 @@ mod tests {
     use super::*;
     use std::env;
     use tokio_postgres::NoTls;
+    use zrotext_delivery_store::{DeliveryStore, NewMessage, StoreError};
 
     const BODY: &[u8] = br#"{"id":"evt_fixture1","object":"event","livemode":false,"type":"customer.subscription.updated","data":{"object":{"id":"sub_fixture1","object":"subscription","customer":"cus_fixture1","status":"active"}}}"#;
     const HEADER: &str =
@@ -458,6 +649,340 @@ mod tests {
         let event = verify_event(body, &signature, SECRET, 1_750_000_000).unwrap();
         assert_eq!(event.object_id.as_deref(), Some("cs_test_fixture1"));
         assert_eq!(event.customer_id.as_deref(), Some("cus_fixture1"));
+    }
+
+    #[test]
+    fn test_quota_plan_config_is_explicit_and_bounded() {
+        let prices = vec!["price_basic1".to_owned(), "price_plus1".to_owned()];
+        assert_eq!(
+            parse_test_quota_plans("price_basic1:2,price_plus1:10", &prices).unwrap(),
+            vec![
+                TestQuotaPlan {
+                    price_id: prices[0].clone(),
+                    outbound_limit: 2
+                },
+                TestQuotaPlan {
+                    price_id: prices[1].clone(),
+                    outbound_limit: 10
+                },
+            ]
+        );
+        for invalid in [
+            "price_unknown1:2",
+            "price_basic1:0",
+            "price_basic1:-1",
+            "price_basic1:2,price_basic1:3",
+            "price_basic1:18446744073709551616",
+            "price_basic1:x",
+        ] {
+            assert!(parse_test_quota_plans(invalid, &prices).is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn reconciled_test_subscription_controls_metered_reservations() {
+        let Ok(base_url) = env::var("ZT_AUTH_TEST_DATABASE_URL") else {
+            return;
+        };
+        let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let schema = format!("billing_quota_test_{}", Uuid::new_v4().simple());
+        setup
+            .batch_execute(&format!("CREATE SCHEMA {schema}"))
+            .await
+            .unwrap();
+        let separator = if base_url.contains('?') { '&' } else { '?' };
+        let scoped_url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
+        let (mut db, connection) = tokio_postgres::connect(&scoped_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        for sql in [
+            include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
+            include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+            include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
+            include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
+            include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+            include_str!("../../../../deploy/compose/migrations/006_usage_metering.sql"),
+            include_str!(
+                "../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"
+            ),
+            include_str!("../../../../deploy/compose/migrations/008_stripe_billing_foundation.sql"),
+            include_str!("../../../../deploy/compose/migrations/009_billing_test_entitlement.sql"),
+        ] {
+            db.batch_execute(sql).await.unwrap();
+        }
+        let account = Uuid::new_v4();
+        let other = Uuid::new_v4();
+        let device = Uuid::new_v4();
+        db.execute(
+            "INSERT INTO accounts(id) VALUES($1),($2)",
+            &[&account, &other],
+        )
+        .await
+        .unwrap();
+        db.execute(
+            "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'test phone')",
+            &[&device, &account],
+        )
+        .await
+        .unwrap();
+        db.execute("INSERT INTO usage_quota_policies(account_id,metric,limit_units) VALUES($1,'outbound_message',99)", &[&account]).await.unwrap();
+        bind_customer(&mut db, account, "cus_entitlement1")
+            .await
+            .unwrap();
+        let expiry = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64
+            + 3_600_000;
+        let first = Uuid::new_v4();
+        let send = |message_id: Uuid, key: &'static str| NewMessage {
+            account_id: account,
+            client_message_id: message_id,
+            device_id: device,
+            idempotency_key: key,
+            recipient_e164: "+15551234567",
+            synthetic_payload: b"synthetic test",
+            expires_at_ms: expiry,
+        };
+        {
+            let mut store = DeliveryStore::new(&mut db);
+            assert!(matches!(
+                store.accept_metered(send(first, "first")).await,
+                Err(StoreError::QuotaNotConfigured)
+            ));
+        }
+        let event = VerifiedEvent {
+            event_id: "evt_entitlement1".into(),
+            event_type: "customer.subscription.updated".into(),
+            object_id: Some("sub_entitlement1".into()),
+            customer_id: Some("cus_entitlement1".into()),
+            subscription_id: Some("sub_entitlement1".into()),
+            body_sha256: [1; 32],
+        };
+        assert_eq!(ingest(&mut db, &event).await.unwrap(), IngestResult::Queued);
+        let plans = parse_test_quota_plans(
+            "price_basic1:2,price_plus1:1",
+            &["price_basic1".into(), "price_plus1".into()],
+        )
+        .unwrap();
+        let prices = vec!["price_basic1".into(), "price_plus1".into()];
+        let active = SubscriptionSnapshot {
+            subscription_id: "sub_entitlement1".into(),
+            customer_id: "cus_entitlement1".into(),
+            status: "active".into(),
+            price_id: Some("price_basic1".into()),
+        };
+        reconcile_snapshot_with_quotas(&mut db, other, &active, &prices, &plans, 1)
+            .await
+            .expect_err("wrong tenant");
+        reconcile_snapshot_with_quotas(&mut db, account, &active, &prices, &plans, 1)
+            .await
+            .unwrap();
+        assert_eq!(
+            ingest(&mut db, &event).await.unwrap(),
+            IngestResult::Duplicate
+        );
+        let second = Uuid::new_v4();
+        {
+            let mut store = DeliveryStore::new(&mut db);
+            assert!(
+                store
+                    .accept_metered(send(first, "first"))
+                    .await
+                    .unwrap()
+                    .created
+            );
+            assert!(
+                !store
+                    .accept_metered(send(first, "first"))
+                    .await
+                    .unwrap()
+                    .created
+            );
+            assert!(
+                store
+                    .accept_metered(send(second, "second"))
+                    .await
+                    .unwrap()
+                    .created
+            );
+            assert!(matches!(
+                store.accept_metered(send(Uuid::new_v4(), "third")).await,
+                Err(StoreError::QuotaExceeded)
+            ));
+        }
+        reset_test_quotas_on_start(&scoped_url, true).await.unwrap();
+        {
+            let mut store = DeliveryStore::new(&mut db);
+            assert!(matches!(
+                store
+                    .accept_metered(send(Uuid::new_v4(), "after-restart"))
+                    .await,
+                Err(StoreError::QuotaNotConfigured)
+            ));
+        }
+        reconcile_snapshot_with_quotas(&mut db, account, &active, &prices, &plans, 2)
+            .await
+            .unwrap();
+        let mut next = event.clone();
+        next.event_id = "evt_entitlement2".into();
+        assert_eq!(ingest(&mut db, &next).await.unwrap(), IngestResult::Queued);
+        {
+            let mut store = DeliveryStore::new(&mut db);
+            assert!(matches!(
+                store.accept_metered(send(Uuid::new_v4(), "pending")).await,
+                Err(StoreError::QuotaNotConfigured)
+            ));
+        }
+        let downgraded = SubscriptionSnapshot {
+            price_id: Some("price_plus1".into()),
+            ..active.clone()
+        };
+        reconcile_snapshot_with_quotas(&mut db, account, &downgraded, &prices, &plans, 3)
+            .await
+            .unwrap();
+        let row = db.query_one("SELECT p.limit_units,p.source,u.limit_units,u.reserved_units FROM usage_quota_policies p JOIN usage_periods u USING(account_id,metric) WHERE p.account_id=$1", &[&account]).await.unwrap();
+        assert_eq!(
+            (
+                row.get::<_, i64>(0),
+                row.get::<_, String>(1),
+                row.get::<_, i64>(2),
+                row.get::<_, i64>(3)
+            ),
+            (1, "stripe_test".into(), 1, 2)
+        );
+        next.event_id = "evt_entitlement3".into();
+        assert_eq!(ingest(&mut db, &next).await.unwrap(), IngestResult::Queued);
+        let canceled = SubscriptionSnapshot {
+            status: "canceled".into(),
+            ..downgraded.clone()
+        };
+        reconcile_snapshot_with_quotas(&mut db, account, &canceled, &prices, &plans, 4)
+            .await
+            .unwrap();
+        reconcile_snapshot_with_quotas(&mut db, account, &active, &prices, &plans, 3)
+            .await
+            .unwrap();
+        let row = db
+            .query_one(
+                "SELECT limit_units FROM usage_quota_policies WHERE account_id=$1",
+                &[&account],
+            )
+            .await
+            .unwrap();
+        assert_eq!(row.get::<_, i64>(0), 0);
+        {
+            let mut store = DeliveryStore::new(&mut db);
+            assert!(matches!(
+                store
+                    .accept_metered(send(Uuid::new_v4(), "after-cancel"))
+                    .await,
+                Err(StoreError::QuotaExceeded)
+            ));
+            assert!(
+                !store
+                    .accept_metered(send(first, "first"))
+                    .await
+                    .unwrap()
+                    .created
+            );
+        }
+        let mut generation = 4;
+        for (event_id, snapshot, expected_limit) in [
+            (
+                "evt_entitlement4",
+                SubscriptionSnapshot {
+                    status: "past_due".into(),
+                    ..active.clone()
+                },
+                0_i64,
+            ),
+            (
+                "evt_entitlement5",
+                SubscriptionSnapshot {
+                    price_id: Some("price_unknown1".into()),
+                    ..active.clone()
+                },
+                0_i64,
+            ),
+            ("evt_entitlement6", active.clone(), 2_i64),
+        ] {
+            next.event_id = event_id.into();
+            assert_eq!(ingest(&mut db, &next).await.unwrap(), IngestResult::Queued);
+            generation += 1;
+            reconcile_snapshot_with_quotas(
+                &mut db, account, &snapshot, &prices, &plans, generation,
+            )
+            .await
+            .unwrap();
+            let row = db
+                .query_one(
+                    "SELECT limit_units FROM usage_quota_policies WHERE account_id=$1",
+                    &[&account],
+                )
+                .await
+                .unwrap();
+            assert_eq!(row.get::<_, i64>(0), expected_limit);
+        }
+        let mut another = event.clone();
+        another.event_id = "evt_entitlement7".into();
+        another.subscription_id = Some("sub_entitlement2".into());
+        another.object_id = another.subscription_id.clone();
+        assert_eq!(
+            ingest(&mut db, &another).await.unwrap(),
+            IngestResult::Queued
+        );
+        let second_active = SubscriptionSnapshot {
+            subscription_id: "sub_entitlement2".into(),
+            ..active.clone()
+        };
+        reconcile_snapshot_with_quotas(&mut db, account, &second_active, &prices, &plans, 1)
+            .await
+            .unwrap();
+        let row = db
+            .query_one(
+                "SELECT limit_units FROM usage_quota_policies WHERE account_id=$1",
+                &[&account],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            row.get::<_, i64>(0),
+            0,
+            "two active subscriptions are ambiguous"
+        );
+        another.event_id = "evt_entitlement8".into();
+        assert_eq!(
+            ingest(&mut db, &another).await.unwrap(),
+            IngestResult::Queued
+        );
+        let second_canceled = SubscriptionSnapshot {
+            status: "canceled".into(),
+            ..second_active
+        };
+        reconcile_snapshot_with_quotas(&mut db, account, &second_canceled, &prices, &plans, 2)
+            .await
+            .unwrap();
+        let row = db
+            .query_one(
+                "SELECT limit_units FROM usage_quota_policies WHERE account_id=$1",
+                &[&account],
+            )
+            .await
+            .unwrap();
+        assert_eq!(row.get::<_, i64>(0), 2);
+        let row = db
+            .query_one(
+                "SELECT count(*) FROM billing_quota_audit WHERE account_id=$1",
+                &[&account],
+            )
+            .await
+            .unwrap();
+        assert_eq!(row.get::<_, i64>(0), 8);
+        setup
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

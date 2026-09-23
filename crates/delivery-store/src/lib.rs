@@ -1005,15 +1005,43 @@ async fn reserve_outbound(
     message_id: Uuid,
     at_unix_ms: Option<i64>,
 ) -> Result<(), StoreError> {
+    // A bound Stripe test customer cannot use an old operator policy while a
+    // payment event is pending. Lock reconciliation rows before the policy to
+    // serialize event ingestion with new reservations.
+    let billed = tx
+        .query_opt(
+            "SELECT 1 FROM billing_customers WHERE account_id=$1 FOR SHARE",
+            &[&account_id],
+        )
+        .await?
+        .is_some();
+    if billed {
+        let rows = tx
+            .query(
+                "SELECT dirty_generation,processed_generation FROM billing_reconciliations WHERE account_id=$1 FOR SHARE",
+                &[&account_id],
+            )
+            .await?;
+        if rows.is_empty()
+            || rows
+                .iter()
+                .any(|row| row.get::<_, i64>(0) != row.get::<_, i64>(1))
+        {
+            return Err(StoreError::QuotaNotConfigured);
+        }
+    }
     let policy = tx
         .query_opt(
-            "SELECT limit_units FROM usage_quota_policies \
+            "SELECT limit_units,source FROM usage_quota_policies \
              WHERE account_id=$1 AND metric='outbound_message' FOR SHARE",
             &[&account_id],
         )
         .await?
         .ok_or(StoreError::QuotaNotConfigured)?;
     let limit: i64 = policy.get(0);
+    if billed && policy.get::<_, String>(1) != "stripe_test" {
+        return Err(StoreError::QuotaNotConfigured);
+    }
     let period_start: String = tx
         .query_one(
             "SELECT date_trunc('month', COALESCE(to_timestamp($1::bigint::double precision / 1000), \

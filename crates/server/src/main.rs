@@ -29,6 +29,7 @@ use zrotext_server::{
     auth::TokenHasher,
     billing::{
         http::{self as billing_http, BillingHttpState},
+        parse_test_quota_plans, reset_test_quotas_on_start,
         worker::StripeTestWorker,
     },
     device_socket::{self, DeviceSocketState},
@@ -68,12 +69,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if !endpoint_secret.starts_with("whsec_") || endpoint_secret.len() < 16 {
                 return Err("invalid Stripe test webhook secret".into());
             }
-            let prices = required("STRIPE_TEST_PRICE_IDS")?
+            let prices: Vec<String> = required("STRIPE_TEST_PRICE_IDS")?
                 .split(',')
                 .map(str::trim)
                 .map(str::to_owned)
                 .collect();
-            let worker = StripeTestWorker::new(required("STRIPE_TEST_SECRET_KEY")?, prices)?;
+            let plans = parse_test_quota_plans(
+                &env::var("STRIPE_TEST_QUOTA_PLANS").unwrap_or_default(),
+                &prices,
+            )?;
+            let worker = StripeTestWorker::new_with_quotas(
+                required("STRIPE_TEST_SECRET_KEY")?,
+                prices,
+                plans,
+            )?;
             Some((endpoint_secret, worker))
         }
         _ => return Err("invalid STRIPE_BILLING_TEST_ENABLED".into()),
@@ -116,8 +125,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/readyz", get(ready))
         .route("/m0/device-test", get(device_test))
         .with_state(config.clone());
+    let mut quotas_reset = false;
     if let Some((auth_state, enrollment_state)) = account_routes(&config)? {
         ensure_local_site(&config).await?;
+        reset_test_quotas_on_start(&config.database_url, billing_test.is_some()).await?;
+        quotas_reset = true;
         let mail_state = auth_state.clone();
         let message_hasher = auth_state.hasher.clone();
         let mail_draining = config.draining.clone();
@@ -205,6 +217,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if let Some((endpoint_secret, worker)) = billing_test {
         let billing_database = config.database_url.clone();
+        if !quotas_reset {
+            reset_test_quotas_on_start(&billing_database, true).await?;
+        }
         app = app.nest(
             "/v1/billing",
             billing_http::router(BillingHttpState {
