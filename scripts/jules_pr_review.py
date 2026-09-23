@@ -269,8 +269,7 @@ def main() -> int:
     if event_name == "schedule":
         poll_reviews(github_token, jules_key)
     else:
-        with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as source:
-            event = json.load(source)
+        event = json.load(sys.stdin)
         requested = event_request(event_name, event)
         if requested:
             start_review(*requested, github_token, jules_key)
