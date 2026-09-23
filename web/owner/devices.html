@@ -89,6 +89,27 @@
         <ul id="message-list"></ul>
         <button id="more-messages" type="button" class="quiet" hidden>Load more messages</button>
       </section>
+
+      <section aria-labelledby="keys-title">
+        <div class="section-head"><h2 id="keys-title">API keys</h2><button id="refresh-keys" type="button" class="quiet">Refresh</button></div>
+        <p>Create a key for the current pilot API. <code>messages:read</code> reads message status; <code>messages:send</code> is limited to the private synthetic alpha route and its account and recipient allowlists. Other product APIs do not accept these keys yet.</p>
+        <form id="key-create-form">
+          <label class="check"><input name="scope" type="checkbox" value="messages:read" checked> Read message status</label>
+          <label class="check"><input name="scope" type="checkbox" value="messages:send"> Private synthetic alpha send</label>
+          <label for="key-lifetime">Expires after</label>
+          <select id="key-lifetime" name="lifetime_days"><option value="7">7 days</option><option value="30" selected>30 days</option><option value="90">90 days</option><option value="365">365 days</option></select>
+          <button type="submit">Create API key</button>
+        </form>
+        <p id="key-create-status" role="status" aria-live="polite"></p>
+        <div id="key-secret-panel" hidden>
+          <p><strong>Copy this key now.</strong> It is shown only once and cannot be recovered after you leave this page.</p>
+          <code id="key-secret"></code>
+          <button id="dismiss-key-secret" type="button" class="quiet">Done</button>
+        </div>
+        <p id="key-list-status" role="status" aria-live="polite"></p>
+        <ul id="key-list"></ul>
+        <button id="more-keys" type="button" class="quiet" hidden>Load more keys</button>
+      </section>
     </div>
   </main>
 </body>
