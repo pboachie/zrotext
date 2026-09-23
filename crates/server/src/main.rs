@@ -35,6 +35,7 @@ use zrotext_server::{
     },
     http_enrollment::{self, EnrollmentHttpState},
     http_messages::{self, MessagesHttpState},
+    http_owner_messages::{self, OwnerMessagesState},
     owner_ui,
 };
 
@@ -168,9 +169,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             draining: config.draining.clone(),
             drain_notify: config.drain_notify.clone(),
         };
+        let owner_messages_state = OwnerMessagesState {
+            database_url: config.database_url.clone(),
+            auth_hasher: auth_state.hasher.clone(),
+            canonical_origin: auth_state.canonical_origin.clone(),
+        };
         app = app
             .nest("/v1/auth", http_auth::router(auth_state))
             .nest("/v1/enrollment", http_enrollment::router(enrollment_state))
+            .merge(http_owner_messages::router(owner_messages_state))
             .merge(owner_ui::router())
             .merge(device_socket::router(socket_state));
         if config.alpha_policy.enabled() {

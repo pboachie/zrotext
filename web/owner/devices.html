@@ -71,6 +71,14 @@
         <ul id="device-list"></ul>
         <button id="more-devices" type="button" class="quiet" hidden>Load more devices</button>
       </section>
+
+      <section aria-labelledby="messages-title">
+        <div class="section-head"><h2 id="messages-title">Message timeline</h2><button id="refresh-messages" type="button" class="quiet">Refresh</button></div>
+        <p>This pilot view shows writer states and received evidence for synthetic tests. Delivery callbacks do not prove the recipient read a message.</p>
+        <p id="message-status" role="status" aria-live="polite"></p>
+        <ul id="message-list"></ul>
+        <button id="more-messages" type="button" class="quiet" hidden>Load more messages</button>
+      </section>
     </div>
   </main>
 </body>
