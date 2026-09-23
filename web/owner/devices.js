@@ -8,6 +8,21 @@ let shownDeviceCount = 0;
 let nextKeyCursor = null;
 let shownKeyCount = 0;
 let ownerEpoch = 0;
+let selectedInboundMessageId = null;
+let nextInboundCursor = null;
+let shownInboundCount = 0;
+let inboundLoadGeneration = 0;
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const inboundClassificationLabels = Object.freeze({
+  captured_local: "Captured locally",
+  sim_unverified: "SIM unverified",
+  send_unverified: "Send unverified",
+  encryption_unverified: "Encryption unverified",
+});
+const inboundContentLabels = Object.freeze({
+  metadata_only: "Metadata only",
+  opaque_pilot: "Opaque pilot event",
+});
 
 function message(id, value) {
   byId(id).textContent = value;
@@ -77,10 +92,25 @@ function clearKeySecret() {
   byId("key-secret-panel").hidden = true;
 }
 
+function clearInboundHistory() {
+  inboundLoadGeneration += 1;
+  selectedInboundMessageId = null;
+  nextInboundCursor = null;
+  shownInboundCount = 0;
+  byId("inbound-message-id").value = "";
+  byId("inbound-selected-id").textContent = "";
+  byId("inbound-selected").hidden = true;
+  byId("inbound-event-list").replaceChildren();
+  byId("more-inbound-events").hidden = true;
+  byId("more-inbound-events").disabled = false;
+  message("inbound-history-status", "");
+}
+
 function clearOwnerState() {
   ownerEpoch += 1;
   clearPairing();
   clearKeySecret();
+  clearInboundHistory();
   byId("device-list").replaceChildren();
   byId("more-devices").hidden = true;
   nextDeviceCursor = null;
@@ -95,6 +125,63 @@ function clearOwnerState() {
 
 function dateText(milliseconds) {
   return milliseconds === null ? "Never" : new Date(milliseconds).toLocaleString();
+}
+
+function inboundDateText(milliseconds) {
+  const date = new Date(milliseconds);
+  return Number.isSafeInteger(milliseconds) && Number.isFinite(date.getTime())
+    ? date.toLocaleString() : "Unknown time";
+}
+
+function showInboundEvent(event) {
+  const row = document.createElement("li");
+  const classification = document.createElement("strong");
+  const detail = document.createElement("span");
+  classification.textContent = inboundClassificationLabels[event.classification] || "Unrecognized classification";
+  const parts = Number.isInteger(event.part_count) && event.part_count >= 1 && event.part_count <= 6
+    ? `${event.part_count} part${event.part_count === 1 ? "" : "s"}` : "Unknown part count";
+  detail.textContent = `Observed ${inboundDateText(event.observed_at_ms)} · received ${inboundDateText(event.received_at_ms)} · ${parts} · ${inboundContentLabels[event.content_kind] || "Unrecognized content kind"}`;
+  row.append(classification, detail);
+  byId("inbound-event-list").append(row);
+}
+
+async function loadInboundEvents(reset = true) {
+  if (!selectedInboundMessageId || (!reset && !nextInboundCursor)) return;
+  const messageId = selectedInboundMessageId;
+  const cursor = reset ? null : nextInboundCursor;
+  const requestEpoch = ownerEpoch;
+  const generation = ++inboundLoadGeneration;
+  const moreButton = byId("more-inbound-events");
+  moreButton.disabled = true;
+  message("inbound-history-status", "Loading inbound events…");
+  if (reset) {
+    byId("inbound-event-list").replaceChildren();
+    moreButton.hidden = true;
+    nextInboundCursor = null;
+    shownInboundCount = 0;
+  }
+  try {
+    const path = `/v1/inbound/messages/${encodeURIComponent(messageId)}/events?limit=20${cursor ? `&before=${encodeURIComponent(cursor)}` : ""}`;
+    const page = await api(path);
+    if (requestEpoch !== ownerEpoch || generation !== inboundLoadGeneration || messageId !== selectedInboundMessageId) return;
+    if (!Array.isArray(page.events) || page.events.length > 20 ||
+        (page.next_before !== null && !uuidPattern.test(page.next_before)) ||
+        (page.events.length === 0 && page.next_before !== null)) {
+      throw new Error("The event response was invalid.");
+    }
+    for (const event of page.events) showInboundEvent(event);
+    shownInboundCount += page.events.length;
+    nextInboundCursor = page.next_before;
+    moreButton.hidden = !nextInboundCursor;
+    moreButton.disabled = false;
+    message("inbound-history-status", shownInboundCount === 0
+      ? "No inbound events recorded for this message."
+      : `${shownInboundCount} event${shownInboundCount === 1 ? "" : "s"} shown${nextInboundCursor ? "; more available" : ""}.`);
+  } catch (error) {
+    if (requestEpoch !== ownerEpoch || generation !== inboundLoadGeneration || messageId !== selectedInboundMessageId) return;
+    moreButton.disabled = false;
+    message("inbound-history-status", `Could not load inbound events. ${error.message}`);
+  }
 }
 
 async function loadKeys(reset = true) {
@@ -335,6 +422,24 @@ byId("refresh-keys").addEventListener("click", loadKeys);
 byId("more-keys").addEventListener("click", () => loadKeys(false));
 byId("dismiss-key-secret").addEventListener("click", clearKeySecret);
 window.addEventListener("pagehide", clearKeySecret);
+byId("inbound-history-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const messageId = byId("inbound-message-id").value.trim();
+  if (!uuidPattern.test(messageId)) {
+    message("inbound-history-status", "Enter a valid message UUID.");
+    return;
+  }
+  inboundLoadGeneration += 1;
+  selectedInboundMessageId = messageId;
+  nextInboundCursor = null;
+  shownInboundCount = 0;
+  byId("inbound-event-list").replaceChildren();
+  byId("more-inbound-events").hidden = true;
+  byId("inbound-selected-id").textContent = messageId;
+  byId("inbound-selected").hidden = false;
+  await loadInboundEvents();
+});
+byId("more-inbound-events").addEventListener("click", () => loadInboundEvents(false));
 byId("key-create-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   clearKeySecret();

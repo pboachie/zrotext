@@ -92,6 +92,20 @@
         <ul id="key-list"></ul>
         <button id="more-keys" type="button" class="quiet" hidden>Load more keys</button>
       </section>
+
+      <section aria-labelledby="inbound-title">
+        <h2 id="inbound-title">Inbound event history</h2>
+        <p>Enter a message UUID you want to inspect. This pilot view shows event metadata only; it does not show SMS content or phone numbers.</p>
+        <form id="inbound-history-form">
+          <label for="inbound-message-id">Message UUID</label>
+          <input id="inbound-message-id" name="message_id" type="text" inputmode="text" maxlength="36" pattern="[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}" autocomplete="off" spellcheck="false" required>
+          <button type="submit">Show inbound events</button>
+        </form>
+        <p id="inbound-selected" hidden>Selected message: <code id="inbound-selected-id"></code></p>
+        <p id="inbound-history-status" role="status" aria-live="polite"></p>
+        <ol id="inbound-event-list"></ol>
+        <button id="more-inbound-events" type="button" class="quiet" hidden>Load more events</button>
+      </section>
     </div>
   </main>
 </body>
