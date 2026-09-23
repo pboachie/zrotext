@@ -2101,7 +2101,7 @@ dependencies = [
  "argon2",
  "axum",
  "base64 0.22.1",
- "hmac 0.12.1",
+ "hmac 0.13.0",
  "lettre",
  "p256",
  "rand 0.8.8",
