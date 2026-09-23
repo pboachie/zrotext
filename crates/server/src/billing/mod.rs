@@ -117,7 +117,7 @@ pub fn verify_event(
     let object = &json["data"]["object"];
     let (object_id, customer_id, subscription_id) = match event_type {
         "checkout.session.completed" => (
-            Some(stripe_id(&object["id"], "cs_")?.to_owned()),
+            Some(stripe_id(&object["id"], "cs_test_")?.to_owned()),
             Some(stripe_id(&object["customer"], "cus_")?.to_owned()),
             Some(stripe_id(&object["subscription"], "sub_")?.to_owned()),
         ),
@@ -446,6 +446,18 @@ mod tests {
             verify_event(&body, &signed, SECRET, 1_750_000_000),
             Err(BillingError::InvalidEvent)
         ));
+    }
+
+    #[test]
+    fn test_mode_checkout_completion_accepts_stripe_test_id_shape() {
+        let body = br#"{"id":"evt_checkout1","object":"event","livemode":false,"type":"checkout.session.completed","data":{"object":{"id":"cs_test_fixture1","customer":"cus_fixture1","subscription":"sub_fixture1"}}}"#;
+        let mut mac = HmacSha256::new_from_slice(SECRET.as_bytes()).unwrap();
+        mac.update(b"1750000000.");
+        mac.update(body);
+        let signature = format!("t=1750000000,v1={:x}", mac.finalize().into_bytes());
+        let event = verify_event(body, &signature, SECRET, 1_750_000_000).unwrap();
+        assert_eq!(event.object_id.as_deref(), Some("cs_test_fixture1"));
+        assert_eq!(event.customer_id.as_deref(), Some("cus_fixture1"));
     }
 
     #[tokio::test]
