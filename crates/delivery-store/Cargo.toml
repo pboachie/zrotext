@@ -8,7 +8,7 @@ license.workspace = true
 [dependencies]
 zrotext-domain = { path = "../domain" }
 tokio-postgres = { version = "0.7.13", features = ["with-uuid-1"] }
-tokio = { version = "1.47.1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.47.1", features = ["macros", "rt-multi-thread", "sync"] }
 uuid.workspace = true
 sha2 = "0.11.0"
 thiserror = "2.0.20"

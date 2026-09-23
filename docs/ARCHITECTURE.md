@@ -65,6 +65,18 @@ Every tenant-owned table includes `account_id`. Use composite foreign keys and r
 | suppression_entries | Account/normalized-recipient, source, timestamp; created from device opt-out signal/user action |
 | security_audit_events | Key/device/permission changes, redacted subjects, no content |
 
+The durable outbound metering core uses an operator or billing-provisioned
+`usage_quota_policies` row per account. `accept_metered` reserves one unit in
+the same transaction as idempotency, message and job insertion. The period is
+the UTC calendar month at PostgreSQL transaction start; its limit is copied
+from policy when that month's row is first created. Replays of the same request
+reuse the original reservation even across a month boundary. Pre-grant cancel
+or expiry writes one refund entry against the original period in the same
+transaction. An issued grant or ambiguous radio state does not refund. Policy
+changes during a period need an explicit, audited adjustment path before
+billing uses them. The private synthetic-alpha HTTP route still uses unmetered
+acceptance and is not a customer billing path.
+
 Index queue due times and `(account_id, created_at DESC, id)`. Cursor pagination only. Body history and recipient metadata expire together by plan; retain content-free usage totals as needed and document financial-record obligations separately. Default API body limit 32 KiB; one-recipient SMS; payload cannot exceed six radio segments after decryption. Keep ingress limits before expensive crypto/parsing.
 
 ## Message semantics and the duplicate-send problem
