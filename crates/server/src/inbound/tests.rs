@@ -75,6 +75,10 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
     let message = Uuid::new_v4();
     let attempt = Uuid::new_v4();
     let endpoint = Uuid::new_v4();
+    let vault =
+        crate::webhook_worker::WebhookSecretVault::new(1, zeroize::Zeroizing::new(vec![7_u8; 32]))
+            .unwrap();
+    let endpoint_secret = vault.seal(account, endpoint, &[8_u8; 32]).unwrap();
     let signing = SigningKey::random(&mut OsRng);
     let public = signing
         .verifying_key()
@@ -135,12 +139,12 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
     )
     .await
     .unwrap();
-    // Endpoint creation is deliberately not exposed in the server. Seed an
-    // enabled, encrypted-secret-shaped fixture to prove atomic fanout only.
+    // A synthetic endpoint is enough to exercise durable fanout and a fake
+    // transport below; no external webhook request is made.
     db.execute(
         "INSERT INTO webhook_endpoints(id,account_id,callback_url,signing_secret_ciphertext, \
-         signing_secret_key_version,enabled) VALUES($1,$2,'https://example.invalid/hook',$3,1,true)",
-        &[&endpoint, &account, &vec![5u8;48]],
+         signing_secret_key_version,enabled) VALUES($1,$2,'https://hooks.example.org/hook',$3,1,true)",
+        &[&endpoint, &account, &endpoint_secret],
     ).await.unwrap();
 
     let session = InboundSession {
@@ -241,9 +245,6 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
     // rejected by local policy must consume one attempt and dead-letter it.
     let policy_endpoint = Uuid::new_v4();
     let policy_delivery = Uuid::new_v4();
-    let vault =
-        crate::webhook_worker::WebhookSecretVault::new(1, zeroize::Zeroizing::new(vec![7_u8; 32]))
-            .unwrap();
     let encrypted = vault.seal(account, policy_endpoint, &[8_u8; 32]).unwrap();
     db.execute(
         "INSERT INTO webhook_endpoints(id,account_id,callback_url,signing_secret_ciphertext, \
@@ -371,6 +372,92 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
         .await,
         Err(InboundError::UnknownSource)
     ));
+
+    // The same signed logical event reaches the worker once, then keeps its
+    // delivery ID and exact body through a failed attempt and retry. A fake
+    // transport inspects the prepared request without using external DNS.
+    let retryable = InboundEvent {
+        event_id: Uuid::new_v4(),
+        sequence: 2,
+        signature_der: &[],
+        ..signed
+    };
+    let retry_sig: Signature = signing.sign(&signed_event_bytes(session, &retryable));
+    let retry_der = retry_sig.to_der().as_bytes().to_vec();
+    let retryable = InboundEvent {
+        signature_der: &retry_der,
+        ..retryable
+    };
+    assert_eq!(
+        ingest(&mut db, session, &retryable)
+            .await
+            .unwrap()
+            .queued_deliveries,
+        1
+    );
+    assert_eq!(
+        ingest(&mut db, session, &retryable)
+            .await
+            .unwrap()
+            .queued_deliveries,
+        0
+    );
+    let retry_event_id = retryable.event_id;
+    let observed = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Vec<u8>>::new()));
+    for (worker, status, acknowledged) in [("worker-fail", 500, false), ("worker-ack", 204, true)] {
+        let captured = observed.clone();
+        assert!(
+            crate::webhook_worker::dispatch_one_with(
+                &mut db,
+                &vault,
+                worker,
+                move |url, body, secret| async move {
+                    assert_eq!(url, "https://hooks.example.org/hook");
+                    assert_eq!(secret.as_slice(), &[8_u8; 32]);
+                    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                    assert_eq!(
+                        json["event_id"].as_str(),
+                        Some(retry_event_id.to_string().as_str())
+                    );
+                    assert_eq!(json["content_kind"], "metadata_only");
+                    assert!(json["content_ciphertext_b64"].is_null());
+                    assert!(json.get("sender_e164").is_none());
+                    assert!(json.get("body").is_none());
+                    let signature =
+                        crate::webhook_egress::signature_header(&secret, 1_750_000_000, &body)
+                            .unwrap();
+                    assert_eq!(signature.len(), 67);
+                    captured.lock().unwrap().push(body);
+                    Ok(crate::webhook_egress::DeliveryResponse {
+                        status,
+                        acknowledged,
+                    })
+                }
+            )
+            .await
+            .unwrap()
+        );
+        if !acknowledged {
+            db.execute(
+                "UPDATE webhook_deliveries SET next_attempt_at=now()-interval '1 second' WHERE event_id=$1",
+                &[&retry_event_id],
+            ).await.unwrap();
+        }
+    }
+    {
+        let bodies = observed.lock().unwrap();
+        assert_eq!(bodies.len(), 2);
+        assert_eq!(bodies[0], bodies[1]);
+    }
+    let result = db
+        .query_one(
+            "SELECT status,attempt_count FROM webhook_deliveries WHERE event_id=$1",
+            &[&retry_event_id],
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.get::<_, String>(0), "succeeded");
+    assert_eq!(result.get::<_, i16>(1), 2);
 
     let opaque = vec![0x9du8; 64];
     let next = InboundEvent {
