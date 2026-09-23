@@ -59,6 +59,7 @@ class AuthenticatedGatewayService : Service() {
     private val reconnect = DeviceReconnectPolicy { Random.nextDouble() }
     private var endpoint: String? = null
     private var approvedDevice: UUID? = null
+    private var observedNetwork: Network? = null
     private lateinit var connectivity: ConnectivityManager
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) = refreshNetwork()
@@ -128,8 +129,9 @@ class AuthenticatedGatewayService : Service() {
         }
         endpoint = url
         approvedDevice = deviceId
+        observedNetwork = connectivity.activeNetwork
         retry?.cancel(false)
-        when (reconnect.start(hasNetwork())) {
+        when (reconnect.start(hasNetwork(observedNetwork))) {
             DeviceReconnectPolicy.Action.Connect -> openConnection(
                 url, deviceId, armRequested, armRecipient, armSubscriptionId, armStartedAtNanos)
             DeviceReconnectPolicy.Action.WaitForNetwork ->
@@ -444,16 +446,20 @@ class AuthenticatedGatewayService : Service() {
         }
     }
 
-    private fun hasNetwork(): Boolean {
-        val active = connectivity.activeNetwork ?: return false
-        return connectivity.getNetworkCapabilities(active)
+    private fun hasNetwork(network: Network?): Boolean {
+        if (network == null) return false
+        return connectivity.getNetworkCapabilities(network)
             ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
     }
 
     private fun refreshNetwork() {
         synchronized(this) {
             if (endpoint == null || approvedDevice == null) return
-            when (reconnect.networkChanged(hasNetwork())) {
+            val network = connectivity.activeNetwork
+            val replaced = observedNetwork != null && network != null && observedNetwork != network
+            observedNetwork = network
+            val available = hasNetwork(network)
+            when (reconnect.networkChanged(available)) {
                 DeviceReconnectPolicy.Action.WaitForNetwork -> {
                     generation += 1
                     cancelTimers()
@@ -469,6 +475,10 @@ class AuthenticatedGatewayService : Service() {
                 DeviceReconnectPolicy.Action.Connect -> {
                     retry?.cancel(false)
                     openConnection(checkNotNull(endpoint), checkNotNull(approvedDevice))
+                }
+                DeviceReconnectPolicy.Action.NoChange -> {
+                    if (replaced && available && socket != null)
+                        disconnect(generation, DeviceReconnectPolicy.Loss.TRANSPORT)
                 }
                 else -> Unit
             }
