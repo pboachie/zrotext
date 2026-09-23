@@ -43,6 +43,8 @@ class MainActivity : ComponentActivity() {
     private var selectedSim by mutableStateOf<Int?>(null)
     private var endpoint by mutableStateOf("")
     private var testToken by mutableStateOf("")
+    private var deviceStreamEndpoint by mutableStateOf("")
+    private var approvedDeviceId by mutableStateOf("")
     private var pairingOrigin by mutableStateOf("")
     private var pairingId by mutableStateOf("")
     private var pairingToken by mutableStateOf("")
@@ -95,6 +97,7 @@ class MainActivity : ComponentActivity() {
                         if (selectedSim == null) {
                             GatewayStatus.value = "Select a SIM first"
                         } else {
+                            stopService(Intent(this@MainActivity, AuthenticatedGatewayService::class.java))
                             val intent = Intent(this@MainActivity, GatewayService::class.java)
                                 .putExtra(GatewayService.EXTRA_URL, endpoint)
                                 .putExtra(GatewayService.EXTRA_TOKEN, testToken)
@@ -106,6 +109,29 @@ class MainActivity : ComponentActivity() {
                         startService(Intent(this@MainActivity, GatewayService::class.java).setAction(GatewayService.ACTION_PAUSE))
                     }) { Text("Pause gateway") }
                     Text("Keep this dedicated phone plugged in for the screen-off test. Reopen the app after a stop or reboot; automatic recovery is not implemented in M0.")
+                    HorizontalDivider()
+                    Text("Authenticated device heartbeat", style = MaterialTheme.typography.titleMedium)
+                    Text("After owner approval, enter the approved device UUID and trusted WSS origin. This proves the phone's Keystore key and exchanges heartbeats only. It cannot send SMS.")
+                    Text("Status: ${AuthenticatedGatewayStatus.value}; acknowledgments this session: ${AuthenticatedGatewayStatus.heartbeats}")
+                    OutlinedTextField(value = deviceStreamEndpoint, onValueChange = { deviceStreamEndpoint = it },
+                        label = { Text("WSS device stream URL") })
+                    OutlinedTextField(value = approvedDeviceId, onValueChange = { approvedDeviceId = it },
+                        label = { Text("Approved device UUID") })
+                    Button(onClick = {
+                        if (selectedSim == null) {
+                            AuthenticatedGatewayStatus.value = "Select a SIM first"
+                        } else {
+                            stopService(Intent(this@MainActivity, GatewayService::class.java))
+                            val intent = Intent(this@MainActivity, AuthenticatedGatewayService::class.java)
+                                .putExtra(AuthenticatedGatewayService.EXTRA_URL, deviceStreamEndpoint)
+                                .putExtra(AuthenticatedGatewayService.EXTRA_DEVICE_ID, approvedDeviceId.trim())
+                            ContextCompat.startForegroundService(this@MainActivity, intent)
+                        }
+                    }) { Text("Start authenticated heartbeat") }
+                    Button(onClick = {
+                        startService(Intent(this@MainActivity, AuthenticatedGatewayService::class.java)
+                            .setAction(AuthenticatedGatewayService.ACTION_PAUSE))
+                    }) { Text("Pause authenticated heartbeat") }
                     HorizontalDivider()
                     Text("Device pairing", style = MaterialTheme.typography.titleMedium)
                     Text("Enter the one-use pairing ID and token from the owner account. The phone will prove possession of its Keystore key. Compare both values below with the browser before approving there.")

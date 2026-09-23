@@ -82,7 +82,7 @@ Ephemeral/RAM-only mode is deferred. A later mode must specify process restart l
 
 ## Required review and adversarial tests
 
-Protocol reviewer must resolve: concrete suite/library support, canonical encoding, sender signature roles, trust-root bootstrap, key-directory substitution, manifest rollback/freshness, key rotation, recovery, nonce reuse, chosen-ciphertext handling, multipart semantics and device time skew. The agent must not invent a protocol and self-certify it.
+Protocol review must resolve concrete suite/library support, canonical encoding, sender signature roles, trust-root bootstrap, key-directory substitution, manifest rollback/freshness, key rotation, recovery, nonce reuse, chosen-ciphertext handling, multipart semantics and device time skew. A protocol implementation cannot certify its own design.
 
 Test altered AAD, wrong recipient/account/device, old manifests, revoked keys, duplicated command/event, nonce misuse vectors, truncated/oversized envelopes, invalid points, malformed HPKE inputs, signature forgery, cross-tenant object IDs, CSRF, redirect/DNS-rebinding SSRF, and billing event replay/out-of-order delivery. Use published known-answer vectors and differential interoperability among browser, TypeScript SDK and Android.
 
