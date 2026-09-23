@@ -734,7 +734,7 @@ mod tests {
     use super::*;
     use crate::enrollment::{EnrollmentError, device_challenge_bytes};
     use p256::ecdsa::{Signature, SigningKey, signature::Signer};
-    use rand::rngs::OsRng;
+    use p256::elliptic_curve::rand_core::OsRng;
     use sha2::{Digest, Sha256};
     use zrotext_delivery_store::NewMessage;
 

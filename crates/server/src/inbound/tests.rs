@@ -1,6 +1,6 @@
 use super::*;
 use p256::ecdsa::{SigningKey, signature::Signer};
-use rand::rngs::OsRng;
+use p256::elliptic_curve::rand_core::OsRng;
 
 #[tokio::test]
 async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
