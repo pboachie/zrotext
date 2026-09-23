@@ -4,6 +4,7 @@
 use crate::{
     alpha_policy::AlphaPolicy,
     enrollment::{self, AuthenticatedDevice, EnrollmentHasher},
+    inbound::{self, Content, InboundEvent, InboundSession},
 };
 use axum::{
     Router,
@@ -54,6 +55,7 @@ pub struct DeviceSocketState {
     pub enrollment_hasher: Arc<EnrollmentHasher>,
     pub alpha_policy: Arc<AlphaPolicy>,
     pub dispatch_runtime_enabled: bool,
+    pub inbound_pilot_enabled: bool,
     pub draining: Arc<AtomicBool>,
     pub drain_notify: Arc<Notify>,
 }
@@ -101,6 +103,39 @@ enum ClientFrame {
         #[serde(default)]
         segment_count: Option<i32>,
     },
+    #[serde(rename = "inbound_event")]
+    InboundEvent {
+        v: u8,
+        connection_epoch: i64,
+        event_id: Uuid,
+        sequence: i64,
+        message_id: Uuid,
+        attempt_id: Uuid,
+        classification: InboundClassification,
+        observed_at_ms: i64,
+        part_count: i16,
+        signature_der: String,
+    },
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum InboundClassification {
+    CapturedLocal,
+    SimUnverified,
+    SendUnverified,
+    EncryptionUnverified,
+}
+
+impl From<InboundClassification> for inbound::Classification {
+    fn from(value: InboundClassification) -> Self {
+        match value {
+            InboundClassification::CapturedLocal => Self::CapturedLocal,
+            InboundClassification::SimUnverified => Self::SimUnverified,
+            InboundClassification::SendUnverified => Self::SendUnverified,
+            InboundClassification::EncryptionUnverified => Self::EncryptionUnverified,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -170,6 +205,13 @@ enum ServerFrame {
         event_id: Uuid,
         state: MessageState,
         submit_permitted: bool,
+    },
+    #[serde(rename = "inbound_event_ack")]
+    InboundEventAck {
+        v: u8,
+        event_id: Uuid,
+        created: bool,
+        queued_deliveries: u64,
     },
 }
 
@@ -405,6 +447,33 @@ async fn run_socket(mut socket: WebSocket, state: DeviceSocketState) {
                                 .unwrap_or(false);
                         if !send_frame(&mut socket, ServerFrame::RadioEventAck {
                             v: 1, event_id, state: next, submit_permitted,
+                        }).await { break; }
+                    }
+                    Some(ClientFrame::InboundEvent {
+                        v: 1, connection_epoch, event_id, sequence, message_id,
+                        attempt_id, classification, observed_at_ms, part_count, signature_der,
+                    }) if state.inbound_pilot_enabled && connection_epoch == session.connection_epoch => {
+                        let Ok(signature) = URL_SAFE_NO_PAD.decode(signature_der.as_bytes()) else { break; };
+                        if URL_SAFE_NO_PAD.encode(&signature) != signature_der { break; }
+                        let inbound_session = InboundSession {
+                            account_id: session.account_id,
+                            device_id: session.device_id,
+                            site_id: &state.site_id,
+                            instance_id: &state.instance_id,
+                            connection_epoch: session.connection_epoch,
+                            deployment_epoch: state.deployment_epoch,
+                        };
+                        let event = InboundEvent {
+                            event_id, sequence, message_id, attempt_id,
+                            classification: classification.into(), observed_at_ms,
+                            part_count, content: Content::MetadataOnly,
+                            signature_der: &signature,
+                        };
+                        let Ok(outcome) = inbound::ingest(&mut client, inbound_session, &event).await else { break; };
+                        if !send_frame(&mut socket, ServerFrame::InboundEventAck {
+                            v: 1, event_id,
+                            created: outcome.created,
+                            queued_deliveries: outcome.queued_deliveries,
                         }).await { break; }
                     }
                     _ => break,
@@ -831,6 +900,38 @@ mod tests {
                 "state":"submitting", "submit_permitted":true
             })
         );
+        let inbound = serde_json::json!({
+            "type":"inbound_event", "v":1, "connection_epoch":7,
+            "event_id":event_id, "sequence":1, "message_id":message_id,
+            "attempt_id":attempt_id, "classification":"captured_local",
+            "observed_at_ms":1, "part_count":1,
+            "signature_der":URL_SAFE_NO_PAD.encode([5u8; 70])
+        });
+        assert!(matches!(
+            serde_json::from_value::<ClientFrame>(inbound.clone()),
+            Ok(ClientFrame::InboundEvent {
+                v: 1,
+                connection_epoch: 7,
+                classification: InboundClassification::CapturedLocal,
+                ..
+            })
+        ));
+        let mut extra_inbound = inbound;
+        extra_inbound["sender_e164"] = serde_json::json!("+15551234567");
+        assert!(serde_json::from_value::<ClientFrame>(extra_inbound).is_err());
+        assert_eq!(
+            serde_json::to_value(ServerFrame::InboundEventAck {
+                v: 1,
+                event_id,
+                created: true,
+                queued_deliveries: 0,
+            })
+            .unwrap(),
+            serde_json::json!({
+                "type":"inbound_event_ack", "v":1, "event_id":event_id,
+                "created":true, "queued_deliveries":0
+            })
+        );
     }
 
     #[tokio::test]
@@ -891,6 +992,7 @@ mod tests {
             enrollment_hasher: hasher.clone(),
             alpha_policy: Arc::new(AlphaPolicy::parse(None, None, None).unwrap()),
             dispatch_runtime_enabled: false,
+            inbound_pilot_enabled: false,
             draining: Arc::new(AtomicBool::new(false)),
             drain_notify: Arc::new(Notify::new()),
         };
