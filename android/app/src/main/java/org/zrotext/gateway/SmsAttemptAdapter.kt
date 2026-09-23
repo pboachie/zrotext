@@ -195,15 +195,27 @@ class SmsCallbackReceiver : BroadcastReceiver() {
         val report = runCatching { SmsMessage.createFromPdu(pdu, format) }.getOrNull()
             ?: return DeliveryStatus.UNVERIFIED
         if (!report.isStatusReportMessage) return DeliveryStatus.UNVERIFIED
-        return when (report.status) {
-            0, 2 shl 16 -> DeliveryStatus.RECEIVED
-            in 64..127 -> DeliveryStatus.FAILED
-            else -> DeliveryStatus.UNVERIFIED
-        }
+        return SmsDeliveryReportStatus.classify(format, report.status)
     }
 
     companion object {
         const val ACTION_SENT = "org.zrotext.gateway.SMS_SENT"
         const val ACTION_DELIVERED = "org.zrotext.gateway.SMS_DELIVERED"
+    }
+}
+
+/** The platform reports GSM and CDMA delivery statuses in different numeric spaces. */
+internal object SmsDeliveryReportStatus {
+    fun classify(format: String?, status: Int): Int = when (format) {
+        "3gpp" -> when (status) {
+            0 -> DeliveryStatus.RECEIVED
+            in 64..127 -> DeliveryStatus.FAILED
+            else -> DeliveryStatus.UNVERIFIED
+        }
+        "3gpp2" -> when (status) {
+            2 shl 16 -> DeliveryStatus.RECEIVED
+            else -> DeliveryStatus.UNVERIFIED
+        }
+        else -> DeliveryStatus.UNVERIFIED
     }
 }
