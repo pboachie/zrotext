@@ -2,7 +2,7 @@
 # ZT-017 Stripe test-mode billing foundation
 
 This branch is stacked on the inbound-server branch, which includes metering
-migration 006 and inbound migration 007. Apply migrations 001–009 in order.
+migration 006 and inbound migration 007. Apply migrations 001–010 in order.
 
 The billing route is absent by default. Setting
 `STRIPE_BILLING_TEST_ENABLED=true` requires all of:
@@ -62,7 +62,8 @@ returns quota exceeded. An idempotent replay retains its original message
 and reservation. On account-route startup, old test allowances are set to
 zero and known subscriptions are queued for a fresh provider read; disabling
 billing test mode therefore leaves no old positive allowance. Billing test
-mode requires migration 009. The isolated branch uses migration 009; when
+mode requires migrations 009 and 010. The isolated entitlement branch uses
+migration 009; when
 combined with webhook replay and auth-abuse migration work, renumber this
 migration and its fixture references to 011.
 
