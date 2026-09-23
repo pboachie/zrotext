@@ -29,6 +29,10 @@ use zrotext_delivery_store::DeliveryStore;
 use zrotext_server::{
     alpha_policy::AlphaPolicy,
     auth::TokenHasher,
+    billing::{
+        http::{self as billing_http, BillingHttpState},
+        worker::StripeTestWorker,
+    },
     device_socket::{self, DeviceSocketState},
     enrollment::EnrollmentHasher,
     http_auth::{
@@ -62,6 +66,23 @@ struct Health {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let billing_test = match env::var("STRIPE_BILLING_TEST_ENABLED").ok().as_deref() {
+        None | Some("false") => None,
+        Some("true") => {
+            let endpoint_secret = required("STRIPE_TEST_WEBHOOK_SECRET")?;
+            if !endpoint_secret.starts_with("whsec_") || endpoint_secret.len() < 16 {
+                return Err("invalid Stripe test webhook secret".into());
+            }
+            let prices = required("STRIPE_TEST_PRICE_IDS")?
+                .split(',')
+                .map(str::trim)
+                .map(str::to_owned)
+                .collect();
+            let worker = StripeTestWorker::new(required("STRIPE_TEST_SECRET_KEY")?, prices)?;
+            Some((endpoint_secret, worker))
+        }
+        _ => return Err("invalid STRIPE_BILLING_TEST_ENABLED".into()),
+    };
     let (webhook_vault, webhook_delivery_enabled) = webhook_config()?;
     let webhook_management_configured = webhook_vault.is_some();
     let alpha_policy = Arc::new(AlphaPolicy::parse(
@@ -243,6 +264,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         || inbound_pilot_enabled
     {
         return Err("account and enrollment routes are required for enabled features".into());
+    }
+    if let Some((endpoint_secret, worker)) = billing_test {
+        let billing_database = config.database_url.clone();
+        app = app.nest(
+            "/v1/billing",
+            billing_http::router(BillingHttpState {
+                database_url: billing_database.clone(),
+                endpoint_secret,
+            }),
+        );
+        let billing_draining = config.draining.clone();
+        let billing_notify = config.drain_notify.clone();
+        tokio::spawn(async move {
+            let mut checks = tokio::time::interval(Duration::from_secs(10));
+            checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut unavailable_logged = false;
+            loop {
+                tokio::select! {
+                    _ = checks.tick() => {
+                        if billing_draining.load(Ordering::Acquire) { break; }
+                        match worker.reconcile_one(&billing_database).await {
+                            Ok(_) => unavailable_logged = false,
+                            Err(_) if !unavailable_logged => {
+                                eprintln!("Stripe test reconciliation unavailable");
+                                unavailable_logged = true;
+                            }
+                            Err(_) => {}
+                        }
+                    }
+                    _ = billing_notify.notified() => break,
+                }
+            }
+        });
     }
     eprintln!(
         "zrotext site={} instance={} listening={bind}",
