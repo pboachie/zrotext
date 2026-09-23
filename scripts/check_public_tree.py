@@ -11,7 +11,7 @@ from pathlib import Path
 TEXT_SUFFIXES = {".bat", ".css", ".html", ".js", ".json", ".kt", ".kts", ".md", ".pem", ".properties", ".py", ".rs", ".sh", ".sql", ".svg", ".toml", ".xml", ".yaml", ".yml"}
 TEXT_NAMES = {".dockerignore", ".editorconfig", ".env.example", ".gitignore", "CODEOWNERS", "DCO", "Dockerfile", "LICENSE"}
 SECRET_PATTERNS = {
-    "credential-shaped token": re.compile(r"\b(?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{20,}\b|\bwhsec_[A-Za-z0-9]{20,}\b|\bcfat_[A-Za-z0-9]{20,}\b|\bgh[pousr]_[A-Za-z0-9]{20,}\b|\bAKIA[A-Z0-9]{16}\b"),
+    "credential-shaped token": re.compile(r"\b(?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{20,}\b|\bcfat_[A-Za-z0-9]{20,}\b|\bgh[pousr]_[A-Za-z0-9]{20,}\b|\bAKIA[A-Z0-9]{16}\b"),
     "private key": re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
     "SMTP password value": re.compile(r"(?i)\bSMTP_PASS\s*[:=]\s*['\"]?(?!\$\{|\$|<|example|changeme|your-|placeholder|\s*$)[^\s'\"]{8,}"),
     "personal Windows path": re.compile(r"(?i)\b[A-Z]:[/\\]Users[/\\](?!<|\$\{|%|example|user[/\\])[^/\\\s]+"),

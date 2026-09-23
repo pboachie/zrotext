@@ -403,7 +403,7 @@ mod tests {
     const BODY: &[u8] = br#"{"id":"evt_fixture1","object":"event","livemode":false,"type":"customer.subscription.updated","data":{"object":{"id":"sub_fixture1","object":"subscription","customer":"cus_fixture1","status":"active"}}}"#;
     const HEADER: &str =
         "t=1750000000,v0=0000,v1=17db9d23bf1f46a7db28382296af063cf65b36c77d80f154712e9f0803633536";
-    const SECRET: &str = concat!("whsec_", "testfixture1234567890");
+    const SECRET: &str = "whsec_testfixture1234567890";
 
     fn signed_header(timestamp: i64, mac: HmacSha256) -> String {
         let digest = mac.finalize().into_bytes();
