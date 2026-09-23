@@ -2,10 +2,10 @@
 
 This describes a store API, **not an enabled device frame or public route**. The
 Android inbound pilot in PR #25 keeps reply bodies in the phone's local vault;
-it does not upload them. A device-stream frame, customer-decryptable sealed
-envelope and endpoint management still need separate implementation and
-review. The webhook sender is disabled by default. Synthetic/consented test
-content only.
+it does not upload them. An opt-in device-stream frame carries signed metadata
+only; Android upload, a customer-decryptable sealed envelope, and endpoint
+management still need separate implementation and review. The webhook sender
+is disabled by default. Synthetic/consented test content only.
 
 `inbound::ingest` accepts an event only through an enrolled device's current
 writer session. It checks the tenant/device, site and instance, connection and
