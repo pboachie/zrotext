@@ -99,6 +99,26 @@ data class InboundEvent(
     val nonce: ByteArray?
 )
 
+/** An auto-incremented per-install sequence and signature survive socket restarts. */
+@Entity(
+    tableName = "inbound_uploads",
+    foreignKeys = [ForeignKey(
+        entity = InboundEvent::class,
+        parentColumns = ["eventId"], childColumns = ["eventId"],
+        onDelete = ForeignKey.CASCADE
+    )],
+    indices = [Index(value = ["eventId"], unique = true),
+        Index(value = ["acknowledgedAtMs", "sequence"])]
+)
+data class InboundUpload(
+    @PrimaryKey(autoGenerate = true) val sequence: Long = 0,
+    val eventId: String,
+    val accountId: String? = null,
+    val deviceId: String? = null,
+    val signatureDer: ByteArray? = null,
+    val acknowledgedAtMs: Long? = null
+)
+
 internal object InboundClassification {
     const val CAPTURED_LOCAL = "captured_local"
     const val SIM_UNVERIFIED = "sim_unverified"
@@ -181,6 +201,25 @@ internal object CallbackEvidence {
 
 @Dao
 abstract class SmsAttemptDao {
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    abstract fun insertInboundUpload(upload: InboundUpload): Long
+
+    @Query("SELECT u.* FROM inbound_uploads u JOIN inbound_events i ON i.eventId = u.eventId WHERE u.acknowledgedAtMs IS NULL AND i.receivedAtMs >= :minimumObservedAtMs ORDER BY u.sequence LIMIT 1")
+    abstract fun nextInboundUpload(minimumObservedAtMs: Long): InboundUpload?
+
+    @Query("SELECT * FROM inbound_uploads WHERE eventId = :eventId LIMIT 1")
+    abstract fun inboundUpload(eventId: String): InboundUpload?
+
+    @Query("SELECT * FROM inbound_events WHERE eventId = :eventId LIMIT 1")
+    abstract fun inboundByEventId(eventId: String): InboundEvent?
+
+    @Query("UPDATE inbound_uploads SET accountId = :accountId, deviceId = :deviceId, signatureDer = :signature WHERE eventId = :eventId AND accountId IS NULL AND deviceId IS NULL AND signatureDer IS NULL AND acknowledgedAtMs IS NULL")
+    abstract fun signInboundUpload(eventId: String, accountId: String, deviceId: String,
+                                   signature: ByteArray): Int
+
+    @Query("UPDATE inbound_uploads SET acknowledgedAtMs = :now WHERE eventId = :eventId AND acknowledgedAtMs IS NULL AND signatureDer IS NOT NULL")
+    abstract fun acknowledgeInboundUpload(eventId: String, now: Long): Int
+
     @Insert(onConflict = OnConflictStrategy.ABORT)
     abstract fun insertInboundWindow(window: InboundWindow)
 
@@ -227,7 +266,12 @@ abstract class SmsAttemptDao {
             classification,
             if (classification == InboundClassification.CAPTURED_LOCAL) encryptedBody else null,
             if (classification == InboundClassification.CAPTURED_LOCAL) nonce else null)
-        return if (insertInboundEvent(event) != -1L) event else inboundByDedupe(dedupeToken)
+        return if (insertInboundEvent(event) != -1L) {
+            if (classification == InboundClassification.CAPTURED_LOCAL) {
+                check(insertInboundUpload(InboundUpload(eventId = event.eventId)) > 0)
+            }
+            event
+        } else inboundByDedupe(dedupeToken)
     }
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
@@ -393,7 +437,7 @@ abstract class SmsAttemptDao {
 private const val INBOUND_PILOT_WINDOW_MS = 24L * 60 * 60 * 1000
 
 @Database(entities = [SmsAttempt::class, SmsSegment::class, AlphaRadioEvent::class,
-    InboundWindow::class, InboundEvent::class], version = 4, exportSchema = false)
+    InboundWindow::class, InboundEvent::class, InboundUpload::class], version = 5, exportSchema = false)
 abstract class SmsJournalDatabase : RoomDatabase() {
     abstract fun attempts(): SmsAttemptDao
 
@@ -403,7 +447,8 @@ abstract class SmsJournalDatabase : RoomDatabase() {
         fun get(context: Context): SmsJournalDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(
                 context.applicationContext, SmsJournalDatabase::class.java, "sms_attempts.db"
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build().also { instance = it }
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                .build().also { instance = it }
         }
 
         internal val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -428,6 +473,15 @@ abstract class SmsJournalDatabase : RoomDatabase() {
                 db.execSQL("CREATE TABLE IF NOT EXISTS inbound_events (eventId TEXT NOT NULL PRIMARY KEY, attemptId TEXT NOT NULL, messageId TEXT NOT NULL, dedupeToken TEXT NOT NULL, observedSubscriptionId INTEGER, receivedAtMs INTEGER NOT NULL, partCount INTEGER NOT NULL, classification TEXT NOT NULL, encryptedBody BLOB, nonce BLOB, FOREIGN KEY(attemptId) REFERENCES inbound_windows(attemptId) ON UPDATE NO ACTION ON DELETE CASCADE)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_inbound_events_attemptId ON inbound_events(attemptId)")
                 db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_inbound_events_dedupeToken ON inbound_events(dedupeToken)")
+            }
+        }
+
+        internal val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS inbound_uploads (sequence INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, eventId TEXT NOT NULL, accountId TEXT, deviceId TEXT, signatureDer BLOB, acknowledgedAtMs INTEGER, FOREIGN KEY(eventId) REFERENCES inbound_events(eventId) ON UPDATE NO ACTION ON DELETE CASCADE)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_inbound_uploads_eventId ON inbound_uploads(eventId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_inbound_uploads_acknowledgedAtMs_sequence ON inbound_uploads(acknowledgedAtMs, sequence)")
+                db.execSQL("INSERT INTO inbound_uploads(eventId) SELECT eventId FROM inbound_events WHERE classification = 'captured_local' ORDER BY rowid")
             }
         }
     }
