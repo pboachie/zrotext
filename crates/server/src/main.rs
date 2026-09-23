@@ -383,15 +383,35 @@ fn webhook_config() -> Result<(Option<WebhookSecretVault>, bool), Box<dyn std::e
         Some("true") => true,
         Some(_) => return Err("WEBHOOK_DELIVERY_ENABLED must be true or false".into()),
     };
+    let secondary = match (
+        env::var("WEBHOOK_KEK_SECONDARY_VERSION"),
+        env::var("WEBHOOK_KEK_SECONDARY_B64"),
+    ) {
+        (Err(env::VarError::NotPresent), Err(env::VarError::NotPresent)) => None,
+        (Ok(version), Ok(encoded)) => {
+            let version: i32 = version.parse()?;
+            let encoded = Zeroizing::new(encoded);
+            let decoded = Zeroizing::new(STANDARD.decode(encoded.as_bytes())?);
+            Some((version, decoded))
+        }
+        _ => return Err(
+            "WEBHOOK_KEK_SECONDARY_VERSION and WEBHOOK_KEK_SECONDARY_B64 must be supplied together"
+                .into(),
+        ),
+    };
     let vault = match (env::var("WEBHOOK_KEK_VERSION"), env::var("WEBHOOK_KEK_B64")) {
-        (Err(env::VarError::NotPresent), Err(env::VarError::NotPresent)) if !delivery_enabled => {
+        (Err(env::VarError::NotPresent), Err(env::VarError::NotPresent))
+            if !delivery_enabled && secondary.is_none() =>
+        {
             None
         }
         (Ok(version), Ok(encoded)) => {
             let version: i32 = version.parse()?;
             let encoded = Zeroizing::new(encoded);
             let decoded = Zeroizing::new(STANDARD.decode(encoded.as_bytes())?);
-            Some(WebhookSecretVault::new(version, decoded)?)
+            Some(WebhookSecretVault::with_secondary(
+                version, decoded, secondary,
+            )?)
         }
         _ => {
             return Err("WEBHOOK_KEK_VERSION and WEBHOOK_KEK_B64 must be supplied together".into());
