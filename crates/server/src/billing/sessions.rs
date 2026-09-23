@@ -89,6 +89,22 @@ struct StripeClient {
     api_base: String,
 }
 
+enum StripeEndpoint {
+    Customer,
+    Checkout,
+    Portal,
+}
+
+impl StripeEndpoint {
+    fn path(&self) -> &'static str {
+        match self {
+            Self::Customer => "/v1/customers",
+            Self::Checkout => "/v1/checkout/sessions",
+            Self::Portal => "/v1/billing_portal/sessions",
+        }
+    }
+}
+
 pub fn router(state: SessionState) -> Router {
     Router::new()
         .route("/checkout", post(checkout))
@@ -276,13 +292,13 @@ async fn bound_customer(db: &Client, account_id: Uuid) -> Result<Option<String>,
 impl StripeClient {
     async fn post(
         &self,
-        path: &str,
+        endpoint: StripeEndpoint,
         form: &[(&str, String)],
         key: Option<&str>,
     ) -> Result<Value, AuthHttpError> {
         let mut request = self
             .http
-            .post(format!("{}{path}", self.api_base))
+            .post(format!("{}{}", self.api_base, endpoint.path()))
             .bearer_auth(&self.secret_key)
             .form(form);
         if let Some(key) = key {
@@ -312,7 +328,7 @@ impl StripeClient {
     async fn create_customer(&self, account_id: Uuid) -> Result<String, AuthHttpError> {
         let result = self
             .post(
-                "/v1/customers",
+                StripeEndpoint::Customer,
                 &[("metadata[account_id]", account_id.to_string())],
                 Some(&format!("zt-customer-v1-{account_id}")),
             )
@@ -342,7 +358,7 @@ impl StripeClient {
     ) -> Result<String, AuthHttpError> {
         let result = self
             .post(
-                "/v1/checkout/sessions",
+                StripeEndpoint::Checkout,
                 &[
                     ("mode", "subscription".into()),
                     ("customer", customer_id.into()),
@@ -382,7 +398,7 @@ impl StripeClient {
     ) -> Result<String, AuthHttpError> {
         let result = self
             .post(
-                "/v1/billing_portal/sessions",
+                StripeEndpoint::Portal,
                 &[
                     ("customer", customer_id.into()),
                     ("return_url", return_url.into()),
@@ -615,33 +631,25 @@ mod tests {
         ] {
             db.batch_execute(sql).await.unwrap();
         }
-        let hasher = Arc::new(auth::TokenHasher::new(vec![42; 32]).unwrap());
-        let signup = auth::register(
-            &mut db,
-            &hasher,
-            "billing-a@example.test",
-            "correct horse 123",
-        )
-        .await
-        .unwrap();
+        let hasher = Arc::new(auth::TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
+        let password_a = Uuid::new_v4().to_string();
+        let password_b = Uuid::new_v4().to_string();
+        let signup = auth::register(&mut db, &hasher, "billing-a@example.test", &password_a)
+            .await
+            .unwrap();
         auth::verify_email(&mut db, &hasher, &signup.verification_token)
             .await
             .unwrap();
-        let owner = auth::login(&db, &hasher, "billing-a@example.test", "correct horse 123")
+        let owner = auth::login(&db, &hasher, "billing-a@example.test", &password_a)
             .await
             .unwrap();
-        let other = auth::register(
-            &mut db,
-            &hasher,
-            "billing-b@example.test",
-            "correct horse 123",
-        )
-        .await
-        .unwrap();
+        let other = auth::register(&mut db, &hasher, "billing-b@example.test", &password_b)
+            .await
+            .unwrap();
         auth::verify_email(&mut db, &hasher, &other.verification_token)
             .await
             .unwrap();
-        let other_owner = auth::login(&db, &hasher, "billing-b@example.test", "correct horse 123")
+        let other_owner = auth::login(&db, &hasher, "billing-b@example.test", &password_b)
             .await
             .unwrap();
         let mock = Arc::new(MockStripe {
@@ -863,17 +871,16 @@ mod tests {
         ] {
             db.batch_execute(sql).await.unwrap();
         }
-        let hasher = Arc::new(auth::TokenHasher::new(vec![73; 32]).unwrap());
+        let hasher = Arc::new(auth::TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
         let email = format!("stripe-smoke-{}@example.test", Uuid::new_v4().simple());
-        let signup = auth::register(&mut db, &hasher, &email, "synthetic password 123")
+        let password = Uuid::new_v4().to_string();
+        let signup = auth::register(&mut db, &hasher, &email, &password)
             .await
             .unwrap();
         auth::verify_email(&mut db, &hasher, &signup.verification_token)
             .await
             .unwrap();
-        let owner = auth::login(&db, &hasher, &email, "synthetic password 123")
-            .await
-            .unwrap();
+        let owner = auth::login(&db, &hasher, &email, &password).await.unwrap();
         let auth_state = AuthHttpState::new(
             db_url,
             hasher,

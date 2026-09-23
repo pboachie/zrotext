@@ -205,45 +205,27 @@ mod tests {
         ] {
             db.batch_execute(sql).await.unwrap();
         }
-        let hasher = Arc::new(auth::TokenHasher::new(vec![51; 32]).unwrap());
-        let first = auth::register(
-            &mut db,
-            &hasher,
-            "billing-view-a@example.test",
-            "correct horse 123",
-        )
-        .await
-        .unwrap();
+        let hasher = Arc::new(auth::TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
+        let password_a = Uuid::new_v4().to_string();
+        let password_b = Uuid::new_v4().to_string();
+        let first = auth::register(&mut db, &hasher, "billing-view-a@example.test", &password_a)
+            .await
+            .unwrap();
         auth::verify_email(&mut db, &hasher, &first.verification_token)
             .await
             .unwrap();
-        let owner_a = auth::login(
-            &db,
-            &hasher,
-            "billing-view-a@example.test",
-            "correct horse 123",
-        )
-        .await
-        .unwrap();
-        let second = auth::register(
-            &mut db,
-            &hasher,
-            "billing-view-b@example.test",
-            "correct horse 123",
-        )
-        .await
-        .unwrap();
+        let owner_a = auth::login(&db, &hasher, "billing-view-a@example.test", &password_a)
+            .await
+            .unwrap();
+        let second = auth::register(&mut db, &hasher, "billing-view-b@example.test", &password_b)
+            .await
+            .unwrap();
         auth::verify_email(&mut db, &hasher, &second.verification_token)
             .await
             .unwrap();
-        let owner_b = auth::login(
-            &db,
-            &hasher,
-            "billing-view-b@example.test",
-            "correct horse 123",
-        )
-        .await
-        .unwrap();
+        let owner_b = auth::login(&db, &hasher, "billing-view-b@example.test", &password_b)
+            .await
+            .unwrap();
         let auth_state = AuthHttpState::new(
             db_url,
             hasher,
@@ -337,7 +319,10 @@ mod tests {
             &first.account_id.to_string(),
             &second.account_id.to_string(),
         ] {
-            assert!(!text.contains(secret), "status leaked {secret}");
+            assert!(
+                !text.contains(secret),
+                "billing status exposed a provider identifier"
+            );
         }
         let other = app
             .clone()
