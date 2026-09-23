@@ -132,7 +132,7 @@ mod tests {
         .unwrap();
         let a = Arc::new(a);
         let b = Arc::new(b);
-        let hasher = Arc::new(TokenHasher::new(vec![91; 32]).unwrap());
+        let hasher = Arc::new(TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
         let mut tasks = Vec::new();
         for index in 0..48 {
             let client = if index % 2 == 0 { a.clone() } else { b.clone() };
@@ -241,7 +241,7 @@ mod tests {
         }
         let a = Arc::new(a);
         let b = Arc::new(b);
-        let hasher = Arc::new(TokenHasher::new(vec![92; 32]).unwrap());
+        let hasher = Arc::new(TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
         let global_hash = hasher.digest(b"abuse-global-v1", "pair_claim");
         a.execute(
             "INSERT INTO auth_abuse_counters(scope,subject_hash,window_started_at,attempts,updated_at)
