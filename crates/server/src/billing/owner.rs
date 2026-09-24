@@ -170,7 +170,7 @@ async fn dashboard(
     owner_id(&state, &headers).await?;
     Ok((
         [
-            (header::CONTENT_SECURITY_POLICY, "default-src 'none'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'"),
+            (header::CONTENT_SECURITY_POLICY, "default-src 'none'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"),
             (header::REFERRER_POLICY, "no-referrer"),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
         ],
@@ -414,6 +414,12 @@ mod tests {
                 .to_str()
                 .unwrap()
                 .contains("script-src 'self'")
+        );
+        assert!(
+            page.headers()[header::CONTENT_SECURITY_POLICY]
+                .to_str()
+                .unwrap()
+                .contains("frame-ancestors 'none'")
         );
         let page = to_bytes(page.into_body(), 4096).await.unwrap();
         assert!(

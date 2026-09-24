@@ -18,13 +18,13 @@
     <section id="sign-in" hidden aria-labelledby="sign-in-title">
       <h2 id="sign-in-title">Sign in</h2>
       <p>Use your verified owner account to manage gateway devices.</p>
-      <form id="login-form">
+      <form id="login-form" method="post" action="/v1/auth/login">
         <label for="email">Email</label><input id="email" name="email" type="email" autocomplete="username" required>
         <label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required>
         <button type="submit">Sign in</button>
       </form>
       <p id="login-status" role="status" aria-live="polite"></p>
-      <form id="mfa-form" hidden>
+      <form id="mfa-form" method="post" action="/v1/auth/login/mfa" hidden>
         <p>Enter a code from your authenticator, or one unused recovery code.</p>
         <label for="mfa-code">Authenticator or recovery code</label>
         <input id="mfa-code" name="code" autocomplete="one-time-code" maxlength="64" spellcheck="false" required>

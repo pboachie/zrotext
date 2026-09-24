@@ -61,6 +61,57 @@ mod tests {
     use tower::ServiceExt;
 
     #[tokio::test]
+    async fn credential_forms_fail_closed_without_javascript() {
+        use crate::{
+            auth::TokenHasher,
+            http_auth::{self, AuthHttpState, DisabledVerificationDispatcher},
+        };
+        use std::sync::Arc;
+
+        let state = AuthHttpState::new(
+            "postgres://unused".into(),
+            Arc::new(TokenHasher::new(vec![7; 32]).unwrap()),
+            "https://zrotext.example".into(),
+            Arc::new(DisabledVerificationDispatcher),
+        )
+        .unwrap();
+        let app = router().nest("/v1/auth", http_auth::router(state));
+        for (id, endpoint, body) in [
+            (
+                "login-form",
+                "/v1/auth/login",
+                "email=owner%40example.test&password=synthetic-password",
+            ),
+            (
+                "mfa-form",
+                "/v1/auth/login/mfa",
+                "code=synthetic-recovery-code",
+            ),
+        ] {
+            // Without the submit listener, native HTML forms must not put
+            // credentials in the URL. Their URL-encoded POST fails closed at
+            // the JSON-only endpoint, before any database or password work.
+            let start = PAGE.find(&format!("<form id=\"{id}\"")).unwrap();
+            let tag = PAGE[start..].split('>').next().unwrap();
+            assert!(tag.contains("method=\"post\""));
+            assert!(tag.contains(&format!("action=\"{endpoint}\"")));
+            let request = Request::builder()
+                .method("POST")
+                .uri(endpoint)
+                .header(header::ORIGIN, "https://zrotext.example")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(body))
+                .unwrap();
+            assert!(request.uri().query().is_none());
+            let response = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+            assert!(!response.headers().contains_key(header::SET_COOKIE));
+            assert!(!response.headers().contains_key(header::LOCATION));
+            assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        }
+    }
+
+    #[tokio::test]
     async fn owner_assets_are_same_origin_and_never_cached() {
         for (path, content_type) in [
             ("/owner/devices", "text/html; charset=utf-8"),

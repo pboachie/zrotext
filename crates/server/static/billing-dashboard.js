@@ -10,6 +10,7 @@ const checkout = document.getElementById("checkout");
 const portal = document.getElementById("portal");
 const refresh = document.getElementById("refresh");
 const checkoutKey = crypto.randomUUID();
+let statusGeneration = 0;
 
 function csrfToken() {
   const entry = document.cookie.split(";").map((part) => part.trim())
@@ -18,6 +19,8 @@ function csrfToken() {
 }
 
 async function loadStatus() {
+  const generation = ++statusGeneration;
+  list.replaceChildren();
   error.textContent = "";
   state.textContent = "Loading billing status…";
   deviceCapStatus.textContent = "";
@@ -27,6 +30,7 @@ async function loadStatus() {
     const response = await fetch("/v1/billing/status", { credentials: "same-origin", cache: "no-store" });
     if (!response.ok) throw new Error("Could not load billing status. Sign in again if your session expired.");
     const result = await response.json();
+    if (generation !== statusGeneration) return;
     if (result.mode !== "test") throw new Error("Unexpected billing mode.");
     list.replaceChildren();
     for (const subscription of result.subscriptions) {
@@ -56,6 +60,8 @@ async function loadStatus() {
     }
     portal.disabled = !result.customerBound;
   } catch (cause) {
+    if (generation !== statusGeneration) return;
+    list.replaceChildren();
     state.textContent = "Billing status unavailable.";
     deviceCapStatus.textContent = "";
     manageDevices.hidden = true;
