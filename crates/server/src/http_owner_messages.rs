@@ -250,7 +250,7 @@ mod tests {
         ] {
             db.batch_execute(migration).await.unwrap();
         }
-        let hasher = Arc::new(TokenHasher::new(vec![11; 32]).unwrap());
+        let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(11)).unwrap());
         let a = register(
             &mut db,
             &hasher,

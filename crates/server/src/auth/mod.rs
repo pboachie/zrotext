@@ -707,7 +707,7 @@ mod tests {
 
     #[test]
     fn token_domains_are_separate_and_csrf_needs_origin() {
-        let hasher = TokenHasher::new(vec![7; 32]).unwrap();
+        let hasher = TokenHasher::new(crate::test_keys::key(7)).unwrap();
         let token = random_token("ztc_");
         let principal = SessionPrincipal {
             tenant: Tenant {
@@ -795,7 +795,7 @@ mod tests {
             ))
             .await
             .unwrap();
-        let hasher = TokenHasher::new(vec![11; 32]).unwrap();
+        let hasher = TokenHasher::new(crate::test_keys::key(11)).unwrap();
         let a_password = Uuid::new_v4().to_string();
         let b_password = Uuid::new_v4().to_string();
         let a = register(&mut client, &hasher, "A@example.test", &a_password)

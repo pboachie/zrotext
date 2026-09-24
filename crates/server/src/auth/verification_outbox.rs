@@ -218,7 +218,7 @@ mod tests {
         ))
         .await
         .unwrap();
-        let hasher = TokenHasher::new(vec![29; 32]).unwrap();
+        let hasher = TokenHasher::new(crate::test_keys::key(29)).unwrap();
         let signup = register(&mut a, &hasher, "owner@example.test", "correct horse 123")
             .await
             .unwrap();
@@ -338,7 +338,7 @@ mod tests {
             ))
             .await
             .unwrap();
-        let hasher = TokenHasher::new(vec![31; 32]).unwrap();
+        let hasher = TokenHasher::new(crate::test_keys::key(31)).unwrap();
         let signup = register(
             &mut client,
             &hasher,

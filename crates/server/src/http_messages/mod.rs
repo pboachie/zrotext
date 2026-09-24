@@ -502,7 +502,7 @@ mod tests {
         ] {
             client.batch_execute(sql).await.unwrap();
         }
-        let hasher = Arc::new(TokenHasher::new(vec![51; 32]).unwrap());
+        let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(51)).unwrap());
         let (account_a, device_a, send_a, read_a, unbound_send_a) =
             owner(&mut client, &hasher, "owner-a@example.test").await;
         let (_, device_b, _send_b, read_b, _) =
