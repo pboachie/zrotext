@@ -64,9 +64,11 @@ context. It rejects cross-tenant moves, version mismatch and tampering.
 source. The same key pair can mount owner endpoint management while delivery
 remains off. A missing or malformed key fails startup if delivery is enabled;
 an incomplete key pair always fails startup. Do not put the KEK or
-endpoint signing secrets in source, images or SQL. This worker accepts one
-key version at a time; pause delivery and reseal existing endpoint secrets
-before a version change. Automated rotation is not implemented.
+endpoint signing secrets in source, images or SQL. The worker can read an
+active and a secondary KEK version during an online, two-site rewrap. Follow
+the [coordinated rotation procedure](../../docs/WEBHOOK-KEK-ROTATION.md)
+before changing either site's active key; do not remove the old secondary key
+until both sites and in-flight deliveries have drained.
 
 The JSON body has a stable `event_id`, delivery/account/device/message/attempt
 IDs, classification, timestamp, part count, content kind, base64 opaque
