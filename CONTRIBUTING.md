@@ -7,6 +7,7 @@ Thanks for helping improve ZROtext. Application code is licensed under `AGPL-3.0
 - Search existing issues and discussions. Open an issue for a bug or a discussion for a proposed feature or design change, so maintainers can help settle scope before you invest in a large patch.
 - For a security vulnerability, use [GitHub's private vulnerability reporting](https://github.com/pboachie/zrotext/security/advisories/new). Do not open a public issue.
 - Use synthetic phone numbers and message content in tests and examples. Never post credentials, real message bodies, phone numbers, device identifiers, or private infrastructure details.
+- Install the opt-in [public privacy hooks](docs/public-privacy-guard.md) with `python scripts/install_privacy_hooks.py`. They protect all worktrees of this repository without replacing existing hooks.
 
 ## Submit a change
 
