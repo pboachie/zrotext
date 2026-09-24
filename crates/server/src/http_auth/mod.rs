@@ -16,22 +16,34 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{delete, get, post},
 };
+use base64::{Engine, engine::general_purpose::STANDARD};
+use hmac::{Hmac, Mac, digest::KeyInit};
 use lettre::{
     AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
     transport::smtp::authentication::Credentials,
 };
 use serde::{Deserialize, Serialize};
-use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
+use sha2::Sha256;
+use std::{
+    collections::HashSet,
+    future::Future,
+    pin::Pin,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+use subtle::ConstantTimeEq;
 use tokio::sync::Semaphore;
 use tokio_postgres::Client;
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 const SESSION_COOKIE: &str = "__Host-zrotext_session";
 const CSRF_COOKIE: &str = "__Host-zrotext_csrf";
 const CSRF_HEADER: &str = "x-zrotext-csrf";
 
 /// A deployment supplies a reviewed mail transport here. The default server
-/// deliberately keeps registration closed until that transport is configured.
+/// deliberately keeps registration closed until that transport and an explicit
+/// registration policy are configured.
 /// Implementations must not log the token or place it in a URL.
 pub trait VerificationDispatcher: Send + Sync {
     fn ready(&self) -> bool;
@@ -42,7 +54,7 @@ pub trait VerificationDispatcher: Send + Sync {
         &'a self,
         email: &'a str,
         token: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<(), ()>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<(), DispatchFailure>> + Send + 'a>>;
     fn dispatch_password_reset<'a>(
         &'a self,
         _email: &'a str,
@@ -55,6 +67,77 @@ pub trait VerificationDispatcher: Send + Sync {
         _email: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<(), ()>> + Send + 'a>> {
         Box::pin(async { Err(()) })
+    }
+    fn check_connection<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, DispatchFailure>> + Send + 'a>> {
+        Box::pin(async { Ok(false) })
+    }
+}
+
+/// Only fixed categories cross the mail transport boundary. SMTP responses may
+/// contain addresses or other private data and must never enter logs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DispatchFailure {
+    Message,
+    Connect,
+    Tls,
+    Auth,
+    Rejected,
+    Timeout,
+}
+
+impl DispatchFailure {
+    fn from_smtp(error: &lettre::transport::smtp::Error) -> Self {
+        if error.is_timeout() {
+            Self::Timeout
+        } else if error.is_tls() {
+            Self::Tls
+        } else if error
+            .status()
+            .is_some_and(|code| matches!(code.to_string().as_str(), "530" | "534" | "535"))
+        {
+            Self::Auth
+        } else if error.is_transient() || error.is_permanent() {
+            Self::Rejected
+        } else {
+            Self::Connect
+        }
+    }
+
+    pub fn warning(self) -> &'static str {
+        match self {
+            Self::Message => "verification mail delivery failed (category=message)",
+            Self::Connect => "verification mail delivery failed (category=connect)",
+            Self::Tls => "verification mail delivery failed (category=tls)",
+            Self::Auth => "verification mail delivery failed (category=auth)",
+            Self::Rejected => "verification mail delivery failed (category=rejected)",
+            Self::Timeout => "verification mail delivery failed (category=timeout)",
+        }
+    }
+}
+
+/// Limit repeated warnings when many queued messages encounter the same
+/// transport problem. A successful send clears the failure streak.
+#[derive(Default)]
+pub struct VerificationWarningGate {
+    last_warning: Option<Instant>,
+}
+
+impl VerificationWarningGate {
+    pub fn on_failure(&mut self, category: DispatchFailure, now: Instant) -> Option<&'static str> {
+        if self
+            .last_warning
+            .is_some_and(|last| now.saturating_duration_since(last) < Duration::from_secs(300))
+        {
+            return None;
+        }
+        self.last_warning = Some(now);
+        Some(category.warning())
+    }
+
+    pub fn on_success(&mut self) {
+        self.last_warning = None;
     }
 }
 
@@ -69,8 +152,8 @@ impl VerificationDispatcher for DisabledVerificationDispatcher {
         &'a self,
         _email: &'a str,
         _token: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<(), ()>> + Send + 'a>> {
-        Box::pin(async { Err(()) })
+    ) -> Pin<Box<dyn Future<Output = Result<(), DispatchFailure>> + Send + 'a>> {
+        Box::pin(async { Err(DispatchFailure::Connect) })
     }
 }
 
@@ -80,6 +163,12 @@ pub struct SmtpVerificationDispatcher {
     from: lettre::message::Mailbox,
     reply_to: Option<lettre::message::Mailbox>,
     transport: AsyncSmtpTransport<Tokio1Executor>,
+}
+
+fn verification_email_body(token: &str) -> String {
+    format!(
+        "Your ZROtext email verification code is:\n\n{token}\n\nOpen /owner/account#verify on your ZROtext server and enter this code. It expires in 24 hours.\n"
+    )
 }
 
 impl SmtpVerificationDispatcher {
@@ -121,6 +210,14 @@ impl SmtpVerificationDispatcher {
             transport,
         })
     }
+
+    pub async fn test_connection(&self) -> Result<(), DispatchFailure> {
+        match self.transport.test_connection().await {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(DispatchFailure::Connect),
+            Err(error) => Err(DispatchFailure::from_smtp(&error)),
+        }
+    }
 }
 
 impl VerificationDispatcher for SmtpVerificationDispatcher {
@@ -136,20 +233,21 @@ impl VerificationDispatcher for SmtpVerificationDispatcher {
         &'a self,
         email: &'a str,
         token: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<(), ()>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), DispatchFailure>> + Send + 'a>> {
         Box::pin(async move {
-            let recipient = email.parse().map_err(|_| ())?;
+            let recipient = email.parse().map_err(|_| DispatchFailure::Message)?;
             let mut builder = Message::builder().from(self.from.clone()).to(recipient);
             if let Some(reply_to) = &self.reply_to {
                 builder = builder.reply_to(reply_to.clone());
             }
             let message = builder
                 .subject("Verify your ZROtext email")
-                .body(format!(
-                    "Your ZROtext email verification code is:\n\n{token}\n\nEnter this code in the ZROtext verification form. It expires in 24 hours.\n"
-                ))
-                .map_err(|_| ())?;
-            self.transport.send(message).await.map_err(|_| ())?;
+                .body(verification_email_body(token))
+                .map_err(|_| DispatchFailure::Message)?;
+            self.transport
+                .send(message)
+                .await
+                .map_err(|error| DispatchFailure::from_smtp(&error))?;
             Ok(())
         })
     }
@@ -194,6 +292,188 @@ impl VerificationDispatcher for SmtpVerificationDispatcher {
             Ok(())
         })
     }
+    fn check_connection<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, DispatchFailure>> + Send + 'a>> {
+        Box::pin(async move { self.test_connection().await.map(|_| true) })
+    }
+}
+
+/// Admission applies only to new accounts. Closing registration never disables
+/// login, verification, or recovery for owners already in the database.
+#[derive(Clone, Default)]
+pub enum RegistrationPolicy {
+    #[default]
+    Closed,
+    Allowlist {
+        emails: HashSet<String>,
+        domains: HashSet<String>,
+        enrollment_key: [u8; 32],
+    },
+    Open,
+}
+
+impl RegistrationPolicy {
+    pub fn parse(
+        mode: Option<&str>,
+        allowed_emails: Option<&str>,
+        allowed_domains: Option<&str>,
+        enrollment_key_b64: Option<&str>,
+    ) -> Result<Self, &'static str> {
+        let enrollment_key = enrollment_key_b64
+            .map(|encoded| {
+                let decoded = Zeroizing::new(
+                    STANDARD
+                        .decode(encoded)
+                        .map_err(|_| "invalid REGISTRATION_ENROLLMENT_KEY_B64")?,
+                );
+                decoded
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| "invalid REGISTRATION_ENROLLMENT_KEY_B64")
+            })
+            .transpose()?;
+        let emails = parse_entries(
+            allowed_emails,
+            "invalid REGISTRATION_ALLOWED_EMAILS",
+            |entry| {
+                let email = auth::normalize_email(entry).ok()?;
+                let (local, domain) = email.split_once('@')?;
+                (!local.is_empty() && valid_domain(domain)).then_some(email)
+            },
+        )?;
+        let domains = parse_entries(
+            allowed_domains,
+            "invalid REGISTRATION_ALLOWED_DOMAINS",
+            |entry| {
+                let domain = entry.to_ascii_lowercase();
+                valid_domain(&domain).then_some(domain)
+            },
+        )?;
+        match mode.unwrap_or("closed") {
+            "closed" if emails.is_empty() && domains.is_empty() && enrollment_key.is_none() => {
+                Ok(Self::Closed)
+            }
+            "open" if emails.is_empty() && domains.is_empty() && enrollment_key.is_none() => {
+                Ok(Self::Open)
+            }
+            "allowlist"
+                if (!emails.is_empty() || !domains.is_empty()) && enrollment_key.is_some() =>
+            {
+                Ok(Self::Allowlist {
+                    emails,
+                    domains,
+                    enrollment_key: enrollment_key.expect("checked above"),
+                })
+            }
+            "closed" | "open" | "allowlist" => Err("REGISTRATION_MODE and allowlists disagree"),
+            _ => Err("REGISTRATION_MODE must be closed, allowlist, or open"),
+        }
+    }
+
+    fn admitted_email(
+        &self,
+        headers: &HeaderMap,
+        raw_email: &str,
+    ) -> Result<Option<String>, AuthError> {
+        match self {
+            Self::Closed => Ok(None),
+            Self::Open => auth::normalize_email(raw_email).map(Some),
+            Self::Allowlist { enrollment_key, .. } => {
+                let candidate = headers
+                    .get("x-zrotext-registration-token")
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| STANDARD.decode(value).ok())
+                    .map(Zeroizing::new);
+                let Some(candidate) = candidate.filter(|candidate| candidate.len() == 32) else {
+                    return Ok(None);
+                };
+                let Ok(email) = auth::normalize_email(raw_email) else {
+                    return Ok(None);
+                };
+                let expected = invite_digest(enrollment_key, &email);
+                let valid = bool::from(expected.as_slice().ct_eq(candidate.as_slice()));
+                let allowed = self.admits(&email);
+                Ok((allowed & valid).then_some(email))
+            }
+        }
+    }
+
+    /// Mint a token bound to one allowlisted email. Only the operator CLI
+    /// should expose this; the master key never leaves private configuration.
+    pub fn issue_invite(&self, raw_email: &str) -> Result<String, &'static str> {
+        let email = auth::normalize_email(raw_email).map_err(|_| "invalid invited email")?;
+        let Self::Allowlist { enrollment_key, .. } = self else {
+            return Err("invite issuance requires allowlist mode");
+        };
+        if !self.admits(&email) {
+            return Err("email is not allowlisted");
+        }
+        Ok(STANDARD.encode(invite_digest(enrollment_key, &email)))
+    }
+
+    fn admits(&self, normalized_email: &str) -> bool {
+        match self {
+            Self::Closed => false,
+            Self::Open => true,
+            Self::Allowlist {
+                emails, domains, ..
+            } => {
+                emails.contains(normalized_email)
+                    || normalized_email
+                        .split_once('@')
+                        .is_some_and(|(_, domain)| domains.contains(domain))
+            }
+        }
+    }
+}
+
+fn invite_digest(key: &[u8; 32], normalized_email: &str) -> [u8; 32] {
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts 32-byte keys");
+    mac.update(b"zrotext-registration-invite-v1\0");
+    mac.update(normalized_email.as_bytes());
+    mac.finalize().into_bytes().into()
+}
+
+fn parse_entries<F>(
+    value: Option<&str>,
+    error: &'static str,
+    normalize: F,
+) -> Result<HashSet<String>, &'static str>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let Some(value) = value else {
+        return Ok(HashSet::new());
+    };
+    if value.len() > 4096 {
+        return Err(error);
+    }
+    value
+        .split(',')
+        .map(|entry| normalize(entry.trim()).ok_or(error))
+        .collect()
+}
+
+fn valid_domain(domain: &str) -> bool {
+    !domain.is_empty()
+        && domain.len() <= 253
+        && domain.is_ascii()
+        && domain.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label
+                    .bytes()
+                    .next()
+                    .is_some_and(|b| b.is_ascii_alphanumeric())
+                && label
+                    .bytes()
+                    .last()
+                    .is_some_and(|b| b.is_ascii_alphanumeric())
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        })
 }
 
 #[derive(Clone)]
@@ -202,6 +482,7 @@ pub struct AuthHttpState {
     pub hasher: Arc<TokenHasher>,
     pub canonical_origin: String,
     pub dispatcher: Arc<dyn VerificationDispatcher>,
+    pub registration_policy: RegistrationPolicy,
     pub hash_limit: Arc<Semaphore>,
     pub mfa_cipher: Option<Arc<MfaCipher>>,
     pub mfa_enrollment_enabled: bool,
@@ -213,20 +494,30 @@ impl AuthHttpState {
         hasher: Arc<TokenHasher>,
         canonical_origin: String,
         dispatcher: Arc<dyn VerificationDispatcher>,
-    ) -> Result<Self, &'static str> {
+    ) -> Result<Self, String> {
         if !valid_canonical_origin(&canonical_origin) {
-            return Err("AUTH_ORIGIN must be a canonical HTTPS origin");
+            let message = match canonical_origin_serialization(&canonical_origin) {
+                Some(expected) => format!("AUTH_ORIGIN must be a canonical HTTPS origin; use {expected}"),
+                None => "AUTH_ORIGIN must be a canonical HTTPS origin with no path, query, fragment, or userinfo".to_owned(),
+            };
+            return Err(message);
         }
         Ok(Self {
             database_url,
             hasher,
             canonical_origin,
             dispatcher,
+            registration_policy: RegistrationPolicy::Closed,
             // Argon2id uses 64 MiB per operation. Limit concurrent hashes.
             hash_limit: Arc::new(Semaphore::new(2)),
             mfa_cipher: None,
             mfa_enrollment_enabled: false,
         })
+    }
+
+    pub fn with_registration_policy(mut self, policy: RegistrationPolicy) -> Self {
+        self.registration_policy = policy;
+        self
     }
 
     pub fn with_mfa_cipher(mut self, cipher: Arc<MfaCipher>) -> Self {
@@ -332,17 +623,22 @@ async fn connect(database_url: &str) -> Result<Client, AuthHttpError> {
     Ok(client)
 }
 
-fn valid_canonical_origin(origin: &str) -> bool {
-    let Some(host) = origin.strip_prefix("https://") else {
-        return false;
+fn canonical_origin_serialization(origin: &str) -> Option<String> {
+    let Ok(parsed) = url::Url::parse(origin) else {
+        return None;
     };
-    !host.is_empty()
-        && !host.contains('/')
-        && !host.contains('?')
-        && !host.contains('#')
-        && !host.contains('@')
-        && !host.chars().any(char::is_whitespace)
-        && !host.ends_with(':')
+    (parsed.scheme() == "https"
+        && parsed.has_host()
+        && parsed.username().is_empty()
+        && parsed.password().is_none()
+        && parsed.path() == "/"
+        && parsed.query().is_none()
+        && parsed.fragment().is_none())
+    .then(|| parsed.origin().ascii_serialization())
+}
+
+fn valid_canonical_origin(origin: &str) -> bool {
+    canonical_origin_serialization(origin).as_deref() == Some(origin)
 }
 
 fn require_origin(headers: &HeaderMap, expected: &str) -> Result<(), AuthHttpError> {
@@ -409,19 +705,23 @@ async fn register(
     Json(body): Json<RegisterBody>,
 ) -> Result<StatusCode, AuthHttpError> {
     require_origin(&headers, &state.canonical_origin)?;
+    // Private modes first require an address-bound operator invite. Missing
+    // or malformed credentials return before email parsing; every denied
+    // request avoids the database, abuse budget, and password hashing.
+    let Some(subject) = state
+        .registration_policy
+        .admitted_email(&headers, &body.email)
+        .map_err(map_auth)?
+    else {
+        return Ok(StatusCode::ACCEPTED);
+    };
     if !state.dispatcher.ready() {
         return Err(AuthHttpError::Unavailable);
     }
     let mut client = connect(&state.database_url).await?;
-    let subject = auth::normalize_email(&body.email).ok();
-    if !abuse_limits::consume(
-        &client,
-        &state.hasher,
-        Limit::Registration,
-        subject.as_deref(),
-    )
-    .await
-    .map_err(|_| AuthHttpError::Unavailable)?
+    if !abuse_limits::consume(&client, &state.hasher, Limit::Registration, Some(&subject))
+        .await
+        .map_err(|_| AuthHttpError::Unavailable)?
     {
         return Err(AuthHttpError::TooManyRequests);
     }
@@ -484,8 +784,27 @@ async fn resend_verification(
 /// makes concurrent polling safe; this routine performs at most one send.
 /// SMTP acceptance can be ambiguous, so failed claims retry at least once.
 pub async fn dispatch_one_verification(state: &AuthHttpState) -> Result<bool, AuthHttpError> {
+    Ok(!matches!(
+        dispatch_one_verification_report(state).await?,
+        VerificationDispatchOutcome::Idle
+    ))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VerificationDispatchOutcome {
+    Idle,
+    Delivered,
+    Failed {
+        category: DispatchFailure,
+        dead_lettered: bool,
+    },
+}
+
+pub async fn dispatch_one_verification_report(
+    state: &AuthHttpState,
+) -> Result<VerificationDispatchOutcome, AuthHttpError> {
     if !state.dispatcher.ready() {
-        return Ok(false);
+        return Ok(VerificationDispatchOutcome::Idle);
     }
     let (mut client, connection) = crate::runtime_db::connect_worker(&state.database_url)
         .await
@@ -497,18 +816,28 @@ pub async fn dispatch_one_verification(state: &AuthHttpState) -> Result<bool, Au
         .await
         .map_err(map_auth)?
     else {
-        return Ok(false);
+        return Ok(VerificationDispatchOutcome::Idle);
     };
-    let delivered = tokio::time::timeout(
+    let result = tokio::time::timeout(
         Duration::from_secs(30),
         state.dispatcher.dispatch(&mail.email, &mail.token),
     )
-    .await
-    .is_ok_and(|result| result.is_ok());
-    let _ = auth::ack_verification_mail(&client, &mail, delivered)
+    .await;
+    let delivered = matches!(&result, Ok(Ok(())));
+    let acknowledged = auth::ack_verification_mail(&client, &mail, delivered)
         .await
         .map_err(map_auth)?;
-    Ok(true)
+    Ok(match result {
+        Ok(Ok(())) => VerificationDispatchOutcome::Delivered,
+        Ok(Err(category)) => VerificationDispatchOutcome::Failed {
+            category,
+            dead_lettered: acknowledged && mail.attempt_count >= 6,
+        },
+        Err(_) => VerificationDispatchOutcome::Failed {
+            category: DispatchFailure::Timeout,
+            dead_lettered: acknowledged && mail.attempt_count >= 6,
+        },
+    })
 }
 
 /// At-least-once delivery of a one-use reset code. Concurrent hubs use the
@@ -1455,7 +1784,7 @@ mod tests {
             &'a self,
             _email: &'a str,
             token: &'a str,
-        ) -> Pin<Box<dyn Future<Output = Result<(), ()>> + Send + 'a>> {
+        ) -> Pin<Box<dyn Future<Output = Result<(), DispatchFailure>> + Send + 'a>> {
             *self.0.lock().unwrap() = Some(token.to_owned());
             Box::pin(async { Ok(()) })
         }
@@ -1495,6 +1824,15 @@ mod tests {
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(body.to_string()))
             .unwrap()
+    }
+
+    fn invite_post(uri: &str, body: serde_json::Value, token: &str) -> Request<Body> {
+        let mut request = json_post(uri, body);
+        request.headers_mut().insert(
+            "x-zrotext-registration-token",
+            HeaderValue::from_str(token).unwrap(),
+        );
+        request
     }
 
     fn owner_post(uri: &str, body: serde_json::Value, cookies: &str, csrf: &str) -> Request<Body> {
@@ -1543,11 +1881,152 @@ mod tests {
     }
 
     #[test]
+    fn registration_policy_defaults_closed_and_matches_exact_addresses_or_domains() {
+        let token = STANDARD.encode([7u8; 32]);
+        let mut headers = HeaderMap::new();
+        assert!(
+            RegistrationPolicy::parse(None, None, None, None)
+                .unwrap()
+                .admitted_email(&headers, "owner@example.test")
+                .unwrap()
+                .is_none()
+        );
+        let allowlist = RegistrationPolicy::parse(
+            Some("allowlist"),
+            Some("OWNER@Example.Test"),
+            Some("Team.Example.Test"),
+            Some(&token),
+        )
+        .unwrap();
+        assert!(
+            allowlist
+                .admitted_email(&headers, "owner@example.test")
+                .unwrap()
+                .is_none()
+        );
+        headers.insert(
+            "x-zrotext-registration-token",
+            HeaderValue::from_static("wrong"),
+        );
+        assert!(
+            allowlist
+                .admitted_email(&headers, "owner@example.test")
+                .unwrap()
+                .is_none()
+        );
+        headers.insert(
+            "x-zrotext-registration-token",
+            HeaderValue::from_str(&token).unwrap(),
+        );
+        assert!(
+            allowlist
+                .admitted_email(&headers, "owner@example.test")
+                .unwrap()
+                .is_none()
+        );
+        let owner_invite = allowlist.issue_invite("OWNER@EXAMPLE.TEST").unwrap();
+        headers.insert(
+            "x-zrotext-registration-token",
+            HeaderValue::from_str(&owner_invite).unwrap(),
+        );
+        assert_eq!(
+            allowlist
+                .admitted_email(&headers, "owner@example.test")
+                .unwrap()
+                .as_deref(),
+            Some("owner@example.test")
+        );
+        assert!(
+            allowlist
+                .admitted_email(&headers, "another@team.example.test")
+                .unwrap()
+                .is_none()
+        );
+        let domain_invite = allowlist.issue_invite("another@team.example.test").unwrap();
+        headers.insert(
+            "x-zrotext-registration-token",
+            HeaderValue::from_str(&domain_invite).unwrap(),
+        );
+        assert_eq!(
+            allowlist
+                .admitted_email(&headers, "another@team.example.test")
+                .unwrap()
+                .as_deref(),
+            Some("another@team.example.test")
+        );
+        assert!(allowlist.issue_invite("someone@example.test").is_err());
+        assert!(allowlist.admits("owner@example.test"));
+        assert!(allowlist.admits("another@team.example.test"));
+        assert!(!allowlist.admits("owner@evil.example.test"));
+        assert!(!allowlist.admits("another@sub.team.example.test"));
+        assert!(!allowlist.admits("another@example.test"));
+        assert!(
+            RegistrationPolicy::parse(Some("open"), None, None, None)
+                .unwrap()
+                .admits("another@example.test")
+        );
+        for (mode, emails, domains, key) in [
+            (Some("allowlist"), None, None, Some(token.as_str())),
+            (Some("allowlist"), Some("owner@example.test"), None, None),
+            (Some("closed"), Some("owner@example.test"), None, None),
+            (Some("closed"), None, None, Some(token.as_str())),
+            (Some("open"), None, Some("example.test"), None),
+            (
+                Some("allowlist"),
+                Some("owner@example.test,"),
+                None,
+                Some(token.as_str()),
+            ),
+            (
+                Some("allowlist"),
+                None,
+                Some("example.test,evil..test"),
+                Some(token.as_str()),
+            ),
+            (
+                Some("allowlist"),
+                None,
+                Some("example.test@evil.test"),
+                Some(token.as_str()),
+            ),
+            (
+                Some("allowlist"),
+                Some("owner@example.test"),
+                None,
+                Some("short"),
+            ),
+            (Some("OPEN"), None, None, None),
+        ] {
+            assert!(RegistrationPolicy::parse(mode, emails, domains, key).is_err());
+        }
+    }
+
+    #[test]
     fn canonical_origin_and_cookie_parsing_are_strict() {
         assert!(valid_canonical_origin("https://zrotext.example"));
+        assert!(valid_canonical_origin("https://app.example.com:8443"));
+        assert!(valid_canonical_origin("https://xn--bcher-kva.example"));
+        assert!(valid_canonical_origin("https://[::1]"));
         assert!(!valid_canonical_origin("http://zrotext.example"));
+        assert!(!valid_canonical_origin("https://zrotext.example/"));
         assert!(!valid_canonical_origin("https://zrotext.example/path"));
         assert!(!valid_canonical_origin("https://a@zrotext.example"));
+        for (input, expected) in [
+            ("https://App.Example.com", "https://app.example.com"),
+            ("https://app.example.com:443", "https://app.example.com"),
+            ("https://bücher.example", "https://xn--bcher-kva.example"),
+        ] {
+            assert!(!valid_canonical_origin(input));
+            let error = AuthHttpState::new(
+                "postgres://unused".to_owned(),
+                Arc::new(TokenHasher::new(crate::test_keys::key(7)).unwrap()),
+                input.to_owned(),
+                Arc::new(DisabledVerificationDispatcher),
+            )
+            .err()
+            .unwrap();
+            assert!(error.contains(&format!("use {expected}")));
+        }
         let mut headers = HeaderMap::new();
         headers.insert(
             header::COOKIE,
@@ -1555,6 +2034,121 @@ mod tests {
         );
         assert_eq!(cookie(&headers, SESSION_COOKIE), Some("zts_abc"));
         assert_eq!(cookie(&headers, CSRF_COOKIE), None);
+    }
+
+    struct FailingVerification;
+
+    impl VerificationDispatcher for FailingVerification {
+        fn ready(&self) -> bool {
+            true
+        }
+
+        fn dispatch<'a>(
+            &'a self,
+            _email: &'a str,
+            _token: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<(), DispatchFailure>> + Send + 'a>> {
+            Box::pin(async { Err(DispatchFailure::Rejected) })
+        }
+    }
+
+    #[tokio::test]
+    async fn repeated_delivery_failures_produce_one_content_free_warning() {
+        let dispatcher = FailingVerification;
+        let mut gate = VerificationWarningGate::default();
+        let now = Instant::now();
+        let mut warnings = Vec::new();
+        for _ in 0..2 {
+            let category = dispatcher
+                .dispatch("owner@example.test", "ztv_secret-token")
+                .await
+                .unwrap_err();
+            warnings.extend(gate.on_failure(category, now));
+        }
+        assert_eq!(
+            warnings,
+            ["verification mail delivery failed (category=rejected)"]
+        );
+        assert!(!warnings[0].contains("owner@example.test"));
+        assert!(!warnings[0].contains("ztv_"));
+        assert!(
+            gate.on_failure(DispatchFailure::Rejected, now + Duration::from_secs(300))
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_mail_worker_reports_each_attempt_and_final_dead_letter() {
+        let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
+            return;
+        };
+        let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let schema = format!("mail_failure_test_{}", Uuid::new_v4().simple());
+        setup
+            .batch_execute(&format!("CREATE SCHEMA {schema}"))
+            .await
+            .unwrap();
+        let database_url = format!("{base_url}?options=-csearch_path%3D{schema}");
+        let (mut client, connection) = tokio_postgres::connect(&database_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        for migration in [
+            include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+            include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+        ] {
+            client.batch_execute(migration).await.unwrap();
+        }
+        let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(44)).unwrap());
+        let test_password = Uuid::new_v4().to_string();
+        auth::register(&mut client, &hasher, "owner@example.test", &test_password)
+            .await
+            .unwrap();
+        let state = AuthHttpState::new(
+            database_url,
+            hasher,
+            "https://zrotext.example".to_owned(),
+            Arc::new(FailingVerification),
+        )
+        .unwrap();
+        let mut gate = VerificationWarningGate::default();
+        let now = Instant::now();
+        let mut warnings = Vec::new();
+        for attempt in 1..=6 {
+            let outcome = dispatch_one_verification_report(&state).await.unwrap();
+            assert_eq!(
+                outcome,
+                VerificationDispatchOutcome::Failed {
+                    category: DispatchFailure::Rejected,
+                    dead_lettered: attempt == 6,
+                }
+            );
+            if let VerificationDispatchOutcome::Failed { category, .. } = outcome {
+                warnings.extend(gate.on_failure(category, now));
+            }
+            if attempt < 6 {
+                client.execute(
+                    "UPDATE verification_mail_outbox SET next_attempt_at=now()-interval '1 second'",
+                    &[],
+                ).await.unwrap();
+            }
+        }
+        assert_eq!(
+            warnings,
+            ["verification mail delivery failed (category=rejected)"]
+        );
+        let row = client
+            .query_one(
+                "SELECT attempt_count, dead_at IS NOT NULL FROM verification_mail_outbox",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(row.get::<_, i32>(0), 6);
+        assert!(row.get::<_, bool>(1));
+        setup
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .unwrap();
     }
 
     #[test]
@@ -1604,6 +2198,14 @@ mod tests {
         );
     }
 
+    #[test]
+    fn verification_mail_names_the_shipped_form_without_a_code_url() {
+        let body = verification_email_body("synthetic-code");
+        assert!(body.contains("/owner/account#verify"));
+        assert!(body.contains("synthetic-code"));
+        assert!(!body.contains("?token="));
+    }
+
     #[tokio::test]
     async fn registration_fails_closed_without_delivery_and_never_returns_token() {
         let state = AuthHttpState::new(
@@ -1612,7 +2214,8 @@ mod tests {
             "https://zrotext.example".to_owned(),
             Arc::new(DisabledVerificationDispatcher),
         )
-        .unwrap();
+        .unwrap()
+        .with_registration_policy(RegistrationPolicy::Open);
         let request = Request::builder()
             .method("POST")
             .uri("/register")
@@ -1629,6 +2232,43 @@ mod tests {
             .await
             .unwrap();
         assert!(!String::from_utf8_lossy(&body).contains("ztv_"));
+    }
+
+    #[tokio::test]
+    async fn allowlist_without_address_bound_invite_never_reaches_database() {
+        let master = STANDARD.encode([3u8; 32]);
+        let policy = RegistrationPolicy::parse(
+            Some("allowlist"),
+            Some("owner@example.test"),
+            None,
+            Some(&master),
+        )
+        .unwrap();
+        let state = AuthHttpState::new(
+            "postgres://unused".to_owned(),
+            Arc::new(TokenHasher::new(crate::test_keys::key(7)).unwrap()),
+            "https://zrotext.example".to_owned(),
+            Arc::new(CaptureVerification(Mutex::new(None))),
+        )
+        .unwrap()
+        .with_registration_policy(policy);
+        let app = router(state);
+        for request in [
+            json_post(
+                "/register",
+                serde_json::json!({"email":"owner@example.test","password":"short"}),
+            ),
+            invite_post(
+                "/register",
+                serde_json::json!({"email":"not-an-email","password":"short"}),
+                &STANDARD.encode([4u8; 32]),
+            ),
+        ] {
+            assert_eq!(
+                app.clone().oneshot(request).await.unwrap().status(),
+                StatusCode::ACCEPTED
+            );
+        }
     }
 
     #[tokio::test]
@@ -1845,16 +2485,118 @@ mod tests {
             capture.clone(),
         )
         .unwrap();
+        let denied = router(state.clone());
+        assert_eq!(
+            denied
+                .oneshot(json_post(
+                    "/register",
+                    serde_json::json!({"email":"owner@example.test","password":"correct horse 123"}),
+                ))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::ACCEPTED
+        );
+        let master_key = STANDARD.encode([9u8; 32]);
+        let policy = RegistrationPolicy::parse(
+            Some("allowlist"),
+            Some("OWNER@EXAMPLE.TEST,SECOND@EXAMPLE.TEST"),
+            None,
+            Some(&master_key),
+        )
+        .unwrap();
+        let invite = policy.issue_invite("owner@example.test").unwrap();
+        let state = state.with_registration_policy(policy);
         let app = router(state.clone());
+        assert_eq!(
+            app.clone()
+                .oneshot(json_post(
+                    "/register",
+                    serde_json::json!({"email":"owner@example.test","password":"short"}),
+                ))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::ACCEPTED
+        );
+        assert_eq!(
+            app.clone()
+                .oneshot(invite_post(
+                    "/register",
+                    serde_json::json!({"email":"not-an-email","password":"short"}),
+                    &STANDARD.encode([8u8; 32]),
+                ))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::ACCEPTED
+        );
+        assert_eq!(
+            app.clone()
+                .oneshot(invite_post(
+                    "/register",
+                    serde_json::json!({"email":"stranger@example.test","password":"correct horse 123"}),
+                    &invite,
+                ))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::ACCEPTED
+        );
+        assert_eq!(
+            app.clone()
+                .oneshot(invite_post(
+                    "/register",
+                    serde_json::json!({"email":"second@example.test","password":"correct horse 123"}),
+                    &invite,
+                ))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::ACCEPTED
+        );
+        assert_eq!(
+            test_client
+                .query_one("SELECT count(*) FROM users", &[])
+                .await
+                .unwrap()
+                .get::<_, i64>(0),
+            0
+        );
+        assert_eq!(
+            test_client
+                .query_one("SELECT count(*) FROM verification_mail_outbox", &[])
+                .await
+                .unwrap()
+                .get::<_, i64>(0),
+            0
+        );
         let response = app
             .clone()
-            .oneshot(json_post(
+            .oneshot(invite_post(
                 "/register",
                 serde_json::json!({"email":"owner@example.test","password":"correct horse 123"}),
+                &invite,
             ))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert_eq!(
+            test_client
+                .query_one("SELECT count(*) FROM accounts", &[])
+                .await
+                .unwrap()
+                .get::<_, i64>(0),
+            1
+        );
+        assert_eq!(
+            test_client
+                .query_one("SELECT count(*) FROM verification_mail_outbox", &[])
+                .await
+                .unwrap()
+                .get::<_, i64>(0),
+            1
+        );
         for (email, password) in [
             ("unknown@example.test", "correct horse 123"),
             ("owner@example.test", "wrong password"),
@@ -1881,7 +2623,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
-        let response = app
+        // Closing registration after verification leaves the owner able to
+        // authenticate and use the same account.
+        let closed_app = router(
+            state
+                .clone()
+                .with_registration_policy(RegistrationPolicy::Closed),
+        );
+        let response = closed_app
             .clone()
             .oneshot(json_post(
                 "/login",
@@ -2478,7 +3227,8 @@ mod tests {
             "https://zrotext.example".to_owned(),
             capture.clone(),
         )
-        .unwrap();
+        .unwrap()
+        .with_registration_policy(RegistrationPolicy::Open);
         let app = router(state.clone());
         let register = |password: &'static str| {
             app.clone().oneshot(json_post(

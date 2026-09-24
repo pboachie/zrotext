@@ -40,6 +40,20 @@ production promotion; follow the release verification steps in
 Set `APP_PORT` in `.env` if port 8080 is occupied for the normal local setup;
 the documented health endpoints then use that port.
 
+## Owner registration
+
+Compose passes `REGISTRATION_MODE`, allowlists, and the optional enrollment
+key to both API services. The default is `closed` even if SMTP is configured.
+For the first owner, leave it closed, apply migrations and runtime-role
+provisioning, stop every API instance, then use the packaged `zrotext-admin`
+binary through the private `app` service. It reads a password only from a
+non-echoing stdin pipe, creates one verified owner when `accounts` is empty,
+and sends no mail. The executable command and later invited-owner HTTPS
+registration/verification procedure are in
+[Self-hosting](../../docs/SELF-HOSTING.md#owner-registration). Allowlist mode
+requires an independent private master key. `zrotext-admin issue-invite`
+derives an address-bound token from it; `open` is intentionally public.
+
 The `migrate` service applies `migrations/001_*.sql`, `002_*.sql`, and later
 consecutive numbered SQL files before the API starts. Migration files are trusted
 operator source code, not sandboxed input. The runner rejects explicit transaction

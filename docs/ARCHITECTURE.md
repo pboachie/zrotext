@@ -123,13 +123,17 @@ Dispatch must pace each device, allow one radio operation at a time, and bound e
 ## Account and device routes
 
 The server mounts these routes only when `AUTH_ORIGIN`, `AUTH_TOKEN_PEPPER_B64`, and
-`ENROLLMENT_TOKEN_PEPPER_B64` are configured. Registration is closed unless a
-verification mail transport is configured. Device proof establishes an enrolled
+`ENROLLMENT_TOKEN_PEPPER_B64` are configured. New account registration also
+requires a verification mail transport and explicit allowlist or open
+registration mode; it is closed by default. The first verified owner is
+created by a local operator CLI on an empty database. Allowlist mode also
+requires an address-bound token derived from a private operator key. Closing
+registration does not disable existing owner login. Device proof establishes an enrolled
 identity for the authenticated device stream.
 
 | Method/path | Current contract |
 |---|---|
-| POST /v1/auth/register; POST /v1/auth/verify-email; POST /v1/auth/resend-verification | Exact HTTPS Origin; verification code is queued in a durable outbox, never returned by HTTP; resend requires the password and uses a generic response; an unverified sign-up expires 24 hours after registration and a later registration replaces it |
+| POST /v1/auth/register; POST /v1/auth/verify-email; POST /v1/auth/resend-verification | Exact HTTPS Origin; registration policy admits new accounts and otherwise returns a generic acceptance without mail; verification code is queued in a durable outbox, never returned by HTTP; resend requires the password and uses a generic response; an unverified sign-up expires 24 hours after registration and a later registration replaces it |
 | POST /v1/auth/login; POST /v1/auth/logout; GET /v1/auth/session | Owner session with secure host-only cookie; logout requires Origin and CSRF proof |
 | POST /v1/auth/api-keys; DELETE /v1/auth/api-keys/{key_id} | Owner session, Origin and CSRF proof; token shown only at creation |
 | POST /v1/enrollment/pairings; GET /v1/enrollment/pairings/{pairing_id} | Owner creates or views a five-minute, one-use pairing |

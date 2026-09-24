@@ -49,6 +49,129 @@ material, but verify its source before encoding it. The same settings apply to
 migration and webhook key rewrap jobs, not just the server. Test CA trust and
 hostname verification before directing production traffic to a new writer.
 
+### Owner registration
+
+`REGISTRATION_MODE` defaults to `closed`, even when SMTP is configured. A
+closed instance does not create accounts or queue verification mail from
+`POST /v1/auth/register`. It still lets existing owners verify pending codes,
+log in, and use their accounts. The register endpoint returns the same generic
+`202 Accepted` for a blocked address as for an accepted request; the response
+does not prove that mail was queued.
+
+**First owner:** after applying migrations and provisioning the runtime
+database role, keep `REGISTRATION_MODE=closed` and stop every API service. Run
+the operator CLI inside the private Compose network, with the password read
+from a non-echoing prompt and piped on stdin (never in argv or a URL):
+
+```sh
+docker compose --env-file .env -f deploy/compose/compose.yaml stop app
+docker compose --env-file .env -f deploy/compose/compose.yaml \
+  --profile two-hub stop app_b
+docker compose --env-file .env -f deploy/compose/compose.yaml build app
+set +x
+read -rsp 'New owner passphrase> ' ZT_OWNER_PASSWORD; printf '\n'
+printf '%s' "$ZT_OWNER_PASSWORD" | docker compose --env-file .env \
+  -f deploy/compose/compose.yaml run --rm --no-deps -T \
+  --entrypoint /usr/local/bin/zrotext-admin app \
+  create-owner --email owner@example.test
+unset ZT_OWNER_PASSWORD
+docker compose --env-file .env -f deploy/compose/compose.yaml up -d app
+```
+
+Replace the example address with one you control. The CLI connects to the
+already migrated private database through the runtime role. It creates **one
+verified owner** only if `accounts` is empty, and sends no verification mail.
+Configure `AUTH_ORIGIN`, `AUTH_TOKEN_PEPPER_B64`, and
+`ENROLLMENT_TOKEN_PEPPER_B64` before starting the API. The account can sign in
+at `/owner/devices` once it is running.
+Further invocations refuse to create another owner; inspect an existing
+database before attempting bootstrap again. For two hubs, restart `app_b`
+with `--profile two-hub` after the CLI succeeds. Keep the operator CLI and
+database URL inside the private operator environment.
+
+For later invited owners, allowlist mode requires a **separate** 32-byte random
+base64 `REGISTRATION_ENROLLMENT_KEY_B64` (for example, generated privately with
+`openssl rand -base64 32`). Keep this master key in private operator settings.
+The CLI derives a distinct invite token for each normalized email address;
+the raw master key is never sent in the HTTP request. After setting
+`REGISTRATION_MODE=allowlist` and the intended address/domain, issue one token
+for that exact address:
+
+```sh
+docker compose --env-file .env -f deploy/compose/compose.yaml run --rm \
+  --no-deps -T --entrypoint /usr/local/bin/zrotext-admin app \
+  issue-invite --email invited@example.test
+```
+
+The command prints an address-bound token. Share it only with that registrant
+through a private channel; they send it in the
+`x-zrotext-registration-token` header. It cannot authorize a different
+address, even one on the same allowed domain. A missing or invalid token
+returns generic `202 Accepted` without a database lookup, password hash,
+account, or mail. Missing or malformed tokens return before email parsing.
+The token remains usable for its one address until registration closes or the
+master key rotates; close registration or rotate the key after enrollment.
+
+In allowlist mode, `REGISTRATION_ALLOWED_EMAILS` and
+`REGISTRATION_ALLOWED_DOMAINS` are comma-separated. Address and domain matching
+is case-insensitive; a domain permits **every** address at that exact domain,
+so prefer individual addresses for a private instance. Subdomains are not
+implicitly included. At least one entry and the enrollment key are required.
+When account routes are enabled, invalid entries, an unknown mode, or
+allowlists/key supplied in `closed` or `open` mode stop server startup.
+`REGISTRATION_MODE=open` deliberately accepts registrations from anyone who
+can reach the route and verify an email address. Keep the normal
+registration abuse budget and mail-provider limits in place for open mode.
+
+For a later invited owner, configure SMTP and account routes, then restart
+every API instance with the same allowlist and master key. The registrant opens
+`/owner/account` on the exact configured HTTPS `AUTH_ORIGIN`, enters their
+email, a new password and the address-bound invite token, then enters the
+emailed code in the verification form on that page. The page also offers a
+resend form. It sends JSON with the token in a request header; no credentials
+or codes go in URLs. A successful request still returns generic `202`, so the
+page cannot tell a denied invitation from an accepted one.
+
+For a headless setup, send these two HTTPS requests to that same origin
+(replace the example host and placeholders):
+
+```http
+POST /v1/auth/register HTTP/1.1
+Host: app.example.test
+Origin: https://app.example.test
+Content-Type: application/json
+x-zrotext-registration-token: <address-bound-invite-token>
+
+{"email":"invited@example.test","password":"<new-owner-password>"}
+```
+
+After the code arrives in that mailbox:
+
+```http
+POST /v1/auth/verify-email HTTP/1.1
+Host: app.example.test
+Origin: https://app.example.test
+Content-Type: application/json
+
+{"token":"<emailed-verification-code>"}
+```
+
+Use a client that takes the password, invite and code from protected input;
+keep them out of URLs, shell arguments and request logs. Reject redirects to
+another origin. The local CLI above is the executable first-owner path.
+
+After signing in at `/owner/devices`, open `/owner/account` to enroll, confirm
+or disable an authenticator. Enrollment requires `MFA_ENROLLMENT_ENABLED=true`
+and the shared MFA encryption key on every API instance. The page shows the
+manual secret and one-time recovery codes only during setup and clears them
+when the page is left. Save the recovery codes before leaving.
+
+`register` returns `202` even when admission is denied. A successful
+`verify-email` returns `204`. If no mail arrives, check the private policy and
+SMTP worker rather than repeating registrations blindly. After verification,
+remove the allowlists and enrollment key, set `REGISTRATION_MODE=closed`, and
+restart every API instance. Closing registration does not revoke owner sessions.
+
 ### Database privileges
 
 Use separate migration and runtime credentials before public deployment. The
