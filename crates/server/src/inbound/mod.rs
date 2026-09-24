@@ -6,7 +6,7 @@ use p256::ecdsa::{Signature, VerifyingKey, signature::Verifier};
 use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
-use tokio_postgres::{Client, error::SqlState};
+use tokio_postgres::{Client, Row, error::SqlState};
 use uuid::Uuid;
 
 const MAX_AGE_MS: i64 = 7 * 24 * 60 * 60 * 1000;
@@ -227,6 +227,60 @@ pub async fn ingest(
     }
 
     let digest = Sha256::digest(&signed).to_vec();
+    // Serialize this event ID across connections before the replay lookup.
+    // Otherwise a concurrent exact replay can spend a second budget unit, or
+    // be rejected at the boundary before the first insert becomes visible.
+    // Hashing the complete UUID with a domain label makes attacker-chosen
+    // advisory-key collisions impractical; collisions only serialize work.
+    let mut lock_hash = Sha256::new();
+    lock_hash.update(b"zrotext-inbound-event-lock-v1");
+    lock_hash.update(event.event_id.as_bytes());
+    let lock_hash = lock_hash.finalize();
+    let mut lock_bytes = [0u8; 8];
+    lock_bytes.copy_from_slice(&lock_hash[..8]);
+    tx.query_one(
+        "SELECT pg_advisory_xact_lock($1)",
+        &[&i64::from_be_bytes(lock_bytes)],
+    )
+    .await?;
+    if let Some(row) = tx
+        .query_opt(
+            "SELECT account_id,device_id,event_digest FROM inbound_events WHERE id=$1 FOR SHARE",
+            &[&event.event_id],
+        )
+        .await?
+    {
+        verify_exact_replay(&row, session, &digest)?;
+        if tx.query_opt(
+            "SELECT 1 FROM device_sessions WHERE account_id=$1 AND device_id=$2 AND lease_until>clock_timestamp()",
+            &[&session.account_id, &session.device_id],
+        ).await?.is_none() {
+            return Err(InboundError::Unauthorized);
+        }
+        tx.commit().await?;
+        return Ok(IngestOutcome {
+            created: false,
+            queued_deliveries: 0,
+        });
+    }
+    // Reject an already committed sequence without a counter update or a
+    // doomed INSERT. The UNIQUE constraint below remains the race authority.
+    if tx
+        .query_opt(
+            "SELECT 1 FROM inbound_events WHERE device_id=$1 AND device_sequence=$2",
+            &[&session.device_id, &event.sequence],
+        )
+        .await?
+        .is_some()
+    {
+        return Err(InboundError::SequenceConflict);
+    }
+    // Charge before attempting the event INSERT. At a saturated budget,
+    // fresh signed IDs cannot create rolled-back inbound rows and indexes.
+    // The charge and INSERT still commit or roll back as one transaction.
+    if !consume_storage_budget(&tx, session.account_id, session.device_id).await? {
+        return Err(InboundError::BudgetExhausted);
+    }
     let observed_seconds = event.observed_at_ms as f64 / 1000.0;
     let ciphertext: Option<&[u8]> = match event.content {
         Content::MetadataOnly => None,
@@ -271,16 +325,11 @@ pub async fn ingest(
     if inserted.is_none() {
         let row = tx
             .query_one(
-                "SELECT account_id,device_id,event_digest FROM inbound_events WHERE id=$1",
+                "SELECT account_id,device_id,event_digest FROM inbound_events WHERE id=$1 FOR SHARE",
                 &[&event.event_id],
             )
             .await?;
-        let account: Uuid = row.get(0);
-        let device: Uuid = row.get(1);
-        let saved_digest: Vec<u8> = row.get(2);
-        if account != session.account_id || device != session.device_id || saved_digest != digest {
-            return Err(InboundError::EventConflict);
-        }
+        verify_exact_replay(&row, session, &digest)?;
         // Transaction-start now() cannot fence a lease after a row-lock wait.
         // Session/authority rows stay locked; recheck wall time before commit.
         if tx.query_opt(
@@ -289,17 +338,14 @@ pub async fn ingest(
         ).await?.is_none() {
             return Err(InboundError::Unauthorized);
         }
-        tx.commit().await?;
+        // A writer from the prior version may have raced without the event
+        // advisory lock. Roll back this transaction's budget charge; the
+        // committed row already makes this an exact replay.
+        tx.rollback().await?;
         return Ok(IngestOutcome {
             created: false,
             queued_deliveries: 0,
         });
-    }
-    // Charge only a fresh, authenticated event, in the insertion transaction.
-    // Replays above remain free so a lost ACK can be recovered at the limit.
-    // Tenant-local account keys prevent one tenant exhausting another's budget.
-    if !consume_storage_budget(&tx, session.account_id, session.device_id).await? {
-        return Err(InboundError::BudgetExhausted);
     }
     let queued = tx
         .execute(
@@ -322,6 +368,20 @@ pub async fn ingest(
         created: true,
         queued_deliveries: queued,
     })
+}
+
+fn verify_exact_replay(
+    row: &Row,
+    session: InboundSession<'_>,
+    digest: &[u8],
+) -> Result<(), InboundError> {
+    let account: Uuid = row.get(0);
+    let device: Uuid = row.get(1);
+    let saved_digest: Vec<u8> = row.get(2);
+    if account != session.account_id || device != session.device_id || saved_digest != digest {
+        return Err(InboundError::EventConflict);
+    }
+    Ok(())
 }
 
 fn budget_key(kind: &str, id: Uuid) -> Vec<u8> {

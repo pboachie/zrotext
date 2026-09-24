@@ -966,32 +966,111 @@ async fn fresh_signed_events_share_a_durable_budget_and_replays_are_free() {
     )
     .await
     .unwrap();
-    for sequence in 501..=502 {
-        let event = InboundEvent {
-            event_id: Uuid::new_v4(),
-            sequence,
-            ..unsigned
-        };
-        let sig: Signature = signing.sign(&signed_event_bytes(session, &event));
-        let sig = sig.to_der();
-        let result = ingest(
+    // Two sockets race with one exact event at the last account slot. The
+    // second must observe a free replay even after the first fills the budget.
+    let last_slot = InboundEvent {
+        event_id: Uuid::new_v4(),
+        sequence: 501,
+        ..unsigned
+    };
+    let mut last_slot_tasks = Vec::new();
+    for _ in 0..2 {
+        let url = url.clone();
+        let schema = schema.clone();
+        let signing = signing.clone();
+        last_slot_tasks.push(tokio::spawn(async move {
+            let (mut peer, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+                .await
+                .unwrap();
+            tokio::spawn(async move { connection.await.unwrap() });
+            peer.batch_execute(&format!("SET search_path TO {schema}"))
+                .await
+                .unwrap();
+            let sig: Signature = signing.sign(&signed_event_bytes(session, &last_slot));
+            let sig = sig.to_der();
+            ingest(
+                &mut peer,
+                session,
+                &InboundEvent {
+                    signature_der: sig.as_bytes(),
+                    ..last_slot
+                },
+            )
+            .await
+            .unwrap()
+        }));
+    }
+    let mut last_slot_outcomes = Vec::new();
+    for task in last_slot_tasks {
+        last_slot_outcomes.push(task.await.unwrap());
+    }
+    assert_eq!(
+        last_slot_outcomes
+            .iter()
+            .filter(|outcome| outcome.created)
+            .count(),
+        1
+    );
+    assert_eq!(
+        last_slot_outcomes
+            .iter()
+            .filter(|outcome| !outcome.created)
+            .count(),
+        1
+    );
+    let over_limit = InboundEvent {
+        event_id: Uuid::new_v4(),
+        sequence: 502,
+        ..unsigned
+    };
+    let over_limit_sig: Signature = signing.sign(&signed_event_bytes(session, &over_limit));
+    let over_limit_sig = over_limit_sig.to_der();
+    assert!(matches!(
+        ingest(
             &mut db,
             session,
             &InboundEvent {
-                signature_der: sig.as_bytes(),
-                ..event
+                signature_der: over_limit_sig.as_bytes(),
+                ..over_limit
             },
         )
-        .await;
-        if sequence == 501 {
-            assert!(result.unwrap().created);
-        } else {
-            assert!(matches!(result, Err(InboundError::BudgetExhausted)));
-        }
-    }
+        .await,
+        Err(InboundError::BudgetExhausted)
+    ));
     assert_eq!(db.query_one("SELECT attempts FROM auth_abuse_counters WHERE scope='inbound_daily' AND subject_hash=$1", &[&budget_key("device", device)]).await.unwrap().get::<_,i32>(0), 2);
     let row = db.query_one("SELECT (SELECT count(*) FROM inbound_events),(SELECT count(*) FROM webhook_deliveries)", &[]).await.unwrap();
     assert_eq!((row.get::<_, i64>(0), row.get::<_, i64>(1)), (201, 201));
+    // A rejected fresh event must never reach the inbound_events INSERT.
+    // Counting committed rows alone would miss rolled-back heap/index writes.
+    db.batch_execute("CREATE FUNCTION reject_budget_insert() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'over-budget inbound INSERT attempted'; END $$; CREATE TRIGGER reject_budget_insert BEFORE INSERT ON inbound_events FOR EACH ROW EXECUTE FUNCTION reject_budget_insert()")
+        .await
+        .unwrap();
+    let over_budget = InboundEvent {
+        event_id: Uuid::new_v4(),
+        sequence: 503,
+        ..unsigned
+    };
+    let over_budget_sig: Signature = signing.sign(&signed_event_bytes(session, &over_budget));
+    let over_budget_sig = over_budget_sig.to_der();
+    assert!(matches!(
+        ingest(
+            &mut db,
+            session,
+            &InboundEvent {
+                signature_der: over_budget_sig.as_bytes(),
+                ..over_budget
+            },
+        )
+        .await,
+        Err(InboundError::BudgetExhausted)
+    ));
+    assert_eq!(
+        ingest(&mut db, session, &replay).await.unwrap(),
+        IngestOutcome {
+            created: false,
+            queued_deliveries: 0
+        }
+    );
     // Rotating device identities cannot bypass a saturated account or grow counters.
     assert!(
         !consume_storage_budget(&db, account, Uuid::new_v4())
