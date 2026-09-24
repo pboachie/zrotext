@@ -108,6 +108,7 @@ pub async fn prune(
             "WITH due AS (SELECT e.id FROM message_events e \
          JOIN messages m ON (m.account_id,m.id)=(e.account_id,e.message_id) \
          WHERE e.received_at<=now()-$1::int * interval '1 day' \
+           AND m.recipient_e164 IS NULL \
            AND m.state IN ('delivered','failed','cancelled','expired') \
            AND NOT EXISTS (SELECT 1 FROM dispatch_fences f WHERE f.message_id=m.id AND f.outcome IN ('granted','submitting','unknown')) \
          ORDER BY e.received_at,e.id FOR UPDATE OF e SKIP LOCKED LIMIT $2) \

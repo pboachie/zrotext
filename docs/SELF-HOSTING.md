@@ -108,6 +108,12 @@ attempts, digests, and usage records remain; this worker is not an account-erasu
 API. Backups, WAL, replicas, and PostgreSQL dead tuples need their own lifecycle
 policy. A database row update or deletion does not immediately erase old pages.
 
+Message events are deleted only after their parent message content has been
+redacted. If the event window is shorter than the content window, or an old
+unknown message becomes terminal recently, the content cutoff is the effective
+earliest event-deletion time. This preserves exact radio-event replay until the
+store starts rejecting all late receipts for that redacted message.
+
 After content redaction, late radio receipts are rejected as stale even when
 their event ID used to exist in the audit timeline. Device clients must
 quarantine that terminal rejection rather than reconnecting with the same

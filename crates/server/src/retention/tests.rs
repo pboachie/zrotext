@@ -114,6 +114,13 @@ async fn retention_respects_each_cutoff_and_replay_fences() {
     .unwrap();
     let old = message(&db, account, device, "delivered", 31).await;
     let recent = message(&db, account, device, "delivered", 29).await;
+    let recently_terminal = message(&db, account, device, "delivered", 1).await;
+    db.execute(
+        "UPDATE messages SET created_at=now()-interval '120 days' WHERE id=$1",
+        &[&recently_terminal],
+    )
+    .await
+    .unwrap();
     let unknown = message(&db, account, device, "unknown", 120).await;
     let fenced = message(&db, account, device, "delivered", 120).await;
     let fenced_attempt = Uuid::new_v4();
@@ -127,7 +134,13 @@ async fn retention_respects_each_cutoff_and_replay_fences() {
             &[&account,&key,&vec![6_u8; 32],&mid,&age]).await.unwrap();
     }
     let mut events = Vec::new();
-    for (mid, age) in [(old, 91), (recent, 89), (unknown, 120), (fenced, 120)] {
+    for (mid, age) in [
+        (old, 91),
+        (recent, 89),
+        (unknown, 120),
+        (fenced, 120),
+        (recently_terminal, 120),
+    ] {
         let id = Uuid::new_v4();
         db.execute("INSERT INTO message_events(id,account_id,message_id,evidence_code,event_digest,observed_at,received_at,resulting_state) VALUES($1,$2,$3,'fixture',$4,now(),now()-$5::int * interval '1 day','delivered')",
             &[&id,&account,&mid,&vec![7_u8; 32],&age]).await.unwrap();
@@ -312,7 +325,7 @@ async fn retention_respects_each_cutoff_and_replay_fences() {
             .await,
         Err(zrotext_delivery_store::StoreError::StaleFence)
     ));
-    for id in [recent, unknown, fenced] {
+    for id in [recent, unknown, fenced, recently_terminal] {
         assert_eq!(
             db.query_one("SELECT recipient_e164 FROM messages WHERE id=$1", &[&id])
                 .await
@@ -372,6 +385,16 @@ async fn retention_respects_each_cutoff_and_replay_fences() {
             .unwrap(),
         RetentionCounts::default()
     );
+    let short_audit = RetentionPolicy {
+        message_events_days: 1,
+        ..RetentionPolicy::default()
+    };
+    assert_eq!(
+        prune(&mut db, short_audit, BATCH_SIZE).await.unwrap(),
+        RetentionCounts::default()
+    );
+    assert!(present(&db, "message_events", events[1]).await);
+    assert!(present(&db, "message_events", events[4]).await);
     assert!(
         !db.query_one(
             "SELECT EXISTS(SELECT 1 FROM idempotency_keys WHERE account_id=$1 AND key='expired')",
@@ -422,7 +445,8 @@ async fn retention_respects_each_cutoff_and_replay_fences() {
         .get::<_, String>(0),
         "redacted"
     );
-    for id in [unknown, fenced] {
+    assert!(present(&db, "message_events", events[4]).await);
+    for id in [unknown, fenced, recently_terminal] {
         assert_eq!(
             db.query_one("SELECT recipient_e164 FROM messages WHERE id=$1", &[&id])
                 .await
