@@ -2579,6 +2579,10 @@ mod tests {
             include_str!(
                 "../../../../deploy/compose/migrations/023_billing_py_charge_and_unsupported.sql"
             ),
+            include_str!(
+                "../../../../deploy/compose/migrations/024_billing_risk_operator_review.sql"
+            ),
+            include_str!("../../../../deploy/compose/migrations/028_billing_provider_failures.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
@@ -3231,9 +3235,11 @@ mod tests {
         // A rolling upgrade can temporarily have entitlement migration 010
         // without risk migration 011. Disabling billing still clears its old
         // allowance, while enabling billing requires both schemas.
-        db.batch_execute("DROP TABLE billing_payment_holds,billing_risk_events")
-            .await
-            .unwrap();
+        db.batch_execute(
+            "DROP TABLE billing_risk_review_actions,billing_payment_holds,billing_risk_events",
+        )
+        .await
+        .unwrap();
         assert!(
             reset_test_quotas_on_start(&scoped_url, true, false, Some(&[1; 32]))
                 .await

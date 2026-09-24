@@ -570,6 +570,9 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
             include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
             include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+            include_str!(
+                "../../../../deploy/compose/migrations/023_billing_py_charge_and_unsupported.sql"
+            ),
             include_str!("../../../../deploy/compose/migrations/028_billing_provider_failures.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
