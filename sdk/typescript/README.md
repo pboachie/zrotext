@@ -3,8 +3,8 @@
 This is a **test-only implementation of the unapproved ZT-009 byte candidate**.
 It must not be published as a production SDK or connected to a send, inbound,
 webhook, or radio path. Draft 01 has no trusted manifest bootstrap, approved
-role/scope policy, revocation freshness, replay store, or Android Keystore HPKE
-path. The `manifestDigest` in the shared fixture is synthetic, not a real
+role/scope policy, revocation freshness, replay store, or production Android
+Keystore HPKE path. The `manifestDigest` in the shared fixture is synthetic, not a real
 owner-signed manifest.
 
 `parseDraftEnvelope` bounds and reads the exact candidate binary layout.
@@ -27,7 +27,17 @@ content keys, nonce and HPKE ephemeral inputs. Web Crypto ECDSA signing may
 produce a different valid signature when regenerated; committed signature
 bytes are fixed for consumers.
 
-This is one slice of ZT-010 evidence. Android and Rust cross-open, full manifest
-chain/rollback vectors, actual non-exportable phone-key behavior, and the Q1–Q11
-decisions remain separate gates. The candidate profile explicitly says vectors
-must be regenerated after those decisions and versioning.
+For an optional **emulator-only** browser-to-Keystore wrap check, build
+`android/:app:assembleDebug` and `:app:assembleDebugAndroidTest`, install those
+two APKs onto an API 31+ AVD at `emulator-5554`, set `ANDROID_HOME`, then run
+`npm run test:android-keystore` here. The script checks `ro.kernel.qemu=1` and
+refuses a physical serial. It generates a temporary non-exportable P-256
+Keystore key, seals with independent `@hpke/core` using draft-01 nonempty
+`info` and AAD, opens on Android, tests changed `info`/AAD, and removes the
+test alias in a `finally` cleanup. Uninstall the test APKs when finished. This
+is still test-only custom composition, not a maintained production provider.
+
+This is one slice of ZT-010 evidence. Independent Rust cross-open, full manifest
+chain/rollback vectors, production key lifecycle, and the Q1–Q11 decisions
+remain separate gates. The candidate profile says vectors must be regenerated
+after those decisions and versioning.
