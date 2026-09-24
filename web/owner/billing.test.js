@@ -30,6 +30,15 @@ function statusResponse() {
     subscriptions: [{ stripeStatus: "active", recognizedTestPrice: true, reconciledAtUnix: 0 }],
   }) };
 }
+
+function ambiguousStatusResponse() {
+  return { ok: true, json: async () => ({
+    mode: "test", customerBound: true, pendingReconciliations: 1,
+    nonterminalSubscriptions: 2,
+    subscriptions: [{ stripeStatus: "active", recognizedTestPrice: true, reconciledAtUnix: 0 }],
+    projectedEntitlement: { reason: "ambiguous", outboundLimit: 0, deviceCap: 0, paymentHold: true },
+  }) };
+}
 const settle = () => new Promise(setImmediate);
 
 test("billing refresh clears the prior owner's subscriptions when the session expires", async () => {
@@ -56,4 +65,35 @@ test("an older billing response cannot restore account data after a newer unauth
   assert.equal(byId("subscriptions").children.length, 0);
   assert.equal(byId("portal").disabled, true);
   assert.equal(byId("billing-state").textContent, "Billing status unavailable.");
+});
+
+test("an ambiguous projection is explained and closes checkout while subscriptions are live", async () => {
+  const { byId, requests } = billingPage();
+  requests.shift()(ambiguousStatusResponse());
+  await settle();
+  assert.equal(byId("checkout").disabled, true);
+  assert.equal(byId("portal").disabled, false);
+  const summary = byId("entitlement-status").textContent;
+  assert.match(summary, /ambiguous/);
+  assert.match(summary, /outbound allowance 0\/month/);
+  assert.match(summary, /device cap 0/);
+  assert.match(summary, /refund or dispute hold/);
+  assert.match(summary, /Checkout is closed/);
+  assert.match(summary, /customer portal/);
+});
+
+test("a refused checkout directs the owner to the portal and refreshes status", async () => {
+  const { byId, requests } = billingPage();
+  requests.shift()(statusResponse());
+  await settle();
+  assert.equal(byId("checkout").disabled, false);
+  globalThis.document.cookie = "__Host-zrotext_csrf=fixture";
+  const click = byId("checkout").listeners.click();
+  requests.shift()({ ok: false, status: 409 });
+  await settle();
+  requests.shift()(ambiguousStatusResponse());
+  await click;
+  await settle();
+  assert.match(byId("billing-error").textContent, /customer portal/);
+  assert.equal(byId("checkout").disabled, true);
 });

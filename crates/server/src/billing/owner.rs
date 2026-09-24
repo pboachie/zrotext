@@ -22,9 +22,11 @@ struct BillingStatus {
     mode: &'static str,
     customer_bound: bool,
     pending_reconciliations: i64,
+    nonterminal_subscriptions: i64,
     subscriptions: Vec<SubscriptionView>,
     more_subscriptions: bool,
     device_capacity: DeviceCapacityView,
+    projected_entitlement: ProjectedEntitlementView,
 }
 
 #[derive(Serialize)]
@@ -34,6 +36,18 @@ struct DeviceCapacityView {
     active: i64,
     over_limit: bool,
     enrollment_blocked: bool,
+}
+
+/// The entitlement projection reconciliation would apply today, from the
+/// latest audited change and current risk state. Informational only: only
+/// reconciled provider reads ever grant or revoke an entitlement.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectedEntitlementView {
+    reason: Option<String>,
+    outbound_limit: Option<i64>,
+    device_cap: Option<i64>,
+    payment_hold: bool,
 }
 
 #[derive(Serialize)]
@@ -129,6 +143,14 @@ async fn status(
         None
     };
     let active: i64 = capacity.get(1);
+    let projection = db
+        .query_one(
+            "SELECT (SELECT count(*) FROM billing_subscriptions WHERE account_id=$1 AND stripe_status NOT IN ('canceled','incomplete_expired')), (SELECT reason FROM billing_quota_audit WHERE account_id=$1 ORDER BY changed_at DESC, id DESC LIMIT 1), (SELECT limit_units FROM usage_quota_policies WHERE account_id=$1 AND metric='outbound_message' AND source='stripe_test'), (SELECT EXISTS(SELECT 1 FROM billing_payment_holds WHERE account_id=$1))",
+            &[&account_id],
+        )
+        .await
+        .map_err(|_| AuthHttpError::Unavailable)?;
+    let nonterminal_subscriptions: i64 = projection.get(0);
     let rows = db
         .query(
             "SELECT s.stripe_status,s.recognized_price,r.dirty_generation>r.processed_generation,extract(epoch from s.reconciled_at)::bigint,CASE WHEN s.stripe_status='past_due' AND s.payment_grace_invoice_id=s.latest_invoice_id THEN extract(epoch from s.payment_grace_started_at+interval '7 days')::bigint ELSE NULL END FROM billing_subscriptions s JOIN billing_reconciliations r ON r.stripe_subscription_id=s.stripe_subscription_id AND r.account_id=s.account_id WHERE s.account_id=$1 ORDER BY s.reconciled_at DESC,s.stripe_subscription_id LIMIT 21",
@@ -152,6 +174,7 @@ async fn status(
         mode: "test",
         customer_bound,
         pending_reconciliations,
+        nonterminal_subscriptions,
         subscriptions,
         more_subscriptions,
         device_capacity: DeviceCapacityView {
@@ -161,6 +184,14 @@ async fn status(
             enrollment_blocked: limit.is_some_and(|value| active >= value)
                 || (limit.is_some() && pending_reconciliations > 0)
                 || (limit.is_none() && cap_policy_enabled),
+        },
+        projected_entitlement: ProjectedEntitlementView {
+            reason: projection.get(1),
+            outbound_limit: projection.get(2),
+            device_cap: limit,
+            payment_hold: projection
+                .get::<_, Option<bool>>(3)
+                .is_some_and(|held| held),
         },
     }))
 }
@@ -213,10 +244,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn owner_status_omits_provider_ids_and_foreign_tenant_rows() {
-        let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
-            return;
-        };
+        let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
         let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
         tokio::spawn(async move { connection.await.unwrap() });
         let schema = format!("billing_owner_test_{}", Uuid::new_v4().simple());
@@ -469,6 +500,180 @@ mod tests {
                 .status(),
             StatusCode::UNAUTHORIZED
         );
+        setup
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+    async fn owner_status_reports_projected_entitlement_and_ambiguity() {
+        let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
+        let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        let schema = format!("billing_entitlement_{}", Uuid::new_v4().simple());
+        setup
+            .batch_execute(&format!("CREATE SCHEMA {schema}"))
+            .await
+            .unwrap();
+        let db_url = format!("{base_url}?options=-csearch_path%3D{schema}");
+        let (mut db, connection) = tokio_postgres::connect(&db_url, NoTls).await.unwrap();
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        for sql in [
+            include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
+            include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+            include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
+            include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
+            include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+            include_str!("../../../../deploy/compose/migrations/006_usage_metering.sql"),
+            include_str!(
+                "../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"
+            ),
+            include_str!("../../../../deploy/compose/migrations/008_stripe_billing_foundation.sql"),
+            include_str!("../../../../deploy/compose/migrations/009_webhook_manual_replay.sql"),
+            include_str!("../../../../deploy/compose/migrations/010_billing_test_entitlement.sql"),
+            include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
+            include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
+            include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
+            include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
+            include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+            include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
+            include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+        ] {
+            db.batch_execute(sql).await.unwrap();
+        }
+        let hasher = Arc::new(auth::TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
+        let password = Uuid::new_v4().to_string();
+        let signup = auth::register(&mut db, &hasher, "billing-view-c@example.test", &password)
+            .await
+            .unwrap();
+        auth::verify_email(&mut db, &hasher, &signup.verification_token)
+            .await
+            .unwrap();
+        let owner = auth::login(&db, &hasher, "billing-view-c@example.test", &password)
+            .await
+            .unwrap();
+        let auth_state = AuthHttpState::new(
+            db_url,
+            hasher,
+            "https://zrotext.example".into(),
+            Arc::new(DisabledVerificationDispatcher),
+        )
+        .unwrap();
+        let app = status_router(auth_state);
+        let account = signup.account_id;
+
+        // Before any billing state, nothing has been projected.
+        let response = app
+            .clone()
+            .oneshot(get("/status", Some(&owner.token)))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let fresh: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
+        assert_eq!(fresh["nonterminalSubscriptions"], 0);
+        assert_eq!(fresh["projectedEntitlement"]["reason"], Value::Null);
+        assert_eq!(fresh["projectedEntitlement"]["outboundLimit"], Value::Null);
+        assert_eq!(fresh["projectedEntitlement"]["deviceCap"], Value::Null);
+        assert_eq!(fresh["projectedEntitlement"]["paymentHold"], false);
+
+        db.execute(
+            "UPDATE billing_device_cap_config SET enabled=true WHERE singleton=true",
+            &[],
+        )
+        .await
+        .unwrap();
+        db.execute(
+            "INSERT INTO billing_customers(account_id,stripe_customer_id) VALUES($1,'cus_EntA')",
+            &[&account],
+        )
+        .await
+        .unwrap();
+        for (subscription, status) in [("sub_Ent1", "active"), ("sub_Ent2", "past_due")] {
+            db.execute(
+                "INSERT INTO billing_reconciliations(stripe_subscription_id,account_id,stripe_customer_id) VALUES($1,$2,'cus_EntA')",
+                &[&subscription, &account],
+            )
+            .await
+            .unwrap();
+            db.execute(
+                "INSERT INTO billing_subscriptions(stripe_subscription_id,account_id,stripe_customer_id,stripe_status,stripe_price_id,recognized_price) VALUES($1,$2,'cus_EntA',$3,'price_Private',true)",
+                &[&subscription, &account, &status],
+            )
+            .await
+            .unwrap();
+        }
+        db.execute(
+            "INSERT INTO usage_quota_policies(account_id,metric,limit_units,source) VALUES($1,'outbound_message',0,'stripe_test')",
+            &[&account],
+        )
+        .await
+        .unwrap();
+        db.execute(
+            "INSERT INTO billing_device_caps(account_id,limit_devices) VALUES($1,0)",
+            &[&account],
+        )
+        .await
+        .unwrap();
+        db.execute(
+            "INSERT INTO billing_quota_audit(account_id,stripe_subscription_id,reconciliation_generation,previous_limit_units,limit_units,reason) VALUES($1,'sub_Ent1',1,5,5,'active'),($1,'sub_Ent2',2,5,0,'ambiguous')",
+            &[&account],
+        )
+        .await
+        .unwrap();
+        db.execute(
+            "INSERT INTO billing_events(stripe_event_id,event_type,object_id,stripe_customer_id,account_id,body_sha256,disposition) VALUES('evt_EntHold1','refund.created','re_EntHold1','cus_EntA',$1,decode('0000000000000000000000000000000000000000000000000000000000000000','hex'),'queued')",
+            &[&account],
+        )
+        .await
+        .unwrap();
+        db.execute(
+            "INSERT INTO billing_risk_events(stripe_event_id,stripe_charge_id,risk_kind,state,account_id) VALUES('evt_EntHold1','ch_EntHold1','refund','held',$1)",
+            &[&account],
+        )
+        .await
+        .unwrap();
+        db.execute(
+            "INSERT INTO billing_payment_holds(stripe_event_id,account_id,stripe_subscription_id,stripe_charge_id,reason) VALUES('evt_EntHold1',$1,'sub_Ent1','ch_EntHold1','refund')",
+            &[&account],
+        )
+        .await
+        .unwrap();
+
+        let response = app
+            .oneshot(get("/status", Some(&owner.token)))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        let text = std::str::from_utf8(&body).unwrap();
+        let status: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(status["nonterminalSubscriptions"], 2);
+        assert_eq!(status["projectedEntitlement"]["reason"], "ambiguous");
+        assert_eq!(status["projectedEntitlement"]["outboundLimit"], 0);
+        assert_eq!(status["projectedEntitlement"]["deviceCap"], 0);
+        assert_eq!(status["projectedEntitlement"]["paymentHold"], true);
+        for secret in [
+            "cus_EntA",
+            "sub_Ent1",
+            "sub_Ent2",
+            "price_Private",
+            "evt_EntHold1",
+            "ch_EntHold1",
+            &account.to_string(),
+        ] {
+            assert!(
+                !text.contains(secret),
+                "billing status exposed a provider identifier"
+            );
+        }
         setup
             .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
             .await

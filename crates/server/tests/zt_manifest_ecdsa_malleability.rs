@@ -60,8 +60,8 @@ fn a_public_high_s_twin_verifies_but_changes_complete_manifest_digest() {
     let high_signature = Signature::from_slice(&high).unwrap();
     verifier.verify(&transcript, &low_signature).unwrap();
     verifier.verify(&transcript, &high_signature).unwrap();
-    assert!(low_signature.normalize_s().is_none());
-    assert!(high_signature.normalize_s().is_some());
+    assert_eq!(low_signature.normalize_s(), low_signature);
+    assert_ne!(high_signature.normalize_s(), high_signature);
 
     let low_manifest = [unsigned.as_slice(), low.as_slice()].concat();
     let high_manifest = [unsigned.as_slice(), high.as_slice()].concat();

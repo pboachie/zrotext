@@ -62,8 +62,16 @@ queries fail closed and transactions roll back; investigate capacity/timeout
 errors before increasing limits. These limits do not replace the HTTP admission
 gate or a reverse proxy connection/request limit.
 
-A process accepts at most 32 device WebSockets, of which at most 16 can hold
-database sessions. Each socket permits a burst of 256 received frames and refills
+A process holds at most 32 authenticated device WebSockets, of which at most 16
+can hold database sessions. Sockets that have not yet proven an enrolled device
+key use a separate budget of 32 handshakes per process and never occupy an
+authenticated slot. Each handshake must send its hello and its proof within 10
+seconds each and must finish authenticating within 15 seconds of the upgrade
+request, or it is closed and its handshake slot is released. When either budget
+is full, the upgrade is refused with HTTP 503. These in-process budgets are not
+keyed by client address; put a reverse proxy per-address connection limit in
+front of `/v1/device-stream` so one source cannot keep the handshake budget
+full. Each socket permits a burst of 256 received frames and refills
 64 frame credits per second. Text, ping, pong and duplicate replay frames all
 count. An exhausted socket closes; devices can reconnect and replay unacknowledged
 evidence using existing deduplication. Device implementations should pace backlog

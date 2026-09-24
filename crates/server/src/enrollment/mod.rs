@@ -142,7 +142,7 @@ fn parse_public_key(spki_der: &[u8]) -> Result<(VerifyingKey, Vec<u8>, [u8; 32])
     // Android's PublicKey.getEncoded() is X.509 SubjectPublicKeyInfo DER.
     let key =
         VerifyingKey::from_public_key_der(spki_der).map_err(|_| EnrollmentError::InvalidInput)?;
-    let sec1 = key.to_encoded_point(false).as_bytes().to_vec();
+    let sec1 = key.to_sec1_point(false).as_bytes().to_vec();
     if sec1.len() != 65 {
         return Err(EnrollmentError::InvalidInput);
     }
@@ -233,6 +233,70 @@ pub async fn create_pairing(
     Ok(PairingTicket { id, token })
 }
 
+fn valid_pairing_token(token: &str) -> bool {
+    token.starts_with("ztp_")
+        && token.len() == 47
+        && URL_SAFE_NO_PAD
+            .decode(&token[4..])
+            .is_ok_and(|b| b.len() == 32)
+}
+
+// Liveness probes let real phones through after anonymous callers exhaust a
+// route budget. Each is one indexed read with no signature work or writes;
+// the pairing and challenge probes also require the caller's one-use secret.
+
+/// True while this QR token can still claim its pairing.
+pub async fn pairing_claim_is_live(
+    client: &Client,
+    hasher: &EnrollmentHasher,
+    pairing_id: Uuid,
+    token: &str,
+) -> Result<bool, EnrollmentError> {
+    if !valid_pairing_token(token) {
+        return Ok(false);
+    }
+    let digest = hasher.digest(b"pairing-token-v1", token.as_bytes());
+    Ok(client.query_one(
+        "SELECT EXISTS(SELECT 1 FROM pairing_requests WHERE id=$1 AND token_digest=$2 AND expires_at>now() AND claimed_at IS NULL AND cancelled_at IS NULL)",
+        &[&pairing_id, &&digest[..]],
+    ).await?.get(0))
+}
+
+/// True while this claim nonce can still be proven for its pairing.
+pub async fn pairing_proof_is_live(
+    client: &Client,
+    hasher: &EnrollmentHasher,
+    pairing_id: Uuid,
+    nonce: &[u8; 32],
+) -> Result<bool, EnrollmentError> {
+    let digest = hasher.digest(b"enrollment-nonce-v1", nonce);
+    Ok(client.query_one(
+        "SELECT EXISTS(SELECT 1 FROM pairing_requests WHERE id=$1 AND challenge_digest=$2 AND claimed_at IS NOT NULL AND challenge_consumed_at IS NULL AND expires_at>now() AND cancelled_at IS NULL)",
+        &[&pairing_id, &&digest[..]],
+    ).await?.get(0))
+}
+
+/// True when `issue_device_challenge` would issue a challenge for this device.
+pub async fn device_is_live(client: &Client, device_id: Uuid) -> Result<bool, EnrollmentError> {
+    Ok(client.query_one(
+        "SELECT EXISTS(SELECT 1 FROM devices d JOIN device_keys k ON (k.account_id,k.device_id)=(d.account_id,d.id) JOIN accounts a ON a.id=d.account_id WHERE d.id=$1 AND d.revoked_at IS NULL AND k.revoked_at IS NULL AND a.disabled_at IS NULL)",
+        &[&device_id],
+    ).await?.get(0))
+}
+
+/// True while this exact challenge and nonce are unused and unexpired.
+pub async fn device_challenge_is_live(
+    client: &Client,
+    hasher: &EnrollmentHasher,
+    challenge: &DeviceChallenge,
+) -> Result<bool, EnrollmentError> {
+    let digest = hasher.digest(b"device-auth-nonce-v1", &challenge.nonce);
+    Ok(client.query_one(
+        "SELECT EXISTS(SELECT 1 FROM device_auth_challenges WHERE id=$1 AND account_id=$2 AND device_id=$3 AND nonce_digest=$4 AND used_at IS NULL AND expires_at>now())",
+        &[&challenge.id, &challenge.account_id, &challenge.device_id, &&digest[..]],
+    ).await?.get(0))
+}
+
 /// Consumes the QR token once and binds the candidate Keystore public key.
 /// `spki_der` is Android `PublicKey.getEncoded()` for a P-256 signing key.
 pub async fn claim_pairing(
@@ -242,12 +306,7 @@ pub async fn claim_pairing(
     token: &str,
     spki_der: &[u8],
 ) -> Result<ClaimedPairing, EnrollmentError> {
-    if !token.starts_with("ztp_")
-        || token.len() != 47
-        || URL_SAFE_NO_PAD
-            .decode(&token[4..])
-            .map_or(true, |b| b.len() != 32)
-    {
+    if !valid_pairing_token(token) {
         return Err(EnrollmentError::Unavailable);
     }
     let (_, sec1, fingerprint) = parse_public_key(spki_der)?;
@@ -666,12 +725,13 @@ mod tests {
     use crate::auth::{TokenHasher, authenticate_session, login, register, verify_email};
     use crate::billing::{self, SubscriptionSnapshot};
     use p256::ecdsa::{SigningKey, signature::Signer};
-    use p256::elliptic_curve::rand_core::OsRng;
+    use p256::elliptic_curve::Generate;
     use p256::pkcs8::EncodePublicKey;
+    use rand::rng;
 
     #[test]
     fn p256_android_spki_and_der_signature_round_trip() {
-        let signing_key = SigningKey::random(&mut OsRng);
+        let signing_key = SigningKey::generate_from_rng(&mut rng());
         let spki = signing_key.verifying_key().to_public_key_der().unwrap();
         let (_, sec1, fingerprint) = parse_public_key(spki.as_bytes()).unwrap();
         let bytes = enrollment_challenge_bytes(
@@ -696,10 +756,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn postgres_one_use_tenant_replay_expiry_and_revocation() {
-        let Ok(url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
-            return;
-        };
+        let url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
         let (mut client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
             .await
             .unwrap();
@@ -781,7 +841,7 @@ mod tests {
         let pb = authenticate_session(&client, &auth_hasher, &sb.token)
             .await
             .unwrap();
-        let signing = SigningKey::random(&mut OsRng);
+        let signing = SigningKey::generate_from_rng(&mut rng());
         let spki = signing.verifying_key().to_public_key_der().unwrap();
 
         let expired = create_pairing(&client, &hasher, &pa, "Expired")
@@ -813,7 +873,7 @@ mod tests {
             claim_pairing(&mut client, &hasher, bad.id, &bad.token, spki.as_bytes()).await,
             Err(EnrollmentError::Unavailable)
         ));
-        let other_signing = SigningKey::random(&mut OsRng);
+        let other_signing = SigningKey::generate_from_rng(&mut rng());
         let (_, _, bad_fingerprint) = parse_public_key(spki.as_bytes()).unwrap();
         let bad_payload = enrollment_challenge_bytes(
             a.account_id,
@@ -1109,7 +1169,7 @@ mod tests {
         hasher: &EnrollmentHasher,
         principal: &SessionPrincipal,
     ) -> (Uuid, String, String, SigningKey) {
-        let signing = SigningKey::random(&mut OsRng);
+        let signing = SigningKey::generate_from_rng(&mut rng());
         let spki = signing.verifying_key().to_public_key_der().unwrap();
         let ticket = create_pairing(db, hasher, principal, "Virtual phone")
             .await
@@ -1144,10 +1204,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn postgres_device_cap_downgrade_grandfathers_and_serializes_approval() {
-        let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
-            return;
-        };
+        let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
         let (setup, connection) = tokio_postgres::connect(&base_url, tokio_postgres::NoTls)
             .await
             .unwrap();

@@ -13,7 +13,7 @@ jobs:
       - name: Build server image for vulnerability scan
         run: docker build -f deploy/compose/Dockerfile -t zrotext-ci-scan:local .
       - name: Scan server image for critical fixable vulnerabilities
-        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: zrotext-ci-scan:local
           format: json
@@ -71,7 +71,7 @@ jobs:
           PR_CREATED_AT: ${{ github.event.pull_request.created_at }}
         run: python3 scripts/check_dco.py
       - name: Spelling
-        uses: crate-ci/typos@5e183518f8764162ed2841339af896246fccbcfd # v1.49.0
+        uses: crate-ci/typos@8a48f81b6c64dcfea44b3633223084c4be58ac5f # v1.49.0
   rust:
     runs-on: ubuntu-24.04
     services:
@@ -100,8 +100,10 @@ jobs:
         run: cargo fmt --all --check
       - name: Lint
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
-      - name: Test
+      - name: Test without PostgreSQL-backed and live Stripe tests
         run: cargo test --locked --workspace
+      - name: Test against PostgreSQL
+        run: cargo test --locked --workspace -- --ignored --skip real_stripe_ --test-threads=4
       - name: Owner UI checks
         run: |
           node --check web/owner/devices.js
@@ -118,6 +120,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate Gradle wrapper JAR
+        uses: gradle/actions/wrapper-validation@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
       - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
           distribution: temurin
