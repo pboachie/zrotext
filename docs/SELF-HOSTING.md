@@ -24,6 +24,36 @@ Use separate secrets and a private database network, terminate HTTPS and WSS at 
 
 Production packaging and upgrade instructions will expand as release artifacts become available. For now, use this stack as a development environment and check the repository's releases for supported versions.
 
+### Owner registration
+
+`REGISTRATION_MODE` defaults to `closed`, even when SMTP is configured. A
+closed instance does not create accounts or queue verification mail from
+`POST /v1/auth/register`. It still lets existing owners verify pending codes,
+log in, and use their accounts. The register endpoint returns the same generic
+`202 Accepted` for a
+blocked address as for an accepted request; the response does not prove that
+mail was queued.
+
+To enroll the first owner, configure the account peppers, `AUTH_ORIGIN`, and
+SMTP, then set `REGISTRATION_MODE=allowlist` and
+`REGISTRATION_ALLOWED_EMAILS` to **only** an address you control in your private
+deployment settings. Start or restart every API instance, register that exact
+address through the owner UI, and complete email verification. Then clear the
+allowlist variables, set `REGISTRATION_MODE=closed`, and restart every API
+instance. This temporary
+allowlist also works when the database already contains owners. Changing the
+policy does not revoke existing owner sessions.
+
+In allowlist mode, `REGISTRATION_ALLOWED_EMAILS` and
+`REGISTRATION_ALLOWED_DOMAINS` are comma-separated. Address and domain matching
+is case-insensitive; a domain permits **every** address at that exact domain,
+so prefer individual addresses for a private instance. Subdomains are not
+implicitly included. At least one entry is required. Invalid entries, an
+unknown mode, or allowlists supplied in `closed` or `open` mode stop server
+startup. `REGISTRATION_MODE=open` deliberately accepts registrations from
+anyone who can reach the route and verify an email address. Keep the normal
+registration abuse budget and mail-provider limits in place for open mode.
+
 ### Database privileges
 
 Use separate migration and runtime credentials before public deployment. The

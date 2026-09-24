@@ -20,7 +20,7 @@ use lettre::{
     transport::smtp::authentication::Credentials,
 };
 use serde::{Deserialize, Serialize};
-use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
+use std::{collections::HashSet, future::Future, pin::Pin, sync::Arc, time::Duration};
 use tokio::sync::Semaphore;
 use tokio_postgres::Client;
 use uuid::Uuid;
@@ -30,7 +30,8 @@ const CSRF_COOKIE: &str = "__Host-zrotext_csrf";
 const CSRF_HEADER: &str = "x-zrotext-csrf";
 
 /// A deployment supplies a reviewed mail transport here. The default server
-/// deliberately keeps registration closed until that transport is configured.
+/// deliberately keeps registration closed until that transport and an explicit
+/// registration policy are configured.
 /// Implementations must not log the token or place it in a URL.
 pub trait VerificationDispatcher: Send + Sync {
     fn ready(&self) -> bool;
@@ -134,12 +135,115 @@ impl VerificationDispatcher for SmtpVerificationDispatcher {
     }
 }
 
+/// Admission applies only to new accounts. Closing registration never disables
+/// login, verification, or recovery for owners already in the database.
+#[derive(Clone, Debug, Default)]
+pub enum RegistrationPolicy {
+    #[default]
+    Closed,
+    Allowlist {
+        emails: HashSet<String>,
+        domains: HashSet<String>,
+    },
+    Open,
+}
+
+impl RegistrationPolicy {
+    pub fn parse(
+        mode: Option<&str>,
+        allowed_emails: Option<&str>,
+        allowed_domains: Option<&str>,
+    ) -> Result<Self, &'static str> {
+        let emails = parse_entries(
+            allowed_emails,
+            "invalid REGISTRATION_ALLOWED_EMAILS",
+            |entry| {
+                let email = auth::normalize_email(entry).ok()?;
+                let (local, domain) = email.split_once('@')?;
+                (!local.is_empty() && valid_domain(domain)).then_some(email)
+            },
+        )?;
+        let domains = parse_entries(
+            allowed_domains,
+            "invalid REGISTRATION_ALLOWED_DOMAINS",
+            |entry| {
+                let domain = entry.to_ascii_lowercase();
+                valid_domain(&domain).then_some(domain)
+            },
+        )?;
+        match mode.unwrap_or("closed") {
+            "closed" if emails.is_empty() && domains.is_empty() => Ok(Self::Closed),
+            "open" if emails.is_empty() && domains.is_empty() => Ok(Self::Open),
+            "allowlist" if !emails.is_empty() || !domains.is_empty() => {
+                Ok(Self::Allowlist { emails, domains })
+            }
+            "closed" | "open" | "allowlist" => Err("REGISTRATION_MODE and allowlists disagree"),
+            _ => Err("REGISTRATION_MODE must be closed, allowlist, or open"),
+        }
+    }
+
+    fn admits(&self, normalized_email: &str) -> bool {
+        match self {
+            Self::Closed => false,
+            Self::Open => true,
+            Self::Allowlist { emails, domains } => {
+                emails.contains(normalized_email)
+                    || normalized_email
+                        .split_once('@')
+                        .is_some_and(|(_, domain)| domains.contains(domain))
+            }
+        }
+    }
+}
+
+fn parse_entries<F>(
+    value: Option<&str>,
+    error: &'static str,
+    normalize: F,
+) -> Result<HashSet<String>, &'static str>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let Some(value) = value else {
+        return Ok(HashSet::new());
+    };
+    if value.len() > 4096 {
+        return Err(error);
+    }
+    value
+        .split(',')
+        .map(|entry| normalize(entry.trim()).ok_or(error))
+        .collect()
+}
+
+fn valid_domain(domain: &str) -> bool {
+    !domain.is_empty()
+        && domain.len() <= 253
+        && domain.is_ascii()
+        && domain.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label
+                    .bytes()
+                    .next()
+                    .is_some_and(|b| b.is_ascii_alphanumeric())
+                && label
+                    .bytes()
+                    .last()
+                    .is_some_and(|b| b.is_ascii_alphanumeric())
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        })
+}
+
 #[derive(Clone)]
 pub struct AuthHttpState {
     pub database_url: String,
     pub hasher: Arc<TokenHasher>,
     pub canonical_origin: String,
     pub dispatcher: Arc<dyn VerificationDispatcher>,
+    pub registration_policy: RegistrationPolicy,
     pub hash_limit: Arc<Semaphore>,
     pub mfa_cipher: Option<Arc<MfaCipher>>,
     pub mfa_enrollment_enabled: bool,
@@ -160,11 +264,17 @@ impl AuthHttpState {
             hasher,
             canonical_origin,
             dispatcher,
+            registration_policy: RegistrationPolicy::Closed,
             // Argon2id uses 64 MiB per operation. Limit concurrent hashes.
             hash_limit: Arc::new(Semaphore::new(2)),
             mfa_cipher: None,
             mfa_enrollment_enabled: false,
         })
+    }
+
+    pub fn with_registration_policy(mut self, policy: RegistrationPolicy) -> Self {
+        self.registration_policy = policy;
+        self
     }
 
     pub fn with_mfa_cipher(mut self, cipher: Arc<MfaCipher>) -> Self {
@@ -345,16 +455,17 @@ async fn register(
     if !state.dispatcher.ready() {
         return Err(AuthHttpError::Unavailable);
     }
+    let subject = auth::normalize_email(&body.email).map_err(map_auth)?;
+    // Match the accepted response without queuing mail. Do not consume a
+    // database connection, abuse-budget row, or hashing capacity for traffic
+    // that this deployment does not admit.
+    if !state.registration_policy.admits(&subject) {
+        return Ok(StatusCode::ACCEPTED);
+    }
     let mut client = connect(&state.database_url).await?;
-    let subject = auth::normalize_email(&body.email).ok();
-    if !abuse_limits::consume(
-        &client,
-        &state.hasher,
-        Limit::Registration,
-        subject.as_deref(),
-    )
-    .await
-    .map_err(|_| AuthHttpError::Unavailable)?
+    if !abuse_limits::consume(&client, &state.hasher, Limit::Registration, Some(&subject))
+        .await
+        .map_err(|_| AuthHttpError::Unavailable)?
     {
         return Err(AuthHttpError::TooManyRequests);
     }
@@ -1135,6 +1246,42 @@ mod tests {
     }
 
     #[test]
+    fn registration_policy_defaults_closed_and_matches_exact_addresses_or_domains() {
+        assert!(
+            !RegistrationPolicy::parse(None, None, None)
+                .unwrap()
+                .admits("owner@example.test")
+        );
+        let allowlist = RegistrationPolicy::parse(
+            Some("allowlist"),
+            Some("OWNER@Example.Test"),
+            Some("Team.Example.Test"),
+        )
+        .unwrap();
+        assert!(allowlist.admits("owner@example.test"));
+        assert!(allowlist.admits("another@team.example.test"));
+        assert!(!allowlist.admits("owner@evil.example.test"));
+        assert!(!allowlist.admits("another@sub.team.example.test"));
+        assert!(!allowlist.admits("another@example.test"));
+        assert!(
+            RegistrationPolicy::parse(Some("open"), None, None)
+                .unwrap()
+                .admits("another@example.test")
+        );
+        for (mode, emails, domains) in [
+            (Some("allowlist"), None, None),
+            (Some("closed"), Some("owner@example.test"), None),
+            (Some("open"), None, Some("example.test")),
+            (Some("allowlist"), Some("owner@example.test,"), None),
+            (Some("allowlist"), None, Some("example.test,evil..test")),
+            (Some("allowlist"), None, Some("example.test@evil.test")),
+            (Some("OPEN"), None, None),
+        ] {
+            assert!(RegistrationPolicy::parse(mode, emails, domains).is_err());
+        }
+    }
+
+    #[test]
     fn canonical_origin_and_cookie_parsing_are_strict() {
         assert!(valid_canonical_origin("https://zrotext.example"));
         assert!(!valid_canonical_origin("http://zrotext.example"));
@@ -1304,7 +1451,49 @@ mod tests {
             capture.clone(),
         )
         .unwrap();
+        let denied = router(state.clone());
+        assert_eq!(
+            denied
+                .oneshot(json_post(
+                    "/register",
+                    serde_json::json!({"email":"owner@example.test","password":"correct horse 123"}),
+                ))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::ACCEPTED
+        );
+        let state = state.with_registration_policy(
+            RegistrationPolicy::parse(Some("allowlist"), Some("OWNER@EXAMPLE.TEST"), None).unwrap(),
+        );
         let app = router(state.clone());
+        assert_eq!(
+            app.clone()
+                .oneshot(json_post(
+                    "/register",
+                    serde_json::json!({"email":"stranger@example.test","password":"correct horse 123"}),
+                ))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::ACCEPTED
+        );
+        assert_eq!(
+            test_client
+                .query_one("SELECT count(*) FROM users", &[])
+                .await
+                .unwrap()
+                .get::<_, i64>(0),
+            0
+        );
+        assert_eq!(
+            test_client
+                .query_one("SELECT count(*) FROM verification_mail_outbox", &[])
+                .await
+                .unwrap()
+                .get::<_, i64>(0),
+            0
+        );
         let response = app
             .clone()
             .oneshot(json_post(
@@ -1314,6 +1503,22 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert_eq!(
+            test_client
+                .query_one("SELECT count(*) FROM accounts", &[])
+                .await
+                .unwrap()
+                .get::<_, i64>(0),
+            1
+        );
+        assert_eq!(
+            test_client
+                .query_one("SELECT count(*) FROM verification_mail_outbox", &[])
+                .await
+                .unwrap()
+                .get::<_, i64>(0),
+            1
+        );
         for (email, password) in [
             ("unknown@example.test", "correct horse 123"),
             ("owner@example.test", "wrong password"),
@@ -1340,7 +1545,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
-        let response = app
+        // Closing registration after verification leaves the owner able to
+        // authenticate and use the same account.
+        let closed_app = router(
+            state
+                .clone()
+                .with_registration_policy(RegistrationPolicy::Closed),
+        );
+        let response = closed_app
             .clone()
             .oneshot(json_post(
                 "/login",
@@ -1854,7 +2066,8 @@ mod tests {
             "https://zrotext.example".to_owned(),
             capture.clone(),
         )
-        .unwrap();
+        .unwrap()
+        .with_registration_policy(RegistrationPolicy::Open);
         let app = router(state.clone());
         let register = |password: &'static str| {
             app.clone().oneshot(json_post(
