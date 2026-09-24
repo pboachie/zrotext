@@ -12,3 +12,7 @@ updates:
     directory: /android
     schedule:
       interval: weekly
+  - package-ecosystem: docker
+    directory: /deploy/compose
+    schedule:
+      interval: weekly

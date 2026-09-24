@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-FROM rust:1.97.1-bookworm AS build
+FROM rust:1.97.1-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97 AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates ./crates
 COPY web/owner ./web/owner
 RUN cargo build --locked --release -p zrotext-server -p zrotext-migrator
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/* && useradd --system --uid 10001 zrotext
 COPY --from=build /src/target/release/zrotext-server /usr/local/bin/zrotext-server
 COPY --from=build /src/target/release/zrotext-webhook-kek-rewrap /usr/local/bin/zrotext-webhook-kek-rewrap
