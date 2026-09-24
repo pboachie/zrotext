@@ -82,6 +82,7 @@ class AuthenticatedGatewayService : Service() {
         )
         connectivity = getSystemService(ConnectivityManager::class.java)
         connectivity.registerDefaultNetworkCallback(networkCallback)
+        processActive = true
     }
 
     @Synchronized
@@ -690,6 +691,7 @@ class AuthenticatedGatewayService : Service() {
 
     @Synchronized
     override fun onDestroy() {
+        processActive = false
         halt()
         connectivity.unregisterNetworkCallback(networkCallback)
         client.dispatcher.executorService.shutdown()
@@ -745,6 +747,7 @@ class AuthenticatedGatewayService : Service() {
         Base64.encodeToString(value, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
 
     companion object {
+        @Volatile internal var processActive = false
         const val ACTION_PAUSE = "org.zrotext.gateway.AUTH_PAUSE"
         const val ACTION_BOOT_RESUME = "org.zrotext.gateway.AUTH_BOOT_RESUME"
         const val EXTRA_URL = "url"

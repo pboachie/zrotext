@@ -74,6 +74,25 @@ class M0ActiveWssLifecycleTest {
         }
     }
 
+    @Test fun manualOpenWithoutHeartbeatServiceClearsRebootResume() {
+        val args = InstrumentationRegistry.getArguments()
+        assumeTrue(args.getString("m0BootOptIn") == "true")
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val app = instrumentation.targetContext
+        assertTrue("no service should be active", !AuthenticatedGatewayService.processActive)
+        assertTrue(HeartbeatResumeStore.save(app, HeartbeatResumeStore.Config(
+            "wss://localhost:8443/v1/device-stream", UUID.randomUUID())))
+        try {
+            val activity = instrumentation.startActivitySync(
+                Intent(app, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            instrumentation.waitForIdleSync()
+            assertNull(HeartbeatResumeStore.read(app))
+            activity.finish()
+        } finally {
+            HeartbeatResumeStore.clear(app)
+        }
+    }
+
     @Test fun terminalRejectionClearsRebootResume() {
         val args = InstrumentationRegistry.getArguments()
         assumeTrue(args.getString("m0ActiveWss") == "true" &&

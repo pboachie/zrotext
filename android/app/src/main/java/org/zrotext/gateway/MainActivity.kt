@@ -60,6 +60,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Older Android versions do not replay BOOT_COMPLETED after force-stop.
+        // A manual app launch with no heartbeat service means the old reboot
+        // choice cannot be treated as consent for a future boot.
+        if (!AuthenticatedGatewayService.processActive &&
+            HeartbeatResumeStore.read(this) != null &&
+            !HeartbeatResumeStore.clear(this)) {
+            AuthenticatedGatewayStatus.value = "Could not disable previous reboot resume; retry Pause"
+        }
         refreshSims()
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(
