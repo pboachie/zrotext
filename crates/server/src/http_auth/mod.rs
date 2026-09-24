@@ -5,6 +5,7 @@
 use crate::auth::{
     self, AuthError, Scope, SessionPrincipal, TokenHasher,
     abuse_limits::{self, Limit},
+    account,
     mfa::{self, MfaCipher},
 };
 use axum::{
@@ -34,11 +35,27 @@ const CSRF_HEADER: &str = "x-zrotext-csrf";
 /// Implementations must not log the token or place it in a URL.
 pub trait VerificationDispatcher: Send + Sync {
     fn ready(&self) -> bool;
+    fn password_reset_ready(&self) -> bool {
+        false
+    }
     fn dispatch<'a>(
         &'a self,
         email: &'a str,
         token: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<(), ()>> + Send + 'a>>;
+    fn dispatch_password_reset<'a>(
+        &'a self,
+        _email: &'a str,
+        _token: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ()>> + Send + 'a>> {
+        Box::pin(async { Err(()) })
+    }
+    fn dispatch_password_reset_notice<'a>(
+        &'a self,
+        _email: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ()>> + Send + 'a>> {
+        Box::pin(async { Err(()) })
+    }
 }
 
 pub struct DisabledVerificationDispatcher;
@@ -111,6 +128,10 @@ impl VerificationDispatcher for SmtpVerificationDispatcher {
         true
     }
 
+    fn password_reset_ready(&self) -> bool {
+        true
+    }
+
     fn dispatch<'a>(
         &'a self,
         email: &'a str,
@@ -127,6 +148,47 @@ impl VerificationDispatcher for SmtpVerificationDispatcher {
                 .body(format!(
                     "Your ZROtext email verification code is:\n\n{token}\n\nEnter this code in the ZROtext verification form. It expires in 24 hours.\n"
                 ))
+                .map_err(|_| ())?;
+            self.transport.send(message).await.map_err(|_| ())?;
+            Ok(())
+        })
+    }
+
+    fn dispatch_password_reset<'a>(
+        &'a self,
+        email: &'a str,
+        token: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ()>> + Send + 'a>> {
+        Box::pin(async move {
+            let recipient = email.parse().map_err(|_| ())?;
+            let mut builder = Message::builder().from(self.from.clone()).to(recipient);
+            if let Some(reply_to) = &self.reply_to {
+                builder = builder.reply_to(reply_to.clone());
+            }
+            let message = builder
+                .subject("Reset your ZROtext password")
+                .body(format!(
+                    "Your ZROtext password reset code is:\n\n{token}\n\nPaste this code into the password reset form. It expires in one hour. If you did not request it, ignore this message. The code is not a link.\n"
+                ))
+                .map_err(|_| ())?;
+            self.transport.send(message).await.map_err(|_| ())?;
+            Ok(())
+        })
+    }
+
+    fn dispatch_password_reset_notice<'a>(
+        &'a self,
+        email: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ()>> + Send + 'a>> {
+        Box::pin(async move {
+            let recipient = email.parse().map_err(|_| ())?;
+            let mut builder = Message::builder().from(self.from.clone()).to(recipient);
+            if let Some(reply_to) = &self.reply_to {
+                builder = builder.reply_to(reply_to.clone());
+            }
+            let message = builder
+                .subject("Your ZROtext password was reset")
+                .body("Your ZROtext password was reset and all sessions were signed out. If you did not do this, contact support immediately.\n".to_owned())
                 .map_err(|_| ())?;
             self.transport.send(message).await.map_err(|_| ())?;
             Ok(())
@@ -187,6 +249,11 @@ pub fn router(state: AuthHttpState) -> Router {
         .route("/login/mfa", post(complete_mfa_login))
         .route("/logout", post(logout))
         .route("/session", get(session))
+        .route("/sessions", get(list_sessions))
+        .route("/sessions/revoke-others", post(revoke_other_sessions))
+        .route("/password", post(change_password))
+        .route("/password/reset/request", post(request_password_reset))
+        .route("/password/reset/confirm", post(confirm_password_reset))
         .route("/mfa", get(mfa_status))
         .route("/mfa/enroll", post(begin_mfa_enrollment))
         .route("/mfa/confirm", post(confirm_mfa_enrollment))
@@ -444,6 +511,70 @@ pub async fn dispatch_one_verification(state: &AuthHttpState) -> Result<bool, Au
     Ok(true)
 }
 
+/// At-least-once delivery of a one-use reset code. Concurrent hubs use the
+/// same leased PostgreSQL claim and cannot generate different codes for it.
+pub async fn dispatch_one_password_reset(state: &AuthHttpState) -> Result<bool, AuthHttpError> {
+    if !state.dispatcher.password_reset_ready() {
+        return Ok(false);
+    }
+    let (mut client, connection) = crate::runtime_db::connect_worker(&state.database_url)
+        .await
+        .map_err(|_| AuthHttpError::Unavailable)?;
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    let Some(mail) = account::claim_reset_mail(&mut client, &state.hasher)
+        .await
+        .map_err(map_auth)?
+    else {
+        return Ok(false);
+    };
+    let delivered = tokio::time::timeout(
+        Duration::from_secs(30),
+        state
+            .dispatcher
+            .dispatch_password_reset(&mail.email, &mail.token),
+    )
+    .await
+    .is_ok_and(|result| result.is_ok());
+    let _ = account::ack_reset_mail(&client, &mail, delivered)
+        .await
+        .map_err(map_auth)?;
+    Ok(true)
+}
+
+pub async fn dispatch_one_password_reset_notice(
+    state: &AuthHttpState,
+) -> Result<bool, AuthHttpError> {
+    if !state.dispatcher.password_reset_ready() {
+        return Ok(false);
+    }
+    let (mut client, connection) = crate::runtime_db::connect_worker(&state.database_url)
+        .await
+        .map_err(|_| AuthHttpError::Unavailable)?;
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    let Some(notice) = account::claim_reset_notice(&mut client)
+        .await
+        .map_err(map_auth)?
+    else {
+        return Ok(false);
+    };
+    let delivered = tokio::time::timeout(
+        Duration::from_secs(30),
+        state
+            .dispatcher
+            .dispatch_password_reset_notice(&notice.email),
+    )
+    .await
+    .is_ok_and(|result| result.is_ok());
+    let _ = account::ack_reset_notice(&client, &notice, delivered)
+        .await
+        .map_err(map_auth)?;
+    Ok(true)
+}
+
 #[derive(Deserialize)]
 struct VerifyBody {
     token: String,
@@ -522,10 +653,15 @@ async fn login(
             account_id,
             user_id,
         }) => {
-            let challenge_token =
-                mfa::begin_login_challenge(&client, &state.hasher, account_id, user_id)
-                    .await
-                    .map_err(map_auth)?;
+            let challenge_token = mfa::begin_login_challenge(
+                &client,
+                &state.hasher,
+                account_id,
+                user_id,
+                &body.password,
+            )
+            .await
+            .map_err(map_auth)?;
             let mut response = (
                 StatusCode::ACCEPTED,
                 Json(MfaChallengeBody { challenge_token }),
@@ -657,6 +793,190 @@ async fn session(
     .into_response();
     no_store(&mut response);
     Ok(response)
+}
+
+#[derive(Serialize)]
+struct SessionInfoBody {
+    id: Uuid,
+    current: bool,
+    created_at_ms: i64,
+    expires_at_ms: i64,
+    last_used_at_ms: Option<i64>,
+}
+
+#[derive(Serialize)]
+struct SessionsBody {
+    sessions: Vec<SessionInfoBody>,
+}
+
+async fn list_sessions(
+    State(state): State<Arc<AuthHttpState>>,
+    headers: HeaderMap,
+) -> Result<Json<SessionsBody>, AuthHttpError> {
+    let client = connect(&state.database_url).await?;
+    let owner = require_owner(
+        &client,
+        &state.hasher,
+        &state.canonical_origin,
+        &headers,
+        false,
+    )
+    .await?;
+    let sessions = account::list_sessions(&client, &owner)
+        .await
+        .map_err(map_auth)?
+        .into_iter()
+        .map(|entry| SessionInfoBody {
+            id: entry.id,
+            current: entry.current,
+            created_at_ms: entry.created_at_ms,
+            expires_at_ms: entry.expires_at_ms,
+            last_used_at_ms: entry.last_used_at_ms,
+        })
+        .collect();
+    Ok(Json(SessionsBody { sessions }))
+}
+
+async fn revoke_other_sessions(
+    State(state): State<Arc<AuthHttpState>>,
+    headers: HeaderMap,
+) -> Result<StatusCode, AuthHttpError> {
+    let mut client = connect(&state.database_url).await?;
+    let owner = require_owner(
+        &client,
+        &state.hasher,
+        &state.canonical_origin,
+        &headers,
+        true,
+    )
+    .await?;
+    account::revoke_other_sessions(&mut client, &owner)
+        .await
+        .map_err(map_auth)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct ChangePasswordBody {
+    current_password: String,
+    new_password: String,
+    code: Option<String>,
+}
+
+async fn change_password(
+    State(state): State<Arc<AuthHttpState>>,
+    headers: HeaderMap,
+    Json(body): Json<ChangePasswordBody>,
+) -> Result<StatusCode, AuthHttpError> {
+    let mut client = connect(&state.database_url).await?;
+    let owner = require_owner(
+        &client,
+        &state.hasher,
+        &state.canonical_origin,
+        &headers,
+        true,
+    )
+    .await?;
+    let subject = owner.user_id.to_string();
+    if !abuse_limits::consume(
+        &client,
+        &state.hasher,
+        Limit::PasswordChange,
+        Some(&subject),
+    )
+    .await
+    .map_err(|_| AuthHttpError::Unavailable)?
+    {
+        return Err(AuthHttpError::TooManyRequests);
+    }
+    let _permit = state
+        .hash_limit
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| AuthHttpError::TooManyRequests)?;
+    match account::change_password(
+        &mut client,
+        state.mfa_cipher.as_deref(),
+        &state.hasher,
+        &owner,
+        &body.current_password,
+        &body.new_password,
+        body.code.as_deref(),
+    )
+    .await
+    {
+        Ok(()) => {}
+        Err(AuthError::InvalidCredentials) => return Err(AuthHttpError::BadRequest),
+        Err(error) => return Err(map_auth(error)),
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct ResetRequestBody {
+    email: String,
+}
+
+async fn request_password_reset(
+    State(state): State<Arc<AuthHttpState>>,
+    headers: HeaderMap,
+    Json(body): Json<ResetRequestBody>,
+) -> Result<StatusCode, AuthHttpError> {
+    require_origin(&headers, &state.canonical_origin)?;
+    if !state.dispatcher.password_reset_ready() {
+        return Err(AuthHttpError::Unavailable);
+    }
+    let mut client = connect(&state.database_url).await?;
+    let subject = auth::normalize_email(&body.email).ok();
+    if !abuse_limits::consume(
+        &client,
+        &state.hasher,
+        Limit::PasswordResetRequest,
+        subject.as_deref(),
+    )
+    .await
+    .map_err(|_| AuthHttpError::Unavailable)?
+    {
+        return Ok(StatusCode::ACCEPTED);
+    }
+    account::request_password_reset(&mut client, &state.hasher, &body.email)
+        .await
+        .map_err(map_auth)?;
+    Ok(StatusCode::ACCEPTED)
+}
+
+#[derive(Deserialize)]
+struct ResetConfirmBody {
+    token: String,
+    new_password: String,
+}
+
+async fn confirm_password_reset(
+    State(state): State<Arc<AuthHttpState>>,
+    headers: HeaderMap,
+    Json(body): Json<ResetConfirmBody>,
+) -> Result<StatusCode, AuthHttpError> {
+    require_origin(&headers, &state.canonical_origin)?;
+    let mut client = connect(&state.database_url).await?;
+    if !abuse_limits::consume(&client, &state.hasher, Limit::PasswordResetConfirm, None)
+        .await
+        .map_err(|_| AuthHttpError::Unavailable)?
+    {
+        return Err(AuthHttpError::TooManyRequests);
+    }
+    let _permit = state
+        .hash_limit
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| AuthHttpError::TooManyRequests)?;
+    if account::confirm_password_reset(&mut client, &state.hasher, &body.token, &body.new_password)
+        .await
+        .map_err(map_auth)?
+    {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(AuthHttpError::BadRequest)
+    }
 }
 
 #[derive(Serialize)]

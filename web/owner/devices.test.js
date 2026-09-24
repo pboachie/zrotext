@@ -29,11 +29,24 @@ async function ownerPage() {
     historyPages: [], historyRequests: [], webhookPages: [], webhookRequests: [], pendingWebhook: null,
     endpoints: [], pendingEndpoints: null, pendingDevices: null, messages: [],
     devices: [], deletedDevices: [], billingCapacity: null, approveResponse: response(409),
+    authRequests: [], sessions: [{ id: "11111111-1111-4111-8111-111111111111", current: true,
+      created_at_ms: 1000, expires_at_ms: 100000, last_used_at_ms: 2000 }],
   };
   const fetch = async (url, options) => {
     if (url === "/v1/auth/session") return response(200);
     if (url === "/v1/auth/login") return response(204);
     if (url === "/v1/auth/logout") return response(204);
+    if (url === "/v1/auth/sessions" && options.method === "GET")
+      return response(200, { sessions: state.sessions });
+    if (url === "/v1/auth/sessions/revoke-others" && options.method === "POST") {
+      state.authRequests.push({ url, options });
+      state.sessions = state.sessions.filter((session) => session.current);
+      return response(204);
+    }
+    if (url === "/v1/auth/password" || url.startsWith("/v1/auth/password/reset/")) {
+      state.authRequests.push({ url, options });
+      return response(204);
+    }
     if (url === "/v1/enrollment/devices") {
       if (state.pendingDevices) return state.pendingDevices;
       return state.unauthorized ? response(401) : response(200, { devices: state.devices, next_cursor: null });
@@ -110,6 +123,57 @@ function delivery(id = deliveryId) {
 function visibleText(element) {
   return [element.textContent, ...element.children.map(visibleText)].join(" ");
 }
+
+test("password reset keeps the token out of URLs and clears entered passwords", async () => {
+  const { element, state } = await ownerPage();
+  element("reset-email").value = "owner@example.test";
+  await element("reset-request-form").listeners.submit({ preventDefault() {} });
+  assert.equal(state.authRequests[0].url, "/v1/auth/password/reset/request");
+  assert.deepEqual(JSON.parse(state.authRequests[0].options.body), { email: "owner@example.test" });
+  assert.equal(state.authRequests[0].options.headers["x-zrotext-csrf"], undefined);
+  assert.equal(element("reset-email").value, "");
+  element("reset-token").value = "ztp_synthetic-secret";
+  element("reset-new-password").value = "a-long-new-password";
+  element("reset-confirm-password").value = "a-long-new-password";
+  await element("reset-confirm-form").listeners.submit({ preventDefault() {} });
+  assert.equal(state.authRequests[1].url, "/v1/auth/password/reset/confirm");
+  assert.deepEqual(JSON.parse(state.authRequests[1].options.body), {
+    token: "ztp_synthetic-secret", new_password: "a-long-new-password",
+  });
+  assert.equal(state.authRequests[1].options.headers["x-zrotext-csrf"], undefined);
+  assert.equal(element("reset-token").value, "");
+  assert.equal(element("reset-new-password").value, "");
+  assert.equal(element("reset-confirm-password").value, "");
+});
+
+test("password change uses CSRF and sessions can be reviewed and revoked", async () => {
+  const { element, state } = await ownerPage();
+  state.sessions.push({ id: "22222222-2222-4222-8222-222222222222", current: false,
+    created_at_ms: 3000, expires_at_ms: 100000, last_used_at_ms: null });
+  await element("refresh-sessions").listeners.click();
+  assert.equal(element("session-list").children.length, 2);
+  assert.equal(element("revoke-other-sessions").hidden, false);
+  globalThis.window.confirm = () => true;
+  await element("revoke-other-sessions").listeners.click();
+  assert.equal(state.authRequests[0].url, "/v1/auth/sessions/revoke-others");
+  assert.equal(state.authRequests[0].options.headers["x-zrotext-csrf"], "ztc_synthetic");
+  assert.equal(element("session-list").children.length, 1);
+  assert.equal(element("revoke-other-sessions").hidden, true);
+
+  element("current-password").value = "old-password";
+  element("new-password").value = "new-long-password";
+  element("confirm-new-password").value = "new-long-password";
+  element("password-mfa-code").value = "123456";
+  await element("change-password-form").listeners.submit({ preventDefault() {} });
+  assert.equal(state.authRequests[1].url, "/v1/auth/password");
+  assert.equal(state.authRequests[1].options.headers["x-zrotext-csrf"], "ztc_synthetic");
+  assert.deepEqual(JSON.parse(state.authRequests[1].options.body), {
+    current_password: "old-password", new_password: "new-long-password", code: "123456",
+  });
+  assert.equal(element("current-password").value, "");
+  assert.equal(element("new-password").value, "");
+  assert.equal(element("password-mfa-code").value, "");
+});
 
 test("a 401 clears a displayed one-time key and hides owner content", async () => {
   const { element, state } = await ownerPage();

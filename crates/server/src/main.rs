@@ -304,13 +304,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 tokio::select! {
                     _ = checks.tick() => {
                         if mail_draining.load(Ordering::Acquire) { break; }
-                        match http_auth::dispatch_one_verification(&mail_state).await {
-                            Ok(_) => unavailable_logged = false,
-                            Err(_) if !unavailable_logged => {
-                                eprintln!("verification delivery worker unavailable");
+                        let verification = http_auth::dispatch_one_verification(&mail_state).await;
+                        let reset = http_auth::dispatch_one_password_reset(&mail_state).await;
+                        let notice = http_auth::dispatch_one_password_reset_notice(&mail_state).await;
+                        if verification.is_err() || reset.is_err() || notice.is_err() {
+                            if !unavailable_logged {
+                                eprintln!("account mail delivery worker unavailable");
                                 unavailable_logged = true;
                             }
-                            Err(_) => {}
+                        } else {
+                            unavailable_logged = false;
                         }
                     }
                     _ = mail_drain_notify.notified() => break,
