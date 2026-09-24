@@ -1058,8 +1058,8 @@ mod tests {
             site_id: "site-a".into(),
             instance_id: "hub-a".into(),
             deployment_epoch: 1,
-            enrollment_hasher: Arc::new(EnrollmentHasher::new(vec![77; 32]).unwrap()),
-            auth_hasher: Arc::new(TokenHasher::new(vec![78; 32]).unwrap()),
+            enrollment_hasher: Arc::new(EnrollmentHasher::new(crate::test_keys::key(77)).unwrap()),
+            auth_hasher: Arc::new(TokenHasher::new(crate::test_keys::key(78)).unwrap()),
             alpha_policy: policy,
             dispatch_runtime_enabled: true,
             inbound_pilot_enabled: false,
@@ -1284,14 +1284,14 @@ mod tests {
             )
             .await
             .unwrap();
-        let hasher = Arc::new(EnrollmentHasher::new(vec![77; 32]).unwrap());
+        let hasher = Arc::new(EnrollmentHasher::new(crate::test_keys::key(77)).unwrap());
         let state = DeviceSocketState {
             database_url: url,
             site_id: "test-site".into(),
             instance_id: "test-hub".into(),
             deployment_epoch: 1,
             enrollment_hasher: hasher.clone(),
-            auth_hasher: Arc::new(TokenHasher::new(vec![78; 32]).unwrap()),
+            auth_hasher: Arc::new(TokenHasher::new(crate::test_keys::key(78)).unwrap()),
             alpha_policy: Arc::new(AlphaPolicy::parse(None, None, None).unwrap()),
             dispatch_runtime_enabled: false,
             inbound_pilot_enabled: false,

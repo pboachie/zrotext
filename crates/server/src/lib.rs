@@ -14,3 +14,18 @@ pub mod owner_ui;
 pub mod sealed_inbound;
 pub mod webhook_egress;
 pub mod webhook_worker;
+
+#[cfg(test)]
+pub(crate) mod test_keys {
+    use sha2::{Digest, Sha256};
+    use std::sync::OnceLock;
+
+    // A random master makes labeled fixture keys stable within one test process
+    // without embedding reusable authentication or vault keys in source.
+    pub(crate) fn key(label: u8) -> Vec<u8> {
+        static MASTER: OnceLock<[u8; 32]> = OnceLock::new();
+        let mut input = *MASTER.get_or_init(rand::random::<[u8; 32]>);
+        input[0] ^= label;
+        Sha256::digest(input).to_vec()
+    }
+}
