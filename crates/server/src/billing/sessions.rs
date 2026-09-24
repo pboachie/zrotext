@@ -881,7 +881,11 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
             include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
             include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
+            include_str!("../../../../deploy/compose/migrations/015_webhook_kek_commitments.sql"),
             include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+            include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
+            include_str!("../../../../deploy/compose/migrations/018_sealed_inbound_identity.sql"),
+            include_str!("../../../../deploy/compose/migrations/019_line_activation_contract.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
