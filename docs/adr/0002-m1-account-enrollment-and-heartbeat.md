@@ -14,8 +14,14 @@ PostgreSQL. A worker claims one item under a lease, sends with bounded TLS
 SMTP, and acknowledges by lease ID. Retry after ambiguous SMTP acceptance
 may send the same code twice. Six failed attempts dead-letter the item;
 password-authenticated resend can revive it within its validity window.
-The account remains pending after delivery failure. No live SMTP send has
-been verified.
+The account remains pending after delivery failure. A pending sign-up lasts
+24 hours from registration; resends do not extend it. After that window its
+codes stop verifying, and a new registration for the same address replaces
+the expired record in one transaction, removing its codes, queued mail and
+session state. A periodic worker removes remaining expired pending owners
+(migration 022 indexes them). Verified owners are never replaced, and every
+registration outcome returns the same response. No live SMTP send has been
+verified.
 
 ## Phone identity and session
 

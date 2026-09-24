@@ -1776,6 +1776,109 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn postgres_http_expired_pending_signup_is_replaced_with_uniform_responses() {
+        let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
+            return;
+        };
+        let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let schema = format!("http_pending_test_{}", Uuid::new_v4().simple());
+        setup
+            .batch_execute(&format!("CREATE SCHEMA {schema}"))
+            .await
+            .unwrap();
+        let separator = if base_url.contains('?') { '&' } else { '?' };
+        let url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
+        let (client, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        for migration in [
+            include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+            include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+            include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
+            include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
+            include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+            include_str!("../../../../deploy/compose/migrations/022_pending_owner_expiry.sql"),
+        ] {
+            client.batch_execute(migration).await.unwrap();
+        }
+        let capture = Arc::new(CaptureVerification(Mutex::new(None)));
+        let state = AuthHttpState::new(
+            url,
+            Arc::new(TokenHasher::new(crate::test_keys::key(43)).unwrap()),
+            "https://zrotext.example".to_owned(),
+            capture.clone(),
+        )
+        .unwrap();
+        let app = router(state.clone());
+        let register = |password: &'static str| {
+            app.clone().oneshot(json_post(
+                "/register",
+                serde_json::json!({"email":"held@example.test","password":password}),
+            ))
+        };
+        // First registrant never verifies; its code is mailed to the address.
+        assert_eq!(
+            register("first registrant 1").await.unwrap().status(),
+            StatusCode::ACCEPTED
+        );
+        assert!(dispatch_one_verification(&state).await.unwrap());
+        let stale_token = capture.0.lock().unwrap().take().unwrap();
+        // A second attempt inside the window looks identical and mails nothing.
+        assert_eq!(
+            register("address owner 123").await.unwrap().status(),
+            StatusCode::ACCEPTED
+        );
+        assert!(!dispatch_one_verification(&state).await.unwrap());
+        client
+            .execute(
+                "UPDATE users SET created_at=now()-interval '25 hours' WHERE email='held@example.test'",
+                &[],
+            )
+            .await
+            .unwrap();
+        // After the window the same request replaces the stale record.
+        assert_eq!(
+            register("address owner 123").await.unwrap().status(),
+            StatusCode::ACCEPTED
+        );
+        assert!(dispatch_one_verification(&state).await.unwrap());
+        let token = capture.0.lock().unwrap().take().unwrap();
+        assert_ne!(token, stale_token);
+        let verify = |token: String| {
+            app.clone().oneshot(json_post(
+                "/verify-email",
+                serde_json::json!({"token":token}),
+            ))
+        };
+        assert_eq!(
+            verify(stale_token).await.unwrap().status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            verify(token).await.unwrap().status(),
+            StatusCode::NO_CONTENT
+        );
+        let login = |password: &'static str| {
+            app.clone().oneshot(json_post(
+                "/login",
+                serde_json::json!({"email":"held@example.test","password":password}),
+            ))
+        };
+        assert_eq!(
+            login("first registrant 1").await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            login("address owner 123").await.unwrap().status(),
+            StatusCode::NO_CONTENT
+        );
+        setup
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn valid_verification_survives_anonymous_invalid_code_exhaustion() {
         let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
             return;

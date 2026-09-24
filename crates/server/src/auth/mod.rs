@@ -14,7 +14,13 @@ use tokio_postgres::Client;
 use uuid::Uuid;
 
 const SESSION_DAYS: i32 = 14;
+/// Lifetime of a verification code and of the unverified owner that requested
+/// it. The pending window is anchored at `users.created_at` and is not
+/// extended by resends, so an unverified sign-up cannot reserve an address
+/// beyond this bound.
 const VERIFICATION_HOURS: i32 = 24;
+/// Bounded batch for the periodic removal of expired unverified owners.
+const PENDING_PRUNE_BATCH: i64 = 100;
 const MAX_EMAIL_BYTES: usize = 254;
 
 pub mod abuse_limits;
@@ -301,7 +307,19 @@ pub async fn register(
     let verification_id = Uuid::new_v4();
     let verification_token = verification_token_for_id(hasher, verification_id);
     let token_hash = hasher.digest(b"email-verification-v1", &verification_token);
-    let transaction = client.transaction().await?;
+    let mut transaction = client.transaction().await?;
+    // An unverified owner whose pending window has elapsed no longer holds the
+    // address. Its row lock serializes concurrent sign-ups: a waiter re-reads
+    // the deleted row, skips it, and then meets the unique email constraint.
+    let stale = transaction
+        .query_opt(
+            "SELECT u.id,m.account_id FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE u.email=$1 AND u.email_verified_at IS NULL AND u.created_at<=now()-($2::integer * interval '1 hour') AND a.disabled_at IS NULL FOR UPDATE OF u",
+            &[&email, &VERIFICATION_HOURS],
+        )
+        .await?;
+    if let Some(row) = stale {
+        discard_pending_owner(&mut transaction, row.get(0), row.get(1)).await?;
+    }
     transaction
         .execute("INSERT INTO accounts(id) VALUES($1)", &[&account_id])
         .await?;
@@ -337,6 +355,75 @@ pub async fn register(
     })
 }
 
+/// Removes one locked, expired, unverified owner together with its membership,
+/// verification codes, queued mail, and any session state (all cascade from
+/// the user row), then its otherwise-empty account. The caller must hold the
+/// user row lock. Verified owners are never matched. If unexpected dependent
+/// rows exist, nothing is removed and `false` is returned.
+async fn discard_pending_owner(
+    transaction: &mut tokio_postgres::Transaction<'_>,
+    user_id: Uuid,
+    account_id: Uuid,
+) -> Result<bool, AuthError> {
+    let savepoint = transaction.transaction().await?;
+    let removed = async {
+        let users = savepoint
+            .execute(
+                "DELETE FROM users WHERE id=$1 AND email_verified_at IS NULL AND created_at<=now()-($2::integer * interval '1 hour')",
+                &[&user_id, &VERIFICATION_HOURS],
+            )
+            .await?;
+        if users != 1 {
+            return Ok(false);
+        }
+        savepoint
+            .execute(
+                "DELETE FROM accounts a WHERE a.id=$1 AND NOT EXISTS (SELECT 1 FROM memberships m WHERE m.account_id=a.id)",
+                &[&account_id],
+            )
+            .await?;
+        Ok::<_, tokio_postgres::Error>(true)
+    }
+    .await;
+    match removed {
+        Ok(true) => {
+            savepoint.commit().await?;
+            Ok(true)
+        }
+        Ok(false) => {
+            savepoint.rollback().await?;
+            Ok(false)
+        }
+        Err(error)
+            if error.code() == Some(&tokio_postgres::error::SqlState::FOREIGN_KEY_VIOLATION) =>
+        {
+            savepoint.rollback().await?;
+            Ok(false)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Bounded cleanup of unverified owners whose pending window has elapsed.
+/// Safe for concurrent workers and concurrent sign-ups due to SKIP LOCKED.
+pub async fn prune_expired_pending_owners(client: &mut Client) -> Result<u64, AuthError> {
+    let mut transaction = client.transaction().await?;
+    let rows = transaction
+        .query(
+            "SELECT u.id,m.account_id FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE u.email_verified_at IS NULL AND u.created_at<=now()-($1::integer * interval '1 hour') AND a.disabled_at IS NULL ORDER BY u.created_at,u.id LIMIT $2 FOR UPDATE OF u SKIP LOCKED",
+            &[&VERIFICATION_HOURS, &PENDING_PRUNE_BATCH],
+        )
+        .await?;
+    let mut removed = 0;
+    for row in rows {
+        if discard_pending_owner(&mut transaction, row.get(0), row.get(1)).await? {
+            removed += 1;
+        }
+    }
+    transaction.commit().await?;
+    Ok(removed)
+}
+
 /// Cheap indexed probe for a live code after the anonymous invalid-code
 /// budget is exhausted. This never consumes a code or opens a transaction.
 pub async fn verification_token_is_live(
@@ -350,9 +437,10 @@ pub async fn verification_token_is_live(
     let hash = hasher.digest(b"email-verification-v1", token);
     let row = client
         .query_one(
-            "SELECT EXISTS(SELECT 1 FROM email_verifications
-             WHERE token_hash=$1 AND used_at IS NULL AND expires_at>now())",
-            &[&&hash[..]],
+            "SELECT EXISTS(SELECT 1 FROM email_verifications v JOIN users u ON u.id=v.user_id
+             WHERE v.token_hash=$1 AND v.used_at IS NULL AND v.expires_at>now()
+             AND (u.email_verified_at IS NOT NULL OR u.created_at>now()-($2::integer * interval '1 hour')))",
+            &[&&hash[..], &VERIFICATION_HOURS],
         )
         .await?;
     Ok(row.get(0))
@@ -370,20 +458,27 @@ pub async fn verify_email(
     }
     let hash = hasher.digest(b"email-verification-v1", token);
     let tx = client.transaction().await?;
+    // A code only verifies an owner still inside its pending window, even if
+    // the code itself was issued with a later expiry by an older release.
     let row = tx
         .query_opt(
-            "UPDATE email_verifications SET used_at=now() WHERE token_hash=$1 AND used_at IS NULL AND expires_at>now() RETURNING id,user_id",
-            &[&&hash[..]],
+            "UPDATE email_verifications v SET used_at=now() FROM users u WHERE u.id=v.user_id AND v.token_hash=$1 AND v.used_at IS NULL AND v.expires_at>now() AND (u.email_verified_at IS NOT NULL OR u.created_at>now()-($2::integer * interval '1 hour')) RETURNING v.id,v.user_id",
+            &[&&hash[..], &VERIFICATION_HOURS],
         )
         .await?;
     if let Some(row) = row {
         let verification_id: Uuid = row.get(0);
         let user_id: Uuid = row.get(1);
-        tx.execute(
-            "UPDATE users SET email_verified_at=COALESCE(email_verified_at,now()) WHERE id=$1",
-            &[&user_id],
-        )
-        .await?;
+        let verified = tx
+            .execute(
+                "UPDATE users SET email_verified_at=COALESCE(email_verified_at,now()) WHERE id=$1",
+                &[&user_id],
+            )
+            .await?;
+        if verified != 1 {
+            tx.rollback().await?;
+            return Ok(false);
+        }
         tx.execute(
             "UPDATE verification_mail_outbox SET canceled_at=now(),lease_id=NULL,leased_until=NULL WHERE verification_id=$1 AND canceled_at IS NULL",
             &[&verification_id],
@@ -892,6 +987,341 @@ mod tests {
             .batch_execute(&format!(
                 "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
             ))
+            .await
+            .unwrap();
+    }
+
+    fn is_unique_violation(result: &Result<Signup, AuthError>) -> bool {
+        matches!(result, Err(AuthError::Database(error))
+            if error.code() == Some(&tokio_postgres::error::SqlState::UNIQUE_VIOLATION))
+    }
+
+    async fn pending_signup_schema(base_url: &str, schema: &str) -> (Client, Client, String) {
+        let (setup, connection) = tokio_postgres::connect(base_url, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        setup
+            .batch_execute(&format!("CREATE SCHEMA {schema}"))
+            .await
+            .unwrap();
+        let url = format!("{base_url}?options=-csearch_path%3D{schema}");
+        let (client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        for migration in [
+            include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+            include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+            include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
+            include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
+            include_str!("../../../../deploy/compose/migrations/022_pending_owner_expiry.sql"),
+        ] {
+            client.batch_execute(migration).await.unwrap();
+        }
+        (setup, client, url)
+    }
+
+    /// Moves an owner's sign-up past the pending window. Its codes are left
+    /// live on purpose: the window, not only the code expiry, must bind.
+    async fn age_signup(client: &Client, user_id: Uuid) {
+        client
+            .execute(
+                "UPDATE users SET created_at=now()-interval '25 hours' WHERE id=$1",
+                &[&user_id],
+            )
+            .await
+            .unwrap();
+    }
+
+    async fn count(client: &Client, sql: &str, id: Uuid) -> i64 {
+        client.query_one(sql, &[&id]).await.unwrap().get(0)
+    }
+
+    #[tokio::test]
+    async fn postgres_expired_unverified_signup_releases_its_email() {
+        let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
+            return;
+        };
+        let schema = format!("pending_signup_test_{}", Uuid::new_v4().simple());
+        let (setup, mut client, _) = pending_signup_schema(&base_url, &schema).await;
+        let hasher = TokenHasher::new(crate::test_keys::key(13)).unwrap();
+        let first_password = Uuid::new_v4().to_string();
+        let owner_password = Uuid::new_v4().to_string();
+
+        // A third party registers the address first and never verifies it.
+        let first = register(
+            &mut client,
+            &hasher,
+            "claimed@example.test",
+            &first_password,
+        )
+        .await
+        .unwrap();
+        // Within the pending window the address stays reserved.
+        assert!(is_unique_violation(
+            &register(
+                &mut client,
+                &hasher,
+                "Claimed@example.test",
+                &owner_password
+            )
+            .await
+        ));
+        // State tied to the pending record must disappear with it.
+        client
+            .execute(
+                "INSERT INTO sessions(id,account_id,user_id,token_hash,csrf_hash,expires_at) VALUES($1,$2,$3,$4,$4,now()+interval '1 day')",
+                &[&Uuid::new_v4(), &first.account_id, &first.user_id, &&[7u8; 32][..]],
+            )
+            .await
+            .unwrap();
+
+        age_signup(&client, first.user_id).await;
+        // After the window the stale record can neither be verified, nor
+        // mailed, nor resent, even though its code row has not yet expired.
+        assert!(
+            !verification_token_is_live(&client, &hasher, &first.verification_token)
+                .await
+                .unwrap()
+        );
+        assert!(
+            claim_verification_mail(&mut client, &hasher)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            !request_verification_resend(
+                &mut client,
+                &hasher,
+                "claimed@example.test",
+                &first_password
+            )
+            .await
+            .unwrap()
+        );
+
+        // The real owner can now sign up; the stale record is replaced.
+        let owner = register(
+            &mut client,
+            &hasher,
+            "claimed@example.test",
+            &owner_password,
+        )
+        .await
+        .unwrap();
+        assert_ne!(owner.account_id, first.account_id);
+        for sql in [
+            "SELECT count(*) FROM users WHERE id=$1",
+            "SELECT count(*) FROM memberships WHERE user_id=$1",
+            "SELECT count(*) FROM email_verifications WHERE user_id=$1",
+            "SELECT count(*) FROM sessions WHERE user_id=$1",
+        ] {
+            assert_eq!(count(&client, sql, first.user_id).await, 0, "{sql}");
+        }
+        assert_eq!(
+            count(
+                &client,
+                "SELECT count(*) FROM accounts WHERE id=$1",
+                first.account_id
+            )
+            .await,
+            0
+        );
+        assert_eq!(
+            client
+                .query_one("SELECT count(*) FROM verification_mail_outbox", &[])
+                .await
+                .unwrap()
+                .get::<_, i64>(0),
+            1
+        );
+        // The stale code is dead; only the new owner's code verifies.
+        assert!(
+            !verify_email(&mut client, &hasher, &first.verification_token)
+                .await
+                .unwrap()
+        );
+        let mail = claim_verification_mail(&mut client, &hasher)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(mail.token, owner.verification_token);
+        assert!(
+            verify_email(&mut client, &hasher, &mail.token)
+                .await
+                .unwrap()
+        );
+        assert!(matches!(
+            login(&client, &hasher, "claimed@example.test", &first_password).await,
+            Err(AuthError::InvalidCredentials)
+        ));
+        let session = login(&client, &hasher, "claimed@example.test", &owner_password)
+            .await
+            .unwrap();
+
+        // A verified owner is never replaced, however old the sign-up.
+        age_signup(&client, owner.user_id).await;
+        assert!(is_unique_violation(
+            &register(
+                &mut client,
+                &hasher,
+                "claimed@example.test",
+                &first_password
+            )
+            .await
+        ));
+        assert_eq!(prune_expired_pending_owners(&mut client).await.unwrap(), 0);
+        let principal = authenticate_session(&client, &hasher, &session.token)
+            .await
+            .unwrap();
+        assert_eq!(principal.tenant.account_id(), owner.account_id);
+        assert!(
+            login(&client, &hasher, "claimed@example.test", &owner_password)
+                .await
+                .is_ok()
+        );
+
+        // An operator-disabled pending account is left for the operator.
+        let disabled = register(
+            &mut client,
+            &hasher,
+            "disabled@example.test",
+            &first_password,
+        )
+        .await
+        .unwrap();
+        age_signup(&client, disabled.user_id).await;
+        client
+            .execute(
+                "UPDATE accounts SET disabled_at=now() WHERE id=$1",
+                &[&disabled.account_id],
+            )
+            .await
+            .unwrap();
+        assert!(is_unique_violation(
+            &register(
+                &mut client,
+                &hasher,
+                "disabled@example.test",
+                &owner_password
+            )
+            .await
+        ));
+        setup
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn postgres_concurrent_signups_replace_a_stale_record_once() {
+        let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
+            return;
+        };
+        let schema = format!("pending_race_test_{}", Uuid::new_v4().simple());
+        let (setup, mut client, url) = pending_signup_schema(&base_url, &schema).await;
+        let hasher = TokenHasher::new(crate::test_keys::key(17)).unwrap();
+        let stale = register(
+            &mut client,
+            &hasher,
+            "race@example.test",
+            &Uuid::new_v4().to_string(),
+        )
+        .await
+        .unwrap();
+        age_signup(&client, stale.user_id).await;
+        let (mut a, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let (mut b, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let a_password = Uuid::new_v4().to_string();
+        let b_password = Uuid::new_v4().to_string();
+        let (ra, rb) = tokio::join!(
+            register(&mut a, &hasher, "race@example.test", &a_password),
+            register(&mut b, &hasher, "race@example.test", &b_password),
+        );
+        let winners = [&ra, &rb].iter().filter(|result| result.is_ok()).count();
+        assert_eq!(winners, 1);
+        assert!(is_unique_violation(&ra) || is_unique_violation(&rb));
+        let row = client
+            .query_one(
+                "SELECT count(*),(SELECT count(*) FROM accounts),(SELECT count(*) FROM email_verifications) FROM users",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(row.get::<_, i64>(0), 1);
+        assert_eq!(row.get::<_, i64>(1), 1);
+        assert_eq!(row.get::<_, i64>(2), 1);
+        assert!(
+            !verify_email(&mut client, &hasher, &stale.verification_token)
+                .await
+                .unwrap()
+        );
+        setup
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn postgres_prune_removes_only_expired_unverified_owners() {
+        let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
+            return;
+        };
+        let schema = format!("pending_prune_test_{}", Uuid::new_v4().simple());
+        let (setup, mut client, _) = pending_signup_schema(&base_url, &schema).await;
+        let hasher = TokenHasher::new(crate::test_keys::key(19)).unwrap();
+        let password = Uuid::new_v4().to_string();
+        let stale = register(&mut client, &hasher, "stale@example.test", &password)
+            .await
+            .unwrap();
+        let fresh = register(&mut client, &hasher, "fresh@example.test", &password)
+            .await
+            .unwrap();
+        let verified = register(&mut client, &hasher, "verified@example.test", &password)
+            .await
+            .unwrap();
+        assert!(
+            verify_email(&mut client, &hasher, &verified.verification_token)
+                .await
+                .unwrap()
+        );
+        age_signup(&client, stale.user_id).await;
+        age_signup(&client, verified.user_id).await;
+        assert_eq!(prune_expired_pending_owners(&mut client).await.unwrap(), 1);
+        assert_eq!(prune_expired_pending_owners(&mut client).await.unwrap(), 0);
+        let users = "SELECT count(*) FROM users WHERE id=$1";
+        assert_eq!(count(&client, users, stale.user_id).await, 0);
+        assert_eq!(count(&client, users, fresh.user_id).await, 1);
+        assert_eq!(count(&client, users, verified.user_id).await, 1);
+        assert_eq!(
+            count(
+                &client,
+                "SELECT count(*) FROM accounts WHERE id=$1",
+                stale.account_id
+            )
+            .await,
+            0
+        );
+        assert!(
+            !verify_email(&mut client, &hasher, &stale.verification_token)
+                .await
+                .unwrap()
+        );
+        assert!(
+            verify_email(&mut client, &hasher, &fresh.verification_token)
+                .await
+                .unwrap()
+        );
+        setup
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
             .await
             .unwrap();
     }
