@@ -41,6 +41,7 @@ def disposable_env(http_port, https_port, app_port):
     prefixes = ("SMTP_", "STRIPE_", "AUTH_", "ENROLLMENT_", "MFA_", "EMAIL_",
                 "EDGE_", "COMPOSE_", "INBOUND_", "DISPATCH_", "SYNTHETIC_", "M0_")
     exact = {"POSTGRES_PASSWORD", "RUNTIME_DATABASE_PASSWORD", "DATABASE_URL",
+             "DATABASE_TLS_CA_PEM_B64", "DATABASE_ALLOW_PLAINTEXT",
              "APP_PORT", "SITE_ID", "INSTANCE_ID", "DEPLOYMENT_EPOCH"}
     for key in list(env):
         if key.upper().startswith(prefixes) or key.upper() in exact:
