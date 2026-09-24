@@ -796,10 +796,12 @@ mod tests {
             .await
             .unwrap();
         let hasher = TokenHasher::new(vec![11; 32]).unwrap();
-        let a = register(&mut client, &hasher, "A@example.test", "correct horse 123")
+        let a_password = Uuid::new_v4().to_string();
+        let b_password = Uuid::new_v4().to_string();
+        let a = register(&mut client, &hasher, "A@example.test", &a_password)
             .await
             .unwrap();
-        let b = register(&mut client, &hasher, "b@example.test", "correct horse 456")
+        let b = register(&mut client, &hasher, "b@example.test", &b_password)
             .await
             .unwrap();
         for _ in 0..2 {
@@ -820,7 +822,7 @@ mod tests {
             0
         );
         assert!(matches!(
-            login(&client, &hasher, "a@example.test", "correct horse 123").await,
+            login(&client, &hasher, "a@example.test", &a_password).await,
             Err(AuthError::EmailNotVerified)
         ));
         assert!(
@@ -838,10 +840,10 @@ mod tests {
                 .await
                 .unwrap()
         );
-        let sa = login(&client, &hasher, "a@example.test", "correct horse 123")
+        let sa = login(&client, &hasher, "a@example.test", &a_password)
             .await
             .unwrap();
-        let sb = login(&client, &hasher, "b@example.test", "correct horse 456")
+        let sb = login(&client, &hasher, "b@example.test", &b_password)
             .await
             .unwrap();
         let pa = authenticate_session(&client, &hasher, &sa.token)
