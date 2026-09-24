@@ -177,20 +177,14 @@ def main():
     validate_image_args(args.image_ref, args.source_commit, args.source_tag,
                         args.web_static_sha256, args.device_stream_schema_sha256,
                         args.migration_last)
-    # Compose gives shell variables precedence over --env-file and imports
-    # bare environment keys from the shell. Do not pass live account, SMTP,
-    # or MFA settings into this disposable stack.
-    for name in ("POSTGRES_PASSWORD", "DATABASE_URL", "RUNTIME_DATABASE_PASSWORD", "APP_PORT", "SITE_ID",
-                 "INSTANCE_ID", "DEPLOYMENT_EPOCH", "DISPATCH_ENABLED",
-                 "SYNTHETIC_ALPHA_ENABLED", "M0_TEST_TOKEN", "COMPOSE_PROFILES",
-                 "COMPOSE_ENV_FILES", "COMPOSE_PROJECT_NAME", "COMPOSE_FILE",
-                 "AUTH_ORIGIN", "AUTH_TOKEN_PEPPER_B64", "ENROLLMENT_TOKEN_PEPPER_B64",
-                 "SMTP_HOST", "SMTP_PORT", "SMTP_SECURE",
-                 "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM",
-                 "SMTP_FROM_NAME", "SMTP_REPLY_TO", "SMTP_USER", "SMTP_PASS",
-                 "EMAIL_FROM", "EMAIL_FROM_NAME", "EMAIL_REPLY_TO",
-                 "MFA_ENCRYPTION_KEY_B64", "MFA_ENROLLMENT_ENABLED",
-                 "MFA_RECOVERY_ONLY"):
+    # Compose imports bare environment keys from the shell. Scrub every
+    # documented setting before launching this disposable stack so future
+    # feature flags and credentials cannot leak into the smoke project.
+    example = (Path(__file__).resolve().parents[2] / ".env.example").read_text(
+        encoding="utf-8")
+    documented = set(re.findall(r"^\s*#?\s*([A-Z][A-Z0-9_]*)=", example, re.MULTILINE))
+    for name in documented | {"COMPOSE_PROFILES", "COMPOSE_ENV_FILES", "COMPOSE_PROJECT_NAME",
+                              "COMPOSE_FILE"}:
         os.environ.pop(name, None)
     ensure_local_docker()
     project = "zt-fresh-" + secrets.token_hex(8)
