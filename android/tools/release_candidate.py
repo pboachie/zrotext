@@ -8,10 +8,10 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import struct
 import subprocess
 import sys
-import tempfile
 import zipfile
 
 
@@ -20,7 +20,37 @@ ANDROID = ROOT / "android"
 ASSET = "assets/zrotext-source-commit.txt"
 EXPECTED_PACKAGE = "org.zrotext.gateway"
 SIGNING_ALIAS = "zrotext-release"
-ARTIFACT_ROOT = Path(tempfile.gettempdir()) / "zrotext-android-release"
+CUSTODY_BASE = Path.home().resolve()
+
+
+def is_link(path: Path) -> bool:
+    return path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction())
+
+
+def approved_custody_path(path: str | os.PathLike[str]) -> Path:
+    """Normalize and confine operator-selected custody paths to the user home."""
+    expanded = os.path.expanduser(os.fspath(path))
+    normalized = os.path.realpath(expanded)
+    base = os.path.realpath(CUSTODY_BASE)
+    try:
+        contained = os.path.commonpath((base, normalized)) == base
+    except ValueError:
+        contained = False  # Different Windows drives have no common path.
+    if not contained:
+        raise ValueError("Custody paths must remain within the current user's home")
+    if is_link(Path(expanded)):
+        raise ValueError("Custody path must not be a symlink or junction")
+    return Path(normalized)
+
+
+def state_directory() -> Path:
+    if os.name == "nt":
+        return CUSTODY_BASE / "AppData" / "Local" / "ZROtext"
+    return CUSTODY_BASE / ".local" / "state" / "zrotext"
+
+
+ARTIFACT_ROOT = state_directory() / "android-release"
+DEFAULT_KEYSTORE = state_directory() / "android-signing" / "keystore.p12"
 STORE_PASSWORD = "ZROTEXT_ANDROID_KEYSTORE_PASSWORD"
 KEY_PASSWORD = "ZROTEXT_ANDROID_KEY_PASSWORD"
 MAX_APK_BYTES = 512 * 1024 * 1024
@@ -182,10 +212,106 @@ def sha256(path: Path) -> str:
 
 
 def external_artifact_path(path: Path, description: str) -> Path:
-    resolved = path.resolve()
+    resolved = approved_custody_path(path)
     if resolved.is_relative_to(ROOT):
         raise ValueError(f"{description} must be outside the source checkout")
     return resolved
+
+
+def expected_output_directory(path: Path, name: str) -> Path:
+    root = external_artifact_path(ARTIFACT_ROOT, "Artifact root")
+    output = external_artifact_path(path, "Output directory")
+    if output != root / name:
+        raise ValueError("Output directory must be the expected private artifact directory")
+    return output
+
+
+def windows_acl(path: Path, restrict: bool = False) -> None:
+    """Fail closed if any account besides this user can read the custody path."""
+    script = r"""
+$ErrorActionPreference = 'Stop'
+$target = [Console]::In.ReadToEnd()
+$current = [Security.Principal.WindowsIdentity]::GetCurrent().User
+$acl = Get-Acl -LiteralPath $target
+if ($env:ZT_RESTRICT_ACL -eq '1') {
+    $grant = if ((Get-Item -LiteralPath $target).PSIsContainer) {
+        "*$($current.Value):(OI)(CI)F"
+    } else { "*$($current.Value):F" }
+    & icacls.exe $target /inheritance:r /grant:r $grant | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Could not restrict Windows ACL' }
+    $acl = Get-Acl -LiteralPath $target
+    $other = @($acl.GetAccessRules($true, $true,
+        [Security.Principal.SecurityIdentifier]) | Where-Object {
+        $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+        $_.IdentityReference.Value -ne $current.Value
+    } | ForEach-Object { $_.IdentityReference.Value } | Select-Object -Unique)
+    foreach ($sid in $other) {
+        & icacls.exe $target /remove:g "*$sid" | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'Could not remove a Windows ACL grant' }
+    }
+    $acl = Get-Acl -LiteralPath $target
+}
+$owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+$allowed = @($acl.GetAccessRules($true, $true,
+    [Security.Principal.SecurityIdentifier]) | Where-Object {
+    $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow
+} | ForEach-Object { $_.IdentityReference.Value })
+@{ owner = $owner; current = $current.Value; allowed = $allowed } |
+    ConvertTo-Json -Compress
+"""
+    environment = {**unsigned_build_env(), "ZT_RESTRICT_ACL": "1" if restrict else "0"}
+    try:
+        shell = shutil.which("pwsh") or "powershell"
+        result = subprocess.run([shell, "-NoProfile", "-NonInteractive",
+                                 "-Command", script], input=str(path), capture_output=True,
+                                text=True, timeout=30, check=False, env=environment)
+        if result.returncode:
+            raise ValueError("Windows ACL inspection or restriction failed")
+        acl = json.loads(result.stdout)
+        if (acl["owner"] != acl["current"]
+                or set(acl["allowed"]) != {acl["current"]}):
+            raise ValueError(f"{path} must be owned by and accessible only to the current user")
+    except (OSError, subprocess.TimeoutExpired, UnicodeError, KeyError, TypeError,
+            json.JSONDecodeError) as exc:
+        raise ValueError("Windows ACL inspection failed") from exc
+
+
+def secure_directory(path: Path, create: bool = False) -> None:
+    approved_custody_path(path)
+    if create and not path.exists() and not is_link(path):
+        path.mkdir(mode=0o700, parents=True)
+        if os.name == "nt":
+            windows_acl(path, restrict=True)
+    if is_link(path):
+        raise ValueError(f"{path} must not be a symlink")
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError as exc:
+        raise ValueError(f"{path} must be an existing private directory") from exc
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise ValueError(f"{path} must be an existing private directory")
+    if os.name == "nt":
+        windows_acl(path)
+    elif metadata.st_uid != os.geteuid() or metadata.st_mode & 0o077:
+        raise ValueError(f"{path} must be owned by this user with mode 0700")
+
+
+def secure_keystore(path: Path) -> Path:
+    approved_custody_path(path)
+    if is_link(path):
+        raise ValueError("Keystore must not be a symlink")
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError as exc:
+        raise ValueError("Keystore file does not exist") from exc
+    if not stat.S_ISREG(metadata.st_mode):
+        raise ValueError("Keystore must be a regular file")
+    secure_directory(path.parent)
+    if os.name == "nt":
+        windows_acl(path)
+    elif metadata.st_uid != os.geteuid() or metadata.st_mode & 0o077:
+        raise ValueError("Keystore must be owned by this user with mode 0600")
+    return external_artifact_path(path, "Keystore")
 
 
 def checked_artifact_file(path: Path, max_bytes: int) -> Path:
@@ -292,6 +418,9 @@ def checked_sbom(path: Path) -> tuple[str, dict[str, object]]:
 
 
 def build_unsigned(commit: str, out: Path) -> None:
+    out = expected_output_directory(out, "unsigned")
+    external_artifact_path(ARTIFACT_ROOT, "Artifact root")
+    secure_directory(ARTIFACT_ROOT, create=True)
     if out.exists():
         raise ValueError("Output directory already exists; use a new directory")
     gradle = ANDROID / ("gradlew.bat" if os.name == "nt" else "gradlew")
@@ -307,7 +436,7 @@ def build_unsigned(commit: str, out: Path) -> None:
     identity = apk_identity(unsigned)
     generated_sbom = ANDROID / "app/build/reports/cyclonedx-direct/bom.json"
     checked_sbom(generated_sbom)
-    out.mkdir(parents=True)
+    secure_directory(out, create=True)
     copy = out / "unsigned.apk"
     shutil.copyfile(unsigned, copy)
     digest = sha256(copy)
@@ -332,8 +461,9 @@ def build_unsigned(commit: str, out: Path) -> None:
 def checked_unsigned(
         commit: str) -> tuple[Path, str, dict[str, str | int], str, dict[str, object]]:
     build_dir = ARTIFACT_ROOT / "unsigned"
-    if ARTIFACT_ROOT.is_symlink() or build_dir.is_symlink() or not build_dir.is_dir():
-        raise ValueError("Unsigned artifact directory must be a regular directory")
+    external_artifact_path(ARTIFACT_ROOT, "Artifact root")
+    secure_directory(ARTIFACT_ROOT)
+    secure_directory(build_dir)
     receipt_path = checked_artifact_file(build_dir / "unsigned.json", MAX_RECEIPT_BYTES)
     unsigned = checked_artifact_file(build_dir / "unsigned.apk", MAX_APK_BYTES)
     sbom_hash, bom = checked_sbom(build_dir / SBOM_NAME)
@@ -413,9 +543,10 @@ def require_api28_signature(output: str) -> None:
 
 def sign_candidate(commit: str, keystore_path: Path,
                    alias: str, out: Path) -> None:
-    if not keystore_path.is_file():
-        raise ValueError("Keystore file does not exist")
-    keystore = external_artifact_path(keystore_path, "Keystore")
+    out = expected_output_directory(out, "candidate")
+    keystore = secure_keystore(keystore_path)
+    if keystore.is_relative_to(ARTIFACT_ROOT.resolve()):
+        raise ValueError("Keystore must be outside the transferable artifact root")
     if not alias.strip() or any(c.isspace() for c in alias):
         raise ValueError("A nonempty keystore alias without whitespace is required")
     if not os.environ.get(STORE_PASSWORD) or not os.environ.get(KEY_PASSWORD):
@@ -423,7 +554,7 @@ def sign_candidate(commit: str, keystore_path: Path,
     if out.exists():
         raise ValueError("Output directory already exists; use a new directory")
     unsigned, unsigned_hash, identity, sbom_hash, _ = checked_unsigned(commit)
-    out.mkdir(parents=True)
+    secure_directory(out, create=True)
     apk = out / f"zrotext-android-{commit[:12]}-candidate.apk"
     aligned = out / "aligned-unsigned.apk"
     zipalign = sdk_tool("zipalign")
@@ -489,10 +620,9 @@ def verify_candidate(commit: str, expected_certificate: str,
         raise ValueError("Independently approved APK version metadata is required")
     expected_certificate = expected_certificate.lower()
     candidate_dir = ARTIFACT_ROOT / "candidate"
-    if (ARTIFACT_ROOT.is_symlink() or candidate_dir.is_symlink()
-            or not candidate_dir.is_dir()):
-        raise ValueError("Artifact directories must not be symlinks")
     external_artifact_path(ARTIFACT_ROOT, "Artifact root")
+    secure_directory(ARTIFACT_ROOT)
+    secure_directory(candidate_dir)
     unsigned, unsigned_hash, identity, sbom_hash, bom = checked_unsigned(commit)
     if (identity["version_code"] != expected_version_code
             or identity["version_name"] != expected_version_name):
@@ -548,7 +678,7 @@ def verify_candidate(commit: str, expected_certificate: str,
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="phase", required=True)
-    build = commands.add_parser("build", help="Lint, test and assemble without signing secrets")
+    commands.add_parser("build", help="Lint, test and assemble without signing secrets")
     commands.add_parser("verify-unsigned", help="Verify the hosted unsigned APK, receipt and SBOM attestation")
     sign = commands.add_parser("sign", help="Sign and verify a prior unsigned build")
     verify = commands.add_parser("verify", help="Independently check transferred unsigned and signed APKs")
@@ -559,6 +689,7 @@ def main() -> None:
     verify.add_argument("--approval-stdin", required=True, action="store_true",
                         help="read a prior approved source, certificate and app version record from stdin")
     args = parser.parse_args()
+    external_artifact_path(ARTIFACT_ROOT, "Artifact root")
     if args.phase == "verify":
         approval = release_approval(sys.stdin.buffer.read(MAX_RECEIPT_BYTES + 1))
         if (approval["source_tag"] != args.source_tag
@@ -577,7 +708,7 @@ def main() -> None:
         print(f"Verified attested unsigned candidate from {commit}: {digest}")
     else:
         out = external_artifact_path(ARTIFACT_ROOT / "candidate", "Output directory")
-        sign_candidate(commit, ARTIFACT_ROOT / "keystore.p12", SIGNING_ALIAS, out)
+        sign_candidate(commit, DEFAULT_KEYSTORE, SIGNING_ALIAS, out)
 
 
 if __name__ == "__main__":

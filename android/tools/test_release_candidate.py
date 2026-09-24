@@ -31,6 +31,16 @@ class ReleaseCandidateTest(unittest.TestCase):
     COMMIT = "a" * 40
     CERTIFICATE = "b" * 64
 
+    @staticmethod
+    def private_directory(path):
+        path = Path(path)
+        path.mkdir(mode=0o700, exist_ok=True)
+        if os.name == "nt":
+            release_candidate.windows_acl(path, restrict=True)
+        else:
+            path.chmod(0o700)
+        return path
+
     def verify_test_candidate(self, commit, certificate):
         return release_candidate.verify_candidate(
             commit, certificate, self.IDENTITY["version_code"],
@@ -59,7 +69,7 @@ class ReleaseCandidateTest(unittest.TestCase):
         return git, main
 
     def test_reviewed_tag_requires_annotated_main_commit(self):
-        with tempfile.TemporaryDirectory() as directory, \
+        with tempfile.TemporaryDirectory(dir=release_candidate.CUSTODY_BASE) as directory, \
              patch.object(release_candidate, "ROOT", Path(directory)):
             git, main = self.make_tagged_repository(directory)
             self.assertEqual(release_candidate.reviewed_tag_commit("v0.1.0-rc.1"), main)
@@ -88,8 +98,8 @@ class ReleaseCandidateTest(unittest.TestCase):
                 release_candidate.reviewed_tag_commit("v0.1.0-rc.3")
 
     def test_reviewed_tag_commit_must_match_apk_receipts(self):
-        with tempfile.TemporaryDirectory() as repository, \
-             tempfile.TemporaryDirectory() as artifacts, \
+        with tempfile.TemporaryDirectory(dir=release_candidate.CUSTODY_BASE) as repository, \
+             tempfile.TemporaryDirectory(dir=release_candidate.CUSTODY_BASE) as artifacts, \
              patch.object(release_candidate, "ROOT", Path(repository)), \
              patch.object(release_candidate, "ARTIFACT_ROOT", Path(artifacts)):
             self.make_tagged_repository(repository)
@@ -101,7 +111,7 @@ class ReleaseCandidateTest(unittest.TestCase):
                 )
 
     def test_version_must_match_independently_reviewed_metadata(self):
-        with tempfile.TemporaryDirectory() as directory, \
+        with tempfile.TemporaryDirectory(dir=release_candidate.CUSTODY_BASE) as directory, \
              patch.object(release_candidate, "ARTIFACT_ROOT", Path(directory)), \
              patch.object(release_candidate, "apk_identity", return_value=self.IDENTITY):
             self.make_candidate(directory)
@@ -118,7 +128,7 @@ class ReleaseCandidateTest(unittest.TestCase):
                 )
 
     def test_verify_cli_reads_prior_approval_from_stdin(self):
-        with tempfile.TemporaryDirectory() as approvals, \
+        with tempfile.TemporaryDirectory(dir=release_candidate.CUSTODY_BASE) as approvals, \
              patch.object(release_candidate, "verify_reviewed_candidate") as verify:
             manifest = Path(approvals) / "release-approval.json"
             manifest.write_text(json.dumps({
@@ -168,7 +178,7 @@ class ReleaseCandidateTest(unittest.TestCase):
                 release_candidate.main()
 
     def test_reviewed_tag_ignores_hostile_git_environment(self):
-        with tempfile.TemporaryDirectory() as directory, \
+        with tempfile.TemporaryDirectory(dir=release_candidate.CUSTODY_BASE) as directory, \
              patch.object(release_candidate, "ROOT", Path(directory)):
             _, main = self.make_tagged_repository(directory)
             hostile = {
@@ -184,7 +194,7 @@ class ReleaseCandidateTest(unittest.TestCase):
                     "v0.1.0-rc.1"), main)
 
     def test_artifact_files_must_be_regular_and_bounded(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(dir=release_candidate.CUSTODY_BASE) as directory:
             root = Path(directory)
             (root / "candidate.json").mkdir()
             with self.assertRaisesRegex(ValueError, "regular file"):
@@ -204,7 +214,7 @@ class ReleaseCandidateTest(unittest.TestCase):
                     release_candidate.checked_artifact_file(root / "candidate.json", 100)
 
     def test_compressed_apk_cannot_expand_beyond_review_limit(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(dir=release_candidate.CUSTODY_BASE) as directory:
             apk = Path(directory) / "compressed.apk"
             with zipfile.ZipFile(apk, "w", compression=zipfile.ZIP_DEFLATED) as archive:
                 archive.writestr(release_candidate.ASSET, self.COMMIT + "\n")
@@ -216,7 +226,7 @@ class ReleaseCandidateTest(unittest.TestCase):
                     release_candidate.apk_entry_digests(apk)
 
     def test_apk_directory_is_bounded_before_zipfile_opens(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(dir=release_candidate.CUSTODY_BASE) as directory:
             apk = Path(directory) / "many-entries.apk"
             with zipfile.ZipFile(apk, "w") as archive:
                 archive.writestr(release_candidate.ASSET, self.COMMIT + "\n")
@@ -241,10 +251,9 @@ class ReleaseCandidateTest(unittest.TestCase):
                 output.replace("Scheme v3): true", "Scheme v3): false"))
 
     def make_candidate(self, directory):
-        build_dir = Path(directory) / "unsigned"
-        candidate_dir = Path(directory) / "candidate"
-        build_dir.mkdir()
-        candidate_dir.mkdir()
+        self.private_directory(directory)
+        build_dir = self.private_directory(Path(directory) / "unsigned")
+        candidate_dir = self.private_directory(Path(directory) / "candidate")
         unsigned = build_dir / "unsigned.apk"
         signed = candidate_dir / f"zrotext-android-{self.COMMIT[:12]}-candidate.apk"
         for path in (unsigned, signed):
@@ -288,7 +297,7 @@ class ReleaseCandidateTest(unittest.TestCase):
         output = ("Verified using v2 scheme (APK Signature Scheme v2): true\n"
                   "Verified using v3 scheme (APK Signature Scheme v3): true\n"
                   f"Signer #1 certificate SHA-256 digest: {self.CERTIFICATE}\n")
-        with tempfile.TemporaryDirectory() as directory, \
+        with tempfile.TemporaryDirectory(dir=release_candidate.CUSTODY_BASE) as directory, \
              patch.object(release_candidate, "ARTIFACT_ROOT", Path(directory)):
             build_dir, candidate_dir, signed = self.make_candidate(directory)
             with patch.object(release_candidate, "apk_identity", return_value=self.IDENTITY), \
@@ -384,10 +393,10 @@ class ReleaseCandidateTest(unittest.TestCase):
 
     def test_signing_rejects_changed_unsigned_apk(self):
         commit = "a" * 40
-        with tempfile.TemporaryDirectory() as directory, \
+        with tempfile.TemporaryDirectory(dir=release_candidate.CUSTODY_BASE) as directory, \
              patch.object(release_candidate, "ARTIFACT_ROOT", Path(directory)):
-            build_dir = Path(directory) / "unsigned"
-            build_dir.mkdir()
+            self.private_directory(directory)
+            build_dir = self.private_directory(Path(directory) / "unsigned")
             apk = build_dir / "unsigned.apk"
             with zipfile.ZipFile(apk, "w") as archive:
                 archive.writestr(release_candidate.ASSET, commit + "\n")
@@ -414,7 +423,7 @@ class ReleaseCandidateTest(unittest.TestCase):
                     release_candidate.checked_unsigned(commit)
 
     def test_release_sbom_hash_and_scope_reject_stale_inventory(self):
-        with tempfile.TemporaryDirectory() as directory, \
+        with tempfile.TemporaryDirectory(dir=release_candidate.CUSTODY_BASE) as directory, \
              patch.object(release_candidate, "ARTIFACT_ROOT", Path(directory)), \
              patch.object(release_candidate, "apk_identity", return_value=self.IDENTITY):
             build_dir, candidate_dir, _ = self.make_candidate(directory)
@@ -496,17 +505,119 @@ class ReleaseCandidateTest(unittest.TestCase):
         self.assertEqual(command.call_args.kwargs["encoding"], "utf-8")
 
     def test_artifacts_must_remain_outside_checkout(self):
-        with self.assertRaisesRegex(ValueError, "outside the source checkout"):
+        # A checkout on another drive is rejected by the home boundary first.
+        expected = ("outside the source checkout"
+                    if release_candidate.ROOT.is_relative_to(release_candidate.CUSTODY_BASE)
+                    else "within the current user's home")
+        with self.assertRaisesRegex(ValueError, expected):
             release_candidate.external_artifact_path(
                 release_candidate.ROOT / "android" / "app" / "build" / "candidate",
                 "Output directory",
             )
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(dir=release_candidate.CUSTODY_BASE) as directory:
             external = Path(directory) / "candidate"
             self.assertEqual(
                 release_candidate.external_artifact_path(external, "Output directory"),
                 external.resolve(),
             )
+
+    def test_custody_paths_outside_user_home_are_rejected(self):
+        outside = release_candidate.CUSTODY_BASE.parent / "outside-custody"
+        with self.assertRaisesRegex(ValueError, "within the current user's home"):
+            release_candidate.external_artifact_path(outside, "Artifact root")
+        with self.assertRaisesRegex(ValueError, "within the current user's home"):
+            release_candidate.secure_directory(outside, create=True)
+        with self.assertRaisesRegex(ValueError, "within the current user's home"):
+            release_candidate.secure_keystore(outside / "keystore.p12")
+
+    def test_private_artifact_root_is_created_outside_shared_temp(self):
+        default_root = release_candidate.state_directory() / "android-release"
+        self.assertEqual(default_root, release_candidate.ARTIFACT_ROOT)
+        self.assertEqual(release_candidate.DEFAULT_KEYSTORE,
+                         release_candidate.state_directory() / "android-signing" / "keystore.p12")
+        self.assertNotEqual(default_root, Path(tempfile.gettempdir()) / "zrotext-android-release")
+        with tempfile.TemporaryDirectory(dir=release_candidate.CUSTODY_BASE) as directory:
+            root = Path(directory) / "artifacts"
+            release_candidate.secure_directory(root, create=True)
+            release_candidate.secure_directory(root)
+            if os.name != "nt":
+                self.assertEqual(root.stat().st_mode & 0o777, 0o700)
+
+    def test_insecure_artifact_directory_and_keystore_are_rejected(self):
+        with tempfile.TemporaryDirectory(dir=release_candidate.CUSTODY_BASE) as directory:
+            root = self.private_directory(Path(directory) / "artifacts")
+            unsigned = self.private_directory(root / "unsigned")
+            key_dir = self.private_directory(Path(directory) / "signing")
+            key = key_dir / "keystore.p12"
+            key.write_bytes(b"synthetic, not a signing key")
+            if os.name != "nt":
+                key.chmod(0o600)
+            release_candidate.secure_keystore(key)
+            if os.name == "nt":
+                # Change only disposable fixture ACLs, then verify they fail closed.
+                for path in (unsigned, key, root):
+                    subprocess.run(["icacls", str(path), "/grant", "*S-1-5-32-545:R"],
+                                   check=True, capture_output=True)
+                    with self.assertRaisesRegex(ValueError, "accessible only"):
+                        (release_candidate.secure_directory(path) if path != key
+                         else release_candidate.secure_keystore(path))
+            else:
+                unsigned.chmod(0o755)
+                with self.assertRaisesRegex(ValueError, "mode 0700"):
+                    release_candidate.secure_directory(unsigned)
+                unsigned.chmod(0o700)
+                key.chmod(0o644)
+                with self.assertRaisesRegex(ValueError, "mode 0600"):
+                    release_candidate.secure_keystore(key)
+                key.chmod(0o600)
+                root.chmod(0o755)
+                with self.assertRaisesRegex(ValueError, "mode 0700"):
+                    release_candidate.secure_directory(root)
+                root.chmod(0o700)
+                with patch.object(release_candidate.os, "geteuid", return_value=os.geteuid() + 1):
+                    with self.assertRaisesRegex(ValueError, "owned by this user"):
+                        release_candidate.secure_directory(root)
+                    with self.assertRaisesRegex(ValueError, "owned by this user"):
+                        release_candidate.secure_keystore(key)
+
+    def test_signing_uses_fixed_private_paths_even_with_redirected_state_environment(self):
+        environment = {"LOCALAPPDATA": str(release_candidate.CUSTODY_BASE.parent),
+                       "XDG_STATE_HOME": str(release_candidate.CUSTODY_BASE.parent),
+                       "ZROTEXT_ANDROID_ARTIFACT_ROOT": str(release_candidate.CUSTODY_BASE.parent),
+                       "ZROTEXT_ANDROID_KEYSTORE_PATH": str(release_candidate.CUSTODY_BASE.parent)}
+        with patch.dict(os.environ, environment), \
+             patch.object(sys, "argv", ["release_candidate.py", "sign"]), \
+             patch.object(release_candidate, "source_commit", return_value=self.COMMIT), \
+             patch.object(release_candidate, "sign_candidate") as sign:
+            release_candidate.main()
+        sign.assert_called_once_with(self.COMMIT, release_candidate.DEFAULT_KEYSTORE,
+                                     release_candidate.SIGNING_ALIAS,
+                                     release_candidate.ARTIFACT_ROOT / "candidate")
+
+    def test_signing_key_cannot_be_inside_transferable_artifacts(self):
+        with tempfile.TemporaryDirectory(dir=release_candidate.CUSTODY_BASE) as directory:
+            root = self.private_directory(Path(directory) / "artifacts")
+            key = root / "keystore.p12"
+            key.write_bytes(b"synthetic, not a signing key")
+            if os.name != "nt":
+                key.chmod(0o600)
+            with patch.object(release_candidate, "ARTIFACT_ROOT", root):
+                with self.assertRaisesRegex(ValueError, "outside the transferable"):
+                    release_candidate.sign_candidate(self.COMMIT, key,
+                                                     release_candidate.SIGNING_ALIAS,
+                                                     root / "candidate")
+
+    def test_direct_build_and_sign_reject_unexpected_output_directory(self):
+        with tempfile.TemporaryDirectory(dir=release_candidate.CUSTODY_BASE) as directory:
+            root = self.private_directory(Path(directory) / "artifacts")
+            wrong = Path(directory) / "other-output"
+            with patch.object(release_candidate, "ARTIFACT_ROOT", root):
+                with self.assertRaisesRegex(ValueError, "expected private"):
+                    release_candidate.build_unsigned(self.COMMIT, wrong)
+                with self.assertRaisesRegex(ValueError, "expected private"):
+                    release_candidate.sign_candidate(self.COMMIT, wrong / "keystore.p12",
+                                                     release_candidate.SIGNING_ALIAS, wrong)
+            self.assertFalse(wrong.exists())
 
 
 if __name__ == "__main__":
