@@ -35,41 +35,32 @@ impl BillingJobs for StripeTestWorker {
 
 /// Each queue has its own 10-second clock. A shared semaphore limits total
 /// work, while a slow batch in either queue cannot delay the other's polling.
-pub async fn run_billing_queue(
-    worker: Arc<StripeTestWorker>,
-    database_url: String,
-    batch_size: usize,
-    concurrency: usize,
-    risk: bool,
-    draining: Arc<AtomicBool>,
-    notify: Arc<Notify>,
-    permits: Arc<Semaphore>,
-) {
-    run_queue(
+pub struct BillingQueueConfig<T> {
+    pub worker: Arc<T>,
+    pub database_url: String,
+    pub batch_size: usize,
+    pub concurrency: usize,
+    pub risk: bool,
+    pub draining: Arc<AtomicBool>,
+    pub notify: Arc<Notify>,
+    pub permits: Arc<Semaphore>,
+}
+
+pub async fn run_billing_queue(config: BillingQueueConfig<StripeTestWorker>) {
+    run_queue(config, Duration::from_secs(10)).await
+}
+
+async fn run_queue<T: BillingJobs>(config: BillingQueueConfig<T>, interval: Duration) {
+    let BillingQueueConfig {
         worker,
         database_url,
         batch_size,
         concurrency,
+        risk,
         draining,
         notify,
         permits,
-        risk,
-        Duration::from_secs(10),
-    )
-    .await
-}
-
-async fn run_queue<T: BillingJobs>(
-    worker: Arc<T>,
-    database_url: String,
-    batch_size: usize,
-    concurrency: usize,
-    draining: Arc<AtomicBool>,
-    notify: Arc<Notify>,
-    permits: Arc<Semaphore>,
-    risk: bool,
-    interval: Duration,
-) {
+    } = config;
     let mut checks = tokio::time::interval(interval);
     checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut unavailable_logged = false;
@@ -381,25 +372,29 @@ mod tests {
         let permits = Arc::new(Semaphore::new(1));
         let initial_empty = worker.initial_empty.notified();
         let subscriptions = tokio::spawn(run_queue(
-            worker.clone(),
-            "unused".into(),
-            20,
-            1,
-            draining.clone(),
-            notify.clone(),
-            permits.clone(),
-            false,
+            BillingQueueConfig {
+                worker: worker.clone(),
+                database_url: "unused".into(),
+                batch_size: 20,
+                concurrency: 1,
+                risk: false,
+                draining: draining.clone(),
+                notify: notify.clone(),
+                permits: permits.clone(),
+            },
             std::time::Duration::from_millis(20),
         ));
         let risks = tokio::spawn(run_queue(
-            worker.clone(),
-            "unused".into(),
-            20,
-            1,
-            draining.clone(),
-            notify.clone(),
-            permits,
-            true,
+            BillingQueueConfig {
+                worker: worker.clone(),
+                database_url: "unused".into(),
+                batch_size: 20,
+                concurrency: 1,
+                risk: true,
+                draining: draining.clone(),
+                notify: notify.clone(),
+                permits,
+            },
             std::time::Duration::from_millis(20),
         ));
         tokio::time::timeout(std::time::Duration::from_secs(1), initial_empty)

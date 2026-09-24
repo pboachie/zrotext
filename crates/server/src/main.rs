@@ -34,7 +34,7 @@ use zrotext_server::{
         mfa::{self, MfaCipher},
     },
     billing::{
-        drain::run_billing_queue,
+        drain::{BillingQueueConfig, run_billing_queue},
         http::{self as billing_http, BillingHttpState},
         owner as billing_owner, parse_test_quota_plans, quota_configuration_fingerprint,
         reset_test_quotas_on_start,
@@ -499,16 +499,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let worker = Arc::new(worker);
         let permits = Arc::new(tokio::sync::Semaphore::new(concurrency));
         for risk in [false, true] {
-            tokio::spawn(run_billing_queue(
-                worker.clone(),
-                billing_database.clone(),
+            tokio::spawn(run_billing_queue(BillingQueueConfig {
+                worker: worker.clone(),
+                database_url: billing_database.clone(),
                 batch_size,
                 concurrency,
                 risk,
-                billing_draining.clone(),
-                billing_notify.clone(),
-                permits.clone(),
-            ));
+                draining: billing_draining.clone(),
+                notify: billing_notify.clone(),
+                permits: permits.clone(),
+            }));
         }
     }
     eprintln!(
