@@ -1,11 +1,24 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Shared PostgreSQL request budgets for public auth and enrollment routes.
 //! Counts are spent before password hashing or pairing proof work.
-//! Email verification permits live one-use codes through an indexed probe
-//! after its anonymous invalid-code budget is exhausted.
+//!
+//! Each route has an anonymous budget that any caller can spend with made-up
+//! subjects. Exhausting it must not lock out real owners and phones, so a
+//! refused request may still be admitted through `consume_or_verify` once a
+//! cheap indexed probe proves its subject is live (a device, a pairing and its
+//! one-use secret, a login challenge). Login instead accepts a login-client
+//! token and charges that browser's own subject. Either way the request spends
+//! a per-subject budget plus a separate, larger verified-route ceiling that
+//! made-up subjects never reach. Email verification probes live one-use codes
+//! the same way.
 
 use super::TokenHasher;
+use std::future::Future;
 use tokio_postgres::Client;
+
+/// Verified subjects share a route ceiling this many times the anonymous one.
+/// It is a backstop against many real subjects, not the per-subject limit.
+const VERIFIED_CEILING_FACTOR: i32 = 10;
 
 #[derive(Clone, Copy, Debug)]
 pub enum Limit {
@@ -55,11 +68,75 @@ pub async fn consume(
     limit: Limit,
     subject: Option<&str>,
 ) -> Result<bool, tokio_postgres::Error> {
-    let (scope, global_max, global_seconds, subject_policy) = limit.policy();
+    let (scope, global_max, global_seconds, _) = limit.policy();
+    let global_hash = hasher.digest(b"abuse-global-v1", scope);
+    charge(
+        client,
+        hasher,
+        limit,
+        subject,
+        &global_hash,
+        global_max,
+        global_seconds,
+    )
+    .await
+}
+
+/// Admit a subject the caller has verified is real after the anonymous route
+/// budget refused it. The per-subject budget is the same one `consume` spends;
+/// only the route ceiling differs.
+pub async fn consume_verified(
+    client: &Client,
+    hasher: &TokenHasher,
+    limit: Limit,
+    subject: &str,
+) -> Result<bool, tokio_postgres::Error> {
+    let (scope, global_max, global_seconds, _) = limit.policy();
+    let ceiling_hash = hasher.digest(b"abuse-verified-v1", scope);
+    charge(
+        client,
+        hasher,
+        limit,
+        Some(subject),
+        &ceiling_hash,
+        global_max * VERIFIED_CEILING_FACTOR,
+        global_seconds,
+    )
+    .await
+}
+
+/// Spend the anonymous budget first. Only when it refuses does `live` run;
+/// a live subject is then charged through `consume_verified`. `live` must be a
+/// cheap indexed lookup that performs no credential or signature work.
+pub async fn consume_or_verify<E: From<tokio_postgres::Error>>(
+    client: &Client,
+    hasher: &TokenHasher,
+    limit: Limit,
+    subject: &str,
+    live: impl Future<Output = Result<bool, E>>,
+) -> Result<bool, E> {
+    if consume(client, hasher, limit, Some(subject)).await? {
+        return Ok(true);
+    }
+    if !live.await? {
+        return Ok(false);
+    }
+    Ok(consume_verified(client, hasher, limit, subject).await?)
+}
+
+async fn charge(
+    client: &Client,
+    hasher: &TokenHasher,
+    limit: Limit,
+    subject: Option<&str>,
+    route_hash: &[u8; 32],
+    route_max: i32,
+    route_seconds: i32,
+) -> Result<bool, tokio_postgres::Error> {
+    let (scope, _, _, subject_policy) = limit.policy();
     let subject_hash = subject
         .zip(subject_policy)
         .map(|(subject, _)| hasher.digest(format!("abuse-subject-{scope}-v1").as_bytes(), subject));
-    let global_hash = hasher.digest(b"abuse-global-v1", scope);
     let (subject_max, subject_seconds) = subject_policy.unwrap_or((0, 0));
     let subject_bytes: Option<&[u8]> = subject_hash.as_ref().map(|hash| &hash[..]);
     let row = client
@@ -67,10 +144,10 @@ pub async fn consume(
             "SELECT auth_abuse_consume($1,$2,$3,$4,$5,$6,$7)",
             &[
                 &scope,
-                &&global_hash[..],
+                &&route_hash[..],
                 &subject_bytes,
-                &global_max,
-                &global_seconds,
+                &route_max,
+                &route_seconds,
                 &subject_max,
                 &subject_seconds,
             ],
@@ -217,6 +294,123 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(prune(&b).await.unwrap(), 5);
+        setup
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn junk_subjects_cannot_spend_the_budget_of_verified_subjects() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
+            return;
+        };
+        let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let schema = format!("abuse_test_{}", Uuid::new_v4().simple());
+        setup
+            .batch_execute(&format!("CREATE SCHEMA {schema}"))
+            .await
+            .unwrap();
+        let separator = if base_url.contains('?') { '&' } else { '?' };
+        let url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
+        let (db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        for migration in [
+            include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
+            include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+        ] {
+            db.batch_execute(migration).await.unwrap();
+        }
+        let hasher = TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap();
+        let probes = AtomicUsize::new(0);
+        let live = |answer: bool| {
+            let probes = &probes;
+            async move {
+                probes.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, tokio_postgres::Error>(answer)
+            }
+        };
+        // An open route never runs the liveness probe.
+        assert!(
+            consume_or_verify(&db, &hasher, Limit::DeviceChallenge, "phone", live(true))
+                .await
+                .unwrap()
+        );
+        assert_eq!(probes.load(Ordering::SeqCst), 0);
+        // One anonymous caller spends the whole route with made-up device IDs.
+        for index in 1..300 {
+            assert!(
+                consume_or_verify(
+                    &db,
+                    &hasher,
+                    Limit::DeviceChallenge,
+                    &format!("junk-{index}"),
+                    live(false),
+                )
+                .await
+                .unwrap()
+            );
+        }
+        for index in 300..400 {
+            assert!(
+                !consume_or_verify(
+                    &db,
+                    &hasher,
+                    Limit::DeviceChallenge,
+                    &format!("junk-{index}"),
+                    live(false),
+                )
+                .await
+                .unwrap()
+            );
+        }
+        // The real phone keeps its own per-device budget, and no more.
+        for _ in 1..30 {
+            assert!(
+                consume_or_verify(&db, &hasher, Limit::DeviceChallenge, "phone", live(true))
+                    .await
+                    .unwrap()
+            );
+        }
+        assert!(
+            !consume_or_verify(&db, &hasher, Limit::DeviceChallenge, "phone", live(true))
+                .await
+                .unwrap()
+        );
+        // Other routes are unaffected.
+        assert!(
+            consume(&db, &hasher, Limit::DeviceAuthenticate, Some("phone"))
+                .await
+                .unwrap()
+        );
+        // Refused junk leaves no rows; only the two route rows, 300 admitted
+        // junk subjects, the phone and the other route's two rows remain.
+        let rows: i64 = db
+            .query_one("SELECT count(*) FROM auth_abuse_counters", &[])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(rows, 2 + 299 + 1 + 2);
+        // The verified ceiling is a backstop across many real subjects.
+        let ceiling = hasher.digest(b"abuse-verified-v1", "device_challenge");
+        db.execute(
+            "UPDATE auth_abuse_counters SET attempts=2999 WHERE scope='device_challenge' AND subject_hash=$1",
+            &[&&ceiling[..]],
+        )
+        .await
+        .unwrap();
+        assert!(
+            consume_or_verify(&db, &hasher, Limit::DeviceChallenge, "phone-2", live(true))
+                .await
+                .unwrap()
+        );
+        assert!(
+            !consume_or_verify(&db, &hasher, Limit::DeviceChallenge, "phone-3", live(true))
+                .await
+                .unwrap()
+        );
         setup
             .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
             .await

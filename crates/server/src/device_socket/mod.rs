@@ -410,12 +410,14 @@ async fn authenticate(
     };
     // Share the HTTP enrollment budgets across transports and server instances.
     // A concurrent-socket cap alone cannot bound rapid hello/close cycles.
+    // Enrolled devices still reconnect after junk IDs exhaust the route budget.
     if !matches!(
-        abuse_limits::consume(
+        abuse_limits::consume_or_verify(
             &client,
             &state.auth_hasher,
             Limit::DeviceChallenge,
-            Some(&device_id.to_string()),
+            &device_id.to_string(),
+            enrollment::device_is_live(&client, device_id),
         )
         .await,
         Ok(true)
@@ -469,11 +471,12 @@ async fn authenticate(
         return Err(Some(close_code::POLICY));
     }
     if !matches!(
-        abuse_limits::consume(
+        abuse_limits::consume_or_verify(
             &client,
             &state.auth_hasher,
             Limit::DeviceAuthenticate,
-            Some(&device_id.to_string()),
+            &device_id.to_string(),
+            enrollment::device_challenge_is_live(&client, &state.enrollment_hasher, &challenge),
         )
         .await,
         Ok(true)

@@ -411,6 +411,26 @@ pub async fn begin_login_challenge(
     Ok(token)
 }
 
+/// Cheap indexed probe used only after anonymous callers exhaust the MFA
+/// completion budget. It never consumes the challenge or checks a factor.
+pub async fn login_challenge_is_live(
+    client: &Client,
+    hasher: &TokenHasher,
+    challenge_token: &str,
+) -> Result<bool, AuthError> {
+    if !super::valid_token(challenge_token, "ztm_") {
+        return Ok(false);
+    }
+    let hash = hasher.digest(b"mfa-login-challenge-v1", challenge_token);
+    Ok(client
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM owner_mfa_login_challenges WHERE token_hash=$1 AND consumed_at IS NULL AND expires_at>now())",
+            &[&&hash[..]],
+        )
+        .await?
+        .get(0))
+}
+
 /// Bounded maintenance for consumed and expired challenges. Safe across hubs.
 pub async fn prune_expired_challenges(client: &Client) -> Result<u64, AuthError> {
     Ok(client.execute(

@@ -733,6 +733,49 @@ pub async fn list_api_keys(
     })
 }
 
+/// Normalized address of a session's user, for binding a login-client token
+/// after a second-factor sign-in.
+pub async fn session_email(client: &Client, session_id: Uuid) -> Result<Option<String>, AuthError> {
+    Ok(client
+        .query_opt(
+            "SELECT u.email FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.id=$1",
+            &[&session_id],
+        )
+        .await?
+        .map(|row| row.get(0)))
+}
+
+pub const LOGIN_CLIENT_COOKIE: &str = "__Host-zrotext_login_client";
+const LOGIN_CLIENT_DAYS: i32 = 180;
+
+/// Issued to a browser after it presents the correct password for `email`.
+/// It is not a credential: it only lets that browser keep a login budget of
+/// its own once anonymous callers have spent the shared one. The value is
+/// bound to the normalized email under the auth pepper and reveals neither.
+pub fn login_client_cookie(hasher: &TokenHasher, email: &str) -> Option<String> {
+    let email = normalize_email(email).ok()?;
+    let id = random_token("ztl_");
+    let tag = hasher.digest(b"login-client-v1", &format!("{id}\0{email}"));
+    Some(format!(
+        "{LOGIN_CLIENT_COOKIE}={id}.{}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age={}",
+        URL_SAFE_NO_PAD.encode(tag),
+        LOGIN_CLIENT_DAYS * 86_400
+    ))
+}
+
+/// Returns this browser's own login budget subject when `value` was issued
+/// for `email`. Tokens for other addresses or forged tags yield `None`.
+pub fn login_client_subject(hasher: &TokenHasher, value: &str, email: &str) -> Option<String> {
+    let email = normalize_email(email).ok()?;
+    let (id, tag) = value.split_once('.')?;
+    if !valid_token(id, "ztl_") {
+        return None;
+    }
+    let tag = URL_SAFE_NO_PAD.decode(tag).ok()?;
+    let expected = hasher.digest(b"login-client-v1", &format!("{id}\0{email}"));
+    bool::from(expected.as_slice().ct_eq(&tag)).then(|| format!("{email}\0{id}"))
+}
+
 /// Pass these only over HTTPS. The session cookie is inaccessible to script;
 /// the CSRF cookie is read by same-origin script and mirrored in a header.
 pub fn session_cookies(credentials: &SessionCredentials) -> [String; 2] {

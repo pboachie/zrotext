@@ -110,3 +110,35 @@ per 24-hour window and 600 globally per minute. Sessions and API instances share
 the budget; key revocation does not refund it. Exhaustion returns 429, and budget
 storage failure returns 503 without creating a key. This bounds issuance rate,
 not the lifetime retention of audit metadata for previously created keys.
+
+### Public sign-in and enrollment budgets
+
+Password sign-in, second-factor completion, pairing claim and proof, and device
+challenge and proof (HTTP and the device WebSocket) spend atomic PostgreSQL
+budgets before password, factor or signature work. Each has a per-subject
+budget (address, challenge token, pairing or device) and a route-wide budget
+shared by all API instances. Budgets are not keyed by client IP address: behind
+the TLS edge the server has no trustworthy client address.
+
+Anyone can spend a route-wide budget with made-up subjects, so it only decides
+admission for anonymous requests. When it refuses a request, the request is
+still admitted if the caller shows it is not anonymous: an enrolled, unrevoked
+device ID for a device challenge; the unused challenge ID and nonce for a device
+proof; the one-use QR token for a pairing claim and the claim nonce for its
+proof; a live second-factor challenge token; or, for password sign-in, a
+login-client cookie issued for that address. Each check is a single indexed read
+with no password or signature work. Admitted requests spend the same per-subject
+budget plus a separate verified-route ceiling ten times the anonymous one, which
+made-up subjects cannot reach. Refused requests leave no counter rows.
+
+The login-client cookie (`__Host-zrotext_login_client`; HttpOnly,
+SameSite=Strict, 180 days) is set after a full sign-in from a browser that lacks
+one for that address, and is kept across logout. Its value is a random ID and an
+HMAC, under the auth pepper, binding that ID to the normalized address. It
+grants no session and does not reveal the address. When the address or route
+budget refuses that browser, it falls back to its own budget of 12 attempts per
+15 minutes.
+Browsers without the cookie receive the same 429 whether or not the address
+exists. While the route-wide budgets are exhausted, sign-in from a new browser,
+registration and verification resend still wait for the window to reset, and
+the process-wide password worker gate still applies.
