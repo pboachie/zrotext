@@ -348,7 +348,19 @@ async fn authenticated_inbound_replay_retries_one_webhook_delivery() {
         .unwrap()
     );
 
-    socket.close(None).await.unwrap();
+    // Revoking a key must close an already-authenticated connection on its
+    // next heartbeat, even though its original challenge succeeded.
+    db.execute(
+        "UPDATE device_keys SET revoked_at=now() WHERE device_id=$1",
+        &[&device_id],
+    )
+    .await
+    .unwrap();
+    send_json(&mut socket, json!({"type":"heartbeat", "v":1})).await;
+    let closed = timeout(Duration::from_secs(5), socket.next())
+        .await
+        .unwrap();
+    assert!(matches!(closed, Some(Ok(Message::Close(_))) | None));
     server.abort();
     admin
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))

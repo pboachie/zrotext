@@ -613,6 +613,73 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
     assert_eq!(dead, "dead");
     assert!(claim_webhook(&mut db, "worker-e").await.unwrap().is_none());
 
+    // Lock contention must not let a session outlive its wall-clock lease.
+    let (mut peer, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    peer.batch_execute(&format!("SET search_path TO {schema}"))
+        .await
+        .unwrap();
+    db.execute("UPDATE device_sessions SET lease_until=clock_timestamp()+interval '1 second' WHERE device_id=$1", &[&device]).await.unwrap();
+    let pid: i32 = db
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await
+        .unwrap()
+        .get(0);
+    let blocker = peer.transaction().await.unwrap();
+    blocker
+        .query_one(
+            "SELECT id FROM message_attempts WHERE id=$1 FOR UPDATE",
+            &[&attempt],
+        )
+        .await
+        .unwrap();
+    let delayed = InboundEvent {
+        event_id: Uuid::new_v4(),
+        sequence: 1000,
+        ..unsigned
+    };
+    let signature: Signature = signing.sign(&signed_event_bytes(session, &delayed));
+    let signature = signature.to_der();
+    let delayed = InboundEvent {
+        signature_der: signature.as_bytes(),
+        ..delayed
+    };
+    let (result, ()) = tokio::join!(ingest(&mut db, session, &delayed), async {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                loop {
+                    let waiting: bool = blocker.query_one("SELECT cardinality(pg_blocking_pids($1))>0", &[&pid]).await.unwrap().get(0);
+                    if waiting { break; }
+                    tokio::task::yield_now().await;
+                }
+                loop {
+                    let expired: bool = blocker.query_one("SELECT lease_until<=clock_timestamp() FROM device_sessions WHERE device_id=$1", &[&device]).await.unwrap().get(0);
+                    if expired { break; }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            }).await.unwrap();
+        blocker.commit().await.unwrap();
+    });
+    assert!(
+        matches!(result, Err(InboundError::Unauthorized)),
+        "expired lease accepted inbound event: {result:?}"
+    );
+    let count: i64 = db
+        .query_one(
+            "SELECT count(*) FROM inbound_events WHERE id=$1",
+            &[&delayed.event_id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(count, 0);
+    db.execute(
+        "UPDATE device_sessions SET lease_until=now()+interval '10 minutes' WHERE device_id=$1",
+        &[&device],
+    )
+    .await
+    .unwrap();
     db.execute(
         "UPDATE device_keys SET revoked_at=now() WHERE device_id=$1",
         &[&device],

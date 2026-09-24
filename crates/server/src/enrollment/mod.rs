@@ -398,6 +398,14 @@ pub async fn approve_pairing(
         &[&principal.tenant.account_id()],
     )
     .await?;
+    // The preflight may precede a wait for the account lock. Reauthorize
+    // inside this transaction and hold the owner rows against revocation.
+    if tx.query_opt(
+        "SELECT 1 FROM sessions s JOIN users u ON u.id=s.user_id JOIN memberships m ON (m.account_id,m.user_id)=(s.account_id,s.user_id) JOIN accounts a ON a.id=s.account_id WHERE s.id=$1 AND s.account_id=$2 AND s.user_id=$3 AND s.revoked_at IS NULL AND s.expires_at>clock_timestamp() AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL AND m.role='owner' FOR SHARE OF s,u,m",
+        &[&principal.session_id, &principal.tenant.account_id(), &principal.user_id],
+    ).await?.is_none() {
+        return Err(EnrollmentError::Unauthorized);
+    }
     let row = tx.query_opt(
         "SELECT display_name,comparison_code,key_fingerprint,signing_key_sec1 FROM pairing_requests WHERE id=$1 AND account_id=$2 AND proof_verified_at IS NOT NULL AND approved_at IS NULL AND cancelled_at IS NULL AND expires_at>now() AND approval_failures<5 FOR UPDATE",
         &[&pairing_id, &principal.tenant.account_id()],
@@ -480,6 +488,14 @@ pub async fn approve_pairing(
         &[&pairing_id, &device_id],
     )
     .await?;
+    // Locks serialize revocation but do not stop wall time. Check expiry
+    // again after all potentially blocking writes before issuing the key.
+    if tx.query_opt(
+        "SELECT 1 FROM sessions s JOIN pairing_requests p ON p.account_id=s.account_id WHERE s.id=$1 AND p.id=$2 AND s.expires_at>clock_timestamp() AND p.expires_at>clock_timestamp()",
+        &[&principal.session_id, &pairing_id],
+    ).await?.is_none() {
+        return Err(EnrollmentError::Unavailable);
+    }
     tx.commit().await?;
     Ok(device_id)
 }
@@ -1297,6 +1313,67 @@ mod tests {
             .await,
             Err(EnrollmentError::DeviceLimitReached)
         ));
+        // A logout that wins while approval waits for the account lock must
+        // prevent installation of a new persistent device credential.
+        db.execute("UPDATE billing_device_cap_config SET enabled=false", &[])
+            .await
+            .unwrap();
+        let (blocked, code, fingerprint, _) =
+            proven_pairing(&mut db, &enrollment_hasher, &principal).await;
+        let pid: i32 = db
+            .query_one("SELECT pg_backend_pid()", &[])
+            .await
+            .unwrap()
+            .get(0);
+        let blocker = second.transaction().await.unwrap();
+        blocker
+            .query_one(
+                "SELECT id FROM accounts WHERE id=$1 FOR UPDATE",
+                &[&owner.account_id],
+            )
+            .await
+            .unwrap();
+        let (result, ()) = tokio::join!(
+            approve_pairing(&mut db, &principal, blocked, &code, &fingerprint),
+            async {
+                tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                    loop {
+                        let waiting: bool = blocker
+                            .query_one("SELECT cardinality(pg_blocking_pids($1))>0", &[&pid])
+                            .await
+                            .unwrap()
+                            .get(0);
+                        if waiting {
+                            break;
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .unwrap();
+                blocker
+                    .execute(
+                        "UPDATE sessions SET revoked_at=now() WHERE id=$1",
+                        &[&principal.session_id],
+                    )
+                    .await
+                    .unwrap();
+                blocker.commit().await.unwrap();
+            }
+        );
+        assert!(
+            matches!(result, Err(EnrollmentError::Unauthorized)),
+            "revoked owner session enrolled a device: {result:?}"
+        );
+        let approved: bool = db
+            .query_one(
+                "SELECT approved_at IS NOT NULL FROM pairing_requests WHERE id=$1",
+                &[&blocked],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert!(!approved);
         drop(second);
         drop(db);
         setup

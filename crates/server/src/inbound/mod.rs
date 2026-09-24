@@ -179,7 +179,7 @@ pub async fn ingest(
          JOIN deployment_authority p ON p.singleton=TRUE \
          WHERE s.account_id=$1 AND s.device_id=$2 AND s.site_id=$3 \
          AND s.instance_id=$4 AND s.connection_epoch=$5 AND s.deployment_epoch=$6 \
-         AND s.lease_until>now() AND d.revoked_at IS NULL AND k.revoked_at IS NULL \
+         AND s.lease_until>clock_timestamp() AND d.revoked_at IS NULL AND k.revoked_at IS NULL \
          AND a.disabled_at IS NULL AND t.enabled=TRUE AND t.draining=FALSE \
          AND p.epoch=$6 AND NOT pg_is_in_recovery() \
          FOR SHARE OF s,d,k,a,t,p",
@@ -280,6 +280,14 @@ pub async fn ingest(
         if account != session.account_id || device != session.device_id || saved_digest != digest {
             return Err(InboundError::EventConflict);
         }
+        // Transaction-start now() cannot fence a lease after a row-lock wait.
+        // Session/authority rows stay locked; recheck wall time before commit.
+        if tx.query_opt(
+            "SELECT 1 FROM device_sessions WHERE account_id=$1 AND device_id=$2 AND lease_until>clock_timestamp()",
+            &[&session.account_id, &session.device_id],
+        ).await?.is_none() {
+            return Err(InboundError::Unauthorized);
+        }
         tx.commit().await?;
         return Ok(IngestOutcome {
             created: false,
@@ -294,6 +302,14 @@ pub async fn ingest(
             &[&event.event_id, &session.account_id],
         )
         .await?;
+    // Transaction-start now() cannot fence a lease after a row-lock wait.
+    // Session/authority rows stay locked; recheck wall time before commit.
+    if tx.query_opt(
+        "SELECT 1 FROM device_sessions WHERE account_id=$1 AND device_id=$2 AND lease_until>clock_timestamp()",
+        &[&session.account_id, &session.device_id],
+    ).await?.is_none() {
+        return Err(InboundError::Unauthorized);
+    }
     tx.commit().await?;
     Ok(IngestOutcome {
         created: true,
