@@ -165,6 +165,12 @@ internal object Draft02TinkEnvelopeReceiver {
 
     internal fun openDeviceWrap(parsed: Parsed, keyStore: DevicePayloadKeyStore,
                                 info: ByteArray = wrapInfo(parsed)): ByteArray {
+        return Draft02PublicJcaKeystoreHpke.openCek(
+            keyStore, parsed.deviceWrap.keyId, parsed.deviceWrap.enc, parsed.deviceWrap.ct, info)
+    }
+
+    /** Test-only differential oracle; Tink is not on the release runtime classpath. */
+    internal fun openDeviceWrapTink(parsed: Parsed, keyStore: DevicePayloadKeyStore): ByteArray {
         require(parsed.deviceWrap.ct.size == 48) { "Invalid draft-02 wrap ciphertext" }
         val public = keyStore.existingPublic()
         val dh = keyStore.agreeExisting(parsed.deviceWrap.enc, parsed.deviceWrap.keyId)
@@ -178,7 +184,7 @@ internal object Draft02TinkEnvelopeReceiver {
             val key = HpkePublicKey.create(params, Bytes.copyFrom(public.point), null)
             return HpkeHelperForAndroidKeystore.create(key)
                 .decryptUnauthenticatedWithEncapsulatedKeyAndP256SharedSecret(
-                    parsed.deviceWrap.enc, dh, parsed.deviceWrap.ct, 0, info)
+                    parsed.deviceWrap.enc, dh, parsed.deviceWrap.ct, 0, wrapInfo(parsed))
         } finally { dh.fill(0) }
     }
 
