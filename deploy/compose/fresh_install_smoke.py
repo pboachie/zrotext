@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Verify a fresh Compose install and restore in disposable local projects."""
+"""Verify a fresh Compose install and restore in disposable local projects.
 
+With --image-ref, exercise the exact immutable image selected for release.
+"""
+
+import argparse
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import shutil
 import socket
@@ -18,6 +23,71 @@ from restore_rehearsal import (
     COMPOSE, DrillError, protected_tempdir, summary, target_is_new,
     verify_ledger,
 )
+
+
+IMAGE_REF = re.compile(
+    r"(?:ghcr\.io/pboachie/zrotext|127\.0\.0\.1:[1-9][0-9]{0,4}/zrotext)"
+    r"@sha256:[0-9a-f]{64}\Z"
+)
+COMMIT = re.compile(r"[0-9a-f]{40}\Z")
+TAG = re.compile(r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\."
+                 r"(?:0|[1-9][0-9]*)(?:-rc\.[1-9][0-9]*)?\Z")
+SOURCE = "https://github.com/pboachie/zrotext"
+STAGED_IMAGE = "zrotext-release-smoke:local"
+
+
+def validate_image_args(image_ref, source_commit, source_tag):
+    if image_ref is None:
+        if source_commit is not None or source_tag is not None:
+            raise DrillError("source identity requires --image-ref")
+        return
+    if not IMAGE_REF.fullmatch(image_ref):
+        raise DrillError("release image must be an allowed digest reference")
+    if not source_commit or not COMMIT.fullmatch(source_commit):
+        raise DrillError("release image needs a full source commit")
+    if not source_tag or not TAG.fullmatch(source_tag):
+        raise DrillError("release image needs a valid source tag")
+
+
+def inspect_release_image(image_ref, source_commit, source_tag):
+    raw = run(["docker", "image", "inspect", STAGED_IMAGE, "--format",
+               "{{json .RepoDigests}}"], "staged image digests")
+    try:
+        repo_digests = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        raise DrillError("staged image digests are invalid") from exc
+    if not isinstance(repo_digests, list) or image_ref not in repo_digests:
+        raise DrillError("staged image does not match selected digest")
+    raw = run(["docker", "image", "inspect", STAGED_IMAGE, "--format",
+               "{{json .Config.Labels}}"], "release image labels")
+    try:
+        labels = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        raise DrillError("release image labels are invalid") from exc
+    if not isinstance(labels, dict) or any((
+        labels.get("org.opencontainers.image.source") != SOURCE,
+        labels.get("org.opencontainers.image.revision") != source_commit,
+        labels.get("org.opencontainers.image.version") != source_tag,
+        labels.get("org.opencontainers.image.licenses") != "AGPL-3.0-only",
+    )):
+        raise DrillError("release image source labels differ from selected release")
+    image_id = run(["docker", "image", "inspect", STAGED_IMAGE, "--format",
+                    "{{.Id}}"], "release image ID").strip()
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
+        raise DrillError("release image ID is invalid")
+    return image_id
+
+
+def verify_running_image(compose, image_id):
+    for service in ("migrate", "app"):
+        container = run([*compose, "ps", "--no-trunc", "-aq", service],
+                        f"{service} container lookup").strip()
+        if not re.fullmatch(r"[0-9a-f]{64}", container):
+            raise DrillError(f"{service} container is missing")
+        actual = run(["docker", "inspect", "--format", "{{.Image}}", container],
+                     f"{service} image lookup").strip()
+        if actual != image_id:
+            raise DrillError(f"{service} did not run the selected release image")
 
 
 def available_loopback_port():
@@ -67,6 +137,12 @@ def wait_for_endpoint(port, path, expected):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--image-ref", help="immutable released image digest")
+    parser.add_argument("--source-commit", help="expected full source commit")
+    parser.add_argument("--source-tag", help="expected version tag")
+    args = parser.parse_args()
+    validate_image_args(args.image_ref, args.source_commit, args.source_tag)
     # Compose gives shell variables precedence over --env-file and imports
     # bare environment keys from the shell. Do not pass live account, SMTP,
     # or MFA settings into this disposable stack.
@@ -106,14 +182,27 @@ def main():
     })
     compose = ["docker", "compose", "--project-name", project,
                "--env-file", str(env_file), "-f", str(COMPOSE)]
+    image_id = None
     started = False
     failure = None
     cleanup_failure = None
     migrations = None
     try:
+        if args.image_ref is not None:
+            image_id = inspect_release_image(args.image_ref, args.source_commit,
+                                             args.source_tag)
+            override = directory / "release-image.yaml"
+            override.write_text(json.dumps({"services": {
+                "app": {"image": STAGED_IMAGE},
+                "migrate": {"image": STAGED_IMAGE},
+            }}), encoding="utf-8")
+            compose.extend(("-f", str(override)))
         started = True
-        run([*compose, "up", "-d", "--build"], "fresh Compose startup",
+        up_options = ["--no-build", "--pull", "missing"] if image_id else ["--build"]
+        run([*compose, "up", "-d", *up_options], "fresh Compose startup",
             timeout=3600)
+        if image_id:
+            verify_running_image(compose, image_id)
         wait_for_endpoint(port, "/healthz", "live")
         wait_for_endpoint(port, "/readyz", "ready")
         run([*compose, "exec", "-T", "app", "sh", "-ec",
@@ -138,8 +227,10 @@ def main():
     finally:
         if started:
             try:
-                run([*compose, "down", "--volumes", "--remove-orphans",
-                     "--rmi", "local"], "fresh project cleanup")
+                cleanup = [*compose, "down", "--volumes", "--remove-orphans"]
+                if image_id is None:
+                    cleanup.extend(("--rmi", "local"))
+                run(cleanup, "fresh project cleanup")
             except DrillError as exc:
                 cleanup_failure = exc
         if cleanup_failure is None:
@@ -148,7 +239,8 @@ def main():
         raise DrillError(f"{cleanup_failure}; inspect project {project} and {directory}")
     if failure:
         raise failure
-    print(f"fresh install smoke passed: {migrations} migrations, "
+    kind = "immutable image" if image_id else "source build"
+    print(f"fresh install smoke passed ({kind}): {migrations} migrations, "
           "health and readiness, dispatch disabled, logical restore; "
           "disposable projects removed")
 
