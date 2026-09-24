@@ -85,6 +85,7 @@ enum MessageHttpError {
     NotFound,
     Conflict,
     QueueFull,
+    RateLimited,
     QuotaExceeded,
     Unavailable,
 }
@@ -97,6 +98,7 @@ impl IntoResponse for MessageHttpError {
             Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden"),
             Self::NotFound => (StatusCode::NOT_FOUND, "not_found"),
             Self::Conflict => (StatusCode::CONFLICT, "conflict"),
+            Self::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
             Self::QueueFull => (StatusCode::TOO_MANY_REQUESTS, "queue_full"),
             Self::QuotaExceeded => (StatusCode::TOO_MANY_REQUESTS, "quota_exceeded"),
             Self::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
@@ -267,6 +269,20 @@ async fn accept(
         .is_some();
     if !active {
         return Err(MessageHttpError::NotFound);
+    }
+    // Spend outside the delivery transaction: cancellation, failed storage and
+    // exact retries must not refund abuse attempts. Account identity makes this
+    // shared across API keys, devices and server processes.
+    if !auth::abuse_limits::consume(
+        &client,
+        &state.hasher,
+        auth::abuse_limits::Limit::OutboundAccept,
+        Some(&account_id.to_string()),
+    )
+    .await
+    .map_err(|_| MessageHttpError::Unavailable)?
+    {
+        return Err(MessageHttpError::RateLimited);
     }
     let synthetic_body = format!("ZROtext synthetic test: {}", body.test_case_id);
     let input = NewMessage {
@@ -665,6 +681,166 @@ mod tests {
                 .status(),
             StatusCode::CONFLICT
         );
+        // Strict JSON and case identifiers cannot carry arbitrary message text.
+        for bad_case in [
+            "hello world",
+            "../escape",
+            "case\nsecond",
+            "case\0",
+            "';DROP TABLE messages;--",
+            "a".repeat(33).as_str(),
+        ] {
+            let mut malformed = input.clone();
+            malformed["test_case_id"] = bad_case.into();
+            assert_eq!(
+                app.clone()
+                    .oneshot(post("/messages", &send_a, "bad-case", malformed))
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::BAD_REQUEST
+            );
+        }
+        let mut unknown = input.clone();
+        unknown["body"] = "arbitrary message".into();
+        assert_eq!(
+            app.clone()
+                .oneshot(post("/messages", &send_a, "unknown", unknown))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        let mut oversized = input.clone();
+        oversized["test_case_id"] = "a".repeat(2048).into();
+        assert_eq!(
+            app.clone()
+                .oneshot(post("/messages", &send_a, "oversized", oversized))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
+        // Terminal messages free queue slots, but must not reset the admission
+        // budget. Rotate keys, message IDs and devices under the same account.
+        let rotated_device = Uuid::new_v4();
+        client
+            .execute(
+                "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'budget fixture')",
+                &[&rotated_device, &account_a],
+            )
+            .await
+            .unwrap();
+        client
+            .execute(
+                "DELETE FROM auth_abuse_counters WHERE scope='alpha_send'",
+                &[],
+            )
+            .await
+            .unwrap();
+        for index in 0..60 {
+            let mut churn = input.clone();
+            let id = Uuid::new_v4();
+            churn["client_message_id"] = id.to_string().into();
+            let token = if index % 2 == 0 {
+                &send_a
+            } else {
+                &unbound_send_a
+            };
+            if index % 2 == 1 {
+                churn["device_id"] = rotated_device.to_string().into();
+            }
+            assert_eq!(
+                app.clone()
+                    .oneshot(post("/messages", token, &format!("churn-{index}"), churn))
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::ACCEPTED
+            );
+            assert_eq!(
+                app.clone()
+                    .oneshot(post(
+                        &format!("/messages/{id}/cancel"),
+                        token,
+                        "unused",
+                        serde_json::json!({})
+                    ))
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::NO_CONTENT
+            );
+        }
+        let before: i64 = client
+            .query_one(
+                "SELECT count(*) FROM messages WHERE account_id=$1",
+                &[&account_a],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        let mut denied = input.clone();
+        denied["client_message_id"] = Uuid::new_v4().to_string().into();
+        let denied_response = app
+            .clone()
+            .oneshot(post("/messages", &unbound_send_a, "churn-overflow", denied))
+            .await
+            .unwrap();
+        assert_eq!(denied_response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(denied_response.headers()[header::RETRY_AFTER], "60");
+        let after: i64 = client
+            .query_one(
+                "SELECT count(*) FROM messages WHERE account_id=$1",
+                &[&account_a],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(before, after);
+        // Even an exact replay is an admission attempt when the budget is spent.
+        assert_eq!(
+            app.clone()
+                .oneshot(post("/messages", &send_a, "case-1", input.clone()))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        // Losing the budget relation must fail closed before storing a message.
+        client
+            .batch_execute("ALTER TABLE auth_abuse_counters RENAME TO unavailable_abuse_counters")
+            .await
+            .unwrap();
+        let mut unavailable = input.clone();
+        unavailable["client_message_id"] = Uuid::new_v4().to_string().into();
+        assert_eq!(
+            app.clone()
+                .oneshot(post(
+                    "/messages",
+                    &send_a,
+                    "budget-unavailable",
+                    unavailable
+                ))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        client
+            .batch_execute("ALTER TABLE unavailable_abuse_counters RENAME TO auth_abuse_counters")
+            .await
+            .unwrap();
+        let after_failure: i64 = client
+            .query_one(
+                "SELECT count(*) FROM messages WHERE account_id=$1",
+                &[&account_a],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(before, after_failure);
+
         client
             .execute(
                 "UPDATE devices SET revoked_at=now() WHERE account_id=$1 AND id=$2",
