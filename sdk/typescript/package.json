@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --test test/*.test.mjs"
+    "test": "npm run build && node --test test/*.test.mjs",
+    "test:android-keystore": "node test/android-keystore-interop.mjs"
   },
   "dependencies": {
     "@hpke/core": "1.7.5"

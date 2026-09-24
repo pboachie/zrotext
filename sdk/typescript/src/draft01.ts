@@ -6,6 +6,7 @@ const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false });
 const suite = new CipherSuite({ kem: new DhkemP256HkdfSha256(), kdf: new HkdfSha256(), aead: new Aes128Gcm() });
 const wrapSize = 146;
 const maxSigned = (1n << 63n) - 1n;
+const p256Order = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n;
 
 function label(value: string): Uint8Array { return encoder.encode(`${value}\0`); }
 function concat(...parts: Uint8Array[]): Uint8Array {
@@ -31,6 +32,25 @@ function number64(data: Uint8Array, offset: number): bigint {
 }
 function pointShape(point: Uint8Array): void {
   if (point.length !== 65 || point[0] !== 4) fail("invalid P-256 point encoding");
+}
+function scalar(bytes: Uint8Array): bigint {
+  return bytes.reduce((value, byte) => (value << 8n) | BigInt(byte), 0n);
+}
+function fixed32(value: bigint): Uint8Array {
+  const out = new Uint8Array(32);
+  for (let index = 31; index >= 0; index--) { out[index] = Number(value & 255n); value >>= 8n; }
+  return out;
+}
+/** Canonical draft sender conversion for Web Crypto's fixed-width P-256 r||s output. */
+export function canonicalP256Signature(raw: Uint8Array): Uint8Array {
+  if (raw.length !== 64) fail("signature width");
+  const r = scalar(raw.subarray(0, 32));
+  const s = scalar(raw.subarray(32));
+  if (r === 0n || r >= p256Order || s === 0n || s >= p256Order) fail("signature scalar range");
+  return concat(fixed32(r), fixed32(s > (p256Order >> 1n) ? p256Order - s : s));
+}
+export function isCanonicalP256Signature(raw: Uint8Array): boolean {
+  try { return equal(raw, canonicalP256Signature(raw)); } catch { return false; }
 }
 function peerValue(bytes: Uint8Array): string {
   if (bytes.length < 3 || bytes.length > 16 || bytes[0] !== 43 || bytes[1] < 49 || bytes[1] > 57 ||
