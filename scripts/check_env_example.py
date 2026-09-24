@@ -31,6 +31,7 @@ TEST_ONLY = {
 # are intentionally not forwarded as app environment variables.
 COMPOSE_ONLY = {
     "POSTGRES_PASSWORD", "RUNTIME_DATABASE_PASSWORD", "APP_PORT", "MIGRATIONS_DIR",
+    "EDGE_BIND", "EDGE_DOMAIN", "EDGE_HTTP_PORT", "EDGE_HTTPS_PORT",
 }
 
 

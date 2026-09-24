@@ -40,6 +40,8 @@ services:
     entrypoint: ["/usr/local/bin/zrotext-migrator"]
     environment:
       DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
+      DATABASE_TLS_CA_PEM_B64:
+      DATABASE_ALLOW_PLAINTEXT:
       MIGRATIONS_DIR: /opt/zrotext/migrations
     read_only: true
     security_opt: [no-new-privileges:true]
@@ -70,6 +72,8 @@ services:
     <<: *app
     environment:
       DATABASE_URL: postgres://zrotext_runtime:${RUNTIME_DATABASE_PASSWORD:?set RUNTIME_DATABASE_PASSWORD}@db:5432/zrotext
+      DATABASE_TLS_CA_PEM_B64:
+      DATABASE_ALLOW_PLAINTEXT:
       SITE_ID: ${SITE_ID:-local-a}
       INSTANCE_ID: ${INSTANCE_ID:-api-1}
       DEPLOYMENT_EPOCH: ${DEPLOYMENT_EPOCH:-1}
@@ -132,6 +136,8 @@ services:
     profiles: [two-hub]
     environment:
       DATABASE_URL: postgres://zrotext_runtime:${RUNTIME_DATABASE_PASSWORD:?set RUNTIME_DATABASE_PASSWORD}@db:5432/zrotext
+      DATABASE_TLS_CA_PEM_B64:
+      DATABASE_ALLOW_PLAINTEXT:
       SITE_ID: local-b
       INSTANCE_ID: api-2
       DEPLOYMENT_EPOCH: ${DEPLOYMENT_EPOCH:-1}
