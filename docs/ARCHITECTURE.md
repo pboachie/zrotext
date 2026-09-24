@@ -123,9 +123,11 @@ Dispatch must pace each device, allow one radio operation at a time, and bound e
 
 The server mounts these routes only when `AUTH_ORIGIN`, `AUTH_TOKEN_PEPPER_B64`, and
 `ENROLLMENT_TOKEN_PEPPER_B64` are configured. New account registration also
-requires a verification mail transport and an explicit allowlist or open
-registration mode; it is closed by default. Closing registration does not
-disable existing owner login. Device proof establishes an enrolled
+requires a verification mail transport and explicit allowlist or open
+registration mode; it is closed by default. The first verified owner is
+created by a local operator CLI on an empty database. Allowlist mode also
+requires an address-bound token derived from a private operator key. Closing
+registration does not disable existing owner login. Device proof establishes an enrolled
 identity for the authenticated device stream.
 
 | Method/path | Current contract |

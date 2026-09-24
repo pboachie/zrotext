@@ -15,15 +15,20 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{delete, get, post},
 };
+use base64::{Engine, engine::general_purpose::STANDARD};
+use hmac::{Hmac, Mac, digest::KeyInit};
 use lettre::{
     AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
     transport::smtp::authentication::Credentials,
 };
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use std::{collections::HashSet, future::Future, pin::Pin, sync::Arc, time::Duration};
+use subtle::ConstantTimeEq;
 use tokio::sync::Semaphore;
 use tokio_postgres::Client;
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 const SESSION_COOKIE: &str = "__Host-zrotext_session";
 const CSRF_COOKIE: &str = "__Host-zrotext_csrf";
@@ -137,13 +142,14 @@ impl VerificationDispatcher for SmtpVerificationDispatcher {
 
 /// Admission applies only to new accounts. Closing registration never disables
 /// login, verification, or recovery for owners already in the database.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub enum RegistrationPolicy {
     #[default]
     Closed,
     Allowlist {
         emails: HashSet<String>,
         domains: HashSet<String>,
+        enrollment_key: [u8; 32],
     },
     Open,
 }
@@ -153,7 +159,21 @@ impl RegistrationPolicy {
         mode: Option<&str>,
         allowed_emails: Option<&str>,
         allowed_domains: Option<&str>,
+        enrollment_key_b64: Option<&str>,
     ) -> Result<Self, &'static str> {
+        let enrollment_key = enrollment_key_b64
+            .map(|encoded| {
+                let decoded = Zeroizing::new(
+                    STANDARD
+                        .decode(encoded)
+                        .map_err(|_| "invalid REGISTRATION_ENROLLMENT_KEY_B64")?,
+                );
+                decoded
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| "invalid REGISTRATION_ENROLLMENT_KEY_B64")
+            })
+            .transpose()?;
         let emails = parse_entries(
             allowed_emails,
             "invalid REGISTRATION_ALLOWED_EMAILS",
@@ -172,21 +192,74 @@ impl RegistrationPolicy {
             },
         )?;
         match mode.unwrap_or("closed") {
-            "closed" if emails.is_empty() && domains.is_empty() => Ok(Self::Closed),
-            "open" if emails.is_empty() && domains.is_empty() => Ok(Self::Open),
-            "allowlist" if !emails.is_empty() || !domains.is_empty() => {
-                Ok(Self::Allowlist { emails, domains })
+            "closed" if emails.is_empty() && domains.is_empty() && enrollment_key.is_none() => {
+                Ok(Self::Closed)
+            }
+            "open" if emails.is_empty() && domains.is_empty() && enrollment_key.is_none() => {
+                Ok(Self::Open)
+            }
+            "allowlist"
+                if (!emails.is_empty() || !domains.is_empty()) && enrollment_key.is_some() =>
+            {
+                Ok(Self::Allowlist {
+                    emails,
+                    domains,
+                    enrollment_key: enrollment_key.expect("checked above"),
+                })
             }
             "closed" | "open" | "allowlist" => Err("REGISTRATION_MODE and allowlists disagree"),
             _ => Err("REGISTRATION_MODE must be closed, allowlist, or open"),
         }
     }
 
+    fn admitted_email(
+        &self,
+        headers: &HeaderMap,
+        raw_email: &str,
+    ) -> Result<Option<String>, AuthError> {
+        match self {
+            Self::Closed => Ok(None),
+            Self::Open => auth::normalize_email(raw_email).map(Some),
+            Self::Allowlist { enrollment_key, .. } => {
+                let candidate = headers
+                    .get("x-zrotext-registration-token")
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| STANDARD.decode(value).ok())
+                    .map(Zeroizing::new);
+                let Some(candidate) = candidate.filter(|candidate| candidate.len() == 32) else {
+                    return Ok(None);
+                };
+                let Ok(email) = auth::normalize_email(raw_email) else {
+                    return Ok(None);
+                };
+                let expected = invite_digest(enrollment_key, &email);
+                let valid = bool::from(expected.as_slice().ct_eq(candidate.as_slice()));
+                let allowed = self.admits(&email);
+                Ok((allowed & valid).then_some(email))
+            }
+        }
+    }
+
+    /// Mint a token bound to one allowlisted email. Only the operator CLI
+    /// should expose this; the master key never leaves private configuration.
+    pub fn issue_invite(&self, raw_email: &str) -> Result<String, &'static str> {
+        let email = auth::normalize_email(raw_email).map_err(|_| "invalid invited email")?;
+        let Self::Allowlist { enrollment_key, .. } = self else {
+            return Err("invite issuance requires allowlist mode");
+        };
+        if !self.admits(&email) {
+            return Err("email is not allowlisted");
+        }
+        Ok(STANDARD.encode(invite_digest(enrollment_key, &email)))
+    }
+
     fn admits(&self, normalized_email: &str) -> bool {
         match self {
             Self::Closed => false,
             Self::Open => true,
-            Self::Allowlist { emails, domains } => {
+            Self::Allowlist {
+                emails, domains, ..
+            } => {
                 emails.contains(normalized_email)
                     || normalized_email
                         .split_once('@')
@@ -194,6 +267,13 @@ impl RegistrationPolicy {
             }
         }
     }
+}
+
+fn invite_digest(key: &[u8; 32], normalized_email: &str) -> [u8; 32] {
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts 32-byte keys");
+    mac.update(b"zrotext-registration-invite-v1\0");
+    mac.update(normalized_email.as_bytes());
+    mac.finalize().into_bytes().into()
 }
 
 fn parse_entries<F>(
@@ -452,15 +532,18 @@ async fn register(
     Json(body): Json<RegisterBody>,
 ) -> Result<StatusCode, AuthHttpError> {
     require_origin(&headers, &state.canonical_origin)?;
+    // Private modes first require an address-bound operator invite. Missing
+    // or malformed credentials return before email parsing; every denied
+    // request avoids the database, abuse budget, and password hashing.
+    let Some(subject) = state
+        .registration_policy
+        .admitted_email(&headers, &body.email)
+        .map_err(map_auth)?
+    else {
+        return Ok(StatusCode::ACCEPTED);
+    };
     if !state.dispatcher.ready() {
         return Err(AuthHttpError::Unavailable);
-    }
-    let subject = auth::normalize_email(&body.email).map_err(map_auth)?;
-    // Match the accepted response without queuing mail. Do not consume a
-    // database connection, abuse-budget row, or hashing capacity for traffic
-    // that this deployment does not admit.
-    if !state.registration_policy.admits(&subject) {
-        return Ok(StatusCode::ACCEPTED);
     }
     let mut client = connect(&state.database_url).await?;
     if !abuse_limits::consume(&client, &state.hasher, Limit::Registration, Some(&subject))
@@ -1200,6 +1283,15 @@ mod tests {
             .unwrap()
     }
 
+    fn invite_post(uri: &str, body: serde_json::Value, token: &str) -> Request<Body> {
+        let mut request = json_post(uri, body);
+        request.headers_mut().insert(
+            "x-zrotext-registration-token",
+            HeaderValue::from_str(token).unwrap(),
+        );
+        request
+    }
+
     fn owner_post(uri: &str, body: serde_json::Value, cookies: &str, csrf: &str) -> Request<Body> {
         let mut request = json_post(uri, body);
         request
@@ -1247,37 +1339,122 @@ mod tests {
 
     #[test]
     fn registration_policy_defaults_closed_and_matches_exact_addresses_or_domains() {
+        let token = STANDARD.encode([7u8; 32]);
+        let mut headers = HeaderMap::new();
         assert!(
-            !RegistrationPolicy::parse(None, None, None)
+            RegistrationPolicy::parse(None, None, None, None)
                 .unwrap()
-                .admits("owner@example.test")
+                .admitted_email(&headers, "owner@example.test")
+                .unwrap()
+                .is_none()
         );
         let allowlist = RegistrationPolicy::parse(
             Some("allowlist"),
             Some("OWNER@Example.Test"),
             Some("Team.Example.Test"),
+            Some(&token),
         )
         .unwrap();
+        assert!(
+            allowlist
+                .admitted_email(&headers, "owner@example.test")
+                .unwrap()
+                .is_none()
+        );
+        headers.insert(
+            "x-zrotext-registration-token",
+            HeaderValue::from_static("wrong"),
+        );
+        assert!(
+            allowlist
+                .admitted_email(&headers, "owner@example.test")
+                .unwrap()
+                .is_none()
+        );
+        headers.insert(
+            "x-zrotext-registration-token",
+            HeaderValue::from_str(&token).unwrap(),
+        );
+        assert!(
+            allowlist
+                .admitted_email(&headers, "owner@example.test")
+                .unwrap()
+                .is_none()
+        );
+        let owner_invite = allowlist.issue_invite("OWNER@EXAMPLE.TEST").unwrap();
+        headers.insert(
+            "x-zrotext-registration-token",
+            HeaderValue::from_str(&owner_invite).unwrap(),
+        );
+        assert_eq!(
+            allowlist
+                .admitted_email(&headers, "owner@example.test")
+                .unwrap()
+                .as_deref(),
+            Some("owner@example.test")
+        );
+        assert!(
+            allowlist
+                .admitted_email(&headers, "another@team.example.test")
+                .unwrap()
+                .is_none()
+        );
+        let domain_invite = allowlist.issue_invite("another@team.example.test").unwrap();
+        headers.insert(
+            "x-zrotext-registration-token",
+            HeaderValue::from_str(&domain_invite).unwrap(),
+        );
+        assert_eq!(
+            allowlist
+                .admitted_email(&headers, "another@team.example.test")
+                .unwrap()
+                .as_deref(),
+            Some("another@team.example.test")
+        );
+        assert!(allowlist.issue_invite("someone@example.test").is_err());
         assert!(allowlist.admits("owner@example.test"));
         assert!(allowlist.admits("another@team.example.test"));
         assert!(!allowlist.admits("owner@evil.example.test"));
         assert!(!allowlist.admits("another@sub.team.example.test"));
         assert!(!allowlist.admits("another@example.test"));
         assert!(
-            RegistrationPolicy::parse(Some("open"), None, None)
+            RegistrationPolicy::parse(Some("open"), None, None, None)
                 .unwrap()
                 .admits("another@example.test")
         );
-        for (mode, emails, domains) in [
-            (Some("allowlist"), None, None),
-            (Some("closed"), Some("owner@example.test"), None),
-            (Some("open"), None, Some("example.test")),
-            (Some("allowlist"), Some("owner@example.test,"), None),
-            (Some("allowlist"), None, Some("example.test,evil..test")),
-            (Some("allowlist"), None, Some("example.test@evil.test")),
-            (Some("OPEN"), None, None),
+        for (mode, emails, domains, key) in [
+            (Some("allowlist"), None, None, Some(token.as_str())),
+            (Some("allowlist"), Some("owner@example.test"), None, None),
+            (Some("closed"), Some("owner@example.test"), None, None),
+            (Some("closed"), None, None, Some(token.as_str())),
+            (Some("open"), None, Some("example.test"), None),
+            (
+                Some("allowlist"),
+                Some("owner@example.test,"),
+                None,
+                Some(token.as_str()),
+            ),
+            (
+                Some("allowlist"),
+                None,
+                Some("example.test,evil..test"),
+                Some(token.as_str()),
+            ),
+            (
+                Some("allowlist"),
+                None,
+                Some("example.test@evil.test"),
+                Some(token.as_str()),
+            ),
+            (
+                Some("allowlist"),
+                Some("owner@example.test"),
+                None,
+                Some("short"),
+            ),
+            (Some("OPEN"), None, None, None),
         ] {
-            assert!(RegistrationPolicy::parse(mode, emails, domains).is_err());
+            assert!(RegistrationPolicy::parse(mode, emails, domains, key).is_err());
         }
     }
 
@@ -1351,7 +1528,8 @@ mod tests {
             "https://zrotext.example".to_owned(),
             Arc::new(DisabledVerificationDispatcher),
         )
-        .unwrap();
+        .unwrap()
+        .with_registration_policy(RegistrationPolicy::Open);
         let request = Request::builder()
             .method("POST")
             .uri("/register")
@@ -1368,6 +1546,43 @@ mod tests {
             .await
             .unwrap();
         assert!(!String::from_utf8_lossy(&body).contains("ztv_"));
+    }
+
+    #[tokio::test]
+    async fn allowlist_without_address_bound_invite_never_reaches_database() {
+        let master = STANDARD.encode([3u8; 32]);
+        let policy = RegistrationPolicy::parse(
+            Some("allowlist"),
+            Some("owner@example.test"),
+            None,
+            Some(&master),
+        )
+        .unwrap();
+        let state = AuthHttpState::new(
+            "postgres://unused".to_owned(),
+            Arc::new(TokenHasher::new(crate::test_keys::key(7)).unwrap()),
+            "https://zrotext.example".to_owned(),
+            Arc::new(CaptureVerification(Mutex::new(None))),
+        )
+        .unwrap()
+        .with_registration_policy(policy);
+        let app = router(state);
+        for request in [
+            json_post(
+                "/register",
+                serde_json::json!({"email":"owner@example.test","password":"short"}),
+            ),
+            invite_post(
+                "/register",
+                serde_json::json!({"email":"not-an-email","password":"short"}),
+                &STANDARD.encode([4u8; 32]),
+            ),
+        ] {
+            assert_eq!(
+                app.clone().oneshot(request).await.unwrap().status(),
+                StatusCode::ACCEPTED
+            );
+        }
     }
 
     #[tokio::test]
@@ -1463,15 +1678,58 @@ mod tests {
                 .status(),
             StatusCode::ACCEPTED
         );
-        let state = state.with_registration_policy(
-            RegistrationPolicy::parse(Some("allowlist"), Some("OWNER@EXAMPLE.TEST"), None).unwrap(),
-        );
+        let master_key = STANDARD.encode([9u8; 32]);
+        let policy = RegistrationPolicy::parse(
+            Some("allowlist"),
+            Some("OWNER@EXAMPLE.TEST,SECOND@EXAMPLE.TEST"),
+            None,
+            Some(&master_key),
+        )
+        .unwrap();
+        let invite = policy.issue_invite("owner@example.test").unwrap();
+        let state = state.with_registration_policy(policy);
         let app = router(state.clone());
         assert_eq!(
             app.clone()
                 .oneshot(json_post(
                     "/register",
+                    serde_json::json!({"email":"owner@example.test","password":"short"}),
+                ))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::ACCEPTED
+        );
+        assert_eq!(
+            app.clone()
+                .oneshot(invite_post(
+                    "/register",
+                    serde_json::json!({"email":"not-an-email","password":"short"}),
+                    &STANDARD.encode([8u8; 32]),
+                ))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::ACCEPTED
+        );
+        assert_eq!(
+            app.clone()
+                .oneshot(invite_post(
+                    "/register",
                     serde_json::json!({"email":"stranger@example.test","password":"correct horse 123"}),
+                    &invite,
+                ))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::ACCEPTED
+        );
+        assert_eq!(
+            app.clone()
+                .oneshot(invite_post(
+                    "/register",
+                    serde_json::json!({"email":"second@example.test","password":"correct horse 123"}),
+                    &invite,
                 ))
                 .await
                 .unwrap()
@@ -1496,9 +1754,10 @@ mod tests {
         );
         let response = app
             .clone()
-            .oneshot(json_post(
+            .oneshot(invite_post(
                 "/register",
                 serde_json::json!({"email":"owner@example.test","password":"correct horse 123"}),
+                &invite,
             ))
             .await
             .unwrap();

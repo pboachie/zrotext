@@ -19,6 +19,7 @@ RUN cargo build --locked --release -p zrotext-server -p zrotext-migrator
 FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/* && useradd --system --uid 10001 zrotext
 COPY --from=build /src/target/release/zrotext-server /usr/local/bin/zrotext-server
+COPY --from=build /src/target/release/zrotext-admin /usr/local/bin/zrotext-admin
 COPY --from=build /src/target/release/zrotext-webhook-kek-rewrap /usr/local/bin/zrotext-webhook-kek-rewrap
 COPY --from=build /src/target/release/zrotext-migrator /usr/local/bin/zrotext-migrator
 COPY deploy/compose/migrations /opt/zrotext/migrations
