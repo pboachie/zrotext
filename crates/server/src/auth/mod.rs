@@ -7,6 +7,7 @@ use argon2::{Algorithm, Argon2, Params, PasswordHash, PasswordHasher, PasswordVe
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use hmac::{Hmac, Mac, digest::KeyInit};
 use sha2::Sha256;
+use std::sync::OnceLock;
 use subtle::ConstantTimeEq;
 use thiserror::Error;
 use tokio_postgres::Client;
@@ -256,6 +257,19 @@ fn password_engine() -> Result<Argon2<'static>, AuthError> {
     Ok(Argon2::new(Algorithm::Argon2id, Version::V0x13, params))
 }
 
+/// Unknown accounts must incur the same password verification work as known
+/// accounts. The verifier is process-local and never represents a real user.
+fn dummy_password_hash() -> &'static str {
+    static HASH: OnceLock<String> = OnceLock::new();
+    HASH.get_or_init(|| {
+        password_engine()
+            .expect("fixed Argon2 parameters")
+            .hash_password(b"unregistered-account")
+            .expect("fixed Argon2 parameters and random salt")
+            .to_string()
+    })
+}
+
 pub(crate) fn normalize_email(email: &str) -> Result<String, AuthError> {
     let email = email.trim().to_ascii_lowercase();
     if email.len() < 3
@@ -398,16 +412,18 @@ pub async fn login(
             &[&email],
         )
         .await?;
-    let Some(row) = row else {
-        return Err(AuthError::InvalidCredentials);
-    };
-    let user_id: Uuid = row.get(0);
-    let account_id: Uuid = row.get(1);
-    let stored: String = row.get(2);
-    let parsed = PasswordHash::new(&stored).map_err(|_| AuthError::InvalidCredentials)?;
+    let stored = row.as_ref().map(|row| row.get::<_, String>(2));
+    let parsed = PasswordHash::new(stored.as_deref().unwrap_or_else(|| dummy_password_hash()))
+        .map_err(|_| AuthError::InvalidCredentials)?;
+    #[cfg(test)]
+    tests::PASSWORD_VERIFICATIONS.with(|count| count.set(count.get() + 1));
     Argon2::default()
         .verify_password(password.as_bytes(), &parsed)
         .map_err(|_| AuthError::InvalidCredentials)?;
+    // Even a password matching the dummy verifier cannot authenticate.
+    let row = row.ok_or(AuthError::InvalidCredentials)?;
+    let user_id: Uuid = row.get(0);
+    let account_id: Uuid = row.get(1);
     if !row.get::<_, bool>(3) {
         return Err(AuthError::EmailNotVerified);
     }
@@ -651,6 +667,12 @@ pub fn session_cookies(credentials: &SessionCredentials) -> [String; 2] {
 mod tests {
     use super::*;
 
+    // Tokio's default test runtime stays on one thread; separate tests cannot
+    // satisfy this counter through concurrent password checks.
+    thread_local! {
+        pub(super) static PASSWORD_VERIFICATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
     #[test]
     fn tenant_context_rejects_cross_account_ids() {
         let owner = Uuid::new_v4();
@@ -780,6 +802,22 @@ mod tests {
         let b = register(&mut client, &hasher, "b@example.test", "correct horse 456")
             .await
             .unwrap();
+        for password in ["wrong-password", "unregistered-account"] {
+            let before = PASSWORD_VERIFICATIONS.get();
+            assert!(matches!(
+                login(&client, &hasher, "unknown@example.test", password).await,
+                Err(AuthError::InvalidCredentials)
+            ));
+            assert_eq!(PASSWORD_VERIFICATIONS.get(), before + 1);
+        }
+        assert_eq!(
+            client
+                .query_one("SELECT count(*) FROM sessions", &[])
+                .await
+                .unwrap()
+                .get::<_, i64>(0),
+            0
+        );
         assert!(matches!(
             login(&client, &hasher, "a@example.test", "correct horse 123").await,
             Err(AuthError::EmailNotVerified)
