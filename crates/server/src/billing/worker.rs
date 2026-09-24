@@ -208,11 +208,18 @@ pub(super) fn parse_subscription(body: &[u8]) -> Result<SubscriptionSnapshot, Bi
     } else {
         None
     };
+    let latest_invoice_id = value["latest_invoice"]
+        .as_str()
+        .or_else(|| value["latest_invoice"]["id"].as_str())
+        .map(|id| valid_id(id, "in_"))
+        .transpose()?
+        .map(str::to_owned);
     Ok(SubscriptionSnapshot {
         subscription_id,
         customer_id,
         status,
         price_id,
+        latest_invoice_id,
     })
 }
 
@@ -254,10 +261,11 @@ mod tests {
 
     #[test]
     fn parses_current_test_subscription_shape() {
-        let fixture = br#"{"id":"sub_fixture1","object":"subscription","livemode":false,"customer":"cus_fixture1","status":"past_due","items":{"object":"list","has_more":false,"data":[{"price":{"id":"price_fixture1"}}]}}"#;
+        let fixture = br#"{"id":"sub_fixture1","object":"subscription","livemode":false,"customer":"cus_fixture1","status":"past_due","latest_invoice":"in_fixture1","items":{"object":"list","has_more":false,"data":[{"price":{"id":"price_fixture1"}}]}}"#;
         let parsed = parse_subscription(fixture).unwrap();
         assert_eq!(parsed.status, "past_due");
         assert_eq!(parsed.price_id.as_deref(), Some("price_fixture1"));
+        assert_eq!(parsed.latest_invoice_id.as_deref(), Some("in_fixture1"));
         assert!(parse_subscription(&fixture.replace_bytes(b"false", b"true")).is_err());
     }
 

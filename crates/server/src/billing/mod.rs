@@ -49,6 +49,8 @@ pub struct VerifiedEvent {
     pub subscription_id: Option<String>,
     /// Only populated for verified test-mode refund or chargeback events.
     pub risk_charge_id: Option<String>,
+    /// Creation time on a signed invoice.payment_failed event, in Unix seconds.
+    pub payment_failed_at_unix: Option<i64>,
     pub body_sha256: [u8; 32],
 }
 
@@ -125,6 +127,16 @@ pub fn verify_event(
     if event_type.len() > 100 || event_type.is_empty() {
         return Err(BillingError::InvalidEvent);
     }
+    let payment_failed_at_unix = if event_type == "invoice.payment_failed" {
+        Some(
+            json["created"]
+                .as_i64()
+                .filter(|created| (946_684_800..=253_402_300_799).contains(created))
+                .ok_or(BillingError::InvalidEvent)?,
+        )
+    } else {
+        None
+    };
     let object = &json["data"]["object"];
     let (object_id, customer_id, subscription_id, risk_charge_id) = match event_type {
         "checkout.session.completed" => (
@@ -217,6 +229,7 @@ pub fn verify_event(
         customer_id,
         subscription_id,
         risk_charge_id,
+        payment_failed_at_unix,
         body_sha256: Sha256::digest(body).into(),
     })
 }
@@ -284,9 +297,10 @@ pub async fn ingest(
         _ => "queued",
     };
     let inserted = tx.execute(
-        "INSERT INTO billing_events(stripe_event_id,event_type,object_id,stripe_customer_id,stripe_subscription_id,account_id,body_sha256,disposition) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(stripe_event_id) DO NOTHING",
+        "INSERT INTO billing_events(stripe_event_id,event_type,object_id,stripe_customer_id,stripe_subscription_id,account_id,body_sha256,disposition,payment_failed_at,received_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,CASE WHEN $9::bigint IS NULL THEN NULL ELSE LEAST(to_timestamp($9::bigint::double precision),clock_timestamp()) END,clock_timestamp()) ON CONFLICT(stripe_event_id) DO NOTHING",
         &[&event.event_id, &event.event_type, &event.object_id, &event.customer_id,
-            &event.subscription_id, &account_id, &event.body_sha256.as_slice(), &disposition],
+            &event.subscription_id, &account_id, &event.body_sha256.as_slice(), &disposition,
+            &event.payment_failed_at_unix],
     ).await?;
     if inserted == 0 {
         let existing: Vec<u8> = tx
@@ -426,6 +440,8 @@ pub struct SubscriptionSnapshot {
     pub customer_id: String,
     pub status: String,
     pub price_id: Option<String>,
+    /// Current provider invoice; grace never uses a failure from another bill.
+    pub latest_invoice_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -502,13 +518,14 @@ pub async fn reset_test_quotas_on_start(
     });
     let schema = db
         .query_one(
-            "SELECT to_regclass('billing_quota_audit') IS NOT NULL, to_regclass('billing_risk_events') IS NOT NULL AND to_regclass('billing_payment_holds') IS NOT NULL, to_regclass('billing_device_cap_config') IS NOT NULL AND to_regclass('billing_device_caps') IS NOT NULL AND to_regclass('billing_device_cap_audit') IS NOT NULL",
+            "SELECT to_regclass('billing_quota_audit') IS NOT NULL, to_regclass('billing_risk_events') IS NOT NULL AND to_regclass('billing_payment_holds') IS NOT NULL, to_regclass('billing_device_cap_config') IS NOT NULL AND to_regclass('billing_device_caps') IS NOT NULL AND to_regclass('billing_device_cap_audit') IS NOT NULL, EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='billing_subscriptions' AND column_name='payment_grace_started_at') AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='billing_subscriptions' AND column_name='last_non_past_due_at') AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='billing_subscriptions' AND column_name='latest_invoice_id') AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='billing_subscriptions' AND column_name='payment_grace_invoice_id') AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='billing_events' AND column_name='payment_failed_at')",
             &[],
         )
         .await?;
     let quota_available: bool = schema.get(0);
     let risk_available: bool = schema.get(1);
     let device_caps_available: bool = schema.get(2);
+    let payment_grace_available: bool = schema.get(3);
     if !quota_available {
         return if require_schema {
             Err(BillingError::InvalidEvent)
@@ -522,6 +539,9 @@ pub async fn reset_test_quotas_on_start(
         return Err(BillingError::InvalidEvent);
     }
     if require_schema && !device_caps_available {
+        return Err(BillingError::InvalidEvent);
+    }
+    if require_schema && !payment_grace_available {
         return Err(BillingError::InvalidEvent);
     }
     let tx = db.transaction().await?;
@@ -664,9 +684,60 @@ pub async fn reconcile_snapshot_with_quotas(
         .price_id
         .as_ref()
         .is_some_and(|price| recognized_prices.contains(price));
+    let prior = tx.query_opt(
+        "SELECT stripe_status,extract(epoch FROM payment_grace_started_at)::bigint,payment_grace_invoice_id FROM billing_subscriptions WHERE stripe_subscription_id=$1 AND account_id=$2 FOR UPDATE",
+        &[&snapshot.subscription_id, &account_id],
+    ).await?;
+    let prior_past_due = prior
+        .as_ref()
+        .is_some_and(|row| row.get::<_, String>(0) == "past_due");
+    let prior_start: Option<i64> = prior.as_ref().and_then(|row| row.get(1));
+    let prior_invoice: Option<String> = prior.as_ref().and_then(|row| row.get(2));
+    let (grace_started_at, grace_invoice_id) = if snapshot.status == "past_due" {
+        if prior_past_due
+            && prior_start.is_some()
+            && prior_invoice.as_ref() == snapshot.latest_invoice_id.as_ref()
+        {
+            (prior_start, prior_invoice)
+        } else {
+            let candidate: Option<i64> = if let Some(invoice_id) = &snapshot.latest_invoice_id {
+                // The fetched current invoice binds the failure. After a
+                // provider-confirmed recovery, both creation and receipt must
+                // be later than that boundary; an old event delivered late is
+                // ambiguous and must fail closed even if its invoice is reused.
+                tx.query_one(
+                    "SELECT extract(epoch FROM min(e.payment_failed_at))::bigint FROM billing_events e LEFT JOIN billing_subscriptions s ON s.stripe_subscription_id=e.stripe_subscription_id AND s.account_id=e.account_id WHERE e.account_id=$1 AND e.stripe_subscription_id=$2 AND e.object_id=$3 AND e.payment_failed_at IS NOT NULL AND (s.last_non_past_due_at IS NULL OR (e.payment_failed_at > s.last_non_past_due_at AND e.received_at > s.last_non_past_due_at))",
+                    &[&account_id, &snapshot.subscription_id, &invoice_id],
+                ).await?.get(0)
+            } else {
+                None
+            };
+            if let (Some(candidate), Some(invoice_id)) = (candidate, &snapshot.latest_invoice_id) {
+                // Rebinding within one continuous delinquency never extends
+                // its original deadline to a later invoice's failure date.
+                (
+                    Some(if prior_past_due {
+                        prior_start.map_or(candidate, |start| start.min(candidate))
+                    } else {
+                        candidate
+                    }),
+                    Some(invoice_id.clone()),
+                )
+            } else if prior_past_due {
+                // Keep the old anchor but close admission while the provider's
+                // current invoice differs or is absent. A later matching event
+                // may rebind without resetting the original deadline.
+                (prior_start, prior_invoice)
+            } else {
+                (None, None)
+            }
+        }
+    } else {
+        (None, None)
+    };
     tx.execute(
-        "INSERT INTO billing_subscriptions(stripe_subscription_id,account_id,stripe_customer_id,stripe_status,stripe_price_id,recognized_price) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(stripe_subscription_id) DO UPDATE SET stripe_status=EXCLUDED.stripe_status,stripe_price_id=EXCLUDED.stripe_price_id,recognized_price=EXCLUDED.recognized_price,reconciled_at=now() WHERE billing_subscriptions.account_id=EXCLUDED.account_id AND billing_subscriptions.stripe_customer_id=EXCLUDED.stripe_customer_id",
-        &[&snapshot.subscription_id, &account_id, &snapshot.customer_id, &snapshot.status, &snapshot.price_id, &recognized],
+        "INSERT INTO billing_subscriptions(stripe_subscription_id,account_id,stripe_customer_id,stripe_status,stripe_price_id,recognized_price,payment_grace_started_at,last_non_past_due_at,latest_invoice_id,payment_grace_invoice_id) VALUES($1,$2,$3,$4,$5,$6,CASE WHEN $7::bigint IS NULL THEN NULL ELSE to_timestamp($7::bigint::double precision) END,CASE WHEN $4='past_due' THEN NULL ELSE clock_timestamp() END,$8,$9) ON CONFLICT(stripe_subscription_id) DO UPDATE SET stripe_status=EXCLUDED.stripe_status,stripe_price_id=EXCLUDED.stripe_price_id,recognized_price=EXCLUDED.recognized_price,payment_grace_started_at=EXCLUDED.payment_grace_started_at,last_non_past_due_at=CASE WHEN EXCLUDED.stripe_status='past_due' THEN billing_subscriptions.last_non_past_due_at ELSE clock_timestamp() END,latest_invoice_id=EXCLUDED.latest_invoice_id,payment_grace_invoice_id=EXCLUDED.payment_grace_invoice_id,reconciled_at=clock_timestamp() WHERE billing_subscriptions.account_id=EXCLUDED.account_id AND billing_subscriptions.stripe_customer_id=EXCLUDED.stripe_customer_id",
+        &[&snapshot.subscription_id, &account_id, &snapshot.customer_id, &snapshot.status, &snapshot.price_id, &recognized, &grace_started_at, &snapshot.latest_invoice_id, &grace_invoice_id],
     ).await?;
     tx.execute(
         "UPDATE billing_reconciliations SET processed_generation=$3,failed_attempts=0,updated_at=now() WHERE stripe_subscription_id=$1 AND account_id=$2",
@@ -694,7 +765,7 @@ async fn project_test_quota(
     plans: &[TestQuotaPlan],
 ) -> Result<(), BillingError> {
     let rows = tx.query(
-        "SELECT stripe_status,stripe_price_id,recognized_price FROM billing_subscriptions WHERE account_id=$1",
+        "SELECT stripe_status,stripe_price_id,recognized_price,payment_grace_started_at IS NOT NULL AND payment_grace_invoice_id IS NOT DISTINCT FROM latest_invoice_id AND payment_grace_started_at+interval '7 days'>clock_timestamp() FROM billing_subscriptions WHERE account_id=$1",
         &[&account_id],
     ).await?;
     // Other nonterminal subscriptions make the account ambiguous. Terminal
@@ -711,12 +782,20 @@ async fn project_test_quota(
         let status: String = row.get(0);
         let price: Option<String> = row.get(1);
         let recognized: bool = row.get(2);
-        if status == "active" && recognized {
+        let grace_active: bool = row.get(3);
+        if (status == "active" || (status == "past_due" && grace_active)) && recognized {
             if let Some(plan) = plans
                 .iter()
                 .find(|plan| price.as_deref() == Some(&plan.price_id))
             {
-                (plan.outbound_limit, "active")
+                (
+                    plan.outbound_limit,
+                    if status == "active" {
+                        "active"
+                    } else {
+                        "grace"
+                    },
+                )
             } else {
                 (0, "unmapped")
             }
@@ -751,7 +830,7 @@ async fn project_test_quota(
         ).await?;
     }
     if plans.iter().any(|plan| plan.device_limit.is_some()) {
-        let device_limit = if reason == "active" {
+        let device_limit = if matches!(reason, "active" | "grace") {
             let price: Option<String> = nonterminal[0].get(1);
             plans
                 .iter()
@@ -980,6 +1059,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
             include_str!("../../../../deploy/compose/migrations/018_sealed_inbound_identity.sql"),
             include_str!("../../../../deploy/compose/migrations/019_line_activation_contract.sql"),
+            include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
@@ -1001,7 +1081,7 @@ mod tests {
         let plans =
             parse_test_quota_plans("price_lifecycle1:2,price_lifecycle2:1", &prices).unwrap();
         let active = worker::parse_subscription(br#"{"id":"sub_lifecycle1","object":"subscription","livemode":false,"customer":"cus_lifecycle1","status":"active","items":{"object":"list","has_more":false,"data":[{"price":{"id":"price_lifecycle1"}}]}}"#).unwrap();
-        let past_due = worker::parse_subscription(br#"{"id":"sub_lifecycle1","object":"subscription","livemode":false,"customer":"cus_lifecycle1","status":"past_due","items":{"object":"list","has_more":false,"data":[{"price":{"id":"price_lifecycle1"}}]}}"#).unwrap();
+        let past_due = worker::parse_subscription(br#"{"id":"sub_lifecycle1","object":"subscription","livemode":false,"customer":"cus_lifecycle1","status":"past_due","latest_invoice":"in_lifecyclefailed1","items":{"object":"list","has_more":false,"data":[{"price":{"id":"price_lifecycle1"}}]}}"#).unwrap();
         let downgraded = worker::parse_subscription(br#"{"id":"sub_lifecycle1","object":"subscription","livemode":false,"customer":"cus_lifecycle1","status":"active","items":{"object":"list","has_more":false,"data":[{"price":{"id":"price_lifecycle2"}}]}}"#).unwrap();
         let expiry = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1034,9 +1114,27 @@ mod tests {
                 .unwrap()
                 .created
         );
+        // Model an active provider read before the later failed attempt.
+        db.execute(
+            "UPDATE billing_subscriptions SET last_non_past_due_at=now()-interval '2 minutes' WHERE stripe_subscription_id='sub_lifecycle1'",
+            &[],
+        ).await.unwrap();
 
         // The nested subscription pointer covers the newer Invoice shape.
-        let failed = signed_test_event(br#"{"id":"evt_lifecyclefailed1","object":"event","livemode":false,"type":"invoice.payment_failed","data":{"object":{"id":"in_lifecyclefailed1","customer":"cus_lifecycle1","parent":{"subscription_details":{"subscription":"sub_lifecycle1"}}}}}"#);
+        let failure_created = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+            - 60;
+        let failed_body = serde_json::to_vec(&serde_json::json!({
+            "id": "evt_lifecyclefailed1",
+            "object": "event",
+            "livemode": false,
+            "type": "invoice.payment_failed",
+            "created": failure_created,
+            "data": {"object": {"id": "in_lifecyclefailed1", "customer": "cus_lifecycle1", "parent": {"subscription_details": {"subscription": "sub_lifecycle1"}}}}
+        })).unwrap();
+        let failed = signed_test_event(&failed_body);
         assert_eq!(
             ingest(&mut db, &failed).await.unwrap(),
             IngestResult::Queued
@@ -1062,9 +1160,74 @@ mod tests {
         reconcile_snapshot_with_quotas(&mut db, account, &past_due, &prices, &plans, 2)
             .await
             .unwrap();
+        let grace_start: i64 = db.query_one(
+            "SELECT extract(epoch FROM payment_grace_started_at)::bigint FROM billing_subscriptions WHERE stripe_subscription_id='sub_lifecycle1'",
+            &[],
+        ).await.unwrap().get(0);
+        assert_eq!(grace_start, failure_created);
+        let grace_message = Uuid::new_v4();
+        assert!(
+            DeliveryStore::new(&mut db)
+                .accept_metered(send(grace_message, "within-grace"))
+                .await
+                .unwrap()
+                .created
+        );
+        assert!(
+            DeliveryStore::new(&mut db)
+                .cancel(account, grace_message)
+                .await
+                .unwrap()
+        );
+        // This contender begins before expiry but waits on the account lock
+        // until afterward. Admission must use the post-wait DB clock.
+        db.execute(
+            "UPDATE billing_subscriptions SET payment_grace_started_at=clock_timestamp()-interval '7 days'+interval '1 second' WHERE stripe_subscription_id='sub_lifecycle1'",
+            &[],
+        ).await.unwrap();
+        let (mut locker, connection) = tokio_postgres::connect(&scoped_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let lock = locker.transaction().await.unwrap();
+        lock.query_one(
+            "SELECT id FROM accounts WHERE id=$1 FOR NO KEY UPDATE",
+            &[&account],
+        )
+        .await
+        .unwrap();
+        let contender_url = scoped_url.clone();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let contender = tokio::spawn(async move {
+            let (mut client, connection) = tokio_postgres::connect(&contender_url, NoTls)
+                .await
+                .unwrap();
+            tokio::spawn(async move { connection.await.unwrap() });
+            started_tx.send(()).unwrap();
+            DeliveryStore::new(&mut client)
+                .accept_metered(NewMessage {
+                    account_id: account,
+                    device_id: device,
+                    client_message_id: Uuid::new_v4(),
+                    idempotency_key: "after-lock-expiry",
+                    recipient_e164: "+15551234567",
+                    synthetic_payload: b"synthetic billing fixture",
+                    expires_at_ms: expiry,
+                })
+                .await
+        });
+        started_rx.await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(1_300)).await;
+        lock.commit().await.unwrap();
+        assert!(matches!(
+            contender.await.unwrap(),
+            Err(StoreError::QuotaExceeded)
+        ));
+        db.execute(
+            "UPDATE billing_subscriptions SET payment_grace_started_at=transaction_timestamp()-interval '7 days 1 second' WHERE stripe_subscription_id='sub_lifecycle1'",
+            &[],
+        ).await.unwrap();
         assert!(matches!(
             DeliveryStore::new(&mut db)
-                .accept_metered(send(Uuid::new_v4(), "after-failure"))
+                .accept_metered(send(Uuid::new_v4(), "after-grace"))
                 .await,
             Err(StoreError::QuotaExceeded)
         ));
@@ -1087,10 +1250,22 @@ mod tests {
             .await
             .unwrap();
         let row = db.query_one(
-            "SELECT p.limit_units,u.reserved_units FROM usage_quota_policies p JOIN usage_periods u USING(account_id,metric) WHERE p.account_id=$1",
+            "SELECT p.limit_units,u.reserved_units,u.refunded_units FROM usage_quota_policies p JOIN usage_periods u USING(account_id,metric) WHERE p.account_id=$1",
             &[&account],
         ).await.unwrap();
-        assert_eq!((row.get::<_, i64>(0), row.get::<_, i64>(1)), (0, 1));
+        assert_eq!(
+            (
+                row.get::<_, i64>(0),
+                row.get::<_, i64>(1),
+                row.get::<_, i64>(2)
+            ),
+            (0, 2, 1)
+        );
+        let replayed_start: i64 = db.query_one(
+            "SELECT extract(epoch FROM payment_grace_started_at)::bigint FROM billing_subscriptions WHERE stripe_subscription_id='sub_lifecycle1'",
+            &[],
+        ).await.unwrap().get(0);
+        assert!(replayed_start < grace_start);
 
         let recovered = signed_test_event(br#"{"id":"evt_lifecyclerecovered1","object":"event","livemode":false,"type":"invoice.paid","data":{"object":{"id":"in_lifecyclerecovered1","customer":"cus_lifecycle1","subscription":"sub_lifecycle1"}}}"#);
         assert_eq!(
@@ -1100,6 +1275,11 @@ mod tests {
         reconcile_snapshot_with_quotas(&mut db, account, &active, &prices, &plans, 4)
             .await
             .unwrap();
+        let cleared: bool = db.query_one(
+            "SELECT payment_grace_started_at IS NULL FROM billing_subscriptions WHERE stripe_subscription_id='sub_lifecycle1'",
+            &[],
+        ).await.unwrap().get(0);
+        assert!(cleared);
         assert!(
             DeliveryStore::new(&mut db)
                 .accept_metered(send(Uuid::new_v4(), "recovered"))
@@ -1108,25 +1288,121 @@ mod tests {
                 .created
         );
 
+        // A delayed failure for the recovered invoice reads the current
+        // active subscription and cannot reopen its old grace interval.
+        let stale_failure_body = serde_json::to_vec(&serde_json::json!({
+            "id": "evt_lifecyclestalefailed1",
+            "object": "event",
+            "livemode": false,
+            "type": "invoice.payment_failed",
+            "created": failure_created,
+            "data": {"object": {"id": "in_lifecyclefailed1", "customer": "cus_lifecycle1", "subscription": "sub_lifecycle1"}}
+        })).unwrap();
+        let stale_failure = signed_test_event(&stale_failure_body);
+        assert_eq!(
+            ingest(&mut db, &stale_failure).await.unwrap(),
+            IngestResult::Queued
+        );
+        reconcile_snapshot_with_quotas(&mut db, account, &active, &prices, &plans, 5)
+            .await
+            .unwrap();
+        let cleared: bool = db.query_one(
+            "SELECT payment_grace_started_at IS NULL FROM billing_subscriptions WHERE stripe_subscription_id='sub_lifecycle1'",
+            &[],
+        ).await.unwrap().get(0);
+        assert!(cleared);
+
+        // The old failure is for a different invoice and cannot grant grace
+        // when the current provider snapshot becomes past_due again.
+        let next_past_due = SubscriptionSnapshot {
+            latest_invoice_id: Some("in_lifecyclenew1".into()),
+            ..past_due.clone()
+        };
+        let next_update = signed_test_event(br#"{"id":"evt_lifecyclenextdue1","object":"event","livemode":false,"type":"customer.subscription.updated","data":{"object":{"id":"sub_lifecycle1","customer":"cus_lifecycle1"}}}"#);
+        assert_eq!(
+            ingest(&mut db, &next_update).await.unwrap(),
+            IngestResult::Queued
+        );
+        reconcile_snapshot_with_quotas(&mut db, account, &next_past_due, &prices, &plans, 6)
+            .await
+            .unwrap();
+        let no_grace: bool = db.query_one(
+            "SELECT payment_grace_started_at IS NULL FROM billing_subscriptions WHERE stripe_subscription_id='sub_lifecycle1'",
+            &[],
+        ).await.unwrap().get(0);
+        assert!(no_grace);
+        assert!(matches!(
+            DeliveryStore::new(&mut db)
+                .accept_metered(send(Uuid::new_v4(), "unmatched-invoice"))
+                .await,
+            Err(StoreError::QuotaExceeded)
+        ));
+
+        // A matching signed failure starts a new interval. A future provider
+        // timestamp is capped at database receipt time before persistence.
+        let future_created = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+            + 3_600;
+        let next_failure_body = serde_json::to_vec(&serde_json::json!({
+            "id": "evt_lifecyclenewfailed1",
+            "object": "event",
+            "livemode": false,
+            "type": "invoice.payment_failed",
+            "created": future_created,
+            "data": {"object": {"id": "in_lifecyclenew1", "customer": "cus_lifecycle1", "subscription": "sub_lifecycle1"}}
+        })).unwrap();
+        let next_failure = signed_test_event(&next_failure_body);
+        assert_eq!(
+            ingest(&mut db, &next_failure).await.unwrap(),
+            IngestResult::Queued
+        );
+        reconcile_snapshot_with_quotas(&mut db, account, &next_past_due, &prices, &plans, 7)
+            .await
+            .unwrap();
+        let clock = db.query_one(
+            "SELECT extract(epoch FROM payment_grace_started_at)::bigint,extract(epoch FROM transaction_timestamp())::bigint FROM billing_subscriptions WHERE stripe_subscription_id='sub_lifecycle1'",
+            &[],
+        ).await.unwrap();
+        let new_start: i64 = clock.get(0);
+        let observed_now: i64 = clock.get(1);
+        assert!((observed_now - 5..=observed_now).contains(&new_start));
+        assert!(new_start < future_created);
+        let new_limit: i64 = db.query_one(
+            "SELECT limit_units FROM usage_quota_policies WHERE account_id=$1 AND metric='outbound_message'",
+            &[&account],
+        ).await.unwrap().get(0);
+        assert_eq!(new_limit, 2);
+        let next_recovered = signed_test_event(br#"{"id":"evt_lifecyclenewpaid1","object":"event","livemode":false,"type":"invoice.paid","data":{"object":{"id":"in_lifecyclenew1","customer":"cus_lifecycle1","subscription":"sub_lifecycle1"}}}"#);
+        assert_eq!(
+            ingest(&mut db, &next_recovered).await.unwrap(),
+            IngestResult::Queued
+        );
+        reconcile_snapshot_with_quotas(&mut db, account, &active, &prices, &plans, 8)
+            .await
+            .unwrap();
+
         let downgrade = signed_test_event(br#"{"id":"evt_lifecycledowngrade1","object":"event","livemode":false,"type":"customer.subscription.updated","data":{"object":{"id":"sub_lifecycle1","customer":"cus_lifecycle1"}}}"#);
         assert_eq!(
             ingest(&mut db, &downgrade).await.unwrap(),
             IngestResult::Queued
         );
-        reconcile_snapshot_with_quotas(&mut db, account, &downgraded, &prices, &plans, 5)
+        reconcile_snapshot_with_quotas(&mut db, account, &downgraded, &prices, &plans, 9)
             .await
             .unwrap();
         let row = db.query_one(
-            "SELECT p.limit_units,u.limit_units,u.reserved_units FROM usage_quota_policies p JOIN usage_periods u USING(account_id,metric) WHERE p.account_id=$1",
+            "SELECT p.limit_units,u.limit_units,u.reserved_units,u.refunded_units FROM usage_quota_policies p JOIN usage_periods u USING(account_id,metric) WHERE p.account_id=$1",
             &[&account],
         ).await.unwrap();
         assert_eq!(
             (
                 row.get::<_, i64>(0),
                 row.get::<_, i64>(1),
-                row.get::<_, i64>(2)
+                row.get::<_, i64>(2),
+                row.get::<_, i64>(3)
             ),
-            (1, 1, 2),
+            (1, 1, 3, 1),
             "downgrade preserves existing reservations"
         );
         assert!(matches!(
@@ -1139,24 +1415,325 @@ mod tests {
             "SELECT reconciliation_generation,previous_limit_units,limit_units,reason FROM billing_quota_audit WHERE account_id=$1 ORDER BY id",
             &[&account],
         ).await.unwrap();
-        assert_eq!(audit.len(), 4, "late paid event must not change the policy");
+        assert_eq!(
+            audit.len(),
+            6,
+            "duplicate and late events must not add policy changes"
+        );
         assert_eq!(
             (
                 audit[1].get::<_, i64>(0),
                 audit[1].get::<_, i64>(2),
                 audit[1].get::<_, String>(3)
             ),
-            (2, 0, "inactive".into())
+            (3, 0, "inactive".into())
         );
         assert_eq!(
             (
-                audit[3].get::<_, i64>(0),
-                audit[3].get::<_, i64>(1),
-                audit[3].get::<_, i64>(2)
+                audit[5].get::<_, i64>(0),
+                audit[5].get::<_, i64>(1),
+                audit[5].get::<_, i64>(2)
             ),
-            (5, 2, 1)
+            (9, 2, 1)
         );
         setup
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn delayed_failure_keeps_last_active_boundary_and_recovery_excludes_old_cycle() {
+        let Ok(base_url) = env::var("ZT_AUTH_TEST_DATABASE_URL") else {
+            return;
+        };
+        let (admin, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let schema = format!("billing_delayed_grace_{}", Uuid::new_v4().simple());
+        admin
+            .batch_execute(&format!("CREATE SCHEMA {schema}"))
+            .await
+            .unwrap();
+        let separator = if base_url.contains('?') { '&' } else { '?' };
+        let scoped_url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
+        let (mut db, connection) = tokio_postgres::connect(&scoped_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        for sql in [
+            include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
+            include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+            include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
+            include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
+            include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+            include_str!("../../../../deploy/compose/migrations/006_usage_metering.sql"),
+            include_str!(
+                "../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"
+            ),
+            include_str!("../../../../deploy/compose/migrations/008_stripe_billing_foundation.sql"),
+            include_str!("../../../../deploy/compose/migrations/009_webhook_manual_replay.sql"),
+            include_str!("../../../../deploy/compose/migrations/010_billing_test_entitlement.sql"),
+            include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
+            include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
+            include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+        ] {
+            db.batch_execute(sql).await.unwrap();
+        }
+        let account = Uuid::new_v4();
+        db.execute("INSERT INTO accounts(id) VALUES($1)", &[&account])
+            .await
+            .unwrap();
+        bind_customer(&mut db, account, "cus_delayedgrace1")
+            .await
+            .unwrap();
+        let prices = vec!["price_delayedgrace1".into()];
+        let plans = parse_test_quota_plans("price_delayedgrace1:3", &prices).unwrap();
+        let active = SubscriptionSnapshot {
+            subscription_id: "sub_delayedgrace1".into(),
+            customer_id: "cus_delayedgrace1".into(),
+            status: "active".into(),
+            price_id: Some("price_delayedgrace1".into()),
+            latest_invoice_id: None,
+        };
+        let past_due = SubscriptionSnapshot {
+            status: "past_due".into(),
+            latest_invoice_id: Some("in_delayedgrace1".into()),
+            ..active.clone()
+        };
+        let update =
+            |id: &str| {
+                signed_test_event(&serde_json::to_vec(&serde_json::json!({
+            "id": id,
+            "object": "event",
+            "livemode": false,
+            "type": "customer.subscription.updated",
+            "data": {"object": {"id": "sub_delayedgrace1", "customer": "cus_delayedgrace1"}}
+        })).unwrap())
+            };
+        assert_eq!(
+            ingest(&mut db, &update("evt_delayedactive1"))
+                .await
+                .unwrap(),
+            IngestResult::Queued
+        );
+        reconcile_snapshot_with_quotas(&mut db, account, &active, &prices, &plans, 1)
+            .await
+            .unwrap();
+        db.execute(
+            "UPDATE billing_subscriptions SET last_non_past_due_at=now()-interval '1 hour' WHERE stripe_subscription_id='sub_delayedgrace1'",
+            &[],
+        ).await.unwrap();
+        assert_eq!(
+            ingest(&mut db, &update("evt_delayedpastdue1"))
+                .await
+                .unwrap(),
+            IngestResult::Queued
+        );
+        reconcile_snapshot_with_quotas(&mut db, account, &past_due, &prices, &plans, 2)
+            .await
+            .unwrap();
+        let no_anchor: bool = db.query_one(
+            "SELECT payment_grace_started_at IS NULL FROM billing_subscriptions WHERE stripe_subscription_id='sub_delayedgrace1'",
+            &[],
+        ).await.unwrap().get(0);
+        assert!(no_anchor);
+
+        // Delivery arrives more than five minutes after its signed creation.
+        // Repeated past_due reads must not move the last active boundary.
+        let delayed_created = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+            - 600;
+        let failed_body = serde_json::to_vec(&serde_json::json!({
+            "id": "evt_delayedfailure1",
+            "object": "event",
+            "livemode": false,
+            "type": "invoice.payment_failed",
+            "created": delayed_created,
+            "data": {"object": {"id": "in_delayedgrace1", "customer": "cus_delayedgrace1", "subscription": "sub_delayedgrace1"}}
+        })).unwrap();
+        let delayed = signed_test_event(&failed_body);
+        assert_eq!(
+            ingest(&mut db, &delayed).await.unwrap(),
+            IngestResult::Queued
+        );
+        assert_eq!(
+            ingest(&mut db, &delayed).await.unwrap(),
+            IngestResult::Duplicate
+        );
+        reconcile_snapshot_with_quotas(&mut db, account, &past_due, &prices, &plans, 3)
+            .await
+            .unwrap();
+        let started: i64 = db.query_one(
+            "SELECT extract(epoch FROM payment_grace_started_at)::bigint FROM billing_subscriptions WHERE stripe_subscription_id='sub_delayedgrace1'",
+            &[],
+        ).await.unwrap().get(0);
+        assert_eq!(started, delayed_created);
+        let limit: i64 = db.query_one(
+            "SELECT limit_units FROM usage_quota_policies WHERE account_id=$1 AND metric='outbound_message'",
+            &[&account],
+        ).await.unwrap().get(0);
+        assert_eq!(limit, 3);
+
+        // A newer current invoice invalidates the old binding immediately.
+        // A matching failure can rebind without extending the first deadline.
+        let swapped = SubscriptionSnapshot {
+            latest_invoice_id: Some("in_delayedgrace2".into()),
+            ..past_due.clone()
+        };
+        assert_eq!(
+            ingest(&mut db, &update("evt_delayedswap1")).await.unwrap(),
+            IngestResult::Queued
+        );
+        reconcile_snapshot_with_quotas(&mut db, account, &swapped, &prices, &plans, 4)
+            .await
+            .unwrap();
+        let mismatch = db.query_one(
+            "SELECT payment_grace_invoice_id,latest_invoice_id,extract(epoch FROM payment_grace_started_at)::bigint FROM billing_subscriptions WHERE stripe_subscription_id='sub_delayedgrace1'",
+            &[],
+        ).await.unwrap();
+        assert_eq!(mismatch.get::<_, String>(0), "in_delayedgrace1");
+        assert_eq!(mismatch.get::<_, String>(1), "in_delayedgrace2");
+        assert_eq!(mismatch.get::<_, i64>(2), started);
+        let blocked_limit: i64 = db.query_one(
+            "SELECT limit_units FROM usage_quota_policies WHERE account_id=$1 AND metric='outbound_message'",
+            &[&account],
+        ).await.unwrap().get(0);
+        assert_eq!(blocked_limit, 0);
+        let swapped_created = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+            - 30;
+        let swapped_body = serde_json::to_vec(&serde_json::json!({
+            "id": "evt_delayedswapfailed1",
+            "object": "event",
+            "livemode": false,
+            "type": "invoice.payment_failed",
+            "created": swapped_created,
+            "data": {"object": {"id": "in_delayedgrace2", "customer": "cus_delayedgrace1", "subscription": "sub_delayedgrace1"}}
+        })).unwrap();
+        assert_eq!(
+            ingest(&mut db, &signed_test_event(&swapped_body))
+                .await
+                .unwrap(),
+            IngestResult::Queued
+        );
+        reconcile_snapshot_with_quotas(&mut db, account, &swapped, &prices, &plans, 5)
+            .await
+            .unwrap();
+        let rebound = db.query_one(
+            "SELECT payment_grace_invoice_id,extract(epoch FROM payment_grace_started_at)::bigint FROM billing_subscriptions WHERE stripe_subscription_id='sub_delayedgrace1'",
+            &[],
+        ).await.unwrap();
+        assert_eq!(rebound.get::<_, String>(0), "in_delayedgrace2");
+        assert_eq!(rebound.get::<_, i64>(1), started);
+        let restored_limit: i64 = db.query_one(
+            "SELECT limit_units FROM usage_quota_policies WHERE account_id=$1 AND metric='outbound_message'",
+            &[&account],
+        ).await.unwrap().get(0);
+        assert_eq!(restored_limit, 3);
+
+        // This failure was created and received before recovery, but lies
+        // within five minutes. It cannot be reused after recovery.
+        let near_created = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+            - 60;
+        let near_body = serde_json::to_vec(&serde_json::json!({
+            "id": "evt_delayednear1",
+            "object": "event",
+            "livemode": false,
+            "type": "invoice.payment_failed",
+            "created": near_created,
+            "data": {"object": {"id": "in_delayedgrace2", "customer": "cus_delayedgrace1", "subscription": "sub_delayedgrace1"}}
+        })).unwrap();
+        assert_eq!(
+            ingest(&mut db, &signed_test_event(&near_body))
+                .await
+                .unwrap(),
+            IngestResult::Queued
+        );
+        reconcile_snapshot_with_quotas(&mut db, account, &swapped, &prices, &plans, 6)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            ingest(&mut db, &update("evt_delayedrecovery1"))
+                .await
+                .unwrap(),
+            IngestResult::Queued
+        );
+        reconcile_snapshot_with_quotas(&mut db, account, &active, &prices, &plans, 7)
+            .await
+            .unwrap();
+        let stale_body = serde_json::to_vec(&serde_json::json!({
+            "id": "evt_delayedstale1",
+            "object": "event",
+            "livemode": false,
+            "type": "invoice.payment_failed",
+            "created": near_created,
+            "data": {"object": {"id": "in_delayedgrace2", "customer": "cus_delayedgrace1", "subscription": "sub_delayedgrace1"}}
+        })).unwrap();
+        assert_eq!(
+            ingest(&mut db, &signed_test_event(&stale_body))
+                .await
+                .unwrap(),
+            IngestResult::Queued
+        );
+        reconcile_snapshot_with_quotas(&mut db, account, &active, &prices, &plans, 8)
+            .await
+            .unwrap();
+        db.execute(
+            "UPDATE billing_subscriptions SET last_non_past_due_at=now()-interval '2 seconds' WHERE stripe_subscription_id='sub_delayedgrace1'",
+            &[],
+        ).await.unwrap();
+        assert_eq!(
+            ingest(&mut db, &update("evt_delayedpastdue2"))
+                .await
+                .unwrap(),
+            IngestResult::Queued
+        );
+        reconcile_snapshot_with_quotas(&mut db, account, &swapped, &prices, &plans, 9)
+            .await
+            .unwrap();
+        let no_replay: bool = db.query_one(
+            "SELECT payment_grace_started_at IS NULL FROM billing_subscriptions WHERE stripe_subscription_id='sub_delayedgrace1'",
+            &[],
+        ).await.unwrap().get(0);
+        assert!(
+            no_replay,
+            "the prior cycle's failed invoice must not restart grace"
+        );
+
+        let fresh_created = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let fresh_body = serde_json::to_vec(&serde_json::json!({
+            "id": "evt_delayedfailure2",
+            "object": "event",
+            "livemode": false,
+            "type": "invoice.payment_failed",
+            "created": fresh_created,
+            "data": {"object": {"id": "in_delayedgrace2", "customer": "cus_delayedgrace1", "subscription": "sub_delayedgrace1"}}
+        })).unwrap();
+        assert_eq!(
+            ingest(&mut db, &signed_test_event(&fresh_body))
+                .await
+                .unwrap(),
+            IngestResult::Queued
+        );
+        reconcile_snapshot_with_quotas(&mut db, account, &swapped, &prices, &plans, 10)
+            .await
+            .unwrap();
+        let restarted: i64 = db.query_one(
+            "SELECT extract(epoch FROM payment_grace_started_at)::bigint FROM billing_subscriptions WHERE stripe_subscription_id='sub_delayedgrace1'",
+            &[],
+        ).await.unwrap().get(0);
+        assert!(restarted > started);
+        assert!((fresh_created - 1..=fresh_created).contains(&restarted));
+        admin
             .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
             .await
             .unwrap();
@@ -1199,6 +1776,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/010_billing_test_entitlement.sql"),
             include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
             include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
+            include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
         ] {
             probe.batch_execute(sql).await.unwrap();
         }
@@ -1243,6 +1821,7 @@ mod tests {
                     customer_id: "cus_lockorder1".into(),
                     status: "active".into(),
                     price_id: None,
+                    latest_invoice_id: None,
                 },
                 &[],
                 1,
@@ -1278,6 +1857,17 @@ mod tests {
             "SELECT stripe_subscription_id FROM billing_reconciliations WHERE stripe_subscription_id='sub_lockorder1' FOR UPDATE NOWAIT",
             &[],
         ).await.unwrap();
+        // The recovery boundary must be recorded after the blocked lock is
+        // released. transaction_timestamp() would still be the earlier start
+        // of the reconciliation transaction here.
+        let released_after: f64 = probe
+            .query_one(
+                "SELECT extract(epoch FROM clock_timestamp())::double precision",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
         blocker.commit().await.unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(5), task)
             .await
@@ -1294,6 +1884,15 @@ mod tests {
             &[],
         ).await.unwrap().get(0);
         assert_eq!(status, "active");
+        let recovery_boundary: f64 = probe
+            .query_one(
+                "SELECT extract(epoch FROM last_non_past_due_at)::double precision FROM billing_subscriptions WHERE stripe_subscription_id='sub_lockorder1'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert!(recovery_boundary >= released_after);
         setup
             .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
             .await
@@ -1331,6 +1930,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/010_billing_test_entitlement.sql"),
             include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
             include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
+            include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
@@ -1368,6 +1968,7 @@ mod tests {
                     customer_id: customer.into(),
                     status: "active".into(),
                     price_id: Some("price_hold1".into()),
+                    latest_invoice_id: None,
                 },
                 &prices,
                 &plans,
@@ -1472,6 +2073,7 @@ mod tests {
             customer_id: "cus_holda1".into(),
             status: "active".into(),
             price_id: Some("price_hold1".into()),
+            latest_invoice_id: None,
         };
         reconcile_snapshot_with_quotas(&mut db, a, &active_a, &prices, &plans, 2)
             .await
@@ -1610,6 +2212,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/010_billing_test_entitlement.sql"),
             include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
             include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
+            include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
@@ -1661,6 +2264,7 @@ mod tests {
             customer_id: Some("cus_entitlement1".into()),
             subscription_id: Some("sub_entitlement1".into()),
             risk_charge_id: None,
+            payment_failed_at_unix: None,
             body_sha256: [1; 32],
         };
         assert_eq!(ingest(&mut db, &event).await.unwrap(), IngestResult::Queued);
@@ -1675,6 +2279,7 @@ mod tests {
             customer_id: "cus_entitlement1".into(),
             status: "active".into(),
             price_id: Some("price_basic1".into()),
+            latest_invoice_id: None,
         };
         reconcile_snapshot_with_quotas(&mut db, other, &active, &prices, &plans, 1)
             .await
@@ -1944,6 +2549,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/010_billing_test_entitlement.sql"),
             include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
             include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
+            include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
@@ -2010,6 +2616,7 @@ mod tests {
             customer_id: "cus_fixture1".into(),
             status: "active".into(),
             price_id: Some("price_known1".into()),
+            latest_invoice_id: None,
         };
         let prices = vec!["price_known1".into()];
         reconcile_snapshot(&mut db, a, &active, &prices, 1)
@@ -2113,6 +2720,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/010_billing_test_entitlement.sql"),
             include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
             include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
+            include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }

@@ -698,6 +698,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
             include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
             include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
+            include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
         ] {
             admin.batch_execute(sql).await.unwrap();
         }

@@ -18,6 +18,7 @@ use uuid::Uuid;
 
 const PAIRING_LIFETIME_SECS: i32 = 300;
 const AUTH_CHALLENGE_LIFETIME_SECS: i32 = 60;
+const PAST_DUE_OUTSIDE_GRACE_SQL: &str = "SELECT 1 FROM billing_subscriptions WHERE account_id=$1 AND stripe_status='past_due' AND (payment_grace_started_at IS NULL OR payment_grace_invoice_id IS DISTINCT FROM latest_invoice_id OR payment_grace_started_at+interval '7 days'<=clock_timestamp()) LIMIT 1";
 
 /// Remove at most 500 rows from each table per maintenance tick. Challenges
 /// have a one-hour grace period; pairing requests are retained for 24 hours
@@ -457,6 +458,18 @@ pub async fn approve_pairing(
         .await?
         .get(0);
     if device_caps_enabled {
+        // A projected cap can outlive payment grace without another webhook.
+        // Recheck the trusted deadline at approval, under the account lock.
+        if tx
+            .query_opt(
+                PAST_DUE_OUTSIDE_GRACE_SQL,
+                &[&principal.tenant.account_id()],
+            )
+            .await?
+            .is_some()
+        {
+            return Err(EnrollmentError::DeviceLimitReached);
+        }
         if let Some(cap) = tx
             .query_opt(
                 "SELECT limit_devices FROM billing_device_caps WHERE account_id=$1",
@@ -511,6 +524,17 @@ pub async fn approve_pairing(
         &[&principal.session_id, &pairing_id],
     ).await?.is_none() {
         return Err(EnrollmentError::Unavailable);
+    }
+    if device_caps_enabled
+        && tx
+            .query_opt(
+                PAST_DUE_OUTSIDE_GRACE_SQL,
+                &[&principal.tenant.account_id()],
+            )
+            .await?
+            .is_some()
+    {
+        return Err(EnrollmentError::DeviceLimitReached);
     }
     tx.commit().await?;
     Ok(device_id)
@@ -707,6 +731,7 @@ mod tests {
             include_str!(
                 "../../../../deploy/compose/migrations/020_enrollment_retention_indexes.sql"
             ),
+            include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
         ] {
             client.batch_execute(sql).await.unwrap();
         }
@@ -1158,6 +1183,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/015_webhook_kek_commitments.sql"),
             include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
             include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
+            include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
@@ -1205,6 +1231,7 @@ mod tests {
             customer_id: "cus_captest1".into(),
             status: "active".into(),
             price_id: Some("price_plus1".into()),
+            latest_invoice_id: None,
         };
         billing::reconcile_snapshot_with_quotas(
             &mut db,
@@ -1360,6 +1387,117 @@ mod tests {
             .unwrap()
             .get(0);
         assert_eq!(active, 1);
+        // The projected cap is still one when grace expires without a new
+        // webhook. A free slot must not permit another approval afterward.
+        let remaining_device: Uuid = db
+            .query_one(
+                "SELECT id FROM devices WHERE account_id=$1 AND revoked_at IS NULL",
+                &[&owner.account_id],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert!(
+            revoke_device(&mut db, &principal, remaining_device)
+                .await
+                .unwrap()
+        );
+        db.execute(
+            "UPDATE billing_subscriptions SET stripe_status='past_due',payment_grace_started_at=clock_timestamp()-interval '7 days 1 second',latest_invoice_id='in_captest1',payment_grace_invoice_id='in_captest1' WHERE stripe_subscription_id='sub_captest1'",
+            &[],
+        ).await.unwrap();
+        let (grace_pairing, grace_code, grace_fingerprint, _) =
+            proven_pairing(&mut db, &enrollment_hasher, &principal).await;
+        assert!(matches!(
+            approve_pairing(
+                &mut db,
+                &principal,
+                grace_pairing,
+                &grace_code,
+                &grace_fingerprint
+            )
+            .await,
+            Err(EnrollmentError::DeviceLimitReached)
+        ));
+        let approved: bool = db
+            .query_one(
+                "SELECT approved_at IS NOT NULL FROM pairing_requests WHERE id=$1",
+                &[&grace_pairing],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert!(!approved);
+        // The first check can be valid when a later write waits past the
+        // deadline. The final check must roll back that provisional device.
+        db.execute(
+            "UPDATE billing_subscriptions SET payment_grace_started_at=clock_timestamp()-interval '7 days'+interval '1 second' WHERE stripe_subscription_id='sub_captest1'",
+            &[],
+        ).await.unwrap();
+        let pid: i32 = db
+            .query_one("SELECT pg_backend_pid()", &[])
+            .await
+            .unwrap()
+            .get(0);
+        let blocker = second.transaction().await.unwrap();
+        blocker
+            .batch_execute("LOCK TABLE device_keys IN ACCESS EXCLUSIVE MODE")
+            .await
+            .unwrap();
+        let (late_approval, ()) = tokio::join!(
+            approve_pairing(
+                &mut db,
+                &principal,
+                grace_pairing,
+                &grace_code,
+                &grace_fingerprint,
+            ),
+            async {
+                tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                    loop {
+                        let waiting: bool = blocker
+                            .query_one("SELECT cardinality(pg_blocking_pids($1))>0", &[&pid])
+                            .await
+                            .unwrap()
+                            .get(0);
+                        if waiting {
+                            break;
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .unwrap();
+                tokio::time::sleep(std::time::Duration::from_millis(1_300)).await;
+                blocker.commit().await.unwrap();
+            }
+        );
+        assert!(matches!(
+            late_approval,
+            Err(EnrollmentError::DeviceLimitReached)
+        ));
+        let active: i64 = db
+            .query_one(
+                "SELECT count(*) FROM devices WHERE account_id=$1 AND revoked_at IS NULL",
+                &[&owner.account_id],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(active, 0);
+        db.execute(
+            "UPDATE billing_subscriptions SET payment_grace_started_at=clock_timestamp()-interval '1 day' WHERE stripe_subscription_id='sub_captest1'",
+            &[],
+        ).await.unwrap();
+        approve_pairing(
+            &mut db,
+            &principal,
+            grace_pairing,
+            &grace_code,
+            &grace_fingerprint,
+        )
+        .await
+        .unwrap();
         assert!(
             billing::reset_test_quotas_on_start(&scoped_url, true, false)
                 .await

@@ -45,6 +45,8 @@ impl TestDb {
             include_str!("../../../deploy/compose/migrations/009_webhook_manual_replay.sql"),
             include_str!("../../../deploy/compose/migrations/010_billing_test_entitlement.sql"),
             include_str!("../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
+            include_str!("../../../deploy/compose/migrations/017_billing_device_caps.sql"),
+            include_str!("../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
         ] {
             client.batch_execute(migration).await.unwrap();
         }

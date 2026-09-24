@@ -1173,6 +1173,19 @@ async fn reserve_outbound(
         {
             return Err(StoreError::QuotaNotConfigured);
         }
+        // Lock the provider projection before checking a fresh DB clock.
+        // transaction_timestamp() and statement_timestamp() may predate a
+        // blocked account or subscription lock near the grace deadline.
+        tx.query(
+            "SELECT stripe_subscription_id FROM billing_subscriptions WHERE account_id=$1 AND stripe_status='past_due' FOR SHARE",
+            &[&account_id],
+        ).await?;
+        if tx.query_opt(
+            "SELECT 1 FROM billing_subscriptions WHERE account_id=$1 AND stripe_status='past_due' AND (payment_grace_started_at IS NULL OR payment_grace_invoice_id IS DISTINCT FROM latest_invoice_id OR payment_grace_started_at+interval '7 days'<=clock_timestamp()) LIMIT 1",
+            &[&account_id],
+        ).await?.is_some() {
+            return Err(StoreError::QuotaExceeded);
+        }
     }
     let policy = tx
         .query_opt(
@@ -1376,7 +1389,7 @@ mod tests {
 
     // Keep the admission fixtures on the complete, reviewed schema. SQL is
     // embedded at build time so tests never execute files discovered at runtime.
-    const TEST_MIGRATIONS: [(&str, &str); 20] = [
+    const TEST_MIGRATIONS: [(&str, &str); 21] = [
         (
             "001_foundation.sql",
             include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
@@ -1456,6 +1469,10 @@ mod tests {
         (
             "020_enrollment_retention_indexes.sql",
             include_str!("../../../deploy/compose/migrations/020_enrollment_retention_indexes.sql"),
+        ),
+        (
+            "021_billing_payment_grace.sql",
+            include_str!("../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
         ),
     ];
 

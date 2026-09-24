@@ -43,6 +43,7 @@ struct SubscriptionView {
     recognized_test_price: bool,
     reconciliation_pending: bool,
     reconciled_at_unix: i64,
+    payment_grace_ends_at_unix: Option<i64>,
 }
 
 pub fn page_router(auth: AuthHttpState) -> Router {
@@ -130,7 +131,7 @@ async fn status(
     let active: i64 = capacity.get(1);
     let rows = db
         .query(
-            "SELECT s.stripe_status,s.recognized_price,r.dirty_generation>r.processed_generation,extract(epoch from s.reconciled_at)::bigint FROM billing_subscriptions s JOIN billing_reconciliations r ON r.stripe_subscription_id=s.stripe_subscription_id AND r.account_id=s.account_id WHERE s.account_id=$1 ORDER BY s.reconciled_at DESC,s.stripe_subscription_id LIMIT 21",
+            "SELECT s.stripe_status,s.recognized_price,r.dirty_generation>r.processed_generation,extract(epoch from s.reconciled_at)::bigint,CASE WHEN s.stripe_status='past_due' AND s.payment_grace_invoice_id=s.latest_invoice_id THEN extract(epoch from s.payment_grace_started_at+interval '7 days')::bigint ELSE NULL END FROM billing_subscriptions s JOIN billing_reconciliations r ON r.stripe_subscription_id=s.stripe_subscription_id AND r.account_id=s.account_id WHERE s.account_id=$1 ORDER BY s.reconciled_at DESC,s.stripe_subscription_id LIMIT 21",
             &[&account_id],
         )
         .await
@@ -144,6 +145,7 @@ async fn status(
             recognized_test_price: row.get(1),
             reconciliation_pending: row.get(2),
             reconciled_at_unix: row.get(3),
+            payment_grace_ends_at_unix: row.get(4),
         })
         .collect();
     Ok(Json(BillingStatus {
@@ -244,6 +246,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
             include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
             include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
+            include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
@@ -340,7 +343,7 @@ mod tests {
             .await
             .unwrap();
             db.execute("INSERT INTO billing_reconciliations(stripe_subscription_id,account_id,stripe_customer_id,dirty_generation,processed_generation) VALUES($1,$2,$3,$4,$5)", &[&subscription, &account, &customer, &dirty, &processed]).await.unwrap();
-            db.execute("INSERT INTO billing_subscriptions(stripe_subscription_id,account_id,stripe_customer_id,stripe_status,stripe_price_id,recognized_price) VALUES($1,$2,$3,$4,$5,$6)", &[&subscription, &account, &customer, &status, &"price_Private", &recognized]).await.unwrap();
+            db.execute("INSERT INTO billing_subscriptions(stripe_subscription_id,account_id,stripe_customer_id,stripe_status,stripe_price_id,recognized_price,payment_grace_started_at,latest_invoice_id,payment_grace_invoice_id) VALUES($1,$2,$3,$4,$5,$6,CASE WHEN $4='past_due' THEN now()-interval '1 day' ELSE NULL END,CASE WHEN $4='past_due' THEN 'in_OwnerA' ELSE NULL END,CASE WHEN $4='past_due' THEN 'in_OwnerA' ELSE NULL END)", &[&subscription, &account, &customer, &status, &"price_Private", &recognized]).await.unwrap();
         }
         db.execute(
             "INSERT INTO billing_device_caps(account_id,limit_devices) VALUES($1,1)",
@@ -372,6 +375,11 @@ mod tests {
         assert_eq!(status["subscriptions"][0]["stripeStatus"], "past_due");
         assert_eq!(status["subscriptions"][0]["recognizedTestPrice"], false);
         assert_eq!(status["subscriptions"][0]["reconciliationPending"], true);
+        assert!(
+            status["subscriptions"][0]["paymentGraceEndsAtUnix"]
+                .as_i64()
+                .is_some()
+        );
         assert_eq!(status["deviceCapacity"]["limit"], 1);
         assert_eq!(status["deviceCapacity"]["active"], 2);
         assert_eq!(status["deviceCapacity"]["overLimit"], true);
