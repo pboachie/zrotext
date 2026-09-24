@@ -6,6 +6,30 @@ on:
 permissions:
   contents: read
 jobs:
+  image-scan:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build server image for vulnerability scan
+        run: docker build -f deploy/compose/Dockerfile -t zrotext-ci-scan:local .
+      - name: Scan server image for critical fixable vulnerabilities
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          image-ref: zrotext-ci-scan:local
+          format: json
+          output: trivy-ci.json
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+          version: v0.70.0
+      - name: Store image vulnerability report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: server-image-scan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: trivy-ci.json
+          if-no-files-found: warn
+          retention-days: 30
   owner-browser:
     runs-on: ubuntu-24.04
     steps:
