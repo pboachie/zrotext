@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Account · ZROtext</title>
+  <link rel="stylesheet" href="/owner/devices.css">
+  <script defer src="/owner/account.js"></script>
+</head>
+<body>
+  <main>
+    <header>
+      <div><p class="eyebrow">ZROtext owner account</p><h1>Account setup</h1></div>
+      <a href="/owner/devices">Devices and sign in</a>
+    </header>
+    <p id="account-status" role="status" aria-live="polite"></p>
+
+    <section aria-labelledby="register-title">
+      <h2 id="register-title">Register an invited owner</h2>
+      <p>Your operator may need to open registration and give you an address-bound invite token. The first owner is created with the local operator command.</p>
+      <form id="register-form" method="post" action="/v1/auth/register">
+        <label for="register-email">Email</label>
+        <input id="register-email" name="email" type="email" autocomplete="email" required>
+        <label for="register-password">New password</label>
+        <input id="register-password" name="password" type="password" autocomplete="new-password" minlength="12" required>
+        <label for="register-token">Invite token, if your operator supplied one</label>
+        <input id="register-token" name="invite" type="text" autocomplete="off" spellcheck="false">
+        <button type="submit">Request registration</button>
+      </form>
+      <p id="register-status" role="status" aria-live="polite"></p>
+    </section>
+
+    <section id="verify" aria-labelledby="verify-title">
+      <h2 id="verify-title">Verify your email</h2>
+      <p>Enter the code from your ZROtext verification email. Keep the code out of links and URLs.</p>
+      <form id="verify-form" method="post" action="/v1/auth/verify-email">
+        <label for="verification-code">Verification code</label>
+        <input id="verification-code" name="token" type="text" autocomplete="one-time-code" spellcheck="false" required>
+        <button type="submit">Verify email</button>
+      </form>
+      <p id="verify-status" role="status" aria-live="polite"></p>
+      <h3>Request another code</h3>
+      <form id="resend-form" method="post" action="/v1/auth/resend-verification">
+        <label for="resend-email">Email</label>
+        <input id="resend-email" name="email" type="email" autocomplete="email" required>
+        <label for="resend-password">Password</label>
+        <input id="resend-password" name="password" type="password" autocomplete="current-password" required>
+        <button type="submit">Request another code</button>
+      </form>
+      <p id="resend-status" role="status" aria-live="polite"></p>
+    </section>
+
+    <section id="mfa-section" aria-labelledby="mfa-title" hidden>
+      <h2 id="mfa-title">Authenticator and recovery codes</h2>
+      <p id="mfa-status" role="status" aria-live="polite"></p>
+      <form id="mfa-enroll-form" method="post" action="/v1/auth/mfa/enroll">
+        <label for="mfa-enroll-password">Current password</label>
+        <input id="mfa-enroll-password" name="password" type="password" autocomplete="current-password" required>
+        <button type="submit">Start authenticator setup</button>
+      </form>
+      <div id="mfa-secret-panel" hidden>
+        <p>Add this secret to your authenticator. It is shown only during setup and is cleared when you leave the page.</p>
+        <code id="mfa-secret"></code>
+        <p>Provisioning URI for apps that accept manual import:</p>
+        <code id="mfa-provisioning-uri"></code>
+      </div>
+      <form id="mfa-confirm-form" method="post" action="/v1/auth/mfa/confirm" hidden>
+        <label for="mfa-confirm-code">Code from authenticator</label>
+        <input id="mfa-confirm-code" name="code" type="text" autocomplete="one-time-code" inputmode="numeric" required>
+        <button type="submit">Confirm authenticator</button>
+      </form>
+      <div id="recovery-panel" hidden>
+        <p><strong>Save these recovery codes now.</strong> Each code works once. They are cleared when you leave this page.</p>
+        <ul id="recovery-codes"></ul>
+        <button id="dismiss-recovery" type="button">I saved them</button>
+      </div>
+      <form id="mfa-disable-form" method="post" action="/v1/auth/mfa/disable" hidden>
+        <h3>Disable authenticator</h3>
+        <label for="mfa-disable-password">Current password</label>
+        <input id="mfa-disable-password" name="password" type="password" autocomplete="current-password" required>
+        <label for="mfa-disable-code">Authenticator or unused recovery code</label>
+        <input id="mfa-disable-code" name="code" type="text" autocomplete="one-time-code" required>
+        <button type="submit">Disable authenticator</button>
+      </form>
+    </section>
+  </main>
+  <footer><a href="/source">Source code for this server</a></footer>
+</body>
+</html>

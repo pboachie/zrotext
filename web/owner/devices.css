@@ -36,6 +36,9 @@ code { font-size: .9rem; }
 #webhook-delivery-list ol li { margin: .25rem 0; }
 #webhook-delivery-list strong, #webhook-delivery-list span { overflow-wrap: anywhere; }
 #device-list code, #key-list code, #message-list code, #key-secret { display: block; overflow-wrap: anywhere; }
+#mfa-secret, #mfa-provisioning-uri, #recovery-codes code { display: block; overflow-wrap: anywhere; }
+#recovery-codes { padding-left: 1.5rem; }
+#recovery-codes li { overflow-wrap: anywhere; }
 #message-list details { margin-top: .4rem; }
 #message-list ol { padding-left: 1.5rem; }
 #message-list ol li { padding: .25rem 0; }

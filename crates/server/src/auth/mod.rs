@@ -22,6 +22,8 @@ const VERIFICATION_HOURS: i32 = 24;
 /// Bounded batch for the periodic removal of expired unverified owners.
 const PENDING_PRUNE_BATCH: i64 = 100;
 const MAX_EMAIL_BYTES: usize = 254;
+/// Serialize operator bootstrap and HTTP registration across API processes.
+const REGISTRATION_ADVISORY_LOCK: i64 = 0x5a54524547495354;
 
 pub mod abuse_limits;
 pub mod account;
@@ -309,6 +311,12 @@ pub async fn register(
     let verification_token = verification_token_for_id(hasher, verification_id);
     let token_hash = hasher.digest(b"email-verification-v1", &verification_token);
     let mut transaction = client.transaction().await?;
+    transaction
+        .query_one(
+            "SELECT pg_advisory_xact_lock($1::bigint)",
+            &[&REGISTRATION_ADVISORY_LOCK],
+        )
+        .await?;
     // An unverified owner whose pending window has elapsed no longer holds the
     // address. Its row lock serializes concurrent sign-ups: a waiter re-reads
     // the deleted row, skips it, and then meets the unique email constraint.
@@ -354,6 +362,55 @@ pub async fn register(
         user_id,
         verification_token,
     })
+}
+
+/// Local operator-only bootstrap. A verified owner is created exactly once on
+/// an empty database, without an HTTP registration request or verification
+/// email. Hold the same cross-process lock as HTTP registration while checking
+/// emptiness and inserting all three rows.
+pub async fn bootstrap_owner(
+    client: &mut Client,
+    email: &str,
+    password: &str,
+) -> Result<bool, AuthError> {
+    if !(12..=1024).contains(&password.len()) {
+        return Err(AuthError::InvalidInput);
+    }
+    let email = normalize_email(email)?;
+    let password_hash = password_work::hash(password).await?;
+    let account_id = Uuid::new_v4();
+    let user_id = Uuid::new_v4();
+    let transaction = client.transaction().await?;
+    transaction
+        .query_one(
+            "SELECT pg_advisory_xact_lock($1::bigint)",
+            &[&REGISTRATION_ADVISORY_LOCK],
+        )
+        .await?;
+    let occupied: bool = transaction
+        .query_one("SELECT EXISTS(SELECT 1 FROM accounts)", &[])
+        .await?
+        .get(0);
+    if occupied {
+        return Ok(false);
+    }
+    transaction
+        .execute("INSERT INTO accounts(id) VALUES($1)", &[&account_id])
+        .await?;
+    transaction
+        .execute(
+            "INSERT INTO users(id,email,password_hash,email_verified_at) VALUES($1,$2,$3,now())",
+            &[&user_id, &email, &password_hash],
+        )
+        .await?;
+    transaction
+        .execute(
+            "INSERT INTO memberships(account_id,user_id,role) VALUES($1,$2,'owner')",
+            &[&account_id, &user_id],
+        )
+        .await?;
+    transaction.commit().await?;
+    Ok(true)
 }
 
 /// Removes one locked, expired, unverified owner together with its membership,
@@ -829,6 +886,87 @@ pub fn session_cookies(credentials: &SessionCredentials) -> [String; 2] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn postgres_operator_bootstrap_creates_one_verified_owner_under_concurrency() {
+        let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
+            return;
+        };
+        let (setup, connection) = tokio_postgres::connect(&base_url, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let schema = format!("bootstrap_test_{}", Uuid::new_v4().simple());
+        setup
+            .batch_execute(&format!("CREATE SCHEMA {schema}"))
+            .await
+            .unwrap();
+        let separator = if base_url.contains('?') { '&' } else { '?' };
+        let url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
+        let (mut first, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let (mut second, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        for sql in [
+            include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+            include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+            include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
+        ] {
+            first.batch_execute(sql).await.unwrap();
+        }
+        let first_password = Uuid::new_v4().to_string();
+        let second_password = Uuid::new_v4().to_string();
+        let third_password = Uuid::new_v4().to_string();
+        let (a, b) = tokio::join!(
+            bootstrap_owner(&mut first, "first@example.test", &first_password),
+            bootstrap_owner(&mut second, "second@example.test", &second_password),
+        );
+        let (a, b) = (a.unwrap(), b.unwrap());
+        assert_ne!(a, b);
+        assert!(
+            !bootstrap_owner(&mut first, "third@example.test", &third_password)
+                .await
+                .unwrap()
+        );
+        for table in ["accounts", "users", "memberships"] {
+            let count: i64 = first
+                .query_one(&format!("SELECT count(*) FROM {table}"), &[])
+                .await
+                .unwrap()
+                .get(0);
+            assert_eq!(count, 1, "{table}");
+        }
+        assert_eq!(
+            first
+                .query_one("SELECT count(*) FROM verification_mail_outbox", &[])
+                .await
+                .unwrap()
+                .get::<_, i64>(0),
+            0,
+        );
+        assert!(
+            first
+                .query_one("SELECT email_verified_at IS NOT NULL FROM users", &[])
+                .await
+                .unwrap()
+                .get::<_, bool>(0)
+        );
+        let (email, password) = if a {
+            ("first@example.test", first_password.as_str())
+        } else {
+            ("second@example.test", second_password.as_str())
+        };
+        let hasher = TokenHasher::new(crate::test_keys::key(37)).unwrap();
+        assert!(login(&first, &hasher, email, password).await.is_ok());
+        setup
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .unwrap();
+    }
 
     // Tokio's default test runtime stays on one thread; separate tests cannot
     // satisfy this counter through concurrent password checks. Capture its Arc

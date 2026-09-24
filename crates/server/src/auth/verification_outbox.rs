@@ -13,6 +13,7 @@ use uuid::Uuid;
 pub struct VerificationMail {
     pub verification_id: Uuid,
     pub lease_id: Uuid,
+    pub attempt_count: i32,
     pub email: String,
     /// Secret: never place in logs, URLs, response bodies, or metrics.
     pub token: String,
@@ -117,7 +118,7 @@ pub async fn claim_verification_mail(
     let tx = client.transaction().await?;
     let row = tx
         .query_opt(
-            "SELECT o.verification_id,u.email,v.token_hash FROM verification_mail_outbox o JOIN email_verifications v ON v.id=o.verification_id JOIN users u ON u.id=v.user_id JOIN accounts a ON a.id=v.account_id WHERE o.delivered_at IS NULL AND o.canceled_at IS NULL AND o.dead_at IS NULL AND o.attempt_count<6 AND o.next_attempt_at<=now() AND (o.leased_until IS NULL OR o.leased_until<=now()) AND v.used_at IS NULL AND v.expires_at>now() AND u.email_verified_at IS NULL AND u.created_at>now()-($1::integer * interval '1 hour') AND a.disabled_at IS NULL ORDER BY o.next_attempt_at,o.verification_id LIMIT 1 FOR UPDATE OF o SKIP LOCKED",
+            "SELECT o.verification_id,u.email,v.token_hash,o.attempt_count FROM verification_mail_outbox o JOIN email_verifications v ON v.id=o.verification_id JOIN users u ON u.id=v.user_id JOIN accounts a ON a.id=v.account_id WHERE o.delivered_at IS NULL AND o.canceled_at IS NULL AND o.dead_at IS NULL AND o.attempt_count<6 AND o.next_attempt_at<=now() AND (o.leased_until IS NULL OR o.leased_until<=now()) AND v.used_at IS NULL AND v.expires_at>now() AND u.email_verified_at IS NULL AND u.created_at>now()-($1::integer * interval '1 hour') AND a.disabled_at IS NULL ORDER BY o.next_attempt_at,o.verification_id LIMIT 1 FOR UPDATE OF o SKIP LOCKED",
             &[&VERIFICATION_HOURS],
         )
         .await?;
@@ -128,6 +129,7 @@ pub async fn claim_verification_mail(
     let verification_id: Uuid = row.get(0);
     let email: String = row.get(1);
     let stored_hash: Vec<u8> = row.get(2);
+    let attempt_count: i32 = row.get::<_, i32>(3) + 1;
     let token = verification_token_for_id(hasher, verification_id);
     if stored_hash != hasher.digest(b"email-verification-v1", &token) {
         // Never mail a code that the verification route cannot accept.
@@ -137,6 +139,7 @@ pub async fn claim_verification_mail(
         )
         .await?;
         tx.commit().await?;
+        eprintln!("verification mail dead-lettered (category=integrity)");
         return Ok(None);
     }
     let lease_id = Uuid::new_v4();
@@ -149,6 +152,7 @@ pub async fn claim_verification_mail(
     Ok(Some(VerificationMail {
         verification_id,
         lease_id,
+        attempt_count,
         email,
         token,
     }))
@@ -371,6 +375,7 @@ mod tests {
         );
         let mut claimed = rotated;
         for attempt in 0..6 {
+            assert_eq!(claimed.attempt_count, attempt + 1);
             assert!(
                 ack_verification_mail(&client, &claimed, false)
                     .await
