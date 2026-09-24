@@ -792,6 +792,8 @@ mod tests {
                 "../../../../deploy/compose/migrations/020_enrollment_retention_indexes.sql"
             ),
             include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+            include_str!("../../../../deploy/compose/migrations/027_billing_test_config.sql"),
+            include_str!("../../../../deploy/compose/migrations/028_billing_provider_failures.sql"),
         ] {
             client.batch_execute(sql).await.unwrap();
         }
@@ -1244,6 +1246,8 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
             include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
             include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+            include_str!("../../../../deploy/compose/migrations/027_billing_test_config.sql"),
+            include_str!("../../../../deploy/compose/migrations/028_billing_provider_failures.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
@@ -1262,7 +1266,7 @@ mod tests {
         let principal = authenticate_session(&db, &auth_hasher, &session.token)
             .await
             .unwrap();
-        billing::reset_test_quotas_on_start(&scoped_url, true, true)
+        billing::reset_test_quotas_on_start(&scoped_url, true, true, Some(&[1; 32]))
             .await
             .unwrap();
         let initial = proven_pairing(&mut db, &enrollment_hasher, &principal).await;
@@ -1559,7 +1563,7 @@ mod tests {
         .await
         .unwrap();
         assert!(
-            billing::reset_test_quotas_on_start(&scoped_url, true, false)
+            billing::reset_test_quotas_on_start(&scoped_url, true, false, Some(&[1; 32]))
                 .await
                 .is_err()
         );

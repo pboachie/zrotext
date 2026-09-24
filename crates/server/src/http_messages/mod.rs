@@ -16,10 +16,9 @@ use axum::{
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
-use std::{
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::sync::Arc;
+#[cfg(test)]
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio_postgres::Client;
 use uuid::Uuid;
 use zrotext_delivery_store::{DeliveryStore, NewMessage, StoreError};
@@ -27,7 +26,6 @@ use zrotext_domain::MessageState;
 
 const IDEMPOTENCY_HEADER: &str = "idempotency-key";
 const MAX_BODY_BYTES: usize = 1024;
-const MAX_EXPIRY_MS: i64 = 15 * 60 * 1000;
 
 #[derive(Clone)]
 pub struct MessagesHttpState {
@@ -35,6 +33,7 @@ pub struct MessagesHttpState {
     hasher: Arc<TokenHasher>,
     policy: Arc<AlphaPolicy>,
     metered: bool,
+    idempotency_days: i32,
 }
 
 impl MessagesHttpState {
@@ -54,7 +53,13 @@ impl MessagesHttpState {
             hasher,
             policy,
             metered,
+            idempotency_days: 7,
         })
+    }
+
+    pub fn with_idempotency_days(mut self, days: i32) -> Self {
+        self.idempotency_days = days;
+        self
     }
 }
 
@@ -87,6 +92,9 @@ enum MessageHttpError {
     QueueFull,
     RateLimited,
     QuotaExceeded,
+    BillingPending,
+    PaymentHold,
+    RecipientSuppressed,
     Unavailable,
 }
 
@@ -101,13 +109,22 @@ impl IntoResponse for MessageHttpError {
             Self::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
             Self::QueueFull => (StatusCode::TOO_MANY_REQUESTS, "queue_full"),
             Self::QuotaExceeded => (StatusCode::TOO_MANY_REQUESTS, "quota_exceeded"),
+            Self::BillingPending => (StatusCode::SERVICE_UNAVAILABLE, "billing_pending"),
+            Self::PaymentHold => (StatusCode::PAYMENT_REQUIRED, "payment_hold"),
+            Self::RecipientSuppressed => (StatusCode::FORBIDDEN, "recipient_suppressed"),
             Self::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
         };
         let mut response = (status, Json(ErrorBody { code })).into_response();
-        if status == StatusCode::TOO_MANY_REQUESTS {
+        if status == StatusCode::TOO_MANY_REQUESTS || code == "billing_pending" {
             response.headers_mut().insert(
                 header::RETRY_AFTER,
-                "60".parse().expect("static retry-after"),
+                if code == "billing_pending" {
+                    "10"
+                } else {
+                    "60"
+                }
+                .parse()
+                .expect("static retry-after"),
             );
         }
         response
@@ -138,12 +155,13 @@ fn map_store(error: StoreError) -> MessageHttpError {
         | StoreError::MessageIdConflict
         | StoreError::InvalidTransition => MessageHttpError::Conflict,
         StoreError::NotFound | StoreError::Revoked => MessageHttpError::NotFound,
-        StoreError::Database(_)
-        | StoreError::DispatchDisabled
-        | StoreError::StaleFence
-        | StoreError::PaymentHold
-        | StoreError::QuotaNotConfigured => MessageHttpError::Unavailable,
+        StoreError::Database(_) | StoreError::DispatchDisabled | StoreError::StaleFence => {
+            MessageHttpError::Unavailable
+        }
+        StoreError::PaymentHold => MessageHttpError::PaymentHold,
+        StoreError::QuotaNotConfigured => MessageHttpError::BillingPending,
         StoreError::QuotaExceeded => MessageHttpError::QuotaExceeded,
+        StoreError::RecipientSuppressed => MessageHttpError::RecipientSuppressed,
         StoreError::DeviceBusy | StoreError::EventIdConflict => MessageHttpError::Conflict,
         StoreError::QueueFull => MessageHttpError::QueueFull,
     }
@@ -198,6 +216,7 @@ fn valid_e164(number: &str) -> bool {
         && number.as_bytes()[1..].iter().all(u8::is_ascii_digit)
 }
 
+#[cfg(test)]
 fn now_ms() -> Result<i64, MessageHttpError> {
     i64::try_from(
         SystemTime::now()
@@ -242,10 +261,6 @@ async fn accept(
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
     {
-        return Err(MessageHttpError::BadRequest);
-    }
-    let now = now_ms()?;
-    if body.expires_at_ms <= now || body.expires_at_ms > now + MAX_EXPIRY_MS {
         return Err(MessageHttpError::BadRequest);
     }
     let mut client = connect(&state.database_url).await?;
@@ -294,7 +309,7 @@ async fn accept(
         synthetic_payload: synthetic_body.as_bytes(),
         expires_at_ms: body.expires_at_ms,
     };
-    let mut store = DeliveryStore::new(&mut client);
+    let mut store = DeliveryStore::with_idempotency_days(&mut client, state.idempotency_days);
     let outcome = store
         .accept_alpha(input, state.metered)
         .await
@@ -483,6 +498,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn billing_denials_have_distinct_http_codes() {
+        for (error, status, code, retry_after) in [
+            (
+                StoreError::QuotaNotConfigured,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "billing_pending",
+                Some("10"),
+            ),
+            (
+                StoreError::PaymentHold,
+                StatusCode::PAYMENT_REQUIRED,
+                "payment_hold",
+                None,
+            ),
+        ] {
+            let response = map_store(error).into_response();
+            assert_eq!(response.status(), status);
+            assert_eq!(
+                response
+                    .headers()
+                    .get(header::RETRY_AFTER)
+                    .map(|value| value.to_str().unwrap()),
+                retry_after
+            );
+            let body = to_bytes(response.into_body(), 2048).await.unwrap();
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&body).unwrap()["code"],
+                code
+            );
+        }
+    }
+
+    #[tokio::test]
     #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn postgres_alpha_http_accept_status_cancel_are_tenant_and_device_scoped() {
         let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
@@ -518,6 +566,8 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
             include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
             include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+            include_str!("../../../../deploy/compose/migrations/030_terminal_dispatch_jobs.sql"),
+            include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
         ] {
             client.batch_execute(sql).await.unwrap();
         }
@@ -586,6 +636,112 @@ mod tests {
         let data = to_bytes(response.into_body(), 2048).await.unwrap();
         let replay: serde_json::Value = serde_json::from_slice(&data).unwrap();
         assert_eq!(replay["created"], false);
+        let expiring = serde_json::json!({
+            "client_message_id":Uuid::new_v4(),
+            "device_id":device_a,
+            "recipient_e164":"+15555550101",
+            "test_case_id":"expires_soon",
+            "expires_at_ms":now_ms().unwrap()+5_000
+        });
+        let expiry = expiring["expires_at_ms"].as_i64().unwrap();
+        let response = app
+            .clone()
+            .oneshot(post("/messages", &send_a, "expires-soon", expiring.clone()))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let data = to_bytes(response.into_body(), 2048).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&data).unwrap()["created"],
+            true
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(
+            (expiry - now_ms().unwrap() + 10).max(0) as u64,
+        ))
+        .await;
+        let response = app
+            .clone()
+            .oneshot(post("/messages", &send_a, "expires-soon", expiring.clone()))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let data = to_bytes(response.into_body(), 2048).await.unwrap();
+        let expired_replay: serde_json::Value = serde_json::from_slice(&data).unwrap();
+        assert_eq!(expired_replay["message_id"], expiring["client_message_id"]);
+        assert_eq!(expired_replay["created"], false);
+        let mut changed_expired = expiring.clone();
+        changed_expired["test_case_id"] = "changed".into();
+        assert_eq!(
+            app.clone()
+                .oneshot(post("/messages", &send_a, "expires-soon", changed_expired))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::CONFLICT
+        );
+        let mut changed_expiry = expiring.clone();
+        changed_expiry["expires_at_ms"] = (now_ms().unwrap() + 16 * 60 * 1000).into();
+        assert_eq!(
+            app.clone()
+                .oneshot(post(
+                    "/messages",
+                    &send_a,
+                    "expires-soon",
+                    changed_expiry.clone()
+                ))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::CONFLICT
+        );
+        changed_expiry["client_message_id"] = Uuid::new_v4().to_string().into();
+        assert_eq!(
+            app.clone()
+                .oneshot(post("/messages", &send_a, "too-far-future", changed_expiry))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+        let mut new_expired = expiring.clone();
+        new_expired["client_message_id"] = Uuid::new_v4().to_string().into();
+        assert_eq!(
+            app.clone()
+                .oneshot(post("/messages", &send_a, "new-expired", new_expired))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            app.clone()
+                .oneshot(post(
+                    "/messages",
+                    &send_a,
+                    "new-expired-same-id",
+                    expiring.clone()
+                ))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+        let counts = client
+            .query_one(
+                "SELECT (SELECT count(*) FROM messages WHERE account_id=$1),
+                        (SELECT count(*) FROM dispatch_jobs WHERE account_id=$1),
+                        (SELECT count(*) FROM idempotency_keys WHERE account_id=$1)",
+                &[&account_a],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            (0..3)
+                .map(|index| counts.get::<_, i64>(index))
+                .collect::<Vec<_>>(),
+            vec![2; 3],
+            "expired retry created a second dispatch"
+        );
         let mut changed = input.clone();
         changed["test_case_id"] = "changed".into();
         assert_eq!(
@@ -948,7 +1104,7 @@ mod tests {
         let body = to_bytes(response.into_body(), 2048).await.unwrap();
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&body).unwrap()["code"],
-            "unavailable"
+            "billing_pending"
         );
         let row = client
             .query_one(
@@ -1050,7 +1206,12 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.status(), StatusCode::PAYMENT_REQUIRED);
+        let body = to_bytes(response.into_body(), 2048).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&body).unwrap()["code"],
+            "payment_hold"
+        );
         let risk_counts = client
             .query_one(
                 "SELECT (SELECT count(*) FROM messages WHERE account_id=$1),

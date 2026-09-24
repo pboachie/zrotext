@@ -22,13 +22,16 @@ internal class DeviceReconnectPolicy(private val jitter: () -> Double) {
         data object Stop : Action
     }
 
-    enum class Loss { TRANSPORT, ACTIVE_CLOSE, AUTH_REJECTED, PROTOCOL_REJECTED }
+    enum class Loss { TRANSPORT, ACTIVE_CLOSE, AUTH_REJECTED, PROTOCOL_REJECTED,
+        EVIDENCE_QUARANTINED, EVIDENCE_QUARANTINE_FAILED }
 
     private var running = false
     private var networkAvailable = false
     private var connected = false
     private var authenticatedAtMs: Long? = null
     private var failures = 0
+    private var closingEvidenceId: String? = null
+    private var closingEvidenceCount = 0
 
     fun start(hasNetwork: Boolean, pilotMode: PilotMode = PilotMode.HEARTBEAT_ONLY): Action {
         running = true
@@ -36,12 +39,31 @@ internal class DeviceReconnectPolicy(private val jitter: () -> Double) {
         connected = hasNetwork
         authenticatedAtMs = null
         failures = 0
+        clearEvidenceCloseStreak()
         return if (hasNetwork) Action.Connect(pilotMode) else Action.WaitForNetwork
     }
 
     fun authenticated(nowMs: Long) {
         check(running && connected)
         authenticatedAtMs = nowMs
+    }
+
+    /** An old writer without typed closes gets three immediate closes for one row. */
+    @Synchronized
+    fun recordEvidenceClose(eventKey: String, typed: Boolean): Boolean {
+        require(eventKey.isNotBlank())
+        if (typed) return true
+        if (closingEvidenceId == eventKey) closingEvidenceCount += 1 else {
+            closingEvidenceId = eventKey
+            closingEvidenceCount = 1
+        }
+        return closingEvidenceCount >= 3
+    }
+
+    @Synchronized
+    fun clearEvidenceCloseStreak() {
+        closingEvidenceId = null
+        closingEvidenceCount = 0
     }
 
     fun networkChanged(available: Boolean): Action {
@@ -64,6 +86,7 @@ internal class DeviceReconnectPolicy(private val jitter: () -> Double) {
         val authenticatedAt = authenticatedAtMs
         authenticatedAtMs = null
         if (reason == Loss.AUTH_REJECTED || reason == Loss.PROTOCOL_REJECTED ||
+            reason == Loss.EVIDENCE_QUARANTINE_FAILED ||
             (reason == Loss.ACTIVE_CLOSE && authenticatedAt == null)) {
             running = false
             return Action.Stop
@@ -88,6 +111,7 @@ internal class DeviceReconnectPolicy(private val jitter: () -> Double) {
         running = false
         connected = false
         authenticatedAtMs = null
+        clearEvidenceCloseStreak()
     }
 
     companion object {

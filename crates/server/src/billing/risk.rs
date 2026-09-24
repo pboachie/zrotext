@@ -3,7 +3,10 @@
 //! queue; provider reads then attribute its charge to a paid subscription
 //! invoice. No event body grants access or clears a hold.
 
-use super::{BillingError, lock_customer, queue_subscription, valid_charge_id, valid_id};
+use super::{
+    BillingError, lock_customer, queue_subscription, valid_charge_id, valid_id,
+    worker::ProviderFailure,
+};
 use reqwest::Client as HttpClient;
 use serde_json::Value;
 use tokio_postgres::Client;
@@ -22,16 +25,17 @@ pub(super) struct Charge {
 pub(super) async fn fetch_charge(
     http: &HttpClient,
     secret_key: &str,
+    api_base: &str,
     charge_id: &str,
 ) -> Result<Charge, BillingError> {
     valid_charge_id(charge_id)?;
     let value = fetch_json(
         http,
         secret_key,
-        &format!("https://api.stripe.com/v1/charges/{charge_id}"),
+        &format!("{api_base}/v1/charges/{charge_id}"),
     )
     .await?;
-    parse_charge(&value, charge_id)
+    parse_charge(&value, charge_id).map_err(|_| ProviderFailure::InvalidResponse.into())
 }
 
 pub(super) fn parse_charge(value: &Value, expected_id: &str) -> Result<Charge, BillingError> {
@@ -70,16 +74,18 @@ pub(super) fn parse_charge(value: &Value, expected_id: &str) -> Result<Charge, B
 pub(super) async fn fetch_charge_for_payment_intent(
     http: &HttpClient,
     secret_key: &str,
+    api_base: &str,
     payment_intent_id: &str,
 ) -> Result<Charge, BillingError> {
     valid_id(payment_intent_id, "pi_")?;
     let value = fetch_json(
         http,
         secret_key,
-        &format!("https://api.stripe.com/v1/charges?payment_intent={payment_intent_id}&limit=100"),
+        &format!("{api_base}/v1/charges?payment_intent={payment_intent_id}&limit=100"),
     )
     .await?;
     parse_charge_for_payment_intent(&value, payment_intent_id)
+        .map_err(|_| ProviderFailure::InvalidResponse.into())
 }
 
 pub(super) fn parse_charge_for_payment_intent(
@@ -123,6 +129,7 @@ pub(super) fn parse_charge_for_payment_intent(
 pub(super) async fn fetch_invoice_subscription(
     http: &HttpClient,
     secret_key: &str,
+    api_base: &str,
     charge: &Charge,
 ) -> Result<String, BillingError> {
     // The PI is validated to ASCII alphanumerics above, so interpolation
@@ -130,17 +137,19 @@ pub(super) async fn fetch_invoice_subscription(
     let payments = fetch_json(
         http,
         secret_key,
-        &format!("https://api.stripe.com/v1/invoice_payments?payment%5Btype%5D=payment_intent&payment%5Bpayment_intent%5D={}&limit=2", charge.payment_intent_id),
+        &format!("{api_base}/v1/invoice_payments?payment%5Btype%5D=payment_intent&payment%5Bpayment_intent%5D={}&limit=2", charge.payment_intent_id),
     )
     .await?;
-    let invoice_id = parse_invoice_payment(&payments, &charge.payment_intent_id)?;
+    let invoice_id = parse_invoice_payment(&payments, &charge.payment_intent_id)
+        .map_err(|_| ProviderFailure::InvalidResponse)?;
     let invoice = fetch_json(
         http,
         secret_key,
-        &format!("https://api.stripe.com/v1/invoices/{invoice_id}"),
+        &format!("{api_base}/v1/invoices/{invoice_id}"),
     )
     .await?;
     parse_invoice_subscription(&invoice, &invoice_id, &charge.customer_id)
+        .map_err(|_| ProviderFailure::InvalidResponse.into())
 }
 
 pub(super) fn parse_invoice_payment(
@@ -201,22 +210,22 @@ pub(super) async fn fetch_json(
         .bearer_auth(secret_key)
         .send()
         .await
-        .map_err(|_| BillingError::InvalidEvent)?;
+        .map_err(|_| ProviderFailure::Transport)?;
     if !response.status().is_success() {
-        return Err(BillingError::InvalidEvent);
+        return Err(ProviderFailure::HttpStatus(response.status().as_u16()).into());
     }
     let mut body = Vec::new();
     while let Some(chunk) = response
         .chunk()
         .await
-        .map_err(|_| BillingError::InvalidEvent)?
+        .map_err(|_| ProviderFailure::Transport)?
     {
         if body.len().saturating_add(chunk.len()) > 64 * 1024 {
-            return Err(BillingError::InvalidEvent);
+            return Err(ProviderFailure::InvalidResponse.into());
         }
         body.extend_from_slice(&chunk);
     }
-    serde_json::from_slice(&body).map_err(|_| BillingError::InvalidEvent)
+    serde_json::from_slice(&body).map_err(|_| ProviderFailure::InvalidResponse.into())
 }
 
 /// Bind a verified risk event to the customer returned by the current Charge.
@@ -338,7 +347,7 @@ pub(super) async fn apply_hold(
         &[&event_id, &account_id, &subscription_id, &charge_id, &kind],
     ).await?;
     tx.execute(
-        "UPDATE billing_risk_events SET state='held',account_id=$2,stripe_subscription_id=$3,stripe_charge_id=$4,processed_at=now() WHERE stripe_event_id=$1",
+        "UPDATE billing_risk_events SET state='held',account_id=$2,stripe_subscription_id=$3,stripe_charge_id=$4,last_failure_class=NULL,processed_at=now() WHERE stripe_event_id=$1",
         &[&event_id, &account_id, &subscription_id, &charge_id],
     ).await?;
     tx.commit().await?;
@@ -357,12 +366,16 @@ pub(super) async fn claim(
     Ok(row.map(|row| (row.get(0), row.get(1), row.get(2), row.get(3))))
 }
 
-pub(super) async fn backoff(client: &Client, event_id: &str) -> Result<(), BillingError> {
-    client.execute(
-        "UPDATE billing_risk_events SET failed_attempts=failed_attempts+1,state=CASE WHEN failed_attempts>=9 THEN 'needs_review' ELSE 'queued' END,next_attempt_at=now()+interval '1 minute' WHERE stripe_event_id=$1 AND state='queued'",
-        &[&event_id],
+pub(super) async fn backoff(
+    client: &Client,
+    event_id: &str,
+    class: &str,
+) -> Result<Option<String>, BillingError> {
+    let row = client.query_opt(
+        "UPDATE billing_risk_events SET failed_attempts=failed_attempts+1,state=CASE WHEN failed_attempts>=9 THEN 'needs_review' ELSE 'queued' END,last_failure_class=$2,next_attempt_at=now()+interval '1 minute' WHERE stripe_event_id=$1 AND state='queued' RETURNING state",
+        &[&event_id, &class],
     ).await?;
-    Ok(())
+    Ok(row.map(|row| row.get(0)))
 }
 
 #[cfg(test)]

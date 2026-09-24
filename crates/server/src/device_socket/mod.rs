@@ -9,7 +9,7 @@ use crate::{
         abuse_limits::{self, Limit},
     },
     enrollment::{self, AuthenticatedDevice, EnrollmentError, EnrollmentHasher},
-    inbound::{self, Content, InboundEvent, InboundSession},
+    inbound::{self, Content, InboundError, InboundEvent, InboundSession},
 };
 use axum::{
     Router,
@@ -178,6 +178,9 @@ enum InboundClassification {
     SimUnverified,
     SendUnverified,
     EncryptionUnverified,
+    OptOut,
+    OptOutReview,
+    OptIn,
 }
 
 impl From<InboundClassification> for inbound::Classification {
@@ -187,6 +190,9 @@ impl From<InboundClassification> for inbound::Classification {
             InboundClassification::SimUnverified => Self::SimUnverified,
             InboundClassification::SendUnverified => Self::SendUnverified,
             InboundClassification::EncryptionUnverified => Self::EncryptionUnverified,
+            InboundClassification::OptOut => Self::OptOut,
+            InboundClassification::OptOutReview => Self::OptOutReview,
+            InboundClassification::OptIn => Self::OptIn,
         }
     }
 }
@@ -265,7 +271,13 @@ enum ServerFrame {
         event_id: Uuid,
         created: bool,
         queued_deliveries: u64,
+        #[serde(skip_serializing_if = "is_false")]
+        suppression_cleared: bool,
     },
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 /// Mount at `/v1/device-stream`. Deploy behind TLS/WSS; this route accepts
@@ -366,6 +378,46 @@ async fn send_frame(socket: &mut WebSocket, frame: ServerFrame) -> bool {
 }
 
 const RETRY_LATER: u16 = 1013;
+/// Authenticated upload row cannot be accepted by this writer. The phone must
+/// retire the row before opening a new session, then continue heartbeats.
+const EVIDENCE_REJECTED: u16 = 4409;
+
+fn radio_evidence_close_code(error: &StoreError, session_still_current: bool) -> u16 {
+    match error {
+        StoreError::StaleFence if session_still_current => EVIDENCE_REJECTED,
+        StoreError::InvalidInput | StoreError::InvalidTransition | StoreError::EventIdConflict => {
+            EVIDENCE_REJECTED
+        }
+        StoreError::Revoked => close_code::POLICY,
+        _ => RETRY_LATER,
+    }
+}
+
+fn inbound_evidence_close_code(error: &InboundError) -> u16 {
+    match error {
+        InboundError::InvalidInput
+        | InboundError::InvalidSignature
+        | InboundError::UnknownSource
+        | InboundError::EventConflict
+        | InboundError::SequenceConflict => EVIDENCE_REJECTED,
+        InboundError::Unauthorized => close_code::POLICY,
+        InboundError::SourcePending
+        | InboundError::StaleLease
+        | InboundError::BudgetExhausted
+        | InboundError::Database(_) => RETRY_LATER,
+    }
+}
+
+fn durable_intent_preflight_close_code(
+    current_grant: Option<bool>,
+    previous_intent: Option<bool>,
+) -> Option<u16> {
+    match (current_grant, previous_intent) {
+        (Some(false), Some(false)) => Some(EVIDENCE_REJECTED),
+        (None, _) | (_, None) => Some(RETRY_LATER),
+        _ => None,
+    }
+}
 
 fn enrollment_close_code(error: &EnrollmentError) -> u16 {
     match error {
@@ -578,6 +630,7 @@ async fn run_socket(
     let diagnostic = std::env::var("ZT_DEVICE_STREAM_DIAGNOSTIC").is_ok_and(|value| value == "1");
     let mut diagnostic_heartbeats = 0;
     let mut close_reason = "other_stream_exit";
+    let mut close_with_code = None;
     loop {
         tokio::select! {
             message = receive_frame(&mut socket, &mut frame_budget) => {
@@ -625,15 +678,17 @@ async fn run_socket(
                         if !session_current(&client, session, &state).await.unwrap_or(false) {
                             break;
                         }
-                        if matches!(evidence, RadioEvidence::DurableSubmitIntent)
-                            && !grant_still_current(&client, session, message_id, attempt_id, &state)
-                                .await
-                                .unwrap_or(false)
-                            && !previous_submit_intent(&client, session, event_id, message_id, attempt_id)
-                                .await
-                                .unwrap_or(false)
-                        {
-                            break;
+                        if matches!(evidence, RadioEvidence::DurableSubmitIntent) {
+                            let current_grant = grant_still_current(&client, session,
+                                message_id, attempt_id, &state).await;
+                            let previous_intent = previous_submit_intent(&client, session,
+                                event_id, message_id, attempt_id).await;
+                            if let Some(code) = durable_intent_preflight_close_code(
+                                current_grant.ok(), previous_intent.ok())
+                            {
+                                close_with_code = Some(code);
+                                break;
+                            }
                         }
                         let event = RadioEvent {
                             event_id,
@@ -647,8 +702,13 @@ async fn run_socket(
                             segment_count,
                         };
                         let mut store = DeliveryStore::new(&mut client);
-                        let Ok(next) = store.record_radio_event(event).await else {
-                            break;
+                        let next = match store.record_radio_event(event).await {
+                            Ok(next) => next,
+                            Err(error) => {
+                                close_with_code = Some(radio_evidence_close_code(&error,
+                                    session_current(&client, session, &state).await.unwrap_or(false)));
+                                break;
+                            }
                         };
                         let submit_permitted = matches!(evidence, RadioEvidence::DurableSubmitIntent)
                             && grant_still_current(&client, session, message_id, attempt_id, &state)
@@ -662,8 +722,14 @@ async fn run_socket(
                         v: 1, connection_epoch, event_id, sequence, message_id,
                         attempt_id, classification, observed_at_ms, part_count, signature_der,
                     }) if state.inbound_pilot_enabled && connection_epoch == session.connection_epoch => {
-                        let Ok(signature) = URL_SAFE_NO_PAD.decode(signature_der.as_bytes()) else { break; };
-                        if URL_SAFE_NO_PAD.encode(&signature) != signature_der { break; }
+                        let Ok(signature) = URL_SAFE_NO_PAD.decode(signature_der.as_bytes()) else {
+                            close_with_code = Some(EVIDENCE_REJECTED);
+                            break;
+                        };
+                        if URL_SAFE_NO_PAD.encode(&signature) != signature_der {
+                            close_with_code = Some(EVIDENCE_REJECTED);
+                            break;
+                        }
                         let inbound_session = InboundSession {
                             account_id: session.account_id,
                             device_id: session.device_id,
@@ -678,11 +744,18 @@ async fn run_socket(
                             part_count, content: Content::MetadataOnly,
                             signature_der: &signature,
                         };
-                        let Ok(outcome) = inbound::ingest(&mut client, inbound_session, &event).await else { break; };
+                        let outcome = match inbound::ingest(&mut client, inbound_session, &event).await {
+                            Ok(outcome) => outcome,
+                            Err(error) => {
+                                close_with_code = Some(inbound_evidence_close_code(&error));
+                                break;
+                            }
+                        };
                         if !send_frame(&mut socket, ServerFrame::InboundEventAck {
                             v: 1, event_id,
                             created: outcome.created,
                             queued_deliveries: outcome.queued_deliveries,
+                            suppression_cleared: outcome.suppression_cleared,
                         }).await { break; }
                     }
                     _ => break,
@@ -734,7 +807,12 @@ async fn run_socket(
         );
     }
     let _ = release_session(&client, session).await;
-    let _ = socket.send(Message::Close(None)).await;
+    let _ = socket
+        .send(Message::Close(close_with_code.map(|code| CloseFrame {
+            code,
+            reason: "".into(),
+        })))
+        .await;
 }
 
 fn synthetic_body_is_fixed(body: &str) -> bool {
@@ -1051,6 +1129,64 @@ mod tests {
         );
     }
 
+    #[test]
+    fn stale_radio_replay_after_retention_has_permanent_close_only_for_current_session() {
+        // Retention may remove the old event ID, leaving a late retransmission
+        // with only the attempt fence. The current phone must retire that row.
+        assert_eq!(
+            radio_evidence_close_code(&StoreError::StaleFence, true),
+            EVIDENCE_REJECTED
+        );
+        // A replaced session should establish a fresh epoch, not quarantine
+        // evidence just because its former epoch has been fenced.
+        assert_eq!(
+            radio_evidence_close_code(&StoreError::StaleFence, false),
+            RETRY_LATER
+        );
+        assert_eq!(
+            radio_evidence_close_code(&StoreError::EventIdConflict, true),
+            EVIDENCE_REJECTED
+        );
+        assert_eq!(
+            radio_evidence_close_code(&StoreError::DeviceBusy, true),
+            RETRY_LATER
+        );
+        // A 90-day prune can also remove the former durable intent itself.
+        // This preflight runs before record_radio_event and still needs 4409.
+        assert_eq!(
+            durable_intent_preflight_close_code(Some(false), Some(false)),
+            Some(EVIDENCE_REJECTED)
+        );
+        assert_eq!(
+            durable_intent_preflight_close_code(Some(false), None),
+            Some(RETRY_LATER)
+        );
+    }
+
+    #[test]
+    fn inbound_invalid_content_is_permanent_but_storage_failure_is_retryable() {
+        assert_eq!(
+            inbound_evidence_close_code(&InboundError::InvalidSignature),
+            EVIDENCE_REJECTED
+        );
+        assert_eq!(
+            inbound_evidence_close_code(&InboundError::EventConflict),
+            EVIDENCE_REJECTED
+        );
+        assert_eq!(
+            inbound_evidence_close_code(&InboundError::UnknownSource),
+            EVIDENCE_REJECTED
+        );
+        assert_eq!(
+            inbound_evidence_close_code(&InboundError::SourcePending),
+            RETRY_LATER
+        );
+        assert_eq!(
+            inbound_evidence_close_code(&InboundError::Unauthorized),
+            close_code::POLICY
+        );
+    }
+
     #[tokio::test]
     async fn handshake_closes_with_retry_code_when_database_is_down() {
         let state = DeviceSocketState {
@@ -1177,6 +1313,7 @@ mod tests {
                 event_id: id,
                 created: true,
                 queued_deliveries: 0,
+                suppression_cleared: false,
             },
         ];
         for (actual, documented) in server_frames.into_iter().zip(&examples[6..]) {
@@ -1311,12 +1448,24 @@ mod tests {
                 event_id,
                 created: true,
                 queued_deliveries: 0,
+                suppression_cleared: false,
             })
             .unwrap(),
             serde_json::json!({
                 "type":"inbound_event_ack", "v":1, "event_id":event_id,
                 "created":true, "queued_deliveries":0
             })
+        );
+        assert_eq!(
+            serde_json::to_value(ServerFrame::InboundEventAck {
+                v: 1,
+                event_id,
+                created: true,
+                queued_deliveries: 0,
+                suppression_cleared: true,
+            })
+            .unwrap()["suppression_cleared"],
+            true,
         );
     }
 
@@ -1339,6 +1488,11 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
             include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
             include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
+            include_str!("../../../../deploy/compose/migrations/030_terminal_dispatch_jobs.sql"),
+            include_str!(
+                "../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"
+            ),
+            include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
         ] {
             client.batch_execute(sql).await.unwrap();
         }
@@ -1574,6 +1728,11 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
             include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
             include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
+            include_str!("../../../../deploy/compose/migrations/030_terminal_dispatch_jobs.sql"),
+            include_str!(
+                "../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"
+            ),
+            include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
         ] {
             client.batch_execute(sql).await.unwrap();
         }

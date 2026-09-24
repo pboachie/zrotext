@@ -70,6 +70,11 @@ internal object SmsAttemptAdapter {
 
         val dao = try { SmsJournalDatabase.get(context).attempts() }
                   catch (_: RuntimeException) { return StartResult.JOURNAL_ERROR }
+        val senderToken = try {
+            InboundVault.token("sender-v1", grant.recipientE164.toByteArray(Charsets.US_ASCII))
+        } catch (_: Exception) { return StartResult.NOT_STARTED }
+        if (try { dao.isRecipientSuppressed(senderToken) } catch (_: Exception) { true })
+            return StartResult.NOT_STARTED
         // The writer ack changed Room from reserved to submitting. This single conditional
         // update consumes that authorization before any possible radio invocation.
         if (!isSessionCurrent() || System.currentTimeMillis() >= grant.expiresAtMs ||
@@ -103,12 +108,19 @@ internal object SmsAttemptAdapter {
 
         // There is intentionally no retry around this call. A throw may follow a partial radio action.
         return try {
-            if (parts.size == 1) {
-                manager.sendTextMessage(grant.recipientE164, null, parts[0], sent[0], delivered[0])
-            } else {
-                manager.sendMultipartTextMessage(grant.recipientE164, null, parts, sent, delivered)
+            synchronized(LocalSuppressionGate.lock) {
+                if (dao.isRecipientSuppressed(senderToken)) {
+                    dao.markPreflightNoRadio(attemptId, System.currentTimeMillis())
+                    StartResult.RESERVED_NOT_SENT
+                } else {
+                    if (parts.size == 1) {
+                        manager.sendTextMessage(grant.recipientE164, null, parts[0], sent[0], delivered[0])
+                    } else {
+                        manager.sendMultipartTextMessage(grant.recipientE164, null, parts, sent, delivered)
+                    }
+                    StartResult.CALL_RETURNED // Call return is not a delivery acknowledgment.
+                }
             }
-            StartResult.CALL_RETURNED // Call return is not a sent or delivery acknowledgment.
         } catch (_: RuntimeException) {
             runCatching { dao.setState(attemptId, AttemptState.UNKNOWN, System.currentTimeMillis()) }
             StartResult.UNKNOWN
