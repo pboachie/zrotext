@@ -2,9 +2,7 @@
 "use strict";
 
 const assert = require("node:assert/strict");
-const { readFileSync } = require("node:fs");
 const test = require("node:test");
-const vm = require("node:vm");
 
 function billingPage() {
   const elements = new Map();
@@ -19,11 +17,10 @@ function billingPage() {
     return elements.get(id);
   };
   const requests = [];
-  vm.runInNewContext(readFileSync(require.resolve("../../crates/server/static/billing-dashboard.js"), "utf8"), {
-    document: { getElementById: byId, createElement: element, cookie: "" },
-    crypto: { randomUUID: () => "synthetic-checkout-id" },
-    fetch: () => new Promise((resolve) => requests.push(resolve)),
-  });
+  globalThis.document = { getElementById: byId, createElement: element, cookie: "" };
+  globalThis.fetch = () => new Promise((resolve) => requests.push(resolve));
+  delete require.cache[require.resolve("../../crates/server/static/billing-dashboard.js")];
+  require("../../crates/server/static/billing-dashboard.js");
   return { byId, requests };
 }
 
