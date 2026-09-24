@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! A localhost device speaks the real socket protocol against disposable SQL.
-//! No Android radio, SMS, DNS lookup, or webhook request is involved.
+//! No Android radio, SMS, DNS lookup, or external webhook request is involved.
 
 use super::*;
 use crate::{
     enrollment::{DeviceChallenge, device_challenge_bytes},
-    webhook_worker::WebhookSecretVault,
+    webhook_egress::{DeliveryResponse, EgressError},
+    webhook_worker::{WebhookSecretVault, dispatch_one_with},
 };
 use futures_util::{SinkExt, StreamExt};
+use hmac::{Hmac, Mac};
 use p256::ecdsa::{Signature, SigningKey, signature::Signer};
 use p256::elliptic_curve::rand_core::OsRng;
 use serde_json::{Value, json};
@@ -35,7 +37,7 @@ async fn send_json(socket: &mut TestSocket, value: Value) {
 }
 
 #[tokio::test]
-async fn authenticated_inbound_frame_commits_one_webhook_delivery() {
+async fn authenticated_inbound_replay_retries_one_webhook_delivery() {
     let Ok(url) = std::env::var("ZT_INBOUND_TEST_DATABASE_URL") else {
         eprintln!("set ZT_INBOUND_TEST_DATABASE_URL to run virtual inbound socket test");
         return;
@@ -49,7 +51,7 @@ async fn authenticated_inbound_frame_commits_one_webhook_delivery() {
         .unwrap();
     let separator = if url.contains('?') { '&' } else { '?' };
     let schema_url = format!("{url}{separator}options=-csearch_path%3D{schema}");
-    let (db, connection) = tokio_postgres::connect(&schema_url, NoTls).await.unwrap();
+    let (mut db, connection) = tokio_postgres::connect(&schema_url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
     for migration in [
         include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
@@ -225,6 +227,121 @@ async fn authenticated_inbound_frame_commits_one_webhook_delivery() {
         .await
         .unwrap();
     assert_eq!((row.get::<_, i64>(0), row.get::<_, i64>(1)), (1, 1));
+
+    // The socket replay above must still leave one logical event and delivery.
+    // Drive that delivery through the real claim, payload, and retry code while
+    // a local receiver stub checks the stable body and decrypted signing key.
+    let received = Arc::new(std::sync::Mutex::new(Vec::<Vec<u8>>::new()));
+    for (attempt, expected_outcome) in ["http_error", "network_error", "ack"]
+        .into_iter()
+        .enumerate()
+    {
+        let received = received.clone();
+        assert!(
+            dispatch_one_with(
+                &mut db,
+                &vault,
+                "virtual-receiver",
+                move |url, body, secret| async move {
+                    assert_eq!(url, "https://hooks.example.org/inbound");
+                    assert_eq!(secret.as_slice(), &[8_u8; 32]);
+                    let parsed: Value = serde_json::from_slice(&body).unwrap();
+                    assert_eq!(parsed["event_id"], event_id.to_string());
+                    assert_eq!(parsed["message_id"], message_id.to_string());
+                    assert_eq!(parsed["content_kind"], "metadata_only");
+                    assert!(parsed.get("sender_e164").is_none());
+                    assert!(parsed.get("body").is_none());
+                    let timestamp = 1_750_000_000_u64;
+                    let header =
+                        crate::webhook_egress::signature_header(&secret, timestamp, &body).unwrap();
+                    let digest = header.strip_prefix("v1=").unwrap();
+                    let digest = digest
+                        .as_bytes()
+                        .chunks_exact(2)
+                        .map(|pair| {
+                            u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap()
+                        })
+                        .collect::<Vec<_>>();
+                    let mut verifier =
+                        <Hmac<Sha256> as hmac::digest::KeyInit>::new_from_slice(&secret).unwrap();
+                    verifier.update(timestamp.to_string().as_bytes());
+                    verifier.update(b".");
+                    verifier.update(&body);
+                    verifier.verify_slice(&digest).unwrap();
+                    received.lock().unwrap().push(body);
+                    match attempt {
+                        0 => Ok(DeliveryResponse {
+                            status: 500,
+                            acknowledged: false,
+                        }),
+                        1 => Err(EgressError::Transport),
+                        _ => Ok(DeliveryResponse {
+                            status: 204,
+                            acknowledged: true,
+                        }),
+                    }
+                }
+            )
+            .await
+            .unwrap()
+        );
+        let outcome: String = db
+            .query_one(
+                "SELECT outcome FROM webhook_attempts a JOIN webhook_deliveries d ON d.id=a.delivery_id \
+                 WHERE d.event_id=$1 AND d.endpoint_id=$2 AND a.attempt_number=$3",
+                &[&event_id, &endpoint_id, &((attempt + 1) as i16)],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(outcome, expected_outcome);
+        if attempt < 2 {
+            assert!(
+                !dispatch_one_with(&mut db, &vault, "early-retry", |_, _, _| async {
+                    unreachable!("retry must observe backoff")
+                })
+                .await
+                .unwrap()
+            );
+            assert_eq!(
+                db.execute(
+                    "UPDATE webhook_deliveries SET next_attempt_at=now()-interval '1 second' \
+                     WHERE event_id=$1 AND endpoint_id=$2 AND status='pending'",
+                    &[&event_id, &endpoint_id],
+                )
+                .await
+                .unwrap(),
+                1
+            );
+        }
+    }
+    {
+        let bodies = received.lock().unwrap();
+        assert_eq!(bodies.len(), 3);
+        assert_eq!(bodies[0], bodies[1]);
+        assert_eq!(bodies[1], bodies[2]);
+    }
+    let row = db
+        .query_one(
+            "SELECT (SELECT count(*) FROM inbound_events WHERE id=$1), \
+                    (SELECT count(*) FROM webhook_deliveries WHERE event_id=$1 AND endpoint_id=$2), \
+                    (SELECT status FROM webhook_deliveries WHERE event_id=$1 AND endpoint_id=$2), \
+                    (SELECT attempt_count FROM webhook_deliveries WHERE event_id=$1 AND endpoint_id=$2)",
+            &[&event_id, &endpoint_id],
+        )
+        .await
+        .unwrap();
+    assert_eq!(row.get::<_, i64>(0), 1);
+    assert_eq!(row.get::<_, i64>(1), 1);
+    assert_eq!(row.get::<_, String>(2), "succeeded");
+    assert_eq!(row.get::<_, i16>(3), 3);
+    assert!(
+        !dispatch_one_with(&mut db, &vault, "virtual-receiver", |_, _, _| async {
+            unreachable!("a completed delivery must not be sent again")
+        })
+        .await
+        .unwrap()
+    );
 
     socket.close(None).await.unwrap();
     server.abort();
