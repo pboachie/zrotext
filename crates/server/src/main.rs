@@ -45,7 +45,8 @@ use zrotext_server::{
     enrollment::{self, EnrollmentHasher},
     http_auth::{
         self, AuthHttpState, DisabledVerificationDispatcher, RegistrationPolicy,
-        SmtpVerificationDispatcher, VerificationDispatcher,
+        SmtpVerificationDispatcher, VerificationDispatchOutcome, VerificationDispatcher,
+        VerificationWarningGate,
     },
     http_enrollment::{self, EnrollmentHttpState},
     http_messages::{self, MessagesHttpState},
@@ -275,7 +276,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     let mut quotas_reset = false;
     let mut billing_auth_state = None;
-    if let Some((auth_state, enrollment_state)) = account_routes(&config)? {
+    if let Some((auth_state, enrollment_state)) = account_routes(&config).await? {
         billing_auth_state = Some(auth_state.clone());
         ensure_mfa_startup(
             &config.database_url,
@@ -394,21 +395,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut checks = tokio::time::interval(Duration::from_secs(5));
             checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut unavailable_logged = false;
+            let mut failure_gate = VerificationWarningGate::default();
             loop {
                 tokio::select! {
                     _ = checks.tick() => {
                         if mail_draining.load(Ordering::Acquire) { break; }
-                        let verification = http_auth::dispatch_one_verification(&mail_state).await;
+                        let verification = http_auth::dispatch_one_verification_report(&mail_state).await;
+                        match verification.as_ref() {
+                            Ok(VerificationDispatchOutcome::Idle) | Err(_) => {}
+                            Ok(VerificationDispatchOutcome::Delivered) => failure_gate.on_success(),
+                            Ok(VerificationDispatchOutcome::Failed { category, dead_lettered }) => {
+                                if let Some(warning) = failure_gate.on_failure(*category, std::time::Instant::now()) {
+                                    eprintln!("{warning}");
+                                }
+                                if *dead_lettered {
+                                    eprintln!("verification mail dead-lettered after six failed attempts");
+                                }
+                            }
+                        }
                         let reset = http_auth::dispatch_one_password_reset(&mail_state).await;
                         let notice = http_auth::dispatch_one_password_reset_notice(&mail_state).await;
-                        if verification.is_err() || reset.is_err() || notice.is_err() {
-                            if !unavailable_logged {
-                                eprintln!("account mail delivery worker unavailable");
-                                unavailable_logged = true;
-                            }
-                        } else {
-                            unavailable_logged = false;
+                        let unavailable = verification.is_err() || reset.is_err() || notice.is_err();
+                        if unavailable && !unavailable_logged {
+                            eprintln!("account mail delivery worker unavailable");
                         }
+                        unavailable_logged = unavailable;
                     }
                     _ = mail_drain_notify.notified() => break,
                 }
@@ -603,7 +614,7 @@ fn webhook_config() -> Result<(Option<WebhookSecretVault>, bool), Box<dyn std::e
     Ok((vault, delivery_enabled))
 }
 
-fn account_routes(
+async fn account_routes(
     config: &Config,
 ) -> Result<Option<(AuthHttpState, EnrollmentHttpState)>, Box<dyn std::error::Error>> {
     let origin = env::var("AUTH_ORIGIN").ok();
@@ -701,6 +712,21 @@ fn account_routes(
         enrollment_hasher,
         origin,
     );
+    // NOOP checks TLS and credentials without sending a message. A broken SMTP
+    // server must remain visible, but must not prevent unrelated API startup.
+    match tokio::time::timeout(
+        Duration::from_secs(10),
+        auth_state.dispatcher.check_connection(),
+    )
+    .await
+    {
+        Ok(Err(category)) => eprintln!(
+            "SMTP startup connection check failed: {}",
+            category.warning()
+        ),
+        Ok(Ok(_)) => {}
+        Err(_) => eprintln!("SMTP startup connection check failed (category=timeout)"),
+    }
     Ok(Some((auth_state, enrollment_state)))
 }
 

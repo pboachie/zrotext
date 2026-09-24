@@ -24,7 +24,13 @@ use lettre::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
-use std::{collections::HashSet, future::Future, pin::Pin, sync::Arc, time::Duration};
+use std::{
+    collections::HashSet,
+    future::Future,
+    pin::Pin,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use subtle::ConstantTimeEq;
 use tokio::sync::Semaphore;
 use tokio_postgres::Client;
@@ -48,7 +54,7 @@ pub trait VerificationDispatcher: Send + Sync {
         &'a self,
         email: &'a str,
         token: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<(), ()>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<(), DispatchFailure>> + Send + 'a>>;
     fn dispatch_password_reset<'a>(
         &'a self,
         _email: &'a str,
@@ -61,6 +67,77 @@ pub trait VerificationDispatcher: Send + Sync {
         _email: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<(), ()>> + Send + 'a>> {
         Box::pin(async { Err(()) })
+    }
+    fn check_connection<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, DispatchFailure>> + Send + 'a>> {
+        Box::pin(async { Ok(false) })
+    }
+}
+
+/// Only fixed categories cross the mail transport boundary. SMTP responses may
+/// contain addresses or other private data and must never enter logs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DispatchFailure {
+    Message,
+    Connect,
+    Tls,
+    Auth,
+    Rejected,
+    Timeout,
+}
+
+impl DispatchFailure {
+    fn from_smtp(error: &lettre::transport::smtp::Error) -> Self {
+        if error.is_timeout() {
+            Self::Timeout
+        } else if error.is_tls() {
+            Self::Tls
+        } else if error
+            .status()
+            .is_some_and(|code| matches!(code.to_string().as_str(), "530" | "534" | "535"))
+        {
+            Self::Auth
+        } else if error.is_transient() || error.is_permanent() {
+            Self::Rejected
+        } else {
+            Self::Connect
+        }
+    }
+
+    pub fn warning(self) -> &'static str {
+        match self {
+            Self::Message => "verification mail delivery failed (category=message)",
+            Self::Connect => "verification mail delivery failed (category=connect)",
+            Self::Tls => "verification mail delivery failed (category=tls)",
+            Self::Auth => "verification mail delivery failed (category=auth)",
+            Self::Rejected => "verification mail delivery failed (category=rejected)",
+            Self::Timeout => "verification mail delivery failed (category=timeout)",
+        }
+    }
+}
+
+/// Limit repeated warnings when many queued messages encounter the same
+/// transport problem. A successful send clears the failure streak.
+#[derive(Default)]
+pub struct VerificationWarningGate {
+    last_warning: Option<Instant>,
+}
+
+impl VerificationWarningGate {
+    pub fn on_failure(&mut self, category: DispatchFailure, now: Instant) -> Option<&'static str> {
+        if self
+            .last_warning
+            .is_some_and(|last| now.saturating_duration_since(last) < Duration::from_secs(300))
+        {
+            return None;
+        }
+        self.last_warning = Some(now);
+        Some(category.warning())
+    }
+
+    pub fn on_success(&mut self) {
+        self.last_warning = None;
     }
 }
 
@@ -75,8 +152,8 @@ impl VerificationDispatcher for DisabledVerificationDispatcher {
         &'a self,
         _email: &'a str,
         _token: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<(), ()>> + Send + 'a>> {
-        Box::pin(async { Err(()) })
+    ) -> Pin<Box<dyn Future<Output = Result<(), DispatchFailure>> + Send + 'a>> {
+        Box::pin(async { Err(DispatchFailure::Connect) })
     }
 }
 
@@ -133,6 +210,14 @@ impl SmtpVerificationDispatcher {
             transport,
         })
     }
+
+    pub async fn test_connection(&self) -> Result<(), DispatchFailure> {
+        match self.transport.test_connection().await {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(DispatchFailure::Connect),
+            Err(error) => Err(DispatchFailure::from_smtp(&error)),
+        }
+    }
 }
 
 impl VerificationDispatcher for SmtpVerificationDispatcher {
@@ -148,9 +233,9 @@ impl VerificationDispatcher for SmtpVerificationDispatcher {
         &'a self,
         email: &'a str,
         token: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<(), ()>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), DispatchFailure>> + Send + 'a>> {
         Box::pin(async move {
-            let recipient = email.parse().map_err(|_| ())?;
+            let recipient = email.parse().map_err(|_| DispatchFailure::Message)?;
             let mut builder = Message::builder().from(self.from.clone()).to(recipient);
             if let Some(reply_to) = &self.reply_to {
                 builder = builder.reply_to(reply_to.clone());
@@ -158,8 +243,11 @@ impl VerificationDispatcher for SmtpVerificationDispatcher {
             let message = builder
                 .subject("Verify your ZROtext email")
                 .body(verification_email_body(token))
-                .map_err(|_| ())?;
-            self.transport.send(message).await.map_err(|_| ())?;
+                .map_err(|_| DispatchFailure::Message)?;
+            self.transport
+                .send(message)
+                .await
+                .map_err(|error| DispatchFailure::from_smtp(&error))?;
             Ok(())
         })
     }
@@ -203,6 +291,11 @@ impl VerificationDispatcher for SmtpVerificationDispatcher {
             self.transport.send(message).await.map_err(|_| ())?;
             Ok(())
         })
+    }
+    fn check_connection<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, DispatchFailure>> + Send + 'a>> {
+        Box::pin(async move { self.test_connection().await.map(|_| true) })
     }
 }
 
@@ -401,9 +494,13 @@ impl AuthHttpState {
         hasher: Arc<TokenHasher>,
         canonical_origin: String,
         dispatcher: Arc<dyn VerificationDispatcher>,
-    ) -> Result<Self, &'static str> {
+    ) -> Result<Self, String> {
         if !valid_canonical_origin(&canonical_origin) {
-            return Err("AUTH_ORIGIN must be a canonical HTTPS origin");
+            let message = match canonical_origin_serialization(&canonical_origin) {
+                Some(expected) => format!("AUTH_ORIGIN must be a canonical HTTPS origin; use {expected}"),
+                None => "AUTH_ORIGIN must be a canonical HTTPS origin with no path, query, fragment, or userinfo".to_owned(),
+            };
+            return Err(message);
         }
         Ok(Self {
             database_url,
@@ -526,17 +623,22 @@ async fn connect(database_url: &str) -> Result<Client, AuthHttpError> {
     Ok(client)
 }
 
-fn valid_canonical_origin(origin: &str) -> bool {
-    let Some(host) = origin.strip_prefix("https://") else {
-        return false;
+fn canonical_origin_serialization(origin: &str) -> Option<String> {
+    let Ok(parsed) = url::Url::parse(origin) else {
+        return None;
     };
-    !host.is_empty()
-        && !host.contains('/')
-        && !host.contains('?')
-        && !host.contains('#')
-        && !host.contains('@')
-        && !host.chars().any(char::is_whitespace)
-        && !host.ends_with(':')
+    (parsed.scheme() == "https"
+        && parsed.has_host()
+        && parsed.username().is_empty()
+        && parsed.password().is_none()
+        && parsed.path() == "/"
+        && parsed.query().is_none()
+        && parsed.fragment().is_none())
+    .then(|| parsed.origin().ascii_serialization())
+}
+
+fn valid_canonical_origin(origin: &str) -> bool {
+    canonical_origin_serialization(origin).as_deref() == Some(origin)
 }
 
 fn require_origin(headers: &HeaderMap, expected: &str) -> Result<(), AuthHttpError> {
@@ -682,8 +784,27 @@ async fn resend_verification(
 /// makes concurrent polling safe; this routine performs at most one send.
 /// SMTP acceptance can be ambiguous, so failed claims retry at least once.
 pub async fn dispatch_one_verification(state: &AuthHttpState) -> Result<bool, AuthHttpError> {
+    Ok(!matches!(
+        dispatch_one_verification_report(state).await?,
+        VerificationDispatchOutcome::Idle
+    ))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VerificationDispatchOutcome {
+    Idle,
+    Delivered,
+    Failed {
+        category: DispatchFailure,
+        dead_lettered: bool,
+    },
+}
+
+pub async fn dispatch_one_verification_report(
+    state: &AuthHttpState,
+) -> Result<VerificationDispatchOutcome, AuthHttpError> {
     if !state.dispatcher.ready() {
-        return Ok(false);
+        return Ok(VerificationDispatchOutcome::Idle);
     }
     let (mut client, connection) = crate::runtime_db::connect_worker(&state.database_url)
         .await
@@ -695,18 +816,28 @@ pub async fn dispatch_one_verification(state: &AuthHttpState) -> Result<bool, Au
         .await
         .map_err(map_auth)?
     else {
-        return Ok(false);
+        return Ok(VerificationDispatchOutcome::Idle);
     };
-    let delivered = tokio::time::timeout(
+    let result = tokio::time::timeout(
         Duration::from_secs(30),
         state.dispatcher.dispatch(&mail.email, &mail.token),
     )
-    .await
-    .is_ok_and(|result| result.is_ok());
-    let _ = auth::ack_verification_mail(&client, &mail, delivered)
+    .await;
+    let delivered = matches!(&result, Ok(Ok(())));
+    let acknowledged = auth::ack_verification_mail(&client, &mail, delivered)
         .await
         .map_err(map_auth)?;
-    Ok(true)
+    Ok(match result {
+        Ok(Ok(())) => VerificationDispatchOutcome::Delivered,
+        Ok(Err(category)) => VerificationDispatchOutcome::Failed {
+            category,
+            dead_lettered: acknowledged && mail.attempt_count >= 6,
+        },
+        Err(_) => VerificationDispatchOutcome::Failed {
+            category: DispatchFailure::Timeout,
+            dead_lettered: acknowledged && mail.attempt_count >= 6,
+        },
+    })
 }
 
 /// At-least-once delivery of a one-use reset code. Concurrent hubs use the
@@ -1653,7 +1784,7 @@ mod tests {
             &'a self,
             _email: &'a str,
             token: &'a str,
-        ) -> Pin<Box<dyn Future<Output = Result<(), ()>> + Send + 'a>> {
+        ) -> Pin<Box<dyn Future<Output = Result<(), DispatchFailure>> + Send + 'a>> {
             *self.0.lock().unwrap() = Some(token.to_owned());
             Box::pin(async { Ok(()) })
         }
@@ -1873,9 +2004,29 @@ mod tests {
     #[test]
     fn canonical_origin_and_cookie_parsing_are_strict() {
         assert!(valid_canonical_origin("https://zrotext.example"));
+        assert!(valid_canonical_origin("https://app.example.com:8443"));
+        assert!(valid_canonical_origin("https://xn--bcher-kva.example"));
+        assert!(valid_canonical_origin("https://[::1]"));
         assert!(!valid_canonical_origin("http://zrotext.example"));
+        assert!(!valid_canonical_origin("https://zrotext.example/"));
         assert!(!valid_canonical_origin("https://zrotext.example/path"));
         assert!(!valid_canonical_origin("https://a@zrotext.example"));
+        for (input, expected) in [
+            ("https://App.Example.com", "https://app.example.com"),
+            ("https://app.example.com:443", "https://app.example.com"),
+            ("https://bücher.example", "https://xn--bcher-kva.example"),
+        ] {
+            assert!(!valid_canonical_origin(input));
+            let error = AuthHttpState::new(
+                "postgres://unused".to_owned(),
+                Arc::new(TokenHasher::new(crate::test_keys::key(7)).unwrap()),
+                input.to_owned(),
+                Arc::new(DisabledVerificationDispatcher),
+            )
+            .err()
+            .unwrap();
+            assert!(error.contains(&format!("use {expected}")));
+        }
         let mut headers = HeaderMap::new();
         headers.insert(
             header::COOKIE,
@@ -1883,6 +2034,47 @@ mod tests {
         );
         assert_eq!(cookie(&headers, SESSION_COOKIE), Some("zts_abc"));
         assert_eq!(cookie(&headers, CSRF_COOKIE), None);
+    }
+
+    struct FailingVerification;
+
+    impl VerificationDispatcher for FailingVerification {
+        fn ready(&self) -> bool {
+            true
+        }
+
+        fn dispatch<'a>(
+            &'a self,
+            _email: &'a str,
+            _token: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<(), DispatchFailure>> + Send + 'a>> {
+            Box::pin(async { Err(DispatchFailure::Rejected) })
+        }
+    }
+
+    #[tokio::test]
+    async fn repeated_delivery_failures_produce_one_content_free_warning() {
+        let dispatcher = FailingVerification;
+        let mut gate = VerificationWarningGate::default();
+        let now = Instant::now();
+        let mut warnings = Vec::new();
+        for _ in 0..2 {
+            let category = dispatcher
+                .dispatch("owner@example.test", "ztv_secret-token")
+                .await
+                .unwrap_err();
+            warnings.extend(gate.on_failure(category, now));
+        }
+        assert_eq!(
+            warnings,
+            ["verification mail delivery failed (category=rejected)"]
+        );
+        assert!(!warnings[0].contains("owner@example.test"));
+        assert!(!warnings[0].contains("ztv_"));
+        assert!(
+            gate.on_failure(DispatchFailure::Rejected, now + Duration::from_secs(300))
+                .is_some()
+        );
     }
 
     #[test]
