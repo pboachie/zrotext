@@ -55,29 +55,94 @@ hostname verification before directing production traffic to a new writer.
 closed instance does not create accounts or queue verification mail from
 `POST /v1/auth/register`. It still lets existing owners verify pending codes,
 log in, and use their accounts. The register endpoint returns the same generic
-`202 Accepted` for a
-blocked address as for an accepted request; the response does not prove that
-mail was queued.
+`202 Accepted` for a blocked address as for an accepted request; the response
+does not prove that mail was queued.
 
-To enroll the first owner, configure the account peppers, `AUTH_ORIGIN`, and
-SMTP, then set `REGISTRATION_MODE=allowlist` and
-`REGISTRATION_ALLOWED_EMAILS` to **only** an address you control in your private
-deployment settings. Start or restart every API instance, register that exact
-address through the owner UI, and complete email verification. Then clear the
-allowlist variables, set `REGISTRATION_MODE=closed`, and restart every API
-instance. This temporary
-allowlist also works when the database already contains owners. Changing the
-policy does not revoke existing owner sessions.
+**First owner:** after applying migrations and provisioning the runtime
+database role, keep `REGISTRATION_MODE=closed` and stop every API service. Run
+the operator CLI inside the private Compose network, with the password read
+from a non-echoing prompt and piped on stdin (never in argv or a URL):
+
+```sh
+docker compose --env-file .env -f deploy/compose/compose.yaml stop app
+docker compose --env-file .env -f deploy/compose/compose.yaml \
+  --profile two-hub stop app_b
+docker compose --env-file .env -f deploy/compose/compose.yaml build app
+set +x
+read -rsp 'New owner passphrase> ' ZT_OWNER_PASSWORD; printf '\n'
+printf '%s' "$ZT_OWNER_PASSWORD" | docker compose --env-file .env \
+  -f deploy/compose/compose.yaml run --rm --no-deps -T \
+  --entrypoint /usr/local/bin/zrotext-admin app \
+  create-owner --email owner@example.test
+unset ZT_OWNER_PASSWORD
+docker compose --env-file .env -f deploy/compose/compose.yaml up -d app
+```
+
+Replace the example address with one you control. The CLI connects to the
+already migrated private database through the runtime role. It creates **one
+verified owner** only if `accounts` is empty, and sends no verification mail.
+Configure `AUTH_ORIGIN`, `AUTH_TOKEN_PEPPER_B64`, and
+`ENROLLMENT_TOKEN_PEPPER_B64` before starting the API. The account can sign in
+at `/owner/devices.html` once it is running.
+Further invocations refuse to create another owner; inspect an existing
+database before attempting bootstrap again. For two hubs, restart `app_b`
+with `--profile two-hub` after the CLI succeeds. Keep the operator CLI and
+database URL inside the private operator environment.
+
+For later invited owners, allowlist mode requires a **separate** 32-byte random
+base64 `REGISTRATION_ENROLLMENT_KEY_B64` (for example, generated privately with
+`openssl rand -base64 32`). Keep this master key in private operator settings.
+The CLI derives a distinct invite token for each normalized email address;
+the raw master key is never sent in the HTTP request. After setting
+`REGISTRATION_MODE=allowlist` and the intended address/domain, issue one token
+for that exact address:
+
+```sh
+docker compose --env-file .env -f deploy/compose/compose.yaml run --rm \
+  --no-deps -T --entrypoint /usr/local/bin/zrotext-admin app \
+  issue-invite --email invited@example.test
+```
+
+The command prints an address-bound token. Share it only with that registrant
+through a private channel; they send it in the
+`x-zrotext-registration-token` header. It cannot authorize a different
+address, even one on the same allowed domain. A missing or invalid token
+returns generic `202 Accepted` without a database lookup, password hash,
+account, or mail. Missing or malformed tokens return before email parsing.
+The token remains usable for its one address until registration closes or the
+master key rotates; close registration or rotate the key after enrollment.
 
 In allowlist mode, `REGISTRATION_ALLOWED_EMAILS` and
 `REGISTRATION_ALLOWED_DOMAINS` are comma-separated. Address and domain matching
 is case-insensitive; a domain permits **every** address at that exact domain,
 so prefer individual addresses for a private instance. Subdomains are not
-implicitly included. At least one entry is required. Invalid entries, an
-unknown mode, or allowlists supplied in `closed` or `open` mode stop server
-startup. `REGISTRATION_MODE=open` deliberately accepts registrations from
-anyone who can reach the route and verify an email address. Keep the normal
+implicitly included. At least one entry and the enrollment key are required.
+When account routes are enabled, invalid entries, an unknown mode, or
+allowlists/key supplied in `closed` or `open` mode stop server startup.
+`REGISTRATION_MODE=open` deliberately accepts registrations from anyone who
+can reach the route and verify an email address. Keep the normal
 registration abuse budget and mail-provider limits in place for open mode.
+
+There is no registration form in the current owner UI. For a later invited
+owner, configure SMTP and account routes, restart every API instance with the
+same allowlist and master key, then run:
+
+```sh
+python3 scripts/operator_enroll.py
+```
+
+The script prompts for the exact configured HTTPS `AUTH_ORIGIN`, invited
+email, new password, address-bound token issued above, and emailed code. It
+posts JSON to `/v1/auth/register` with that Origin and the
+`x-zrotext-registration-token` header, then posts the code to
+`/v1/auth/verify-email`. Its non-echoing prompts keep credentials out of shell
+history and process arguments; it refuses redirects.
+
+`register` returns `202` even when admission is denied. A successful
+`verify-email` returns `204`. If no mail arrives, check the private policy and
+SMTP worker rather than repeating registrations blindly. After verification,
+remove the allowlists and enrollment key, set `REGISTRATION_MODE=closed`, and
+restart every API instance. Closing registration does not revoke owner sessions.
 
 ### Database privileges
 

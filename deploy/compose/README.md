@@ -42,16 +42,17 @@ the documented health endpoints then use that port.
 
 ## Owner registration
 
-Compose passes `REGISTRATION_MODE` and its allowlists to both API services.
-The default is `closed` even if SMTP is configured. To create the first owner,
-put `REGISTRATION_MODE=allowlist` and
-`REGISTRATION_ALLOWED_EMAILS=your-controlled-address@example.test` in your
-private `.env`, configure account routes and SMTP, recreate every API service,
-register and verify that address, then clear the allowlist, set
-`REGISTRATION_MODE=closed`, and recreate the services again. Existing owners
-retain access. See
-[Self-hosting](../../docs/SELF-HOSTING.md#owner-registration) for exact matching,
-domain-wide access, and the intentionally public `open` mode.
+Compose passes `REGISTRATION_MODE`, allowlists, and the optional enrollment
+key to both API services. The default is `closed` even if SMTP is configured.
+For the first owner, leave it closed, apply migrations and runtime-role
+provisioning, stop every API instance, then use the packaged `zrotext-admin`
+binary through the private `app` service. It reads a password only from a
+non-echoing stdin pipe, creates one verified owner when `accounts` is empty,
+and sends no mail. The executable command and later invited-owner HTTPS
+registration/verification procedure are in
+[Self-hosting](../../docs/SELF-HOSTING.md#owner-registration). Allowlist mode
+requires an independent private master key. `zrotext-admin issue-invite`
+derives an address-bound token from it; `open` is intentionally public.
 
 The `migrate` service applies `migrations/001_*.sql`, `002_*.sql`, and later
 consecutive numbered SQL files before the API starts. Migration files are trusted

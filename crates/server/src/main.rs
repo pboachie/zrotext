@@ -623,10 +623,12 @@ fn account_routes(
     let registration_mode = smtp_env_option("REGISTRATION_MODE")?;
     let registration_emails = smtp_env_option("REGISTRATION_ALLOWED_EMAILS")?;
     let registration_domains = smtp_env_option("REGISTRATION_ALLOWED_DOMAINS")?;
+    let registration_key = smtp_env_option("REGISTRATION_ENROLLMENT_KEY_B64")?.map(Zeroizing::new);
     let registration_policy = RegistrationPolicy::parse(
         registration_mode.as_deref(),
         registration_emails.as_deref(),
         registration_domains.as_deref(),
+        registration_key.as_ref().map(|key| key.as_str()),
     )?;
     let auth_pepper = auth_pepper.ok_or("AUTH_TOKEN_PEPPER_B64 is required for account routes")?;
     let enrollment_pepper =
