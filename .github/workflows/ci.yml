@@ -27,6 +27,11 @@ jobs:
         run: python3 scripts/check_public_tree.py --ci
       - name: Hygiene regression tests
         run: python3 -m unittest discover -s scripts -p 'test_*.py'
+      - name: Device stream schema examples
+        run: |
+          python3 -m venv /tmp/zrotext-schema-venv
+          /tmp/zrotext-schema-venv/bin/pip install --disable-pip-version-check jsonschema==4.25.1
+          /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_device_stream_schema.py'
       - name: JavaScript syntax
         run: node --check web/owner/devices.js
       - name: Commit sign-off
