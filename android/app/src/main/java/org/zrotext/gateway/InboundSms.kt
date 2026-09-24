@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 package org.zrotext.gateway
 
+import android.Manifest
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.provider.Telephony
+import android.telephony.SubscriptionManager
 import android.telephony.SmsMessage
 import java.io.ByteArrayOutputStream
 import java.security.KeyStore
@@ -151,20 +154,20 @@ class InboundSmsReceiver : BroadcastReceiver() {
         val dedupeToken = InboundVault.token("pdu-v1", senderToken.toByteArray(Charsets.US_ASCII),
             pduFingerprint)
         val optAction = OptOutParser.classify(message.body)
-        if ((optAction == OptOutParser.OPT_OUT || optAction == OptOutParser.OPT_OUT_REVIEW) &&
-            dao.inboundByDedupe(dedupeToken) == null) {
-            // Persist the local radio block even when the reply cannot be
-            // associated with a trusted upload window or the server is offline.
-            synchronized(LocalSuppressionGate.lock) {
-                dao.suppressRecipient(LocalRecipientSuppression(senderToken, now))
-            }
-        }
-        val window = dao.activeInboundWindows(senderToken, now).singleOrNull() ?: return
-        // SMS_RECEIVED documents PDUs, not a mandatory subscription extra. Missing evidence
-        // is stored without a body; a slot/default-SIM guess cannot authorize capture.
+        // SMS_RECEIVED does not promise a subscription extra. Never infer one from the
+        // default SIM or the owner's saved selection.
         val rawSub = intent.extras?.get("subscription")
         val observedSub = (rawSub as? Number)?.toLong()
             ?.takeIf { it in 0..Int.MAX_VALUE.toLong() }?.toInt()
+        if (optAction == OptOutParser.OPT_OUT || optAction == OptOutParser.OPT_OUT_REVIEW) {
+            // The same lock fences a concurrent final radio preflight. An unknown or
+            // changed line still blocks the recipient globally on this phone.
+            synchronized(LocalSuppressionGate.lock) {
+                dao.recordLocalWithdrawal(dedupeToken, senderToken, optAction, observedSub,
+                    activeSubscriptionIds(context), now)
+            }
+        }
+        val window = dao.activeInboundWindows(senderToken, now).singleOrNull() ?: return
         if (observedSub != null && observedSub != window.subscriptionId) return
         val sealed = if (optAction == null) try { InboundVault.seal(message.body, dedupeToken) }
             catch (_: Exception) { null } else null
@@ -174,5 +177,14 @@ class InboundSmsReceiver : BroadcastReceiver() {
 
     companion object {
         private val io = Executors.newSingleThreadExecutor()
+
+        private fun activeSubscriptionIds(context: Context): List<Int> {
+            if (context.checkSelfPermission(Manifest.permission.READ_PHONE_STATE) !=
+                PackageManager.PERMISSION_GRANTED) return emptyList()
+            return try {
+                context.getSystemService(SubscriptionManager::class.java)
+                    .activeSubscriptionInfoList.orEmpty().map { it.subscriptionId }
+            } catch (_: RuntimeException) { emptyList() }
+        }
     }
 }

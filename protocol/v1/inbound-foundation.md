@@ -41,6 +41,19 @@ the authenticated source attempt. START and UNSTOP produce code 7 only when
 the phone recognizes the entire trimmed reply; an older action or a reply
 from a different outbound-attempt window cannot clear a later opt-out.
 
+The Android Room journal also records a metadata-only local withdrawal for a
+recognized STOP or likely opt-out even when no outbound reply window matches.
+It stores keyed sender and PDU dedupe tokens, the action, time and any observed
+subscription index; it keeps the local recipient block across restarts. A
+verified line ID and binding generation are attached only if a separately
+authenticated activation has been installed and the incoming subscription is
+the sole active subscription at capture time. The app currently has no
+activation route or unsolicited-action upload frame, so these rows stay local.
+An unattributed STOP still blocks local sends. START never clears that block;
+the existing reply-window START acknowledgement does not prove the source
+line or binding generation. Android subscription indexes may be reused after
+a SIM swap, so a matching index alone is not proof of the physical line.
+
 Migration 007 follows metering migration 006 and adds `inbound_events`,
 `webhook_endpoints`, `webhook_deliveries`, and `webhook_attempts`. Endpoint rows
 default disabled. Only KEK-encrypted signing secrets belong in the endpoint
