@@ -8,7 +8,7 @@ use aes_gcm::{
     aead::{Aead, KeyInit, Payload},
 };
 use base64::Engine;
-use p256::elliptic_curve::rand_core::{OsRng, RngCore};
+use rand::{Rng, rng};
 use std::time::{SystemTime, UNIX_EPOCH};
 use subtle::ConstantTimeEq;
 use tokio_postgres::{Client, Transaction};
@@ -48,7 +48,7 @@ impl MfaCipher {
     ) -> Result<(Vec<u8>, Vec<u8>), AuthError> {
         let cipher = Aes256Gcm::new_from_slice(&self.0[..]).map_err(|_| AuthError::Crypto)?;
         let mut nonce = [0u8; 12];
-        OsRng.fill_bytes(&mut nonce);
+        rng().fill_bytes(&mut nonce);
         let nonce_array = Nonce::try_from(nonce.as_slice()).map_err(|_| AuthError::Crypto)?;
         let ciphertext = cipher
             .encrypt(
@@ -203,7 +203,7 @@ fn valid_recovery_code(code: &str) -> bool {
 
 fn new_recovery_code() -> String {
     let mut bytes = [0u8; 16];
-    OsRng.fill_bytes(&mut bytes);
+    rng().fill_bytes(&mut bytes);
     format!(
         "zrc_{}",
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
@@ -411,6 +411,26 @@ pub async fn begin_login_challenge(
     Ok(token)
 }
 
+/// Cheap indexed probe used only after anonymous callers exhaust the MFA
+/// completion budget. It never consumes the challenge or checks a factor.
+pub async fn login_challenge_is_live(
+    client: &Client,
+    hasher: &TokenHasher,
+    challenge_token: &str,
+) -> Result<bool, AuthError> {
+    if !super::valid_token(challenge_token, "ztm_") {
+        return Ok(false);
+    }
+    let hash = hasher.digest(b"mfa-login-challenge-v1", challenge_token);
+    Ok(client
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM owner_mfa_login_challenges WHERE token_hash=$1 AND consumed_at IS NULL AND expires_at>now())",
+            &[&&hash[..]],
+        )
+        .await?
+        .get(0))
+}
+
 /// Bounded maintenance for consumed and expired challenges. Safe across hubs.
 pub async fn prune_expired_challenges(client: &Client) -> Result<u64, AuthError> {
     Ok(client.execute(
@@ -580,12 +600,12 @@ mod tests {
     #[test]
     fn encrypted_secret_is_bound_to_owner_identity() {
         let mut key = vec![0u8; 32];
-        OsRng.fill_bytes(&mut key);
+        rng().fill_bytes(&mut key);
         let cipher = MfaCipher::new(key).unwrap();
         let account = Uuid::new_v4();
         let user = Uuid::new_v4();
         let mut secret = [0u8; 20];
-        OsRng.fill_bytes(&mut secret);
+        rng().fill_bytes(&mut secret);
         let (nonce, ciphertext) = cipher.seal(account, user, &secret).unwrap();
         assert!(cipher.open(account, user, &nonce, &ciphertext).is_ok());
         assert!(
@@ -601,10 +621,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn postgres_enrollment_challenge_replay_recovery_and_disable() {
-        let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
-            return;
-        };
+        let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
         let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
         tokio::spawn(async move { connection.await.unwrap() });
         let schema = format!("mfa_test_{}", Uuid::new_v4().simple());
@@ -826,7 +846,7 @@ mod tests {
             Err(AuthError::Crypto)
         ));
         let mut wrong_key = vec![0u8; 32];
-        OsRng.fill_bytes(&mut wrong_key);
+        rng().fill_bytes(&mut wrong_key);
         let wrong_cipher = MfaCipher::new(wrong_key).unwrap();
         assert!(matches!(
             validate_runtime_key(&client, Some(&wrong_cipher), false).await,

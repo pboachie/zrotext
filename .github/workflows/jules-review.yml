@@ -33,8 +33,15 @@ concurrency:
 jobs:
   jules:
     # Dependabot-triggered runs cannot use the Actions secret; the trusted
-    # scheduled run picks up those same-repository PRs.
-    if: github.actor != 'dependabot[bot]'
+    # scheduled run picks up those same-repository PRs. Comment and review
+    # events from other accounts never start the job that holds the secret;
+    # scripts/jules_pr_review.py repeats these checks.
+    if: >-
+      github.actor != 'dependabot[bot]' &&
+      (github.event_name != 'issue_comment' ||
+       (github.event.issue.pull_request && github.event.comment.user.login == 'pboachie')) &&
+      (github.event_name != 'pull_request_review' ||
+       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association))
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:

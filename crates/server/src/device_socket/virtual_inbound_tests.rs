@@ -11,7 +11,8 @@ use crate::{
 use futures_util::{SinkExt, StreamExt};
 use hmac::{Hmac, Mac};
 use p256::ecdsa::{Signature, SigningKey, signature::Signer};
-use p256::elliptic_curve::rand_core::OsRng;
+use p256::elliptic_curve::Generate;
+use rand::rng;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
@@ -37,11 +38,10 @@ async fn send_json(socket: &mut TestSocket, value: Value) {
 }
 
 #[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn authenticated_inbound_replay_retries_one_webhook_delivery() {
-    let Ok(url) = std::env::var("ZT_INBOUND_TEST_DATABASE_URL") else {
-        eprintln!("set ZT_INBOUND_TEST_DATABASE_URL to run virtual inbound socket test");
-        return;
-    };
+    let url = std::env::var("ZT_INBOUND_TEST_DATABASE_URL")
+        .expect("set ZT_INBOUND_TEST_DATABASE_URL for PostgreSQL-backed tests");
     let (admin, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
     let schema = format!("inbound_socket_{}", Uuid::new_v4().simple());
@@ -75,8 +75,8 @@ async fn authenticated_inbound_replay_retries_one_webhook_delivery() {
     let attempt_id = Uuid::new_v4();
     let endpoint_id = Uuid::new_v4();
     let event_id = Uuid::new_v4();
-    let signing = SigningKey::random(&mut OsRng);
-    let public_key = signing.verifying_key().to_encoded_point(false);
+    let signing = SigningKey::generate_from_rng(&mut rng());
+    let public_key = signing.verifying_key().to_sec1_point(false);
     let fingerprint: [u8; 32] = Sha256::digest(public_key.as_bytes()).into();
     db.execute("INSERT INTO sites(site_id) VALUES('socket-test')", &[])
         .await
@@ -369,6 +369,7 @@ async fn authenticated_inbound_replay_retries_one_webhook_delivery() {
 }
 
 #[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn socket_handshakes_share_http_enrollment_budgets() {
     use crate::http_enrollment::{self, EnrollmentHttpState};
     use axum::{
@@ -377,9 +378,8 @@ async fn socket_handshakes_share_http_enrollment_budgets() {
     };
     use tower::ServiceExt;
 
-    let Ok(url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
-        return;
-    };
+    let url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+        .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
     let (admin, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
     let schema = format!("socket_budget_{}", Uuid::new_v4().simple());
@@ -403,8 +403,8 @@ async fn socket_handshakes_share_http_enrollment_budgets() {
     }
     let account_id = Uuid::new_v4();
     let device_id = Uuid::new_v4();
-    let signing = SigningKey::random(&mut OsRng);
-    let public_key = signing.verifying_key().to_encoded_point(false);
+    let signing = SigningKey::generate_from_rng(&mut rng());
+    let public_key = signing.verifying_key().to_sec1_point(false);
     let fingerprint: [u8; 32] = Sha256::digest(public_key.as_bytes()).into();
     db.execute("INSERT INTO accounts(id) VALUES($1)", &[&account_id])
         .await
@@ -535,6 +535,132 @@ async fn socket_handshakes_share_http_enrollment_budgets() {
         !used,
         "rate-limited proof must not reach signature verification"
     );
+    server.abort();
+    admin
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn enrolled_phone_reconnects_after_junk_spends_handshake_budgets() {
+    let url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+        .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let (admin, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let schema = format!("socket_junk_{}", Uuid::new_v4().simple());
+    admin
+        .batch_execute(&format!("CREATE SCHEMA {schema}"))
+        .await
+        .unwrap();
+    let separator = if url.contains('?') { '&' } else { '?' };
+    let schema_url = format!("{url}{separator}options=-csearch_path%3D{schema}");
+    let (db, connection) = tokio_postgres::connect(&schema_url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    for migration in [
+        include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
+        include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+        include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
+        include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
+        include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
+        include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+    ] {
+        db.batch_execute(migration).await.unwrap();
+    }
+    let account_id = Uuid::new_v4();
+    let device_id = Uuid::new_v4();
+    let signing = SigningKey::generate_from_rng(&mut rng());
+    let public_key = signing.verifying_key().to_sec1_point(false);
+    let fingerprint: [u8; 32] = Sha256::digest(public_key.as_bytes()).into();
+    db.execute("INSERT INTO sites(site_id) VALUES('fixture')", &[])
+        .await
+        .unwrap();
+    db.execute("INSERT INTO accounts(id) VALUES($1)", &[&account_id])
+        .await
+        .unwrap();
+    db.execute(
+        "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'reconnect fixture')",
+        &[&device_id, &account_id],
+    )
+    .await
+    .unwrap();
+    db.execute("INSERT INTO device_keys(device_id,account_id,signing_key_sec1,fingerprint) VALUES($1,$2,$3,$4)", &[&device_id,&account_id,&public_key.as_bytes(),&&fingerprint[..]]).await.unwrap();
+    let auth_hasher = Arc::new(TokenHasher::new(crate::test_keys::key(10)).unwrap());
+    let state = DeviceSocketState {
+        database_url: schema_url,
+        site_id: "fixture".into(),
+        instance_id: "fixture".into(),
+        deployment_epoch: 1,
+        enrollment_hasher: Arc::new(EnrollmentHasher::new(crate::test_keys::key(9)).unwrap()),
+        auth_hasher: auth_hasher.clone(),
+        alpha_policy: Arc::new(AlphaPolicy::parse(None, None, None).unwrap()),
+        dispatch_runtime_enabled: false,
+        inbound_pilot_enabled: false,
+        draining: Arc::new(AtomicBool::new(false)),
+        drain_notify: Arc::new(Notify::new()),
+    };
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router(state)).await.unwrap();
+    });
+    // One anonymous source spends both shared handshake budgets with
+    // made-up device IDs, as rapid hello/close cycles would.
+    for limit in [Limit::DeviceChallenge, Limit::DeviceAuthenticate] {
+        for _ in 0..300 {
+            assert!(
+                abuse_limits::consume(&db, &auth_hasher, limit, Some(&Uuid::new_v4().to_string()))
+                    .await
+                    .unwrap()
+            );
+        }
+    }
+    let (mut junk, _) = connect_async(format!("ws://{address}/v1/device-stream"))
+        .await
+        .unwrap();
+    send_json(
+        &mut junk,
+        json!({"v":1,"type":"hello","device_id":Uuid::new_v4()}),
+    )
+    .await;
+    assert!(matches!(
+        timeout(Duration::from_secs(5), junk.next()).await.unwrap(),
+        Some(Ok(Message::Close(Some(frame)))) if u16::from(frame.code) == RETRY_LATER
+    ));
+    // The enrolled phone still completes its handshake.
+    let (mut socket, _) = connect_async(format!("ws://{address}/v1/device-stream"))
+        .await
+        .unwrap();
+    send_json(
+        &mut socket,
+        json!({"v":1,"type":"hello","device_id":device_id}),
+    )
+    .await;
+    let challenge_json = receive_json(&mut socket).await;
+    assert_eq!(challenge_json["type"], "challenge");
+    let challenge = DeviceChallenge {
+        id: Uuid::parse_str(challenge_json["challenge_id"].as_str().unwrap()).unwrap(),
+        account_id,
+        device_id,
+        nonce: URL_SAFE_NO_PAD
+            .decode(challenge_json["nonce"].as_str().unwrap())
+            .unwrap()
+            .try_into()
+            .unwrap(),
+    };
+    let proof: Signature = signing.sign(&device_challenge_bytes(&challenge));
+    send_json(
+        &mut socket,
+        json!({
+            "v":1,"type":"proof","challenge_id":challenge.id,"account_id":account_id,
+            "device_id":device_id,"nonce":challenge_json["nonce"],
+            "signature_der":URL_SAFE_NO_PAD.encode(proof.to_der().as_bytes())
+        }),
+    )
+    .await;
+    let session_json = receive_json(&mut socket).await;
+    assert_eq!(session_json["type"], "session");
     server.abort();
     admin
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))

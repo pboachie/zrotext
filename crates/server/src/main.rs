@@ -30,7 +30,7 @@ use zrotext_delivery_store::DeliveryStore;
 use zrotext_server::{
     alpha_policy::AlphaPolicy,
     auth::{
-        TokenHasher, abuse_limits,
+        self, TokenHasher, abuse_limits,
         mfa::{self, MfaCipher},
     },
     billing::{
@@ -280,11 +280,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 tokio::select! {
                     _ = checks.tick() => {
                         if abuse_draining.load(Ordering::Acquire) { break; }
-                        if let Ok((client, connection)) = zrotext_server::runtime_db::connect_worker(&abuse_database).await {
+                        if let Ok((mut client, connection)) = zrotext_server::runtime_db::connect_worker(&abuse_database).await {
                             tokio::spawn(async move { let _ = connection.await; });
                             let _ = abuse_limits::prune(&client).await;
                             let _ = mfa::prune_expired_challenges(&client).await;
                             let _ = enrollment::prune_expired(&client).await;
+                            let _ = auth::prune_expired_pending_owners(&mut client).await;
                         }
                     }
                     _ = abuse_drain_notify.notified() => break,
@@ -865,7 +866,7 @@ async fn device_test(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use p256::elliptic_curve::rand_core::{OsRng, RngCore};
+    use rand::{Rng, rng};
     use uuid::Uuid;
 
     #[test]
@@ -917,10 +918,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn account_startup_requires_matching_mfa_key_or_explicit_recovery_mode() {
-        let Ok(base_url) = env::var("ZT_AUTH_TEST_DATABASE_URL") else {
-            return;
-        };
+        let base_url = env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
         let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
         tokio::spawn(async move { connection.await.unwrap() });
         let schema = format!("mfa_startup_test_{}", Uuid::new_v4().simple());
@@ -968,7 +969,7 @@ mod tests {
             .await
             .unwrap();
         let mut key = vec![0u8; 32];
-        OsRng.fill_bytes(&mut key);
+        rng().fill_bytes(&mut key);
         let cipher = MfaCipher::new(key).unwrap();
         assert!(
             ensure_mfa_startup(&database_url, None, false)
@@ -988,10 +989,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn configured_site_registers_once_and_disabled_site_fails_closed() {
-        let Ok(base_url) = env::var("ZT_AUTH_TEST_DATABASE_URL") else {
-            return;
-        };
+        let base_url = env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
         let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
         tokio::spawn(async move { connection.await.unwrap() });
         let schema = format!("site_test_{}", Uuid::new_v4().simple());
