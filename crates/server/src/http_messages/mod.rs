@@ -87,6 +87,7 @@ enum MessageHttpError {
     QueueFull,
     RateLimited,
     QuotaExceeded,
+    RecipientSuppressed,
     Unavailable,
 }
 
@@ -101,6 +102,7 @@ impl IntoResponse for MessageHttpError {
             Self::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
             Self::QueueFull => (StatusCode::TOO_MANY_REQUESTS, "queue_full"),
             Self::QuotaExceeded => (StatusCode::TOO_MANY_REQUESTS, "quota_exceeded"),
+            Self::RecipientSuppressed => (StatusCode::FORBIDDEN, "recipient_suppressed"),
             Self::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
         };
         let mut response = (status, Json(ErrorBody { code })).into_response();
@@ -144,6 +146,7 @@ fn map_store(error: StoreError) -> MessageHttpError {
         | StoreError::PaymentHold
         | StoreError::QuotaNotConfigured => MessageHttpError::Unavailable,
         StoreError::QuotaExceeded => MessageHttpError::QuotaExceeded,
+        StoreError::RecipientSuppressed => MessageHttpError::RecipientSuppressed,
         StoreError::DeviceBusy | StoreError::EventIdConflict => MessageHttpError::Conflict,
         StoreError::QueueFull => MessageHttpError::QueueFull,
     }
@@ -518,6 +521,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
             include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
             include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+            include_str!("../../../../deploy/compose/migrations/023_recipient_suppression.sql"),
         ] {
             client.batch_execute(sql).await.unwrap();
         }

@@ -28,6 +28,9 @@ pub enum Classification {
     SimUnverified,
     SendUnverified,
     EncryptionUnverified,
+    OptOut,
+    OptOutReview,
+    OptIn,
 }
 
 impl Classification {
@@ -37,6 +40,9 @@ impl Classification {
             Self::SimUnverified => 2,
             Self::SendUnverified => 3,
             Self::EncryptionUnverified => 4,
+            Self::OptOut => 5,
+            Self::OptOutReview => 6,
+            Self::OptIn => 7,
         }
     }
 
@@ -46,6 +52,9 @@ impl Classification {
             Self::SimUnverified => "sim_unverified",
             Self::SendUnverified => "send_unverified",
             Self::EncryptionUnverified => "encryption_unverified",
+            Self::OptOut => "opt_out",
+            Self::OptOutReview => "opt_out_review",
+            Self::OptIn => "opt_in",
         }
     }
 }
@@ -90,6 +99,7 @@ pub struct InboundEvent<'a> {
 pub struct IngestOutcome {
     pub created: bool,
     pub queued_deliveries: u64,
+    pub suppression_cleared: bool,
 }
 
 #[derive(Debug, Error)]
@@ -156,6 +166,13 @@ fn validate(event: &InboundEvent<'_>) -> Result<(), InboundError> {
     {
         return Err(InboundError::InvalidInput);
     }
+    if matches!(
+        event.classification,
+        Classification::OptOut | Classification::OptOutReview | Classification::OptIn
+    ) && event.content != Content::MetadataOnly
+    {
+        return Err(InboundError::InvalidInput);
+    }
     Ok(())
 }
 
@@ -183,7 +200,7 @@ pub async fn ingest(
          AND s.lease_until>clock_timestamp() AND d.revoked_at IS NULL AND k.revoked_at IS NULL \
          AND a.disabled_at IS NULL AND t.enabled=TRUE AND t.draining=FALSE \
          AND p.epoch=$6 AND NOT pg_is_in_recovery() \
-         FOR SHARE OF s,d,k,a,t,p",
+         FOR SHARE OF s,d,k,t,p",
             &[
                 &session.account_id,
                 &session.device_id,
@@ -202,12 +219,20 @@ pub async fn ingest(
     let signed = signed_event_bytes(session, event);
     key.verify(&signed, &signature)
         .map_err(|_| InboundError::InvalidSignature)?;
+    // Admission takes this account lock before checking suppression. This
+    // serializes STOP and START with every acceptance transaction.
+    tx.query_opt(
+        "SELECT id FROM accounts WHERE id=$1 AND disabled_at IS NULL FOR NO KEY UPDATE",
+        &[&session.account_id],
+    )
+    .await?
+    .ok_or(InboundError::Unauthorized)?;
 
     // A reply can be associated only with a message attempt from this tenant
     // and device that already has positive sent-callback evidence.
     let source = tx
         .query_opt(
-            "SELECT 1 FROM message_attempts ma \
+            "SELECT m.recipient_e164 FROM message_attempts ma \
          JOIN messages m ON (m.account_id,m.id)=(ma.account_id,ma.message_id) \
          WHERE ma.id=$1 AND ma.account_id=$2 AND ma.device_id=$3 \
          AND ma.message_id=$4 AND ma.status='submitted' \
@@ -222,9 +247,7 @@ pub async fn ingest(
             ],
         )
         .await?;
-    if source.is_none() {
-        return Err(InboundError::UnknownSource);
-    }
+    let recipient_e164: String = source.ok_or(InboundError::UnknownSource)?.get(0);
 
     let digest = Sha256::digest(&signed).to_vec();
     // Serialize this event ID across connections before the replay lookup.
@@ -257,10 +280,13 @@ pub async fn ingest(
         ).await?.is_none() {
             return Err(InboundError::Unauthorized);
         }
+        let cleared =
+            suppression_cleared(&tx, session.account_id, &recipient_e164, event.event_id).await?;
         tx.commit().await?;
         return Ok(IngestOutcome {
             created: false,
             queued_deliveries: 0,
+            suppression_cleared: cleared,
         });
     }
     // Reject an already committed sequence without a counter update or a
@@ -341,12 +367,38 @@ pub async fn ingest(
         // A writer from the prior version may have raced without the event
         // advisory lock. Roll back this transaction's budget charge; the
         // committed row already makes this an exact replay.
+        let cleared =
+            suppression_cleared(&tx, session.account_id, &recipient_e164, event.event_id).await?;
         tx.rollback().await?;
         return Ok(IngestOutcome {
             created: false,
             queued_deliveries: 0,
+            suppression_cleared: cleared,
         });
     }
+    let cleared = match event.classification {
+        Classification::OptOut | Classification::OptOutReview => {
+            let source = if event.classification == Classification::OptOut {
+                "sms_keyword"
+            } else {
+                "sms_review"
+            };
+            tx.execute(
+                "INSERT INTO recipient_suppressions(account_id,recipient_e164,active,source_event_id,source_attempt_id,source_observed_at,source) \
+                 VALUES($1,$2,TRUE,$3,$4,to_timestamp($5),$6) ON CONFLICT(account_id,recipient_e164) DO UPDATE \
+                 SET active=TRUE,source_event_id=EXCLUDED.source_event_id,source_attempt_id=EXCLUDED.source_attempt_id,source_observed_at=EXCLUDED.source_observed_at,source=EXCLUDED.source,changed_at=clock_timestamp()",
+                &[&session.account_id, &recipient_e164, &event.event_id, &event.attempt_id, &observed_seconds, &source],
+            ).await?;
+            false
+        }
+        Classification::OptIn => tx.execute(
+            "UPDATE recipient_suppressions SET active=FALSE,source_event_id=$3,source_observed_at=to_timestamp($4),source='sms_resume',changed_at=clock_timestamp() \
+             WHERE account_id=$1 AND recipient_e164=$2 AND active=TRUE AND source_attempt_id=$5 \
+             AND source_observed_at<to_timestamp($4)",
+            &[&session.account_id, &recipient_e164, &event.event_id, &observed_seconds, &event.attempt_id],
+        ).await? == 1,
+        _ => false,
+    };
     let queued = tx
         .execute(
             "INSERT INTO webhook_deliveries (id,account_id,endpoint_id,event_id) \
@@ -367,7 +419,24 @@ pub async fn ingest(
     Ok(IngestOutcome {
         created: true,
         queued_deliveries: queued,
+        suppression_cleared: cleared,
     })
+}
+
+async fn suppression_cleared<C: tokio_postgres::GenericClient>(
+    client: &C,
+    account_id: Uuid,
+    recipient_e164: &str,
+    event_id: Uuid,
+) -> Result<bool, tokio_postgres::Error> {
+    Ok(client
+        .query_opt(
+            "SELECT 1 FROM recipient_suppressions WHERE account_id=$1 AND recipient_e164=$2 \
+         AND active=FALSE AND source_event_id=$3",
+            &[&account_id, &recipient_e164, &event_id],
+        )
+        .await?
+        .is_some())
 }
 
 fn verify_exact_replay(

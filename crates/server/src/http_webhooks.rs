@@ -1060,6 +1060,7 @@ mod tests {
             include_str!("../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
             include_str!("../../../deploy/compose/migrations/015_webhook_kek_commitments.sql"),
             include_str!("../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+            include_str!("../../../deploy/compose/migrations/023_recipient_suppression.sql"),
         ] {
             admin.batch_execute(migration).await.unwrap();
         }
@@ -1530,6 +1531,7 @@ mod tests {
             include_str!("../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
             include_str!("../../../deploy/compose/migrations/015_webhook_kek_commitments.sql"),
             include_str!("../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+            include_str!("../../../deploy/compose/migrations/023_recipient_suppression.sql"),
         ] {
             admin.batch_execute(migration).await.unwrap();
         }
@@ -1913,6 +1915,7 @@ mod tests {
             include_str!("../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
             include_str!("../../../deploy/compose/migrations/015_webhook_kek_commitments.sql"),
             include_str!("../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+            include_str!("../../../deploy/compose/migrations/023_recipient_suppression.sql"),
         ] {
             admin.batch_execute(migration).await.unwrap();
         }

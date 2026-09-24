@@ -535,6 +535,7 @@ mod tests {
             include_str!("../../../deploy/compose/migrations/006_usage_metering.sql"),
             include_str!("../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"),
             include_str!("../../../deploy/compose/migrations/015_webhook_kek_commitments.sql"),
+            include_str!("../../../deploy/compose/migrations/023_recipient_suppression.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }

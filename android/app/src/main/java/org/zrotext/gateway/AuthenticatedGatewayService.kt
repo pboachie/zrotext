@@ -383,13 +383,16 @@ class AuthenticatedGatewayService : Service() {
                         }
                         "inbound_event_ack" -> {
                             check(inboundUploadRequested && machine.phase == DeviceStreamMachine.Phase.ACTIVE)
-                            requireFields(frame, setOf("v", "type", "event_id", "created", "queued_deliveries"))
+                            val ackFields = setOf("v", "type", "event_id", "created", "queued_deliveries")
+                            requireFields(frame, ackFields + if (frame.has("suppression_cleared"))
+                                setOf("suppression_cleared") else emptySet())
                             check(frame.opt("created") is Boolean)
+                            check(!frame.has("suppression_cleared") || frame.opt("suppression_cleared") is Boolean)
                             val deliveries = frame.opt("queued_deliveries")
                             check((deliveries is Int || deliveries is Long) &&
                                 (deliveries as Number).toLong() >= 0)
                             handleInboundAck(webSocket, currentGeneration,
-                                uuid(frame, "event_id").toString())
+                                uuid(frame, "event_id").toString(), frame.optBoolean("suppression_cleared", false))
                         }
                         else -> error("Unexpected device frame")
                     }
@@ -486,7 +489,9 @@ class AuthenticatedGatewayService : Service() {
                 if (awaitingInboundId == pending.eventId &&
                     System.nanoTime() - inboundSentAtNanos < TimeUnit.SECONDS.toNanos(30)) return@execute
                 val event = dao.inboundByEventId(pending.eventId) ?: error("Missing inbound event")
-                check(event.classification == InboundClassification.CAPTURED_LOCAL)
+                check(event.classification in setOf(InboundClassification.CAPTURED_LOCAL,
+                    InboundClassification.OPT_OUT, InboundClassification.OPT_OUT_REVIEW,
+                    InboundClassification.OPT_IN))
                 val upload = if (pending.signatureDer == null) {
                     val signature = keys.signInboundMetadata(accountId, deviceId, pending, event)
                     check(signature.size in 8..80)
@@ -507,7 +512,8 @@ class AuthenticatedGatewayService : Service() {
         }
     }
 
-    private fun handleInboundAck(webSocket: WebSocket, currentGeneration: Int, eventId: String) {
+    private fun handleInboundAck(webSocket: WebSocket, currentGeneration: Int, eventId: String,
+                                 suppressionCleared: Boolean) {
         JournalRuntime.io.execute {
             if (generation != currentGeneration) return@execute
             try {
@@ -518,6 +524,15 @@ class AuthenticatedGatewayService : Service() {
                     return@execute
                 }
                 check(upload.acknowledgedAtMs == null)
+                if (suppressionCleared) {
+                    val event = dao.inboundByEventId(eventId) ?: error("Unknown inbound event")
+                    check(event.classification == InboundClassification.OPT_IN)
+                    val senderToken = dao.senderTokenForAttempt(event.attemptId)
+                        ?: error("Missing inbound sender token")
+                    synchronized(LocalSuppressionGate.lock) {
+                        dao.clearRecipientThrough(senderToken, event.receivedAtMs)
+                    }
+                }
                 check(dao.acknowledgeInboundUpload(eventId, System.currentTimeMillis()) == 1)
                 awaitingInboundId = null
             } catch (_: Exception) {

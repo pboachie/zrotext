@@ -68,6 +68,7 @@ async fn sealed_identity_requires_live_writer_and_active_same_tenant_line() {
         include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
         include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
         include_str!("../../../../deploy/compose/migrations/018_sealed_inbound_identity.sql"),
+        include_str!("../../../../deploy/compose/migrations/023_recipient_suppression.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }

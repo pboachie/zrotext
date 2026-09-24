@@ -1060,6 +1060,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/018_sealed_inbound_identity.sql"),
             include_str!("../../../../deploy/compose/migrations/019_line_activation_contract.sql"),
             include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+            include_str!("../../../../deploy/compose/migrations/023_recipient_suppression.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
@@ -1474,6 +1475,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
             include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
             include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+            include_str!("../../../../deploy/compose/migrations/023_recipient_suppression.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
@@ -1777,6 +1779,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
             include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
             include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+            include_str!("../../../../deploy/compose/migrations/023_recipient_suppression.sql"),
         ] {
             probe.batch_execute(sql).await.unwrap();
         }
@@ -1931,6 +1934,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
             include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
             include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+            include_str!("../../../../deploy/compose/migrations/023_recipient_suppression.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
@@ -2213,6 +2217,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
             include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
             include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+            include_str!("../../../../deploy/compose/migrations/023_recipient_suppression.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
@@ -2550,6 +2555,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
             include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
             include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+            include_str!("../../../../deploy/compose/migrations/023_recipient_suppression.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
@@ -2721,6 +2727,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
             include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
             include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+            include_str!("../../../../deploy/compose/migrations/023_recipient_suppression.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }

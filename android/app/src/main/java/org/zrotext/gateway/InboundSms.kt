@@ -40,6 +40,9 @@ internal object InboundNormalizer {
     }
 }
 
+/** Orders a just received STOP with the final in-process radio preflight. */
+internal object LocalSuppressionGate { val lock = Any() }
+
 /** Android Keystore keys never leave the phone. The Room body is AES-GCM ciphertext. */
 internal object InboundVault {
     data class Sealed(val ciphertext: ByteArray, val nonce: ByteArray)
@@ -123,13 +126,6 @@ class InboundSmsReceiver : BroadcastReceiver() {
         val now = System.currentTimeMillis()
         val senderToken = InboundVault.token("sender-v1", message.senderE164.toByteArray(Charsets.US_ASCII))
         val dao = SmsJournalDatabase.get(context).attempts()
-        val window = dao.activeInboundWindows(senderToken, now).singleOrNull() ?: return
-        // SMS_RECEIVED documents PDUs, not a mandatory subscription extra. Missing evidence
-        // is stored without a body; a slot/default-SIM guess cannot authorize capture.
-        val rawSub = intent.extras?.get("subscription")
-        val observedSub = (rawSub as? Number)?.toLong()
-            ?.takeIf { it in 0..Int.MAX_VALUE.toLong() }?.toInt()
-        if (observedSub != null && observedSub != window.subscriptionId) return
         val pduFingerprint = ByteArrayOutputStream().apply {
             for (pdu in pdus) {
                 write((pdu.size ushr 8) and 0xff)
@@ -139,10 +135,26 @@ class InboundSmsReceiver : BroadcastReceiver() {
         }.toByteArray()
         val dedupeToken = InboundVault.token("pdu-v1", senderToken.toByteArray(Charsets.US_ASCII),
             pduFingerprint)
-        val sealed = try { InboundVault.seal(message.body, dedupeToken) }
-            catch (_: Exception) { null }
+        val optAction = OptOutParser.classify(message.body)
+        if ((optAction == OptOutParser.OPT_OUT || optAction == OptOutParser.OPT_OUT_REVIEW) &&
+            dao.inboundByDedupe(dedupeToken) == null) {
+            // Persist the local radio block even when the reply cannot be
+            // associated with a trusted upload window or the server is offline.
+            synchronized(LocalSuppressionGate.lock) {
+                dao.suppressRecipient(LocalRecipientSuppression(senderToken, now))
+            }
+        }
+        val window = dao.activeInboundWindows(senderToken, now).singleOrNull() ?: return
+        // SMS_RECEIVED documents PDUs, not a mandatory subscription extra. Missing evidence
+        // is stored without a body; a slot/default-SIM guess cannot authorize capture.
+        val rawSub = intent.extras?.get("subscription")
+        val observedSub = (rawSub as? Number)?.toLong()
+            ?.takeIf { it in 0..Int.MAX_VALUE.toLong() }?.toInt()
+        if (observedSub != null && observedSub != window.subscriptionId) return
+        val sealed = if (optAction == null) try { InboundVault.seal(message.body, dedupeToken) }
+            catch (_: Exception) { null } else null
         dao.recordInbound(window, dedupeToken, observedSub, message.partCount, now,
-            sealed?.ciphertext, sealed?.nonce)
+            sealed?.ciphertext, sealed?.nonce, optAction)
     }
 
     companion object {

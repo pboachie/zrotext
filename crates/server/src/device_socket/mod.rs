@@ -178,6 +178,9 @@ enum InboundClassification {
     SimUnverified,
     SendUnverified,
     EncryptionUnverified,
+    OptOut,
+    OptOutReview,
+    OptIn,
 }
 
 impl From<InboundClassification> for inbound::Classification {
@@ -187,6 +190,9 @@ impl From<InboundClassification> for inbound::Classification {
             InboundClassification::SimUnverified => Self::SimUnverified,
             InboundClassification::SendUnverified => Self::SendUnverified,
             InboundClassification::EncryptionUnverified => Self::EncryptionUnverified,
+            InboundClassification::OptOut => Self::OptOut,
+            InboundClassification::OptOutReview => Self::OptOutReview,
+            InboundClassification::OptIn => Self::OptIn,
         }
     }
 }
@@ -265,7 +271,13 @@ enum ServerFrame {
         event_id: Uuid,
         created: bool,
         queued_deliveries: u64,
+        #[serde(skip_serializing_if = "is_false")]
+        suppression_cleared: bool,
     },
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 /// Mount at `/v1/device-stream`. Deploy behind TLS/WSS; this route accepts
@@ -683,6 +695,7 @@ async fn run_socket(
                             v: 1, event_id,
                             created: outcome.created,
                             queued_deliveries: outcome.queued_deliveries,
+                            suppression_cleared: outcome.suppression_cleared,
                         }).await { break; }
                     }
                     _ => break,
@@ -1177,6 +1190,7 @@ mod tests {
                 event_id: id,
                 created: true,
                 queued_deliveries: 0,
+                suppression_cleared: false,
             },
         ];
         for (actual, documented) in server_frames.into_iter().zip(&examples[6..]) {
@@ -1311,12 +1325,24 @@ mod tests {
                 event_id,
                 created: true,
                 queued_deliveries: 0,
+                suppression_cleared: false,
             })
             .unwrap(),
             serde_json::json!({
                 "type":"inbound_event_ack", "v":1, "event_id":event_id,
                 "created":true, "queued_deliveries":0
             })
+        );
+        assert_eq!(
+            serde_json::to_value(ServerFrame::InboundEventAck {
+                v: 1,
+                event_id,
+                created: true,
+                queued_deliveries: 0,
+                suppression_cleared: true,
+            })
+            .unwrap()["suppression_cleared"],
+            true,
         );
     }
 
@@ -1339,6 +1365,10 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
             include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
             include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
+            include_str!(
+                "../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"
+            ),
+            include_str!("../../../../deploy/compose/migrations/023_recipient_suppression.sql"),
         ] {
             client.batch_execute(sql).await.unwrap();
         }
@@ -1574,6 +1604,10 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
             include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
             include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
+            include_str!(
+                "../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"
+            ),
+            include_str!("../../../../deploy/compose/migrations/023_recipient_suppression.sql"),
         ] {
             client.batch_execute(sql).await.unwrap();
         }

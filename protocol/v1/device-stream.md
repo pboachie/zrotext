@@ -67,8 +67,9 @@ session nor a heartbeat authorizes SMS.
 
 The Android app exposes a separate **Start inbound metadata pilot** action. It
 is off by default. The hub must separately enable `INBOUND_PILOT_ENABLED=true`.
-After authenticated session setup, the phone sends only previously captured
-`captured_local` events. It does not transmit the sender address, SMS body, PDU,
+After authenticated session setup, the phone sends previously captured
+`captured_local`, `opt_out`, `opt_out_review`, and `opt_in` events from a
+trusted reply window. It does not transmit the sender address, SMS body, PDU,
 or the local AES-GCM vault ciphertext. This pilot does not expose reply content
 to customers and has not passed a live WSS interoperability test.
 

@@ -68,6 +68,7 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
         include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
         include_str!("../../../../deploy/compose/migrations/015_webhook_kek_commitments.sql"),
         include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+        include_str!("../../../../deploy/compose/migrations/023_recipient_suppression.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }
@@ -185,14 +186,16 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
         ingest(&mut db, session, &signed).await.unwrap(),
         IngestOutcome {
             created: true,
-            queued_deliveries: 1
+            queued_deliveries: 1,
+            suppression_cleared: false,
         }
     );
     assert_eq!(
         ingest(&mut db, session, &signed).await.unwrap(),
         IngestOutcome {
             created: false,
-            queued_deliveries: 0
+            queued_deliveries: 0,
+            suppression_cleared: false,
         }
     );
     let counts = db.query_one(
@@ -490,7 +493,8 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
         .unwrap(),
         IngestOutcome {
             created: true,
-            queued_deliveries: 1
+            queued_deliveries: 1,
+            suppression_cleared: false,
         }
     );
     // Make the due condition explicit instead of relying on nearly coincident
@@ -682,6 +686,255 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
     )
     .await
     .unwrap();
+    // STOP and START carry no body or sender field. The signed attempt binds
+    // them to the writer's exact account-scoped recipient. Replays are inert.
+    let stop = InboundEvent {
+        event_id: Uuid::new_v4(),
+        sequence: 2001,
+        classification: Classification::OptOut,
+        signature_der: &[],
+        ..unsigned
+    };
+    let stop_signature: Signature = signing.sign(&signed_event_bytes(session, &stop));
+    let stop_der = stop_signature.to_der();
+    let stop = InboundEvent {
+        signature_der: stop_der.as_bytes(),
+        ..stop
+    };
+    assert!(ingest(&mut db, session, &stop).await.unwrap().created);
+    assert!(!ingest(&mut db, session, &stop).await.unwrap().created);
+    let active: bool = db.query_one(
+        "SELECT active FROM recipient_suppressions WHERE account_id=$1 AND recipient_e164='+15551234567'",
+        &[&account],
+    ).await.unwrap().get(0);
+    assert!(active);
+    assert!(db.query_opt(
+        "SELECT 1 FROM recipient_suppressions WHERE account_id=$1 AND recipient_e164='+15551234567'",
+        &[&other_account],
+    ).await.unwrap().is_none());
+    let other_attempt = Uuid::new_v4();
+    db.execute(
+        "INSERT INTO message_attempts(id,account_id,message_id,device_id,generation,session_epoch,deployment_epoch,status) \
+         VALUES($1,$2,$3,$4,2,2,1,'submitted')",
+        &[&other_attempt, &account, &message, &device],
+    ).await.unwrap();
+    db.execute(
+        "INSERT INTO message_events(id,account_id,message_id,attempt_id,evidence_code,event_digest,observed_at,resulting_state,segment_index,segment_count) \
+         VALUES($1,$2,$3,$4,'sent_callback_ok',$5,now(),'submitted',0,1)",
+        &[&Uuid::new_v4(), &account, &message, &other_attempt, &vec![5u8; 32]],
+    ).await.unwrap();
+    let wrong_window = InboundEvent {
+        event_id: Uuid::new_v4(),
+        sequence: 2002,
+        attempt_id: other_attempt,
+        observed_at_ms: stop.observed_at_ms + 1,
+        classification: Classification::OptIn,
+        signature_der: &[],
+        ..unsigned
+    };
+    let wrong_signature: Signature = signing.sign(&signed_event_bytes(session, &wrong_window));
+    let wrong_der = wrong_signature.to_der();
+    assert!(
+        !ingest(
+            &mut db,
+            session,
+            &InboundEvent {
+                signature_der: wrong_der.as_bytes(),
+                ..wrong_window
+            }
+        )
+        .await
+        .unwrap()
+        .suppression_cleared
+    );
+    assert!(db.query_one(
+        "SELECT active FROM recipient_suppressions WHERE account_id=$1 AND recipient_e164='+15551234567'",
+        &[&account],
+    ).await.unwrap().get::<_, bool>(0));
+    let resume = InboundEvent {
+        event_id: Uuid::new_v4(),
+        sequence: 2003,
+        observed_at_ms: stop.observed_at_ms + 1,
+        classification: Classification::OptIn,
+        signature_der: &[],
+        ..unsigned
+    };
+    let resume_signature: Signature = signing.sign(&signed_event_bytes(session, &resume));
+    let resume_der = resume_signature.to_der();
+    let resume = InboundEvent {
+        signature_der: resume_der.as_bytes(),
+        ..resume
+    };
+    assert!(
+        ingest(&mut db, session, &resume)
+            .await
+            .unwrap()
+            .suppression_cleared
+    );
+    assert!(
+        ingest(&mut db, session, &resume)
+            .await
+            .unwrap()
+            .suppression_cleared
+    );
+    let inactive: bool = db.query_one(
+        "SELECT NOT active FROM recipient_suppressions WHERE account_id=$1 AND recipient_e164='+15551234567'",
+        &[&account],
+    ).await.unwrap().get(0);
+    assert!(inactive);
+    let forged = InboundEvent {
+        classification: Classification::OptOut,
+        ..resume
+    };
+    assert!(matches!(
+        ingest(&mut db, session, &forged).await,
+        Err(InboundError::InvalidSignature)
+    ));
+    let (mut suppression_db, suppression_connection) =
+        tokio_postgres::connect(&url, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+    tokio::spawn(async move { suppression_connection.await.unwrap() });
+    suppression_db
+        .batch_execute(&format!("SET search_path TO {schema}"))
+        .await
+        .unwrap();
+    let disabled_event = InboundEvent {
+        event_id: Uuid::new_v4(),
+        sequence: 2004,
+        signature_der: &[],
+        ..unsigned
+    };
+    let disabled_signature: Signature = signing.sign(&signed_event_bytes(session, &disabled_event));
+    let disabled_der = disabled_signature.to_der();
+    let disabled_event = InboundEvent {
+        signature_der: disabled_der.as_bytes(),
+        ..disabled_event
+    };
+    let ingest_pid: i32 = db
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await
+        .unwrap()
+        .get(0);
+    let disable_tx = suppression_db.transaction().await.unwrap();
+    disable_tx
+        .query_one(
+            "SELECT id FROM accounts WHERE id=$1 FOR UPDATE",
+            &[&account],
+        )
+        .await
+        .unwrap();
+    let disabled_result = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        tokio::join!(ingest(&mut db, session, &disabled_event), async {
+            loop {
+                let waiting: bool = disable_tx
+                    .query_one("SELECT cardinality(pg_blocking_pids($1))>0", &[&ingest_pid])
+                    .await
+                    .unwrap()
+                    .get(0);
+                if waiting {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+            disable_tx
+                .execute(
+                    "UPDATE accounts SET disabled_at=clock_timestamp() WHERE id=$1",
+                    &[&account],
+                )
+                .await
+                .unwrap();
+            disable_tx.commit().await.unwrap();
+        })
+    })
+    .await
+    .unwrap()
+    .0;
+    assert!(matches!(disabled_result, Err(InboundError::Unauthorized)));
+    assert!(
+        db.query_opt(
+            "SELECT 1 FROM inbound_events WHERE id=$1",
+            &[&disabled_event.event_id]
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+    suppression_db
+        .execute(
+            "UPDATE accounts SET disabled_at=NULL WHERE id=$1",
+            &[&account],
+        )
+        .await
+        .unwrap();
+    let (mut accept_db, accept_connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move { accept_connection.await.unwrap() });
+    accept_db
+        .batch_execute(&format!("SET search_path TO {schema}"))
+        .await
+        .unwrap();
+    let accept_pid: i32 = accept_db
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await
+        .unwrap()
+        .get(0);
+    let blocker = suppression_db.transaction().await.unwrap();
+    blocker
+        .query_one(
+            "SELECT id FROM accounts WHERE id=$1 FOR NO KEY UPDATE",
+            &[&account],
+        )
+        .await
+        .unwrap();
+    let race_id = Uuid::new_v4();
+    let mut race_store = zrotext_delivery_store::DeliveryStore::new(&mut accept_db);
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        tokio::join!(
+            race_store.accept(
+                zrotext_delivery_store::NewMessage {
+                    account_id: account, client_message_id: race_id, device_id: device,
+                    idempotency_key: "suppression-race", recipient_e164: "+15551234567",
+                    synthetic_payload: b"synthetic", expires_at_ms: SystemTime::now()
+                        .duration_since(UNIX_EPOCH).unwrap().as_millis() as i64 + 60_000,
+                }
+            ),
+            async {
+                loop {
+                    let waiting: bool = blocker.query_one(
+                        "SELECT cardinality(pg_blocking_pids($1))>0", &[&accept_pid]
+                    ).await.unwrap().get(0);
+                    if waiting { break; }
+                    tokio::task::yield_now().await;
+                }
+                blocker.execute(
+                    "UPDATE recipient_suppressions SET active=TRUE,source_event_id=$3,source='sms_keyword' WHERE account_id=$1 AND recipient_e164=$2",
+                    &[&account, &"+15551234567", &stop.event_id],
+                ).await.unwrap();
+                blocker.commit().await.unwrap();
+            }
+        )
+    }).await.unwrap().0;
+    assert!(matches!(
+        result,
+        Err(zrotext_delivery_store::StoreError::RecipientSuppressed)
+    ));
+    assert!(
+        db.query_opt("SELECT 1 FROM messages WHERE id=$1", &[&race_id])
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        db.query_opt(
+            "SELECT 1 FROM idempotency_keys WHERE account_id=$1 AND key='suppression-race'",
+            &[&account]
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
     db.execute(
         "UPDATE device_keys SET revoked_at=now() WHERE device_id=$1",
         &[&device],
@@ -732,6 +985,7 @@ async fn fresh_signed_events_share_a_durable_budget_and_replays_are_free() {
         include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
         include_str!("../../../../deploy/compose/migrations/015_webhook_kek_commitments.sql"),
         include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+        include_str!("../../../../deploy/compose/migrations/023_recipient_suppression.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }
@@ -920,7 +1174,8 @@ async fn fresh_signed_events_share_a_durable_budget_and_replays_are_free() {
         ingest(&mut db, session, &replay).await.unwrap(),
         IngestOutcome {
             created: false,
-            queued_deliveries: 0
+            queued_deliveries: 0,
+            suppression_cleared: false,
         }
     );
     // A bad signature cannot burn another charge, nor can an exact replay.
@@ -1069,7 +1324,8 @@ async fn fresh_signed_events_share_a_durable_budget_and_replays_are_free() {
         ingest(&mut db, session, &replay).await.unwrap(),
         IngestOutcome {
             created: false,
-            queued_deliveries: 0
+            queued_deliveries: 0,
+            suppression_cleared: false,
         }
     );
     // Rotating device identities cannot bypass a saturated account or grow counters.

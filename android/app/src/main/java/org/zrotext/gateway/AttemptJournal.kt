@@ -124,7 +124,17 @@ internal object InboundClassification {
     const val SIM_UNVERIFIED = "sim_unverified"
     const val SEND_UNVERIFIED = "send_unverified"
     const val ENCRYPTION_UNVERIFIED = "encryption_unverified"
+    const val OPT_OUT = OptOutParser.OPT_OUT
+    const val OPT_OUT_REVIEW = OptOutParser.OPT_OUT_REVIEW
+    const val OPT_IN = OptOutParser.OPT_IN
 }
+
+/** Kept even without an active reply window, so the phone refuses later radio work. */
+@Entity(tableName = "local_recipient_suppressions")
+data class LocalRecipientSuppression(
+    @PrimaryKey val senderToken: String,
+    val observedAtMs: Long
+)
 
 @Entity(
     tableName = "sms_segments",
@@ -201,6 +211,28 @@ internal object CallbackEvidence {
 
 @Dao
 abstract class SmsAttemptDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    protected abstract fun putRecipientSuppression(entry: LocalRecipientSuppression)
+
+    @Query("SELECT observedAtMs FROM local_recipient_suppressions WHERE senderToken=:senderToken")
+    protected abstract fun suppressionObservedAt(senderToken: String): Long?
+
+    @Transaction
+    open fun suppressRecipient(entry: LocalRecipientSuppression) {
+        val prior = suppressionObservedAt(entry.senderToken)
+        val monotonicAt = if (prior == null) entry.observedAtMs else
+            maxOf(entry.observedAtMs, if (prior == Long.MAX_VALUE) prior else prior + 1)
+        putRecipientSuppression(entry.copy(observedAtMs = monotonicAt))
+    }
+
+    @Query("SELECT EXISTS(SELECT 1 FROM local_recipient_suppressions WHERE senderToken=:senderToken)")
+    abstract fun isRecipientSuppressed(senderToken: String): Boolean
+
+    @Query("DELETE FROM local_recipient_suppressions WHERE senderToken=:senderToken AND observedAtMs<:observedAtMs")
+    abstract fun clearRecipientThrough(senderToken: String, observedAtMs: Long): Int
+
+    @Query("SELECT senderToken FROM inbound_windows WHERE attemptId=:attemptId LIMIT 1")
+    abstract fun senderTokenForAttempt(attemptId: String): String?
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     abstract fun insertInboundUpload(upload: InboundUpload): Long
 
@@ -239,7 +271,8 @@ abstract class SmsAttemptDao {
     @Transaction
     open fun recordInbound(
         window: InboundWindow, dedupeToken: String, observedSubscriptionId: Int?,
-        partCount: Int, receivedAtMs: Long, encryptedBody: ByteArray?, nonce: ByteArray?
+        partCount: Int, receivedAtMs: Long, encryptedBody: ByteArray?, nonce: ByteArray?,
+        optAction: String? = null
     ): InboundEvent? {
         if (partCount !in 1..6 || receivedAtMs < window.opensAtMs ||
             receivedAtMs >= window.closesAtMs ||
@@ -257,6 +290,8 @@ abstract class SmsAttemptDao {
         val classification = when {
             observedSubscriptionId == null -> InboundClassification.SIM_UNVERIFIED
             !sent -> InboundClassification.SEND_UNVERIFIED
+            optAction in setOf(OptOutParser.OPT_OUT, OptOutParser.OPT_OUT_REVIEW,
+                OptOutParser.OPT_IN) -> optAction!!
             encryptedBody == null || nonce?.size != 12 || encryptedBody.size < 16 ->
                 InboundClassification.ENCRYPTION_UNVERIFIED
             else -> InboundClassification.CAPTURED_LOCAL
@@ -267,7 +302,9 @@ abstract class SmsAttemptDao {
             if (classification == InboundClassification.CAPTURED_LOCAL) encryptedBody else null,
             if (classification == InboundClassification.CAPTURED_LOCAL) nonce else null)
         return if (insertInboundEvent(event) != -1L) {
-            if (classification == InboundClassification.CAPTURED_LOCAL) {
+            if (classification in setOf(InboundClassification.CAPTURED_LOCAL,
+                    InboundClassification.OPT_OUT, InboundClassification.OPT_OUT_REVIEW,
+                    InboundClassification.OPT_IN)) {
                 check(insertInboundUpload(InboundUpload(eventId = event.eventId)) > 0)
             }
             event
@@ -491,7 +528,8 @@ abstract class SmsAttemptDao {
 private const val INBOUND_PILOT_WINDOW_MS = 24L * 60 * 60 * 1000
 
 @Database(entities = [SmsAttempt::class, SmsSegment::class, AlphaRadioEvent::class,
-    InboundWindow::class, InboundEvent::class, InboundUpload::class], version = 5, exportSchema = false)
+    InboundWindow::class, InboundEvent::class, InboundUpload::class,
+    LocalRecipientSuppression::class], version = 6, exportSchema = false)
 abstract class SmsJournalDatabase : RoomDatabase() {
     abstract fun attempts(): SmsAttemptDao
 
@@ -501,7 +539,8 @@ abstract class SmsJournalDatabase : RoomDatabase() {
         fun get(context: Context): SmsJournalDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(
                 context.applicationContext, SmsJournalDatabase::class.java, "sms_attempts.db"
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
+                MIGRATION_5_6)
                 .build().also { instance = it }
         }
 
@@ -536,6 +575,12 @@ abstract class SmsJournalDatabase : RoomDatabase() {
                 db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_inbound_uploads_eventId ON inbound_uploads(eventId)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_inbound_uploads_acknowledgedAtMs_sequence ON inbound_uploads(acknowledgedAtMs, sequence)")
                 db.execSQL("INSERT INTO inbound_uploads(eventId) SELECT eventId FROM inbound_events WHERE classification = 'captured_local' ORDER BY rowid")
+            }
+        }
+
+        internal val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS local_recipient_suppressions (senderToken TEXT NOT NULL PRIMARY KEY, observedAtMs INTEGER NOT NULL)")
             }
         }
     }

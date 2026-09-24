@@ -40,6 +40,8 @@ pub enum StoreError {
     QuotaExceeded,
     #[error("billing payment requires review")]
     PaymentHold,
+    #[error("recipient is suppressed for this account")]
+    RecipientSuppressed,
 }
 
 #[derive(Clone, Copy)]
@@ -273,6 +275,23 @@ impl<'a> DeliveryStore<'a> {
         } else {
             !matches!(metering, MeteringTime::Unmetered)
         };
+        // Suppression writers take this same account lock. A STOP that wins
+        // before admission commits must be visible here, even across sites.
+        // Take it before idempotency lookup so an exact retry cannot return
+        // another successful acceptance after a suppression is recorded.
+        if !matches!(metering, MeteringTime::Alpha { .. }) {
+            tx.query_one(
+                "SELECT id FROM accounts WHERE id=$1 FOR NO KEY UPDATE",
+                &[&input.account_id],
+            )
+            .await?;
+        }
+        if tx.query_opt(
+            "SELECT 1 FROM recipient_suppressions WHERE account_id=$1 AND recipient_e164=$2 AND active=TRUE",
+            &[&input.account_id, &input.recipient_e164],
+        ).await?.is_some() {
+            return Err(StoreError::RecipientSuppressed);
+        }
         let inserted_key = tx
             .query_opt(
                 "INSERT INTO idempotency_keys (account_id, key, request_digest, message_id, expires_at) \
@@ -326,13 +345,6 @@ impl<'a> DeliveryStore<'a> {
         // Every new acceptance for this account takes the same row lock. The
         // counts and insert are in one transaction, so parallel API instances
         // cannot each observe one remaining slot and overfill the queue.
-        if !matches!(metering, MeteringTime::Alpha { .. }) {
-            tx.query_one(
-                "SELECT id FROM accounts WHERE id=$1 FOR NO KEY UPDATE",
-                &[&input.account_id],
-            )
-            .await?;
-        }
         let counts = tx
             .query_one(
                 "SELECT COUNT(*) FILTER (WHERE device_id=$2), COUNT(*) FROM messages \
@@ -1389,7 +1401,7 @@ mod tests {
 
     // Keep the admission fixtures on the complete, reviewed schema. SQL is
     // embedded at build time so tests never execute files discovered at runtime.
-    const TEST_MIGRATIONS: [(&str, &str); 22] = [
+    const TEST_MIGRATIONS: [(&str, &str); 23] = [
         (
             "001_foundation.sql",
             include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
@@ -1478,6 +1490,10 @@ mod tests {
             "022_pending_owner_expiry.sql",
             include_str!("../../../deploy/compose/migrations/022_pending_owner_expiry.sql"),
         ),
+        (
+            "023_recipient_suppression.sql",
+            include_str!("../../../deploy/compose/migrations/023_recipient_suppression.sql"),
+        ),
     ];
 
     #[test]
@@ -1518,6 +1534,11 @@ mod tests {
             include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
             include_str!("../../../deploy/compose/migrations/002_auth.sql"),
             include_str!("../../../deploy/compose/migrations/003_delivery.sql"),
+            include_str!("../../../deploy/compose/migrations/004_enrollment.sql"),
+            include_str!("../../../deploy/compose/migrations/005_verification_outbox.sql"),
+            include_str!("../../../deploy/compose/migrations/006_usage_metering.sql"),
+            include_str!("../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"),
+            include_str!("../../../deploy/compose/migrations/023_recipient_suppression.sql"),
         ] {
             client.batch_execute(migration).await.unwrap();
         }
@@ -2019,30 +2040,9 @@ mod tests {
             ))
             .await
             .unwrap();
-        client
-            .batch_execute(include_str!(
-                "../../../deploy/compose/migrations/001_foundation.sql"
-            ))
-            .await
-            .unwrap();
-        client
-            .batch_execute(include_str!(
-                "../../../deploy/compose/migrations/002_auth.sql"
-            ))
-            .await
-            .unwrap();
-        client
-            .batch_execute(include_str!(
-                "../../../deploy/compose/migrations/003_delivery.sql"
-            ))
-            .await
-            .unwrap();
-        client
-            .batch_execute(include_str!(
-                "../../../deploy/compose/migrations/006_usage_metering.sql"
-            ))
-            .await
-            .unwrap();
+        for (_, migration) in TEST_MIGRATIONS {
+            client.batch_execute(migration).await.unwrap();
+        }
 
         let account = Uuid::new_v4();
         let other_account = Uuid::new_v4();

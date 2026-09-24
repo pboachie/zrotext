@@ -74,6 +74,38 @@ class InboundUploadTest {
         assertNull(dao.nextInboundUpload(2001))
     }
 
+    @Test fun stopAndReviewRepliesUseSignedMetadataAndLocalBlockSurvivesReplay() {
+        dao.acknowledgeAlphaIntent("77777777-7777-4777-8777-777777777777", true, 1001)
+        dao.consumeRadioStart(attempt, message, 7, 1, 1002)
+        dao.recordCallback(attempt, 0, false, Activity.RESULT_OK, null, 1003)
+        val window = dao.activeInboundWindows(senderToken, 2000).single()
+        dao.suppressRecipient(LocalRecipientSuppression(senderToken, 2000))
+        val stop = dao.recordInbound(window, "s".repeat(64), 7, 1, 2000,
+            null, null, OptOutParser.OPT_OUT)!!
+        assertEquals(InboundClassification.OPT_OUT, stop.classification)
+        assertNull(stop.encryptedBody)
+        assertEquals(stop.eventId, dao.nextInboundUpload(0)!!.eventId)
+        dao.suppressRecipient(LocalRecipientSuppression(senderToken, 2100))
+        dao.suppressRecipient(LocalRecipientSuppression(senderToken, 1900))
+        assertEquals(0, dao.clearRecipientThrough(senderToken, 2000))
+        assertTrue(dao.isRecipientSuppressed(senderToken))
+        assertEquals(1, dao.clearRecipientThrough(senderToken, 2200))
+        assertFalse(dao.isRecipientSuppressed(senderToken))
+    }
+
+    @Test fun exactResumeAndReasonableFreeTextAreClassifiedConservatively() {
+        for (word in listOf("STOP", "STOPALL", "UNSUBSCRIBE", "CANCEL", "END", "QUIT",
+                "REVOKE", "OPTOUT"))
+            assertEquals(OptOutParser.OPT_OUT, OptOutParser.classify("  ${word.lowercase()}  "))
+        assertEquals(OptOutParser.OPT_IN, OptOutParser.classify("  sTaRt  "))
+        assertEquals(OptOutParser.OPT_IN, OptOutParser.classify("UnStOp"))
+        assertNull(OptOutParser.classify("Please START sending marketing messages"))
+        assertEquals(OptOutParser.OPT_OUT_REVIEW,
+            OptOutParser.classify("Please do not text me again"))
+        assertEquals(OptOutParser.OPT_OUT_REVIEW,
+            OptOutParser.classify("Remove me from your list"))
+    }
+
     @Test fun signatureBytesMatchIndependentServerVectorAndFrameHasNoContent() {
         val event = InboundEvent("33333333-3333-4333-8333-333333333333", attempt, message,
             "f".repeat(64), 7, 1700000000000L, 2,
@@ -121,13 +153,14 @@ class InboundUploadTest {
         old.version = 4
         old.close()
         val migrated = Room.databaseBuilder(context, SmsJournalDatabase::class.java, name)
-            .allowMainThreadQueries().addMigrations(SmsJournalDatabase.MIGRATION_4_5).build()
+            .allowMainThreadQueries().addMigrations(SmsJournalDatabase.MIGRATION_4_5,
+                SmsJournalDatabase.MIGRATION_5_6).build()
         try {
             assertNotNull(migrated.attempts().nextInboundUpload(0))
             assertEquals(1L, migrated.attempts().nextInboundUpload(0)!!.sequence)
             assertNull(migrated.attempts().inboundUpload(migrated.attempts()
                 .inboundByDedupe("f".repeat(64))!!.eventId))
-            assertEquals(5, migrated.openHelper.readableDatabase.version)
+            assertEquals(6, migrated.openHelper.readableDatabase.version)
         } finally {
             migrated.close()
             context.deleteDatabase(name)

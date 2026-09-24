@@ -23,7 +23,8 @@ sequence (signed 64-bit big-endian)
 outbound message UUID (16 raw bytes)
 outbound attempt UUID (16 raw bytes)
 classification (1 captured_local, 2 sim_unverified,
-                3 send_unverified, 4 encryption_unverified)
+                3 send_unverified, 4 encryption_unverified,
+                5 opt_out, 6 opt_out_review, 7 opt_in)
 observed_at_ms (signed 64-bit big-endian)
 part_count (signed 16-bit big-endian)
 content kind (0 metadata_only, 1 opaque_pilot)
@@ -34,6 +35,11 @@ SHA-256(content ciphertext, or empty bytes for metadata_only)
 follow a reviewed sealed-content envelope; it must not be exposed as a public
 customer content API. No sender phone number or SMS body is a separate database
 column. The Android local AES-GCM vault format is not a server upload format.
+Migration 023 adds account-scoped recipient suppression. The three opt action
+codes carry no plaintext. Their sender is the writer's E.164 recipient from
+the authenticated source attempt. START and UNSTOP produce code 7 only when
+the phone recognizes the entire trimmed reply; an older action or a reply
+from a different outbound-attempt window cannot clear a later opt-out.
 
 Migration 007 follows metering migration 006 and adds `inbound_events`,
 `webhook_endpoints`, `webhook_deliveries`, and `webhook_attempts`. Endpoint rows
