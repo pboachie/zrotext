@@ -3,7 +3,7 @@ import { createHash, webcrypto } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { Aes128Gcm, CipherSuite, DhkemP256HkdfSha256, HkdfSha256 } from "@hpke/core";
-import { bodyAad, keyId, openDraftEnvelope, parseDraftEnvelope, signatureInput, wrapAad, wrapInfo } from "../dist/draft01.js";
+import { bodyAad, canonicalP256Signature, isCanonicalP256Signature, keyId, openDraftEnvelope, parseDraftEnvelope, signatureInput, wrapAad, wrapInfo } from "../dist/draft01.js";
 
 globalThis.crypto ??= webcrypto;
 const hex = (value) => Buffer.from(value).toString("hex");
@@ -66,6 +66,19 @@ for (const [which, role] of [["outbound", 1], ["inbound", 2]]) {
     assert.equal(await openDraftEnvelope(envelope(which), await context(role)), vector.plaintext);
   });
 }
+
+test("candidate low-s normalization preserves existing high-s draft signature", async () => {
+  const parsed = parseDraftEnvelope(envelope("outbound"));
+  assert.equal(isCanonicalP256Signature(parsed.signature), false);
+  const canonical = canonicalP256Signature(parsed.signature);
+  assert.equal(isCanonicalP256Signature(canonical), true);
+  assert.equal(hex(canonicalP256Signature(canonical)), hex(canonical));
+  const signer = await crypto.subtle.importKey("raw", bytes(fixture.signerPublicPointHex),
+    { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
+  assert.equal(await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, signer,
+    canonical, signatureInput(parsed)), true);
+  assert.throws(() => canonicalP256Signature(new Uint8Array(64)));
+});
 
 test("shape and parse failures reject ambiguous bytes before opening", () => {
   const good = envelope("outbound");

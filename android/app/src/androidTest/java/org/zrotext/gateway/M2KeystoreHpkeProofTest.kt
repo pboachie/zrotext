@@ -12,6 +12,7 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -21,7 +22,9 @@ import java.security.AlgorithmParameters
 import java.security.KeyFactory
 import java.security.KeyPairGenerator
 import java.security.KeyStore
+import java.security.MessageDigest
 import java.security.PrivateKey
+import java.security.Signature
 import java.security.interfaces.ECPublicKey
 import java.security.spec.ECFieldFp
 import java.security.spec.ECGenParameterSpec
@@ -43,6 +46,160 @@ import javax.crypto.spec.SecretKeySpec
  */
 @RunWith(AndroidJUnit4::class)
 class M2KeystoreHpkeProofTest {
+    private val browserInteropAlias = "zrotext.m2.hpke.browser-interop-test"
+
+    @Test fun keystoreDerConvertsToCanonicalRawSignature() {
+        val alias = "zrotext.m2.sig-proof.${UUID.randomUUID()}"
+        val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null, null) }
+        try {
+            val spec = KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_SIGN)
+                .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
+                .setDigests(KeyProperties.DIGEST_SHA256)
+                .build()
+            val pair = KeyPairGenerator.getInstance("EC", "AndroidKeyStore").run {
+                initialize(spec); generateKeyPair()
+            }
+            assertNull(pair.private.encoded)
+            val point = DevicePayloadKeyStore.encodePoint(pair.public as ECPublicKey)
+            val envelope = ByteArray(557)
+            byteArrayOf(0x5a, 0x54, 0x53, 0x45, 1, 1, 0, 0, 0, 157.toByte()).copyInto(envelope)
+            MessageDigest.getInstance("SHA-256").digest(
+                "ZTSE/key/v1\u0000".toByteArray(Charsets.US_ASCII) + byteArrayOf(1, 1) + point
+            ).copyInto(envelope, 114)
+            val unsigned = envelope.copyOfRange(0, envelope.size - 64)
+            val transcript = "ZTSE/sign/v1\u0000".toByteArray(Charsets.US_ASCII) +
+                byteArrayOf(0, 0, (unsigned.size ushr 8).toByte(), unsigned.size.toByte()) + unsigned
+            val der = Signature.getInstance("SHA256withECDSA").run {
+                initSign(pair.private); update(transcript); sign()
+            }
+            val raw = Draft01SignaturePrimitive.canonicalRawFromDer(der)
+            assertEquals(64, raw.size)
+            raw.copyInto(envelope, unsigned.size)
+            assertTrue(Draft01SignaturePrimitive.verifyOutboundParsed(
+                envelope, point, Draft01SignaturePrimitive.LowSPolicy.REQUIRE_LOW_S))
+            InstrumentationRegistry.getInstrumentation().sendStatus(0, Bundle().apply {
+                putString("m2_keystore_der_low_s", "PASSED")
+            })
+        } finally {
+            if (store.containsAlias(alias)) store.deleteEntry(alias)
+            assertFalse(store.containsAlias(alias))
+        }
+    }
+
+    // These three methods are called in order by the emulator-only Node harness. Ordinary
+    // connectedAndroidTest runs skip them and cannot leave a persistent test alias behind.
+    @Test fun prepareBrowserInteropRecipient() {
+        assumeBrowserInteropHarness()
+        HpkeOneShot.requireSupportedApi(Build.VERSION.SDK_INT)
+        val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null, null) }
+        if (store.containsAlias(browserInteropAlias)) store.deleteEntry(browserInteropAlias)
+        val recipient = DevicePayloadKeyStore(browserInteropAlias).getOrCreateForEnrollment()
+        assertNull(store.getKey(browserInteropAlias, null)?.encoded)
+        InstrumentationRegistry.getInstrumentation().sendStatus(0, Bundle().apply {
+            putString("m2_browser_interop_recipient_point_hex", recipient.point.toHex())
+        })
+    }
+
+    @Test fun openBrowserInteropWrap() {
+        assumeBrowserInteropHarness()
+        val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null, null) }
+        try {
+            val args = InstrumentationRegistry.getArguments()
+            val enc = hexBytes(requireNotNull(args.getString("m2_enc_hex")))
+            val ct = hexBytes(requireNotNull(args.getString("m2_ct_hex")))
+            val expectedCek = hexBytes(requireNotNull(args.getString("m2_cek_hex")))
+            val keyStore = DevicePayloadKeyStore(browserInteropAlias)
+            val recipient = keyStore.existingPublic()
+            val protected = ByteArray(157) { it.toByte() }
+            val role = byteArrayOf(1)
+            val digest = java.security.MessageDigest.getInstance("SHA-256")
+            val keyId = digest.digest("ZTSE/key/v1\u0000".toByteArray(Charsets.US_ASCII) +
+                byteArrayOf(0, 16) + recipient.point)
+            assertArrayEquals(keyId, recipient.keyId)
+            val info = "ZTSE/wrap/v1\u0000".toByteArray(Charsets.US_ASCII) + digest.digest(protected) + role + keyId
+            val aad = "ZTSE/wrap-aad/v1\u0000".toByteArray(Charsets.US_ASCII) + protected + role + keyId
+            assertArrayEquals(expectedCek, openBrowserWrap(keyStore, recipient, enc, ct, info, aad))
+            rejects { openBrowserWrap(keyStore, recipient, enc, ct, info + 1, aad) }
+            rejects { openBrowserWrap(keyStore, recipient, enc, ct, info, aad + 1) }
+            rejects { keyStore.agreeExisting(enc, ByteArray(32)) }
+            InstrumentationRegistry.getInstrumentation().sendStatus(0, Bundle().apply {
+                putString("m2_browser_to_keystore_open", "PASSED")
+            })
+            expectedCek.fill(0)
+        } finally {
+            if (store.containsAlias(browserInteropAlias)) store.deleteEntry(browserInteropAlias)
+            assertFalse(store.containsAlias(browserInteropAlias))
+        }
+    }
+
+    @Test fun openBrowserInteropEnvelope() {
+        assumeBrowserInteropHarness()
+        val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null, null) }
+        val keyStore = DevicePayloadKeyStore(browserInteropAlias)
+        try {
+            val envelope = hexBytes(requireNotNull(InstrumentationRegistry.getArguments().getString("m2_envelope_hex")))
+            val keyId = keyStore.existingPublic().keyId
+            val expected = Draft01KeystoreReceiver.Expected(
+                ByteArray(16) { 0xa1.toByte() }, ByteArray(16) { 0xd1.toByte() },
+                ByteArray(16) { 0xb1.toByte() }, "+12", ByteArray(32) { 0x4d.toByte() }, keyId,
+                hexBytes("0451590b7a515140d2d784c85608668fdfef8c82fd1f5be52421554a0dc3d033ed" +
+                    "e0c17da8904a727d8ae1bf36bf8a79260d012f00d4d80888d1d0bb44fda16da4"))
+            assertEquals("Draft outbound ✉", Draft01KeystoreReceiver.openOutbound(envelope, expected, keyStore))
+            rejects { Draft01KeystoreReceiver.openOutbound(envelope.copyOf().also {
+                it[it.lastIndex] = (it.last().toInt() xor 1).toByte()
+            }, expected, keyStore) }
+            rejects { Draft01KeystoreReceiver.openOutbound(envelope.copyOf().also {
+                it[10 + 157 + 16] = (it[10 + 157 + 16].toInt() xor 1).toByte()
+            }, expected, keyStore) }
+            val parsed = Draft01KeystoreReceiver.parseOutbound(envelope)
+            val info = Draft01KeystoreReceiver.wrapInfo(parsed)
+            val aad = Draft01KeystoreReceiver.wrapAad(parsed)
+            rejects { Draft01KeystoreReceiver.openDeviceWrap(parsed, keyStore, info + 1, aad) }
+            rejects { Draft01KeystoreReceiver.openDeviceWrap(parsed, keyStore, info, aad + 1) }
+            rejects { Draft01KeystoreReceiver.openDeviceWrap(parsed.copy(deviceWrap =
+                parsed.deviceWrap.copy(enc = ByteArray(65))), keyStore) }
+            rejects { Draft01KeystoreReceiver.openDeviceWrap(parsed.copy(deviceWrap =
+                parsed.deviceWrap.copy(keyId = ByteArray(32))), keyStore) }
+            rejects { Draft01KeystoreReceiver.parseOutbound(envelope.copyOf(envelope.size - 1)) }
+            rejects { Draft01KeystoreReceiver.parseOutbound(envelope + 0.toByte()) }
+            store.deleteEntry(browserInteropAlias)
+            assertThrows(IllegalStateException::class.java) {
+                Draft01KeystoreReceiver.openOutbound(envelope, expected, keyStore)
+            }
+            InstrumentationRegistry.getInstrumentation().sendStatus(0, Bundle().apply {
+                putString("m2_browser_envelope_open", "PASSED")
+                putString("m2_browser_envelope_lost_key_denied", "PASSED")
+            })
+        } finally {
+            if (store.containsAlias(browserInteropAlias)) store.deleteEntry(browserInteropAlias)
+            assertFalse(store.containsAlias(browserInteropAlias))
+        }
+    }
+
+    @Test fun cleanupBrowserInteropRecipient() {
+        assumeBrowserInteropHarness()
+        val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null, null) }
+        if (store.containsAlias(browserInteropAlias)) store.deleteEntry(browserInteropAlias)
+        assertFalse(store.containsAlias(browserInteropAlias))
+        InstrumentationRegistry.getInstrumentation().sendStatus(0, Bundle().apply {
+            putString("m2_browser_interop_alias_removed", "PASSED")
+        })
+    }
+
+    private fun assumeBrowserInteropHarness() {
+        assumeTrue(InstrumentationRegistry.getArguments().getString("m2_host_driver") == "1")
+    }
+
+    private fun openBrowserWrap(keyStore: DevicePayloadKeyStore, recipient: DevicePayloadPublic,
+                                enc: ByteArray, ct: ByteArray, info: ByteArray, aad: ByteArray): ByteArray {
+        val dh = keyStore.agreeExisting(enc, recipient.keyId)
+        try {
+            val shared = HpkeOneShot.kemSecret(dh, enc, recipient.point)
+            return try { HpkeOneShot.open(shared, ct, info, aad) }
+            finally { shared.fill(0) }
+        } finally { dh.fill(0) }
+    }
+
     @Test fun proofFloorRejectsApisBelow31() {
         for (api in 28..30) rejects { HpkeOneShot.requireSupportedApi(api) }
         HpkeOneShot.requireSupportedApi(31)
@@ -147,7 +304,12 @@ class M2KeystoreHpkeProofTest {
     }
 
     private fun hex(value: String) = BigInteger(value, 16)
-    private fun hexBytes(value: String): ByteArray = value.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+    private fun hexBytes(value: String): ByteArray {
+        require(value.length % 2 == 0 && value.matches(Regex("[0-9a-f]*")))
+        return value.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+    }
+
+    private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
 
     private object P256 {
         val params: ECParameterSpec = AlgorithmParameters.getInstance("EC").run {
@@ -185,7 +347,7 @@ class M2KeystoreHpkeProofTest {
             }
     }
 
-    private object HpkeOneShot {
+    internal object HpkeOneShot {
         private val kemSuite = "KEM".toByteArray(Charsets.US_ASCII) + byteArrayOf(0, 16)
         private val suite = "HPKE".toByteArray(Charsets.US_ASCII) + byteArrayOf(0, 16, 0, 1, 0, 1)
         private val prefix = "HPKE-v1".toByteArray(Charsets.US_ASCII)
