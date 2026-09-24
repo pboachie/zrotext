@@ -70,13 +70,22 @@ The durable outbound metering core uses an operator or billing-provisioned
 `usage_quota_policies` row per account. `accept_metered` reserves one unit in
 the same transaction as idempotency, message and job insertion. The period is
 the UTC calendar month at PostgreSQL transaction start; its limit is copied
-from policy when that month's row is first created. Replays of the same request
+from policy when that month's row is first created. Stripe TEST reconciliation
+may later rewrite the current period's limit and records the change in
+`billing_quota_audit`. Replays of the same request
 reuse the original reservation even across a month boundary. Pre-grant cancel
 or expiry writes one refund entry against the original period in the same
 transaction. An issued grant or ambiguous radio state does not refund. Policy
-changes during a period need an explicit, audited adjustment path before
-billing uses them. The private synthetic-alpha HTTP route still uses unmetered
-acceptance and is not a customer billing path.
+changes outside that reconciliation path need an explicit, audited adjustment.
+The allowlisted synthetic `POST /v1/alpha/messages` route uses metered
+acceptance when Stripe TEST billing is enabled and unmetered acceptance
+otherwise; it is not a general customer send route. For a bound billing
+account, pending reconciliation or a missing test quota returns 503
+`billing_pending` with `Retry-After: 10`; queued or held payment risk returns
+402 `payment_hold`; an exhausted quota or expired payment grace returns 429
+`quota_exceeded` with `Retry-After: 60`. Storage or dispatch failures retain
+503 `unavailable`. An identical idempotent replay reuses the original result
+without reserving another unit.
 
 Index queue due times and `(account_id, created_at DESC, id)`. Cursor pagination only. The retention worker redacts terminal message recipients and synthetic payloads after 30 days by default, counted from the last state update. It preserves recipient and request digests, message identity, state and attempts. It removes eligible message events after 90 days and only after their parent content is redacted, terminal webhook delivery/attempt/replay history after 30 days, and inbound ciphertext after 30 days once related webhook history is gone. M1 inbound event IDs, device sequences, digests and signatures remain as replay tombstones. Sealed inbound envelopes are redacted after 30 days while ID, device sequence and unsigned digest remain. Unknown messages and unresolved grant/submission fences defer related content and history; completed submitted/failed fence records do not. Late radio receipts for redacted messages are stale and must be quarantined by the device protocol. See [self-hosting retention settings](SELF-HOSTING.md#data-retention). Default API body limit 32 KiB; one-recipient SMS; payload cannot exceed six radio segments after decryption. Keep ingress limits before expensive crypto/parsing.
 
