@@ -151,8 +151,10 @@ def main():
                  "SYNTHETIC_ALPHA_ENABLED", "M0_TEST_TOKEN", "COMPOSE_PROFILES",
                  "COMPOSE_ENV_FILES", "COMPOSE_PROJECT_NAME", "COMPOSE_FILE",
                  "AUTH_ORIGIN", "AUTH_TOKEN_PEPPER_B64", "ENROLLMENT_TOKEN_PEPPER_B64",
-                 "SMTP_HOST", "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD",
-                 "SMTP_FROM", "SMTP_FROM_NAME", "SMTP_REPLY_TO",
+                 "SMTP_HOST", "SMTP_PORT", "SMTP_SECURE",
+                 "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM",
+                 "SMTP_FROM_NAME", "SMTP_REPLY_TO", "SMTP_USER", "SMTP_PASS",
+                 "EMAIL_FROM", "EMAIL_FROM_NAME", "EMAIL_REPLY_TO",
                  "MFA_ENCRYPTION_KEY_B64", "MFA_ENROLLMENT_ENABLED",
                  "MFA_RECOVERY_ONLY"):
         os.environ.pop(name, None)
@@ -212,6 +214,7 @@ def main():
              'test -z "$AUTH_TOKEN_PEPPER_B64" && '
              'test -z "$ENROLLMENT_TOKEN_PEPPER_B64" && '
              'test -z "$SMTP_PASSWORD" && '
+             'test -z "$SMTP_PASS" && '
              'test -z "$MFA_ENCRYPTION_KEY_B64"'],
             "disposable credential isolation")
         database = summary(project, env_file)
