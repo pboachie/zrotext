@@ -2,12 +2,15 @@
 package org.zrotext.gateway
 
 import android.os.Build
+import android.os.Bundle
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyInfo
 import android.security.keystore.KeyProperties
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
@@ -82,6 +85,13 @@ class M2KeystoreHpkeProofTest {
             assertNull(privateKey.encoded)
             assertEquals(KeyProperties.ORIGIN_GENERATED, infoFromStore.origin)
             assertTrue(infoFromStore.purposes and KeyProperties.PURPOSE_AGREE_KEY != 0)
+            val securityLevel = when (infoFromStore.securityLevel) {
+                KeyProperties.SECURITY_LEVEL_STRONGBOX -> "STRONGBOX"
+                KeyProperties.SECURITY_LEVEL_TRUSTED_ENVIRONMENT -> "TRUSTED_ENVIRONMENT"
+                KeyProperties.SECURITY_LEVEL_SOFTWARE -> "SOFTWARE"
+                KeyProperties.SECURITY_LEVEL_UNKNOWN_SECURE -> "UNKNOWN_SECURE"
+                else -> "UNKNOWN"
+            }
             assertEquals(65, P256.encode(recipientPoint).size)
 
             val protected = ByteArray(157) { it.toByte() }
@@ -95,6 +105,11 @@ class M2KeystoreHpkeProofTest {
             assertEquals(65, wrap.first.size)
             assertEquals(48, wrap.second.size)
             assertArrayEquals(cek, HpkeOneShot.openKeystore(privateKey, recipientPoint, wrap.first, wrap.second, info, aad))
+            InstrumentationRegistry.getInstrumentation().sendStatus(0, Bundle().apply {
+                putString("m2_keystore_security_level", securityLevel)
+                putString("m2_keystore_key_origin", "GENERATED")
+                putString("m2_keystore_ecdh_and_hpke_open", "PASSED")
+            })
             rejects { HpkeOneShot.openKeystore(privateKey, recipientPoint, wrap.first, wrap.second, info + 1, aad) }
             rejects { HpkeOneShot.openKeystore(privateKey, recipientPoint, wrap.first, wrap.second, info, aad + 1) }
             rejects { HpkeOneShot.openKeystore(privateKey, recipientPoint, wrap.first, wrap.second, info, "ZTSE/wrap-aad/v1\u0000".toByteArray() + protected + byteArrayOf(2) + keyId) }
@@ -113,6 +128,10 @@ class M2KeystoreHpkeProofTest {
             cek.fill(0)
         } finally {
             if (store.containsAlias(alias)) store.deleteEntry(alias)
+            assertFalse(store.containsAlias(alias))
+            InstrumentationRegistry.getInstrumentation().sendStatus(0, Bundle().apply {
+                putString("m2_keystore_temp_alias_removed", "PASSED")
+            })
         }
     }
 
