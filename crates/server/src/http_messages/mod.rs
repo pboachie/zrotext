@@ -16,10 +16,9 @@ use axum::{
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
-use std::{
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::sync::Arc;
+#[cfg(test)]
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio_postgres::Client;
 use uuid::Uuid;
 use zrotext_delivery_store::{DeliveryStore, NewMessage, StoreError};
@@ -27,7 +26,6 @@ use zrotext_domain::MessageState;
 
 const IDEMPOTENCY_HEADER: &str = "idempotency-key";
 const MAX_BODY_BYTES: usize = 1024;
-const MAX_EXPIRY_MS: i64 = 15 * 60 * 1000;
 
 #[derive(Clone)]
 pub struct MessagesHttpState {
@@ -198,6 +196,7 @@ fn valid_e164(number: &str) -> bool {
         && number.as_bytes()[1..].iter().all(u8::is_ascii_digit)
 }
 
+#[cfg(test)]
 fn now_ms() -> Result<i64, MessageHttpError> {
     i64::try_from(
         SystemTime::now()
@@ -242,10 +241,6 @@ async fn accept(
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
     {
-        return Err(MessageHttpError::BadRequest);
-    }
-    let now = now_ms()?;
-    if body.expires_at_ms <= now || body.expires_at_ms > now + MAX_EXPIRY_MS {
         return Err(MessageHttpError::BadRequest);
     }
     let mut client = connect(&state.database_url).await?;
@@ -586,6 +581,99 @@ mod tests {
         let data = to_bytes(response.into_body(), 2048).await.unwrap();
         let replay: serde_json::Value = serde_json::from_slice(&data).unwrap();
         assert_eq!(replay["created"], false);
+        let expiring = serde_json::json!({
+            "client_message_id":Uuid::new_v4(),
+            "device_id":device_a,
+            "recipient_e164":"+15555550101",
+            "test_case_id":"expires_soon",
+            "expires_at_ms":now_ms().unwrap()+5_000
+        });
+        let expiry = expiring["expires_at_ms"].as_i64().unwrap();
+        let response = app
+            .clone()
+            .oneshot(post("/messages", &send_a, "expires-soon", expiring.clone()))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let data = to_bytes(response.into_body(), 2048).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&data).unwrap()["created"],
+            true
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(
+            (expiry - now_ms().unwrap() + 10).max(0) as u64,
+        ))
+        .await;
+        let response = app
+            .clone()
+            .oneshot(post("/messages", &send_a, "expires-soon", expiring.clone()))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let data = to_bytes(response.into_body(), 2048).await.unwrap();
+        let expired_replay: serde_json::Value = serde_json::from_slice(&data).unwrap();
+        assert_eq!(expired_replay["message_id"], expiring["client_message_id"]);
+        assert_eq!(expired_replay["created"], false);
+        let mut changed_expired = expiring.clone();
+        changed_expired["test_case_id"] = "changed".into();
+        assert_eq!(
+            app.clone()
+                .oneshot(post("/messages", &send_a, "expires-soon", changed_expired))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::CONFLICT
+        );
+        let mut changed_expiry = expiring.clone();
+        changed_expiry["expires_at_ms"] = (now_ms().unwrap() + 16 * 60 * 1000).into();
+        assert_eq!(
+            app.clone()
+                .oneshot(post(
+                    "/messages",
+                    &send_a,
+                    "expires-soon",
+                    changed_expiry.clone()
+                ))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::CONFLICT
+        );
+        changed_expiry["client_message_id"] = Uuid::new_v4().to_string().into();
+        assert_eq!(
+            app.clone()
+                .oneshot(post("/messages", &send_a, "too-far-future", changed_expiry))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+        let mut new_expired = expiring.clone();
+        new_expired["client_message_id"] = Uuid::new_v4().to_string().into();
+        assert_eq!(
+            app.clone()
+                .oneshot(post("/messages", &send_a, "new-expired", new_expired))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+        let counts = client
+            .query_one(
+                "SELECT (SELECT count(*) FROM messages WHERE account_id=$1),
+                        (SELECT count(*) FROM dispatch_jobs WHERE account_id=$1),
+                        (SELECT count(*) FROM idempotency_keys WHERE account_id=$1)",
+                &[&account_a],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            (0..3)
+                .map(|index| counts.get::<_, i64>(index))
+                .collect::<Vec<_>>(),
+            vec![2; 3],
+            "expired retry created a second dispatch"
+        );
         let mut changed = input.clone();
         changed["test_case_id"] = "changed".into();
         assert_eq!(

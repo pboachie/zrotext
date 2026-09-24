@@ -58,6 +58,7 @@ enum MeteringTime {
 // limits, not subscription entitlements.
 const MAX_PENDING_PER_DEVICE: i64 = 16;
 const MAX_PENDING_PER_ACCOUNT: i64 = 128;
+const MAX_ALPHA_EXPIRY_MS: i64 = 15 * 60 * 1000;
 
 pub struct NewMessage<'a> {
     pub account_id: Uuid,
@@ -321,6 +322,17 @@ impl<'a> DeliveryStore<'a> {
                 message_id,
                 created: false,
             });
+        }
+
+        // A retained key must replay even after the message expires. For a
+        // newly inserted key, reject elapsed expiry before creating any work;
+        // returning here rolls the uncommitted key insertion back as well.
+        let now = now_ms();
+        if input.expires_at_ms <= now
+            || (matches!(metering, MeteringTime::Alpha { .. })
+                && input.expires_at_ms > now.saturating_add(MAX_ALPHA_EXPIRY_MS))
+        {
+            return Err(StoreError::InvalidInput);
         }
 
         // Every new acceptance for this account takes the same row lock. The
@@ -1279,7 +1291,6 @@ fn validate_message(input: &NewMessage<'_>) -> Result<(), StoreError> {
         || input.synthetic_payload.is_empty()
         || input.synthetic_payload.len() > 32768
         || std::str::from_utf8(input.synthetic_payload).is_err()
-        || input.expires_at_ms <= now_ms()
     {
         return Err(StoreError::InvalidInput);
     }
@@ -1667,6 +1678,109 @@ mod tests {
                 .state,
             MessageState::Submitted
         );
+        client
+            .batch_execute(&format!(
+                "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
+            ))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn expired_message_replay_keeps_identity_without_new_dispatch() {
+        let Ok(url) = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL") else {
+            eprintln!("set ZT_DELIVERY_TEST_DATABASE_URL for expired replay database test");
+            return;
+        };
+        let (mut client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let schema = format!("expired_replay_{}", Uuid::new_v4().simple());
+        client
+            .batch_execute(&format!(
+                "CREATE SCHEMA {schema}; SET search_path TO {schema}"
+            ))
+            .await
+            .unwrap();
+        for migration in [
+            include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
+            include_str!("../../../deploy/compose/migrations/002_auth.sql"),
+            include_str!("../../../deploy/compose/migrations/003_delivery.sql"),
+        ] {
+            client.batch_execute(migration).await.unwrap();
+        }
+        let account = Uuid::new_v4();
+        let device = Uuid::new_v4();
+        let message = Uuid::new_v4();
+        client
+            .execute("INSERT INTO accounts(id) VALUES($1)", &[&account])
+            .await
+            .unwrap();
+        client
+            .execute(
+                "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'virtual phone')",
+                &[&device, &account],
+            )
+            .await
+            .unwrap();
+        let expiry = now_ms() + 5_000;
+        let input = || NewMessage {
+            account_id: account,
+            client_message_id: message,
+            device_id: device,
+            idempotency_key: "expired-replay",
+            recipient_e164: "+15551234567",
+            synthetic_payload: b"test only",
+            expires_at_ms: expiry,
+        };
+        assert!(
+            DeliveryStore::new(&mut client)
+                .accept(input())
+                .await
+                .unwrap()
+                .created
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(
+            (expiry - now_ms() + 10).max(0) as u64,
+        ))
+        .await;
+        let replay = DeliveryStore::new(&mut client)
+            .accept(input())
+            .await
+            .unwrap();
+        assert_eq!(replay.message_id, message);
+        assert!(!replay.created);
+        assert!(matches!(
+            DeliveryStore::new(&mut client)
+                .accept(NewMessage {
+                    synthetic_payload: b"changed",
+                    ..input()
+                })
+                .await,
+            Err(StoreError::IdempotencyConflict)
+        ));
+        assert!(matches!(
+            DeliveryStore::new(&mut client)
+                .accept(NewMessage {
+                    client_message_id: Uuid::new_v4(),
+                    idempotency_key: "expired-new",
+                    ..input()
+                })
+                .await,
+            Err(StoreError::InvalidInput)
+        ));
+        for table in ["messages", "dispatch_jobs", "idempotency_keys"] {
+            let count: i64 = client
+                .query_one(
+                    &format!("SELECT count(*) FROM {table} WHERE account_id=$1"),
+                    &[&account],
+                )
+                .await
+                .unwrap()
+                .get(0);
+            assert_eq!(count, 1, "{table} changed after expired retry");
+        }
         client
             .batch_execute(&format!(
                 "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
