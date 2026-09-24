@@ -49,12 +49,16 @@ pub struct VerifiedEvent {
     pub subscription_id: Option<String>,
     /// Only populated for verified test-mode refund or chargeback events.
     pub risk_charge_id: Option<String>,
+    /// A refund can identify its payment by PaymentIntent when `charge` is null.
+    pub risk_payment_intent_id: Option<String>,
     /// Creation time on a signed invoice.payment_failed event, in Unix seconds.
     pub payment_failed_at_unix: Option<i64>,
     pub body_sha256: [u8; 32],
     /// True when the signed test-mode event's object shape is not one this
     /// build acts on. The event is still acknowledged and durably recorded.
     pub unsupported: bool,
+    /// A recognized risk event with an unexpected shape needs owner review.
+    pub risk_review_required: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,14 +154,65 @@ pub fn verify_event(
     } else {
         None
     };
-    let shape = match parse_event_shape(event_type, &json["data"]["object"]) {
+    let risk_type = matches!(
+        event_type,
+        "charge.refunded" | "refund.created" | "charge.dispute.created"
+    );
+    let object = &json["data"]["object"];
+    let mut risk_review_required = false;
+    let mut shape = match parse_event_shape(event_type, object) {
         Ok(shape) => shape,
         Err(BillingError::InvalidEvent) => {
             unsupported = true;
-            EventShape::default()
+            risk_review_required = risk_type;
+            EventShape {
+                // Preserve only syntactically valid provider pointers for
+                // owner review. They never grant entitlement or create a
+                // final payment hold without provider attribution.
+                object_id: match event_type {
+                    "charge.refunded" => stripe_charge_id(&object["id"]).ok(),
+                    "refund.created" => stripe_id(&object["id"], "re_").ok(),
+                    "charge.dispute.created" => object["id"]
+                        .as_str()
+                        .filter(|id| valid_id(id, "du_").is_ok() || valid_id(id, "dp_").is_ok()),
+                    _ => None,
+                }
+                .map(str::to_owned),
+                // A signed Charge can still name a valid customer even if its
+                // risk shape is unusable. Hold that account for review.
+                customer_id: if event_type == "charge.refunded" {
+                    object["customer"]
+                        .as_str()
+                        .and_then(|id| valid_id(id, "cus_").ok())
+                        .map(str::to_owned)
+                } else {
+                    None
+                },
+                risk_charge_id: match event_type {
+                    "charge.refunded" => stripe_charge_id(&object["id"]).ok(),
+                    "refund.created" | "charge.dispute.created" => {
+                        stripe_charge_id(&object["charge"]).ok()
+                    }
+                    _ => None,
+                }
+                .map(str::to_owned),
+                risk_payment_intent_id: if event_type == "refund.created" {
+                    stripe_id(&object["payment_intent"], "pi_")
+                        .ok()
+                        .map(str::to_owned)
+                } else {
+                    None
+                },
+                ..EventShape::default()
+            }
         }
         Err(other) => return Err(other),
     };
+    if unsupported && !risk_review_required {
+        // An invoice failure without a usable creation time cannot anchor
+        // grace; do not queue it under an unsupported disposition.
+        shape = EventShape::default();
+    }
     Ok(VerifiedEvent {
         event_id,
         event_type: event_type.to_owned(),
@@ -165,9 +220,11 @@ pub fn verify_event(
         customer_id: shape.customer_id,
         subscription_id: shape.subscription_id,
         risk_charge_id: shape.risk_charge_id,
+        risk_payment_intent_id: shape.risk_payment_intent_id,
         payment_failed_at_unix,
         body_sha256: Sha256::digest(body).into(),
         unsupported,
+        risk_review_required,
     })
 }
 
@@ -178,6 +235,7 @@ struct EventShape {
     customer_id: Option<String>,
     subscription_id: Option<String>,
     risk_charge_id: Option<String>,
+    risk_payment_intent_id: Option<String>,
 }
 
 /// Extract the pointers one recognized event type acts on. A recognized type
@@ -190,6 +248,7 @@ fn parse_event_shape(event_type: &str, object: &Value) -> Result<EventShape, Bil
             customer_id: Some(stripe_id(&object["customer"], "cus_")?.to_owned()),
             subscription_id: Some(stripe_id(&object["subscription"], "sub_")?.to_owned()),
             risk_charge_id: None,
+            risk_payment_intent_id: None,
         },
         "customer.subscription.created"
         | "customer.subscription.updated"
@@ -202,6 +261,7 @@ fn parse_event_shape(event_type: &str, object: &Value) -> Result<EventShape, Bil
                 customer_id: Some(stripe_id(&object["customer"], "cus_")?.to_owned()),
                 subscription_id: Some(subscription),
                 risk_charge_id: None,
+                risk_payment_intent_id: None,
             }
         }
         "invoice.paid" | "invoice.payment_failed" => {
@@ -218,6 +278,7 @@ fn parse_event_shape(event_type: &str, object: &Value) -> Result<EventShape, Bil
                 customer_id: Some(stripe_id(&object["customer"], "cus_")?.to_owned()),
                 subscription_id: subscription,
                 risk_charge_id: None,
+                risk_payment_intent_id: None,
             }
         }
         "charge.refunded" => {
@@ -239,6 +300,7 @@ fn parse_event_shape(event_type: &str, object: &Value) -> Result<EventShape, Bil
                 customer_id: customer,
                 subscription_id: None,
                 risk_charge_id: Some(charge),
+                risk_payment_intent_id: None,
             }
         }
         "refund.created" => {
@@ -250,11 +312,20 @@ fn parse_event_shape(event_type: &str, object: &Value) -> Result<EventShape, Bil
                 .map(valid_charge_id)
                 .transpose()?
                 .map(str::to_owned);
+            let payment_intent = object["payment_intent"]
+                .as_str()
+                .map(|id| valid_id(id, "pi_"))
+                .transpose()?
+                .map(str::to_owned);
+            if charge.is_none() && payment_intent.is_none() {
+                return Err(BillingError::InvalidEvent);
+            }
             EventShape {
                 object_id: Some(stripe_id(&object["id"], "re_")?.to_owned()),
                 customer_id: None,
                 subscription_id: None,
                 risk_charge_id: charge,
+                risk_payment_intent_id: payment_intent,
             }
         }
         "charge.dispute.created" => {
@@ -270,6 +341,7 @@ fn parse_event_shape(event_type: &str, object: &Value) -> Result<EventShape, Bil
                 customer_id: None,
                 subscription_id: None,
                 risk_charge_id: Some(stripe_charge_id(&object["charge"])?.to_owned()),
+                risk_payment_intent_id: None,
             }
         }
         _ => EventShape::default(),
@@ -325,7 +397,10 @@ pub async fn ingest(
     let account_id: Option<Uuid> = if let Some(customer_id) = &event.customer_id {
         lock_customer(&tx, customer_id).await?;
         tx.query_opt(
-            if event.risk_charge_id.is_some() {
+            if event.risk_charge_id.is_some()
+                || event.risk_payment_intent_id.is_some()
+                || event.risk_review_required
+            {
                 "SELECT account_id FROM billing_customers WHERE stripe_customer_id=$1 FOR UPDATE"
             } else {
                 "SELECT account_id FROM billing_customers WHERE stripe_customer_id=$1 FOR SHARE"
@@ -339,7 +414,10 @@ pub async fn ingest(
     };
     let initial = if event.unsupported {
         IngestResult::Unsupported
-    } else if event.subscription_id.is_none() && event.risk_charge_id.is_none() {
+    } else if event.subscription_id.is_none()
+        && event.risk_charge_id.is_none()
+        && event.risk_payment_intent_id.is_none()
+    {
         IngestResult::Ignored
     } else if account_id.is_none() {
         IngestResult::Unbound
@@ -372,22 +450,29 @@ pub async fn ingest(
         tx.commit().await?;
         return Ok(IngestResult::Duplicate);
     }
-    if let Some(charge_id) = &event.risk_charge_id {
+    if event.risk_charge_id.is_some()
+        || event.risk_payment_intent_id.is_some()
+        || event.risk_review_required
+    {
         let kind = if event.event_type == "charge.dispute.created" {
             "dispute"
         } else {
             "refund"
         };
         tx.execute(
-            "INSERT INTO billing_risk_events(stripe_event_id,stripe_charge_id,risk_kind,account_id) VALUES($1,$2,$3,$4)",
-            &[&event.event_id, &charge_id, &kind, &account_id],
+            "INSERT INTO billing_risk_events(stripe_event_id,stripe_charge_id,stripe_payment_intent_id,risk_kind,account_id,state) VALUES($1,$2,$3,$4,$5,$6)",
+            &[&event.event_id, &event.risk_charge_id, &event.risk_payment_intent_id,
+                &kind, &account_id, &if event.risk_review_required { "needs_review" } else { "queued" }],
         )
         .await?;
     }
     let mut result = initial;
-    if let (Some(account_id), Some(customer_id), Some(subscription_id)) =
-        (account_id, &event.customer_id, &event.subscription_id)
-    {
+    if let (false, Some(account_id), Some(customer_id), Some(subscription_id)) = (
+        event.unsupported,
+        account_id,
+        &event.customer_id,
+        &event.subscription_id,
+    ) {
         if !queue_subscription(&tx, account_id, customer_id, subscription_id).await? {
             result = IngestResult::Conflict;
         }
@@ -1066,7 +1151,14 @@ mod tests {
         assert_eq!(refund.risk_charge_id.as_deref(), Some("ch_risk1"));
         let unsupported = signed_test_event(br#"{"id":"evt_riskrefund2","object":"event","livemode":false,"type":"refund.created","data":{"object":{"id":"re_risk2","object":"refund","charge":null}}}"#);
         assert!(unsupported.risk_charge_id.is_none());
-        assert!(!unsupported.unsupported);
+        assert!(unsupported.unsupported);
+        assert!(unsupported.risk_review_required);
+        let payment_intent_only = signed_test_event(br#"{"id":"evt_riskrefundpi1","object":"event","livemode":false,"type":"refund.created","data":{"object":{"id":"re_riskpi1","object":"refund","charge":null,"payment_intent":"pi_riskpi1"}}}"#);
+        assert_eq!(
+            payment_intent_only.risk_payment_intent_id.as_deref(),
+            Some("pi_riskpi1")
+        );
+        assert!(!payment_intent_only.unsupported);
         let zero = br#"{"id":"evt_riskzero1","object":"event","livemode":false,"type":"charge.refunded","data":{"object":{"id":"ch_risk1","object":"charge","customer":"cus_risk1","amount_refunded":0}}}"#;
         let mut mac = HmacSha256::new_from_slice(SECRET.as_bytes()).unwrap();
         mac.update(b"1750000000.");
@@ -1074,7 +1166,8 @@ mod tests {
         let signature = signed_header(1_750_000_000, mac);
         let zero_event = verify_event(zero, &signature, SECRET, 1_750_000_000).unwrap();
         assert!(zero_event.unsupported);
-        assert!(zero_event.risk_charge_id.is_none());
+        assert!(zero_event.risk_review_required);
+        assert_eq!(zero_event.risk_charge_id.as_deref(), Some("ch_risk1"));
     }
 
     #[test]
@@ -1095,6 +1188,7 @@ mod tests {
             let event = signed_test_event(body.as_bytes());
             assert!(event.risk_charge_id.is_none());
             assert!(event.unsupported, "charge {unknown} must not act");
+            assert!(event.risk_review_required);
         }
     }
 
@@ -1105,6 +1199,10 @@ mod tests {
         assert!(payment_mode.unsupported);
         assert!(payment_mode.object_id.is_none());
         assert!(payment_mode.customer_id.is_none());
+        let missing_failure_time = signed_test_event(br#"{"id":"evt_unsupportedtime1","object":"event","livemode":false,"type":"invoice.payment_failed","data":{"object":{"id":"in_unsupportedtime1","customer":"cus_unsupported1","subscription":"sub_unsupported1"}}}"#);
+        assert!(missing_failure_time.unsupported);
+        assert!(missing_failure_time.subscription_id.is_none());
+        assert!(missing_failure_time.customer_id.is_none());
         // Envelope problems on a correctly signed body stay hard failures.
         let live = br#"{"id":"evt_unsupported2","object":"event","livemode":true,"type":"checkout.session.completed","data":{"object":{"id":"cs_test_unsupported2","customer":"cus_unsupported1","subscription":"sub_unsupported1"}}}"#;
         let mut mac = HmacSha256::new_from_slice(SECRET.as_bytes()).unwrap();
@@ -2137,6 +2235,7 @@ mod tests {
                 &mut db,
                 "evt_refund1",
                 "ch_refund1",
+                None,
                 "cus_holdb1",
                 "sub_holdb1",
                 "refund"
@@ -2151,6 +2250,7 @@ mod tests {
             &mut db,
             "evt_refund1",
             "ch_refund1",
+            None,
             "cus_holda1",
             "sub_holda1",
             "refund",
@@ -2161,6 +2261,7 @@ mod tests {
             &mut db,
             "evt_refund1",
             "ch_refund1",
+            None,
             "cus_holda1",
             "sub_holda1",
             "refund",
@@ -2228,6 +2329,7 @@ mod tests {
             &mut db,
             "evt_dispute1",
             "ch_dispute1",
+            None,
             "cus_holdb1",
             "sub_holdb1",
             "dispute",
@@ -2411,6 +2513,7 @@ mod tests {
             &mut db,
             "evt_pyrefund1",
             "py_refund1",
+            None,
             "cus_pyhold1",
             "sub_pyhold1",
             "refund",
@@ -2426,6 +2529,66 @@ mod tests {
             .unwrap()
             .get(0);
         assert_eq!(held_charge, "py_refund1");
+
+        // Stripe permits Refund.charge=null. The signed PaymentIntent pointer
+        // enters the risk queue; a separately validated Charges Read supplies
+        // the Charge used for tenant and invoice attribution.
+        let pi_refund = signed_test_event(br#"{"id":"evt_pyrefundpi1","object":"event","livemode":false,"type":"refund.created","data":{"object":{"id":"re_pyrefundpi1","object":"refund","charge":null,"payment_intent":"pi_pyrefundpi1"}}}"#);
+        assert_eq!(
+            ingest(&mut db, &pi_refund).await.unwrap(),
+            IngestResult::Unbound
+        );
+        let risk = db
+            .query_one(
+                "SELECT stripe_charge_id,stripe_payment_intent_id,state FROM billing_risk_events WHERE stripe_event_id='evt_pyrefundpi1'",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert!(risk.get::<_, Option<String>>(0).is_none());
+        assert_eq!(
+            risk.get::<_, Option<String>>(1).as_deref(),
+            Some("pi_pyrefundpi1")
+        );
+        assert_eq!(risk.get::<_, String>(2), "queued");
+        assert!(
+            risk::bind_charge_customer(&mut db, "evt_pyrefundpi1", "cus_pyhold1")
+                .await
+                .unwrap()
+        );
+        assert!(matches!(
+            risk::apply_hold(
+                &mut db,
+                "evt_pyrefundpi1",
+                "py_wrong1",
+                Some("pi_wrong1"),
+                "cus_pyhold1",
+                "sub_pyhold1",
+                "refund"
+            )
+            .await,
+            Err(BillingError::TenantConflict)
+        ));
+        risk::apply_hold(
+            &mut db,
+            "evt_pyrefundpi1",
+            "py_refundpi1",
+            Some("pi_pyrefundpi1"),
+            "cus_pyhold1",
+            "sub_pyhold1",
+            "refund",
+        )
+        .await
+        .unwrap();
+        let resolved: String = db
+            .query_one(
+                "SELECT stripe_charge_id FROM billing_payment_holds WHERE stripe_event_id='evt_pyrefundpi1'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(resolved, "py_refundpi1");
 
         let refund_created = signed_test_event(br#"{"id":"evt_pyrefundre1","object":"event","livemode":false,"type":"refund.created","data":{"object":{"id":"re_pyrefund1","object":"refund","charge":"py_refund2"}}}"#);
         assert_eq!(refund_created.risk_charge_id.as_deref(), Some("py_refund2"));
@@ -2448,6 +2611,7 @@ mod tests {
             &mut db,
             "evt_pydispute1",
             "py_dispute1",
+            None,
             "cus_pyhold1",
             "sub_pyhold1",
             "dispute",
@@ -2459,7 +2623,7 @@ mod tests {
             .await
             .unwrap()
             .get(0);
-        assert_eq!(holds, 2);
+        assert_eq!(holds, 3);
 
         // A correctly signed event this build does not act on — a payment-mode
         // Checkout completion — is acknowledged and durably recorded, and a
@@ -2492,6 +2656,42 @@ mod tests {
             .unwrap()
             .get(0);
         assert_eq!(queued, 1);
+        let before_generation: i64 = db
+            .query_one(
+                "SELECT dirty_generation FROM billing_reconciliations WHERE stripe_subscription_id='sub_pyhold1'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        let unsupported_failure = signed_test_event(br#"{"id":"evt_pyunsupportedtime1","object":"event","livemode":false,"type":"invoice.payment_failed","data":{"object":{"id":"in_pyunsupported1","customer":"cus_pyhold1","subscription":"sub_pyhold1"}}}"#);
+        assert_eq!(
+            ingest(&mut db, &unsupported_failure).await.unwrap(),
+            IngestResult::Unsupported
+        );
+        let after_generation: i64 = db
+            .query_one(
+                "SELECT dirty_generation FROM billing_reconciliations WHERE stripe_subscription_id='sub_pyhold1'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(after_generation, before_generation);
+        let review = signed_test_event(br#"{"id":"evt_pyreview1","object":"event","livemode":false,"type":"charge.refunded","data":{"object":{"id":"py_review1","object":"charge","customer":"cus_pyhold1","amount_refunded":0}}}"#);
+        assert_eq!(
+            ingest(&mut db, &review).await.unwrap(),
+            IngestResult::Unsupported
+        );
+        let review_row = db
+            .query_one(
+                "SELECT state,account_id FROM billing_risk_events WHERE stripe_event_id='evt_pyreview1'",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(review_row.get::<_, String>(0), "needs_review");
+        assert_eq!(review_row.get::<_, Option<Uuid>>(1), Some(account));
         setup
             .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
             .await
@@ -2584,9 +2784,11 @@ mod tests {
             customer_id: Some("cus_entitlement1".into()),
             subscription_id: Some("sub_entitlement1".into()),
             risk_charge_id: None,
+            risk_payment_intent_id: None,
             payment_failed_at_unix: None,
             body_sha256: [1; 32],
             unsupported: false,
+            risk_review_required: false,
         };
         assert_eq!(ingest(&mut db, &event).await.unwrap(), IngestResult::Queued);
         let plans = parse_test_quota_plans(

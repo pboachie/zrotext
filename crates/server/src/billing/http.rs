@@ -192,6 +192,54 @@ mod tests {
             .unwrap()
             .get(0);
         assert_eq!(risk, "py_httprefund1");
+        let pi_refund = br#"{"id":"evt_httprefundpi1","object":"event","livemode":false,"type":"refund.created","data":{"object":{"id":"re_httprefundpi1","object":"refund","charge":null,"payment_intent":"pi_httprefundpi1"}}}"#;
+        assert_eq!(
+            post(app.clone(), pi_refund, &signed_header(now, pi_refund)).await,
+            StatusCode::OK
+        );
+        let queued_pi: String = db
+            .query_one(
+                "SELECT stripe_payment_intent_id FROM billing_risk_events WHERE stripe_event_id='evt_httprefundpi1' AND state='queued'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(queued_pi, "pi_httprefundpi1");
+
+        // A signed but unusable risk shape is a durable review task before
+        // 2xx, rather than a silently ignored payment-risk event.
+        let review = br#"{"id":"evt_httpreview1","object":"event","livemode":false,"type":"charge.refunded","data":{"object":{"id":"py_httpreview1","object":"charge","customer":"cus_http1","amount_refunded":0}}}"#;
+        assert_eq!(
+            post(app.clone(), review, &signed_header(now, review)).await,
+            StatusCode::OK
+        );
+        let review_row = db
+            .query_one(
+                "SELECT e.disposition,r.state,e.stripe_customer_id FROM billing_events e JOIN billing_risk_events r USING(stripe_event_id) WHERE e.stripe_event_id='evt_httpreview1'",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(review_row.get::<_, String>(0), "unsupported");
+        assert_eq!(review_row.get::<_, String>(1), "needs_review");
+        assert_eq!(
+            review_row.get::<_, Option<String>>(2).as_deref(),
+            Some("cus_http1")
+        );
+        assert_eq!(
+            post(app.clone(), review, &signed_header(now, review)).await,
+            StatusCode::OK
+        );
+        let review_count: i64 = db
+            .query_one(
+                "SELECT count(*) FROM billing_risk_events WHERE stripe_event_id='evt_httpreview1'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(review_count, 1);
 
         // Bad signatures and live-mode events remain client errors. This
         // signature covers other bytes than the delivered body.

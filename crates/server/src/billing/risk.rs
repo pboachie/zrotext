@@ -13,6 +13,7 @@ const STRIPE_API_VERSION: &str = "2025-07-30.basil";
 
 #[derive(Debug)]
 pub(super) struct Charge {
+    pub id: String,
     pub customer_id: String,
     pub payment_intent_id: String,
     pub amount_refunded: i64,
@@ -56,10 +57,64 @@ fn parse_charge(value: &Value, expected_id: &str) -> Result<Charge, BillingError
         .filter(|amount| *amount >= 0)
         .ok_or(BillingError::InvalidEvent)?;
     Ok(Charge {
+        id: expected_id.to_owned(),
         customer_id,
         payment_intent_id,
         amount_refunded,
     })
+}
+
+/// Refund.charge is nullable in Stripe's API. Resolve its signed
+/// PaymentIntent pointer through Charges Read, then validate the complete
+/// Charge before tenant and paid-subscription attribution.
+pub(super) async fn fetch_charge_for_payment_intent(
+    http: &HttpClient,
+    secret_key: &str,
+    payment_intent_id: &str,
+) -> Result<Charge, BillingError> {
+    valid_id(payment_intent_id, "pi_")?;
+    let value = fetch_json(
+        http,
+        secret_key,
+        &format!("https://api.stripe.com/v1/charges?payment_intent={payment_intent_id}&limit=100"),
+    )
+    .await?;
+    parse_charge_for_payment_intent(&value, payment_intent_id)
+}
+
+fn parse_charge_for_payment_intent(
+    value: &Value,
+    payment_intent_id: &str,
+) -> Result<Charge, BillingError> {
+    valid_id(payment_intent_id, "pi_")?;
+    if value["object"] != "list" || value["has_more"] != false {
+        return Err(BillingError::InvalidEvent);
+    }
+    let rows = value["data"].as_array().ok_or(BillingError::InvalidEvent)?;
+    if rows.is_empty() || rows.len() > 100 {
+        return Err(BillingError::InvalidEvent);
+    }
+    let mut refunded = None;
+    for row in rows {
+        let id = valid_charge_id(row["id"].as_str().ok_or(BillingError::InvalidEvent)?)?;
+        if row["object"] != "charge"
+            || row["livemode"] != false
+            || row["payment_intent"] != payment_intent_id
+        {
+            return Err(BillingError::InvalidEvent);
+        }
+        let amount_refunded = row["amount_refunded"]
+            .as_i64()
+            .filter(|amount| *amount >= 0)
+            .ok_or(BillingError::InvalidEvent)?;
+        if amount_refunded > 0 {
+            if refunded.is_some() {
+                return Err(BillingError::InvalidEvent);
+            }
+            refunded = Some(parse_charge(row, id)?);
+        }
+    }
+    refunded.ok_or(BillingError::InvalidEvent)
 }
 
 /// Resolve the PaymentIntent through Stripe's invoice-payments API. Requiring
@@ -221,12 +276,16 @@ pub(super) async fn apply_hold(
     client: &mut Client,
     event_id: &str,
     charge_id: &str,
+    payment_intent_id: Option<&str>,
     customer_id: &str,
     subscription_id: &str,
     kind: &str,
 ) -> Result<(), BillingError> {
     valid_id(event_id, "evt_")?;
     valid_charge_id(charge_id)?;
+    if let Some(id) = payment_intent_id {
+        valid_id(id, "pi_")?;
+    }
     valid_id(customer_id, "cus_")?;
     valid_id(subscription_id, "sub_")?;
     if !matches!(kind, "refund" | "dispute") {
@@ -242,11 +301,19 @@ pub(super) async fn apply_hold(
         .await?;
     let account_id: Uuid = bound.get(0);
     let risk = tx.query_one(
-        "SELECT stripe_charge_id,risk_kind,state,account_id FROM billing_risk_events WHERE stripe_event_id=$1 FOR UPDATE",
+        "SELECT stripe_charge_id,risk_kind,state,account_id,stripe_payment_intent_id FROM billing_risk_events WHERE stripe_event_id=$1 FOR UPDATE",
         &[&event_id],
     ).await?;
     let prior_account: Option<Uuid> = risk.get(3);
-    if risk.get::<_, String>(0) != charge_id
+    let recorded_charge: Option<String> = risk.get(0);
+    let recorded_payment_intent: Option<String> = risk.get(4);
+    if (recorded_charge.is_none() && recorded_payment_intent.is_none())
+        || recorded_charge
+            .as_deref()
+            .is_some_and(|known| known != charge_id)
+        || recorded_payment_intent
+            .as_deref()
+            .is_some_and(|known| Some(known) != payment_intent_id)
         || risk.get::<_, String>(1) != kind
         || prior_account.is_some_and(|known| known != account_id)
     {
@@ -264,8 +331,8 @@ pub(super) async fn apply_hold(
         &[&event_id, &account_id, &subscription_id, &charge_id, &kind],
     ).await?;
     tx.execute(
-        "UPDATE billing_risk_events SET state='held',account_id=$2,stripe_subscription_id=$3,processed_at=now() WHERE stripe_event_id=$1",
-        &[&event_id, &account_id, &subscription_id],
+        "UPDATE billing_risk_events SET state='held',account_id=$2,stripe_subscription_id=$3,stripe_charge_id=$4,processed_at=now() WHERE stripe_event_id=$1",
+        &[&event_id, &account_id, &subscription_id, &charge_id],
     ).await?;
     tx.commit().await?;
     Ok(())
@@ -273,14 +340,14 @@ pub(super) async fn apply_hold(
 
 pub(super) async fn claim(
     client: &mut Client,
-) -> Result<Option<(String, String, String)>, BillingError> {
+) -> Result<Option<(String, Option<String>, Option<String>, String)>, BillingError> {
     let tx = client.transaction().await?;
     let row = tx.query_opt(
-        "WITH target AS (SELECT stripe_event_id FROM billing_risk_events WHERE state='queued' AND next_attempt_at<=now() ORDER BY next_attempt_at,stripe_event_id FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE billing_risk_events r SET next_attempt_at=now()+interval '30 seconds' FROM target WHERE r.stripe_event_id=target.stripe_event_id RETURNING r.stripe_event_id,r.stripe_charge_id,r.risk_kind",
+        "WITH target AS (SELECT stripe_event_id FROM billing_risk_events WHERE state='queued' AND next_attempt_at<=now() ORDER BY next_attempt_at,stripe_event_id FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE billing_risk_events r SET next_attempt_at=now()+interval '30 seconds' FROM target WHERE r.stripe_event_id=target.stripe_event_id RETURNING r.stripe_event_id,r.stripe_charge_id,r.stripe_payment_intent_id,r.risk_kind",
         &[],
     ).await?;
     tx.commit().await?;
-    Ok(row.map(|row| (row.get(0), row.get(1), row.get(2))))
+    Ok(row.map(|row| (row.get(0), row.get(1), row.get(2), row.get(3))))
 }
 
 pub(super) async fn backoff(client: &Client, event_id: &str) -> Result<(), BillingError> {
@@ -314,5 +381,32 @@ mod tests {
             "sub_risk1"
         );
         assert!(parse_invoice_subscription(&invoice, "in_risk1", "cus_other1").is_err());
+    }
+
+    #[test]
+    fn payment_intent_charge_lookup_requires_one_matching_test_charge() {
+        let row = json!({"id":"py_refundpi1","object":"charge","livemode":false,"customer":"cus_refundpi1","payment_intent":"pi_refundpi1","amount_refunded":50});
+        let list = json!({"object":"list","has_more":false,"data":[row]});
+        let charge = parse_charge_for_payment_intent(&list, "pi_refundpi1").unwrap();
+        assert_eq!(charge.id, "py_refundpi1");
+        assert_eq!(charge.customer_id, "cus_refundpi1");
+        let failed_attempt = json!({"id":"ch_failedpi1","object":"charge","livemode":false,"customer":null,"payment_intent":"pi_refundpi1","amount_refunded":0});
+        let attempts =
+            json!({"object":"list","has_more":false,"data":[failed_attempt,list["data"][0]]});
+        assert_eq!(
+            parse_charge_for_payment_intent(&attempts, "pi_refundpi1")
+                .unwrap()
+                .id,
+            "py_refundpi1"
+        );
+        for invalid in [
+            json!({"object":"list","has_more":true,"data":list["data"]}),
+            json!({"object":"list","has_more":false,"data":[]}),
+            json!({"object":"list","has_more":false,"data":[list["data"][0],list["data"][0]]}),
+            json!({"object":"list","has_more":false,"data":[{"id":"py_refundpi1","object":"charge","livemode":false,"customer":"cus_refundpi1","payment_intent":"pi_other1","amount_refunded":50}]}),
+            json!({"object":"list","has_more":false,"data":[{"id":"py_refundpi1","object":"charge","livemode":true,"customer":"cus_refundpi1","payment_intent":"pi_refundpi1","amount_refunded":50}]}),
+        ] {
+            assert!(parse_charge_for_payment_intent(&invalid, "pi_refundpi1").is_err());
+        }
     }
 }
