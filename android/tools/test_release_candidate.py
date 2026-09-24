@@ -117,10 +117,8 @@ class ReleaseCandidateTest(unittest.TestCase):
                     self.IDENTITY["version_code"], "different-version",
                 )
 
-    def test_verify_cli_reads_prior_approval_outside_artifacts(self):
+    def test_verify_cli_reads_prior_approval_from_stdin(self):
         with tempfile.TemporaryDirectory() as approvals, \
-             tempfile.TemporaryDirectory() as artifacts, \
-             patch.object(release_candidate, "ARTIFACT_ROOT", Path(artifacts)), \
              patch.object(release_candidate, "verify_reviewed_candidate") as verify:
             manifest = Path(approvals) / "release-approval.json"
             manifest.write_text(json.dumps({
@@ -131,27 +129,28 @@ class ReleaseCandidateTest(unittest.TestCase):
             }), encoding="utf-8")
             arguments = ["release_candidate.py", "verify", "--source-tag",
                          "v0.1.0-rc.1", "--certificate-sha256", self.CERTIFICATE,
-                         "--approval-manifest", str(manifest)]
-            with patch.object(sys, "argv", arguments):
+                         "--approval-stdin"]
+            with patch.object(sys, "argv", arguments), \
+                 patch.object(sys, "stdin", io.TextIOWrapper(
+                     io.BytesIO(manifest.read_bytes()), encoding="utf-8")):
                 release_candidate.main()
             verify.assert_called_once_with("v0.1.0-rc.1", self.CERTIFICATE,
                                            self.IDENTITY["version_code"],
                                            self.IDENTITY["version_name"])
             verify.reset_mock()
-            with patch.object(sys, "argv", [*arguments[:5], "c" * 64, *arguments[6:]]):
+            with patch.object(sys, "argv", [*arguments[:5], "c" * 64, *arguments[6:]]), \
+                 patch.object(sys, "stdin", io.TextIOWrapper(
+                     io.BytesIO(manifest.read_bytes()), encoding="utf-8")):
                 with self.assertRaisesRegex(ValueError, "approval differs"):
                     release_candidate.main()
             verify.assert_not_called()
-            shutil.copyfile(manifest, Path(artifacts) / manifest.name)
-            with self.assertRaisesRegex(ValueError, "outside APK artifacts"):
-                release_candidate.release_approval(Path(artifacts) / "release-approval.json")
             manifest.write_text('{"source_tag":"v0.1.0-rc.1","source_tag":"v0.1.0-rc.1"}',
                                 encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "duplicate fields"):
-                release_candidate.release_approval(manifest)
+                release_candidate.release_approval(manifest.read_bytes())
             manifest.write_bytes(b" " * (release_candidate.MAX_RECEIPT_BYTES + 1))
             with self.assertRaisesRegex(ValueError, "review size limit"):
-                release_candidate.release_approval(manifest)
+                release_candidate.release_approval(manifest.read_bytes())
 
     def test_reviewed_tag_ignores_hostile_git_environment(self):
         with tempfile.TemporaryDirectory() as directory, \

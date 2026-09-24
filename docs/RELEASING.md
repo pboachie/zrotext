@@ -104,8 +104,13 @@ git fetch origin main --tags
 python3 android/tools/release_candidate.py verify \
   --source-tag v0.1.0-rc.1 \
   --certificate-sha256 <approved-64-character-hex-fingerprint> \
-  --approval-manifest /trusted/review/release-approval.json
+  --approval-stdin < /trusted/review/release-approval.json
 ```
+
+The verifier reads the bounded approval record from standard input. Keep the
+approved file outside the checkout and artifact root; select and redirect it
+on the review machine. On PowerShell, use `Get-Content -Raw -Encoding utf8`
+to pipe the file into the same verifier command.
 
 The verifier requires an annotated version tag whose object matches the
 published `origin` tag, a fresh fetched `origin/main`, and tag commit ancestry

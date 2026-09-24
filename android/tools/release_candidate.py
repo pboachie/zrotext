@@ -142,15 +142,8 @@ def verify_reviewed_candidate(tag: str, expected_certificate: str,
                      expected_version_code, expected_version_name)
 
 
-def release_approval(path: Path) -> dict[str, str | int]:
-    """Read a separately prepared approval record, never an APK artifact."""
-    if path.is_symlink() or not path.is_file():
-        raise ValueError("Release approval must be a regular file")
-    resolved = external_artifact_path(path, "Release approval")
-    if resolved.is_relative_to(ARTIFACT_ROOT.resolve()):
-        raise ValueError("Release approval must be outside APK artifacts")
-    with path.open("rb") as source:
-        data = source.read(MAX_RECEIPT_BYTES + 1)
+def release_approval(data: bytes) -> dict[str, str | int]:
+    """Validate a separately prepared approval record supplied on stdin."""
     if len(data) > MAX_RECEIPT_BYTES:
         raise ValueError("Release approval exceeds the review size limit")
 
@@ -561,11 +554,11 @@ def main() -> None:
                         help="independently selected annotated release tag on fetched main")
     verify.add_argument("--certificate-sha256", required=True,
                         help="approved fingerprint obtained independently of candidate.json")
-    verify.add_argument("--approval-manifest", required=True, type=Path,
-                        help="prior approved source, certificate and app version record outside artifacts")
+    verify.add_argument("--approval-stdin", required=True, action="store_true",
+                        help="read a prior approved source, certificate and app version record from stdin")
     args = parser.parse_args()
     if args.phase == "verify":
-        approval = release_approval(args.approval_manifest)
+        approval = release_approval(sys.stdin.buffer.read(MAX_RECEIPT_BYTES + 1))
         if (approval["source_tag"] != args.source_tag
                 or approval["certificate_sha256"].lower() != args.certificate_sha256.lower()):
             raise ValueError("Release approval differs from independently selected tag or certificate")
