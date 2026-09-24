@@ -58,6 +58,8 @@ jobs:
       ZT_INBOUND_TEST_DATABASE_URL: postgresql://postgres@127.0.0.1:5432/postgres
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check documented environment variables
+        run: python3 scripts/check_env_example.py
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.97.1 --profile minimal --component clippy --component rustfmt
       - name: Format
