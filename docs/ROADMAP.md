@@ -6,6 +6,7 @@ ZROtext is an open-source Android SMS gateway in active development. The order b
 
 - Connect a dedicated Android phone and SIM to an authenticated server.
 - Accept outbound requests with durable idempotency and clear queued, submitted, delivered, failed, and unknown states.
+- Before a general, non-allowlisted send route: handle STOP/START and other opt-out requests, persist account-scoped recipient suppression, and reject suppressed recipients at acceptance. The current restricted synthetic pilot does not implement these controls.
 - Capture inbound messages and deliver signed webhook events.
 - Show device health and message history in the owner dashboard.
 

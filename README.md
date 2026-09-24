@@ -26,6 +26,10 @@ ZROtext is in active development. The repository includes a Rust server, Postgre
 
 The architecture describes intended behavior. Check the current code and release notes before relying on a capability.
 
+## Sending responsibly
+
+Only send messages to recipients for whom you have an appropriate basis to send that type of SMS. Keep consent records, honor withdrawal and opt-out requests, and check the rules for your recipients' locations and your carrier or mobile plan. The current send path is a restricted synthetic pilot; ZROtext does not yet provide automatic STOP/START handling or a suppression list. Do not use it for general or bulk sending. See [SMS compliance and current limits](docs/SMS-COMPLIANCE.md).
+
 ## Roadmap
 
 The [roadmap](docs/ROADMAP.md) covers gateway messaging, self-hosting, account tools, and multi-location support. It has no promised release dates.
@@ -56,6 +60,7 @@ The stack runs database migrations before the API starts. Dispatch is disabled b
 - [Architecture and API contracts](docs/ARCHITECTURE.md)
 - [Two-location routing and failover design](docs/MULTI-LOCATION.md)
 - [Security design](docs/SECURITY-DESIGN.md)
+- [SMS compliance and current limits](docs/SMS-COMPLIANCE.md)
 - [Roadmap](docs/ROADMAP.md)
 - [Self-hosting](docs/SELF-HOSTING.md)
 - [Android development and testing](docs/ANDROID-TESTING.md)
