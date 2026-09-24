@@ -55,3 +55,5 @@ if ($actual -ne $expected) { throw 'Gradle wrapper JAR checksum mismatch' }
 Review changes to the pinned `gradle/actions/wrapper-validation` commit against an official `gradle/actions` release. The wrapper action itself is a separate guard because the wrapper JAR runs before Gradle can enforce artifact or distribution checksums.
 
 Application source is licensed under [AGPL-3.0-only](../LICENSE). Third-party tools and libraries retain their own licenses; generated wrapper files and downloaded distributions are not relicensed as application code.
+
+The server image bundles the project license at `/usr/share/doc/zrotext/LICENSE` and generated Rust dependency notices at `/usr/share/doc/zrotext/THIRD_PARTY_NOTICES`. The image build uses the pinned `cargo-about` version, [`about.toml`](../about.toml), and [`about.hbs`](../about.hbs) to resolve license texts for the shipped server and migrator binaries. The release smoke reads both files from the exact published image digest.

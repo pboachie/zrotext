@@ -134,6 +134,27 @@ class ReleaseImageSmokeTest(unittest.TestCase):
             "app container lookup",
         )
 
+    def test_release_image_must_bundle_source_license_and_dependency_notices(self):
+        license_text = (Path(__file__).resolve().parent.parent / "LICENSE").read_text(
+            encoding="utf-8")
+        notices = "License: MIT\naxum 0.8.6\ntokio-postgres 0.7.13\n" + "text\n" * 250
+        with patch.object(smoke, "run", side_effect=[license_text, notices]) as command:
+            smoke.verify_release_licenses()
+        self.assertEqual(command.call_count, 2)
+        self.assertEqual(command.call_args_list[0].args[0], [
+            "docker", "run", "--rm", "--entrypoint", "cat", smoke.STAGED_IMAGE,
+            "/usr/share/doc/zrotext/LICENSE",
+        ])
+        self.assertEqual(command.call_args_list[1].args[0][-1],
+                         "/usr/share/doc/zrotext/THIRD_PARTY_NOTICES")
+
+        with patch.object(smoke, "run", side_effect=["wrong license", notices]):
+            with self.assertRaisesRegex(smoke.DrillError, "license differs"):
+                smoke.verify_release_licenses()
+        with patch.object(smoke, "run", side_effect=[license_text, "short"]):
+            with self.assertRaisesRegex(smoke.DrillError, "notices are incomplete"):
+                smoke.verify_release_licenses()
+
 
 if __name__ == "__main__":
     unittest.main()

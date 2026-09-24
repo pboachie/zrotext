@@ -88,6 +88,20 @@ def inspect_release_image(image_ref, source_commit, source_tag,
     return image_id
 
 
+def verify_release_licenses():
+    license_text = run(["docker", "run", "--rm", "--entrypoint", "cat", STAGED_IMAGE,
+                        "/usr/share/doc/zrotext/LICENSE"], "bundled AGPL license")
+    expected = (Path(__file__).resolve().parents[2] / "LICENSE").read_text(encoding="utf-8")
+    if license_text != expected:
+        raise DrillError("bundled AGPL license differs from selected source")
+    notices = run(["docker", "run", "--rm", "--entrypoint", "cat", STAGED_IMAGE,
+                   "/usr/share/doc/zrotext/THIRD_PARTY_NOTICES"],
+                  "bundled third-party notices")
+    if len(notices) < 1000 or not all(marker in notices for marker in (
+            "License:", "axum ", "tokio-postgres ")):
+        raise DrillError("bundled third-party notices are incomplete")
+
+
 def verify_running_image(compose, image_id):
     for service in ("migrate", "app"):
         container = run([*compose, "ps", "--no-trunc", "-aq", service],
@@ -230,6 +244,7 @@ def main():
                                              args.source_tag, args.web_static_sha256,
                                              args.device_stream_schema_sha256,
                                              args.migration_last)
+            verify_release_licenses()
             override = directory / "release-image.yaml"
             override.write_text(json.dumps({"services": {
                 "app": {"image": STAGED_IMAGE},
