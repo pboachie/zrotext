@@ -12,6 +12,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build server image for vulnerability scan
         run: docker build -f deploy/compose/Dockerfile -t zrotext-ci-scan:local .
+      - name: Assert billing operator command is bundled
+        run: docker run --rm --entrypoint /bin/sh zrotext-ci-scan:local -c 'test -x /usr/local/bin/zrotext-billing-risk-review'
       - name: Scan server image for critical fixable vulnerabilities
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:

@@ -96,11 +96,29 @@ impl StripeTestWorker {
         tokio::spawn(async move {
             let _ = connection.await;
         });
-        let Some((event_id, charge_id, kind)) = risk::claim(&mut db).await? else {
+        let Some((event_id, charge_id, payment_intent_id, kind)) = risk::claim(&mut db).await?
+        else {
             return Ok(false);
         };
         let result = async {
-            let charge = risk::fetch_charge(&self.http, &self.secret_key, &charge_id).await?;
+            let charge = if let Some(charge_id) = &charge_id {
+                risk::fetch_charge(&self.http, &self.secret_key, charge_id).await?
+            } else if let Some(payment_intent_id) = &payment_intent_id {
+                risk::fetch_charge_for_payment_intent(
+                    &self.http,
+                    &self.secret_key,
+                    payment_intent_id,
+                )
+                .await?
+            } else {
+                return Err(BillingError::InvalidEvent);
+            };
+            if payment_intent_id
+                .as_deref()
+                .is_some_and(|known| known != charge.payment_intent_id)
+            {
+                return Err(BillingError::InvalidEvent);
+            }
             if !risk::bind_charge_customer(&mut db, &event_id, &charge.customer_id).await? {
                 return Err(BillingError::InvalidEvent);
             }
@@ -112,7 +130,8 @@ impl StripeTestWorker {
             risk::apply_hold(
                 &mut db,
                 &event_id,
-                &charge_id,
+                &charge.id,
+                Some(&charge.payment_intent_id),
                 &charge.customer_id,
                 &subscription,
                 &kind,

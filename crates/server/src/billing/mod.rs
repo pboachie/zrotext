@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 pub mod http;
 pub mod owner;
+pub mod review;
 pub mod risk;
 pub mod sessions;
 pub mod worker;
@@ -49,9 +50,16 @@ pub struct VerifiedEvent {
     pub subscription_id: Option<String>,
     /// Only populated for verified test-mode refund or chargeback events.
     pub risk_charge_id: Option<String>,
+    /// A refund can identify its payment by PaymentIntent when `charge` is null.
+    pub risk_payment_intent_id: Option<String>,
     /// Creation time on a signed invoice.payment_failed event, in Unix seconds.
     pub payment_failed_at_unix: Option<i64>,
     pub body_sha256: [u8; 32],
+    /// True when the signed test-mode event's object shape is not one this
+    /// build acts on. The event is still acknowledged and durably recorded.
+    pub unsupported: bool,
+    /// A recognized risk event with an unexpected shape needs owner review.
+    pub risk_review_required: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +67,7 @@ pub enum IngestResult {
     Queued,
     Unbound,
     Ignored,
+    Unsupported,
     Conflict,
     Duplicate,
 }
@@ -127,36 +136,134 @@ pub fn verify_event(
     if event_type.len() > 100 || event_type.is_empty() {
         return Err(BillingError::InvalidEvent);
     }
+    // Beyond this point the signature and envelope are trusted. An unexpected
+    // object shape is acknowledged and durably recorded instead of being
+    // answered with 4xx, so a legitimate provider event is never dropped and
+    // retried until Stripe gives up on it.
+    let mut unsupported = false;
     let payment_failed_at_unix = if event_type == "invoice.payment_failed" {
-        Some(
-            json["created"]
-                .as_i64()
-                .filter(|created| (946_684_800..=253_402_300_799).contains(created))
-                .ok_or(BillingError::InvalidEvent)?,
-        )
+        match json["created"]
+            .as_i64()
+            .filter(|created| (946_684_800..=253_402_300_799).contains(created))
+        {
+            Some(created) => Some(created),
+            None => {
+                unsupported = true;
+                None
+            }
+        }
     } else {
         None
     };
+    let risk_type = matches!(
+        event_type,
+        "charge.refunded" | "refund.created" | "charge.dispute.created"
+    );
     let object = &json["data"]["object"];
-    let (object_id, customer_id, subscription_id, risk_charge_id) = match event_type {
-        "checkout.session.completed" => (
-            Some(stripe_id(&object["id"], "cs_test_")?.to_owned()),
-            Some(stripe_id(&object["customer"], "cus_")?.to_owned()),
-            Some(stripe_id(&object["subscription"], "sub_")?.to_owned()),
-            None,
-        ),
+    let mut risk_review_required = false;
+    let mut shape = match parse_event_shape(event_type, object) {
+        Ok(shape) => shape,
+        Err(BillingError::InvalidEvent) => {
+            unsupported = true;
+            risk_review_required = risk_type;
+            EventShape {
+                // Preserve only syntactically valid provider pointers for
+                // owner review. They never grant entitlement or create a
+                // final payment hold without provider attribution.
+                object_id: match event_type {
+                    "charge.refunded" => stripe_charge_id(&object["id"]).ok(),
+                    "refund.created" => stripe_id(&object["id"], "re_").ok(),
+                    "charge.dispute.created" => object["id"]
+                        .as_str()
+                        .filter(|id| valid_id(id, "du_").is_ok() || valid_id(id, "dp_").is_ok()),
+                    _ => None,
+                }
+                .map(str::to_owned),
+                // A signed Charge can still name a valid customer even if its
+                // risk shape is unusable. Hold that account for review.
+                customer_id: if event_type == "charge.refunded" {
+                    object["customer"]
+                        .as_str()
+                        .and_then(|id| valid_id(id, "cus_").ok())
+                        .map(str::to_owned)
+                } else {
+                    None
+                },
+                risk_charge_id: match event_type {
+                    "charge.refunded" => stripe_charge_id(&object["id"]).ok(),
+                    "refund.created" | "charge.dispute.created" => {
+                        stripe_charge_id(&object["charge"]).ok()
+                    }
+                    _ => None,
+                }
+                .map(str::to_owned),
+                risk_payment_intent_id: if event_type == "refund.created" {
+                    stripe_id(&object["payment_intent"], "pi_")
+                        .ok()
+                        .map(str::to_owned)
+                } else {
+                    None
+                },
+                ..EventShape::default()
+            }
+        }
+        Err(other) => return Err(other),
+    };
+    if unsupported && !risk_review_required {
+        // An invoice failure without a usable creation time cannot anchor
+        // grace; do not queue it under an unsupported disposition.
+        shape = EventShape::default();
+    }
+    Ok(VerifiedEvent {
+        event_id,
+        event_type: event_type.to_owned(),
+        object_id: shape.object_id,
+        customer_id: shape.customer_id,
+        subscription_id: shape.subscription_id,
+        risk_charge_id: shape.risk_charge_id,
+        risk_payment_intent_id: shape.risk_payment_intent_id,
+        payment_failed_at_unix,
+        body_sha256: Sha256::digest(body).into(),
+        unsupported,
+        risk_review_required,
+    })
+}
+
+/// Provider pointers extracted from one recognized event's object.
+#[derive(Default)]
+struct EventShape {
+    object_id: Option<String>,
+    customer_id: Option<String>,
+    subscription_id: Option<String>,
+    risk_charge_id: Option<String>,
+    risk_payment_intent_id: Option<String>,
+}
+
+/// Extract the pointers one recognized event type acts on. A recognized type
+/// whose object does not match the expected shape yields InvalidEvent, which
+/// `verify_event` downgrades to the unsupported disposition.
+fn parse_event_shape(event_type: &str, object: &Value) -> Result<EventShape, BillingError> {
+    Ok(match event_type {
+        "checkout.session.completed" => EventShape {
+            object_id: Some(stripe_id(&object["id"], "cs_test_")?.to_owned()),
+            customer_id: Some(stripe_id(&object["customer"], "cus_")?.to_owned()),
+            subscription_id: Some(stripe_id(&object["subscription"], "sub_")?.to_owned()),
+            risk_charge_id: None,
+            risk_payment_intent_id: None,
+        },
         "customer.subscription.created"
         | "customer.subscription.updated"
         | "customer.subscription.deleted"
         | "customer.subscription.paused"
         | "customer.subscription.resumed" => {
             let subscription = stripe_id(&object["id"], "sub_")?.to_owned();
-            (
-                Some(subscription.clone()),
-                Some(stripe_id(&object["customer"], "cus_")?.to_owned()),
-                Some(subscription),
-                None,
-            )
+            EventShape {
+                object_id: Some(subscription.clone()),
+                customer_id: Some(stripe_id(&object["customer"], "cus_")?.to_owned()),
+                subscription_id: Some(subscription),
+                risk_charge_id: None,
+                risk_payment_intent_id: None,
+            }
         }
         "invoice.paid" | "invoice.payment_failed" => {
             // Invoice subscription pointers differ across Stripe API versions.
@@ -165,13 +272,15 @@ pub fn verify_event(
                 .as_str()
                 .or_else(|| object["parent"]["subscription_details"]["subscription"].as_str())
                 .map(|id| valid_id(id, "sub_"))
-                .transpose()?;
-            (
-                Some(stripe_id(&object["id"], "in_")?.to_owned()),
-                Some(stripe_id(&object["customer"], "cus_")?.to_owned()),
-                subscription.map(str::to_owned),
-                None,
-            )
+                .transpose()?
+                .map(str::to_owned);
+            EventShape {
+                object_id: Some(stripe_id(&object["id"], "in_")?.to_owned()),
+                customer_id: Some(stripe_id(&object["customer"], "cus_")?.to_owned()),
+                subscription_id: subscription,
+                risk_charge_id: None,
+                risk_payment_intent_id: None,
+            }
         }
         "charge.refunded" => {
             if object["object"] != "charge"
@@ -181,13 +290,19 @@ pub fn verify_event(
             {
                 return Err(BillingError::InvalidEvent);
             }
-            let charge = stripe_id(&object["id"], "ch_")?.to_owned();
+            let charge = stripe_charge_id(&object["id"])?.to_owned();
             let customer = object["customer"]
                 .as_str()
                 .map(|id| valid_id(id, "cus_"))
                 .transpose()?
                 .map(str::to_owned);
-            (Some(charge.clone()), customer, None, Some(charge))
+            EventShape {
+                object_id: Some(charge.clone()),
+                customer_id: customer,
+                subscription_id: None,
+                risk_charge_id: Some(charge),
+                risk_payment_intent_id: None,
+            }
         }
         "refund.created" => {
             if object["object"] != "refund" {
@@ -195,15 +310,24 @@ pub fn verify_event(
             }
             let charge = object["charge"]
                 .as_str()
-                .map(|id| valid_id(id, "ch_"))
+                .map(valid_charge_id)
                 .transpose()?
                 .map(str::to_owned);
-            (
-                Some(stripe_id(&object["id"], "re_")?.to_owned()),
-                None,
-                None,
-                charge,
-            )
+            let payment_intent = object["payment_intent"]
+                .as_str()
+                .map(|id| valid_id(id, "pi_"))
+                .transpose()?
+                .map(str::to_owned);
+            if charge.is_none() && payment_intent.is_none() {
+                return Err(BillingError::InvalidEvent);
+            }
+            EventShape {
+                object_id: Some(stripe_id(&object["id"], "re_")?.to_owned()),
+                customer_id: None,
+                subscription_id: None,
+                risk_charge_id: charge,
+                risk_payment_intent_id: payment_intent,
+            }
         }
         "charge.dispute.created" => {
             if object["object"] != "dispute" {
@@ -213,29 +337,31 @@ pub fn verify_event(
             if valid_id(dispute, "du_").is_err() {
                 valid_id(dispute, "dp_")?;
             }
-            (
-                Some(dispute.to_owned()),
-                None,
-                None,
-                Some(stripe_id(&object["charge"], "ch_")?.to_owned()),
-            )
+            EventShape {
+                object_id: Some(dispute.to_owned()),
+                customer_id: None,
+                subscription_id: None,
+                risk_charge_id: Some(stripe_charge_id(&object["charge"])?.to_owned()),
+                risk_payment_intent_id: None,
+            }
         }
-        _ => (None, None, None, None),
-    };
-    Ok(VerifiedEvent {
-        event_id,
-        event_type: event_type.to_owned(),
-        object_id,
-        customer_id,
-        subscription_id,
-        risk_charge_id,
-        payment_failed_at_unix,
-        body_sha256: Sha256::digest(body).into(),
+        _ => EventShape::default(),
     })
 }
 
 fn stripe_id<'a>(value: &'a Value, prefix: &str) -> Result<&'a str, BillingError> {
     valid_id(value.as_str().ok_or(BillingError::InvalidEvent)?, prefix)
+}
+
+fn stripe_charge_id(value: &Value) -> Result<&str, BillingError> {
+    valid_charge_id(value.as_str().ok_or(BillingError::InvalidEvent)?)
+}
+
+/// Card charges use `ch_`, but non-card payment methods such as SEPA Direct
+/// Debit, ACH and Bacs create PaymentIntent-scoped charges with `py_` IDs.
+/// Both can carry refunds and disputes.
+fn valid_charge_id(id: &str) -> Result<&str, BillingError> {
+    valid_id(id, "ch_").or_else(|_| valid_id(id, "py_"))
 }
 
 fn valid_id<'a>(id: &'a str, prefix: &str) -> Result<&'a str, BillingError> {
@@ -272,7 +398,10 @@ pub async fn ingest(
     let account_id: Option<Uuid> = if let Some(customer_id) = &event.customer_id {
         lock_customer(&tx, customer_id).await?;
         tx.query_opt(
-            if event.risk_charge_id.is_some() {
+            if event.risk_charge_id.is_some()
+                || event.risk_payment_intent_id.is_some()
+                || event.risk_review_required
+            {
                 "SELECT account_id FROM billing_customers WHERE stripe_customer_id=$1 FOR UPDATE"
             } else {
                 "SELECT account_id FROM billing_customers WHERE stripe_customer_id=$1 FOR SHARE"
@@ -284,7 +413,12 @@ pub async fn ingest(
     } else {
         None
     };
-    let initial = if event.subscription_id.is_none() && event.risk_charge_id.is_none() {
+    let initial = if event.unsupported {
+        IngestResult::Unsupported
+    } else if event.subscription_id.is_none()
+        && event.risk_charge_id.is_none()
+        && event.risk_payment_intent_id.is_none()
+    {
         IngestResult::Ignored
     } else if account_id.is_none() {
         IngestResult::Unbound
@@ -294,6 +428,7 @@ pub async fn ingest(
     let disposition = match initial {
         IngestResult::Ignored => "ignored",
         IngestResult::Unbound => "unbound",
+        IngestResult::Unsupported => "unsupported",
         _ => "queued",
     };
     let inserted = tx.execute(
@@ -316,22 +451,29 @@ pub async fn ingest(
         tx.commit().await?;
         return Ok(IngestResult::Duplicate);
     }
-    if let Some(charge_id) = &event.risk_charge_id {
+    if event.risk_charge_id.is_some()
+        || event.risk_payment_intent_id.is_some()
+        || event.risk_review_required
+    {
         let kind = if event.event_type == "charge.dispute.created" {
             "dispute"
         } else {
             "refund"
         };
         tx.execute(
-            "INSERT INTO billing_risk_events(stripe_event_id,stripe_charge_id,risk_kind,account_id) VALUES($1,$2,$3,$4)",
-            &[&event.event_id, &charge_id, &kind, &account_id],
+            "INSERT INTO billing_risk_events(stripe_event_id,stripe_charge_id,stripe_payment_intent_id,risk_kind,account_id,state) VALUES($1,$2,$3,$4,$5,$6)",
+            &[&event.event_id, &event.risk_charge_id, &event.risk_payment_intent_id,
+                &kind, &account_id, &if event.risk_review_required { "needs_review" } else { "queued" }],
         )
         .await?;
     }
     let mut result = initial;
-    if let (Some(account_id), Some(customer_id), Some(subscription_id)) =
-        (account_id, &event.customer_id, &event.subscription_id)
-    {
+    if let (false, Some(account_id), Some(customer_id), Some(subscription_id)) = (
+        event.unsupported,
+        account_id,
+        &event.customer_id,
+        &event.subscription_id,
+    ) {
         if !queue_subscription(&tx, account_id, customer_id, subscription_id).await? {
             result = IngestResult::Conflict;
         }
@@ -1010,13 +1152,66 @@ mod tests {
         assert_eq!(refund.risk_charge_id.as_deref(), Some("ch_risk1"));
         let unsupported = signed_test_event(br#"{"id":"evt_riskrefund2","object":"event","livemode":false,"type":"refund.created","data":{"object":{"id":"re_risk2","object":"refund","charge":null}}}"#);
         assert!(unsupported.risk_charge_id.is_none());
+        assert!(unsupported.unsupported);
+        assert!(unsupported.risk_review_required);
+        let payment_intent_only = signed_test_event(br#"{"id":"evt_riskrefundpi1","object":"event","livemode":false,"type":"refund.created","data":{"object":{"id":"re_riskpi1","object":"refund","charge":null,"payment_intent":"pi_riskpi1"}}}"#);
+        assert_eq!(
+            payment_intent_only.risk_payment_intent_id.as_deref(),
+            Some("pi_riskpi1")
+        );
+        assert!(!payment_intent_only.unsupported);
         let zero = br#"{"id":"evt_riskzero1","object":"event","livemode":false,"type":"charge.refunded","data":{"object":{"id":"ch_risk1","object":"charge","customer":"cus_risk1","amount_refunded":0}}}"#;
         let mut mac = HmacSha256::new_from_slice(SECRET.as_bytes()).unwrap();
         mac.update(b"1750000000.");
         mac.update(zero);
         let signature = signed_header(1_750_000_000, mac);
+        let zero_event = verify_event(zero, &signature, SECRET, 1_750_000_000).unwrap();
+        assert!(zero_event.unsupported);
+        assert!(zero_event.risk_review_required);
+        assert_eq!(zero_event.risk_charge_id.as_deref(), Some("ch_risk1"));
+    }
+
+    #[test]
+    fn noncard_py_charges_carry_verified_risk_and_block_metered_sends() {
+        // Non-card payment methods (SEPA Direct Debit, ACH, Bacs) surface as
+        // PaymentIntent-scoped `py_` charges on refunds and disputes.
+        let refund = signed_test_event(br#"{"id":"evt_riskpyrefund1","object":"event","livemode":false,"type":"refund.created","data":{"object":{"id":"re_pyrefund1","object":"refund","charge":"py_risk1"}}}"#);
+        assert_eq!(refund.risk_charge_id.as_deref(), Some("py_risk1"));
+        let refunded = signed_test_event(br#"{"id":"evt_riskpyrefunded1","object":"event","livemode":false,"type":"charge.refunded","data":{"object":{"id":"py_risk1","object":"charge","customer":"cus_risk1","amount_refunded":50}}}"#);
+        assert_eq!(refunded.risk_charge_id.as_deref(), Some("py_risk1"));
+        assert_eq!(refunded.customer_id.as_deref(), Some("cus_risk1"));
+        let dispute = signed_test_event(br#"{"id":"evt_riskpydispute1","object":"event","livemode":false,"type":"charge.dispute.created","data":{"object":{"id":"du_pydispute1","object":"dispute","charge":"py_risk1"}}}"#);
+        assert_eq!(dispute.risk_charge_id.as_deref(), Some("py_risk1"));
+        for unknown in ["ca_risk1", "ch_", "py_", "py_risk-1", "ch_risk1 py_risk1"] {
+            let body = format!(
+                "{{\"id\":\"evt_riskunknown1\",\"object\":\"event\",\"livemode\":false,\"type\":\"refund.created\",\"data\":{{\"object\":{{\"id\":\"re_unknown1\",\"object\":\"refund\",\"charge\":\"{unknown}\"}}}}}}"
+            );
+            let event = signed_test_event(body.as_bytes());
+            assert!(event.risk_charge_id.is_none());
+            assert!(event.unsupported, "charge {unknown} must not act");
+            assert!(event.risk_review_required);
+        }
+    }
+
+    #[test]
+    fn signed_but_unexpected_shapes_are_recorded_as_unsupported() {
+        // A payment-mode Checkout completion has no subscription pointer.
+        let payment_mode = signed_test_event(br#"{"id":"evt_unsupported1","object":"event","livemode":false,"type":"checkout.session.completed","data":{"object":{"id":"cs_test_unsupported1","customer":"cus_unsupported1","subscription":null}}}"#);
+        assert!(payment_mode.unsupported);
+        assert!(payment_mode.object_id.is_none());
+        assert!(payment_mode.customer_id.is_none());
+        let missing_failure_time = signed_test_event(br#"{"id":"evt_unsupportedtime1","object":"event","livemode":false,"type":"invoice.payment_failed","data":{"object":{"id":"in_unsupportedtime1","customer":"cus_unsupported1","subscription":"sub_unsupported1"}}}"#);
+        assert!(missing_failure_time.unsupported);
+        assert!(missing_failure_time.subscription_id.is_none());
+        assert!(missing_failure_time.customer_id.is_none());
+        // Envelope problems on a correctly signed body stay hard failures.
+        let live = br#"{"id":"evt_unsupported2","object":"event","livemode":true,"type":"checkout.session.completed","data":{"object":{"id":"cs_test_unsupported2","customer":"cus_unsupported1","subscription":"sub_unsupported1"}}}"#;
+        let mut mac = HmacSha256::new_from_slice(SECRET.as_bytes()).unwrap();
+        mac.update(b"1750000000.");
+        mac.update(live);
+        let signature = signed_header(1_750_000_000, mac);
         assert!(matches!(
-            verify_event(zero, &signature, SECRET, 1_750_000_000),
+            verify_event(live, &signature, SECRET, 1_750_000_000),
             Err(BillingError::InvalidEvent)
         ));
     }
@@ -1060,6 +1255,9 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/018_sealed_inbound_identity.sql"),
             include_str!("../../../../deploy/compose/migrations/019_line_activation_contract.sql"),
             include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+            include_str!(
+                "../../../../deploy/compose/migrations/023_billing_py_charge_and_unsupported.sql"
+            ),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
@@ -1474,6 +1672,9 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
             include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
             include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+            include_str!(
+                "../../../../deploy/compose/migrations/023_billing_py_charge_and_unsupported.sql"
+            ),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
@@ -1777,6 +1978,9 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
             include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
             include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+            include_str!(
+                "../../../../deploy/compose/migrations/023_billing_py_charge_and_unsupported.sql"
+            ),
         ] {
             probe.batch_execute(sql).await.unwrap();
         }
@@ -1931,6 +2135,9 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
             include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
             include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+            include_str!(
+                "../../../../deploy/compose/migrations/023_billing_py_charge_and_unsupported.sql"
+            ),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
@@ -2029,6 +2236,7 @@ mod tests {
                 &mut db,
                 "evt_refund1",
                 "ch_refund1",
+                None,
                 "cus_holdb1",
                 "sub_holdb1",
                 "refund"
@@ -2043,6 +2251,7 @@ mod tests {
             &mut db,
             "evt_refund1",
             "ch_refund1",
+            None,
             "cus_holda1",
             "sub_holda1",
             "refund",
@@ -2053,6 +2262,7 @@ mod tests {
             &mut db,
             "evt_refund1",
             "ch_refund1",
+            None,
             "cus_holda1",
             "sub_holda1",
             "refund",
@@ -2120,6 +2330,7 @@ mod tests {
             &mut db,
             "evt_dispute1",
             "ch_dispute1",
+            None,
             "cus_holdb1",
             "sub_holdb1",
             "dispute",
@@ -2183,6 +2394,313 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+    async fn noncard_py_refunds_and_disputes_hold_metered_accounts() {
+        let base_url = env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
+        let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        let schema = format!("billing_py_hold_test_{}", Uuid::new_v4().simple());
+        setup
+            .batch_execute(&format!("CREATE SCHEMA {schema}"))
+            .await
+            .unwrap();
+        let separator = if base_url.contains('?') { '&' } else { '?' };
+        let scoped_url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
+        let (mut db, connection) = tokio_postgres::connect(&scoped_url, NoTls).await.unwrap();
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        for sql in [
+            include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
+            include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+            include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
+            include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
+            include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+            include_str!("../../../../deploy/compose/migrations/006_usage_metering.sql"),
+            include_str!(
+                "../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"
+            ),
+            include_str!("../../../../deploy/compose/migrations/008_stripe_billing_foundation.sql"),
+            include_str!("../../../../deploy/compose/migrations/009_webhook_manual_replay.sql"),
+            include_str!("../../../../deploy/compose/migrations/010_billing_test_entitlement.sql"),
+            include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
+            include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
+            include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+            include_str!(
+                "../../../../deploy/compose/migrations/023_billing_py_charge_and_unsupported.sql"
+            ),
+        ] {
+            db.batch_execute(sql).await.unwrap();
+        }
+        let account = Uuid::new_v4();
+        let device = Uuid::new_v4();
+        db.execute("INSERT INTO accounts(id) VALUES($1)", &[&account])
+            .await
+            .unwrap();
+        db.execute(
+            "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'py charge fixture')",
+            &[&device, &account],
+        )
+        .await
+        .unwrap();
+        bind_customer(&mut db, account, "cus_pyhold1")
+            .await
+            .unwrap();
+        let prices = vec!["price_pyhold1".to_owned()];
+        let plans = parse_test_quota_plans("price_pyhold1:5", &prices).unwrap();
+        let update = signed_test_event(br#"{"id":"evt_pyholdsub1","object":"event","livemode":false,"type":"customer.subscription.updated","data":{"object":{"id":"sub_pyhold1","customer":"cus_pyhold1"}}}"#);
+        assert_eq!(
+            ingest(&mut db, &update).await.unwrap(),
+            IngestResult::Queued
+        );
+        reconcile_snapshot_with_quotas(
+            &mut db,
+            account,
+            &SubscriptionSnapshot {
+                subscription_id: "sub_pyhold1".into(),
+                customer_id: "cus_pyhold1".into(),
+                status: "active".into(),
+                price_id: Some("price_pyhold1".into()),
+                latest_invoice_id: None,
+            },
+            &prices,
+            &plans,
+            1,
+        )
+        .await
+        .unwrap();
+        let expiry = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64
+            + 3_600_000;
+        let send = |id: Uuid, key: &'static str| NewMessage {
+            account_id: account,
+            device_id: device,
+            client_message_id: id,
+            idempotency_key: key,
+            recipient_e164: "+15551234567",
+            synthetic_payload: b"synthetic billing fixture",
+            expires_at_ms: expiry,
+        };
+        assert!(
+            DeliveryStore::new(&mut db)
+                .accept_metered(send(Uuid::new_v4(), "py-before"))
+                .await
+                .unwrap()
+                .created
+        );
+
+        // Non-card payment methods (SEPA Direct Debit, ACH, Bacs) surface as
+        // PaymentIntent-scoped py_ charges on refunds and disputes.
+        let refunded = signed_test_event(br#"{"id":"evt_pyrefund1","object":"event","livemode":false,"type":"charge.refunded","data":{"object":{"id":"py_refund1","object":"charge","customer":"cus_pyhold1","amount_refunded":50}}}"#);
+        assert_eq!(refunded.risk_charge_id.as_deref(), Some("py_refund1"));
+        assert_eq!(
+            ingest(&mut db, &refunded).await.unwrap(),
+            IngestResult::Queued
+        );
+        assert!(matches!(
+            DeliveryStore::new(&mut db)
+                .accept_metered(send(Uuid::new_v4(), "py-pending"))
+                .await,
+            Err(StoreError::PaymentHold)
+        ));
+        risk::bind_charge_customer(&mut db, "evt_pyrefund1", "cus_pyhold1")
+            .await
+            .unwrap();
+        risk::apply_hold(
+            &mut db,
+            "evt_pyrefund1",
+            "py_refund1",
+            None,
+            "cus_pyhold1",
+            "sub_pyhold1",
+            "refund",
+        )
+        .await
+        .unwrap();
+        let held_charge: String = db
+            .query_one(
+                "SELECT stripe_charge_id FROM billing_payment_holds WHERE stripe_event_id='evt_pyrefund1'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(held_charge, "py_refund1");
+
+        // Stripe permits Refund.charge=null. The signed PaymentIntent pointer
+        // enters the risk queue; a separately validated Charges Read supplies
+        // the Charge used for tenant and invoice attribution.
+        let pi_refund = signed_test_event(br#"{"id":"evt_pyrefundpi1","object":"event","livemode":false,"type":"refund.created","data":{"object":{"id":"re_pyrefundpi1","object":"refund","charge":null,"payment_intent":"pi_pyrefundpi1"}}}"#);
+        assert_eq!(
+            ingest(&mut db, &pi_refund).await.unwrap(),
+            IngestResult::Unbound
+        );
+        let risk = db
+            .query_one(
+                "SELECT stripe_charge_id,stripe_payment_intent_id,state FROM billing_risk_events WHERE stripe_event_id='evt_pyrefundpi1'",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert!(risk.get::<_, Option<String>>(0).is_none());
+        assert_eq!(
+            risk.get::<_, Option<String>>(1).as_deref(),
+            Some("pi_pyrefundpi1")
+        );
+        assert_eq!(risk.get::<_, String>(2), "queued");
+        assert!(
+            risk::bind_charge_customer(&mut db, "evt_pyrefundpi1", "cus_pyhold1")
+                .await
+                .unwrap()
+        );
+        assert!(matches!(
+            risk::apply_hold(
+                &mut db,
+                "evt_pyrefundpi1",
+                "py_wrong1",
+                Some("pi_wrong1"),
+                "cus_pyhold1",
+                "sub_pyhold1",
+                "refund"
+            )
+            .await,
+            Err(BillingError::TenantConflict)
+        ));
+        risk::apply_hold(
+            &mut db,
+            "evt_pyrefundpi1",
+            "py_refundpi1",
+            Some("pi_pyrefundpi1"),
+            "cus_pyhold1",
+            "sub_pyhold1",
+            "refund",
+        )
+        .await
+        .unwrap();
+        let resolved: String = db
+            .query_one(
+                "SELECT stripe_charge_id FROM billing_payment_holds WHERE stripe_event_id='evt_pyrefundpi1'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(resolved, "py_refundpi1");
+
+        let refund_created = signed_test_event(br#"{"id":"evt_pyrefundre1","object":"event","livemode":false,"type":"refund.created","data":{"object":{"id":"re_pyrefund1","object":"refund","charge":"py_refund2"}}}"#);
+        assert_eq!(refund_created.risk_charge_id.as_deref(), Some("py_refund2"));
+        assert_eq!(
+            ingest(&mut db, &refund_created).await.unwrap(),
+            IngestResult::Unbound
+        );
+        let dispute = signed_test_event(br#"{"id":"evt_pydispute1","object":"event","livemode":false,"type":"charge.dispute.created","data":{"object":{"id":"du_pydispute1","object":"dispute","charge":"py_dispute1"}}}"#);
+        assert_eq!(dispute.risk_charge_id.as_deref(), Some("py_dispute1"));
+        assert_eq!(
+            ingest(&mut db, &dispute).await.unwrap(),
+            IngestResult::Unbound
+        );
+        assert!(
+            risk::bind_charge_customer(&mut db, "evt_pydispute1", "cus_pyhold1")
+                .await
+                .unwrap()
+        );
+        risk::apply_hold(
+            &mut db,
+            "evt_pydispute1",
+            "py_dispute1",
+            None,
+            "cus_pyhold1",
+            "sub_pyhold1",
+            "dispute",
+        )
+        .await
+        .unwrap();
+        let holds: i64 = db
+            .query_one("SELECT count(*) FROM billing_payment_holds", &[])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(holds, 3);
+
+        // A correctly signed event this build does not act on — a payment-mode
+        // Checkout completion — is acknowledged and durably recorded, and a
+        // redelivery is a duplicate rather than a conflict.
+        let payment_mode = signed_test_event(br#"{"id":"evt_pyunsupported1","object":"event","livemode":false,"type":"checkout.session.completed","data":{"object":{"id":"cs_test_pyunsupported1","customer":"cus_pyhold1","subscription":null}}}"#);
+        assert_eq!(
+            ingest(&mut db, &payment_mode).await.unwrap(),
+            IngestResult::Unsupported
+        );
+        let row = db
+            .query_one(
+                "SELECT disposition,stripe_customer_id,stripe_subscription_id FROM billing_events WHERE stripe_event_id='evt_pyunsupported1'",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(row.get::<_, String>(0), "unsupported");
+        assert!(row.get::<_, Option<String>>(1).is_none());
+        assert!(row.get::<_, Option<String>>(2).is_none());
+        assert_eq!(
+            ingest(&mut db, &payment_mode).await.unwrap(),
+            IngestResult::Duplicate
+        );
+        let queued: i64 = db
+            .query_one(
+                "SELECT count(*) FROM billing_reconciliations WHERE stripe_subscription_id='sub_pyhold1'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(queued, 1);
+        let before_generation: i64 = db
+            .query_one(
+                "SELECT dirty_generation FROM billing_reconciliations WHERE stripe_subscription_id='sub_pyhold1'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        let unsupported_failure = signed_test_event(br#"{"id":"evt_pyunsupportedtime1","object":"event","livemode":false,"type":"invoice.payment_failed","data":{"object":{"id":"in_pyunsupported1","customer":"cus_pyhold1","subscription":"sub_pyhold1"}}}"#);
+        assert_eq!(
+            ingest(&mut db, &unsupported_failure).await.unwrap(),
+            IngestResult::Unsupported
+        );
+        let after_generation: i64 = db
+            .query_one(
+                "SELECT dirty_generation FROM billing_reconciliations WHERE stripe_subscription_id='sub_pyhold1'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(after_generation, before_generation);
+        let review = signed_test_event(br#"{"id":"evt_pyreview1","object":"event","livemode":false,"type":"charge.refunded","data":{"object":{"id":"py_review1","object":"charge","customer":"cus_pyhold1","amount_refunded":0}}}"#);
+        assert_eq!(
+            ingest(&mut db, &review).await.unwrap(),
+            IngestResult::Unsupported
+        );
+        let review_row = db
+            .query_one(
+                "SELECT state,account_id FROM billing_risk_events WHERE stripe_event_id='evt_pyreview1'",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(review_row.get::<_, String>(0), "needs_review");
+        assert_eq!(review_row.get::<_, Option<Uuid>>(1), Some(account));
+        setup
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn reconciled_test_subscription_controls_metered_reservations() {
         let base_url = env::var("ZT_AUTH_TEST_DATABASE_URL")
             .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
@@ -2213,6 +2731,9 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
             include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
             include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+            include_str!(
+                "../../../../deploy/compose/migrations/023_billing_py_charge_and_unsupported.sql"
+            ),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
@@ -2264,8 +2785,11 @@ mod tests {
             customer_id: Some("cus_entitlement1".into()),
             subscription_id: Some("sub_entitlement1".into()),
             risk_charge_id: None,
+            risk_payment_intent_id: None,
             payment_failed_at_unix: None,
             body_sha256: [1; 32],
+            unsupported: false,
+            risk_review_required: false,
         };
         assert_eq!(ingest(&mut db, &event).await.unwrap(), IngestResult::Queued);
         let plans = parse_test_quota_plans(
@@ -2550,6 +3074,9 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
             include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
             include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+            include_str!(
+                "../../../../deploy/compose/migrations/023_billing_py_charge_and_unsupported.sql"
+            ),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
@@ -2721,6 +3248,9 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
             include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
             include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+            include_str!(
+                "../../../../deploy/compose/migrations/023_billing_py_charge_and_unsupported.sql"
+            ),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
