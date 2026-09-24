@@ -31,8 +31,8 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
-    sync::{Notify, Semaphore},
-    time::{interval, timeout},
+    sync::{Notify, OwnedSemaphorePermit, Semaphore},
+    time::{interval, timeout, timeout_at},
 };
 use tokio_postgres::Client;
 use uuid::Uuid;
@@ -40,16 +40,63 @@ use zrotext_delivery_store::{DeliveryStore, GrantRecord, RadioEvent, SessionReco
 use zrotext_domain::{Evidence, MessageState};
 
 const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
+// Whole pre-session phase, from the upgrade request through proof verification,
+// including storage work. Each of hello and proof still has `AUTH_TIMEOUT`.
+const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(15);
+// A pre-session close is best effort; a peer that stops reading cannot hold it.
+const HANDSHAKE_CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
 const HEARTBEAT_SECONDS: u64 = 30;
 const HEARTBEAT_DEADLINE: Duration = Duration::from_secs(45);
 const SESSION_LEASE_SECONDS: i32 = 90;
 const MAX_FRAME_BYTES: usize = 4096;
 const MAX_DEVICE_SOCKETS: usize = 32;
+const MAX_HANDSHAKING_DEVICE_SOCKETS: usize = 32;
 const DISPATCH_POLL_SECONDS: u64 = 5;
 const MIN_SECONDS_BETWEEN_GRANTS: u64 = 60;
 const ALPHA_READY_SECONDS: u64 = 300;
-static DEVICE_SOCKET_SLOTS: LazyLock<Arc<Semaphore>> =
-    LazyLock::new(|| Arc::new(Semaphore::new(MAX_DEVICE_SOCKETS)));
+static DEVICE_SOCKET_ADMISSION: LazyLock<SocketAdmission> = LazyLock::new(|| {
+    SocketAdmission::new(
+        MAX_HANDSHAKING_DEVICE_SOCKETS,
+        MAX_DEVICE_SOCKETS,
+        AUTH_TIMEOUT,
+        HANDSHAKE_DEADLINE,
+    )
+});
+
+/// Per-process device socket capacity. A socket that has not proven an
+/// enrolled key draws only from the short-lived handshake budget; the
+/// long-lived session slot is reserved after the proof verifies. Sockets that
+/// never authenticate therefore expire and cannot occupy enrolled phones'
+/// session capacity.
+#[derive(Clone)]
+struct SocketAdmission {
+    handshaking: Arc<Semaphore>,
+    established: Arc<Semaphore>,
+    step_timeout: Duration,
+    handshake_deadline: Duration,
+}
+
+impl SocketAdmission {
+    fn new(
+        handshaking: usize,
+        established: usize,
+        step_timeout: Duration,
+        handshake_deadline: Duration,
+    ) -> Self {
+        Self {
+            handshaking: Arc::new(Semaphore::new(handshaking)),
+            established: Arc::new(Semaphore::new(established)),
+            step_timeout,
+            handshake_deadline,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct SocketRoute {
+    state: DeviceSocketState,
+    admission: SocketAdmission,
+}
 
 #[derive(Clone)]
 pub struct DeviceSocketState {
@@ -224,13 +271,17 @@ enum ServerFrame {
 /// Mount at `/v1/device-stream`. Deploy behind TLS/WSS; this route accepts
 /// neither a browser Origin nor an identity token in URL or headers.
 pub fn router(state: DeviceSocketState) -> Router {
+    router_with_admission(state, DEVICE_SOCKET_ADMISSION.clone())
+}
+
+fn router_with_admission(state: DeviceSocketState, admission: SocketAdmission) -> Router {
     Router::new()
         .route("/v1/device-stream", get(upgrade))
-        .with_state(state)
+        .with_state(SocketRoute { state, admission })
 }
 
 async fn upgrade(
-    State(state): State<DeviceSocketState>,
+    State(SocketRoute { state, admission }): State<SocketRoute>,
     headers: HeaderMap,
     websocket: WebSocketUpgrade,
 ) -> Response {
@@ -242,16 +293,19 @@ async fn upgrade(
     if headers.contains_key(axum::http::header::ORIGIN) {
         return StatusCode::FORBIDDEN.into_response();
     }
-    let Ok(slot) = DEVICE_SOCKET_SLOTS.clone().try_acquire_owned() else {
+    // Session capacity is reserved only after proof; this early refusal just
+    // avoids spending shared handshake budgets when none is left.
+    if admission.established.available_permits() == 0 {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+    let Ok(handshake_slot) = admission.handshaking.clone().try_acquire_owned() else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
+    let deadline = tokio::time::Instant::now() + admission.handshake_deadline;
     websocket
         .max_message_size(MAX_FRAME_BYTES)
         .max_frame_size(MAX_FRAME_BYTES)
-        .on_upgrade(move |socket| async move {
-            let _slot = slot;
-            run_socket(socket, state).await;
-        })
+        .on_upgrade(move |socket| run_socket(socket, state, admission, handshake_slot, deadline))
         .into_response()
 }
 
@@ -321,28 +375,38 @@ fn enrollment_close_code(error: &EnrollmentError) -> u16 {
 }
 
 async fn close_handshake(socket: &mut WebSocket, code: u16) {
-    let _ = socket
-        .send(Message::Close(Some(CloseFrame {
+    let _ = timeout(
+        HANDSHAKE_CLOSE_TIMEOUT,
+        socket.send(Message::Close(Some(CloseFrame {
             code,
             reason: "".into(),
-        })))
-        .await;
+        }))),
+    )
+    .await;
 }
 
-async fn run_socket(mut socket: WebSocket, state: DeviceSocketState) {
-    let mut frame_budget = FrameBudget::new(Instant::now());
+/// Pre-session failure: the close code to send, or `None` when the socket
+/// already failed and no close frame can be written.
+type HandshakeRefusal = Option<u16>;
+
+/// Hello, challenge and proof. Runs under the handshake deadline and returns the
+/// device-budget database client together with the verified identity.
+async fn authenticate(
+    socket: &mut WebSocket,
+    state: &DeviceSocketState,
+    frame_budget: &mut FrameBudget,
+    step_timeout: Duration,
+) -> Result<(Client, AuthenticatedDevice), HandshakeRefusal> {
     let Some(ClientFrame::Hello { v: 1, device_id }) =
-        timeout(AUTH_TIMEOUT, receive_frame(&mut socket, &mut frame_budget))
+        timeout(step_timeout, receive_frame(socket, frame_budget))
             .await
             .ok()
             .flatten()
     else {
-        close_handshake(&mut socket, close_code::POLICY).await;
-        return;
+        return Err(Some(close_code::POLICY));
     };
     let Ok(mut client) = connect(&state.database_url).await else {
-        close_handshake(&mut socket, RETRY_LATER).await;
-        return;
+        return Err(Some(RETRY_LATER));
     };
     // Share the HTTP enrollment budgets across transports and server instances.
     // A concurrent-socket cap alone cannot bound rapid hello/close cycles.
@@ -356,24 +420,14 @@ async fn run_socket(mut socket: WebSocket, state: DeviceSocketState) {
         .await,
         Ok(true)
     ) {
-        close_handshake(&mut socket, RETRY_LATER).await;
-        return;
+        return Err(Some(RETRY_LATER));
     }
-    let challenge = match enrollment::issue_device_challenge(
-        &client,
-        &state.enrollment_hasher,
-        device_id,
-    )
-    .await
-    {
-        Ok(challenge) => challenge,
-        Err(error) => {
-            close_handshake(&mut socket, enrollment_close_code(&error)).await;
-            return;
-        }
-    };
+    let challenge =
+        enrollment::issue_device_challenge(&client, &state.enrollment_hasher, device_id)
+            .await
+            .map_err(|error| Some(enrollment_close_code(&error)))?;
     if !send_frame(
-        &mut socket,
+        socket,
         ServerFrame::Challenge {
             v: 1,
             challenge_id: challenge.id,
@@ -384,7 +438,7 @@ async fn run_socket(mut socket: WebSocket, state: DeviceSocketState) {
     )
     .await
     {
-        return;
+        return Err(None);
     }
     let Some(ClientFrame::Proof {
         v: 1,
@@ -393,21 +447,18 @@ async fn run_socket(mut socket: WebSocket, state: DeviceSocketState) {
         device_id,
         nonce,
         signature_der,
-    }) = timeout(AUTH_TIMEOUT, receive_frame(&mut socket, &mut frame_budget))
+    }) = timeout(step_timeout, receive_frame(socket, frame_budget))
         .await
         .ok()
         .flatten()
     else {
-        close_handshake(&mut socket, close_code::POLICY).await;
-        return;
+        return Err(Some(close_code::POLICY));
     };
     let Ok(decoded_nonce) = URL_SAFE_NO_PAD.decode(nonce.as_bytes()) else {
-        close_handshake(&mut socket, close_code::POLICY).await;
-        return;
+        return Err(Some(close_code::POLICY));
     };
     let Ok(signature) = URL_SAFE_NO_PAD.decode(signature_der.as_bytes()) else {
-        close_handshake(&mut socket, close_code::POLICY).await;
-        return;
+        return Err(Some(close_code::POLICY));
     };
     if challenge_id != challenge.id
         || account_id != challenge.account_id
@@ -415,8 +466,7 @@ async fn run_socket(mut socket: WebSocket, state: DeviceSocketState) {
         || decoded_nonce != challenge.nonce
         || signature.len() > 80
     {
-        close_handshake(&mut socket, close_code::POLICY).await;
-        return;
+        return Err(Some(close_code::POLICY));
     }
     if !matches!(
         abuse_limits::consume(
@@ -428,22 +478,56 @@ async fn run_socket(mut socket: WebSocket, state: DeviceSocketState) {
         .await,
         Ok(true)
     ) {
-        close_handshake(&mut socket, RETRY_LATER).await;
-        return;
+        return Err(Some(RETRY_LATER));
     }
-    let identity = match enrollment::authenticate_device_challenge(
+    let identity = enrollment::authenticate_device_challenge(
         &mut client,
         &state.enrollment_hasher,
         &challenge,
         &signature,
     )
     .await
-    {
-        Ok(identity) => identity,
-        Err(error) => {
-            close_handshake(&mut socket, enrollment_close_code(&error)).await;
+    .map_err(|error| Some(enrollment_close_code(&error)))?;
+    Ok((client, identity))
+}
+
+async fn run_socket(
+    mut socket: WebSocket,
+    state: DeviceSocketState,
+    admission: SocketAdmission,
+    handshake_slot: OwnedSemaphorePermit,
+    deadline: tokio::time::Instant,
+) {
+    let mut frame_budget = FrameBudget::new(Instant::now());
+    let authenticated = timeout_at(
+        deadline,
+        authenticate(
+            &mut socket,
+            &state,
+            &mut frame_budget,
+            admission.step_timeout,
+        ),
+    )
+    .await
+    .unwrap_or(Err(Some(RETRY_LATER)));
+    let session_slot = match authenticated {
+        Ok(_) => admission.established.clone().try_acquire_owned().ok(),
+        Err(_) => None,
+    };
+    // The handshake budget is released on every path before any close write or
+    // steady-state work; only a verified device continues with a session slot.
+    drop(handshake_slot);
+    let (mut client, identity, _session_slot) = match (authenticated, session_slot) {
+        (Ok((client, identity)), Some(slot)) => (client, identity, slot),
+        (Ok(_), None) => {
+            close_handshake(&mut socket, RETRY_LATER).await;
             return;
         }
+        (Err(Some(code)), _) => {
+            close_handshake(&mut socket, code).await;
+            return;
+        }
+        (Err(None), _) => return,
     };
     if state.draining.load(Ordering::Acquire) {
         close_handshake(&mut socket, RETRY_LATER).await;
@@ -2033,6 +2117,8 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+mod admission_tests;
 #[cfg(test)]
 mod virtual_inbound_tests;
 

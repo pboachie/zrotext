@@ -29,7 +29,10 @@ challenge UUID, and the raw 32-byte nonce. UUID bytes use network order.
 The JSON text itself is not signed. Both clients must reject a changed
 challenge ID, account, device, nonce, version, or epoch. Base64url values
 have no padding. Client frames reject unknown fields; frames are limited to
-4 KiB and the hello/proof steps to 10 seconds each.
+4 KiB and the hello/proof steps to 10 seconds each. The whole handshake, from
+the upgrade request until the proof is verified, is limited to 15 seconds.
+A hub answers the upgrade with HTTP 503 while its handshake or session
+capacity is full; unauthenticated sockets do not use session capacity.
 
 Challenge issuance and proof verification each share their PostgreSQL request
 budget with the corresponding HTTP enrollment route: 30 attempts per device
@@ -46,8 +49,9 @@ disabled, revoked, or writer-isolated hub closes its session. The phone stops
 its foreground heartbeat on authentication, trust, or protocol rejection.
 Before a session is established, the hub closes with `1008` (Policy Violation)
 for a malformed frame, invalid proof, or unknown or revoked device. It closes
-with `1013` for database failures, admission budget refusal, a draining site,
-or an unavailable writer. The phone retries `1011`, `1012`, and `1013` with
+with `1013` for database failures, admission budget refusal, an exceeded
+handshake deadline, full session capacity, a draining site, or an unavailable
+writer. The phone retries `1011`, `1012`, and `1013` with
 bounded backoff even before a session; `1008` and unknown pre-session codes
 stop the foreground service. A pre-session close without a code is treated as
 a rejection.
