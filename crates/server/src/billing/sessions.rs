@@ -131,7 +131,7 @@ fn return_page(title: &'static str, message: &'static str) -> Response {
             ("content-security-policy", "default-src 'none'; base-uri 'none'; form-action 'none'"),
             ("x-content-type-options", "nosniff"),
         ],
-        Html(format!("<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><title>{title}</title><main><h1>{title}</h1><p>{message}</p><p><a href=\"/billing\">Billing status</a></p></main></html>")),
+        Html(format!("<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><title>{title}</title><main><h1>{title}</h1><p>{message}</p><p><a href=\"/billing\">Billing status</a></p></main><footer><a href=\"/source\">Source code for this server</a></footer></html>")),
     ).into_response()
 }
 
