@@ -124,6 +124,14 @@ class DeviceDisconnectClassifierTest {
             DeviceDisconnectClassifier.closed(1005, true))
         assertEquals(DeviceReconnectPolicy.Loss.AUTH_REJECTED,
             DeviceDisconnectClassifier.closed(1005, false))
+        for (code in listOf(1011, 1012, 1013)) {
+            assertEquals(DeviceReconnectPolicy.Loss.TRANSPORT,
+                DeviceDisconnectClassifier.closed(code, false))
+            val policy = DeviceReconnectPolicy { 0.5 }
+            policy.start(true)
+            assertEquals(DeviceReconnectPolicy.Action.RetryAfter(1_000),
+                policy.lost(DeviceDisconnectClassifier.closed(code, false), 0))
+        }
     }
 
     @Test
@@ -134,5 +142,7 @@ class DeviceDisconnectClassifierTest {
             DeviceDisconnectClassifier.failed(EOFException(), 403))
         assertEquals(DeviceReconnectPolicy.Loss.AUTH_REJECTED,
             DeviceDisconnectClassifier.closed(1008, true))
+        assertEquals(DeviceReconnectPolicy.Loss.AUTH_REJECTED,
+            DeviceDisconnectClassifier.closed(1008, false))
     }
 }
