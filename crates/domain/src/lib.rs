@@ -115,6 +115,8 @@ pub enum Rejection {
     GrantAlreadyIssued,
     DeviceBusy,
     DuplicateKeyDifferentRequest,
+    MessageIdConflict,
+    InvalidSessionRange,
     InvalidState,
 }
 
@@ -151,15 +153,23 @@ impl Authority {
         if !self.writer_available {
             return Err(Rejection::WriterUnavailable);
         }
-        let entry = self
-            .idempotency
-            .entry((account_id, key.to_owned()))
-            .or_insert_with(|| (request_digest.to_owned(), message_id));
-        if entry.0 != request_digest {
-            return Err(Rejection::DuplicateKeyDifferentRequest);
+        let key = (account_id, key.to_owned());
+        if let Some((digest, existing_id)) = self.idempotency.get(&key) {
+            return if digest == request_digest {
+                Ok(*existing_id)
+            } else {
+                Err(Rejection::DuplicateKeyDifferentRequest)
+            };
         }
-        self.messages.entry(entry.1).or_insert(MessageState::Queued);
-        Ok(entry.1)
+        // Message IDs are globally unique, even across account-scoped keys.
+        // Reject before reserving the key so a failed acceptance is atomic.
+        if self.messages.contains_key(&message_id) {
+            return Err(Rejection::MessageIdConflict);
+        }
+        self.idempotency
+            .insert(key, (request_digest.to_owned(), message_id));
+        self.messages.insert(message_id, MessageState::Queued);
+        Ok(message_id)
     }
 
     pub fn connect(
@@ -173,16 +183,22 @@ impl Authority {
         if !self.writer_available {
             return Err(Rejection::WriterUnavailable);
         }
-        let epoch = self
-            .sessions
-            .get(&device_id)
-            .map_or(1, |prior| prior.epoch + 1);
+        let epoch = match self.sessions.get(&device_id) {
+            Some(prior) => prior
+                .epoch
+                .checked_add(1)
+                .ok_or(Rejection::InvalidSessionRange)?,
+            None => 1,
+        };
+        let lease_until_ms = now_ms
+            .checked_add(lease_ms)
+            .ok_or(Rejection::InvalidSessionRange)?;
         let session = Session {
             device_id,
             site_id: site_id.to_owned(),
             instance_id: instance_id.to_owned(),
             epoch,
-            lease_until_ms: now_ms + lease_ms,
+            lease_until_ms,
         };
         self.sessions.insert(device_id, session.clone());
         Ok(session)
@@ -442,6 +458,43 @@ mod tests {
         assert_eq!(state, MessageState::Submitted);
         assert_ne!(state, MessageState::Delivered);
         assert!(state.apply(Evidence::Claim).is_err());
+    }
+
+    #[test]
+    fn message_identity_cannot_alias_another_account_or_key() {
+        let mut authority = Authority::new(1);
+        authority
+            .accept(id(1), "original", "body-a", id(2))
+            .unwrap();
+        for (account, key) in [(id(3), "original"), (id(1), "other")] {
+            assert!(authority.accept(account, key, "body-b", id(2)).is_err());
+            // A rejected insert must not reserve the caller's idempotency key.
+            let fresh = if account == id(3) { id(4) } else { id(5) };
+            assert_eq!(authority.accept(account, key, "body-c", fresh), Ok(fresh));
+        }
+        assert_eq!(authority.state(id(2)), Some(MessageState::Queued));
+        assert_eq!(
+            authority.accept(id(1), "original", "body-a", id(4)),
+            Ok(id(2))
+        );
+    }
+
+    #[test]
+    fn overflowing_lease_does_not_replace_the_current_session() {
+        let mut authority = Authority::new(1);
+        let current = authority.connect(id(1), "a", "hub-a", 0, 60).unwrap();
+        assert!(authority.connect(id(1), "b", "hub-b", u64::MAX, 1).is_err());
+        assert_eq!(authority.sessions.get(&id(1)), Some(&current));
+    }
+
+    #[test]
+    fn overflowing_epoch_does_not_reuse_an_old_fence() {
+        let mut authority = Authority::new(1);
+        let mut current = authority.connect(id(1), "a", "hub-a", 0, 60).unwrap();
+        current.epoch = u64::MAX;
+        authority.sessions.insert(id(1), current.clone());
+        assert!(authority.connect(id(1), "b", "hub-b", 1, 60).is_err());
+        assert_eq!(authority.sessions.get(&id(1)), Some(&current));
     }
 
     #[test]
