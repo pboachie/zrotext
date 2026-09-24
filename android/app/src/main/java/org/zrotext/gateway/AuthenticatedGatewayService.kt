@@ -561,9 +561,9 @@ class AuthenticatedGatewayService : Service() {
         inboundSentAtNanos = 0L
         when (val action = reconnect.lost(reason, SystemClock.elapsedRealtime())) {
             is DeviceReconnectPolicy.Action.RetryAfter -> {
-                AuthenticatedGatewayStatus.value = "Disconnected; retrying device proof"
+                AuthenticatedGatewayStatus.value = "Server unavailable; retrying device proof"
                 getSystemService(NotificationManager::class.java)
-                    .notify(NOTIFICATION_ID, notification("Reconnecting after transport loss"))
+                    .notify(NOTIFICATION_ID, notification("Server unavailable; retrying"))
                 retry?.cancel(false)
                 retry = scheduler.schedule({
                     synchronized(this) {

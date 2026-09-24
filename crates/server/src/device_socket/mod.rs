@@ -7,14 +7,14 @@ use crate::{
         TokenHasher,
         abuse_limits::{self, Limit},
     },
-    enrollment::{self, AuthenticatedDevice, EnrollmentHasher},
+    enrollment::{self, AuthenticatedDevice, EnrollmentError, EnrollmentHasher},
     inbound::{self, Content, InboundEvent, InboundSession},
 };
 use axum::{
     Router,
     extract::{
         State,
-        ws::{Message, WebSocket, WebSocketUpgrade},
+        ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade, close_code},
     },
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
@@ -310,6 +310,24 @@ async fn send_frame(socket: &mut WebSocket, frame: ServerFrame) -> bool {
     json.len() <= MAX_FRAME_BYTES && socket.send(Message::Text(json.into())).await.is_ok()
 }
 
+const RETRY_LATER: u16 = 1013;
+
+fn enrollment_close_code(error: &EnrollmentError) -> u16 {
+    match error {
+        EnrollmentError::Unauthorized | EnrollmentError::InvalidInput => close_code::POLICY,
+        _ => RETRY_LATER,
+    }
+}
+
+async fn close_handshake(socket: &mut WebSocket, code: u16) {
+    let _ = socket
+        .send(Message::Close(Some(CloseFrame {
+            code,
+            reason: "".into(),
+        })))
+        .await;
+}
+
 async fn run_socket(mut socket: WebSocket, state: DeviceSocketState) {
     let mut frame_budget = FrameBudget::new(Instant::now());
     let Some(ClientFrame::Hello { v: 1, device_id }) =
@@ -318,32 +336,40 @@ async fn run_socket(mut socket: WebSocket, state: DeviceSocketState) {
             .ok()
             .flatten()
     else {
-        let _ = socket.send(Message::Close(None)).await;
+        close_handshake(&mut socket, close_code::POLICY).await;
         return;
     };
     let Ok(mut client) = connect(&state.database_url).await else {
-        let _ = socket.send(Message::Close(None)).await;
+        close_handshake(&mut socket, RETRY_LATER).await;
         return;
     };
     // Share the HTTP enrollment budgets across transports and server instances.
     // A concurrent-socket cap alone cannot bound rapid hello/close cycles.
-    if !abuse_limits::consume(
-        &client,
-        &state.auth_hasher,
-        Limit::DeviceChallenge,
-        Some(&device_id.to_string()),
-    )
-    .await
-    .unwrap_or(false)
-    {
-        let _ = socket.send(Message::Close(None)).await;
+    if !matches!(
+        abuse_limits::consume(
+            &client,
+            &state.auth_hasher,
+            Limit::DeviceChallenge,
+            Some(&device_id.to_string()),
+        )
+        .await,
+        Ok(true)
+    ) {
+        close_handshake(&mut socket, RETRY_LATER).await;
         return;
     }
-    let Ok(challenge) =
-        enrollment::issue_device_challenge(&client, &state.enrollment_hasher, device_id).await
-    else {
-        let _ = socket.send(Message::Close(None)).await;
-        return;
+    let challenge = match enrollment::issue_device_challenge(
+        &client,
+        &state.enrollment_hasher,
+        device_id,
+    )
+    .await
+    {
+        Ok(challenge) => challenge,
+        Err(error) => {
+            close_handshake(&mut socket, enrollment_close_code(&error)).await;
+            return;
+        }
     };
     if !send_frame(
         &mut socket,
@@ -371,15 +397,15 @@ async fn run_socket(mut socket: WebSocket, state: DeviceSocketState) {
         .ok()
         .flatten()
     else {
-        let _ = socket.send(Message::Close(None)).await;
+        close_handshake(&mut socket, close_code::POLICY).await;
         return;
     };
     let Ok(decoded_nonce) = URL_SAFE_NO_PAD.decode(nonce.as_bytes()) else {
-        let _ = socket.send(Message::Close(None)).await;
+        close_handshake(&mut socket, close_code::POLICY).await;
         return;
     };
     let Ok(signature) = URL_SAFE_NO_PAD.decode(signature_der.as_bytes()) else {
-        let _ = socket.send(Message::Close(None)).await;
+        close_handshake(&mut socket, close_code::POLICY).await;
         return;
     };
     if challenge_id != challenge.id
@@ -388,39 +414,54 @@ async fn run_socket(mut socket: WebSocket, state: DeviceSocketState) {
         || decoded_nonce != challenge.nonce
         || signature.len() > 80
     {
-        let _ = socket.send(Message::Close(None)).await;
+        close_handshake(&mut socket, close_code::POLICY).await;
         return;
     }
-    if !abuse_limits::consume(
-        &client,
-        &state.auth_hasher,
-        Limit::DeviceAuthenticate,
-        Some(&device_id.to_string()),
-    )
-    .await
-    .unwrap_or(false)
-    {
-        let _ = socket.send(Message::Close(None)).await;
+    if !matches!(
+        abuse_limits::consume(
+            &client,
+            &state.auth_hasher,
+            Limit::DeviceAuthenticate,
+            Some(&device_id.to_string()),
+        )
+        .await,
+        Ok(true)
+    ) {
+        close_handshake(&mut socket, RETRY_LATER).await;
         return;
     }
-    let Ok(identity) = enrollment::authenticate_device_challenge(
+    let identity = match enrollment::authenticate_device_challenge(
         &mut client,
         &state.enrollment_hasher,
         &challenge,
         &signature,
     )
     .await
-    else {
-        let _ = socket.send(Message::Close(None)).await;
-        return;
+    {
+        Ok(identity) => identity,
+        Err(error) => {
+            close_handshake(&mut socket, enrollment_close_code(&error)).await;
+            return;
+        }
     };
     if state.draining.load(Ordering::Acquire) {
-        let _ = socket.send(Message::Close(None)).await;
+        close_handshake(&mut socket, RETRY_LATER).await;
         return;
     }
-    let Ok(Some(session)) = claim_session(&mut client, identity, &state).await else {
-        let _ = socket.send(Message::Close(None)).await;
-        return;
+    let session = match claim_session(&mut client, identity, &state).await {
+        Ok(Some(session)) => session,
+        Ok(None) => {
+            let code = match enrollment::device_still_active(&client, identity).await {
+                Ok(false) => close_code::POLICY,
+                _ => RETRY_LATER,
+            };
+            close_handshake(&mut socket, code).await;
+            return;
+        }
+        Err(_) => {
+            close_handshake(&mut socket, RETRY_LATER).await;
+            return;
+        }
     };
     if !send_frame(
         &mut socket,
@@ -899,10 +940,91 @@ use tokio_postgres::NoTls;
 mod tests {
     use super::*;
     use crate::enrollment::{EnrollmentError, device_challenge_bytes};
+    use futures_util::{SinkExt, StreamExt};
     use p256::ecdsa::{Signature, SigningKey, signature::Signer};
     use p256::elliptic_curve::rand_core::OsRng;
     use sha2::{Digest, Sha256};
     use zrotext_delivery_store::NewMessage;
+
+    #[test]
+    fn enrollment_rejections_and_storage_failures_have_distinct_close_codes() {
+        assert_eq!(
+            enrollment_close_code(&EnrollmentError::Unauthorized),
+            close_code::POLICY
+        );
+        assert_eq!(
+            enrollment_close_code(&EnrollmentError::AuthorityUnavailable),
+            RETRY_LATER
+        );
+        assert_eq!(
+            enrollment_close_code(&EnrollmentError::Unavailable),
+            RETRY_LATER
+        );
+    }
+
+    #[tokio::test]
+    async fn handshake_closes_with_retry_code_when_database_is_down() {
+        let state = DeviceSocketState {
+            database_url: "host=127.0.0.1 port=1 connect_timeout=1 user=invalid".into(),
+            site_id: "site-a".into(),
+            instance_id: "test-hub".into(),
+            deployment_epoch: 1,
+            enrollment_hasher: Arc::new(EnrollmentHasher::new(crate::test_keys::key(77)).unwrap()),
+            auth_hasher: Arc::new(TokenHasher::new(crate::test_keys::key(78)).unwrap()),
+            alpha_policy: Arc::new(AlphaPolicy::parse(None, None, None).unwrap()),
+            dispatch_runtime_enabled: false,
+            inbound_pilot_enabled: false,
+            draining: Arc::new(AtomicBool::new(false)),
+            drain_notify: Arc::new(Notify::new()),
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router(state)).await.unwrap();
+        });
+        let (mut socket, _) =
+            tokio_tungstenite::connect_async(format!("ws://{address}/v1/device-stream"))
+                .await
+                .unwrap();
+        socket
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                serde_json::json!({"v":1,"type":"hello","device_id":Uuid::new_v4()})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        let close = timeout(Duration::from_secs(3), socket.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let tokio_tungstenite::tungstenite::Message::Close(Some(frame)) = close else {
+            panic!("expected close frame");
+        };
+        assert_eq!(u16::from(frame.code), RETRY_LATER);
+
+        let (mut socket, _) =
+            tokio_tungstenite::connect_async(format!("ws://{address}/v1/device-stream"))
+                .await
+                .unwrap();
+        socket
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                serde_json::json!({"v":1,"type":"proof"}).to_string().into(),
+            ))
+            .await
+            .unwrap();
+        let close = timeout(Duration::from_secs(3), socket.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let tokio_tungstenite::tungstenite::Message::Close(Some(frame)) = close else {
+            panic!("expected policy close frame");
+        };
+        assert_eq!(u16::from(frame.code), close_code::POLICY);
+        server.abort();
+    }
 
     #[test]
     fn wire_v1_uses_only_documented_fields() {

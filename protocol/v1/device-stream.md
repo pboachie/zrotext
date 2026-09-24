@@ -34,7 +34,8 @@ have no padding. Client frames reject unknown fields; frames are limited to
 Challenge issuance and proof verification each share their PostgreSQL request
 budget with the corresponding HTTP enrollment route: 30 attempts per device
 and 300 attempts globally per 60 seconds, across all hub instances. The hub
-closes the socket when a budget is exhausted or its storage is unavailable.
+closes the socket with code `1013` (Try Again Later) when a budget is
+exhausted or its storage is unavailable.
 Reconnecting or switching transports does not reset a budget. Established
 session heartbeats do not consume these handshake budgets.
 
@@ -43,6 +44,13 @@ most 10 seconds between heartbeats. A new valid connection fences the older
 epoch; release of an old socket cannot clear the newer lease. A drained,
 disabled, revoked, or writer-isolated hub closes its session. The phone stops
 its foreground heartbeat on authentication, trust, or protocol rejection.
+Before a session is established, the hub closes with `1008` (Policy Violation)
+for a malformed frame, invalid proof, or unknown or revoked device. It closes
+with `1013` for database failures, admission budget refusal, a draining site,
+or an unavailable writer. The phone retries `1011`, `1012`, and `1013` with
+bounded backoff even before a session; `1008` and unknown pre-session codes
+stop the foreground service. A pre-session close without a code is treated as
+a rejection.
 While the manually started foreground service remains alive, transport loss,
 an established session's close, or a heartbeat timeout can retry with bounded
 backoff and a fresh challenge proof and epoch. A manual synthetic-SMS arm or
