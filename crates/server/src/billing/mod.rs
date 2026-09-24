@@ -1185,6 +1185,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
             include_str!("../../../../deploy/compose/migrations/025_billing_test_config.sql"),
             include_str!("../../../../deploy/compose/migrations/026_billing_provider_failures.sql"),
+            include_str!("../../../../deploy/compose/migrations/028_terminal_dispatch_jobs.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }

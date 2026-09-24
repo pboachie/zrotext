@@ -560,7 +560,8 @@ impl<'a> DeliveryStore<'a> {
                    SELECT j.message_id FROM dispatch_jobs j JOIN messages m ON m.id=j.message_id \
                    JOIN devices d ON d.id=j.device_id AND d.account_id=j.account_id \
                    WHERE j.next_attempt_at<=now() AND (j.lease_until IS NULL OR j.lease_until<now()) \
-                     AND j.grant_issued_at IS NULL AND m.state IN ('queued','claimed') AND m.expires_at>now() \
+                     AND j.grant_issued_at IS NULL AND j.finished_at IS NULL \
+                     AND m.state IN ('queued','claimed') AND m.expires_at>now() \
                      AND d.revoked_at IS NULL \
                      AND ($2::uuid IS NULL OR j.account_id=$2) \
                      AND ($3::uuid IS NULL OR j.device_id=$3) \
@@ -622,7 +623,7 @@ impl<'a> DeliveryStore<'a> {
             &[&account_id, &message_id],
         ).await?;
         tx.execute(
-            "UPDATE dispatch_jobs SET lease_owner=NULL,lease_until=NULL WHERE account_id=$1 AND message_id=$2",
+            "UPDATE dispatch_jobs SET lease_owner=NULL,lease_until=NULL,finished_at=now() WHERE account_id=$1 AND message_id=$2",
             &[&account_id, &message_id],
         ).await?;
         refund_outbound(&tx, account_id, message_id).await?;
@@ -639,8 +640,9 @@ impl<'a> DeliveryStore<'a> {
         let tx = self.client.transaction().await?;
         let rows = tx.query(
             "SELECT j.account_id,j.message_id FROM dispatch_jobs j JOIN messages m ON m.id=j.message_id \
-             WHERE j.grant_issued_at IS NULL AND m.expires_at<=now() AND m.state IN ('queued','claimed') \
-             ORDER BY m.expires_at,j.message_id FOR UPDATE OF j SKIP LOCKED LIMIT $1",
+             WHERE j.grant_issued_at IS NULL AND j.finished_at IS NULL \
+               AND m.expires_at<=now() AND m.state IN ('queued','claimed') \
+             ORDER BY m.expires_at,m.id FOR UPDATE OF j SKIP LOCKED LIMIT $1",
             &[&limit],
         ).await?;
         let mut expired = 0;
@@ -656,7 +658,7 @@ impl<'a> DeliveryStore<'a> {
                 continue;
             }
             tx.execute(
-                "UPDATE dispatch_jobs SET lease_owner=NULL,lease_until=NULL WHERE account_id=$1 AND message_id=$2",
+                "UPDATE dispatch_jobs SET lease_owner=NULL,lease_until=NULL,finished_at=now() WHERE account_id=$1 AND message_id=$2",
                 &[&account_id, &message_id],
             ).await?;
             refund_outbound(&tx, account_id, message_id).await?;
@@ -1144,7 +1146,7 @@ impl<'a> DeliveryStore<'a> {
             )
             .await?;
             tx.execute(
-                "UPDATE dispatch_jobs SET grant_issued_at=NULL,lease_owner=NULL,lease_until=NULL,next_attempt_at=now() \
+                "UPDATE dispatch_jobs SET grant_issued_at=NULL,lease_owner=NULL,lease_until=NULL,finished_at=NULL,next_attempt_at=now() \
                  WHERE message_id=$1",
                 &[&event.message_id],
             )
@@ -1445,7 +1447,7 @@ mod tests {
 
     // Keep the admission fixtures on the complete, reviewed schema. SQL is
     // embedded at build time so tests never execute files discovered at runtime.
-    const TEST_MIGRATIONS: [(&str, &str); 27] = [
+    const TEST_MIGRATIONS: [(&str, &str); 28] = [
         (
             "001_foundation.sql",
             include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
@@ -1554,6 +1556,10 @@ mod tests {
             "027_webhook_dispatch_fairness.sql",
             include_str!("../../../deploy/compose/migrations/027_webhook_dispatch_fairness.sql"),
         ),
+        (
+            "028_terminal_dispatch_jobs.sql",
+            include_str!("../../../deploy/compose/migrations/028_terminal_dispatch_jobs.sql"),
+        ),
     ];
 
     #[test]
@@ -1594,6 +1600,7 @@ mod tests {
             include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
             include_str!("../../../deploy/compose/migrations/002_auth.sql"),
             include_str!("../../../deploy/compose/migrations/003_delivery.sql"),
+            include_str!("../../../deploy/compose/migrations/028_terminal_dispatch_jobs.sql"),
         ] {
             client.batch_execute(migration).await.unwrap();
         }
@@ -1772,6 +1779,7 @@ mod tests {
             include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
             include_str!("../../../deploy/compose/migrations/002_auth.sql"),
             include_str!("../../../deploy/compose/migrations/003_delivery.sql"),
+            include_str!("../../../deploy/compose/migrations/028_terminal_dispatch_jobs.sql"),
         ] {
             client.batch_execute(migration).await.unwrap();
         }
@@ -2251,6 +2259,12 @@ mod tests {
         client
             .batch_execute(include_str!(
                 "../../../deploy/compose/migrations/006_usage_metering.sql"
+            ))
+            .await
+            .unwrap();
+        client
+            .batch_execute(include_str!(
+                "../../../deploy/compose/migrations/028_terminal_dispatch_jobs.sql"
             ))
             .await
             .unwrap();
@@ -3045,6 +3059,199 @@ mod tests {
             .unwrap()
             .get(0);
         assert_eq!(old_fence_count, 0);
+        client
+            .batch_execute(&format!(
+                "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
+            ))
+            .await
+            .unwrap();
+    }
+    #[tokio::test]
+    async fn terminal_dispatch_backfill_and_live_claims_ignore_large_history() {
+        let Ok(url) = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL") else {
+            eprintln!("set ZT_DELIVERY_TEST_DATABASE_URL for terminal dispatch database test");
+            return;
+        };
+        let (mut client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let schema = format!("terminal_dispatch_{}", Uuid::new_v4().simple());
+        client
+            .batch_execute(&format!(
+                "CREATE SCHEMA {schema}; SET search_path TO {schema}"
+            ))
+            .await
+            .unwrap();
+        for (_, migration) in TEST_MIGRATIONS.iter().take(27) {
+            client.batch_execute(migration).await.unwrap();
+        }
+        let account = Uuid::new_v4();
+        let device = Uuid::new_v4();
+        let due = Uuid::new_v4();
+        let expiring = Uuid::new_v4();
+        client
+            .execute("INSERT INTO accounts(id) VALUES($1)", &[&account])
+            .await
+            .unwrap();
+        client
+            .execute(
+                "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'virtual phone')",
+                &[&device, &account],
+            )
+            .await
+            .unwrap();
+        // This is the historical shape left by old cancel/expiry code: terminal
+        // messages, pre-grant jobs and old next-attempt times still indexed.
+        client
+            .execute(
+                "INSERT INTO messages(id,account_id,device_id,recipient_e164,recipient_digest, \
+             transport_mode,transport_payload,request_digest,state,expires_at,updated_at) \
+             SELECT md5('terminal-'||g::text)::uuid,$1,$2,'+15551234567', \
+               decode(repeat('11',32),'hex'),'synthetic_alpha',decode('01','hex'), \
+               decode(repeat('22',32),'hex'), \
+               CASE WHEN g%2=0 THEN 'cancelled' ELSE 'expired' END, \
+               now()-interval '1 day',now()-interval '1 day' \
+             FROM generate_series(1,8000) g",
+                &[&account, &device],
+            )
+            .await
+            .unwrap();
+        client
+            .execute(
+                "INSERT INTO dispatch_jobs(message_id,account_id,device_id,next_attempt_at, \
+             generation,lease_owner,lease_until) \
+             SELECT id,account_id,device_id,now()-interval '1 day',3,'old-worker', \
+               now()-interval '1 hour' FROM messages WHERE account_id=$1",
+                &[&account],
+            )
+            .await
+            .unwrap();
+        for (id, expiry) in [(due, "10 minutes"), (expiring, "-1 minute")] {
+            client
+                .execute(
+                    "INSERT INTO messages(id,account_id,device_id,recipient_e164,recipient_digest, \
+                 transport_mode,transport_payload,request_digest,state,expires_at) \
+                 VALUES($1,$2,$3,'+15551234567',decode(repeat('11',32),'hex'), \
+                 'synthetic_alpha',decode('01','hex'),decode(repeat('22',32),'hex'), \
+                 'queued',now()+$4::text::interval)",
+                    &[&id, &account, &device, &expiry],
+                )
+                .await
+                .unwrap();
+            client
+                .execute(
+                    "INSERT INTO dispatch_jobs(message_id,account_id,device_id,next_attempt_at) \
+                 VALUES($1,$2,$3,now()-interval '1 minute')",
+                    &[&id, &account, &device],
+                )
+                .await
+                .unwrap();
+        }
+        client.batch_execute(TEST_MIGRATIONS[27].1).await.unwrap();
+        let counts = client
+            .query_one(
+                "SELECT count(*) FILTER (WHERE finished_at IS NOT NULL), \
+             count(*) FILTER (WHERE finished_at IS NULL AND grant_issued_at IS NULL), \
+             count(*) FILTER (WHERE finished_at IS NOT NULL AND \
+               (generation<>3 OR lease_owner IS NOT NULL OR lease_until IS NOT NULL)) \
+             FROM dispatch_jobs",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(counts.get::<_, i64>(0), 8000);
+        assert_eq!(counts.get::<_, i64>(1), 2);
+        assert_eq!(counts.get::<_, i64>(2), 0);
+        let wrong_backfill_time: i64 = client.query_one(
+            "SELECT count(*) FROM dispatch_jobs j JOIN messages m ON m.id=j.message_id \
+             WHERE m.state IN ('cancelled','expired') AND j.finished_at IS DISTINCT FROM m.updated_at",
+            &[],
+        ).await.unwrap().get(0);
+        assert_eq!(wrong_backfill_time, 0);
+        let index: String = client
+            .query_one(
+                "SELECT indexdef FROM pg_indexes WHERE schemaname=current_schema() \
+             AND indexname='dispatch_jobs_due'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert!(index.contains("finished_at IS NULL"), "{index}");
+
+        client
+            .batch_execute("ANALYZE messages; ANALYZE dispatch_jobs; ANALYZE devices")
+            .await
+            .unwrap();
+        let claim_plan = client
+            .query(
+                "EXPLAIN (ANALYZE, BUFFERS) \
+             SELECT j.message_id FROM dispatch_jobs j JOIN messages m ON m.id=j.message_id \
+             JOIN devices d ON d.id=j.device_id AND d.account_id=j.account_id \
+             WHERE j.next_attempt_at<=now() AND (j.lease_until IS NULL OR j.lease_until<now()) \
+             AND j.grant_issued_at IS NULL AND j.finished_at IS NULL \
+             AND m.state IN ('queued','claimed') AND m.expires_at>now() \
+             AND d.revoked_at IS NULL \
+             ORDER BY j.next_attempt_at,j.message_id FOR UPDATE OF j SKIP LOCKED LIMIT 1",
+                &[],
+            )
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.get::<_, String>(0))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !claim_plan.contains("Seq Scan on dispatch_jobs"),
+            "{claim_plan}"
+        );
+        assert!(!claim_plan.contains("Seq Scan on messages"), "{claim_plan}");
+        let expiry_plan = client
+            .query(
+                "EXPLAIN (ANALYZE, BUFFERS) \
+             SELECT j.account_id,j.message_id FROM dispatch_jobs j \
+             JOIN messages m ON m.id=j.message_id \
+             WHERE j.grant_issued_at IS NULL AND j.finished_at IS NULL \
+             AND m.expires_at<=now() AND m.state IN ('queued','claimed') \
+             ORDER BY m.expires_at,m.id FOR UPDATE OF j SKIP LOCKED LIMIT 10",
+                &[],
+            )
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.get::<_, String>(0))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !expiry_plan.contains("Seq Scan on dispatch_jobs"),
+            "{expiry_plan}"
+        );
+        assert!(
+            !expiry_plan.contains("Seq Scan on messages"),
+            "{expiry_plan}"
+        );
+
+        // Both transitions commit the message state and index exclusion together.
+        let mut store = DeliveryStore::new(&mut client);
+        assert!(store.cancel(account, due).await.unwrap());
+        assert_eq!(store.expire_due(10).await.unwrap(), 1);
+        let terminal = client
+            .query(
+                "SELECT m.id,m.state,j.finished_at IS NOT NULL \
+             FROM messages m JOIN dispatch_jobs j ON j.message_id=m.id \
+             WHERE m.id=$1 OR m.id=$2 ORDER BY m.id",
+                &[&due, &expiring],
+            )
+            .await
+            .unwrap();
+        assert_eq!(terminal.len(), 2);
+        for row in terminal {
+            let id: Uuid = row.get(0);
+            let state: String = row.get(1);
+            assert_eq!(state, if id == due { "cancelled" } else { "expired" });
+            assert!(row.get::<_, bool>(2));
+        }
         client
             .batch_execute(&format!(
                 "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
