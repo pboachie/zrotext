@@ -166,7 +166,7 @@ impl StripeTestWorker {
     }
 }
 
-fn parse_subscription(body: &[u8]) -> Result<SubscriptionSnapshot, BillingError> {
+pub(super) fn parse_subscription(body: &[u8]) -> Result<SubscriptionSnapshot, BillingError> {
     let value: Value = serde_json::from_slice(body).map_err(|_| BillingError::InvalidEvent)?;
     if value["object"] != "subscription" || value["livemode"] != false {
         return Err(BillingError::InvalidEvent);
