@@ -2077,6 +2077,84 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn failed_mail_worker_reports_each_attempt_and_final_dead_letter() {
+        let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
+            return;
+        };
+        let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let schema = format!("mail_failure_test_{}", Uuid::new_v4().simple());
+        setup
+            .batch_execute(&format!("CREATE SCHEMA {schema}"))
+            .await
+            .unwrap();
+        let database_url = format!("{base_url}?options=-csearch_path%3D{schema}");
+        let (mut client, connection) = tokio_postgres::connect(&database_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        for migration in [
+            include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+            include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+        ] {
+            client.batch_execute(migration).await.unwrap();
+        }
+        let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(44)).unwrap());
+        auth::register(
+            &mut client,
+            &hasher,
+            "owner@example.test",
+            "correct horse 123",
+        )
+        .await
+        .unwrap();
+        let state = AuthHttpState::new(
+            database_url,
+            hasher,
+            "https://zrotext.example".to_owned(),
+            Arc::new(FailingVerification),
+        )
+        .unwrap();
+        let mut gate = VerificationWarningGate::default();
+        let now = Instant::now();
+        let mut warnings = Vec::new();
+        for attempt in 1..=6 {
+            let outcome = dispatch_one_verification_report(&state).await.unwrap();
+            assert_eq!(
+                outcome,
+                VerificationDispatchOutcome::Failed {
+                    category: DispatchFailure::Rejected,
+                    dead_lettered: attempt == 6,
+                }
+            );
+            if let VerificationDispatchOutcome::Failed { category, .. } = outcome {
+                warnings.extend(gate.on_failure(category, now));
+            }
+            if attempt < 6 {
+                client.execute(
+                    "UPDATE verification_mail_outbox SET next_attempt_at=now()-interval '1 second'",
+                    &[],
+                ).await.unwrap();
+            }
+        }
+        assert_eq!(
+            warnings,
+            ["verification mail delivery failed (category=rejected)"]
+        );
+        let row = client
+            .query_one(
+                "SELECT attempt_count, dead_at IS NOT NULL FROM verification_mail_outbox",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(row.get::<_, i32>(0), 6);
+        assert!(row.get::<_, bool>(1));
+        setup
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .unwrap();
+    }
+
     #[test]
     fn unauthenticated_writes_require_exact_origin() {
         let mut headers = HeaderMap::new();
