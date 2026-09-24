@@ -13,6 +13,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc, time::SystemTime};
+#[cfg(test)]
 use tokio_postgres::NoTls;
 use uuid::Uuid;
 
@@ -79,7 +80,7 @@ async fn list_messages(
     Query(query): Query<ListQuery>,
     headers: HeaderMap,
 ) -> Response {
-    let Ok((client, connection)) = tokio_postgres::connect(&state.database_url, NoTls).await else {
+    let Ok((client, connection)) = crate::runtime_db::connect(&state.database_url).await else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
     tokio::spawn(async move {

@@ -13,7 +13,7 @@ use axum::{
 };
 use serde::Serialize;
 use std::sync::Arc;
-use tokio_postgres::{Client, NoTls};
+use tokio_postgres::Client;
 use uuid::Uuid;
 
 #[derive(Serialize)]
@@ -70,7 +70,7 @@ async fn no_store_response(request: Request, next: Next) -> Response {
 }
 
 async fn connect(database_url: &str) -> Result<Client, AuthHttpError> {
-    let (db, connection) = tokio_postgres::connect(database_url, NoTls)
+    let (db, connection) = crate::runtime_db::connect(database_url)
         .await
         .map_err(|_| AuthHttpError::Unavailable)?;
     tokio::spawn(async move {
@@ -189,6 +189,8 @@ async fn script() -> impl IntoResponse {
     )
 }
 
+#[cfg(test)]
+use tokio_postgres::NoTls;
 #[cfg(test)]
 mod tests {
     use super::*;

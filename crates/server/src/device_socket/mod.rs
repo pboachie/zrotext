@@ -33,7 +33,7 @@ use tokio::{
     sync::{Notify, Semaphore},
     time::{interval, timeout},
 };
-use tokio_postgres::{Client, NoTls};
+use tokio_postgres::Client;
 use uuid::Uuid;
 use zrotext_delivery_store::{DeliveryStore, GrantRecord, RadioEvent, SessionRecord, StoreError};
 use zrotext_domain::{Evidence, MessageState};
@@ -43,7 +43,7 @@ const HEARTBEAT_SECONDS: u64 = 30;
 const HEARTBEAT_DEADLINE: Duration = Duration::from_secs(45);
 const SESSION_LEASE_SECONDS: i32 = 90;
 const MAX_FRAME_BYTES: usize = 4096;
-const MAX_DEVICE_SOCKETS: usize = 128;
+const MAX_DEVICE_SOCKETS: usize = 32;
 const DISPATCH_POLL_SECONDS: u64 = 5;
 const MIN_SECONDS_BETWEEN_GRANTS: u64 = 60;
 const ALPHA_READY_SECONDS: u64 = 300;
@@ -254,8 +254,8 @@ async fn upgrade(
         .into_response()
 }
 
-async fn connect(database_url: &str) -> Result<Client, tokio_postgres::Error> {
-    let (client, connection) = tokio_postgres::connect(database_url, NoTls).await?;
+async fn connect(database_url: &str) -> Result<Client, crate::runtime_db::ConnectError> {
+    let (client, connection) = crate::runtime_db::connect_device(database_url).await?;
     tokio::spawn(async move {
         if connection.await.is_err() {
             eprintln!("device socket database connection closed");
@@ -264,9 +264,37 @@ async fn connect(database_url: &str) -> Result<Client, tokio_postgres::Error> {
     Ok(client)
 }
 
-async fn receive_frame(socket: &mut WebSocket) -> Option<ClientFrame> {
+// A burst accommodates queued device evidence; the sustained bound includes
+// control frames and exact replays, neither of which consumes a daily event cap.
+struct FrameBudget {
+    tokens: f64,
+    updated: Instant,
+}
+impl FrameBudget {
+    fn new(now: Instant) -> Self {
+        Self {
+            tokens: 256.0,
+            updated: now,
+        }
+    }
+    fn admit(&mut self, now: Instant) -> bool {
+        self.tokens =
+            (self.tokens + now.duration_since(self.updated).as_secs_f64() * 64.0).min(256.0);
+        self.updated = now;
+        if self.tokens < 1.0 {
+            return false;
+        }
+        self.tokens -= 1.0;
+        true
+    }
+}
+
+async fn receive_frame(socket: &mut WebSocket, budget: &mut FrameBudget) -> Option<ClientFrame> {
     loop {
         let message = socket.recv().await?.ok()?;
+        if !budget.admit(Instant::now()) {
+            return None;
+        }
         match message {
             Message::Text(text) => return serde_json::from_str(text.as_str()).ok(),
             Message::Ping(_) | Message::Pong(_) => continue,
@@ -283,8 +311,9 @@ async fn send_frame(socket: &mut WebSocket, frame: ServerFrame) -> bool {
 }
 
 async fn run_socket(mut socket: WebSocket, state: DeviceSocketState) {
+    let mut frame_budget = FrameBudget::new(Instant::now());
     let Some(ClientFrame::Hello { v: 1, device_id }) =
-        timeout(AUTH_TIMEOUT, receive_frame(&mut socket))
+        timeout(AUTH_TIMEOUT, receive_frame(&mut socket, &mut frame_budget))
             .await
             .ok()
             .flatten()
@@ -337,7 +366,7 @@ async fn run_socket(mut socket: WebSocket, state: DeviceSocketState) {
         device_id,
         nonce,
         signature_der,
-    }) = timeout(AUTH_TIMEOUT, receive_frame(&mut socket))
+    }) = timeout(AUTH_TIMEOUT, receive_frame(&mut socket, &mut frame_budget))
         .await
         .ok()
         .flatten()
@@ -422,7 +451,7 @@ async fn run_socket(mut socket: WebSocket, state: DeviceSocketState) {
     let mut close_reason = "other_stream_exit";
     loop {
         tokio::select! {
-            message = receive_frame(&mut socket) => {
+            message = receive_frame(&mut socket, &mut frame_budget) => {
                 match message {
                     Some(ClientFrame::Heartbeat { v: 1 }) => {
                         let received_at = Instant::now();
@@ -864,6 +893,8 @@ async fn release_session(
     Ok(())
 }
 
+#[cfg(test)]
+use tokio_postgres::NoTls;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1803,3 +1834,72 @@ mod tests {
 
 #[cfg(test)]
 mod virtual_inbound_tests;
+
+#[cfg(test)]
+mod frame_budget_tests {
+    use super::*;
+    #[tokio::test]
+    async fn control_frame_flood_closes_real_socket() {
+        use futures_util::SinkExt;
+        let closed = Arc::new(Notify::new());
+        let observed = closed.clone();
+        let app = Router::new().route(
+            "/",
+            get(move |upgrade: WebSocketUpgrade| {
+                let closed = closed.clone();
+                async move {
+                    upgrade.on_upgrade(move |mut socket| async move {
+                        let mut budget = FrameBudget::new(Instant::now());
+                        assert!(receive_frame(&mut socket, &mut budget).await.is_none());
+                        closed.notify_one();
+                    })
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}/"))
+            .await
+            .unwrap();
+        let sender = tokio::spawn(async move {
+            for _ in 0..4096 {
+                if socket
+                    .send(tokio_tungstenite::tungstenite::Message::Pong(
+                        Vec::new().into(),
+                    ))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        timeout(Duration::from_secs(2), observed.notified())
+            .await
+            .unwrap();
+        sender.abort();
+        server.abort();
+    }
+    #[test]
+    fn replay_burst_is_bounded_and_replenishes_without_unbounded_credit() {
+        let now = Instant::now();
+        let mut budget = FrameBudget::new(now);
+        for _ in 0..256 {
+            assert!(budget.admit(now));
+        }
+        assert!(!budget.admit(now));
+        let later = now + Duration::from_secs(1);
+        for _ in 0..64 {
+            assert!(budget.admit(later));
+        }
+        assert!(!budget.admit(later));
+        let later = later + Duration::from_secs(3600);
+        for _ in 0..256 {
+            assert!(budget.admit(later));
+        }
+        assert!(!budget.admit(later));
+    }
+}

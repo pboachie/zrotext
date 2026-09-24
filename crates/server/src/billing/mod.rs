@@ -26,6 +26,8 @@ fn is_test_api_key(key: &str) -> bool {
 
 #[derive(Debug, Error)]
 pub enum BillingError {
+    #[error("runtime database unavailable")]
+    RuntimeDatabase(#[from] crate::runtime_db::ConnectError),
     #[error("invalid Stripe signature")]
     InvalidSignature,
     #[error("invalid Stripe event")]
@@ -494,7 +496,7 @@ pub async fn reset_test_quotas_on_start(
     require_schema: bool,
     device_caps_enabled: bool,
 ) -> Result<(), BillingError> {
-    let (mut db, connection) = tokio_postgres::connect(database_url, tokio_postgres::NoTls).await?;
+    let (mut db, connection) = crate::runtime_db::connect_worker(database_url).await?;
     tokio::spawn(async move {
         let _ = connection.await;
     });
