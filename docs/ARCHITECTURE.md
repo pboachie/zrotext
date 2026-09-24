@@ -190,6 +190,8 @@ Public sealed send example (shape only; **not valid ciphertext**):
 
 The SDK accepts readable message text in the customer's process and encrypts it locally. Public REST does not silently accept plaintext under the sealed promise. A future plaintext convenience mode would require an explicit separate product decision and separate claims. No account-wide API key on a phone, no API key in URL/query, and no secrets in QR examples or logs.
 
+Owner browser pages require JavaScript for sign-in. The credential forms use POST as a defensive native fallback; the JSON-only auth endpoints reject form-encoded submissions without creating a session. The device and billing dashboards deny framing. Billing refresh removes the previous snapshot immediately, and an older response cannot restore account data after a newer refresh has failed.
+
 ## Android acceptance surface
 
 User-initiated gateway mode, persistent visible notification with Pause, explicit SMS permissions, optional default-SMS role only if implementing the required messaging UI, pairing approval, SIM selection, local history/queue, foreground/background state and diagnostics. The current Android SDK levels are pinned in [the app build](../android/app/build.gradle.kts).
