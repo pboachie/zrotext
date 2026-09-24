@@ -47,6 +47,15 @@ A follow-up [provider study](zt-009-android-provider-study.md) records why the e
 
 The documented Android Keystore ECDH purpose, [`PURPOSE_AGREE_KEY`](https://developer.android.com/reference/android/security/keystore/KeyProperties#PURPOSE_AGREE_KEY), was added in API 31. The current gateway package has `minSdk` 28, so this non-exportable ECDH route cannot be assumed across its stated device range. A software HPKE key encrypted at rest under a [Keystore AEAD key](https://github.com/tink-crypto/tink-java/blob/v1.23.0/src/main/java/com/google/crypto/tink/integration/android/AndroidKeystore.java) would have a different exposure claim because its private bytes enter app memory for decryption. The product decision below excludes API 28–30 from sealed mode; the exact nonempty-AAD HPKE provider and key lifecycle remain open engineering work.
 
+The [Android provider study](zt-009-android-provider-study.md) adds a dormant
+API 31+ payload-key boundary with enrollment-only generation, existing-key-only
+ECDH and exact P-256/key-ID validation. A Pixel API 36 AVD opened an
+`@hpke/core` wrap through that boundary in an Android **test-only** HPKE
+composition and rejected altered `info`/AAD and a changed pinned key ID.
+This proves the boundary can feed the draft operation in a virtual device; it
+does not select a maintained HPKE receiver, prove supported-phone behavior or
+authorize a sealed route. Q5 remains open.
+
 ## Q5 product device-floor decision (2026-09-23)
 
 The founder selected **API 31+ for sealed-content mode only**. The existing M1 SMS gateway continues to support API 28+; a phone on API 28–30 must not enroll a sealed payload key, accept a sealed outbound grant, or claim sealed inbound protection. The decision does not authorize a software-key fallback on API 28–30. A future change to that device policy requires a new explicit decision and security review.

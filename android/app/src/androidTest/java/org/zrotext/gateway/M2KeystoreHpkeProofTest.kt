@@ -52,14 +52,10 @@ class M2KeystoreHpkeProofTest {
         HpkeOneShot.requireSupportedApi(Build.VERSION.SDK_INT)
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null, null) }
         if (store.containsAlias(browserInteropAlias)) store.deleteEntry(browserInteropAlias)
-        val pair = KeyPairGenerator.getInstance("EC", "AndroidKeyStore").run {
-            initialize(KeyGenParameterSpec.Builder(browserInteropAlias, KeyProperties.PURPOSE_AGREE_KEY)
-                .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1")).build())
-            generateKeyPair()
-        }
+        val recipient = DevicePayloadKeyStore(browserInteropAlias).getOrCreateForEnrollment()
         assertNull(store.getKey(browserInteropAlias, null)?.encoded)
         InstrumentationRegistry.getInstrumentation().sendStatus(0, Bundle().apply {
-            putString("m2_browser_interop_recipient_point_hex", P256.encode(pair.public as ECPublicKey).toHex())
+            putString("m2_browser_interop_recipient_point_hex", recipient.point.toHex())
         })
     }
 
@@ -71,21 +67,20 @@ class M2KeystoreHpkeProofTest {
             val enc = hexBytes(requireNotNull(args.getString("m2_enc_hex")))
             val ct = hexBytes(requireNotNull(args.getString("m2_ct_hex")))
             val expectedCek = hexBytes(requireNotNull(args.getString("m2_cek_hex")))
-            val recipient = store.getCertificate(browserInteropAlias)?.publicKey as? ECPublicKey
-                ?: throw IllegalArgumentException("Missing temporary recipient")
-            val privateKey = store.getKey(browserInteropAlias, null) as PrivateKey
-            assertNull(privateKey.encoded)
+            val keyStore = DevicePayloadKeyStore(browserInteropAlias)
+            val recipient = keyStore.existingPublic()
             val protected = ByteArray(157) { it.toByte() }
             val role = byteArrayOf(1)
-            val point = P256.encode(recipient)
             val digest = java.security.MessageDigest.getInstance("SHA-256")
             val keyId = digest.digest("ZTSE/key/v1\u0000".toByteArray(Charsets.US_ASCII) +
-                byteArrayOf(0, 16) + point)
+                byteArrayOf(0, 16) + recipient.point)
+            assertArrayEquals(keyId, recipient.keyId)
             val info = "ZTSE/wrap/v1\u0000".toByteArray(Charsets.US_ASCII) + digest.digest(protected) + role + keyId
             val aad = "ZTSE/wrap-aad/v1\u0000".toByteArray(Charsets.US_ASCII) + protected + role + keyId
-            assertArrayEquals(expectedCek, HpkeOneShot.openKeystore(privateKey, recipient, enc, ct, info, aad))
-            rejects { HpkeOneShot.openKeystore(privateKey, recipient, enc, ct, info + 1, aad) }
-            rejects { HpkeOneShot.openKeystore(privateKey, recipient, enc, ct, info, aad + 1) }
+            assertArrayEquals(expectedCek, openBrowserWrap(keyStore, recipient, enc, ct, info, aad))
+            rejects { openBrowserWrap(keyStore, recipient, enc, ct, info + 1, aad) }
+            rejects { openBrowserWrap(keyStore, recipient, enc, ct, info, aad + 1) }
+            rejects { keyStore.agreeExisting(enc, ByteArray(32)) }
             InstrumentationRegistry.getInstrumentation().sendStatus(0, Bundle().apply {
                 putString("m2_browser_to_keystore_open", "PASSED")
             })
@@ -108,6 +103,16 @@ class M2KeystoreHpkeProofTest {
 
     private fun assumeBrowserInteropHarness() {
         assumeTrue(InstrumentationRegistry.getArguments().getString("m2_host_driver") == "1")
+    }
+
+    private fun openBrowserWrap(keyStore: DevicePayloadKeyStore, recipient: DevicePayloadPublic,
+                                enc: ByteArray, ct: ByteArray, info: ByteArray, aad: ByteArray): ByteArray {
+        val dh = keyStore.agreeExisting(enc, recipient.keyId)
+        try {
+            val shared = HpkeOneShot.kemSecret(dh, enc, recipient.point)
+            return try { HpkeOneShot.open(shared, ct, info, aad) }
+            finally { shared.fill(0) }
+        } finally { dh.fill(0) }
     }
 
     @Test fun proofFloorRejectsApisBelow31() {

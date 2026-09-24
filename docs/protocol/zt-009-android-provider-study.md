@@ -48,14 +48,42 @@ and alias deletion (`OK (3 tests)`). This is reported platform evidence for
 one temporary key, not independent hardware attestation or key-lifecycle
 proof. No SMS or network/power setting was involved in either test.
 
+## Dormant production recipient boundary (2026-09-24)
+
+[`DevicePayloadKeyStore`](../../android/app/src/main/java/org/zrotext/gateway/DevicePayloadKeyStore.kt)
+now supplies a narrow, release-compiled recipient key boundary, separate from
+the M1 signing identity. Explicit enrollment creates a P-256
+`PURPOSE_AGREE_KEY` alias only on API 31+; the caller must provide an explicit
+alias while account/device/line key scoping remains a Q2/Q8 decision. Receipt
+loads the existing alias and
+checks origin, purpose, key size, non-exportability through the Android API,
+public point and pinned draft key ID before one ECDH operation. A missing or
+changed key is an error; the receive operation never regenerates an identity.
+The reported `KeyInfo.securityLevel` is metadata, not attestation or a hardware
+claim. The ECDH result necessarily enters app memory for a future HPKE
+receiver and its caller must clear it.
+
+This class is not called by the gateway service, registration route or radio
+path. It supplies no HPKE implementation, body opening or authorization. The
+test-only Android HPKE composition now exercises this production key boundary
+against an independent `@hpke/core` browser-style sender on a Pixel API 36 AVD:
+the exact nonempty draft `info` and AAD opened a 32-byte CEK; altered inputs
+and a wrong pinned key ID failed. A separate instrumented test checked a
+persistent alias, matching software ECDH, malformed points and key loss without
+replacement. The AVD reported software security level in the separate proof;
+this run makes no supported-phone claim. JVM API-floor/key-ID tests, seven
+TypeScript tests, two Python vector checks and Android test-APK compilation
+passed. No SMS or physical phone test ran in this slice.
+
 ## Remaining Q5 decision
 
 The platform can perform the cryptographic operation, but none of the
 evaluated maintained high-level APIs directly handles both the non-exportable
 P-256 recipient and this draft's nonempty AAD on API 31+. The test-only
-composition is not a selected production provider. Engineering must select a
-supported provider or explicitly own and validate the composition, including
-point parsing, key ID and role binding, key loss/reboot, device API and security
-levels, independent Rust/browser vectors, fuzz/adversarial cases, and the
-complete signed envelope and grant boundary. Keep sealed mode disabled and Q5
-open until that choice and the remaining ZT-009 decisions are recorded.
+composition is not a selected production provider. The recipient boundary
+reduces key-lifecycle uncertainty but does not close Q5. Engineering must
+select a supported provider or explicitly own and validate the composition,
+including role binding, reboot and longer key-lifecycle behavior, API/security
+levels on supported phones, independent Rust vectors, fuzz/adversarial cases,
+and the complete signed envelope and grant boundary. Keep sealed mode disabled
+and Q5 open until that choice and the remaining ZT-009 decisions are recorded.
