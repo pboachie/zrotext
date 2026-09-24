@@ -4,7 +4,6 @@
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use std::{env, error::Error};
-use tokio_postgres::NoTls;
 use zeroize::Zeroizing;
 use zrotext_server::webhook_worker::{
     WebhookSecretVault, check_runtime_keys, rewrap_endpoint_secrets,
@@ -28,7 +27,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         active_key,
         Some((secondary_version, secondary_key)),
     )?;
-    let (mut db, connection) = tokio_postgres::connect(&database_url, NoTls).await?;
+    let (mut db, connection) = zrotext_postgres_connection::connect(&database_url).await?;
     tokio::spawn(async move {
         let _ = connection.await;
     });

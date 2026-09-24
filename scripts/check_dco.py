@@ -10,7 +10,8 @@ import sys
 from datetime import datetime, timezone
 
 SIGNOFF = re.compile(r"^Signed-off-by:\s+.+\s+<([^<>\s]+@[^<>\s]+)>\s*$", re.I | re.M)
-BOT_EMAILS = {"49699333+dependabot[bot]@users.noreply.github.com"}
+DEPENDABOT_EMAIL = "49699333+dependabot[bot]@users.noreply.github.com"
+DEPENDABOT_LOGIN = "dependabot[bot]"
 GITHUB_COMMITTER_EMAILS = {"noreply@github.com"}
 POLICY_START = datetime(2026, 9, 23, 14, 32, tzinfo=timezone.utc)
 
@@ -23,6 +24,9 @@ def main() -> int:
     base = os.environ.get("PR_BASE_SHA", "")
     head = os.environ.get("PR_HEAD_SHA", "")
     created_at = os.environ.get("PR_CREATED_AT", "")
+    pr_author = os.environ.get("PR_AUTHOR_LOGIN", "")
+    head_repo = os.environ.get("PR_HEAD_REPO", "")
+    base_repo = os.environ.get("PR_BASE_REPO", "")
     if not re.fullmatch(r"[0-9a-f]{40}", base) or not re.fullmatch(r"[0-9a-f]{40}", head):
         print("PR_BASE_SHA and PR_HEAD_SHA must be commit hashes.", file=sys.stderr)
         return 2
@@ -31,6 +35,10 @@ def main() -> int:
     except ValueError:
         print("PR_CREATED_AT must be an ISO-8601 timestamp.", file=sys.stderr)
         return 2
+    if not pr_author or not head_repo or not base_repo:
+        print("PR_AUTHOR_LOGIN, PR_HEAD_REPO and PR_BASE_REPO are required.", file=sys.stderr)
+        return 2
+    trusted_dependabot_pr = pr_author == DEPENDABOT_LOGIN and head_repo == base_repo
     commits = git("rev-list", "--reverse", f"{base}..{head}").splitlines()
     if not commits:
         print("No pull request commits to check.")
@@ -38,7 +46,7 @@ def main() -> int:
     failures = []
     for sha in commits:
         author = git("show", "-s", "--format=%ae", sha)
-        if author.lower() in BOT_EMAILS:
+        if trusted_dependabot_pr and author.lower() == DEPENDABOT_EMAIL:
             continue
         # GitHub's web UI ("Update branch", the merge button) cannot add a
         # sign-off trailer, so its merge commits are exempt; the commits they
