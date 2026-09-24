@@ -11,6 +11,7 @@ tokio-postgres-rustls = { version = "0.14.0", default-features = false, features
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rustls-native-certs = "0.8"
 rustls-pemfile = "2"
+base64 = "0.23.1"
 thiserror = "2.0.16"
 
 [dev-dependencies]

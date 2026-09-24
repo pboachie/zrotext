@@ -75,9 +75,9 @@ indexes. Investigate any failure before retrying; do not modify
 The local Compose database is named `db` and stays on its private Docker network;
 this example does not enable PostgreSQL transport TLS. Remote database URLs for
 the API, migrator, and key rewrap tool must use `sslmode=require`. The application
-verifies the server certificate and URL hostname using system trust roots, or the
-PEM bundle at `DATABASE_TLS_CA_FILE`. Mount that file into each relevant
-container when using a private CA. A URL with `sslmode=prefer` or `disable` for
+verifies the server certificate and URL hostname using system trust roots, or a
+private CA PEM bundle supplied as `DATABASE_TLS_CA_PEM_B64`. Provide that variable
+to each relevant container when using a private CA. A URL with `sslmode=prefer` or `disable` for
 any host other than loopback, a Unix socket, or Compose `db` fails unless
 `DATABASE_ALLOW_PLAINTEXT=true` is explicitly set; that override logs a warning
 and permits unencrypted database traffic. See the

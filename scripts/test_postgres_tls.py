@@ -1,6 +1,7 @@
 """Disposable PostgreSQL TLS proof for the shared connector and migrator."""
 
 from datetime import datetime, timedelta, timezone
+import base64
 import os
 from pathlib import Path
 import secrets
@@ -99,7 +100,7 @@ def main():
         binding = command(["docker", "port", container, "5432/tcp"], capture_output=True).stdout.strip()
         port = binding.splitlines()[0].rsplit(":", 1)[1]
         trusted = os.environ.copy()
-        trusted["DATABASE_TLS_CA_FILE"] = str(directory / "ca.pem")
+        trusted["DATABASE_TLS_CA_PEM_B64"] = base64.b64encode((directory / "ca.pem").read_bytes()).decode("ascii")
         trusted["DATABASE_URL"] = f"postgresql://postgres@localhost:{port}/postgres?sslmode=require"
         trusted["ZT_POSTGRES_TLS_TEST_DATABASE_URL"] = trusted["DATABASE_URL"]
         cargo(trusted, True, "run", "--locked", "-p", "zrotext-migrator")
@@ -109,7 +110,7 @@ def main():
         wrong_host["DATABASE_URL"] = f"postgresql://postgres@127.0.0.1:{port}/postgres?sslmode=require"
         cargo(wrong_host, False, "run", "--locked", "-p", "zrotext-migrator")
         wrong_ca = trusted.copy()
-        wrong_ca["DATABASE_TLS_CA_FILE"] = str(directory / "wrong-ca.pem")
+        wrong_ca["DATABASE_TLS_CA_PEM_B64"] = base64.b64encode((directory / "wrong-ca.pem").read_bytes()).decode("ascii")
         cargo(wrong_ca, False, "run", "--locked", "-p", "zrotext-migrator")
         print("PostgreSQL TLS: migration and encrypted query passed; wrong host and CA rejected")
     finally:

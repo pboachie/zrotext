@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! The one production PostgreSQL transport policy for server and operator tools.
 
+use base64::{Engine, engine::general_purpose::STANDARD};
 use std::{
     env,
-    fs::File,
     future::Future,
     net::IpAddr,
-    path::Path,
     sync::{
         Arc, OnceLock,
         atomic::{AtomicBool, Ordering},
@@ -104,26 +103,32 @@ fn local_destination(config: &Config) -> bool {
 
 fn load_tls_config() -> Result<Arc<rustls::ClientConfig>, String> {
     let mut roots = rustls::RootCertStore::empty();
-    if let Some(path) = env::var_os("DATABASE_TLS_CA_FILE") {
-        let path = Path::new(&path);
-        let file = File::open(path)
-            .map_err(|error| format!("cannot open DATABASE_TLS_CA_FILE: {error}"))?;
-        let mut reader = std::io::BufReader::new(file);
-        let certs = rustls_pemfile::certs(&mut reader)
+    if let Ok(encoded) = env::var("DATABASE_TLS_CA_PEM_B64") {
+        if encoded.len() > 512 * 1024 {
+            return Err("DATABASE_TLS_CA_PEM_B64 exceeds 512 KiB".into());
+        }
+        let pem = STANDARD
+            .decode(encoded)
+            .map_err(|_| "DATABASE_TLS_CA_PEM_B64 is not valid base64".to_string())?;
+        let certs = rustls_pemfile::certs(&mut pem.as_slice())
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| format!("cannot read DATABASE_TLS_CA_FILE certificates: {error}"))?;
+            .map_err(|error| {
+                format!("cannot read DATABASE_TLS_CA_PEM_B64 certificates: {error}")
+            })?;
         for certificate in certs {
             roots
                 .add(certificate)
-                .map_err(|error| format!("invalid DATABASE_TLS_CA_FILE certificate: {error}"))?;
+                .map_err(|error| format!("invalid DATABASE_TLS_CA_PEM_B64 certificate: {error}"))?;
         }
-    } else {
+    } else if env::var_os("DATABASE_TLS_CA_PEM_B64").is_none() {
         let native = rustls_native_certs::load_native_certs();
         for certificate in native.certs {
             roots
                 .add(certificate)
                 .map_err(|error| format!("invalid system CA certificate: {error}"))?;
         }
+    } else {
+        return Err("DATABASE_TLS_CA_PEM_B64 must be valid UTF-8".into());
     }
     if roots.is_empty() {
         return Err("no trusted PostgreSQL CA certificates found".into());
