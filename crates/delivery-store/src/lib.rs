@@ -986,6 +986,26 @@ impl<'a> DeliveryStore<'a> {
         if attempt.is_none() {
             return Err(StoreError::StaleFence);
         }
+        // A no-submit proof releases the attempt's fence. Later evidence with
+        // a fresh event ID must not change a replacement attempt's message.
+        // Keep exact receipt replays above this check and allow late callbacks
+        // for retained fences, including after a session or deployment move.
+        let active_fence: bool = tx
+            .query_one(
+                "SELECT EXISTS(SELECT 1 FROM dispatch_fences WHERE attempt_id=$1 AND account_id=$2 \
+             AND message_id=$3 AND device_id=$4)",
+                &[
+                    &event.attempt_id,
+                    &event.account_id,
+                    &event.message_id,
+                    &event.device_id,
+                ],
+            )
+            .await?
+            .get(0);
+        if !active_fence {
+            return Err(StoreError::StaleFence);
+        }
         if event.evidence != Evidence::CallbackConflict {
             let conflicted: bool = tx.query_one(
                 "SELECT EXISTS(SELECT 1 FROM message_events WHERE attempt_id=$1 AND evidence_code='callback_conflict')",
@@ -996,16 +1016,6 @@ impl<'a> DeliveryStore<'a> {
             }
         }
         if event.evidence == Evidence::ProvenNoSubmit {
-            // A fresh event ID from a previously released attempt must never
-            // requeue a newer grant for the same message.
-            let active_fence: bool = tx.query_one(
-                "SELECT EXISTS(SELECT 1 FROM dispatch_fences WHERE attempt_id=$1 AND account_id=$2 \
-                 AND message_id=$3 AND device_id=$4)",
-                &[&event.attempt_id, &event.account_id, &event.message_id, &event.device_id],
-            ).await?.get(0);
-            if !active_fence {
-                return Err(StoreError::StaleFence);
-            }
             // The phone's durable no-radio proof may arrive after the writer's
             // silent-attempt timeout. Never release a fence once any radio
             // callback or contradictory evidence was recorded for this attempt.
@@ -1363,6 +1373,184 @@ fn state_from_row(row: &Row) -> Result<MessageState, StoreError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn released_attempt_cannot_change_a_new_grant() {
+        let Ok(url) = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL") else {
+            eprintln!("set ZT_DELIVERY_TEST_DATABASE_URL to run the database fault test");
+            return;
+        };
+        let (mut client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let schema = format!("stale_attempt_test_{}", Uuid::new_v4().simple());
+        client
+            .batch_execute(&format!(
+                "CREATE SCHEMA {schema}; SET search_path TO {schema}"
+            ))
+            .await
+            .unwrap();
+        for migration in [
+            include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
+            include_str!("../../../deploy/compose/migrations/002_auth.sql"),
+            include_str!("../../../deploy/compose/migrations/003_delivery.sql"),
+        ] {
+            client.batch_execute(migration).await.unwrap();
+        }
+        let account_id = Uuid::new_v4();
+        let device_id = Uuid::new_v4();
+        let message_id = Uuid::new_v4();
+        client
+            .execute("INSERT INTO accounts(id) VALUES($1)", &[&account_id])
+            .await
+            .unwrap();
+        client
+            .execute(
+                "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'synthetic phone')",
+                &[&device_id, &account_id],
+            )
+            .await
+            .unwrap();
+        client
+            .execute("UPDATE deployment_authority SET dispatch_enabled=TRUE", &[])
+            .await
+            .unwrap();
+        let mut store = DeliveryStore::new(&mut client);
+        store
+            .accept(NewMessage {
+                account_id,
+                device_id,
+                client_message_id: message_id,
+                idempotency_key: "stale-attempt",
+                recipient_e164: "+15551234567",
+                synthetic_payload: b"synthetic regression",
+                expires_at_ms: now_ms() + 60_000,
+            })
+            .await
+            .unwrap();
+        let session = store
+            .connect_session(account_id, device_id, "test", "test", 60)
+            .await
+            .unwrap();
+        let claim = store
+            .claim_due_for_device("test", account_id, device_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let attempt_id = Uuid::new_v4();
+        store
+            .issue_grant(&claim, &session, attempt_id)
+            .await
+            .unwrap();
+        let event = |evidence| RadioEvent {
+            event_id: Uuid::new_v4(),
+            account_id,
+            device_id,
+            message_id,
+            attempt_id,
+            evidence,
+            observed_at_ms: now_ms(),
+            segment_index: None,
+            segment_count: None,
+        };
+        let intent = event(Evidence::DurableSubmitIntent);
+        store.record_radio_event(intent).await.unwrap();
+        let proof = event(Evidence::ProvenNoSubmit);
+        store.record_radio_event(proof).await.unwrap();
+        let claim = store
+            .claim_due_for_device("test", account_id, device_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let fresh_attempt = Uuid::new_v4();
+        store
+            .issue_grant(&claim, &session, fresh_attempt)
+            .await
+            .unwrap();
+        // Exact receipts remain replayable without applying their state again.
+        assert_eq!(
+            store.record_radio_event(intent).await.unwrap(),
+            MessageState::Submitting
+        );
+        assert_eq!(
+            store.record_radio_event(proof).await.unwrap(),
+            MessageState::Queued
+        );
+        for evidence in [Evidence::DurableSubmitIntent, Evidence::CallbackConflict] {
+            assert!(matches!(
+                store.record_radio_event(event(evidence)).await,
+                Err(StoreError::StaleFence)
+            ));
+        }
+        assert_eq!(
+            store
+                .status(account_id, message_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            MessageState::Claimed
+        );
+        store
+            .record_radio_event(RadioEvent {
+                attempt_id: fresh_attempt,
+                ..event(Evidence::DurableSubmitIntent)
+            })
+            .await
+            .unwrap();
+        for evidence in [Evidence::SentCallbackOk, Evidence::SentCallbackFailed] {
+            assert!(matches!(
+                store
+                    .record_radio_event(RadioEvent {
+                        segment_index: Some(0),
+                        segment_count: Some(1),
+                        ..event(evidence)
+                    })
+                    .await,
+                Err(StoreError::StaleFence)
+            ));
+        }
+        assert_eq!(
+            store
+                .status(account_id, message_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            MessageState::Submitting
+        );
+        store
+            .record_radio_event(RadioEvent {
+                attempt_id: fresh_attempt,
+                segment_index: Some(0),
+                segment_count: Some(1),
+                ..event(Evidence::SentCallbackOk)
+            })
+            .await
+            .unwrap();
+        for evidence in [Evidence::DeliveryCallbackOk, Evidence::DeliveryTimeout] {
+            assert!(matches!(
+                store.record_radio_event(event(evidence)).await,
+                Err(StoreError::StaleFence)
+            ));
+        }
+        assert_eq!(
+            store
+                .status(account_id, message_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            MessageState::Submitted
+        );
+        client
+            .batch_execute(&format!(
+                "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
+            ))
+            .await
+            .unwrap();
+    }
 
     #[tokio::test]
     async fn exact_alpha_replay_survives_customer_binding_without_new_work() {
