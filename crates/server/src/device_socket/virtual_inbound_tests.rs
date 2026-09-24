@@ -63,6 +63,8 @@ async fn authenticated_inbound_replay_retries_one_webhook_delivery() {
         include_str!("../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"),
         include_str!("../../../../deploy/compose/migrations/008_stripe_billing_foundation.sql"),
         include_str!("../../../../deploy/compose/migrations/009_webhook_manual_replay.sql"),
+        include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
+        include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }
@@ -131,6 +133,7 @@ async fn authenticated_inbound_replay_retries_one_webhook_delivery() {
         instance_id: "virtual-server".into(),
         deployment_epoch: 1,
         enrollment_hasher: Arc::new(EnrollmentHasher::new(vec![9; 32]).unwrap()),
+        auth_hasher: Arc::new(TokenHasher::new(vec![10; 32]).unwrap()),
         alpha_policy: Arc::new(AlphaPolicy::parse(None, None, None).unwrap()),
         dispatch_runtime_enabled: false,
         inbound_pilot_enabled: true,
@@ -344,6 +347,180 @@ async fn authenticated_inbound_replay_retries_one_webhook_delivery() {
     );
 
     socket.close(None).await.unwrap();
+    server.abort();
+    admin
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn socket_handshakes_share_http_enrollment_budgets() {
+    use crate::http_enrollment::{self, EnrollmentHttpState};
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    let Ok(url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
+        return;
+    };
+    let (admin, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let schema = format!("socket_budget_{}", Uuid::new_v4().simple());
+    admin
+        .batch_execute(&format!("CREATE SCHEMA {schema}"))
+        .await
+        .unwrap();
+    let separator = if url.contains('?') { '&' } else { '?' };
+    let schema_url = format!("{url}{separator}options=-csearch_path%3D{schema}");
+    let (db, connection) = tokio_postgres::connect(&schema_url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    for migration in [
+        include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
+        include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+        include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
+        include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
+        include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
+        include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+    ] {
+        db.batch_execute(migration).await.unwrap();
+    }
+    let account_id = Uuid::new_v4();
+    let device_id = Uuid::new_v4();
+    let signing = SigningKey::random(&mut OsRng);
+    let public_key = signing.verifying_key().to_encoded_point(false);
+    let fingerprint: [u8; 32] = Sha256::digest(public_key.as_bytes()).into();
+    db.execute("INSERT INTO accounts(id) VALUES($1)", &[&account_id])
+        .await
+        .unwrap();
+    db.execute(
+        "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'budget fixture')",
+        &[&device_id, &account_id],
+    )
+    .await
+    .unwrap();
+    db.execute("INSERT INTO device_keys(device_id,account_id,signing_key_sec1,fingerprint) VALUES($1,$2,$3,$4)", &[&device_id,&account_id,&public_key.as_bytes(),&&fingerprint[..]]).await.unwrap();
+    let auth_hasher = Arc::new(TokenHasher::new(vec![10; 32]).unwrap());
+    let enrollment_hasher = Arc::new(EnrollmentHasher::new(vec![9; 32]).unwrap());
+    let state = DeviceSocketState {
+        database_url: schema_url.clone(),
+        site_id: "fixture".into(),
+        instance_id: "fixture".into(),
+        deployment_epoch: 1,
+        enrollment_hasher: enrollment_hasher.clone(),
+        auth_hasher: auth_hasher.clone(),
+        alpha_policy: Arc::new(AlphaPolicy::parse(None, None, None).unwrap()),
+        dispatch_runtime_enabled: false,
+        inbound_pilot_enabled: false,
+        draining: Arc::new(AtomicBool::new(false)),
+        drain_notify: Arc::new(Notify::new()),
+    };
+    let http = http_enrollment::router(EnrollmentHttpState::new(
+        schema_url,
+        auth_hasher.clone(),
+        enrollment_hasher,
+        "https://zrotext.example".into(),
+    ));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router(state)).await.unwrap();
+    });
+    let path = format!("/devices/{device_id}/challenge");
+    let request = || {
+        Request::builder()
+            .method("POST")
+            .uri(&path)
+            .body(Body::empty())
+            .unwrap()
+    };
+    // Spend 29 attempts on HTTP, then the last attempt on a fresh socket.
+    for _ in 0..29 {
+        assert_eq!(
+            http.clone().oneshot(request()).await.unwrap().status(),
+            StatusCode::OK
+        );
+    }
+    let (mut socket, _) = connect_async(format!("ws://{address}/v1/device-stream"))
+        .await
+        .unwrap();
+    send_json(
+        &mut socket,
+        json!({"v":1,"type":"hello","device_id":device_id}),
+    )
+    .await;
+    let challenge = receive_json(&mut socket).await;
+    assert_eq!(challenge["type"], "challenge");
+    assert_eq!(
+        http.clone().oneshot(request()).await.unwrap().status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    // A reconnect must not create the 31st persistent challenge.
+    let (mut denied, _) = connect_async(format!("ws://{address}/v1/device-stream"))
+        .await
+        .unwrap();
+    send_json(
+        &mut denied,
+        json!({"v":1,"type":"hello","device_id":device_id}),
+    )
+    .await;
+    assert!(matches!(
+        timeout(Duration::from_secs(5), denied.next())
+            .await
+            .unwrap(),
+        Some(Ok(Message::Close(_)))
+    ));
+    let count: i64 = db
+        .query_one("SELECT count(*) FROM device_auth_challenges", &[])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(count, 30);
+    // A valid signature must still be rejected when the shared proof budget is spent.
+    for _ in 0..30 {
+        assert!(
+            abuse_limits::consume(
+                &db,
+                &auth_hasher,
+                Limit::DeviceAuthenticate,
+                Some(&device_id.to_string())
+            )
+            .await
+            .unwrap()
+        );
+    }
+    let typed = DeviceChallenge {
+        id: Uuid::parse_str(challenge["challenge_id"].as_str().unwrap()).unwrap(),
+        account_id,
+        device_id,
+        nonce: URL_SAFE_NO_PAD
+            .decode(challenge["nonce"].as_str().unwrap())
+            .unwrap()
+            .try_into()
+            .unwrap(),
+    };
+    let signature: Signature = signing.sign(&device_challenge_bytes(&typed));
+    send_json(&mut socket, json!({"v":1,"type":"proof","challenge_id":typed.id,"account_id":account_id,"device_id":device_id,"nonce":challenge["nonce"],"signature_der":URL_SAFE_NO_PAD.encode(signature.to_der().as_bytes())})).await;
+    assert!(matches!(
+        timeout(Duration::from_secs(5), socket.next())
+            .await
+            .unwrap(),
+        Some(Ok(Message::Close(_)))
+    ));
+    let used: bool = db
+        .query_one(
+            "SELECT used_at IS NOT NULL FROM device_auth_challenges WHERE id=$1",
+            &[&typed.id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert!(
+        !used,
+        "rate-limited proof must not reach signature verification"
+    );
     server.abort();
     admin
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
