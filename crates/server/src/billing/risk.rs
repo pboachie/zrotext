@@ -3,7 +3,7 @@
 //! queue; provider reads then attribute its charge to a paid subscription
 //! invoice. No event body grants access or clears a hold.
 
-use super::{BillingError, lock_customer, queue_subscription, valid_id};
+use super::{BillingError, lock_customer, queue_subscription, valid_charge_id, valid_id};
 use reqwest::Client as HttpClient;
 use serde_json::Value;
 use tokio_postgres::Client;
@@ -23,7 +23,7 @@ pub(super) async fn fetch_charge(
     secret_key: &str,
     charge_id: &str,
 ) -> Result<Charge, BillingError> {
-    valid_id(charge_id, "ch_")?;
+    valid_charge_id(charge_id)?;
     let value = fetch_json(
         http,
         secret_key,
@@ -226,7 +226,7 @@ pub(super) async fn apply_hold(
     kind: &str,
 ) -> Result<(), BillingError> {
     valid_id(event_id, "evt_")?;
-    valid_id(charge_id, "ch_")?;
+    valid_charge_id(charge_id)?;
     valid_id(customer_id, "cus_")?;
     valid_id(subscription_id, "sub_")?;
     if !matches!(kind, "refund" | "dispute") {

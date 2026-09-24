@@ -206,4 +206,6 @@ Webhook stable event ID, creation timestamp, delivery timestamp, attempt ID, cip
 
 Stripe Checkout and hosted Customer Portal; signed raw-body events, unique event records, reconciliation jobs, and test-mode lifecycle tests. Server-side price allowlist; no client-controlled entitlement flags. [Stripe webhooks](https://docs.stripe.com/webhooks)
 
+The event inbox acts on `checkout.session.completed` (subscription mode), `customer.subscription.*`, `invoice.paid`, `invoice.payment_failed`, and the refund/dispute types `charge.refunded`, `refund.created` and `charge.dispute.created`. Risk holds cover both card charges (`ch_`) and PaymentIntent-scoped non-card charges (`py_`, used by SEPA Direct Debit, ACH and Bacs). Only signature failures and live-mode events are answered with 4xx; a correctly signed test-mode event whose object shape this build does not act on — for example a payment-mode Checkout completion — is acknowledged with 2xx and stored with an `unsupported` disposition, so a legitimate delivery is never retried to exhaustion or lost without a local record.
+
 Performance measurements should distinguish synthetic sockets, actual connected phones, and end-recipient delivery. API acknowledgment and online dispatch exclude radio and carrier latency.
