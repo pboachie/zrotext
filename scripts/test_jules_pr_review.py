@@ -1,8 +1,10 @@
 """Offline checks for Jules workflow routing and trust boundaries."""
 
 import json
+from io import BytesIO
 import unittest
 from unittest.mock import patch
+from urllib.error import HTTPError
 
 import jules_pr_review as review
 
@@ -103,11 +105,63 @@ class ReviewRoutingTests(unittest.TestCase):
             raise AssertionError(url)
 
         with patch.object(review, "pages", return_value=[]), \
+             patch.object(review, "source_branches", return_value={"codex/owner-ui"}), \
              patch.object(review, "request_json", side_effect=fake_request):
             review.start_review(74, "review", "dispatch-1", "github-test", "jules-test")
 
         self.assertEqual(len(posted), 1)
         self.assertIn(f"head={SHA} base={BASE_SHA} mode=review", posted[0]["body"])
+
+    def test_source_preflight_reads_connected_repository_and_branches(self):
+        def fake_request(url, **kwargs):
+            self.assertEqual(url, f"{review.JULES}/{review.SOURCE}")
+            self.assertEqual(kwargs["method"] if "method" in kwargs else "GET", "GET")
+            return {"name": review.SOURCE,
+                    "githubRepo": {"owner": "pboachie", "repo": "zrotext",
+                                   "branches": [{"displayName": "main"},
+                                                {"displayName": "codex/owner-ui"}]}}
+
+        with patch.object(review, "request_json", side_effect=fake_request):
+            self.assertEqual(review.source_branches("jules-test"),
+                             {"main", "codex/owner-ui"})
+
+    def test_unavailable_branch_defers_without_creating_a_paid_session(self):
+        requests = []
+
+        def fake_request(url, **kwargs):
+            requests.append(url)
+            if url == f"{review.GITHUB}/pulls/74":
+                return pull_request()
+            if url == f"{review.JULES}/{review.SOURCE}":
+                return {"name": review.SOURCE,
+                        "githubRepo": {"owner": "pboachie", "repo": "zrotext",
+                                       "branches": [{"displayName": "main"}]}}
+            raise AssertionError(url)
+
+        with patch.object(review, "pages", return_value=[]), \
+             patch.object(review, "request_json", side_effect=fake_request):
+            self.assertFalse(review.start_review(74, "review", "dispatch-1",
+                                                 "github-test", "jules-test"))
+        self.assertEqual(requests, [f"{review.GITHUB}/pulls/74",
+                                    f"{review.JULES}/{review.SOURCE}"])
+
+    def test_400_error_is_categorized_without_echoing_untrusted_data(self):
+        secret = "private-api-key-in-error"
+        body = json.dumps({"error": {"status": "INVALID_ARGUMENT",
+                                     "message": f"startingBranch unavailable; {secret}"}}).encode()
+        error = HTTPError(f"https://jules.googleapis.com/?key={secret}", 400,
+                          "Bad Request", None, BytesIO(body))
+        with patch.object(review, "urlopen", side_effect=error):
+            with self.assertRaisesRegex(RuntimeError,
+                                        r"jules request failed with HTTP 400 \(INVALID_ARGUMENT; branch\)") as caught:
+                review.request_json(f"{review.JULES}/sessions", token=secret,
+                                    service="jules", method="POST", payload={"prompt": "test"})
+        self.assertNotIn(secret, str(caught.exception))
+        self.assertNotIn("startingBranch unavailable", str(caught.exception))
+
+        quota = HTTPError("https://jules.googleapis.com/", 400, "Bad Request", None,
+                          BytesIO(b'{"error":{"status":"RESOURCE_EXHAUSTED","message":"Daily quota exceeded"}}'))
+        self.assertEqual(review.jules_error_category(quota), "RESOURCE_EXHAUSTED; capacity")
 
     def test_schedule_starts_one_missing_review_and_skips_existing_head(self):
         ready = pull_request(owner="dependabot[bot]")
@@ -126,7 +180,8 @@ class ReviewRoutingTests(unittest.TestCase):
             }[path]
 
         with patch.object(review, "pages", side_effect=fake_pages), \
-             patch.object(review, "start_review", side_effect=lambda *args: started.append(args)):
+             patch.object(review, "source_branches", return_value={"codex/owner-ui"}), \
+             patch.object(review, "start_review", side_effect=lambda *args, **kwargs: started.append(args) or True):
             review.start_missing_reviews("github-test", "jules-test")
 
         self.assertEqual(len(started), 1)
@@ -328,6 +383,7 @@ class AddressFeedbackTrustTests(unittest.TestCase):
             raise AssertionError(url)
 
         with patch.object(review, "pages", side_effect=lambda path, _token: data[path]), \
+             patch.object(review, "source_branches", return_value={"codex/owner-ui"}), \
              patch.object(review, "request_json", side_effect=fake_request):
             review.start_review(74, "address", "comment-8", "github-test", "jules-test")
 
