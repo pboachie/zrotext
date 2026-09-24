@@ -69,3 +69,7 @@ count. An exhausted socket closes; devices can reconnect and replay unacknowledg
 evidence using existing deduplication. Device implementations should pace backlog
 replay and use reconnect backoff. These are resource limits, not per-account abuse
 or billing quotas.
+
+## Source for modified deployments
+
+The server's HTML pages link to `/source`. Published release images point this link to the exact upstream commit used for the build. If you modify ZROtext and let people use your server over a network, set `SOURCE_URL` to a downloadable copy of the full corresponding source for **your running version**, including your changes and applicable build instructions. A link to the unmodified upstream repository is insufficient for a modified deployment. See [AGPL-3.0 section 13](https://www.gnu.org/licenses/agpl-3.0.en.html). Review the license for your situation.
