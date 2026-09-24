@@ -9,7 +9,7 @@ use serde_json::Value;
 use tokio_postgres::Client;
 use uuid::Uuid;
 
-const STRIPE_API_VERSION: &str = "2025-07-30.basil";
+pub(super) const STRIPE_API_VERSION: &str = "2025-07-30.basil";
 
 #[derive(Debug)]
 pub(super) struct Charge {
@@ -34,7 +34,7 @@ pub(super) async fn fetch_charge(
     parse_charge(&value, charge_id)
 }
 
-fn parse_charge(value: &Value, expected_id: &str) -> Result<Charge, BillingError> {
+pub(super) fn parse_charge(value: &Value, expected_id: &str) -> Result<Charge, BillingError> {
     if value["object"] != "charge" || value["livemode"] != false || value["id"] != expected_id {
         return Err(BillingError::InvalidEvent);
     }
@@ -82,7 +82,7 @@ pub(super) async fn fetch_charge_for_payment_intent(
     parse_charge_for_payment_intent(&value, payment_intent_id)
 }
 
-fn parse_charge_for_payment_intent(
+pub(super) fn parse_charge_for_payment_intent(
     value: &Value,
     payment_intent_id: &str,
 ) -> Result<Charge, BillingError> {
@@ -143,7 +143,10 @@ pub(super) async fn fetch_invoice_subscription(
     parse_invoice_subscription(&invoice, &invoice_id, &charge.customer_id)
 }
 
-fn parse_invoice_payment(value: &Value, payment_intent_id: &str) -> Result<String, BillingError> {
+pub(super) fn parse_invoice_payment(
+    value: &Value,
+    payment_intent_id: &str,
+) -> Result<String, BillingError> {
     if value["object"] != "list" || value["has_more"] != false {
         return Err(BillingError::InvalidEvent);
     }
@@ -167,7 +170,7 @@ fn parse_invoice_payment(value: &Value, payment_intent_id: &str) -> Result<Strin
     .to_owned())
 }
 
-fn parse_invoice_subscription(
+pub(super) fn parse_invoice_subscription(
     value: &Value,
     invoice_id: &str,
     customer_id: &str,
@@ -187,7 +190,11 @@ fn parse_invoice_subscription(
     Ok(valid_id(subscription, "sub_")?.to_owned())
 }
 
-async fn fetch_json(http: &HttpClient, secret_key: &str, url: &str) -> Result<Value, BillingError> {
+pub(super) async fn fetch_json(
+    http: &HttpClient,
+    secret_key: &str,
+    url: &str,
+) -> Result<Value, BillingError> {
     let mut response = http
         .get(url)
         .header("Stripe-Version", STRIPE_API_VERSION)

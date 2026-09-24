@@ -83,6 +83,15 @@ operational webhook encryption-key change. Follow the
 example does not configure webhook delivery or supply the required private
 keys.
 
+The image also contains the local TEST billing review command
+`/usr/local/bin/zrotext-billing-risk-review`. After migration 024, run it as a
+one-off process on the private Compose network with the runtime database URL;
+`list [--after evt_ID]` needs no provider key. For `resolve`, supply a TEST-only
+`STRIPE_BILLING_RECONCILIATION_KEY` through a temporary protected environment,
+not a Compose file, command argument or image layer. See the
+[billing review procedure](../../docs/protocol/stripe-test-billing-foundation.md)
+for the decision and audit rules. The Compose example does not enable billing.
+
 ## Database role separation
 
 The Compose API services use `zrotext_runtime`, with a separate

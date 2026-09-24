@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 pub mod http;
 pub mod owner;
+pub mod review;
 pub mod risk;
 pub mod sessions;
 pub mod worker;
