@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+{$EDGE_DOMAIN} {
+	reverse_proxy app:8080 {
+		# Authenticated device streams are long-lived WebSockets. Caddy
+		# forwards the Upgrade and Host headers without extra directives.
+		stream_timeout 24h
+		stream_close_delay 5m
+	}
+}
