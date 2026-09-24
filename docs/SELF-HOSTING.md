@@ -97,14 +97,24 @@ from 1 through 3650. An invalid value prevents server startup.
 | `ZT_SEALED_INBOUND_CONTENT_RETENTION_DAYS` | 30 | Null sealed inbound envelopes after this many days since receipt. |
 
 The message, event, webhook, and M1 inbound actions require an eligible terminal
-outbound message and no dispatch fence. `unknown`, `delivery_unknown`, other
-nonterminal states, and fenced messages retain their data until resolved. Pending
+outbound message and no unresolved dispatch fence (`granted`, `submitting`, or
+`unknown`). Completed `submitted` and `failed` fence records do not block
+retention. `unknown`, `delivery_unknown`, other nonterminal states, and messages
+with unresolved fences retain their data until resolved. Pending
 and leased webhook deliveries also remain until terminal. The M1 and sealed
 inbound event rows keep their IDs, device sequence fences, and digests after
 content redaction, so replay cannot recreate a purged body. Message IDs, state,
 attempts, digests, and usage records remain; this worker is not an account-erasure
 API. Backups, WAL, replicas, and PostgreSQL dead tuples need their own lifecycle
 policy. A database row update or deletion does not immediately erase old pages.
+
+After content redaction, late radio receipts are rejected as stale even when
+their event ID used to exist in the audit timeline. Device clients must
+quarantine that terminal rejection rather than reconnecting with the same
+frame. The [stale-event protocol fix](https://github.com/pboachie/zrotext/issues/147)
+is a rollout dependency for this retention worker. Inbound source admission
+uses the attempt's durable `submitted` status after sent-callback audit events
+have been pruned; new inbound events still have a seven-day upload-age limit.
 
 When changing these settings across multiple hubs, deploy the same values to
 every hub. A shorter value can make data eligible immediately, while a longer

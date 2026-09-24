@@ -139,6 +139,18 @@ async fn retention_respects_each_cutoff_and_replay_fences() {
     let inbound_fenced = inbound(&db, account, device, fenced, 4, 120).await;
     let inbound_no_webhook = inbound(&db, account, device, old, 5, 31).await;
     let inbound_pending = inbound(&db, account, device, old, 6, 31).await;
+    // A normal completed radio attempt retains a submitted fence for late
+    // evidence. This must not prevent terminal content/history retention.
+    let old_attempt: Uuid = db
+        .query_one(
+            "SELECT attempt_id FROM inbound_events WHERE id=$1",
+            &[&inbound_old],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    db.execute("INSERT INTO dispatch_fences(message_id,account_id,device_id,attempt_id,generation,session_epoch,deployment_epoch,grant_expires_at,outcome) VALUES($1,$2,$3,$4,1,1,1,now()+interval '1 day','submitted')",
+        &[&old,&account,&device,&old_attempt]).await.unwrap();
 
     let endpoint = Uuid::new_v4();
     db.execute("INSERT INTO webhook_endpoints(id,account_id,callback_url,signing_secret_ciphertext,signing_secret_key_version) VALUES($1,$2,'https://example.test/hook',$3,1)",
@@ -158,9 +170,9 @@ async fn retention_respects_each_cutoff_and_replay_fences() {
     let pending_delivery = Uuid::new_v4();
     db.execute("INSERT INTO webhook_deliveries(id,account_id,endpoint_id,event_id,status,created_at,updated_at) VALUES($1,$2,$3,$4,'pending',now()-interval '31 days',now()-interval '31 days')",
         &[&pending_delivery,&account,&endpoint,&inbound_pending]).await.unwrap();
-    let old_attempt = Uuid::new_v4();
+    let old_webhook_attempt = Uuid::new_v4();
     db.execute("INSERT INTO webhook_attempts(id,delivery_id,attempt_number,completed_at,outcome) VALUES($1,$2,1,now(),'ack')",
-        &[&old_attempt,&deliveries[0]]).await.unwrap();
+        &[&old_webhook_attempt,&deliveries[0]]).await.unwrap();
     db.execute("INSERT INTO webhook_replay_requests(account_id,request_id,delivery_id,generation) VALUES($1,$2,$3,2)",
         &[&account,&Uuid::new_v4(),&deliveries[0]]).await.unwrap();
 
@@ -222,7 +234,7 @@ async fn retention_respects_each_cutoff_and_replay_fences() {
     for id in &deliveries[1..] {
         assert!(present(&db, "webhook_deliveries", *id).await);
     }
-    assert!(!present(&db, "webhook_attempts", old_attempt).await);
+    assert!(!present(&db, "webhook_attempts", old_webhook_attempt).await);
     assert!(
         !db.query_one(
             "SELECT EXISTS(SELECT 1 FROM webhook_replay_requests WHERE delivery_id=$1)",
@@ -242,6 +254,64 @@ async fn retention_respects_each_cutoff_and_replay_fences() {
     assert!(old_row.get::<_, Option<String>>(0).is_none());
     assert!(old_row.get::<_, Option<Vec<u8>>>(1).is_none());
     assert_eq!(old_row.get::<_, Vec<u8>>(2), vec![1_u8; 32]);
+    assert!(db.query_one("SELECT EXISTS(SELECT 1 FROM dispatch_fences WHERE message_id=$1 AND outcome='submitted')", &[&old]).await.unwrap().get::<_,bool>(0));
+    assert_eq!(
+        db.query_one(
+            "SELECT status FROM message_attempts WHERE id=$1",
+            &[&old_attempt]
+        )
+        .await
+        .unwrap()
+        .get::<_, String>(0),
+        "submitted"
+    );
+    let late = zrotext_delivery_store::RadioEvent {
+        event_id: events[0],
+        account_id: account,
+        device_id: device,
+        message_id: old,
+        attempt_id: old_attempt,
+        evidence: zrotext_domain::Evidence::DeliveryCallbackOk,
+        observed_at_ms: 1_700_000_000_000,
+        segment_index: None,
+        segment_count: None,
+    };
+    assert!(matches!(
+        zrotext_delivery_store::DeliveryStore::new(&mut db)
+            .record_radio_event(late)
+            .await,
+        Err(zrotext_delivery_store::StoreError::StaleFence)
+    ));
+    db.execute("INSERT INTO sites(site_id) VALUES('retention-test')", &[])
+        .await
+        .unwrap();
+    db.execute("INSERT INTO device_sessions(device_id,account_id,site_id,instance_id,connection_epoch,lease_until,deployment_epoch) VALUES($1,$2,'retention-test','synthetic-hub',1,now()+interval '1 day',1)",
+        &[&device,&account]).await.unwrap();
+    let grant = zrotext_delivery_store::GrantRecord {
+        account_id: account,
+        message_id: old,
+        attempt_id: old_attempt,
+        device_id: device,
+        generation: 1,
+        session_epoch: 1,
+        deployment_epoch: 1,
+        recipient_digest: vec![1_u8; 32],
+        expires_at_ms: 0,
+    };
+    let session = zrotext_delivery_store::SessionRecord {
+        account_id: account,
+        device_id: device,
+        site_id: "retention-test".into(),
+        instance_id: "synthetic-hub".into(),
+        epoch: 1,
+        deployment_epoch: 1,
+    };
+    assert!(matches!(
+        zrotext_delivery_store::DeliveryStore::new(&mut db)
+            .synthetic_payload_for_grant(&grant, &session)
+            .await,
+        Err(zrotext_delivery_store::StoreError::StaleFence)
+    ));
     for id in [recent, unknown, fenced] {
         assert_eq!(
             db.query_one("SELECT recipient_e164 FROM messages WHERE id=$1", &[&id])

@@ -932,8 +932,12 @@ impl<'a> DeliveryStore<'a> {
             &[&grant.account_id, &grant.message_id, &grant.device_id, &grant.attempt_id,
               &grant.generation, &grant.session_epoch, &grant.deployment_epoch],
         ).await?.ok_or(StoreError::StaleFence)?;
-        let recipient: String = row.get(0);
-        let body_bytes: Vec<u8> = row.get(1);
+        let recipient: String = row
+            .get::<_, Option<String>>(0)
+            .ok_or(StoreError::StaleFence)?;
+        let body_bytes: Vec<u8> = row
+            .get::<_, Option<Vec<u8>>>(1)
+            .ok_or(StoreError::StaleFence)?;
         let recipient_digest: Vec<u8> = row.get(2);
         if recipient_digest != grant.recipient_digest
             || recipient_digest != Sha256::digest(recipient.as_bytes()).as_slice()
@@ -990,12 +994,20 @@ impl<'a> DeliveryStore<'a> {
         let tx = self.client.transaction().await?;
         let row = tx
             .query_opt(
-                "SELECT state FROM messages WHERE account_id=$1 AND id=$2 FOR UPDATE",
+                "SELECT state,recipient_e164 IS NULL FROM messages \
+                 WHERE account_id=$1 AND id=$2 FOR UPDATE",
                 &[&event.account_id, &event.message_id],
             )
             .await?
             .ok_or(StoreError::NotFound)?;
         let current = state_from_row(&row)?;
+        // After terminal content retention, a late receipt is stale even if
+        // its old event ID has since been removed from the audit timeline.
+        // The device stream must quarantine StaleFence instead of reconnecting
+        // with the same frame (#147).
+        if row.get::<_, bool>(1) {
+            return Err(StoreError::StaleFence);
+        }
         if let Some(existing) = tx
             .query_opt(
                 "SELECT event_digest,resulting_state FROM message_events WHERE id=$1",

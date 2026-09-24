@@ -203,16 +203,15 @@ pub async fn ingest(
     key.verify(&signed, &signature)
         .map_err(|_| InboundError::InvalidSignature)?;
 
-    // A reply can be associated only with a message attempt from this tenant
-    // and device that already has positive sent-callback evidence.
+    // A reply can be associated only with a submitted attempt from this tenant
+    // and device. The submitted status is written only after positive sent
+    // callback evidence and remains after its audit event is pruned.
     let source = tx
         .query_opt(
             "SELECT 1 FROM message_attempts ma \
          JOIN messages m ON (m.account_id,m.id)=(ma.account_id,ma.message_id) \
          WHERE ma.id=$1 AND ma.account_id=$2 AND ma.device_id=$3 \
          AND ma.message_id=$4 AND ma.status='submitted' \
-         AND EXISTS (SELECT 1 FROM message_events me \
-             WHERE me.attempt_id=ma.id AND me.evidence_code='sent_callback_ok') \
          FOR SHARE OF ma,m",
             &[
                 &event.attempt_id,

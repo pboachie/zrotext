@@ -96,7 +96,7 @@ pub async fn prune(
          WHERE m.updated_at<=now()-$1::int * interval '1 day' \
            AND m.recipient_e164 IS NOT NULL \
            AND m.state IN ('delivered','failed','cancelled','expired') \
-           AND NOT EXISTS (SELECT 1 FROM dispatch_fences f WHERE f.message_id=m.id) \
+           AND NOT EXISTS (SELECT 1 FROM dispatch_fences f WHERE f.message_id=m.id AND f.outcome IN ('granted','submitting','unknown')) \
          ORDER BY m.updated_at,m.id FOR UPDATE OF m SKIP LOCKED LIMIT $2) \
          UPDATE messages m SET recipient_e164=NULL,transport_payload=NULL \
          FROM due WHERE m.id=due.id",
@@ -109,7 +109,7 @@ pub async fn prune(
          JOIN messages m ON (m.account_id,m.id)=(e.account_id,e.message_id) \
          WHERE e.received_at<=now()-$1::int * interval '1 day' \
            AND m.state IN ('delivered','failed','cancelled','expired') \
-           AND NOT EXISTS (SELECT 1 FROM dispatch_fences f WHERE f.message_id=m.id) \
+           AND NOT EXISTS (SELECT 1 FROM dispatch_fences f WHERE f.message_id=m.id AND f.outcome IN ('granted','submitting','unknown')) \
          ORDER BY e.received_at,e.id FOR UPDATE OF e SKIP LOCKED LIMIT $2) \
          DELETE FROM message_events e USING due WHERE e.id=due.id",
             &[&policy.message_events_days, &limit],
@@ -127,7 +127,7 @@ pub async fn prune(
          WHERE d.status IN ('succeeded','dead') \
            AND d.updated_at<=now()-$1::int * interval '1 day' \
            AND m.state IN ('delivered','failed','cancelled','expired') \
-           AND NOT EXISTS (SELECT 1 FROM dispatch_fences f WHERE f.message_id=m.id) \
+           AND NOT EXISTS (SELECT 1 FROM dispatch_fences f WHERE f.message_id=m.id AND f.outcome IN ('granted','submitting','unknown')) \
          ORDER BY d.updated_at,d.id FOR UPDATE OF d SKIP LOCKED LIMIT $2",
             &[&policy.webhook_days, &limit],
         )
@@ -160,7 +160,7 @@ pub async fn prune(
          WHERE i.received_at<=now()-$1::int * interval '1 day' \
            AND i.content_ciphertext IS NOT NULL \
            AND m.state IN ('delivered','failed','cancelled','expired') \
-           AND NOT EXISTS (SELECT 1 FROM dispatch_fences f WHERE f.message_id=m.id) \
+           AND NOT EXISTS (SELECT 1 FROM dispatch_fences f WHERE f.message_id=m.id AND f.outcome IN ('granted','submitting','unknown')) \
            AND NOT EXISTS (SELECT 1 FROM webhook_deliveries d WHERE d.event_id=i.id) \
          ORDER BY i.received_at,i.id FOR UPDATE OF i SKIP LOCKED LIMIT $2) \
          UPDATE inbound_events i SET content_kind='redacted',content_ciphertext=NULL \
