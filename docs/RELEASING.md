@@ -22,8 +22,11 @@ Before writing the receipt, the workflow pulls that exact digest and boots its
 migrator and API in a disposable Compose project. It checks source labels,
 container image IDs, migrations, health, readiness, disabled dispatch and a
 seeded logical restore with two synthetic tenants and persisted delivery and
-usage state. A failed rehearsal leaves no promotion receipt. The registry
-may retain the uniquely tagged image after a failure; do not promote it.
+usage state. It also retrieves the BuildKit SPDX SBOM from the published digest,
+requires a nonempty package inventory, and signs that exact SBOM as a GitHub
+attestation for the same digest. A failed rehearsal or missing SBOM leaves no
+promotion receipt. The registry may retain the uniquely tagged image after a
+failure; do not promote it.
 
 Before linking an image from the GitHub Release, review the workflow result and
 download its `image-receipt.json`. From a checkout with fetched release tags,
@@ -36,13 +39,18 @@ python3 scripts/verify_release_image.py --tag v0.1.0-rc.1 \
 ```
 
 Select the tag independently of the receipt. This verifies the receipt's
-derived fields, annotated tag and `main` ancestry, GitHub's attestation for
-the exact image digest with the release workflow and source ref/SHA pinned,
-then pulls that digest and checks its source labels. A receipt or mutable
-registry tag alone is insufficient. Confirm the package is publicly readable
-without registry credentials before offering it to self-hosters. A successful
-image verification does not establish Android, phone, database-restore, or
-hosted-deployment readiness.
+derived fields, annotated tag and `main` ancestry, GitHub's provenance
+attestation for the exact image digest with the release workflow and source
+ref/SHA pinned, and a separately verified SPDX SBOM attestation whose content
+matches the BuildKit SBOM retrieved from that same published digest. It then
+pulls that digest and checks its source labels. This requires Docker Buildx,
+the GitHub CLI, and registry access to the image and its attestations. A
+receipt or mutable registry tag alone is insufficient. Confirm the package is
+publicly readable without registry credentials before offering it to
+self-hosters. A successful image verification does not establish Android,
+phone, database-restore, or hosted-deployment readiness. The Android candidate
+workflow currently has no APK SBOM or signed APK SBOM attestation. BuildKit's
+default SBOM inventories the final server image, not build-stage dependencies.
 
 ## Android candidate custody
 

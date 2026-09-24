@@ -8,6 +8,7 @@ import subprocess
 import sys
 
 from write_image_receipt import IMAGE, image_receipt
+from verify_published_sbom import SbomError, published_sbom, spdx_predicate
 
 
 REPOSITORY = "pboachie/zrotext"
@@ -106,6 +107,37 @@ def verify_attestation(receipt: dict[str, object]) -> None:
         raise VerificationError("verified attestation does not name the selected image digest") from exc
 
 
+def verify_sbom_attestation(receipt: dict[str, object]) -> None:
+    image_ref = str(receipt["image_ref"])
+    try:
+        document = published_sbom(image_ref)
+        predicate_type = spdx_predicate(document)
+    except SbomError as exc:
+        raise VerificationError("published image has no verified SPDX SBOM") from exc
+    output = gh_output([
+        "attestation", "verify", f"oci://{image_ref}",
+        "--repo", REPOSITORY, "--signer-workflow", WORKFLOW,
+        "--source-ref", f"refs/tags/{receipt['source_tag']}",
+        "--source-digest", str(receipt["source_commit"]),
+        "--predicate-type", predicate_type, "--format", "json",
+    ], "image SBOM attestation verification")
+    try:
+        verified = json.loads(output)
+        if not isinstance(verified, list) or not any(
+            statement.get("predicateType") == predicate_type
+            and statement.get("predicate") == document
+            and any(subject.get("name") == IMAGE
+                    and subject.get("digest", {}).get("sha256") ==
+                        str(receipt["image_digest"])[len("sha256:"):]
+                    for subject in statement["subject"])
+            for item in verified
+            for statement in [item["verificationResult"]["statement"]]
+        ):
+            raise ValueError("SBOM subject or predicate mismatch")
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise VerificationError("verified SBOM differs from the published image digest") from exc
+
+
 def ensure_local_docker() -> None:
     override = os.environ.get("DOCKER_HOST", "")
     if override and not override.startswith(("npipe://", "unix://")):
@@ -150,6 +182,7 @@ def main() -> None:
     receipt = checked_receipt(sys.stdin.buffer.read(MAX_RECEIPT_BYTES + 1), args.tag)
     verify_tag(args.tag, str(receipt["source_commit"]))
     verify_attestation(receipt)
+    verify_sbom_attestation(receipt)
     verify_image(receipt)
     print(f"verified server image {receipt['image_ref']} from {args.tag} "
           f"at {receipt['source_commit']}")
