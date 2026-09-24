@@ -111,7 +111,7 @@ class InboundJournalTest {
         val first = Room.databaseBuilder(context, SmsJournalDatabase::class.java, name)
             .allowMainThreadQueries().addMigrations(SmsJournalDatabase.MIGRATION_1_2,
                 SmsJournalDatabase.MIGRATION_2_3, SmsJournalDatabase.MIGRATION_3_4,
-                SmsJournalDatabase.MIGRATION_4_5).build()
+                SmsJournalDatabase.MIGRATION_4_5, SmsJournalDatabase.MIGRATION_5_6).build()
         try {
             val a = first.attempts()
             val id = "e6f78854-8cdc-4788-b56c-350d5902a673"
@@ -127,7 +127,7 @@ class InboundJournalTest {
         val reopened = Room.databaseBuilder(context, SmsJournalDatabase::class.java, name)
             .allowMainThreadQueries().addMigrations(SmsJournalDatabase.MIGRATION_1_2,
                 SmsJournalDatabase.MIGRATION_2_3, SmsJournalDatabase.MIGRATION_3_4,
-                SmsJournalDatabase.MIGRATION_4_5).build()
+                SmsJournalDatabase.MIGRATION_4_5, SmsJournalDatabase.MIGRATION_5_6).build()
         try {
             val persisted = reopened.attempts().inboundByDedupe("d".repeat(64))!!
             assertEquals(InboundClassification.CAPTURED_LOCAL, persisted.classification)

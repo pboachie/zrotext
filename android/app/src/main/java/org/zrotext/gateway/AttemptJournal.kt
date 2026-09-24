@@ -32,7 +32,10 @@ data class SmsAttempt(
     val createdAtMs: Long,
     val updatedAtMs: Long,
     @ColumnInfo(defaultValue = "0") val evidenceConflict: Boolean = false,
-    @ColumnInfo(defaultValue = "NULL") val messageId: String? = null
+    @ColumnInfo(defaultValue = "NULL") val messageId: String? = null,
+    @ColumnInfo(defaultValue = "NULL") val accountId: String? = null,
+    @ColumnInfo(defaultValue = "NULL") val deviceId: String? = null,
+    @ColumnInfo(defaultValue = "NULL") val originHash: String? = null
 )
 
 /** One event ID and its exact payload stay in Room until the writer acknowledges them. */
@@ -54,7 +57,12 @@ data class AlphaRadioEvent(
     val observedAtMs: Long,
     val segmentIndex: Int? = null,
     val segmentCount: Int? = null,
-    val acknowledgedAtMs: Long? = null
+    val acknowledgedAtMs: Long? = null,
+    @ColumnInfo(defaultValue = "NULL") val accountId: String? = null,
+    @ColumnInfo(defaultValue = "NULL") val deviceId: String? = null,
+    @ColumnInfo(defaultValue = "NULL") val originHash: String? = null,
+    @ColumnInfo(defaultValue = "NULL") val quarantinedAtMs: Long? = null,
+    @ColumnInfo(defaultValue = "NULL") val quarantineReason: String? = null
 )
 
 /** The one locally approved sender/SIM window is bound to the durable alpha attempt. */
@@ -116,7 +124,10 @@ data class InboundUpload(
     val accountId: String? = null,
     val deviceId: String? = null,
     val signatureDer: ByteArray? = null,
-    val acknowledgedAtMs: Long? = null
+    val acknowledgedAtMs: Long? = null,
+    @ColumnInfo(defaultValue = "NULL") val originHash: String? = null,
+    @ColumnInfo(defaultValue = "NULL") val quarantinedAtMs: Long? = null,
+    @ColumnInfo(defaultValue = "NULL") val quarantineReason: String? = null
 )
 
 internal object InboundClassification {
@@ -204,8 +215,16 @@ abstract class SmsAttemptDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     abstract fun insertInboundUpload(upload: InboundUpload): Long
 
-    @Query("SELECT u.* FROM inbound_uploads u JOIN inbound_events i ON i.eventId = u.eventId WHERE u.acknowledgedAtMs IS NULL AND i.receivedAtMs >= :minimumObservedAtMs ORDER BY u.sequence LIMIT 1")
-    abstract fun nextInboundUpload(minimumObservedAtMs: Long): InboundUpload?
+    @Query("SELECT u.* FROM inbound_uploads u JOIN inbound_events i ON i.eventId = u.eventId WHERE u.acknowledgedAtMs IS NULL AND u.quarantinedAtMs IS NULL AND u.accountId = :accountId AND u.deviceId = :deviceId AND u.originHash = :originHash AND i.receivedAtMs >= :minimumObservedAtMs ORDER BY u.sequence LIMIT 1")
+    abstract fun nextInboundUpload(minimumObservedAtMs: Long, accountId: String,
+                                   deviceId: String, originHash: String): InboundUpload?
+
+    @Query("UPDATE inbound_uploads SET quarantinedAtMs = :now, quarantineReason = 'identity_changed' WHERE acknowledgedAtMs IS NULL AND quarantinedAtMs IS NULL AND (accountId IS NULL OR deviceId IS NULL OR originHash IS NULL OR accountId != :accountId OR deviceId != :deviceId OR originHash != :originHash)")
+    abstract fun quarantineForeignInbound(accountId: String, deviceId: String,
+                                          originHash: String, now: Long): Int
+
+    @Query("UPDATE inbound_uploads SET quarantinedAtMs = :now, quarantineReason = :reason WHERE eventId = :eventId AND acknowledgedAtMs IS NULL AND quarantinedAtMs IS NULL")
+    abstract fun quarantineInboundUpload(eventId: String, reason: String, now: Long): Int
 
     @Query("SELECT * FROM inbound_uploads WHERE eventId = :eventId LIMIT 1")
     abstract fun inboundUpload(eventId: String): InboundUpload?
@@ -213,9 +232,9 @@ abstract class SmsAttemptDao {
     @Query("SELECT * FROM inbound_events WHERE eventId = :eventId LIMIT 1")
     abstract fun inboundByEventId(eventId: String): InboundEvent?
 
-    @Query("UPDATE inbound_uploads SET accountId = :accountId, deviceId = :deviceId, signatureDer = :signature WHERE eventId = :eventId AND accountId IS NULL AND deviceId IS NULL AND signatureDer IS NULL AND acknowledgedAtMs IS NULL")
+    @Query("UPDATE inbound_uploads SET signatureDer = :signature WHERE eventId = :eventId AND accountId = :accountId AND deviceId = :deviceId AND originHash = :originHash AND signatureDer IS NULL AND acknowledgedAtMs IS NULL AND quarantinedAtMs IS NULL")
     abstract fun signInboundUpload(eventId: String, accountId: String, deviceId: String,
-                                   signature: ByteArray): Int
+                                   originHash: String, signature: ByteArray): Int
 
     @Query("UPDATE inbound_uploads SET acknowledgedAtMs = :now WHERE eventId = :eventId AND acknowledgedAtMs IS NULL AND signatureDer IS NOT NULL")
     abstract fun acknowledgeInboundUpload(eventId: String, now: Long): Int
@@ -268,7 +287,9 @@ abstract class SmsAttemptDao {
             if (classification == InboundClassification.CAPTURED_LOCAL) nonce else null)
         return if (insertInboundEvent(event) != -1L) {
             if (classification == InboundClassification.CAPTURED_LOCAL) {
-                check(insertInboundUpload(InboundUpload(eventId = event.eventId)) > 0)
+                check(insertInboundUpload(InboundUpload(eventId = event.eventId,
+                    accountId = attempt.accountId, deviceId = attempt.deviceId,
+                    originHash = attempt.originHash)) > 0)
             }
             event
         } else inboundByDedupe(dedupeToken)
@@ -286,13 +307,21 @@ abstract class SmsAttemptDao {
     @Query("SELECT * FROM alpha_radio_events WHERE eventId = :eventId")
     abstract fun getAlphaEvent(eventId: String): AlphaRadioEvent?
 
-    @Query("SELECT * FROM alpha_radio_events WHERE acknowledgedAtMs IS NULL ORDER BY rowid LIMIT 1")
-    abstract fun nextAlphaEvent(): AlphaRadioEvent?
+    @Query("SELECT * FROM alpha_radio_events WHERE acknowledgedAtMs IS NULL AND quarantinedAtMs IS NULL AND accountId = :accountId AND deviceId = :deviceId AND originHash = :originHash ORDER BY rowid LIMIT 1")
+    abstract fun nextAlphaEvent(accountId: String, deviceId: String,
+                                originHash: String): AlphaRadioEvent?
 
-    @Query("SELECT e.* FROM alpha_radio_events e JOIN sms_attempts a ON a.attemptId = e.attemptId WHERE e.evidence = 'durable_submit_intent' AND e.acknowledgedAtMs IS NULL AND a.state IN ('reserved','not_submitted') ORDER BY e.rowid")
+    @Query("UPDATE alpha_radio_events SET quarantinedAtMs = :now, quarantineReason = 'identity_changed' WHERE acknowledgedAtMs IS NULL AND quarantinedAtMs IS NULL AND (accountId IS NULL OR deviceId IS NULL OR originHash IS NULL OR accountId != :accountId OR deviceId != :deviceId OR originHash != :originHash)")
+    abstract fun quarantineForeignAlpha(accountId: String, deviceId: String,
+                                        originHash: String, now: Long): Int
+
+    @Query("UPDATE alpha_radio_events SET quarantinedAtMs = :now, quarantineReason = :reason WHERE eventId = :eventId AND acknowledgedAtMs IS NULL AND quarantinedAtMs IS NULL")
+    abstract fun quarantineAlphaEvent(eventId: String, reason: String, now: Long): Int
+
+    @Query("SELECT e.* FROM alpha_radio_events e JOIN sms_attempts a ON a.attemptId = e.attemptId WHERE e.evidence = 'durable_submit_intent' AND e.acknowledgedAtMs IS NULL AND e.quarantinedAtMs IS NULL AND a.state IN ('reserved','not_submitted') ORDER BY e.rowid")
     protected abstract fun orphanedAlphaIntents(): List<AlphaRadioEvent>
 
-    @Query("UPDATE alpha_radio_events SET acknowledgedAtMs = :now WHERE eventId = :eventId AND acknowledgedAtMs IS NULL")
+    @Query("UPDATE alpha_radio_events SET acknowledgedAtMs = :now WHERE eventId = :eventId AND acknowledgedAtMs IS NULL AND quarantinedAtMs IS NULL")
     abstract fun acknowledgeAlphaEvent(eventId: String, now: Long): Int
 
     @Query("SELECT * FROM sms_attempts WHERE attemptId = :attemptId")
@@ -331,7 +360,9 @@ abstract class SmsAttemptDao {
                 it.sentResultCode != null || it.deliveryResultCode != null || it.deliveryStatus != null
             }) return
         insertAlphaEvent(AlphaRadioEvent(UUID.randomUUID().toString(), messageId,
-            attemptId, "proven_no_submit", now))
+            attemptId, "proven_no_submit", now,
+            accountId = attempt.accountId, deviceId = attempt.deviceId,
+            originHash = attempt.originHash))
     }
 
     /** The state and proof are committed together, before a later grant can be issued. */
@@ -372,7 +403,9 @@ abstract class SmsAttemptDao {
         val messageId = attempt.messageId ?: return
         removePendingNoRadioProof(attempt.attemptId)
         insertAlphaEvent(AlphaRadioEvent(UUID.randomUUID().toString(), messageId,
-            attempt.attemptId, "callback_conflict", now))
+            attempt.attemptId, "callback_conflict", now,
+            accountId = attempt.accountId, deviceId = attempt.deviceId,
+            originHash = attempt.originHash))
     }
 
     @Query("UPDATE sms_segments SET sentResultCode = :result WHERE attemptId = :attemptId AND segmentIndex = :index AND sentResultCode IS NULL")
@@ -405,17 +438,20 @@ abstract class SmsAttemptDao {
     open fun reserveAlpha(
         attemptId: String, messageId: String, subscriptionId: Int,
         segmentCount: Int, intentEventId: String, now: Long,
-        approvedSenderToken: String? = null
+        approvedSenderToken: String? = null, identity: EvidenceIdentity
     ) {
         require(segmentCount in 1..6)
         require(listOf(attemptId, messageId, intentEventId).all {
             runCatching { UUID.fromString(it).toString() == it }.getOrDefault(false)
         })
         insertAttempt(SmsAttempt(attemptId, subscriptionId, segmentCount,
-            AttemptState.RESERVED, now, now, messageId = messageId))
+            AttemptState.RESERVED, now, now, messageId = messageId,
+            accountId = identity.accountId, deviceId = identity.deviceId,
+            originHash = identity.originHash))
         insertSegments((0 until segmentCount).map { SmsSegment(attemptId, it) })
         insertAlphaEvent(AlphaRadioEvent(intentEventId, messageId, attemptId,
-            "durable_submit_intent", now))
+            "durable_submit_intent", now, accountId = identity.accountId,
+            deviceId = identity.deviceId, originHash = identity.originHash))
         if (approvedSenderToken != null) {
             require(approvedSenderToken.matches(Regex("[0-9a-f]{64}")))
             insertInboundWindow(InboundWindow(attemptId, messageId, approvedSenderToken,
@@ -427,7 +463,8 @@ abstract class SmsAttemptDao {
     @Transaction
     open fun acknowledgeAlphaIntent(eventId: String, permitted: Boolean, now: Long): Boolean {
         val event = getAlphaEvent(eventId) ?: return false
-        if (event.evidence != "durable_submit_intent" || event.acknowledgedAtMs != null) return false
+        if (event.evidence != "durable_submit_intent" || event.acknowledgedAtMs != null ||
+            event.quarantinedAtMs != null) return false
         val attempt = getAttempt(event.attemptId) ?: return false
         if (attempt.state != AttemptState.RESERVED || attempt.messageId != event.messageId) {
             acknowledgeAlphaEvent(eventId, now)
@@ -477,12 +514,15 @@ abstract class SmsAttemptDao {
         if (!delivery && attempt.messageId != null && !attempt.evidenceConflict) {
             insertAlphaEvent(AlphaRadioEvent(UUID.randomUUID().toString(), attempt.messageId,
                 attemptId, if (result == Activity.RESULT_OK) "sent_callback_ok" else "sent_callback_failed",
-                now, index, attempt.segmentCount))
+                now, index, attempt.segmentCount, accountId = attempt.accountId,
+                deviceId = attempt.deviceId, originHash = attempt.originHash))
         }
         if (attempt.messageId != null && nextState == AttemptState.DELIVERED &&
             attempt.state != AttemptState.DELIVERED) {
             insertAlphaEvent(AlphaRadioEvent(UUID.randomUUID().toString(), attempt.messageId,
-                attemptId, "delivery_callback_ok", now))
+                attemptId, "delivery_callback_ok", now,
+                accountId = attempt.accountId, deviceId = attempt.deviceId,
+                originHash = attempt.originHash))
         }
         setState(attemptId, nextState, now)
     }
@@ -491,7 +531,7 @@ abstract class SmsAttemptDao {
 private const val INBOUND_PILOT_WINDOW_MS = 24L * 60 * 60 * 1000
 
 @Database(entities = [SmsAttempt::class, SmsSegment::class, AlphaRadioEvent::class,
-    InboundWindow::class, InboundEvent::class, InboundUpload::class], version = 5, exportSchema = false)
+    InboundWindow::class, InboundEvent::class, InboundUpload::class], version = 6, exportSchema = false)
 abstract class SmsJournalDatabase : RoomDatabase() {
     abstract fun attempts(): SmsAttemptDao
 
@@ -501,7 +541,8 @@ abstract class SmsJournalDatabase : RoomDatabase() {
         fun get(context: Context): SmsJournalDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(
                 context.applicationContext, SmsJournalDatabase::class.java, "sms_attempts.db"
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
+                MIGRATION_5_6)
                 .build().also { instance = it }
         }
 
@@ -536,6 +577,22 @@ abstract class SmsJournalDatabase : RoomDatabase() {
                 db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_inbound_uploads_eventId ON inbound_uploads(eventId)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_inbound_uploads_acknowledgedAtMs_sequence ON inbound_uploads(acknowledgedAtMs, sequence)")
                 db.execSQL("INSERT INTO inbound_uploads(eventId) SELECT eventId FROM inbound_events WHERE classification = 'captured_local' ORDER BY rowid")
+            }
+        }
+
+        /** Existing unbound evidence remains local but cannot enter a new device session. */
+        internal val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                for (table in listOf("sms_attempts", "alpha_radio_events")) {
+                    db.execSQL("ALTER TABLE $table ADD COLUMN accountId TEXT DEFAULT NULL")
+                    db.execSQL("ALTER TABLE $table ADD COLUMN deviceId TEXT DEFAULT NULL")
+                    db.execSQL("ALTER TABLE $table ADD COLUMN originHash TEXT DEFAULT NULL")
+                }
+                db.execSQL("ALTER TABLE alpha_radio_events ADD COLUMN quarantinedAtMs INTEGER DEFAULT NULL")
+                db.execSQL("ALTER TABLE alpha_radio_events ADD COLUMN quarantineReason TEXT DEFAULT NULL")
+                db.execSQL("ALTER TABLE inbound_uploads ADD COLUMN originHash TEXT DEFAULT NULL")
+                db.execSQL("ALTER TABLE inbound_uploads ADD COLUMN quarantinedAtMs INTEGER DEFAULT NULL")
+                db.execSQL("ALTER TABLE inbound_uploads ADD COLUMN quarantineReason TEXT DEFAULT NULL")
             }
         }
     }

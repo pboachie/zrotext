@@ -10,11 +10,12 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class JournalDeviceUpgradeTest {
-    @Test fun installedJournalOpensAtVersionFiveWithInboundUploadOutbox() {
+    @Test fun installedJournalOpensAtVersionSixWithIdentityBoundOutbox() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val db = SmsJournalDatabase.get(context)
-        assertEquals(5, db.openHelper.readableDatabase.version)
-        db.attempts().nextAlphaEvent()
+        assertEquals(6, db.openHelper.readableDatabase.version)
+        db.attempts().nextAlphaEvent("11111111-1111-4111-8111-111111111111",
+            "22222222-2222-4222-8222-222222222222", "a".repeat(64))
         db.openHelper.readableDatabase.query("SELECT COUNT(*) FROM inbound_windows").close()
         db.openHelper.readableDatabase.query("SELECT COUNT(*) FROM inbound_events").close()
         db.openHelper.readableDatabase.query("SELECT COUNT(*) FROM inbound_uploads").close()
