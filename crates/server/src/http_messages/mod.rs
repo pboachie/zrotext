@@ -658,6 +658,19 @@ mod tests {
                 .status(),
             StatusCode::BAD_REQUEST
         );
+        assert_eq!(
+            app.clone()
+                .oneshot(post(
+                    "/messages",
+                    &send_a,
+                    "new-expired-same-id",
+                    expiring.clone()
+                ))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
         let counts = client
             .query_one(
                 "SELECT (SELECT count(*) FROM messages WHERE account_id=$1),

@@ -274,33 +274,28 @@ impl<'a> DeliveryStore<'a> {
         } else {
             !matches!(metering, MeteringTime::Unmetered)
         };
-        let inserted_key = tx
+        let new_key = tx
             .query_opt(
                 "INSERT INTO idempotency_keys (account_id, key, request_digest, message_id, expires_at) \
                  VALUES ($1,$2,$3,$4,now() + interval '7 days') \
-                 ON CONFLICT (account_id,key) DO NOTHING RETURNING message_id",
+                 ON CONFLICT DO NOTHING RETURNING message_id",
                 &[&input.account_id, &input.idempotency_key, &digest, &input.client_message_id],
             )
-            .await;
-        let new_key = match inserted_key {
-            Ok(value) => value,
-            Err(error)
-                if error.as_db_error().is_some_and(|db| {
-                    db.code() == &SqlState::UNIQUE_VIOLATION
-                        && db.constraint() == Some("idempotency_message_id")
-                }) =>
-            {
-                return Err(StoreError::MessageIdConflict);
-            }
-            Err(error) => return Err(StoreError::Database(error)),
-        };
+            .await?;
         if new_key.is_none() {
             let row = tx
-                .query_one(
+                .query_opt(
                     "SELECT message_id, request_digest FROM idempotency_keys WHERE account_id=$1 AND key=$2",
                     &[&input.account_id, &input.idempotency_key],
                 )
                 .await?;
+            let Some(row) = row else {
+                // The other unique constraint is message_id. A different key
+                // for an expired request is invalid before its ID collision is
+                // reported; neither path can create a message or dispatch job.
+                validate_new_expiry(input.expires_at_ms, metering)?;
+                return Err(StoreError::MessageIdConflict);
+            };
             let saved_digest: Vec<u8> = row.get(1);
             if saved_digest != digest {
                 return Err(StoreError::IdempotencyConflict);
@@ -327,13 +322,7 @@ impl<'a> DeliveryStore<'a> {
         // A retained key must replay even after the message expires. For a
         // newly inserted key, reject elapsed expiry before creating any work;
         // returning here rolls the uncommitted key insertion back as well.
-        let now = now_ms();
-        if input.expires_at_ms <= now
-            || (matches!(metering, MeteringTime::Alpha { .. })
-                && input.expires_at_ms > now.saturating_add(MAX_ALPHA_EXPIRY_MS))
-        {
-            return Err(StoreError::InvalidInput);
-        }
+        validate_new_expiry(input.expires_at_ms, metering)?;
 
         // Every new acceptance for this account takes the same row lock. The
         // counts and insert are in one transaction, so parallel API instances
@@ -1278,6 +1267,17 @@ async fn refund_outbound(
     Ok(true)
 }
 
+fn validate_new_expiry(expires_at_ms: i64, metering: MeteringTime) -> Result<(), StoreError> {
+    let now = now_ms();
+    if expires_at_ms <= now
+        || (matches!(metering, MeteringTime::Alpha { .. })
+            && expires_at_ms > now.saturating_add(MAX_ALPHA_EXPIRY_MS))
+    {
+        return Err(StoreError::InvalidInput);
+    }
+    Ok(())
+}
+
 fn validate_message(input: &NewMessage<'_>) -> Result<(), StoreError> {
     let valid_number = input.recipient_e164.starts_with('+')
         && (3..=16).contains(&input.recipient_e164.len())
@@ -1765,6 +1765,15 @@ mod tests {
                 .accept(NewMessage {
                     client_message_id: Uuid::new_v4(),
                     idempotency_key: "expired-new",
+                    ..input()
+                })
+                .await,
+            Err(StoreError::InvalidInput)
+        ));
+        assert!(matches!(
+            DeliveryStore::new(&mut client)
+                .accept(NewMessage {
+                    idempotency_key: "expired-new-same-id",
                     ..input()
                 })
                 .await,
