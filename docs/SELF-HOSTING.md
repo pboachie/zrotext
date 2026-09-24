@@ -54,6 +54,26 @@ connections in total. These conservative limits are fixed in `runtime_db.rs`;
 adding replicas requires a database capacity review. Migration and operator CLI
 connections are separate and must be included in the deployment budget.
 
+When `WEBHOOK_DELIVERY_ENABLED=true`, `WEBHOOK_DISPATCH_CONCURRENCY` controls
+parallel sender lanes per process (default 2, allowed 1–3). The cap leaves at
+least one of the four background database slots for other jobs. Claims rotate
+between accounts and endpoints with due work across all hubs; only one leased
+attempt per endpoint can exist. Private process logs emit `webhook_queue` with
+pending count, oldest pending age in seconds, and in-flight count about once a
+minute. Monitor these alongside the owner-visible pause state.
+
+Migration 027 requires a webhook maintenance window. Stop webhook delivery on
+**every** old dispatch node (`WEBHOOK_DELIVERY_ENABLED=false`) before migrating.
+The migration takes an exclusive delivery-table lock, records expired leases as
+timed-out attempts using the normal retry schedule, and fails with a clear error
+if any unexpired lease remains. A failure rolls back the whole migration,
+including that recovery. Wait for the remaining leases to expire, then retry;
+recovery is committed only when the migration succeeds.
+Keep old senders stopped until the new code is
+running. The unique index then protects the one-in-flight rule even if an old
+worker is accidentally restarted; duplicate claims fail and retry instead of
+creating overlapping sends.
+
 Connection establishment is limited to three seconds. Runtime sessions enforce a
 10-second statement timeout, three-second lock timeout, and 15-second idle
 transaction timeout. The connection driver retains its capacity permit even when

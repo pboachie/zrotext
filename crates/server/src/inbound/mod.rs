@@ -513,6 +513,7 @@ fn retry_delay(attempt_count: i16) -> Option<i32> {
 }
 
 /// Recover timed-out leases then claim one due delivery with SKIP LOCKED.
+/// Account and endpoint cursors are durable across workers and processes.
 /// A separate egress worker must validate DNS/addresses and decrypt the
 /// endpoint's signing secret before any HTTP request. No network I/O occurs.
 pub async fn claim_webhook(
@@ -525,16 +526,30 @@ pub async fn claim_webhook(
     let tx = client.transaction().await?;
     let expired = tx
         .query(
-            "SELECT id,generation,attempt_count FROM webhook_deliveries \
-         WHERE status='leased' AND lease_until<=now() \
-         ORDER BY lease_until,id FOR UPDATE SKIP LOCKED LIMIT 100",
+            "SELECT e.id,d.id FROM webhook_deliveries d \
+             JOIN webhook_endpoints e ON e.id=d.endpoint_id \
+             WHERE d.status='leased' AND d.lease_until<=now() \
+             ORDER BY d.lease_until,d.id FOR UPDATE OF e SKIP LOCKED LIMIT 100",
             &[],
         )
         .await?;
-    for row in expired {
-        let delivery_id: Uuid = row.get(0);
-        let generation: i16 = row.get(1);
-        let attempts: i16 = row.get(2);
+    for candidate in expired {
+        // Match claim, finish and owner retirement: endpoint lock first. A
+        // previous worker may have finished this lease since the scan.
+        let delivery_id: Uuid = candidate.get(1);
+        let Some(row) = tx
+            .query_opt(
+                "SELECT generation,attempt_count FROM webhook_deliveries \
+             WHERE id=$1 AND status='leased' AND lease_until<=now() \
+             FOR UPDATE SKIP LOCKED",
+                &[&delivery_id],
+            )
+            .await?
+        else {
+            continue;
+        };
+        let generation: i16 = row.get(0);
+        let attempts: i16 = row.get(1);
         tx.execute(
             "UPDATE webhook_attempts SET completed_at=now(),outcome='timeout' \
              WHERE delivery_id=$1 AND generation=$2 AND attempt_number=$3 AND completed_at IS NULL",
@@ -558,15 +573,48 @@ pub async fn claim_webhook(
             .await?;
         }
     }
+    let account = tx
+        .query_opt(
+            "SELECT a.account_id FROM webhook_dispatch_accounts a WHERE EXISTS ( \
+             SELECT 1 FROM webhook_endpoints e JOIN webhook_deliveries d \
+             ON d.endpoint_id=e.id WHERE e.account_id=a.account_id \
+             AND e.enabled AND e.paused_at IS NULL AND d.status='pending' \
+             AND d.next_attempt_at<=now() AND d.attempt_count<7 \
+             AND NOT EXISTS (SELECT 1 FROM webhook_deliveries l \
+             WHERE l.endpoint_id=e.id AND l.status='leased')) \
+             ORDER BY a.last_claim_seq,a.account_id \
+             FOR UPDATE OF a SKIP LOCKED LIMIT 1",
+            &[],
+        )
+        .await?;
+    let Some(account) = account else {
+        tx.commit().await?;
+        return Ok(None);
+    };
+    let account_id: Uuid = account.get(0);
+    let endpoint = tx
+        .query_opt(
+            "SELECT e.id FROM webhook_endpoints e WHERE e.account_id=$1 \
+         AND e.enabled AND e.paused_at IS NULL AND NOT EXISTS ( \
+         SELECT 1 FROM webhook_deliveries l WHERE l.endpoint_id=e.id AND l.status='leased') \
+         AND EXISTS (SELECT 1 FROM webhook_deliveries d WHERE d.endpoint_id=e.id \
+         AND d.status='pending' AND d.next_attempt_at<=now() AND d.attempt_count<7) \
+         ORDER BY e.last_claim_seq,e.id FOR UPDATE OF e SKIP LOCKED LIMIT 1",
+            &[&account_id],
+        )
+        .await?;
+    let Some(endpoint) = endpoint else {
+        tx.commit().await?;
+        return Ok(None);
+    };
+    let endpoint_id: Uuid = endpoint.get(0);
     let row = tx
         .query_opt(
-            "SELECT d.id,d.account_id,d.endpoint_id,d.event_id,d.generation,d.attempt_count \
-         FROM webhook_deliveries d JOIN webhook_endpoints e ON \
-         (e.account_id,e.id)=(d.account_id,d.endpoint_id) \
-         WHERE d.status='pending' AND d.next_attempt_at<=now() AND \
-         d.attempt_count<7 AND e.enabled=TRUE \
-         ORDER BY d.next_attempt_at,d.id FOR UPDATE OF d SKIP LOCKED LIMIT 1",
-            &[],
+            "SELECT id,event_id,generation,attempt_count FROM webhook_deliveries \
+         WHERE endpoint_id=$1 AND status='pending' AND next_attempt_at<=now() \
+         AND attempt_count<7 ORDER BY next_attempt_at,id \
+         FOR UPDATE SKIP LOCKED LIMIT 1",
+            &[&endpoint_id],
         )
         .await?;
     let Some(row) = row else {
@@ -574,11 +622,9 @@ pub async fn claim_webhook(
         return Ok(None);
     };
     let delivery_id: Uuid = row.get(0);
-    let account_id: Uuid = row.get(1);
-    let endpoint_id: Uuid = row.get(2);
-    let event_id: Uuid = row.get(3);
-    let generation: i16 = row.get(4);
-    let attempt_number: i16 = row.get::<_, i16>(5) + 1;
+    let event_id: Uuid = row.get(1);
+    let generation: i16 = row.get(2);
+    let attempt_number: i16 = row.get::<_, i16>(3) + 1;
     let attempt_id = Uuid::new_v4();
     tx.execute(
         "UPDATE webhook_deliveries SET status='leased',attempt_count=$2,lease_owner=$3, \
@@ -589,6 +635,20 @@ pub async fn claim_webhook(
     tx.execute(
         "INSERT INTO webhook_attempts(id,delivery_id,generation,attempt_number) VALUES($1,$2,$3,$4)",
         &[&attempt_id, &delivery_id, &generation, &attempt_number],
+    )
+    .await?;
+    let claim_seq: i64 = tx
+        .query_one("SELECT nextval('webhook_claim_sequence')", &[])
+        .await?
+        .get(0);
+    tx.execute(
+        "UPDATE webhook_dispatch_accounts SET last_claim_seq=$2 WHERE account_id=$1",
+        &[&account_id, &claim_seq],
+    )
+    .await?;
+    tx.execute(
+        "UPDATE webhook_endpoints SET last_claim_seq=$2 WHERE id=$1",
+        &[&endpoint_id, &claim_seq],
     )
     .await?;
     tx.commit().await?;
@@ -625,6 +685,13 @@ pub async fn finish_webhook(
         return Err(InboundError::InvalidInput);
     }
     let tx = client.transaction().await?;
+    // The owner disable path locks the endpoint before its deliveries. Keep
+    // this order to avoid a finish/disable deadlock.
+    tx.query_one(
+        "SELECT id FROM webhook_endpoints WHERE account_id=$1 AND id=$2 FOR UPDATE",
+        &[&lease.account_id, &lease.endpoint_id],
+    )
+    .await?;
     let row = tx
         .query_opt(
             "SELECT status,generation,attempt_count,lease_owner,coalesce(lease_until>now(),false) \
@@ -703,6 +770,26 @@ pub async fn finish_webhook(
             )
             .await?;
         }
+    }
+    match outcome {
+        WebhookOutcome::Ack => {
+            tx.execute(
+                "UPDATE webhook_endpoints SET failure_started_at=NULL WHERE id=$1",
+                &[&lease.endpoint_id],
+            )
+            .await?;
+        }
+        WebhookOutcome::Timeout | WebhookOutcome::HttpError | WebhookOutcome::NetworkError => {
+            tx.execute(
+                "UPDATE webhook_endpoints SET \
+                 paused_at=CASE WHEN coalesce(failure_started_at,now())<=now()-interval '72 hours' \
+                 THEN coalesce(paused_at,now()) ELSE paused_at END, \
+                 failure_started_at=coalesce(failure_started_at,now()) WHERE id=$1",
+                &[&lease.endpoint_id],
+            )
+            .await?;
+        }
+        WebhookOutcome::PolicyRejected => {}
     }
     tx.commit().await?;
     Ok(())

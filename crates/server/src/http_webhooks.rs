@@ -137,6 +137,8 @@ struct EndpointView {
     endpoint_id: Uuid,
     callback_url: String,
     enabled: bool,
+    paused_at_ms: Option<i64>,
+    failure_started_at_ms: Option<i64>,
     created_at_ms: i64,
 }
 
@@ -158,7 +160,10 @@ async fn list_endpoints(
     };
     match client
         .query(
-            "SELECT id,callback_url,enabled,(extract(epoch FROM created_at)*1000)::bigint \
+            "SELECT id,callback_url,enabled, \
+             (extract(epoch FROM paused_at)*1000)::bigint, \
+             (extract(epoch FROM failure_started_at)*1000)::bigint, \
+             (extract(epoch FROM created_at)*1000)::bigint \
              FROM webhook_endpoints WHERE account_id=$1 ORDER BY created_at,id",
             &[&principal.tenant.account_id()],
         )
@@ -171,7 +176,9 @@ async fn list_endpoints(
                     endpoint_id: row.get(0),
                     callback_url: row.get(1),
                     enabled: row.get(2),
-                    created_at_ms: row.get(3),
+                    paused_at_ms: row.get(3),
+                    failure_started_at_ms: row.get(4),
+                    created_at_ms: row.get(5),
                 })
                 .collect(),
         })
@@ -754,7 +761,8 @@ async fn enable(
         )
         .map_err(|_| EndpointError::Unavailable)?;
     tx.execute(
-        "UPDATE webhook_endpoints SET enabled=true WHERE account_id=$1 AND id=$2",
+        "UPDATE webhook_endpoints SET enabled=true,paused_at=NULL,failure_started_at=NULL \
+         WHERE account_id=$1 AND id=$2",
         &[&principal.tenant.account_id(), &endpoint_id],
     )
     .await
@@ -1060,6 +1068,7 @@ mod tests {
             include_str!("../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
             include_str!("../../../deploy/compose/migrations/015_webhook_kek_commitments.sql"),
             include_str!("../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+            include_str!("../../../deploy/compose/migrations/027_webhook_dispatch_fairness.sql"),
         ] {
             admin.batch_execute(migration).await.unwrap();
         }
@@ -1209,6 +1218,16 @@ mod tests {
                 "unexpected replay for {id}"
             );
         }
+        // The leased fixture proved replay rejection. Close it before sending
+        // another delivery to the same endpoint: only one may be in flight.
+        admin.execute(
+            "UPDATE webhook_attempts SET completed_at=now(),outcome='policy_rejected' WHERE delivery_id=$1 AND completed_at IS NULL",
+            &[&ids[5]],
+        ).await.unwrap();
+        admin.execute(
+            "UPDATE webhook_deliveries SET status='dead',terminal_reason='retired',lease_owner=NULL,lease_until=NULL WHERE id=$1",
+            &[&ids[5]],
+        ).await.unwrap();
 
         // Multiple independent database clients race the same owner request.
         // Exactly one generation is created; every retry observes its result.
@@ -1530,6 +1549,7 @@ mod tests {
             include_str!("../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
             include_str!("../../../deploy/compose/migrations/015_webhook_kek_commitments.sql"),
             include_str!("../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+            include_str!("../../../deploy/compose/migrations/027_webhook_dispatch_fairness.sql"),
         ] {
             admin.batch_execute(migration).await.unwrap();
         }
@@ -1913,6 +1933,7 @@ mod tests {
             include_str!("../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
             include_str!("../../../deploy/compose/migrations/015_webhook_kek_commitments.sql"),
             include_str!("../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+            include_str!("../../../deploy/compose/migrations/027_webhook_dispatch_fairness.sql"),
         ] {
             admin.batch_execute(migration).await.unwrap();
         }
@@ -2057,6 +2078,42 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(enable.status(), StatusCode::NO_CONTENT);
+
+        admin.execute(
+            "UPDATE webhook_endpoints SET paused_at=now(),failure_started_at=now()-interval '73 hours' WHERE id=$1",
+            &[&endpoint],
+        ).await.unwrap();
+        let paused_list = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                "/v1/webhooks",
+                json!({}),
+                Some((&sa.token, &sa.csrf_token)),
+                false,
+            ))
+            .await
+            .unwrap();
+        let paused_list = json_body(paused_list).await;
+        assert!(paused_list["endpoints"][0]["paused_at_ms"].is_number());
+        assert!(paused_list["endpoints"][0]["failure_started_at_ms"].is_number());
+        let resume = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                &format!("/v1/webhooks/{endpoint}/enable"),
+                json!({}),
+                Some((&sa.token, &sa.csrf_token)),
+                true,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resume.status(), StatusCode::NO_CONTENT);
+        let resumed: bool = admin.query_one(
+            "SELECT paused_at IS NULL AND failure_started_at IS NULL FROM webhook_endpoints WHERE id=$1",
+            &[&endpoint],
+        ).await.unwrap().get(0);
+        assert!(resumed);
 
         let device = Uuid::new_v4();
         let message = Uuid::new_v4();

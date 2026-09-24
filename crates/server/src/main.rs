@@ -166,6 +166,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("Stripe hosted sessions require STRIPE_BILLING_TEST_ENABLED=true".into());
     }
     let (webhook_vault, webhook_delivery_enabled) = webhook_config()?;
+    // The process-wide worker database budget is four connections. Reserve at
+    // least one for billing, recovery and other background work.
+    let webhook_dispatch_concurrency = match env::var("WEBHOOK_DISPATCH_CONCURRENCY") {
+        Ok(value) => match value.parse::<usize>() {
+            Ok(count @ 1..=3) => count,
+            _ => return Err("WEBHOOK_DISPATCH_CONCURRENCY must be 1..=3".into()),
+        },
+        Err(env::VarError::NotPresent) => 2,
+        Err(_) => return Err("WEBHOOK_DISPATCH_CONCURRENCY must be valid UTF-8".into()),
+    };
     let webhook_management_configured = webhook_vault.is_some();
     let alpha_policy = Arc::new(AlphaPolicy::parse(
         env::var("SYNTHETIC_ALPHA_ENABLED").ok().as_deref(),
@@ -299,39 +309,58 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 vault: vault.clone(),
             }));
             if webhook_delivery_enabled {
-                let worker_database = config.database_url.clone();
-                let worker_draining = config.draining.clone();
-                let worker_notify = config.drain_notify.clone();
-                let worker_id = Uuid::new_v4().to_string();
-                tokio::spawn(async move {
-                    let mut checks = tokio::time::interval(Duration::from_secs(2));
-                    checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                    let mut unavailable_logged = false;
-                    loop {
-                        tokio::select! {
-                            _ = checks.tick() => {
-                                if worker_draining.load(Ordering::Acquire) { break; }
-                                let result = async {
-                                    let (mut client, connection) =
-                                        zrotext_server::runtime_db::connect_worker(&worker_database).await
-                                            .map_err(|_| "webhook database unavailable")?;
-                                    tokio::spawn(async move { let _ = connection.await; });
-                                    webhook_worker::dispatch_one(&mut client, &vault, &worker_id).await
-                                        .map_err(|_| "webhook dispatch failed")
-                                }.await;
-                                match result {
-                                    Ok(_) => unavailable_logged = false,
-                                    Err(_) if !unavailable_logged => {
-                                        eprintln!("webhook delivery worker unavailable");
-                                        unavailable_logged = true;
+                for lane in 0..webhook_dispatch_concurrency {
+                    let worker_database = config.database_url.clone();
+                    let worker_draining = config.draining.clone();
+                    let worker_notify = config.drain_notify.clone();
+                    let worker_vault = vault.clone();
+                    let worker_id = Uuid::new_v4().to_string();
+                    tokio::spawn(async move {
+                        // Spread claims through each period so workers do not
+                        // all contend for the same account cursor at once.
+                        let offset_ms = 2_000 * lane / webhook_dispatch_concurrency;
+                        let mut checks = tokio::time::interval_at(
+                            tokio::time::Instant::now() + Duration::from_millis(offset_ms as u64),
+                            Duration::from_secs(2),
+                        );
+                        checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                        let mut unavailable_logged = false;
+                        let mut ticks = 0_u32;
+                        loop {
+                            tokio::select! {
+                                _ = checks.tick() => {
+                                    if worker_draining.load(Ordering::Acquire) { break; }
+                                    ticks = ticks.wrapping_add(1);
+                                    let result = async {
+                                        let (mut client, connection) =
+                                            zrotext_server::runtime_db::connect_worker(&worker_database).await
+                                                .map_err(|_| "webhook database unavailable")?;
+                                        tokio::spawn(async move { let _ = connection.await; });
+                                        let sent = webhook_worker::dispatch_one(&mut client, &worker_vault, &worker_id).await
+                                            .map_err(|_| "webhook dispatch failed")?;
+                                        if lane == 0 && ticks % 30 == 1 {
+                                            let (pending, oldest_age_seconds, in_flight) =
+                                                webhook_worker::queue_signal(&client).await
+                                                    .map_err(|_| "webhook metrics unavailable")?;
+                                            eprintln!("webhook_queue pending={pending} oldest_pending_age_seconds={} in_flight={in_flight}",
+                                                oldest_age_seconds.unwrap_or(0));
+                                        }
+                                        Ok::<bool, &str>(sent)
+                                    }.await;
+                                    match result {
+                                        Ok(_) => unavailable_logged = false,
+                                        Err(_) if !unavailable_logged => {
+                                            eprintln!("webhook delivery worker unavailable");
+                                            unavailable_logged = true;
+                                        }
+                                        Err(_) => {}
                                     }
-                                    Err(_) => {}
                                 }
+                                _ = worker_notify.notified() => break,
                             }
-                            _ = worker_notify.notified() => break,
                         }
-                    }
-                });
+                    });
+                }
             }
         }
         let abuse_database = config.database_url.clone();
