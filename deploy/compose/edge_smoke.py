@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Exercise the optional HTTPS edge and WebSocket upgrade in a disposable stack."""
+"""Exercise HTTPS owner sign-in and WSS through a disposable local edge."""
 
 import base64
 import hashlib
@@ -14,16 +14,19 @@ import ssl
 import subprocess
 import tempfile
 import time
+import uuid
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from fresh_install_smoke import available_loopback_port, ensure_local_docker
 from restore_rehearsal import COMPOSE, DrillError, protected_tempdir, target_is_new
 
+TEST_EMAIL = "edge-smoke@example.invalid"
 
-def run(command, stage, env, timeout=180):
+
+def run(command, stage, env, timeout=180, input_data=None):
     try:
-        result = subprocess.run(command, capture_output=True, text=True,
+        result = subprocess.run(command, input=input_data, capture_output=True, text=True,
                                 errors="replace", env=env, timeout=timeout, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise DrillError(f"{stage} could not finish") from exc
@@ -85,7 +88,7 @@ def wait_for_tls(port, context):
 def expect_login_status(port, context, origin, expected):
     request = Request(
         f"https://localhost:{port}/v1/auth/login",
-        data=json.dumps({"email": "edge-smoke@example.invalid",
+        data=json.dumps({"email": TEST_EMAIL,
                          "password": "never-a-real-account"}).encode(),
         headers={"Content-Type": "application/json", "Origin": origin},
         method="POST",
@@ -98,6 +101,71 @@ def expect_login_status(port, context, origin, expected):
         error.close()
     if status != expected:
         raise DrillError(f"HTTPS login route returned {status}, expected {expected}")
+
+
+def seed_verified_owner(compose, env):
+    """Insert only disposable account rows to exercise successful HTTPS login."""
+    try:
+        from cryptography.hazmat.primitives.kdf.argon2 import Argon2id
+    except ImportError as exc:
+        raise DrillError("edge smoke needs Python cryptography with Argon2id support") from exc
+    synthetic_passphrase = secrets.token_urlsafe(32)
+    password_hash = Argon2id(
+        salt=secrets.token_bytes(16), length=32, iterations=3,
+        lanes=1, memory_cost=64 * 1024,
+    ).derive_phc_encoded(synthetic_passphrase.encode())
+    account_id = str(uuid.uuid4())
+    user_id = str(uuid.uuid4())
+    sql = (
+        "BEGIN;\n"
+        f"INSERT INTO accounts(id) VALUES ('{account_id}');\n"
+        f"INSERT INTO users(id,email,password_hash,email_verified_at) VALUES "
+        f"('{user_id}','{TEST_EMAIL}','{password_hash}',now());\n"
+        f"INSERT INTO memberships(account_id,user_id,role) VALUES "
+        f"('{account_id}','{user_id}','owner');\n"
+        "COMMIT;\n"
+    )
+    run([*compose, "exec", "-T", "db", "sh", "-ec",
+         'PGPASSWORD="$POSTGRES_PASSWORD" exec psql -X -q -v ON_ERROR_STOP=1 '
+         '-U zrotext -d zrotext -f -'], "synthetic verified owner seed", env,
+        input_data=sql)
+    return synthetic_passphrase
+
+
+def verify_owner_sign_in(port, context, synthetic_passphrase):
+    origin = f"https://localhost:{port}"
+    request = Request(
+        f"{origin}/v1/auth/login",
+        data=json.dumps({"email": TEST_EMAIL, "password": synthetic_passphrase}).encode(),
+        headers={"Content-Type": "application/json", "Origin": origin},
+        method="POST",
+    )
+    with urlopen(request, context=context, timeout=15) as response:
+        if response.status != 204:
+            raise DrillError("HTTPS owner sign-in did not return 204")
+        set_cookies = response.headers.get_all("Set-Cookie", [])
+    session = next((item for item in set_cookies
+                    if item.startswith("__Host-zrotext_session=")), None)
+    csrf = next((item for item in set_cookies
+                 if item.startswith("__Host-zrotext_csrf=")), None)
+    if not session or not csrf:
+        raise DrillError("HTTPS owner sign-in omitted session cookies")
+    attributes = {part.strip().lower() for part in session.split(";")[1:]}
+    if not {"path=/", "secure", "httponly"}.issubset(attributes) \
+            or any(part.startswith("domain=") for part in attributes):
+        raise DrillError("HTTPS session cookie is not securely scoped")
+    csrf_token = csrf.split(";", 1)[0].split("=", 1)[1]
+    cookies = "; ".join(item.split(";", 1)[0] for item in (session, csrf))
+    session_request = Request(
+        f"{origin}/v1/auth/session",
+        headers={"Cookie": cookies, "x-zrotext-csrf": csrf_token},
+    )
+    with urlopen(session_request, context=context, timeout=10) as response:
+        if response.status != 200:
+            raise DrillError("HTTPS owner session was not readable")
+        owner = json.load(response)
+    if not all(owner.get(name) for name in ("account_id", "user_id", "session_id")):
+        raise DrillError("HTTPS owner session identity was incomplete")
 
 
 def verify_websocket_upgrade(port, context):
@@ -167,8 +235,10 @@ def main():
         expect_login_status(https_port, context,
                             f"https://localhost:{https_port}", 401)
         expect_login_status(https_port, context, "https://wrong.invalid", 403)
+        synthetic_passphrase = seed_verified_owner(compose, env)
+        verify_owner_sign_in(https_port, context, synthetic_passphrase)
         verify_websocket_upgrade(https_port, context)
-        print("edge HTTPS health, canonical-Origin login, and WSS upgrade passed")
+        print("edge HTTPS health, owner sign-in/session, Origin guard, and WSS upgrade passed")
     except Exception as exc:
         failure = exc
     finally:

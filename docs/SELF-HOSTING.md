@@ -72,10 +72,13 @@ location /v1/device-stream {
 The nginx server also needs its trusted `ssl_certificate` and
 `ssl_certificate_key`, a normal `location /` proxy to the same API, and the same
 canonical public origin in `AUTH_ORIGIN`. To test the Compose edge without a
-public domain or a phone, run `python deploy/compose/edge_smoke.py`. It creates
+public domain or a phone, install Python's `cryptography` package with Argon2id
+support, then run `python deploy/compose/edge_smoke.py`. It creates
 a disposable loopback-only stack, trusts only its temporary Caddy local CA,
-checks HTTPS health and login Origin handling, then performs a WSS upgrade and
-removes the test containers and volumes. It does not send mail or SMS.
+creates a synthetic verified owner with a freshly generated passphrase in its
+own database, checks HTTPS sign-in,
+secure session cookies and exact-Origin handling, then performs a WSS upgrade
+and removes the test containers and volumes. It does not send mail or SMS.
 
 Production packaging and upgrade instructions will expand as release artifacts become available. For now, use this stack as a development environment and check the repository's releases for supported versions.
 
