@@ -107,6 +107,39 @@ class DeviceReconnectPolicyTest {
             assertEquals(heartbeat, offline.networkChanged(true))
         }
     }
+
+    @Test
+    fun repeatedImmediateCloseForOneEvidenceRowQuarantinesThenHeartbeatsResume() {
+        val policy = DeviceReconnectPolicy { 0.5 }
+        policy.start(true, DeviceReconnectPolicy.PilotMode.INBOUND_UPLOAD)
+        for (attempt in 1..3) {
+            policy.authenticated(attempt.toLong())
+            assertEquals(attempt == 3, policy.recordEvidenceClose("inbound:old-event", false))
+            val reason = if (attempt == 3) DeviceReconnectPolicy.Loss.EVIDENCE_QUARANTINED
+                else DeviceReconnectPolicy.Loss.ACTIVE_CLOSE
+            assertEquals(DeviceReconnectPolicy.Action.RetryAfter(
+                1_000L shl (attempt - 1)), policy.lost(reason, attempt.toLong() + 1))
+            assertEquals(heartbeat, policy.retryDue())
+        }
+        policy.authenticated(10)
+        assertEquals(true, policy.recordEvidenceClose("radio:new-event", true))
+        assertEquals(DeviceReconnectPolicy.Action.RetryAfter(8_000),
+            policy.lost(DeviceReconnectPolicy.Loss.EVIDENCE_QUARANTINED, 11))
+        assertEquals(heartbeat, policy.retryDue())
+        policy.authenticated(12)
+        assertEquals(DeviceReconnectPolicy.Action.Stop,
+            policy.lost(DeviceReconnectPolicy.Loss.EVIDENCE_QUARANTINE_FAILED, 13))
+    }
+
+    @Test
+    fun unrelatedClosesDoNotCountTowardAnotherEvidenceRow() {
+        val policy = DeviceReconnectPolicy { 0.5 }
+        policy.start(true)
+        assertEquals(false, policy.recordEvidenceClose("radio:first", false))
+        assertEquals(false, policy.recordEvidenceClose("radio:second", false))
+        policy.clearEvidenceCloseStreak()
+        assertEquals(false, policy.recordEvidenceClose("radio:second", false))
+    }
 }
 
 class DeviceDisconnectClassifierTest {

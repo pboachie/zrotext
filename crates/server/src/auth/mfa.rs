@@ -212,7 +212,7 @@ fn new_recovery_code() -> String {
 
 /// The owner row is locked before checking or spending this budget. It is
 /// shared by every challenge and management flow on every API site.
-async fn ensure_factor_budget(
+pub(super) async fn ensure_factor_budget(
     tx: &Transaction<'_>,
     account_id: Uuid,
     user_id: Uuid,
@@ -230,7 +230,7 @@ async fn ensure_factor_budget(
     Ok(())
 }
 
-async fn record_failed_factor(
+pub(super) async fn record_failed_factor(
     tx: &Transaction<'_>,
     account_id: Uuid,
     user_id: Uuid,
@@ -398,15 +398,25 @@ pub async fn begin_login_challenge(
     hasher: &TokenHasher,
     account_id: Uuid,
     user_id: Uuid,
+    password: &str,
 ) -> Result<String, AuthError> {
+    let row = client
+        .query_opt(
+            "SELECT u.password_hash FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE u.id=$1 AND m.account_id=$2 AND u.mfa_enabled AND a.disabled_at IS NULL",
+            &[&user_id, &account_id],
+        )
+        .await?
+        .ok_or(AuthError::InvalidCredentials)?;
+    let stored: String = row.get(0);
+    super::password_work::verify(password, Some(stored.clone())).await?;
     let token = super::random_token("ztm_");
     let hash = hasher.digest(b"mfa-login-challenge-v1", &token);
     let inserted = client.execute(
-        "INSERT INTO owner_mfa_login_challenges(id,account_id,user_id,token_hash,expires_at) SELECT $1,$2,$3,$4,now()+($5::integer * interval '1 minute') FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE u.id=$3 AND m.account_id=$2 AND u.mfa_enabled AND a.disabled_at IS NULL",
-        &[&Uuid::new_v4(), &account_id, &user_id, &&hash[..], &CHALLENGE_MINUTES],
+        "INSERT INTO owner_mfa_login_challenges(id,account_id,user_id,token_hash,expires_at) SELECT $1,$2,$3,$4,now()+($5::integer * interval '1 minute') FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE u.id=$3 AND m.account_id=$2 AND u.password_hash=$6 AND u.mfa_enabled AND a.disabled_at IS NULL FOR UPDATE OF u",
+        &[&Uuid::new_v4(), &account_id, &user_id, &&hash[..], &CHALLENGE_MINUTES, &stored],
     ).await?;
     if inserted != 1 {
-        return Err(AuthError::Unauthorized);
+        return Err(AuthError::InvalidCredentials);
     }
     Ok(token)
 }
@@ -439,7 +449,7 @@ pub async fn prune_expired_challenges(client: &Client) -> Result<u64, AuthError>
     ).await?)
 }
 
-async fn use_factor(
+pub(super) async fn use_factor(
     tx: &Transaction<'_>,
     cipher: Option<&MfaCipher>,
     hasher: &TokenHasher,
@@ -783,9 +793,10 @@ mod tests {
             .unwrap()
             .get(0);
         assert_eq!(count, 2);
-        let challenge = begin_login_challenge(&client, &hasher, a.account_id, a.user_id)
-            .await
-            .unwrap();
+        let challenge =
+            begin_login_challenge(&client, &hasher, a.account_id, a.user_id, &password_a)
+                .await
+                .unwrap();
         assert!(matches!(
             complete_login(
                 &mut client,
@@ -853,9 +864,10 @@ mod tests {
             Err(AuthError::Crypto)
         ));
         assert!(validate_runtime_key(&client, None, true).await.is_ok());
-        let b_challenge = begin_login_challenge(&client, &hasher, b.account_id, b.user_id)
-            .await
-            .unwrap();
+        let b_challenge =
+            begin_login_challenge(&client, &hasher, b.account_id, b.user_id, &password_b)
+                .await
+                .unwrap();
         assert!(matches!(
             complete_login(
                 &mut client,
@@ -876,9 +888,10 @@ mod tests {
             .unwrap()
             .get(0);
         assert_eq!(b_sessions, 1);
-        let recovery_challenge = begin_login_challenge(&client, &hasher, a.account_id, a.user_id)
-            .await
-            .unwrap();
+        let recovery_challenge =
+            begin_login_challenge(&client, &hasher, a.account_id, a.user_id, &password_a)
+                .await
+                .unwrap();
         let recovered = complete_login(
             &mut client,
             None,
@@ -893,9 +906,10 @@ mod tests {
                 .await
                 .is_ok()
         );
-        let replay_challenge = begin_login_challenge(&client, &hasher, a.account_id, a.user_id)
-            .await
-            .unwrap();
+        let replay_challenge =
+            begin_login_challenge(&client, &hasher, a.account_id, a.user_id, &password_a)
+                .await
+                .unwrap();
         assert!(matches!(
             complete_login(
                 &mut client,
@@ -917,9 +931,10 @@ mod tests {
             )
             .await;
         }
-        let fresh_challenge = begin_login_challenge(&client, &hasher, a.account_id, a.user_id)
-            .await
-            .unwrap();
+        let fresh_challenge =
+            begin_login_challenge(&client, &hasher, a.account_id, a.user_id, &password_a)
+                .await
+                .unwrap();
         assert!(matches!(
             complete_login(
                 &mut client,

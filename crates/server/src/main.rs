@@ -34,8 +34,10 @@ use zrotext_server::{
         mfa::{self, MfaCipher},
     },
     billing::{
+        drain::{BillingQueueConfig, run_billing_queue},
         http::{self as billing_http, BillingHttpState},
-        owner as billing_owner, parse_test_quota_plans, reset_test_quotas_on_start,
+        owner as billing_owner, parse_test_quota_plans, quota_configuration_fingerprint,
+        reset_test_quotas_on_start,
         sessions::{self as billing_sessions, SessionState},
         worker::StripeTestWorker,
     },
@@ -50,6 +52,7 @@ use zrotext_server::{
     http_owner_messages::{self, OwnerMessagesState},
     http_webhooks::{self, WebhookHttpState},
     owner_ui,
+    retention::{self, RetentionPolicy},
     webhook_worker::{self, WebhookSecretVault},
 };
 
@@ -64,8 +67,10 @@ struct Config {
     dispatch_runtime_enabled: bool,
     mfa_recovery_only: bool,
     mfa_enrollment_enabled: bool,
+    retention: RetentionPolicy,
     draining: Arc<AtomicBool>,
     drain_notify: Arc<Notify>,
+    billing_provider_authorized: Option<(Arc<AtomicBool>, Arc<AtomicBool>)>,
 }
 
 #[derive(Serialize)]
@@ -94,6 +99,21 @@ fn build_version() -> BuildVersion {
     }
 }
 
+fn bounded_worker_setting(
+    name: &str,
+    default: usize,
+    maximum: usize,
+) -> Result<usize, &'static str> {
+    match env::var(name) {
+        Err(env::VarError::NotPresent) => Ok(default),
+        Ok(value) => match value.parse::<usize>() {
+            Ok(value) if (1..=maximum).contains(&value) => Ok(value),
+            _ => Err("invalid Stripe test reconciliation worker setting"),
+        },
+        Err(_) => Err("invalid Stripe test reconciliation worker setting"),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let hosted_sessions_enabled = optional_bool("STRIPE_TEST_HOSTED_SESSIONS_ENABLED")?;
@@ -114,11 +134,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &prices,
             )?;
             let device_caps_enabled = plans.iter().any(|plan| plan.device_limit.is_some());
+            let batch_size = bounded_worker_setting("STRIPE_TEST_RECONCILE_BATCH_SIZE", 25, 100)?;
+            let concurrency = bounded_worker_setting("STRIPE_TEST_RECONCILE_CONCURRENCY", 2, 4)?;
             let legacy_key = optional_secret("STRIPE_TEST_SECRET_KEY")?;
             let reader_key = select_stripe_test_key(
                 optional_secret("STRIPE_TEST_RECONCILE_SECRET_KEY")?,
                 legacy_key.clone(),
             )?;
+            let config_fingerprint = quota_configuration_fingerprint(&prices, &plans, &reader_key);
             let session_candidate = optional_secret("STRIPE_TEST_SESSION_SECRET_KEY")?;
             let session_key = if hosted_sessions_enabled {
                 Some(select_stripe_test_key(session_candidate, legacy_key)?)
@@ -132,6 +155,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 session_key,
                 prices,
                 device_caps_enabled,
+                config_fingerprint,
+                batch_size,
+                concurrency,
             ))
         }
         _ => return Err("invalid STRIPE_BILLING_TEST_ENABLED".into()),
@@ -140,6 +166,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("Stripe hosted sessions require STRIPE_BILLING_TEST_ENABLED=true".into());
     }
     let (webhook_vault, webhook_delivery_enabled) = webhook_config()?;
+    // The process-wide worker database budget is four connections. Reserve at
+    // least one for billing, recovery and other background work.
+    let webhook_dispatch_concurrency = match env::var("WEBHOOK_DISPATCH_CONCURRENCY") {
+        Ok(value) => match value.parse::<usize>() {
+            Ok(count @ 1..=3) => count,
+            _ => return Err("WEBHOOK_DISPATCH_CONCURRENCY must be 1..=3".into()),
+        },
+        Err(env::VarError::NotPresent) => 2,
+        Err(_) => return Err("WEBHOOK_DISPATCH_CONCURRENCY must be valid UTF-8".into()),
+    };
     let webhook_management_configured = webhook_vault.is_some();
     let alpha_policy = Arc::new(AlphaPolicy::parse(
         env::var("SYNTHETIC_ALPHA_ENABLED").ok().as_deref(),
@@ -165,6 +201,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if mfa_recovery_only && mfa_enrollment_enabled {
         return Err("MFA enrollment cannot be enabled in recovery-only mode".into());
     }
+    let billing_provider_authorized = billing_test
+        .as_ref()
+        .map(|(_, worker, ..)| worker.authorization_state());
     let config = Arc::new(Config {
         database_url: required("DATABASE_URL")?,
         site_id: required("SITE_ID")?,
@@ -177,8 +216,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         dispatch_runtime_enabled,
         mfa_recovery_only,
         mfa_enrollment_enabled,
+        retention: RetentionPolicy::from_env()?,
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),
+        billing_provider_authorized,
     });
     let bind: SocketAddr = env::var("BIND_ADDR")
         .unwrap_or_else(|_| "0.0.0.0:8080".to_owned())
@@ -200,6 +241,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/m0/device-test", get(device_test))
         .merge(owner_ui::source_router(source_url))
         .with_state(config.clone());
+    let retention_database = config.database_url.clone();
+    let retention_policy = config.retention;
+    let retention_draining = config.draining.clone();
+    let retention_notify = config.drain_notify.clone();
+    tokio::spawn(async move {
+        let mut checks = tokio::time::interval(Duration::from_secs(15));
+        checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut unavailable_logged = false;
+        loop {
+            tokio::select! {
+                _ = checks.tick() => {
+                    if retention_draining.load(Ordering::Acquire) { break; }
+                    let result = async {
+                        let (mut client, connection) =
+                            zrotext_server::runtime_db::connect_worker(&retention_database).await?;
+                        tokio::spawn(async move { let _ = connection.await; });
+                        retention::prune(&mut client, retention_policy, retention::BATCH_SIZE).await?;
+                        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+                    }.await;
+                    match result {
+                        Ok(()) => unavailable_logged = false,
+                        Err(_) if !unavailable_logged => {
+                            eprintln!("data retention worker unavailable");
+                            unavailable_logged = true;
+                        }
+                        Err(_) => {}
+                    }
+                }
+                _ = retention_notify.notified() => break,
+            }
+        }
+    });
     let mut quotas_reset = false;
     let mut billing_auth_state = None;
     if let Some((auth_state, enrollment_state)) = account_routes(&config)? {
@@ -223,6 +296,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &config.database_url,
             billing_test.is_some(),
             billing_test.as_ref().is_some_and(|billing| billing.4),
+            billing_test.as_ref().map(|billing| &billing.5),
         )
         .await?;
         quotas_reset = true;
@@ -235,39 +309,58 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 vault: vault.clone(),
             }));
             if webhook_delivery_enabled {
-                let worker_database = config.database_url.clone();
-                let worker_draining = config.draining.clone();
-                let worker_notify = config.drain_notify.clone();
-                let worker_id = Uuid::new_v4().to_string();
-                tokio::spawn(async move {
-                    let mut checks = tokio::time::interval(Duration::from_secs(2));
-                    checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                    let mut unavailable_logged = false;
-                    loop {
-                        tokio::select! {
-                            _ = checks.tick() => {
-                                if worker_draining.load(Ordering::Acquire) { break; }
-                                let result = async {
-                                    let (mut client, connection) =
-                                        zrotext_server::runtime_db::connect_worker(&worker_database).await
-                                            .map_err(|_| "webhook database unavailable")?;
-                                    tokio::spawn(async move { let _ = connection.await; });
-                                    webhook_worker::dispatch_one(&mut client, &vault, &worker_id).await
-                                        .map_err(|_| "webhook dispatch failed")
-                                }.await;
-                                match result {
-                                    Ok(_) => unavailable_logged = false,
-                                    Err(_) if !unavailable_logged => {
-                                        eprintln!("webhook delivery worker unavailable");
-                                        unavailable_logged = true;
+                for lane in 0..webhook_dispatch_concurrency {
+                    let worker_database = config.database_url.clone();
+                    let worker_draining = config.draining.clone();
+                    let worker_notify = config.drain_notify.clone();
+                    let worker_vault = vault.clone();
+                    let worker_id = Uuid::new_v4().to_string();
+                    tokio::spawn(async move {
+                        // Spread claims through each period so workers do not
+                        // all contend for the same account cursor at once.
+                        let offset_ms = 2_000 * lane / webhook_dispatch_concurrency;
+                        let mut checks = tokio::time::interval_at(
+                            tokio::time::Instant::now() + Duration::from_millis(offset_ms as u64),
+                            Duration::from_secs(2),
+                        );
+                        checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                        let mut unavailable_logged = false;
+                        let mut ticks = 0_u32;
+                        loop {
+                            tokio::select! {
+                                _ = checks.tick() => {
+                                    if worker_draining.load(Ordering::Acquire) { break; }
+                                    ticks = ticks.wrapping_add(1);
+                                    let result = async {
+                                        let (mut client, connection) =
+                                            zrotext_server::runtime_db::connect_worker(&worker_database).await
+                                                .map_err(|_| "webhook database unavailable")?;
+                                        tokio::spawn(async move { let _ = connection.await; });
+                                        let sent = webhook_worker::dispatch_one(&mut client, &worker_vault, &worker_id).await
+                                            .map_err(|_| "webhook dispatch failed")?;
+                                        if lane == 0 && ticks % 30 == 1 {
+                                            let (pending, oldest_age_seconds, in_flight) =
+                                                webhook_worker::queue_signal(&client).await
+                                                    .map_err(|_| "webhook metrics unavailable")?;
+                                            eprintln!("webhook_queue pending={pending} oldest_pending_age_seconds={} in_flight={in_flight}",
+                                                oldest_age_seconds.unwrap_or(0));
+                                        }
+                                        Ok::<bool, &str>(sent)
+                                    }.await;
+                                    match result {
+                                        Ok(_) => unavailable_logged = false,
+                                        Err(_) if !unavailable_logged => {
+                                            eprintln!("webhook delivery worker unavailable");
+                                            unavailable_logged = true;
+                                        }
+                                        Err(_) => {}
                                     }
-                                    Err(_) => {}
                                 }
+                                _ = worker_notify.notified() => break,
                             }
-                            _ = worker_notify.notified() => break,
                         }
-                    }
-                });
+                    });
+                }
             }
         }
         let abuse_database = config.database_url.clone();
@@ -286,6 +379,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let _ = mfa::prune_expired_challenges(&client).await;
                             let _ = enrollment::prune_expired(&client).await;
                             let _ = auth::prune_expired_pending_owners(&mut client).await;
+                            let _ = auth::account::prune_expired_password_resets(&client).await;
                         }
                     }
                     _ = abuse_drain_notify.notified() => break,
@@ -304,13 +398,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 tokio::select! {
                     _ = checks.tick() => {
                         if mail_draining.load(Ordering::Acquire) { break; }
-                        match http_auth::dispatch_one_verification(&mail_state).await {
-                            Ok(_) => unavailable_logged = false,
-                            Err(_) if !unavailable_logged => {
-                                eprintln!("verification delivery worker unavailable");
+                        let verification = http_auth::dispatch_one_verification(&mail_state).await;
+                        let reset = http_auth::dispatch_one_password_reset(&mail_state).await;
+                        let notice = http_auth::dispatch_one_password_reset_notice(&mail_state).await;
+                        if verification.is_err() || reset.is_err() || notice.is_err() {
+                            if !unavailable_logged {
+                                eprintln!("account mail delivery worker unavailable");
                                 unavailable_logged = true;
                             }
-                            Err(_) => {}
+                        } else {
+                            unavailable_logged = false;
                         }
                     }
                     _ = mail_drain_notify.notified() => break,
@@ -381,7 +478,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 message_hasher,
                 config.alpha_policy.clone(),
                 billing_test.is_some(),
-            )?;
+            )?
+            .with_idempotency_days(config.retention.idempotency_days);
             app = app.nest("/v1/alpha", http_messages::router(message_state));
         }
     } else if config.alpha_policy.enabled()
@@ -391,11 +489,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         return Err("account and enrollment routes are required for enabled features".into());
     }
-    if let Some((endpoint_secret, worker, session_key, prices, device_caps_enabled)) = billing_test
+    if let Some((
+        endpoint_secret,
+        worker,
+        session_key,
+        prices,
+        device_caps_enabled,
+        config_fingerprint,
+        batch_size,
+        concurrency,
+    )) = billing_test
     {
         let billing_database = config.database_url.clone();
         if !quotas_reset {
-            reset_test_quotas_on_start(&billing_database, true, device_caps_enabled).await?;
+            reset_test_quotas_on_start(
+                &billing_database,
+                true,
+                device_caps_enabled,
+                Some(&config_fingerprint),
+            )
+            .await?;
         }
         let mut billing_routes = billing_http::router(BillingHttpState {
             database_url: billing_database.clone(),
@@ -421,35 +534,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         app = app.nest("/v1/billing", billing_routes);
         let billing_draining = config.draining.clone();
         let billing_notify = config.drain_notify.clone();
-        tokio::spawn(async move {
-            let mut checks = tokio::time::interval(Duration::from_secs(10));
-            checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            let mut unavailable_logged = false;
-            loop {
-                tokio::select! {
-                    _ = checks.tick() => {
-                        if billing_draining.load(Ordering::Acquire) { break; }
-                        match worker.reconcile_one(&billing_database).await {
-                            Ok(_) => unavailable_logged = false,
-                            Err(_) if !unavailable_logged => {
-                                eprintln!("Stripe test reconciliation unavailable");
-                                unavailable_logged = true;
-                            }
-                            Err(_) => {}
-                        }
-                        match worker.reconcile_risk_one(&billing_database).await {
-                            Ok(_) => unavailable_logged = false,
-                            Err(_) if !unavailable_logged => {
-                                eprintln!("Stripe test payment-risk reconciliation unavailable");
-                                unavailable_logged = true;
-                            }
-                            Err(_) => {}
-                        }
-                    }
-                    _ = billing_notify.notified() => break,
-                }
-            }
-        });
+        let worker = Arc::new(worker);
+        let permits = Arc::new(tokio::sync::Semaphore::new(concurrency));
+        for risk in [false, true] {
+            tokio::spawn(run_billing_queue(BillingQueueConfig {
+                worker: worker.clone(),
+                database_url: billing_database.clone(),
+                batch_size,
+                concurrency,
+                risk,
+                draining: billing_draining.clone(),
+                notify: billing_notify.clone(),
+                permits: permits.clone(),
+            }));
+        }
     }
     eprintln!(
         "zrotext site={} instance={} listening={bind}",
@@ -766,9 +864,23 @@ async fn ready(
             }),
         );
     }
+    if config
+        .billing_provider_authorized
+        .as_ref()
+        .is_some_and(|(subscription, risk)| {
+            !subscription.load(Ordering::Acquire) || !risk.load(Ordering::Acquire)
+        })
+    {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(Health {
+                status: "unavailable",
+            }),
+        );
+    }
     // A frontend is write-ready only while it can reach the configured single
-    // writer and observe the expected deployment epoch. This M0 service has no
-    // dispatch endpoints; worker readiness is a later, separate contract.
+    // writer, observe the expected deployment epoch, and, when billing is
+    // enabled, has no unresolved provider authorization failure.
     let status = match zrotext_server::runtime_db::connect(&config.database_url).await {
         Ok((client, connection)) => {
             tokio::spawn(async move {
@@ -776,7 +888,7 @@ async fn ready(
                     eprintln!("database connection closed");
                 }
             });
-            client
+            let authority_ready = client
                 .query_one(
                     "SELECT NOT pg_is_in_recovery(), epoch, \
                     COALESCE((SELECT enabled AND NOT draining FROM sites WHERE site_id=$1),TRUE) \
@@ -789,7 +901,17 @@ async fn ready(
                         && row.get::<_, i64>(1) == config.deployment_epoch
                         && row.get::<_, bool>(2)
                 })
-                .unwrap_or(false)
+                .unwrap_or(false);
+            if !authority_ready {
+                false
+            } else if config.billing_provider_authorized.is_some() {
+                client.query_one(
+                    "SELECT NOT EXISTS(SELECT 1 FROM billing_reconciliations WHERE dirty_generation>processed_generation AND last_failure_class='authorization') AND NOT EXISTS(SELECT 1 FROM billing_risk_events WHERE state IN ('queued','needs_review') AND last_failure_class='authorization')",
+                    &[],
+                ).await.map(|row| row.get::<_, bool>(0)).unwrap_or(false)
+            } else {
+                true
+            }
         }
         Err(_) => false,
     };
@@ -1019,13 +1141,63 @@ mod tests {
             dispatch_runtime_enabled: false,
             mfa_recovery_only: false,
             mfa_enrollment_enabled: false,
+            retention: RetentionPolicy::default(),
             draining: Arc::new(AtomicBool::new(false)),
             drain_notify: Arc::new(Notify::new()),
+            billing_provider_authorized: None,
         };
         ensure_local_site(&config).await.unwrap();
         ensure_local_site(&config).await.unwrap();
         assert_eq!(
             ready(State(Arc::new(config.clone()))).await.0,
+            StatusCode::OK
+        );
+        client.batch_execute("CREATE TABLE billing_reconciliations(dirty_generation bigint,processed_generation bigint,last_failure_class text); CREATE TABLE billing_risk_events(state text,last_failure_class text)").await.unwrap();
+        let provider_authorized = Arc::new(AtomicBool::new(false));
+        let mut provider_config = config.clone();
+        provider_config.billing_provider_authorized =
+            Some((provider_authorized.clone(), Arc::new(AtomicBool::new(true))));
+        assert_eq!(
+            ready(State(Arc::new(provider_config.clone()))).await.0,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        provider_authorized.store(true, Ordering::Release);
+        assert_eq!(
+            ready(State(Arc::new(provider_config.clone()))).await.0,
+            StatusCode::OK
+        );
+        client
+            .execute(
+                "INSERT INTO billing_reconciliations VALUES(2,1,'authorization')",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            ready(State(Arc::new(provider_config.clone()))).await.0,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        client
+            .execute("DELETE FROM billing_reconciliations", &[])
+            .await
+            .unwrap();
+        client
+            .execute(
+                "INSERT INTO billing_risk_events VALUES('needs_review','authorization')",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            ready(State(Arc::new(provider_config.clone()))).await.0,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        client
+            .execute("DELETE FROM billing_risk_events", &[])
+            .await
+            .unwrap();
+        assert_eq!(
+            ready(State(Arc::new(provider_config))).await.0,
             StatusCode::OK
         );
         client

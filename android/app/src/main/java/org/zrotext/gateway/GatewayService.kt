@@ -28,56 +28,77 @@ class GatewayService : Service() {
         .build()
     private var socket: WebSocket? = null
     private var heartbeat: ScheduledFuture<*>? = null
+    private var refusedStart = false
+    @Volatile private var generation = 0
 
     override fun onCreate() {
         super.onCreate()
+        processActive = true
         getSystemService(NotificationManager::class.java).createNotificationChannel(
             NotificationChannel(CHANNEL, "Gateway session", NotificationManager.IMPORTANCE_LOW)
         )
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        generation += 1
+        val currentGeneration = generation
         if (intent?.action == ACTION_PAUSE) {
+            refusedStart = false
             stopSelf()
             return START_NOT_STICKY
+        }
+        // A startForegroundService launch must be promoted even when its extras
+        // are invalid. Android otherwise terminates the entire app process.
+        val checking = notification("Checking gateway settings")
+        if (Build.VERSION.SDK_INT >= 29) {
+            startForeground(NOTIFICATION_ID, checking, ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING)
+        } else {
+            startForeground(NOTIFICATION_ID, checking)
         }
         val url = intent?.getStringExtra(EXTRA_URL)
         val token = intent?.getStringExtra(EXTRA_TOKEN)
-        if (url == null || token.isNullOrBlank() || !url.startsWith("wss://")) {
+        if (url == null || token.isNullOrBlank() || !GatewayInputValidation.testEndpoint(url)) {
             GatewayStatus.value = "Set a WSS endpoint and test token"
+            refusedStart = true
+            stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return START_NOT_STICKY
         }
-        val notification = notification("Connecting")
-        if (Build.VERSION.SDK_INT >= 29) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING)
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
-        }
+        refusedStart = false
+        GatewayStatus.value = "Connecting"
+        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification("Connecting"))
         socket?.close(1000, "replaced")
         heartbeat?.cancel(false)
         val request = Request.Builder().url(url).header("Authorization", "Bearer $token").build()
         socket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                if (generation != currentGeneration) {
+                    webSocket.close(1000, "replaced")
+                    return
+                }
                 GatewayStatus.value = "Connected for heartbeat test"
                 getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification("Connected"))
                 heartbeat = scheduler.scheduleAtFixedRate({
-                    webSocket.send("{\"v\":1,\"type\":\"heartbeat\"}")
+                    if (generation == currentGeneration)
+                        webSocket.send("{\"v\":1,\"type\":\"heartbeat\"}")
                 }, 0, 30, TimeUnit.SECONDS)
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
+                if (generation != currentGeneration) return
                 if (text == "{\"v\":1,\"type\":\"heartbeat_ack\"}") {
                     GatewayStatus.heartbeats += 1
                 }
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                if (generation != currentGeneration) return
                 heartbeat?.cancel(false)
                 GatewayStatus.value = "Disconnected ($code)"
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                if (generation != currentGeneration) return
                 heartbeat?.cancel(false)
                 GatewayStatus.value = "Connection failed; reopen gateway mode"
             }
@@ -86,11 +107,13 @@ class GatewayService : Service() {
     }
 
     override fun onDestroy() {
+        processActive = false
+        generation += 1
         heartbeat?.cancel(false)
         socket?.close(1000, "paused")
         client.dispatcher.executorService.shutdown()
         scheduler.shutdownNow()
-        GatewayStatus.value = "Paused"
+        if (!refusedStart) GatewayStatus.value = "Paused"
         super.onDestroy()
     }
 
@@ -111,6 +134,7 @@ class GatewayService : Service() {
     }
 
     companion object {
+        @Volatile internal var processActive = false
         const val ACTION_PAUSE = "org.zrotext.gateway.PAUSE"
         const val EXTRA_URL = "url"
         const val EXTRA_TOKEN = "token"

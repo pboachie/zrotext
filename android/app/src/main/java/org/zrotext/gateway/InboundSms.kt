@@ -40,6 +40,35 @@ internal object InboundNormalizer {
     }
 }
 
+/** Orders a just received STOP with the final in-process radio preflight. */
+internal object LocalSuppressionGate { val lock = Any() }
+
+/** A missing format extra is valid for SMS_RECEIVED. Reject ambiguous decodes. */
+internal object InboundPduParser {
+    fun decode(intent: Intent, decodePart: (ByteArray, String) -> InboundNormalizer.Part? =
+        { pdu, format ->
+            val sms = runCatching { SmsMessage.createFromPdu(pdu, format) }.getOrNull()
+            if (sms == null || sms.isEmail) null else
+                InboundNormalizer.Part(sms.originatingAddress, sms.messageBody, sms.timestampMillis)
+        }): Pair<List<ByteArray>, InboundNormalizer.Message>? {
+        val raw = intent.extras?.get("pdus") as? Array<*> ?: return null
+        if (raw.size !in 1..6 || raw.any { it !is ByteArray || it.size !in 1..512 }) return null
+        val pdus = raw.map { it as ByteArray }
+        if (pdus.distinctBy { it.toList() }.size != pdus.size) return null
+        val suppliedFormat = intent.getStringExtra("format")
+        val formats = when (suppliedFormat) {
+            null -> listOf("3gpp", "3gpp2")
+            "3gpp", "3gpp2" -> listOf(suppliedFormat)
+            else -> return null
+        }
+        val candidates = formats.mapNotNull { format ->
+            val parts = pdus.map { decodePart(it, format) ?: return@mapNotNull null }
+            InboundNormalizer.normalize(parts)
+        }.distinct()
+        return candidates.singleOrNull()?.let { pdus to it }
+    }
+}
+
 /** Android Keystore keys never leave the phone. The Room body is AES-GCM ciphertext. */
 internal object InboundVault {
     data class Sealed(val ciphertext: ByteArray, val nonce: ByteArray)
@@ -108,28 +137,10 @@ class InboundSmsReceiver : BroadcastReceiver() {
     }
 
     private fun capture(context: Context, intent: Intent) {
-        val raw = intent.extras?.get("pdus") as? Array<*> ?: return
-        if (raw.size !in 1..6 || raw.any { it !is ByteArray || it.size !in 1..512 }) return
-        val format = intent.getStringExtra("format")?.takeIf { it == "3gpp" || it == "3gpp2" }
-            ?: return
-        val pdus = raw.map { it as ByteArray }
-        if (pdus.distinctBy { it.toList() }.size != pdus.size) return
-        val parts = pdus.map { pdu ->
-            val sms = SmsMessage.createFromPdu(pdu, format) ?: return
-            if (sms.isEmail) return
-            InboundNormalizer.Part(sms.originatingAddress, sms.messageBody, sms.timestampMillis)
-        }
-        val message = InboundNormalizer.normalize(parts) ?: return
+        val (pdus, message) = InboundPduParser.decode(intent) ?: return
         val now = System.currentTimeMillis()
         val senderToken = InboundVault.token("sender-v1", message.senderE164.toByteArray(Charsets.US_ASCII))
         val dao = SmsJournalDatabase.get(context).attempts()
-        val window = dao.activeInboundWindows(senderToken, now).singleOrNull() ?: return
-        // SMS_RECEIVED documents PDUs, not a mandatory subscription extra. Missing evidence
-        // is stored without a body; a slot/default-SIM guess cannot authorize capture.
-        val rawSub = intent.extras?.get("subscription")
-        val observedSub = (rawSub as? Number)?.toLong()
-            ?.takeIf { it in 0..Int.MAX_VALUE.toLong() }?.toInt()
-        if (observedSub != null && observedSub != window.subscriptionId) return
         val pduFingerprint = ByteArrayOutputStream().apply {
             for (pdu in pdus) {
                 write((pdu.size ushr 8) and 0xff)
@@ -139,10 +150,26 @@ class InboundSmsReceiver : BroadcastReceiver() {
         }.toByteArray()
         val dedupeToken = InboundVault.token("pdu-v1", senderToken.toByteArray(Charsets.US_ASCII),
             pduFingerprint)
-        val sealed = try { InboundVault.seal(message.body, dedupeToken) }
-            catch (_: Exception) { null }
+        val optAction = OptOutParser.classify(message.body)
+        if ((optAction == OptOutParser.OPT_OUT || optAction == OptOutParser.OPT_OUT_REVIEW) &&
+            dao.inboundByDedupe(dedupeToken) == null) {
+            // Persist the local radio block even when the reply cannot be
+            // associated with a trusted upload window or the server is offline.
+            synchronized(LocalSuppressionGate.lock) {
+                dao.suppressRecipient(LocalRecipientSuppression(senderToken, now))
+            }
+        }
+        val window = dao.activeInboundWindows(senderToken, now).singleOrNull() ?: return
+        // SMS_RECEIVED documents PDUs, not a mandatory subscription extra. Missing evidence
+        // is stored without a body; a slot/default-SIM guess cannot authorize capture.
+        val rawSub = intent.extras?.get("subscription")
+        val observedSub = (rawSub as? Number)?.toLong()
+            ?.takeIf { it in 0..Int.MAX_VALUE.toLong() }?.toInt()
+        if (observedSub != null && observedSub != window.subscriptionId) return
+        val sealed = if (optAction == null) try { InboundVault.seal(message.body, dedupeToken) }
+            catch (_: Exception) { null } else null
         dao.recordInbound(window, dedupeToken, observedSub, message.partCount, now,
-            sealed?.ciphertext, sealed?.nonce)
+            sealed?.ciphertext, sealed?.nonce, optAction)
     }
 
     companion object {

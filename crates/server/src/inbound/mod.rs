@@ -28,6 +28,9 @@ pub enum Classification {
     SimUnverified,
     SendUnverified,
     EncryptionUnverified,
+    OptOut,
+    OptOutReview,
+    OptIn,
 }
 
 impl Classification {
@@ -37,6 +40,9 @@ impl Classification {
             Self::SimUnverified => 2,
             Self::SendUnverified => 3,
             Self::EncryptionUnverified => 4,
+            Self::OptOut => 5,
+            Self::OptOutReview => 6,
+            Self::OptIn => 7,
         }
     }
 
@@ -46,6 +52,9 @@ impl Classification {
             Self::SimUnverified => "sim_unverified",
             Self::SendUnverified => "send_unverified",
             Self::EncryptionUnverified => "encryption_unverified",
+            Self::OptOut => "opt_out",
+            Self::OptOutReview => "opt_out_review",
+            Self::OptIn => "opt_in",
         }
     }
 }
@@ -90,6 +99,7 @@ pub struct InboundEvent<'a> {
 pub struct IngestOutcome {
     pub created: bool,
     pub queued_deliveries: u64,
+    pub suppression_cleared: bool,
 }
 
 #[derive(Debug, Error)]
@@ -102,6 +112,8 @@ pub enum InboundError {
     InvalidSignature,
     #[error("outbound attempt is unavailable to this device")]
     UnknownSource,
+    #[error("outbound attempt has not yet produced positive sent evidence")]
+    SourcePending,
     #[error("event ID was reused with different content")]
     EventConflict,
     #[error("device sequence was reused by another event")]
@@ -156,6 +168,13 @@ fn validate(event: &InboundEvent<'_>) -> Result<(), InboundError> {
     {
         return Err(InboundError::InvalidInput);
     }
+    if matches!(
+        event.classification,
+        Classification::OptOut | Classification::OptOutReview | Classification::OptIn
+    ) && event.content != Content::MetadataOnly
+    {
+        return Err(InboundError::InvalidInput);
+    }
     Ok(())
 }
 
@@ -183,7 +202,7 @@ pub async fn ingest(
          AND s.lease_until>clock_timestamp() AND d.revoked_at IS NULL AND k.revoked_at IS NULL \
          AND a.disabled_at IS NULL AND t.enabled=TRUE AND t.draining=FALSE \
          AND p.epoch=$6 AND NOT pg_is_in_recovery() \
-         FOR SHARE OF s,d,k,a,t,p",
+         FOR SHARE OF s,d,k,t,p",
             &[
                 &session.account_id,
                 &session.device_id,
@@ -202,17 +221,28 @@ pub async fn ingest(
     let signed = signed_event_bytes(session, event);
     key.verify(&signed, &signature)
         .map_err(|_| InboundError::InvalidSignature)?;
+    // Admission takes this account lock before checking suppression. This
+    // serializes STOP and START with every acceptance transaction.
+    tx.query_opt(
+        "SELECT id FROM accounts WHERE id=$1 AND disabled_at IS NULL FOR NO KEY UPDATE",
+        &[&session.account_id],
+    )
+    .await?
+    .ok_or(InboundError::Unauthorized)?;
 
     // A reply can be associated only with a message attempt from this tenant
-    // and device that already has positive sent-callback evidence.
+    // and device that already has positive sent-callback evidence. An early
+    // reply may reach the writer before the callback event; preserve it for
+    // retry. A submitted attempt with no callback row is permanently stale
+    // (for example, after event retention).
     let source = tx
         .query_opt(
-            "SELECT 1 FROM message_attempts ma \
+            "SELECT ma.status, EXISTS (SELECT 1 FROM message_events me \
+                WHERE me.attempt_id=ma.id AND me.evidence_code='sent_callback_ok'), m.recipient_e164 \
+             FROM message_attempts ma \
          JOIN messages m ON (m.account_id,m.id)=(ma.account_id,ma.message_id) \
          WHERE ma.id=$1 AND ma.account_id=$2 AND ma.device_id=$3 \
-         AND ma.message_id=$4 AND ma.status='submitted' \
-         AND EXISTS (SELECT 1 FROM message_events me \
-             WHERE me.attempt_id=ma.id AND me.evidence_code='sent_callback_ok') \
+         AND ma.message_id=$4 \
          FOR SHARE OF ma,m",
             &[
                 &event.attempt_id,
@@ -222,9 +252,9 @@ pub async fn ingest(
             ],
         )
         .await?;
-    if source.is_none() {
-        return Err(InboundError::UnknownSource);
-    }
+    let source = source.ok_or(InboundError::UnknownSource)?;
+    source_readiness(Some(source.get::<_, String>(0).as_str()), source.get(1))?;
+    let recipient_e164: String = source.get(2);
 
     let digest = Sha256::digest(&signed).to_vec();
     // Serialize this event ID across connections before the replay lookup.
@@ -257,10 +287,13 @@ pub async fn ingest(
         ).await?.is_none() {
             return Err(InboundError::Unauthorized);
         }
+        let cleared =
+            suppression_cleared(&tx, session.account_id, &recipient_e164, event.event_id).await?;
         tx.commit().await?;
         return Ok(IngestOutcome {
             created: false,
             queued_deliveries: 0,
+            suppression_cleared: cleared,
         });
     }
     // Reject an already committed sequence without a counter update or a
@@ -341,12 +374,38 @@ pub async fn ingest(
         // A writer from the prior version may have raced without the event
         // advisory lock. Roll back this transaction's budget charge; the
         // committed row already makes this an exact replay.
+        let cleared =
+            suppression_cleared(&tx, session.account_id, &recipient_e164, event.event_id).await?;
         tx.rollback().await?;
         return Ok(IngestOutcome {
             created: false,
             queued_deliveries: 0,
+            suppression_cleared: cleared,
         });
     }
+    let cleared = match event.classification {
+        Classification::OptOut | Classification::OptOutReview => {
+            let source = if event.classification == Classification::OptOut {
+                "sms_keyword"
+            } else {
+                "sms_review"
+            };
+            tx.execute(
+                "INSERT INTO recipient_suppressions(account_id,recipient_e164,active,source_event_id,source_attempt_id,source_observed_at,source) \
+                 VALUES($1,$2,TRUE,$3,$4,to_timestamp($5),$6) ON CONFLICT(account_id,recipient_e164) DO UPDATE \
+                 SET active=TRUE,source_event_id=EXCLUDED.source_event_id,source_attempt_id=EXCLUDED.source_attempt_id,source_observed_at=EXCLUDED.source_observed_at,source=EXCLUDED.source,changed_at=clock_timestamp()",
+                &[&session.account_id, &recipient_e164, &event.event_id, &event.attempt_id, &observed_seconds, &source],
+            ).await?;
+            false
+        }
+        Classification::OptIn => tx.execute(
+            "UPDATE recipient_suppressions SET active=FALSE,source_event_id=$3,source_observed_at=to_timestamp($4),source='sms_resume',changed_at=clock_timestamp() \
+             WHERE account_id=$1 AND recipient_e164=$2 AND active=TRUE AND source_attempt_id=$5 \
+             AND source_observed_at<to_timestamp($4)",
+            &[&session.account_id, &recipient_e164, &event.event_id, &observed_seconds, &event.attempt_id],
+        ).await? == 1,
+        _ => false,
+    };
     let queued = tx
         .execute(
             "INSERT INTO webhook_deliveries (id,account_id,endpoint_id,event_id) \
@@ -367,7 +426,35 @@ pub async fn ingest(
     Ok(IngestOutcome {
         created: true,
         queued_deliveries: queued,
+        suppression_cleared: cleared,
     })
+}
+
+fn source_readiness(
+    status: Option<&str>,
+    positive_sent_callback: bool,
+) -> Result<(), InboundError> {
+    match status {
+        Some("submitted") if positive_sent_callback => Ok(()),
+        Some("granted" | "submitting" | "unknown") => Err(InboundError::SourcePending),
+        _ => Err(InboundError::UnknownSource),
+    }
+}
+
+async fn suppression_cleared<C: tokio_postgres::GenericClient>(
+    client: &C,
+    account_id: Uuid,
+    recipient_e164: &str,
+    event_id: Uuid,
+) -> Result<bool, tokio_postgres::Error> {
+    Ok(client
+        .query_opt(
+            "SELECT 1 FROM recipient_suppressions WHERE account_id=$1 AND recipient_e164=$2 \
+         AND active=FALSE AND source_event_id=$3",
+            &[&account_id, &recipient_e164, &event_id],
+        )
+        .await?
+        .is_some())
 }
 
 fn verify_exact_replay(
@@ -514,6 +601,7 @@ fn retry_delay(attempt_count: i16) -> Option<i32> {
 }
 
 /// Recover timed-out leases then claim one due delivery with SKIP LOCKED.
+/// Account and endpoint cursors are durable across workers and processes.
 /// A separate egress worker must validate DNS/addresses and decrypt the
 /// endpoint's signing secret before any HTTP request. No network I/O occurs.
 pub async fn claim_webhook(
@@ -526,16 +614,30 @@ pub async fn claim_webhook(
     let tx = client.transaction().await?;
     let expired = tx
         .query(
-            "SELECT id,generation,attempt_count FROM webhook_deliveries \
-         WHERE status='leased' AND lease_until<=now() \
-         ORDER BY lease_until,id FOR UPDATE SKIP LOCKED LIMIT 100",
+            "SELECT e.id,d.id FROM webhook_deliveries d \
+             JOIN webhook_endpoints e ON e.id=d.endpoint_id \
+             WHERE d.status='leased' AND d.lease_until<=now() \
+             ORDER BY d.lease_until,d.id FOR UPDATE OF e SKIP LOCKED LIMIT 100",
             &[],
         )
         .await?;
-    for row in expired {
-        let delivery_id: Uuid = row.get(0);
-        let generation: i16 = row.get(1);
-        let attempts: i16 = row.get(2);
+    for candidate in expired {
+        // Match claim, finish and owner retirement: endpoint lock first. A
+        // previous worker may have finished this lease since the scan.
+        let delivery_id: Uuid = candidate.get(1);
+        let Some(row) = tx
+            .query_opt(
+                "SELECT generation,attempt_count FROM webhook_deliveries \
+             WHERE id=$1 AND status='leased' AND lease_until<=now() \
+             FOR UPDATE SKIP LOCKED",
+                &[&delivery_id],
+            )
+            .await?
+        else {
+            continue;
+        };
+        let generation: i16 = row.get(0);
+        let attempts: i16 = row.get(1);
         tx.execute(
             "UPDATE webhook_attempts SET completed_at=now(),outcome='timeout' \
              WHERE delivery_id=$1 AND generation=$2 AND attempt_number=$3 AND completed_at IS NULL",
@@ -559,15 +661,48 @@ pub async fn claim_webhook(
             .await?;
         }
     }
+    let account = tx
+        .query_opt(
+            "SELECT a.account_id FROM webhook_dispatch_accounts a WHERE EXISTS ( \
+             SELECT 1 FROM webhook_endpoints e JOIN webhook_deliveries d \
+             ON d.endpoint_id=e.id WHERE e.account_id=a.account_id \
+             AND e.enabled AND e.paused_at IS NULL AND d.status='pending' \
+             AND d.next_attempt_at<=now() AND d.attempt_count<7 \
+             AND NOT EXISTS (SELECT 1 FROM webhook_deliveries l \
+             WHERE l.endpoint_id=e.id AND l.status='leased')) \
+             ORDER BY a.last_claim_seq,a.account_id \
+             FOR UPDATE OF a SKIP LOCKED LIMIT 1",
+            &[],
+        )
+        .await?;
+    let Some(account) = account else {
+        tx.commit().await?;
+        return Ok(None);
+    };
+    let account_id: Uuid = account.get(0);
+    let endpoint = tx
+        .query_opt(
+            "SELECT e.id FROM webhook_endpoints e WHERE e.account_id=$1 \
+         AND e.enabled AND e.paused_at IS NULL AND NOT EXISTS ( \
+         SELECT 1 FROM webhook_deliveries l WHERE l.endpoint_id=e.id AND l.status='leased') \
+         AND EXISTS (SELECT 1 FROM webhook_deliveries d WHERE d.endpoint_id=e.id \
+         AND d.status='pending' AND d.next_attempt_at<=now() AND d.attempt_count<7) \
+         ORDER BY e.last_claim_seq,e.id FOR UPDATE OF e SKIP LOCKED LIMIT 1",
+            &[&account_id],
+        )
+        .await?;
+    let Some(endpoint) = endpoint else {
+        tx.commit().await?;
+        return Ok(None);
+    };
+    let endpoint_id: Uuid = endpoint.get(0);
     let row = tx
         .query_opt(
-            "SELECT d.id,d.account_id,d.endpoint_id,d.event_id,d.generation,d.attempt_count \
-         FROM webhook_deliveries d JOIN webhook_endpoints e ON \
-         (e.account_id,e.id)=(d.account_id,d.endpoint_id) \
-         WHERE d.status='pending' AND d.next_attempt_at<=now() AND \
-         d.attempt_count<7 AND e.enabled=TRUE \
-         ORDER BY d.next_attempt_at,d.id FOR UPDATE OF d SKIP LOCKED LIMIT 1",
-            &[],
+            "SELECT id,event_id,generation,attempt_count FROM webhook_deliveries \
+         WHERE endpoint_id=$1 AND status='pending' AND next_attempt_at<=now() \
+         AND attempt_count<7 ORDER BY next_attempt_at,id \
+         FOR UPDATE SKIP LOCKED LIMIT 1",
+            &[&endpoint_id],
         )
         .await?;
     let Some(row) = row else {
@@ -575,11 +710,9 @@ pub async fn claim_webhook(
         return Ok(None);
     };
     let delivery_id: Uuid = row.get(0);
-    let account_id: Uuid = row.get(1);
-    let endpoint_id: Uuid = row.get(2);
-    let event_id: Uuid = row.get(3);
-    let generation: i16 = row.get(4);
-    let attempt_number: i16 = row.get::<_, i16>(5) + 1;
+    let event_id: Uuid = row.get(1);
+    let generation: i16 = row.get(2);
+    let attempt_number: i16 = row.get::<_, i16>(3) + 1;
     let attempt_id = Uuid::new_v4();
     tx.execute(
         "UPDATE webhook_deliveries SET status='leased',attempt_count=$2,lease_owner=$3, \
@@ -590,6 +723,20 @@ pub async fn claim_webhook(
     tx.execute(
         "INSERT INTO webhook_attempts(id,delivery_id,generation,attempt_number) VALUES($1,$2,$3,$4)",
         &[&attempt_id, &delivery_id, &generation, &attempt_number],
+    )
+    .await?;
+    let claim_seq: i64 = tx
+        .query_one("SELECT nextval('webhook_claim_sequence')", &[])
+        .await?
+        .get(0);
+    tx.execute(
+        "UPDATE webhook_dispatch_accounts SET last_claim_seq=$2 WHERE account_id=$1",
+        &[&account_id, &claim_seq],
+    )
+    .await?;
+    tx.execute(
+        "UPDATE webhook_endpoints SET last_claim_seq=$2 WHERE id=$1",
+        &[&endpoint_id, &claim_seq],
     )
     .await?;
     tx.commit().await?;
@@ -626,6 +773,13 @@ pub async fn finish_webhook(
         return Err(InboundError::InvalidInput);
     }
     let tx = client.transaction().await?;
+    // The owner disable path locks the endpoint before its deliveries. Keep
+    // this order to avoid a finish/disable deadlock.
+    tx.query_one(
+        "SELECT id FROM webhook_endpoints WHERE account_id=$1 AND id=$2 FOR UPDATE",
+        &[&lease.account_id, &lease.endpoint_id],
+    )
+    .await?;
     let row = tx
         .query_opt(
             "SELECT status,generation,attempt_count,lease_owner,coalesce(lease_until>now(),false) \
@@ -704,6 +858,26 @@ pub async fn finish_webhook(
             )
             .await?;
         }
+    }
+    match outcome {
+        WebhookOutcome::Ack => {
+            tx.execute(
+                "UPDATE webhook_endpoints SET failure_started_at=NULL WHERE id=$1",
+                &[&lease.endpoint_id],
+            )
+            .await?;
+        }
+        WebhookOutcome::Timeout | WebhookOutcome::HttpError | WebhookOutcome::NetworkError => {
+            tx.execute(
+                "UPDATE webhook_endpoints SET \
+                 paused_at=CASE WHEN coalesce(failure_started_at,now())<=now()-interval '72 hours' \
+                 THEN coalesce(paused_at,now()) ELSE paused_at END, \
+                 failure_started_at=coalesce(failure_started_at,now()) WHERE id=$1",
+                &[&lease.endpoint_id],
+            )
+            .await?;
+        }
+        WebhookOutcome::PolicyRejected => {}
     }
     tx.commit().await?;
     Ok(())

@@ -105,6 +105,8 @@ class MainActivity : ComponentActivity() {
                     Button(onClick = {
                         if (selectedSim == null) {
                             GatewayStatus.value = "Select a SIM first"
+                        } else if (!GatewayInputValidation.testEndpoint(endpoint) || testToken.isBlank()) {
+                            GatewayStatus.value = "Set a WSS endpoint and test token"
                         } else if (!GatewaySessionSelection.startVisibleTestSession(
                                 this@MainActivity, endpoint, testToken)) {
                             GatewayStatus.value = "Could not disable heartbeat reboot resume; try again"
@@ -137,6 +139,7 @@ class MainActivity : ComponentActivity() {
                     }) { Text("Pause authenticated heartbeat") }
                     Text("Inbound pilot: capture carrier SMS replies and upload signed metadata. RCS replies do not reach this SMS receiver. Before using a dedicated gateway line, verify that a sender with unchanged messaging settings can send an SMS reply and this app acknowledges it. The sender number and SMS body stay on this phone.")
                     Button(onClick = {
+                        if (!validAuthenticatedFields()) return@Button
                         stopService(Intent(this@MainActivity, GatewayService::class.java))
                         val intent = Intent(this@MainActivity, AuthenticatedGatewayService::class.java)
                             .putExtra(AuthenticatedGatewayService.EXTRA_URL, deviceStreamEndpoint)
@@ -151,7 +154,12 @@ class MainActivity : ComponentActivity() {
                         label = { Text("Controlled recipient +E.164") })
                     Button(onClick = {
                         val sim = selectedSim
-                        if (sim == null || !alphaRecipient.matches(Regex("^\\+[1-9][0-9]{1,14}$"))) {
+                        if (!validAuthenticatedFields()) return@Button
+                        if (getSharedPreferences("alpha_pilot", MODE_PRIVATE)
+                                .getBoolean("attempt_used", false)) {
+                            AuthenticatedGatewayStatus.value = "Alpha arm refused: one test attempt already used"
+                        } else if (sim == null || sims.none { it.first == sim } ||
+                            !alphaRecipient.matches(Regex("^\\+[1-9][0-9]{1,14}$"))) {
                             AuthenticatedGatewayStatus.value = "Select an active SIM and enter a valid recipient"
                         } else {
                             stopService(Intent(this@MainActivity, GatewayService::class.java))
@@ -225,12 +233,20 @@ class MainActivity : ComponentActivity() {
             AuthenticatedGatewayStatus.value = "Select a SIM first"
             return
         }
+        if (!validAuthenticatedFields()) return
         stopService(Intent(this, GatewayService::class.java))
         val intent = Intent(this, AuthenticatedGatewayService::class.java)
             .putExtra(AuthenticatedGatewayService.EXTRA_URL, deviceStreamEndpoint)
             .putExtra(AuthenticatedGatewayService.EXTRA_DEVICE_ID, approvedDeviceId.trim())
             .putExtra(AuthenticatedGatewayService.EXTRA_REBOOT_RESUME, rebootResume)
         ContextCompat.startForegroundService(this, intent)
+    }
+
+    private fun validAuthenticatedFields(): Boolean {
+        if (HeartbeatResumeStore.validUrl(deviceStreamEndpoint) &&
+            GatewayInputValidation.deviceId(approvedDeviceId.trim()) != null) return true
+        AuthenticatedGatewayStatus.value = "Set a WSS device stream and approved device ID"
+        return false
     }
 
     private fun askPermissions() {

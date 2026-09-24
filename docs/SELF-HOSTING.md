@@ -79,6 +79,26 @@ connections in total. These conservative limits are fixed in `runtime_db.rs`;
 adding replicas requires a database capacity review. Migration and operator CLI
 connections are separate and must be included in the deployment budget.
 
+When `WEBHOOK_DELIVERY_ENABLED=true`, `WEBHOOK_DISPATCH_CONCURRENCY` controls
+parallel sender lanes per process (default 2, allowed 1–3). The cap leaves at
+least one of the four background database slots for other jobs. Claims rotate
+between accounts and endpoints with due work across all hubs; only one leased
+attempt per endpoint can exist. Private process logs emit `webhook_queue` with
+pending count, oldest pending age in seconds, and in-flight count about once a
+minute. Monitor these alongside the owner-visible pause state.
+
+Migration 027 requires a webhook maintenance window. Stop webhook delivery on
+**every** old dispatch node (`WEBHOOK_DELIVERY_ENABLED=false`) before migrating.
+The migration takes an exclusive delivery-table lock, records expired leases as
+timed-out attempts using the normal retry schedule, and fails with a clear error
+if any unexpired lease remains. A failure rolls back the whole migration,
+including that recovery. Wait for the remaining leases to expire, then retry;
+recovery is committed only when the migration succeeds.
+Keep old senders stopped until the new code is
+running. The unique index then protects the one-in-flight rule even if an old
+worker is accidentally restarted; duplicate claims fail and retry instead of
+creating overlapping sends.
+
 Connection establishment is limited to three seconds. Runtime sessions enforce a
 10-second statement timeout, three-second lock timeout, and 15-second idle
 transaction timeout. The connection driver retains its capacity permit even when
@@ -102,6 +122,54 @@ count. An exhausted socket closes; devices can reconnect and replay unacknowledg
 evidence using existing deduplication. Device implementations should pace backlog
 replay and use reconnect backoff. These are resource limits, not per-account abuse
 or billing quotas.
+
+## Data retention
+
+The API starts a retention worker at startup. Every 15
+seconds, each hub processes at most 100 rows per table, using `SKIP LOCKED` so
+concurrent hubs can divide the work. The first run occurs at startup. Backlogs
+are reduced over successive ticks; the configured age is an eligibility cutoff,
+not a hard deletion deadline. Values below are calendar days and must be integers
+from 1 through 3650. An invalid value prevents server startup.
+
+| Setting | Default | Action and cutoff |
+|---|---:|---|
+| `ZT_IDEMPOTENCY_RETENTION_DAYS` | 7 | New keys expire after this many days; expired keys are ignored for replay and removed. Changing the setting does not rewrite existing expiry timestamps. |
+| `ZT_MESSAGE_CONTENT_RETENTION_DAYS` | 30 | Null the E.164 recipient and synthetic payload on delivered, failed, cancelled, or expired messages after this many days since their last state update. |
+| `ZT_MESSAGE_EVENTS_RETENTION_DAYS` | 90 | Delete message event rows after this many days since receipt when their message is eligible for terminal retention. |
+| `ZT_WEBHOOK_HISTORY_RETENTION_DAYS` | 30 | Delete succeeded/dead deliveries and their attempts and manual replay requests after this many days since the delivery's last update. |
+| `ZT_INBOUND_CONTENT_RETENTION_DAYS` | 30 | Redact M1 opaque pilot ciphertext after this many days since receipt, once every related webhook delivery has been removed. |
+| `ZT_SEALED_INBOUND_CONTENT_RETENTION_DAYS` | 30 | Null sealed inbound envelopes after this many days since receipt. |
+
+The message, event, webhook, and M1 inbound actions require an eligible terminal
+outbound message and no unresolved dispatch fence (`granted`, `submitting`, or
+`unknown`). Completed `submitted` and `failed` fence records do not block
+retention. `unknown`, `delivery_unknown`, other nonterminal states, and messages
+with unresolved fences retain their data until resolved. Pending
+and leased webhook deliveries also remain until terminal. The M1 and sealed
+inbound event rows keep their IDs, device sequence fences, and digests after
+content redaction, so replay cannot recreate a purged body. Message IDs, state,
+attempts, digests, and usage records remain; this worker is not an account-erasure
+API. Backups, WAL, replicas, and PostgreSQL dead tuples need their own lifecycle
+policy. A database row update or deletion does not immediately erase old pages.
+
+Message events are deleted only after their parent message content has been
+redacted. If the event window is shorter than the content window, or an old
+unknown message becomes terminal recently, the content cutoff is the effective
+earliest event-deletion time. This preserves exact radio-event replay until the
+store starts rejecting all late receipts for that redacted message.
+
+After content redaction, late radio receipts are rejected as stale even when
+their event ID used to exist in the audit timeline. Device clients must
+quarantine that terminal rejection rather than reconnecting with the same
+frame. The [stale-event protocol fix](https://github.com/pboachie/zrotext/issues/147)
+is a rollout dependency for this retention worker. Inbound source admission
+uses the attempt's durable `submitted` status after sent-callback audit events
+have been pruned; new inbound events still have a seven-day upload-age limit.
+
+When changing these settings across multiple hubs, deploy the same values to
+every hub. A shorter value can make data eligible immediately, while a longer
+value cannot restore content already redacted or history already deleted.
 
 ## Source for modified deployments
 

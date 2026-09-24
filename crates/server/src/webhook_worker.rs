@@ -361,6 +361,23 @@ pub async fn dispatch_one(
     .await
 }
 
+/// A payload-free operational signal for private process logs.
+pub async fn queue_signal(
+    client: &Client,
+) -> Result<(i64, Option<i64>, i64), tokio_postgres::Error> {
+    let row = client
+        .query_one(
+            "SELECT count(*) FILTER (WHERE status='pending'), \
+         greatest(0,(extract(epoch FROM now()-min(created_at) \
+         FILTER (WHERE status='pending')))::bigint), \
+         count(*) FILTER (WHERE status='leased') FROM webhook_deliveries \
+         WHERE status IN ('pending','leased')",
+            &[],
+        )
+        .await?;
+    Ok((row.get(0), row.get(1), row.get(2)))
+}
+
 /// The transport seam keeps the real sender fixed above while a test can
 /// exercise claim, authenticated payload preparation and retry accounting.
 pub(crate) async fn dispatch_one_with<F, Fut>(
@@ -535,6 +552,7 @@ mod tests {
             include_str!("../../../deploy/compose/migrations/006_usage_metering.sql"),
             include_str!("../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"),
             include_str!("../../../deploy/compose/migrations/015_webhook_kek_commitments.sql"),
+            include_str!("../../../deploy/compose/migrations/031_recipient_suppression.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
