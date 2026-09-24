@@ -2623,6 +2623,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(row.get::<_, i64>(0), 8);
+        db.execute("UPDATE billing_reconciliations SET dirty_generation=dirty_generation+1,state='needs_review',failed_attempts=10,last_failure_class='authorization' WHERE stripe_subscription_id='sub_entitlement1'", &[]).await.unwrap();
+        db.execute("UPDATE billing_reconciliations SET state='needs_review',failed_attempts=10,last_failure_class='authorization' WHERE stripe_subscription_id='sub_entitlement2'", &[]).await.unwrap();
+        db.execute("INSERT INTO billing_events(stripe_event_id,event_type,account_id,body_sha256,disposition) VALUES('evt_ConfigRisk1','charge.refunded',$1,$2,'queued')", &[&account, &vec![0u8; 32]]).await.unwrap();
+        db.execute("INSERT INTO billing_risk_events(stripe_event_id,stripe_charge_id,risk_kind,state,account_id,failed_attempts,last_failure_class) VALUES('evt_ConfigRisk1','ch_ConfigRisk1','refund','needs_review',$1,10,'authorization')", &[&account]).await.unwrap();
         let before = db.query("SELECT stripe_subscription_id,dirty_generation,processed_generation FROM billing_reconciliations WHERE account_id=$1 ORDER BY stripe_subscription_id", &[&account]).await.unwrap();
         reset_test_quotas_on_start(&scoped_url, true, false, Some(&[1; 32]))
             .await
@@ -2641,6 +2645,16 @@ mod tests {
             .unwrap()
             .get(0);
         assert_eq!(preserved, 2, "same config must preserve active quota");
+        let review = db.query_one("SELECT state,failed_attempts,last_failure_class FROM billing_reconciliations WHERE stripe_subscription_id='sub_entitlement2'", &[]).await.unwrap();
+        assert_eq!(review.get::<_, String>(0), "needs_review");
+        assert_eq!(review.get::<_, i32>(1), 10);
+        assert_eq!(
+            review.get::<_, Option<String>>(2).as_deref(),
+            Some("authorization")
+        );
+        let unchanged_risk = db.query_one("SELECT state,failed_attempts FROM billing_risk_events WHERE stripe_event_id='evt_ConfigRisk1'", &[]).await.unwrap();
+        assert_eq!(unchanged_risk.get::<_, String>(0), "needs_review");
+        assert_eq!(unchanged_risk.get::<_, i32>(1), 10);
         reset_test_quotas_on_start(&scoped_url, true, false, Some(&[2; 32]))
             .await
             .unwrap();
@@ -2654,6 +2668,21 @@ mod tests {
                 "terminal subscription must not be redirtied"
             );
         }
+        let terminal_review = db.query_one("SELECT state,failed_attempts,last_failure_class FROM billing_reconciliations WHERE stripe_subscription_id='sub_entitlement2'", &[]).await.unwrap();
+        assert_eq!(terminal_review.get::<_, String>(0), "needs_review");
+        assert_eq!(terminal_review.get::<_, i32>(1), 10);
+        assert_eq!(
+            terminal_review.get::<_, Option<String>>(2).as_deref(),
+            Some("authorization")
+        );
+        let risk_review = db.query_one("SELECT state,failed_attempts,last_failure_class FROM billing_risk_events WHERE stripe_event_id='evt_ConfigRisk1'", &[]).await.unwrap();
+        assert_eq!(risk_review.get::<_, String>(0), "queued");
+        assert_eq!(risk_review.get::<_, i32>(1), 0);
+        assert_eq!(risk_review.get::<_, Option<String>>(2), None);
+        let active_review = db.query_one("SELECT state,failed_attempts,last_failure_class FROM billing_reconciliations WHERE stripe_subscription_id='sub_entitlement1'", &[]).await.unwrap();
+        assert_eq!(active_review.get::<_, String>(0), "queued");
+        assert_eq!(active_review.get::<_, i32>(1), 0);
+        assert_eq!(active_review.get::<_, Option<String>>(2), None);
         // A rolling upgrade can temporarily have entitlement migration 010
         // without risk migration 011. Disabling billing still clears its old
         // allowance, while enabling billing requires both schemas.

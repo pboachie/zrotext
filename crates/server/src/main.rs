@@ -193,7 +193,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let billing_provider_authorized = billing_test
         .as_ref()
-        .map(|(_, worker, _, _, _)| worker.authorization_state());
+        .map(|(_, worker, ..)| worker.authorization_state());
     let config = Arc::new(Config {
         database_url: required("DATABASE_URL")?,
         site_id: required("SITE_ID")?,
