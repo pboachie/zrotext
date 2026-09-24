@@ -2,10 +2,12 @@
 
 import contextlib
 import io
+import json
 import os
 import subprocess
 import tempfile
 import unittest
+import urllib.error
 from unittest.mock import patch
 
 import check_dco
@@ -99,7 +101,62 @@ class CheckDcoTests(unittest.TestCase):
     def test_github_committed_merge_is_exempt(self):
         side = self.diverge()
         self.git("merge", "--no-ff", "--no-edit", side, committer_email=GITHUB_EMAIL)
-        self.assertEqual(self.run_check(), 0)
+        with patch.object(check_dco, "github_web_merge_verified", return_value=True) as verified:
+            self.assertEqual(self.run_check(), 0)
+        verified.assert_called_once()
+
+    def test_spoofed_github_committer_merge_without_signature_fails(self):
+        side = self.diverge()
+        self.git("merge", "--no-ff", "--no-edit", side, committer_email=GITHUB_EMAIL)
+        with patch.object(check_dco, "github_web_merge_verified", return_value=False):
+            self.assertEqual(self.run_check(), 1)
+
+    def test_verified_web_signature_api_response(self):
+        sha = "b" * 40
+        payload = {
+            "sha": sha,
+            "committer": {"email": GITHUB_EMAIL},
+            "verification": {"verified": True, "reason": "valid"},
+        }
+        with patch.dict(os.environ, {"GITHUB_TOKEN": BOT_EMAIL}):
+            with patch.object(check_dco.urllib.request, "urlopen",
+                              return_value=io.BytesIO(json.dumps(payload).encode())) as urlopen:
+                self.assertTrue(check_dco.github_web_merge_verified(sha, "pboachie/zrotext"))
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.full_url,
+                         f"https://api.github.com/repos/pboachie/zrotext/git/commits/{sha}")
+        self.assertEqual(request.get_header("Authorization"), f"Bearer {BOT_EMAIL}")
+
+    def test_repository_slug_validation_is_bounded(self):
+        self.assertTrue(check_dco.valid_github_repo_slug("pboachie/zrotext"))
+        for invalid in ("", "owner/", "/repo", "owner/repo/extra",
+                        "owner/repo?query", "-" * 10000 + "/repo"):
+            with self.subTest(invalid=invalid[:32]):
+                self.assertFalse(check_dco.valid_github_repo_slug(invalid))
+
+    def test_web_merge_verification_fails_closed(self):
+        sha = "b" * 40
+        with patch.dict(os.environ, {"GITHUB_TOKEN": ""}):
+            self.assertFalse(check_dco.github_web_merge_verified(sha, "pboachie/zrotext"))
+        valid = {
+            "sha": sha,
+            "committer": {"email": GITHUB_EMAIL},
+            "verification": {"verified": True, "reason": "valid"},
+        }
+        with patch.dict(os.environ, {"GITHUB_TOKEN": BOT_EMAIL}):
+            for invalid in (
+                {**valid, "sha": "c" * 40},
+                {**valid, "verification": {"verified": False, "reason": "unsigned"}},
+                {**valid, "committer": {"email": "attacker@example.test"}},
+                {**valid, "verification": "malformed"},
+            ):
+                with self.subTest(invalid=invalid):
+                    with patch.object(check_dco.urllib.request, "urlopen",
+                                      return_value=io.BytesIO(json.dumps(invalid).encode())):
+                        self.assertFalse(check_dco.github_web_merge_verified(sha, "pboachie/zrotext"))
+            with patch.object(check_dco.urllib.request, "urlopen",
+                              side_effect=urllib.error.URLError("offline")):
+                self.assertFalse(check_dco.github_web_merge_verified(sha, "pboachie/zrotext"))
 
     def test_local_unsigned_merge_fails(self):
         side = self.diverge()
