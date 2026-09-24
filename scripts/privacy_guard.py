@@ -22,12 +22,36 @@ SECRET_PATTERNS = {
     "machine network folder": re.compile(r"(?<!\\)\\{2,}[A-Za-z0-9][A-Za-z0-9_.-]*\\+[^\\\s]+"),
 }
 PHONE = re.compile(r"(?<![A-Za-z0-9])(?:\+1[-. ]?)?([2-9]\d{2})[-. ]?([2-9]\d{2})[-. ]?(\d{4})(?![A-Za-z0-9])")
-ASSIGNMENT = re.compile(r'''(?:^|[\s{,])(?:export\s+|\$env:)?["']?([A-Z][A-Z0-9_]*)["']?\s*[:=]\s*(.*)''')
+ASSIGNMENT = re.compile(r'''(?:^|[\s{,;])(?:export\s+|\$env:)?["']?([A-Z][A-Z0-9_]*)["']?\s*[:=]\s*("[^"\n]*"|'[^'\n]*'|[^\s,;}]*)''')
 SENSITIVE_NAME = re.compile(r"(?:^|_)(?:PASSWORD|PASS|SECRET|TOKEN|API_KEY|ACCESS_KEY|PRIVATE_KEY|PEPPER)(?:_|$)")
 URI_PASSWORD = re.compile(r"\b[a-z][a-z0-9+.-]*://[^\s/:]+:([^\s@]+)@", re.I)
 IPV4 = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])")
 PRIVATE_NETWORKS = tuple(ipaddress.ip_network(prefix) for prefix in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
 ZERO = "0" * 40
+
+DIAGNOSTIC_MESSAGES = {
+    "credential-shaped token": "credential-shaped token",
+    "private key": "private key",
+    "age recovery key": "age recovery key",
+    "personal Windows path": "personal Windows path",
+    "absolute machine folder": "absolute machine folder",
+    "personal Unix path": "personal Unix path",
+    "machine network folder": "machine network folder",
+    "embedded credential assignment": "embedded credential assignment",
+    "credential-bearing URL": "credential-bearing URL",
+    "non-synthetic US phone number": "non-synthetic US phone number",
+    "private infrastructure address": "private infrastructure address",
+    "trailing whitespace": "trailing whitespace",
+    "invalid text encoding": "invalid text encoding",
+    "invalid UTF-8": "invalid UTF-8",
+    "missing final newline": "missing final newline",
+}
+
+
+def diagnostic_text(code: str) -> str:
+    # Only closed literal labels can cross into a log; never echo an unknown
+    # string, even if a future detector accidentally returns matched content.
+    return DIAGNOSTIC_MESSAGES.get(code, "unclassified privacy violation")
 
 
 def placeholder(value: str) -> bool:
@@ -41,8 +65,6 @@ def literal_value(raw: str) -> str | None:
     if raw[0] in "\"'":
         return raw[1:].split(raw[0], 1)[0]
     value = raw.split()[0].rstrip(",;")
-    if raw.startswith(("std::", "env::", "os.", "process.", "config.", "secrets.", "None", "null")) or "(" in value:
-        return None
     return value
 
 
@@ -59,8 +81,9 @@ def source_url_reference(password: str, line: str) -> bool:
 
 def scan_line(line: str, *, infrastructure: bool = False, hygiene: bool = True, source: bool = False, fixture: bool = False) -> list[str]:
     problems = [label for label, pattern in SECRET_PATTERNS.items() if pattern.search(line)]
-    assignment = ASSIGNMENT.search(line)
-    if assignment and SENSITIVE_NAME.search(assignment[1]):
+    for assignment in ASSIGNMENT.finditer(line):
+        if not SENSITIVE_NAME.search(assignment[1]):
+            continue
         value = literal_value(assignment[2])
         env_name = bool(re.fullmatch(r"(?:[A-Z][A-Z0-9]*_){2,}(?:PASSWORD|SECRET|TOKEN|API_KEY|KEY)", value or ""))
         extra_name = assignment[1].startswith("EXTRA_") and value == assignment[1][6:].lower()
@@ -170,7 +193,7 @@ def scan_snapshot(root: Path, tree: str | None, cache: dict) -> list[str]:
     label = tree[:12] if tree else "index"
     if tree:
         message = git(root, "show", "-s", "--format=%B", tree)
-        errors.extend(f"{label}:commit-message:line-{line}: {issue}"
+        errors.extend(f"{label}:commit-message:line-{line}: {diagnostic_text(issue)}"
                       for line, issue in scan_blob("message.md", message))
     files = entries(root, tree)
     pending = list(dict.fromkeys(oid for relative, oid, mode in files if mode != "160000" and blob_key(relative, oid) not in cache))
@@ -189,7 +212,7 @@ def scan_snapshot(root: Path, tree: str | None, cache: dict) -> list[str]:
         key = blob_key(relative, oid)
         if key not in cache:
             cache[key] = scan_blob(relative, blobs[oid])
-        errors.extend(f"{location}:line-{line}: {issue}" for line, issue in cache[key])
+        errors.extend(f"{location}:line-{line}: {diagnostic_text(issue)}" for line, issue in cache[key])
     return errors
 
 
@@ -243,7 +266,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.message_file:
             issues = scan_blob("message.md", args.message_file.read_bytes())
             if issues:
-                print("Commit message rejected (values hidden): " + ", ".join(sorted({issue for _, issue in issues})), file=sys.stderr)
+                print("Commit message rejected (values hidden): " + ", ".join(sorted({diagnostic_text(issue) for _, issue in issues})), file=sys.stderr)
                 return 1
             return 0
         if args.pre_push:

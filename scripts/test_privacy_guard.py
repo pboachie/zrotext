@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from privacy_guard import forbidden_path, scan_blob, scan_line
+from privacy_guard import diagnostic_text, forbidden_path, scan_blob, scan_line
 
 SCRIPTS = Path(__file__).resolve().parent
 SCANNER = SCRIPTS / "privacy_guard.py"
@@ -43,6 +43,24 @@ class PatternTests(unittest.TestCase):
         for key in ("SERVICE_TOKEN", "EXTRA_PASSWORD"):
             data = (key + ' = "' + "ABCDEFGHIJKLMNOP1234567890" + '"\n').encode()
             self.assertTrue(scan_blob("src/config.py", data))
+
+    def test_all_assignments_and_punctuation_passwords(self):
+        field = "SERVICE_TOKEN"
+        value = "synthetic-not-real"
+        payload = '{"PUBLIC_NAME":"fixture","' + field + '":"' + value + '"}\n'
+        self.assertTrue(scan_blob("config.json", payload.encode()))
+        self.assertTrue(scan_blob("src/config.py", payload.encode()))
+        payload = "PUBLIC_NAME=fixture " + field + "=" + value + "\n"
+        self.assertTrue(scan_blob("config.txt", payload.encode()))
+        payload = "SERVICE_PASSWORD" + "=synthetic(not-real)\n"
+        self.assertTrue(scan_blob("config.txt", payload.encode()))
+        reference = "SERVICE_PASSWORD" + " = os.environ.get('" + "SERVICE_PASSWORD" + "')\n"
+        self.assertEqual(scan_blob("src/config.py", reference.encode()), [])
+
+    def test_unknown_diagnostic_is_never_printed(self):
+        value = "synthetic-private-value"
+        self.assertEqual(diagnostic_text(value), "unclassified privacy violation")
+        self.assertNotIn(value, diagnostic_text(value))
 
     def test_private_infrastructure_and_fixtures(self):
         address = ".".join(("192", "168", "87", "19"))
