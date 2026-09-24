@@ -22,6 +22,7 @@ use std::{
 };
 use subtle::ConstantTimeEq;
 use tokio::sync::Notify;
+#[cfg(test)]
 use tokio_postgres::NoTls;
 use uuid::Uuid;
 use zeroize::Zeroizing;
@@ -181,7 +182,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
         if let Some(vault) = webhook_vault.as_ref() {
             let (mut key_db, key_connection) =
-                tokio_postgres::connect(&config.database_url, NoTls).await?;
+                zrotext_server::runtime_db::connect(&config.database_url).await?;
             tokio::spawn(async move {
                 let _ = key_connection.await;
             });
@@ -218,7 +219,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 if worker_draining.load(Ordering::Acquire) { break; }
                                 let result = async {
                                     let (mut client, connection) =
-                                        tokio_postgres::connect(&worker_database, NoTls).await
+                                        zrotext_server::runtime_db::connect_worker(&worker_database).await
                                             .map_err(|_| "webhook database unavailable")?;
                                     tokio::spawn(async move { let _ = connection.await; });
                                     webhook_worker::dispatch_one(&mut client, &vault, &worker_id).await
@@ -249,7 +250,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 tokio::select! {
                     _ = checks.tick() => {
                         if abuse_draining.load(Ordering::Acquire) { break; }
-                        if let Ok((client, connection)) = tokio_postgres::connect(&abuse_database, NoTls).await {
+                        if let Ok((client, connection)) = zrotext_server::runtime_db::connect_worker(&abuse_database).await {
                             tokio::spawn(async move { let _ = connection.await; });
                             let _ = abuse_limits::prune(&client).await;
                             let _ = mfa::prune_expired_challenges(&client).await;
@@ -297,13 +298,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if recovery_draining.load(Ordering::Acquire) { break; }
                         let result = async {
                             let (mut client, connection) =
-                                tokio_postgres::connect(&recovery_database, NoTls).await?;
+                                zrotext_server::runtime_db::connect_worker(&recovery_database).await?;
                             tokio::spawn(async move { let _ = connection.await; });
                             let mut store = DeliveryStore::new(&mut client);
                             store.expire_due(100).await?;
                             store.reconcile_silent_attempts(100).await?;
                             store.reconcile_delivery_timeouts(100).await?;
-                            Ok::<(), zrotext_delivery_store::StoreError>(())
+                            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
                         }.await;
                         match result {
                             Ok(()) => unavailable_logged = false,
@@ -567,7 +568,7 @@ async fn ensure_mfa_startup(
     cipher: Option<&MfaCipher>,
     recovery_only: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (client, connection) = tokio_postgres::connect(database_url, NoTls)
+    let (client, connection) = zrotext_server::runtime_db::connect(database_url)
         .await
         .map_err(|_| "MFA startup key check could not reach database")?;
     tokio::spawn(async move {
@@ -584,7 +585,7 @@ async fn ensure_mfa_startup(
 /// A configured M1 site registers once on a fresh writer. An operator-disabled
 /// or draining existing site is never re-enabled by application startup.
 async fn ensure_local_site(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
-    let (client, connection) = tokio_postgres::connect(&config.database_url, NoTls)
+    let (client, connection) = zrotext_server::runtime_db::connect(&config.database_url)
         .await
         .map_err(|_| "site registration unavailable")?;
     tokio::spawn(async move {
@@ -736,11 +737,11 @@ async fn ready(
     // A frontend is write-ready only while it can reach the configured single
     // writer and observe the expected deployment epoch. This M0 service has no
     // dispatch endpoints; worker readiness is a later, separate contract.
-    let status = match tokio_postgres::connect(&config.database_url, NoTls).await {
+    let status = match zrotext_server::runtime_db::connect(&config.database_url).await {
         Ok((client, connection)) => {
             tokio::spawn(async move {
-                if let Err(error) = connection.await {
-                    eprintln!("database connection closed: {error}");
+                if connection.await.is_err() {
+                    eprintln!("database connection closed");
                 }
             });
             client

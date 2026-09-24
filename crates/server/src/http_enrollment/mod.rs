@@ -23,7 +23,7 @@ use axum::{
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tokio_postgres::{Client, NoTls};
+use tokio_postgres::Client;
 use uuid::Uuid;
 
 const MAX_BODY_BYTES: usize = 4096;
@@ -81,7 +81,7 @@ async fn no_store(request: axum::extract::Request, next: Next) -> Response {
 }
 
 async fn connect(state: &EnrollmentHttpState) -> Result<Client, Response> {
-    let (client, connection) = tokio_postgres::connect(&state.database_url, NoTls)
+    let (client, connection) = crate::runtime_db::connect(&state.database_url)
         .await
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE.into_response())?;
     tokio::spawn(async move {
@@ -607,6 +607,8 @@ async fn list_devices(
     }
 }
 
+#[cfg(test)]
+use tokio_postgres::NoTls;
 #[cfg(test)]
 mod tests {
     use super::*;

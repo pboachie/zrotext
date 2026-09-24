@@ -20,7 +20,7 @@ use std::{
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
-use tokio_postgres::{Client, NoTls};
+use tokio_postgres::Client;
 use uuid::Uuid;
 use zrotext_delivery_store::{DeliveryStore, NewMessage, StoreError};
 use zrotext_domain::MessageState;
@@ -150,7 +150,7 @@ fn map_store(error: StoreError) -> MessageHttpError {
 }
 
 async fn connect(database_url: &str) -> Result<Client, MessageHttpError> {
-    let (client, connection) = tokio_postgres::connect(database_url, NoTls)
+    let (client, connection) = crate::runtime_db::connect(database_url)
         .await
         .map_err(|_| MessageHttpError::Unavailable)?;
     tokio::spawn(async move {
@@ -374,6 +374,8 @@ async fn cancel(
     }
 }
 
+#[cfg(test)]
+use tokio_postgres::NoTls;
 #[cfg(test)]
 mod tests {
     use super::*;

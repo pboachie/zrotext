@@ -19,7 +19,7 @@ use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{sync::Arc, time::Duration};
-use tokio_postgres::{Client, NoTls};
+use tokio_postgres::Client;
 use uuid::Uuid;
 
 const STRIPE_API: &str = "https://api.stripe.com";
@@ -295,7 +295,7 @@ fn checkout_retry_key(
 }
 
 async fn connect(database_url: &str) -> Result<Client, AuthHttpError> {
-    let (db, connection) = tokio_postgres::connect(database_url, NoTls)
+    let (db, connection) = crate::runtime_db::connect(database_url)
         .await
         .map_err(|_| AuthHttpError::Unavailable)?;
     tokio::spawn(async move {
@@ -464,6 +464,8 @@ fn hosted_url(value: &Value, host: &str) -> Result<String, AuthHttpError> {
     Ok(raw.to_owned())
 }
 
+#[cfg(test)]
+use tokio_postgres::NoTls;
 #[cfg(test)]
 mod tests {
     use super::*;

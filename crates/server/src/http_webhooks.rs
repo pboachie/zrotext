@@ -20,7 +20,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use p256::elliptic_curve::rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
-use tokio_postgres::{Client, NoTls, error::SqlState};
+use tokio_postgres::{Client, error::SqlState};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
@@ -92,7 +92,7 @@ impl IntoResponse for EndpointError {
 }
 
 async fn connect(state: &WebhookHttpState) -> Result<Client, EndpointError> {
-    let (client, connection) = tokio_postgres::connect(&state.database_url, NoTls)
+    let (client, connection) = crate::runtime_db::connect(&state.database_url)
         .await
         .map_err(|_| EndpointError::Unavailable)?;
     tokio::spawn(async move {
@@ -906,6 +906,8 @@ async fn retire(
     Ok(callback_url)
 }
 
+#[cfg(test)]
+use tokio_postgres::NoTls;
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -13,7 +13,6 @@ use std::{
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
-use tokio_postgres::NoTls;
 
 #[derive(Clone)]
 pub struct BillingHttpState {
@@ -54,8 +53,7 @@ async fn receive(
         }
         Err(_) => return StatusCode::SERVICE_UNAVAILABLE,
     };
-    let Ok((mut client, connection)) = tokio_postgres::connect(&state.database_url, NoTls).await
-    else {
+    let Ok((mut client, connection)) = crate::runtime_db::connect(&state.database_url).await else {
         return StatusCode::SERVICE_UNAVAILABLE;
     };
     tokio::spawn(async move {

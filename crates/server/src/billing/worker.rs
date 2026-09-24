@@ -8,7 +8,7 @@ use super::{
 use reqwest::{Client as HttpClient, redirect, retry};
 use serde_json::Value;
 use std::time::Duration;
-use tokio_postgres::{Client, NoTls};
+use tokio_postgres::Client;
 use uuid::Uuid;
 
 pub struct StripeTestWorker {
@@ -57,7 +57,7 @@ impl StripeTestWorker {
     }
 
     pub async fn reconcile_one(&self, database_url: &str) -> Result<bool, BillingError> {
-        let (mut db, connection) = tokio_postgres::connect(database_url, NoTls).await?;
+        let (mut db, connection) = crate::runtime_db::connect_worker(database_url).await?;
         tokio::spawn(async move {
             let _ = connection.await;
         });
@@ -92,7 +92,7 @@ impl StripeTestWorker {
     /// One bounded payment-risk job per tick. A known customer's queued risk
     /// blocks new metered reservations while the provider chain is resolved.
     pub async fn reconcile_risk_one(&self, database_url: &str) -> Result<bool, BillingError> {
-        let (mut db, connection) = tokio_postgres::connect(database_url, NoTls).await?;
+        let (mut db, connection) = crate::runtime_db::connect_worker(database_url).await?;
         tokio::spawn(async move {
             let _ = connection.await;
         });
