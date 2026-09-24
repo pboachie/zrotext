@@ -6,7 +6,7 @@ The test billing worker uses `STRIPE_TEST_RECONCILE_SECRET_KEY` for `GET /v1/sub
 
 The route bounds the raw request body, verifies Stripe's signature before parsing JSON, and rejects stale or live-mode events. It stores each event ID once and rejects a repeated ID with different content. A worker retrieves current subscription state from Stripe's fixed API host, avoiding reliance on delivery order. Customer IDs are tenant-bound; unbound or conflicting events cannot grant access.
 
-An optional `STRIPE_TEST_QUOTA_PLANS` mapping assigns a positive UTC monthly outbound limit to each configured test price (`price_example123:100`). An optional third field assigns a nonnegative active-device cap (`price_example123:100:2`). If any mapped price has a device cap, every mapped price must have one; the values are operator configuration, not commercial defaults. Two-field mappings retain the legacy behavior of no device cap until cap enforcement has first been enabled. A recognized `active` subscription projects limits only when it is the account's sole nonterminal subscription. A current `past_due` subscription keeps the mapped limit for seven days from the signed `invoice.payment_failed` event's creation time, provided the failed invoice matches the current invoice in the freshly fetched subscription. The event time is capped at database receipt time if it is in the future. The last provider-confirmed non-`past_due` time is stored separately, so repeated `past_due` reads do not exclude a delayed matching failure event. After recovery, both failure creation and receipt must follow that boundary; a failure from an earlier cycle cannot restart grace. A changed current invoice pauses admission until a matching signed failure arrives, and rebinding within one continuous delinquency cannot extend the original deadline. Duplicate and delayed events retain the first grace start; a provider-confirmed recovery clears it. A missing trusted failure time or current invoice grants no grace. Metered admission checks a fresh database clock after locking billing state, so outbound pauses at expiry without another webhook. Existing message replays create no new reservation. The owner billing page shows the grace deadline or pause notice. Pending reconciliation, other inactive or unrecognized prices, and ambiguous subscriptions block new metered reservations. A downgrade lowers the current period limit without removing existing reservations; cancellation projects zero. Policy changes are audited. Startup resets prior test allowances and queues a fresh provider read. These rules apply to `DeliveryStore::accept_metered`; a public metered send route is still pending.
+An optional `STRIPE_TEST_QUOTA_PLANS` mapping assigns a positive UTC monthly outbound limit to each configured test price (`price_example123:100`). An optional third field assigns a nonnegative active-device cap (`price_example123:100:2`). If any mapped price has a device cap, every mapped price must have one; the values are operator configuration, not commercial defaults. Two-field mappings retain the legacy behavior of no device cap until cap enforcement has first been enabled. A recognized `active` subscription projects limits only when it is the account's sole nonterminal subscription — one nonterminal subscription per account, enforced server-side by the Checkout refusal below; a second live subscription projects `ambiguous`, which is zero outbound quota and a zero device cap. A current `past_due` subscription keeps the mapped limit for seven days from the signed `invoice.payment_failed` event's creation time, provided the failed invoice matches the current invoice in the freshly fetched subscription. The event time is capped at database receipt time if it is in the future. The last provider-confirmed non-`past_due` time is stored separately, so repeated `past_due` reads do not exclude a delayed matching failure event. After recovery, both failure creation and receipt must follow that boundary; a failure from an earlier cycle cannot restart grace. A changed current invoice pauses admission until a matching signed failure arrives, and rebinding within one continuous delinquency cannot extend the original deadline. Duplicate and delayed events retain the first grace start; a provider-confirmed recovery clears it. A missing trusted failure time or current invoice grants no grace. Metered admission checks a fresh database clock after locking billing state, so outbound pauses at expiry without another webhook. Existing message replays create no new reservation. The owner billing page shows the grace deadline or pause notice. Pending reconciliation, other inactive or unrecognized prices, and ambiguous subscriptions block new metered reservations. A downgrade lowers the current period limit without removing existing reservations; cancellation projects zero. Policy changes are audited. Startup resets prior test allowances and queues a fresh provider read. These rules apply to `DeliveryStore::accept_metered`; a public metered send route is still pending.
 
 Apply migration 021 before enabling this behavior, and drain older API and worker binaries before switching traffic. Previously stored failure events have no creation time in the database; they cannot retroactively begin a grace interval. Existing `past_due` accounts without a newly signed matching failure event remain paused until payment recovers.
 
@@ -23,6 +23,29 @@ requests per account per minute and 120 across the deployment per minute.
 Requests exceeding either budget return HTTP 429 before calling Stripe.
 Changing owner sessions, Checkout idempotency keys, or API instances does not
 reset the account budget. Database errors fail closed with HTTP 503.
+
+`POST /v1/billing/checkout` refuses to open a second subscription. Before any
+Stripe call, it takes the per-account advisory lock that reconciliation uses
+and returns HTTP 409 (`subscription_exists`) when the account has any
+nonterminal `billing_subscriptions` row — any status except `canceled` and
+`incomplete_expired` — or any `billing_reconciliations` row whose
+`dirty_generation` exceeds its `processed_generation`. A refused request does
+not spend the shared session budget, and the owner is directed to the
+customer Portal instead. Terminal historical subscriptions do not block a new
+Checkout once their reconciliation has caught up. Running the check under the
+reconciliation lock also means concurrent Checkout attempts serialize with an
+in-flight projection and cannot both observe a pre-commit state.
+
+`GET /v1/billing/status` reports the projected entitlement that
+reconciliation currently applies: the audited `reason` (`active`, `grace`,
+`inactive`, `ambiguous`, `unmapped`, `startup_reset`, or null before the
+first projection), the `outboundLimit` from the current `stripe_test` quota
+policy, the effective `deviceCap`, whether a payment hold is active
+(`paymentHold`), and the count of nonterminal subscriptions. The owner
+dashboard renders this summary and closes the Checkout button while a
+subscription is live or a reconciliation is pending, so an owner in
+`past_due`, `unpaid`, or `paused` is routed to the Portal rather than into a
+duplicate subscription that would project zero quota and a zero device cap.
 
 Subscription reconciliation requires a complete Stripe items list with
 `object=list` and `has_more=false`. A partial or malformed provider response
