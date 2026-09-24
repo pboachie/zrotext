@@ -4,7 +4,7 @@
 use axum::{
     Router,
     http::{HeaderValue, StatusCode, header},
-    response::{Html, IntoResponse, Response},
+    response::{Html, IntoResponse, Redirect, Response},
     routing::get,
 };
 
@@ -18,6 +18,44 @@ pub fn router() -> Router {
         .route("/owner/devices", get(page))
         .route("/owner/devices.js", get(script))
         .route("/owner/devices.css", get(style))
+}
+
+pub fn source_router<S>(source_url: String) -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    Router::new().route(
+        "/source",
+        get(move || {
+            let url = source_url.clone();
+            async move { Redirect::temporary(&url) }
+        }),
+    )
+}
+
+pub fn source_destination(
+    configured: Option<&str>,
+    commit: Option<&str>,
+) -> Result<String, &'static str> {
+    let url = match configured {
+        Some(value) => value.to_owned(),
+        None => match commit
+            .filter(|value| value.len() == 40 && value.bytes().all(|b| b.is_ascii_hexdigit()))
+        {
+            Some(value) => format!("https://github.com/pboachie/zrotext/tree/{value}"),
+            None => "https://github.com/pboachie/zrotext".to_owned(),
+        },
+    };
+    let parsed = reqwest::Url::parse(&url).map_err(|_| "SOURCE_URL must be a valid HTTPS URL")?;
+    if parsed.scheme() != "https"
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err("SOURCE_URL must be an HTTPS URL without credentials or fragment");
+    }
+    Ok(url)
 }
 
 fn secure_response(mut response: Response, content_type: &'static str) -> Response {
@@ -59,6 +97,28 @@ mod tests {
     use super::*;
     use axum::{body::Body, http::Request};
     use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn source_route_uses_configured_corresponding_source() {
+        assert!(PAGE.contains("href=\"/source\""));
+        assert!(include_str!("../static/billing-dashboard.html").contains("href=\"/source\""));
+        let url = source_destination(Some("https://example.org/fork/source"), None).unwrap();
+        let response = source_router::<()>(url)
+            .oneshot(
+                Request::builder()
+                    .uri("/source")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(
+            response.headers()[header::LOCATION],
+            "https://example.org/fork/source"
+        );
+        assert!(source_destination(Some("javascript:alert(1)"), None).is_err());
+    }
 
     #[tokio::test]
     async fn credential_forms_fail_closed_without_javascript() {

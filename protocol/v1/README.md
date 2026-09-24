@@ -11,3 +11,7 @@ The authenticated socket determines the device identity for `radio_event`; that 
 [sealed-inbound-prerequisites.md](sealed-inbound-prerequisites.md) records the separate event identity and default-closed line-binding storage foundation for future sealed inbound content. It exposes no sealed-content route.
 
 [line-activation-contract.md](line-activation-contract.md) defines an internal, challenge-bound, dual-signature generation transition. It is not wired to a transport or a trusted owner-key bootstrap.
+
+[vectors/ztse-draft-01.json](vectors/ztse-draft-01.json) contains public synthetic
+bytes for the unapproved sealed-content draft. The TypeScript reader and test
+instructions are in [sdk/typescript/README.md](../../sdk/typescript/README.md).

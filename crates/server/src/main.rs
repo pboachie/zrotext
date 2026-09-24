@@ -162,6 +162,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bind: SocketAddr = env::var("BIND_ADDR")
         .unwrap_or_else(|_| "0.0.0.0:8080".to_owned())
         .parse()?;
+    let configured_source = match env::var("SOURCE_URL") {
+        Ok(value) => Some(value),
+        Err(env::VarError::NotPresent) => None,
+        Err(_) => return Err("SOURCE_URL must be valid UTF-8".into()),
+    };
+    let source_url =
+        owner_ui::source_destination(configured_source.as_deref(), option_env!("GIT_COMMIT"))?;
     let mut app = Router::new()
         .route(
             "/healthz",
@@ -169,6 +176,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .route("/readyz", get(ready))
         .route("/m0/device-test", get(device_test))
+        .merge(owner_ui::source_router(source_url))
         .with_state(config.clone());
     let mut quotas_reset = false;
     let mut billing_auth_state = None;

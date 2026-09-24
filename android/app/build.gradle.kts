@@ -5,6 +5,8 @@ import org.gradle.api.provider.Property
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.TaskAction
+import org.cyclonedx.gradle.CyclonedxDirectTask
+import org.cyclonedx.model.Component
 
 abstract class WriteReleaseSourceCommit : DefaultTask() {
     @get:Input abstract val sourceCommit: Property<String>
@@ -30,6 +32,15 @@ plugins {
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
     id("com.google.devtools.ksp")
+    id("org.cyclonedx.bom")
+}
+
+tasks.named<CyclonedxDirectTask>("cyclonedxDirectBom") {
+    // This inventory describes dependencies resolved for the shipped release APK.
+    includeConfigs = listOf("releaseRuntimeClasspath")
+    testConfigs = emptyList()
+    includeBuildEnvironment = false
+    projectType = Component.Type.APPLICATION
 }
 
 android {
@@ -89,6 +100,8 @@ dependencies {
     testImplementation("org.robolectric:robolectric:4.16.1")
     androidTestImplementation("androidx.test:runner:1.7.0")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    // Dormant draft-02 provider probe only; no Tink code enters the release runtime.
+    androidTestImplementation("com.google.crypto.tink:tink:1.23.0")
 
     // These constraints affect local unit tests and AGP's lint tools. None of
     // these libraries is present in the app's release runtime classpath.
