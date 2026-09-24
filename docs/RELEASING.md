@@ -102,11 +102,29 @@ independent check. For example, the separately approved file has this shape:
 }
 ```
 
-Place the two directories at the tool's fixed external artifact root:
-`<system temporary directory>/zrotext-android-release/unsigned` and
-`<system temporary directory>/zrotext-android-release/candidate`. The tool
-rejects symlinked or oversized artifact files, caps central-directory metadata
-before opening APK ZIPs, and caps uncompressed entries before reading them.
+The local artifact root is
+`~/.local/state/zrotext/android-release` on Linux and macOS, and
+`%USERPROFILE%\AppData\Local\ZROtext\android-release` on Windows. Its `unsigned` and
+`candidate` subdirectories hold the transferred artifacts. The private signing
+keystore is separately at `~/.local/state/zrotext/android-signing/keystore.p12`
+and `%USERPROFILE%\AppData\Local\ZROtext\android-signing\keystore.p12`, respectively. Keep the
+keystore outside the artifact root so it cannot be included in a transfer.
+The signing alias is `zrotext-release`; supply its two passwords through
+`ZROTEXT_ANDROID_KEYSTORE_PASSWORD` and `ZROTEXT_ANDROID_KEY_PASSWORD` in the
+private signing environment. Do not put passwords on the command line or in a
+repository file.
+
+The paths are fixed under the current user's home directory. The tool creates the artifact root and new output directories with
+owner-only access. Before reading transferred artifacts or a signing key, it
+rejects a symlink, a foreign owner, or a group/world-accessible artifact root,
+`unsigned` or `candidate` directory, keystore directory, or keystore file on
+POSIX. The keystore file should have mode `0600` and its directory `0700`.
+On Windows the tool restricts newly created artifact directories to the current
+user and checks owner and allow rules on existing directories and the key;
+prepare the key directory and file with current-user-only ACLs. It never fixes
+an insecure existing key automatically. It also rejects symlinked or oversized
+artifact files, caps central-directory metadata before opening APK ZIPs, and
+caps uncompressed entries before reading them.
 
 ```sh
 git fetch origin main --tags
