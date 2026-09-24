@@ -132,12 +132,13 @@ mod tests {
 
     #[tokio::test]
     async fn malformed_and_oversized_credentials_fail_closed() {
+        let password = uuid::Uuid::new_v4().to_string();
         assert!(matches!(
-            verify("", Some("invalid verifier".to_owned())).await,
+            verify(&password, Some("invalid verifier".to_owned())).await,
             Err(AuthError::InvalidCredentials)
         ));
         assert!(matches!(
-            verify(&"x".repeat(1025), None).await,
+            verify(&password.repeat(1025 / password.len() + 1), None).await,
             Err(AuthError::InvalidCredentials)
         ));
     }
