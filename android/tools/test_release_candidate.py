@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -23,6 +24,12 @@ class ReleaseCandidateTest(unittest.TestCase):
     }
     COMMIT = "a" * 40
     CERTIFICATE = "b" * 64
+
+    def verify_test_candidate(self, commit, certificate):
+        return release_candidate.verify_candidate(
+            commit, certificate, self.IDENTITY["version_code"],
+            self.IDENTITY["version_name"],
+        )
 
     @staticmethod
     def make_tagged_repository(directory):
@@ -84,7 +91,61 @@ class ReleaseCandidateTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Unsigned APK receipt"):
                 release_candidate.verify_reviewed_candidate(
                     "v0.1.0-rc.1", self.CERTIFICATE,
+                    self.IDENTITY["version_code"], self.IDENTITY["version_name"],
                 )
+
+    def test_version_must_match_independently_reviewed_metadata(self):
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(release_candidate, "ARTIFACT_ROOT", Path(directory)), \
+             patch.object(release_candidate, "apk_identity", return_value=self.IDENTITY):
+            self.make_candidate(directory)
+            with self.assertRaisesRegex(ValueError, "version differs"):
+                release_candidate.verify_candidate(
+                    self.COMMIT, self.CERTIFICATE,
+                    self.IDENTITY["version_code"] + 1,
+                    self.IDENTITY["version_name"],
+                )
+            with self.assertRaisesRegex(ValueError, "version differs"):
+                release_candidate.verify_candidate(
+                    self.COMMIT, self.CERTIFICATE,
+                    self.IDENTITY["version_code"], "different-version",
+                )
+
+    def test_verify_cli_reads_prior_approval_outside_artifacts(self):
+        with tempfile.TemporaryDirectory() as approvals, \
+             tempfile.TemporaryDirectory() as artifacts, \
+             patch.object(release_candidate, "ARTIFACT_ROOT", Path(artifacts)), \
+             patch.object(release_candidate, "verify_reviewed_candidate") as verify:
+            manifest = Path(approvals) / "release-approval.json"
+            manifest.write_text(json.dumps({
+                "source_tag": "v0.1.0-rc.1",
+                "certificate_sha256": self.CERTIFICATE,
+                "version_code": self.IDENTITY["version_code"],
+                "version_name": self.IDENTITY["version_name"],
+            }), encoding="utf-8")
+            arguments = ["release_candidate.py", "verify", "--source-tag",
+                         "v0.1.0-rc.1", "--certificate-sha256", self.CERTIFICATE,
+                         "--approval-manifest", str(manifest)]
+            with patch.object(sys, "argv", arguments):
+                release_candidate.main()
+            verify.assert_called_once_with("v0.1.0-rc.1", self.CERTIFICATE,
+                                           self.IDENTITY["version_code"],
+                                           self.IDENTITY["version_name"])
+            verify.reset_mock()
+            with patch.object(sys, "argv", [*arguments[:5], "c" * 64, *arguments[6:]]):
+                with self.assertRaisesRegex(ValueError, "approval differs"):
+                    release_candidate.main()
+            verify.assert_not_called()
+            shutil.copyfile(manifest, Path(artifacts) / manifest.name)
+            with self.assertRaisesRegex(ValueError, "outside APK artifacts"):
+                release_candidate.release_approval(Path(artifacts) / "release-approval.json")
+            manifest.write_text('{"source_tag":"v0.1.0-rc.1","source_tag":"v0.1.0-rc.1"}',
+                                encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "duplicate fields"):
+                release_candidate.release_approval(manifest)
+            manifest.write_bytes(b" " * (release_candidate.MAX_RECEIPT_BYTES + 1))
+            with self.assertRaisesRegex(ValueError, "review size limit"):
+                release_candidate.release_approval(manifest)
 
     def test_reviewed_tag_ignores_hostile_git_environment(self):
         with tempfile.TemporaryDirectory() as directory, \
@@ -207,41 +268,41 @@ class ReleaseCandidateTest(unittest.TestCase):
                  patch.object(release_candidate, "sdk_tool", side_effect=lambda name: Path(name)), \
                  patch.object(release_candidate, "run", side_effect=[output, ""]) as command:
                 with redirect_stdout(io.StringIO()):
-                    release_candidate.verify_candidate(self.COMMIT,
-                                                       self.CERTIFICATE.upper())
+                    self.verify_test_candidate(self.COMMIT,
+                                               self.CERTIFICATE.upper())
             self.assertEqual(command.call_count, 2)
             self.assertEqual(command.call_args_list[0].args[1:3], ("verify", "--verbose"))
             extra = candidate_dir / "zrotext-android-cccccccccccc-candidate.apk"
             shutil.copyfile(signed, extra)
             with patch.object(release_candidate, "apk_identity", return_value=self.IDENTITY):
                 with self.assertRaisesRegex(ValueError, "exactly one signed APK"):
-                    release_candidate.verify_candidate(self.COMMIT, self.CERTIFICATE)
+                    self.verify_test_candidate(self.COMMIT, self.CERTIFICATE)
             extra.unlink()
             signed.rename(extra)
             with patch.object(release_candidate, "apk_identity", return_value=self.IDENTITY):
                 with self.assertRaisesRegex(ValueError, "exactly one signed APK"):
-                    release_candidate.verify_candidate(self.COMMIT, self.CERTIFICATE)
+                    self.verify_test_candidate(self.COMMIT, self.CERTIFICATE)
             extra.rename(signed)
             with patch.object(release_candidate, "apk_identity", return_value=self.IDENTITY), \
                  patch.object(release_candidate, "sdk_tool", side_effect=lambda name: Path(name)), \
                  patch.object(release_candidate, "run", return_value=output.replace(
                      "APK Signature Scheme v3): true", "APK Signature Scheme v3): false")):
                 with self.assertRaisesRegex(ValueError, "did not verify with v3"):
-                    release_candidate.verify_candidate(self.COMMIT, self.CERTIFICATE)
+                    self.verify_test_candidate(self.COMMIT, self.CERTIFICATE)
             with patch.object(release_candidate, "apk_identity", return_value=self.IDENTITY), \
                  patch.object(release_candidate, "sdk_tool", side_effect=lambda name: Path(name)), \
                  patch.object(release_candidate, "run", return_value=output.replace(
                      self.CERTIFICATE, "c" * 64)):
                 with self.assertRaisesRegex(ValueError, "approved fingerprint"):
-                    release_candidate.verify_candidate(self.COMMIT, self.CERTIFICATE)
+                    self.verify_test_candidate(self.COMMIT, self.CERTIFICATE)
             with patch.object(release_candidate, "apk_identity", return_value=self.IDENTITY):
                 with self.assertRaisesRegex(ValueError, "receipt differs"):
-                    release_candidate.verify_candidate(self.COMMIT, "c" * 64)
+                    self.verify_test_candidate(self.COMMIT, "c" * 64)
             with signed.open("ab") as changed:
                 changed.write(b"tampered")
             with patch.object(release_candidate, "apk_identity", return_value=self.IDENTITY):
                 with self.assertRaisesRegex(ValueError, "receipt differs"):
-                    release_candidate.verify_candidate(self.COMMIT, self.CERTIFICATE)
+                    self.verify_test_candidate(self.COMMIT, self.CERTIFICATE)
             with zipfile.ZipFile(signed, "w") as archive:
                 archive.writestr(release_candidate.ASSET, self.COMMIT + "\n")
                 archive.writestr("classes.dex", "changed fake bytecode")
@@ -254,7 +315,7 @@ class ReleaseCandidateTest(unittest.TestCase):
                 f"{changed_hash}  {signed.name}\n", encoding="ascii")
             with patch.object(release_candidate, "apk_identity", return_value=self.IDENTITY):
                 with self.assertRaisesRegex(ValueError, "entries differ"):
-                    release_candidate.verify_candidate(self.COMMIT, self.CERTIFICATE)
+                    self.verify_test_candidate(self.COMMIT, self.CERTIFICATE)
 
     def test_apk_identity_requires_gateway_package_and_complete_sdk_metadata(self):
         badging = (

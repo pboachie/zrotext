@@ -130,8 +130,49 @@ def reviewed_tag_commit(tag: str) -> str:
     return commit
 
 
-def verify_reviewed_candidate(tag: str, expected_certificate: str) -> None:
-    verify_candidate(reviewed_tag_commit(tag), expected_certificate)
+def verify_reviewed_candidate(tag: str, expected_certificate: str,
+                              expected_version_code: int,
+                              expected_version_name: str) -> None:
+    verify_candidate(reviewed_tag_commit(tag), expected_certificate,
+                     expected_version_code, expected_version_name)
+
+
+def release_approval(path: Path) -> dict[str, str | int]:
+    """Read a separately prepared approval record, never an APK artifact."""
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("Release approval must be a regular file")
+    resolved = external_artifact_path(path, "Release approval")
+    if resolved.is_relative_to(ARTIFACT_ROOT.resolve()):
+        raise ValueError("Release approval must be outside APK artifacts")
+    with path.open("rb") as source:
+        data = source.read(MAX_RECEIPT_BYTES + 1)
+    if len(data) > MAX_RECEIPT_BYTES:
+        raise ValueError("Release approval exceeds the review size limit")
+
+    def unique_fields(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        fields: dict[str, object] = {}
+        for key, value in pairs:
+            if key in fields:
+                raise ValueError("Release approval contains duplicate fields")
+            fields[key] = value
+        return fields
+
+    approval = json.loads(data.decode("utf-8"), object_pairs_hook=unique_fields)
+    if not isinstance(approval, dict) or set(approval) != {
+            "source_tag", "certificate_sha256", "version_code", "version_name"}:
+        raise ValueError("Release approval fields are invalid")
+    if not isinstance(approval["source_tag"], str) \
+            or not SOURCE_TAG.fullmatch(approval["source_tag"]):
+        raise ValueError("Release approval source tag is invalid")
+    if not isinstance(approval["certificate_sha256"], str) \
+            or not re.fullmatch(r"[0-9a-fA-F]{64}", approval["certificate_sha256"]):
+        raise ValueError("Release approval certificate is invalid")
+    if type(approval["version_code"]) is not int or approval["version_code"] < 1 \
+            or not isinstance(approval["version_name"], str) \
+            or not approval["version_name"].strip() \
+            or len(approval["version_name"]) > 128:
+        raise ValueError("Release approval version is invalid")
+    return approval
 
 
 def sha256(path: Path) -> str:
@@ -367,12 +408,18 @@ def sign_candidate(commit: str, keystore_path: Path,
         aligned.unlink(missing_ok=True)
 
 
-def verify_candidate(commit: str, expected_certificate: str) -> None:
+def verify_candidate(commit: str, expected_certificate: str,
+                     expected_version_code: int,
+                     expected_version_name: str) -> None:
     """Independently verify transferred artifacts without signing credentials."""
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ValueError("A full expected source commit is required")
     if not re.fullmatch(r"[0-9a-fA-F]{64}", expected_certificate):
         raise ValueError("An independently approved certificate SHA-256 is required")
+    if type(expected_version_code) is not int or expected_version_code < 1 \
+            or not isinstance(expected_version_name, str) \
+            or not expected_version_name.strip() or len(expected_version_name) > 128:
+        raise ValueError("Independently approved APK version metadata is required")
     expected_certificate = expected_certificate.lower()
     candidate_dir = ARTIFACT_ROOT / "candidate"
     if (ARTIFACT_ROOT.is_symlink() or candidate_dir.is_symlink()
@@ -380,6 +427,9 @@ def verify_candidate(commit: str, expected_certificate: str) -> None:
         raise ValueError("Artifact directories must not be symlinks")
     external_artifact_path(ARTIFACT_ROOT, "Artifact root")
     unsigned, unsigned_hash, identity = checked_unsigned(commit)
+    if (identity["version_code"] != expected_version_code
+            or identity["version_name"] != expected_version_name):
+        raise ValueError("APK version differs from independently approved release metadata")
     candidates = list(candidate_dir.glob("zrotext-android-*-candidate.apk"))
     expected_name = f"zrotext-android-{commit[:12]}-candidate.apk"
     if len(candidates) != 1 or candidates[0].name != expected_name:
@@ -436,9 +486,16 @@ def main() -> None:
                         help="independently selected annotated release tag on fetched main")
     verify.add_argument("--certificate-sha256", required=True,
                         help="approved fingerprint obtained independently of candidate.json")
+    verify.add_argument("--approval-manifest", required=True, type=Path,
+                        help="prior approved source, certificate and app version record outside artifacts")
     args = parser.parse_args()
     if args.phase == "verify":
-        verify_reviewed_candidate(args.source_tag, args.certificate_sha256)
+        approval = release_approval(args.approval_manifest)
+        if (approval["source_tag"] != args.source_tag
+                or approval["certificate_sha256"].lower() != args.certificate_sha256.lower()):
+            raise ValueError("Release approval differs from independently selected tag or certificate")
+        verify_reviewed_candidate(args.source_tag, args.certificate_sha256,
+                                  approval["version_code"], approval["version_name"])
         return
     commit = source_commit(os.environ.get("GITHUB_SHA"))
     if args.phase == "build":
