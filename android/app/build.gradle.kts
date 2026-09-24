@@ -100,6 +100,8 @@ dependencies {
     testImplementation("org.robolectric:robolectric:4.16.1")
     androidTestImplementation("androidx.test:runner:1.7.0")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    // Dormant draft-02 provider probe only; no Tink code enters the release runtime.
+    androidTestImplementation("com.google.crypto.tink:tink:1.23.0")
 
     // These constraints affect local unit tests and AGP's lint tools. None of
     // these libraries is present in the app's release runtime classpath.
