@@ -420,7 +420,12 @@ pub async fn dispatch_one_verification(state: &AuthHttpState) -> Result<bool, Au
     if !state.dispatcher.ready() {
         return Ok(false);
     }
-    let mut client = connect(&state.database_url).await?;
+    let (mut client, connection) = crate::runtime_db::connect_worker(&state.database_url)
+        .await
+        .map_err(|_| AuthHttpError::Unavailable)?;
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
     let Some(mail) = auth::claim_verification_mail(&mut client, &state.hasher)
         .await
         .map_err(map_auth)?
