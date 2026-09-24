@@ -23,6 +23,7 @@ SECRET_PATTERNS = {
 }
 PHONE = re.compile(r"(?<![A-Za-z0-9])(?:\+1[-. ]?)?([2-9]\d{2})[-. ]?([2-9]\d{2})[-. ]?(\d{4})(?![A-Za-z0-9])")
 ASSIGNMENT = re.compile(r'''(?:^|[\s{,;])(?:export\s+|\$env:)?["']?([A-Z][A-Z0-9_]*)["']?\s*[:=]\s*("[^"\n]*"|'[^'\n]*'|[^\s,;}]*)''')
+CONFIG_ASSIGNMENT = re.compile(ASSIGNMENT.pattern, re.IGNORECASE)
 SENSITIVE_NAME = re.compile(r"(?:^|_)(?:PASSWORD|PASS|SECRET|TOKEN|API_KEY|ACCESS_KEY|PRIVATE_KEY|PEPPER)(?:_|$)")
 URI_PASSWORD = re.compile(r"\b[a-z][a-z0-9+.-]*://[^\s/:]+:([^\s@]+)@", re.I)
 IPV4 = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])")
@@ -81,8 +82,9 @@ def source_url_reference(password: str, line: str) -> bool:
 
 def scan_line(line: str, *, infrastructure: bool = False, hygiene: bool = True, source: bool = False, fixture: bool = False) -> list[str]:
     problems = [label for label, pattern in SECRET_PATTERNS.items() if pattern.search(line)]
-    for assignment in ASSIGNMENT.finditer(line):
-        if not SENSITIVE_NAME.search(assignment[1]):
+    assignments = ASSIGNMENT if source else CONFIG_ASSIGNMENT
+    for assignment in assignments.finditer(line):
+        if not SENSITIVE_NAME.search(assignment[1].upper()):
             continue
         value = literal_value(assignment[2])
         env_name = bool(re.fullmatch(r"(?:[A-Z][A-Z0-9]*_){2,}(?:PASSWORD|SECRET|TOKEN|API_KEY|KEY)", value or ""))

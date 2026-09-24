@@ -62,6 +62,14 @@ class PatternTests(unittest.TestCase):
         self.assertEqual(diagnostic_text(value), "unclassified privacy violation")
         self.assertNotIn(value, diagnostic_text(value))
 
+    def test_lowercase_config_credentials_without_lowercase_source_variables(self):
+        samples = (("config.json", '{"name":"fixture","api_key":"synthetic-not-real"}\n'),
+                   ("config.yaml", "password: synthetic-not-real\n"),
+                   ("config.txt", "smtp_password=synthetic-not-real\n"))
+        for filename, payload in samples:
+            self.assertTrue(scan_blob(filename, payload.encode()))
+        self.assertEqual(scan_blob("src/field_names.py", b'password = "password"\n'), [])
+
     def test_private_infrastructure_and_fixtures(self):
         address = ".".join(("192", "168", "87", "19"))
         value = ("host=" + address + "\n").encode()
