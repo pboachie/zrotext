@@ -3,6 +3,8 @@ name: Jules PR review
 on:
   pull_request_target:
     types: [opened, ready_for_review]
+  pull_request_review:
+    types: [submitted]
   issue_comment:
     types: [created]
   schedule:
@@ -30,11 +32,14 @@ concurrency:
 
 jobs:
   jules:
+    # Dependabot-triggered runs cannot use the Actions secret; the trusted
+    # scheduled run picks up those same-repository PRs.
+    if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      # issue_comment and pull_request_target run the workflow from the trusted
-      # default branch. Never check out or execute PR code with the API key.
+      # Review/comment events run the workflow from the trusted default branch.
+      # Never check out or execute PR code with the API key.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
