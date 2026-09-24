@@ -941,6 +941,226 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn failed_payment_and_late_paid_event_follow_current_test_subscription() {
+        let Ok(base_url) = env::var("ZT_AUTH_TEST_DATABASE_URL") else {
+            return;
+        };
+        let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let schema = format!("billing_lifecycle_{}", Uuid::new_v4().simple());
+        setup
+            .batch_execute(&format!("CREATE SCHEMA {schema}"))
+            .await
+            .unwrap();
+        let separator = if base_url.contains('?') { '&' } else { '?' };
+        let scoped_url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
+        let (mut db, connection) = tokio_postgres::connect(&scoped_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        for sql in [
+            include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
+            include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+            include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
+            include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
+            include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+            include_str!("../../../../deploy/compose/migrations/006_usage_metering.sql"),
+            include_str!(
+                "../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"
+            ),
+            include_str!("../../../../deploy/compose/migrations/008_stripe_billing_foundation.sql"),
+            include_str!("../../../../deploy/compose/migrations/009_webhook_manual_replay.sql"),
+            include_str!("../../../../deploy/compose/migrations/010_billing_test_entitlement.sql"),
+            include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
+            include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
+            include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
+            include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
+            include_str!("../../../../deploy/compose/migrations/015_webhook_kek_commitments.sql"),
+            include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+            include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
+            include_str!("../../../../deploy/compose/migrations/018_sealed_inbound_identity.sql"),
+            include_str!("../../../../deploy/compose/migrations/019_line_activation_contract.sql"),
+        ] {
+            db.batch_execute(sql).await.unwrap();
+        }
+        let account = Uuid::new_v4();
+        let device = Uuid::new_v4();
+        db.execute("INSERT INTO accounts(id) VALUES($1)", &[&account])
+            .await
+            .unwrap();
+        db.execute(
+            "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'billing fixture')",
+            &[&device, &account],
+        )
+        .await
+        .unwrap();
+        bind_customer(&mut db, account, "cus_lifecycle1")
+            .await
+            .unwrap();
+        let prices = vec!["price_lifecycle1".into(), "price_lifecycle2".into()];
+        let plans =
+            parse_test_quota_plans("price_lifecycle1:2,price_lifecycle2:1", &prices).unwrap();
+        let active = worker::parse_subscription(br#"{"id":"sub_lifecycle1","object":"subscription","livemode":false,"customer":"cus_lifecycle1","status":"active","items":{"object":"list","data":[{"price":{"id":"price_lifecycle1"}}]}}"#).unwrap();
+        let past_due = worker::parse_subscription(br#"{"id":"sub_lifecycle1","object":"subscription","livemode":false,"customer":"cus_lifecycle1","status":"past_due","items":{"object":"list","data":[{"price":{"id":"price_lifecycle1"}}]}}"#).unwrap();
+        let downgraded = worker::parse_subscription(br#"{"id":"sub_lifecycle1","object":"subscription","livemode":false,"customer":"cus_lifecycle1","status":"active","items":{"object":"list","data":[{"price":{"id":"price_lifecycle2"}}]}}"#).unwrap();
+        let expiry = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64
+            + 3_600_000;
+        let send = |id: Uuid, key: &'static str| NewMessage {
+            account_id: account,
+            device_id: device,
+            client_message_id: id,
+            idempotency_key: key,
+            recipient_e164: "+15551234567",
+            synthetic_payload: b"synthetic billing fixture",
+            expires_at_ms: expiry,
+        };
+
+        // These are locally signed virtual Stripe TEST fixtures. Only the
+        // subscription snapshots, as parsed from a provider response, project
+        // entitlements; invoice event payloads merely dirty the queue.
+        let paid = signed_test_event(br#"{"id":"evt_lifecyclepaid1","object":"event","livemode":false,"type":"invoice.paid","data":{"object":{"id":"in_lifecyclepaid1","customer":"cus_lifecycle1","subscription":"sub_lifecycle1"}}}"#);
+        assert_eq!(ingest(&mut db, &paid).await.unwrap(), IngestResult::Queued);
+        reconcile_snapshot_with_quotas(&mut db, account, &active, &prices, &plans, 1)
+            .await
+            .unwrap();
+        let first = Uuid::new_v4();
+        assert!(
+            DeliveryStore::new(&mut db)
+                .accept_metered(send(first, "first"))
+                .await
+                .unwrap()
+                .created
+        );
+
+        // The nested subscription pointer covers the newer Invoice shape.
+        let failed = signed_test_event(br#"{"id":"evt_lifecyclefailed1","object":"event","livemode":false,"type":"invoice.payment_failed","data":{"object":{"id":"in_lifecyclefailed1","customer":"cus_lifecycle1","parent":{"subscription_details":{"subscription":"sub_lifecycle1"}}}}}"#);
+        assert_eq!(
+            ingest(&mut db, &failed).await.unwrap(),
+            IngestResult::Queued
+        );
+        assert_eq!(
+            ingest(&mut db, &failed).await.unwrap(),
+            IngestResult::Duplicate
+        );
+        let generation: i64 = db.query_one(
+            "SELECT dirty_generation FROM billing_reconciliations WHERE stripe_subscription_id='sub_lifecycle1'",
+            &[],
+        ).await.unwrap().get(0);
+        assert_eq!(
+            generation, 2,
+            "duplicate delivery must not queue a second read"
+        );
+        assert!(matches!(
+            DeliveryStore::new(&mut db)
+                .accept_metered(send(Uuid::new_v4(), "pending-failure"))
+                .await,
+            Err(StoreError::QuotaNotConfigured)
+        ));
+        reconcile_snapshot_with_quotas(&mut db, account, &past_due, &prices, &plans, 2)
+            .await
+            .unwrap();
+        assert!(matches!(
+            DeliveryStore::new(&mut db)
+                .accept_metered(send(Uuid::new_v4(), "after-failure"))
+                .await,
+            Err(StoreError::QuotaExceeded)
+        ));
+        assert!(
+            !DeliveryStore::new(&mut db)
+                .accept_metered(send(first, "first"))
+                .await
+                .unwrap()
+                .created
+        );
+
+        // A delayed paid webhook must read the current past_due state. Its
+        // old invoice payload cannot restore an allowance by itself.
+        let late_paid = signed_test_event(br#"{"id":"evt_lifecyclelate1","object":"event","livemode":false,"type":"invoice.paid","data":{"object":{"id":"in_lifecycleold1","customer":"cus_lifecycle1","subscription":"sub_lifecycle1"}}}"#);
+        assert_eq!(
+            ingest(&mut db, &late_paid).await.unwrap(),
+            IngestResult::Queued
+        );
+        reconcile_snapshot_with_quotas(&mut db, account, &past_due, &prices, &plans, 3)
+            .await
+            .unwrap();
+        let row = db.query_one(
+            "SELECT p.limit_units,u.reserved_units FROM usage_quota_policies p JOIN usage_periods u USING(account_id,metric) WHERE p.account_id=$1",
+            &[&account],
+        ).await.unwrap();
+        assert_eq!((row.get::<_, i64>(0), row.get::<_, i64>(1)), (0, 1));
+
+        let recovered = signed_test_event(br#"{"id":"evt_lifecyclerecovered1","object":"event","livemode":false,"type":"invoice.paid","data":{"object":{"id":"in_lifecyclerecovered1","customer":"cus_lifecycle1","subscription":"sub_lifecycle1"}}}"#);
+        assert_eq!(
+            ingest(&mut db, &recovered).await.unwrap(),
+            IngestResult::Queued
+        );
+        reconcile_snapshot_with_quotas(&mut db, account, &active, &prices, &plans, 4)
+            .await
+            .unwrap();
+        assert!(
+            DeliveryStore::new(&mut db)
+                .accept_metered(send(Uuid::new_v4(), "recovered"))
+                .await
+                .unwrap()
+                .created
+        );
+
+        let downgrade = signed_test_event(br#"{"id":"evt_lifecycledowngrade1","object":"event","livemode":false,"type":"customer.subscription.updated","data":{"object":{"id":"sub_lifecycle1","customer":"cus_lifecycle1"}}}"#);
+        assert_eq!(
+            ingest(&mut db, &downgrade).await.unwrap(),
+            IngestResult::Queued
+        );
+        reconcile_snapshot_with_quotas(&mut db, account, &downgraded, &prices, &plans, 5)
+            .await
+            .unwrap();
+        let row = db.query_one(
+            "SELECT p.limit_units,u.limit_units,u.reserved_units FROM usage_quota_policies p JOIN usage_periods u USING(account_id,metric) WHERE p.account_id=$1",
+            &[&account],
+        ).await.unwrap();
+        assert_eq!(
+            (
+                row.get::<_, i64>(0),
+                row.get::<_, i64>(1),
+                row.get::<_, i64>(2)
+            ),
+            (1, 1, 2),
+            "downgrade preserves existing reservations"
+        );
+        assert!(matches!(
+            DeliveryStore::new(&mut db)
+                .accept_metered(send(Uuid::new_v4(), "after-downgrade"))
+                .await,
+            Err(StoreError::QuotaExceeded)
+        ));
+        let audit = db.query(
+            "SELECT reconciliation_generation,previous_limit_units,limit_units,reason FROM billing_quota_audit WHERE account_id=$1 ORDER BY id",
+            &[&account],
+        ).await.unwrap();
+        assert_eq!(audit.len(), 4, "late paid event must not change the policy");
+        assert_eq!(
+            (
+                audit[1].get::<_, i64>(0),
+                audit[1].get::<_, i64>(2),
+                audit[1].get::<_, String>(3)
+            ),
+            (2, 0, "inactive".into())
+        );
+        assert_eq!(
+            (
+                audit[3].get::<_, i64>(0),
+                audit[3].get::<_, i64>(1),
+                audit[3].get::<_, i64>(2)
+            ),
+            (5, 2, 1)
+        );
+        setup
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn reconciliation_locks_customer_before_queue_row_without_blocking_account_fk() {
         let Ok(base_url) = env::var("ZT_AUTH_TEST_DATABASE_URL") else {
             return;
