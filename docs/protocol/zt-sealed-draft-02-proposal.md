@@ -58,3 +58,7 @@ The authorization view is **not an owner-signed manifest parser**. Its `ownerSig
 | Q11 | No sealed-only production route, downgrade test, deployed leakage sweep or backup/log canary evidence. |
 
 The released dependency is pinned only on the instrumentation-test classpath. Neither this receiver nor Tink is in the app's production source/runtime classpath. No profile-02 route is enabled.
+
+## Separate authorization candidate
+
+The later [Manifest02 authorization candidate](zt-sealed-draft-02-manifest-candidate.md) proposes exact owner-signed manifest and dual-signed root-transition bytes, a semantic **unsigned-byte** manifest digest, role/scope and freshness rules, and strict low-`s` signatures for a future complete profile-02 implementation. Its TypeScript verifier is test-only. The Android envelope proof above still uses synthetic authorization and accepts high-`s`; it must not be presented as evidence that the later manifest or low-`s` policy is integrated. Q1–Q4 and Q6–Q11 stay open until the proposed choices are accepted and end-to-end evidence exists.
