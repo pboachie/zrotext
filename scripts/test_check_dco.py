@@ -6,6 +6,7 @@ import os
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import check_dco
 
@@ -40,18 +41,18 @@ class CheckDcoTests(unittest.TestCase):
             env["GIT_COMMITTER_EMAIL"] = committer_email
         return subprocess.check_output(["git", *args], text=True, env=env, stderr=subprocess.DEVNULL).strip()
 
-    def run_check(self):
-        os.environ.update(
-            PR_BASE_SHA=self.base,
-            PR_HEAD_SHA=self.git("rev-parse", "HEAD"),
-            PR_CREATED_AT=PR_CREATED_AT,
-        )
-        try:
+    def run_check(self, *, pr_author="contributor", head_repo="pboachie/zrotext"):
+        environment = {
+            "PR_BASE_SHA": self.base,
+            "PR_HEAD_SHA": self.git("rev-parse", "HEAD"),
+            "PR_CREATED_AT": PR_CREATED_AT,
+            "PR_AUTHOR_LOGIN": pr_author,
+            "PR_HEAD_REPO": head_repo,
+            "PR_BASE_REPO": "pboachie/zrotext",
+        }
+        with patch.dict(os.environ, environment):
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 return check_dco.main()
-        finally:
-            for key in ("PR_BASE_SHA", "PR_HEAD_SHA", "PR_CREATED_AT"):
-                os.environ.pop(key, None)
 
     def diverge(self):
         self.git("checkout", "-q", "-b", "feature")
@@ -71,7 +72,29 @@ class CheckDcoTests(unittest.TestCase):
 
     def test_bot_commit_is_exempt(self):
         self.git("commit", "--allow-empty", "-m", "bump deps", author_email=BOT_EMAIL)
-        self.assertEqual(self.run_check(), 0)
+        self.assertEqual(self.run_check(pr_author="dependabot[bot]"), 0)
+
+    def test_spoofed_bot_email_on_human_pr_fails(self):
+        self.git("commit", "--allow-empty", "-m", "unsigned", author_email=BOT_EMAIL)
+        self.assertEqual(self.run_check(), 1)
+
+    def test_bot_pr_from_fork_does_not_get_exemption(self):
+        self.git("commit", "--allow-empty", "-m", "unsigned", author_email=BOT_EMAIL)
+        self.assertEqual(self.run_check(pr_author="dependabot[bot]",
+                                        head_repo="contributor/zrotext"), 1)
+
+    def test_human_commit_in_bot_pr_requires_signoff(self):
+        self.git("commit", "--allow-empty", "-m", "unsigned")
+        self.assertEqual(self.run_check(pr_author="dependabot[bot]"), 1)
+
+    def test_missing_pr_identity_fails_closed(self):
+        with patch.dict(os.environ, {
+            "PR_BASE_SHA": self.base,
+            "PR_HEAD_SHA": self.git("rev-parse", "HEAD"),
+            "PR_CREATED_AT": PR_CREATED_AT,
+        }, clear=True):
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(check_dco.main(), 2)
 
     def test_github_committed_merge_is_exempt(self):
         side = self.diverge()
