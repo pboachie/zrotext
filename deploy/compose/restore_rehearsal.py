@@ -24,6 +24,7 @@ import uuid
 HERE = Path(__file__).resolve().parent
 COMPOSE = HERE / "compose.yaml"
 MIGRATIONS = HERE / "migrations"
+FIXTURE_CHECK = HERE / "verify_restore_fixture.sql"
 PROJECT_NAME = re.compile(r"[a-z][a-z0-9_-]{0,62}\Z")
 MIGRATION_NAME = re.compile(r"(\d{3})_[a-z0-9_]+\.sql\Z")
 
@@ -154,6 +155,14 @@ def verify_ledger(ledger):
     return len(files)
 
 
+def verify_synthetic_fixture(project, env_file):
+    with FIXTURE_CHECK.open("rb") as check:
+        run(db_exec(project, env_file,
+                    'PGPASSWORD="$POSTGRES_PASSWORD" exec psql -X -q '
+                    '-v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f -'),
+            stage="synthetic fixture verification", stdin=check, timeout=30)
+
+
 def protected_tempdir():
     directory = Path(tempfile.mkdtemp(prefix="zrotext-restore-"))
     try:
@@ -202,6 +211,8 @@ def main():
                         help="existing Compose project to read; no source writes")
     parser.add_argument("--env-file", required=True, type=Path,
                         help="private Compose environment file")
+    parser.add_argument("--expect-synthetic-fixture", action="store_true",
+                        help="verify disposable seeded data before and after restore")
     args = parser.parse_args()
     if not PROJECT_NAME.fullmatch(args.source_project):
         raise DrillError("invalid source project name")
@@ -218,6 +229,8 @@ def main():
     try:
         before = summary(args.source_project, env_file)
         migration_count = verify_ledger(before["ledger"])
+        if args.expect_synthetic_fixture:
+            verify_synthetic_fixture(args.source_project, env_file)
         with archive.open("xb") as output:
             if os.name != "nt":
                 os.chmod(archive, 0o600)
@@ -240,6 +253,8 @@ def main():
                 stage="disposable restore", stdin=source)
         restored = summary(target, env_file)
         verify_ledger(restored["ledger"])
+        if args.expect_synthetic_fixture:
+            verify_synthetic_fixture(target, env_file)
         if before != restored:
             raise DrillError("restored migration ledger or tenant/message counts differ")
         completed = True

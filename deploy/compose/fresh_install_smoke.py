@@ -96,9 +96,9 @@ def available_loopback_port():
         return listener.getsockname()[1]
 
 
-def run(command, stage, timeout=180):
+def run(command, stage, timeout=180, input_data=None):
     try:
-        result = subprocess.run(command, capture_output=True, text=True,
+        result = subprocess.run(command, input=input_data, capture_output=True, text=True,
                                 errors="replace", timeout=timeout, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise DrillError(f"{stage} could not finish") from exc
@@ -219,8 +219,14 @@ def main():
         if database["tenants"] or database["messages"]:
             raise DrillError("fresh database is not empty")
         run([*compose, "stop", "app"], "writer quiescence")
+        fixture = Path(__file__).with_name("seed_restore_fixture.sql")
+        run([*compose, "exec", "-T", "db", "sh", "-ec",
+             'PGPASSWORD="$POSTGRES_PASSWORD" exec psql -X -q '
+             '-v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f -'],
+            "synthetic restore fixture", input_data=fixture.read_text(encoding="utf-8"))
         run([sys.executable, str(Path(__file__).with_name("restore_rehearsal.py")),
-             "--source-project", project, "--env-file", str(env_file)],
+             "--source-project", project, "--env-file", str(env_file),
+             "--expect-synthetic-fixture"],
             "logical restore rehearsal", timeout=600)
     except (DrillError, OSError) as exc:
         failure = exc
@@ -241,7 +247,7 @@ def main():
         raise failure
     kind = "immutable image" if image_id else "source build"
     print(f"fresh install smoke passed ({kind}): {migrations} migrations, "
-          "health and readiness, dispatch disabled, logical restore; "
+          "health and readiness, dispatch disabled, seeded logical restore; "
           "disposable projects removed")
 
 

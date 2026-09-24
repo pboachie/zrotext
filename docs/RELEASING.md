@@ -21,7 +21,8 @@ Publishing a GitHub Release starts the server-image workflow for that exact tag.
 Before writing the receipt, the workflow pulls that exact digest and boots its
 migrator and API in a disposable Compose project. It checks source labels,
 container image IDs, migrations, health, readiness, disabled dispatch and a
-logical restore. A failed rehearsal leaves no promotion receipt. The registry
+seeded logical restore with two synthetic tenants and persisted delivery and
+usage state. A failed rehearsal leaves no promotion receipt. The registry
 may retain the uniquely tagged image after a failure; do not promote it.
 
 Before linking an image from the GitHub Release, review the workflow result and receipt, verify the image attestation against this repository and the release-image workflow, and confirm the package is publicly readable if it is offered to self-hosters. For example, after authenticating to GHCR, run `gh attestation verify oci://ghcr.io/pboachie/zrotext@sha256:<digest> -R pboachie/zrotext --signer-workflow pboachie/zrotext/.github/workflows/release-image.yml`. Compare the attested source ref and SHA with the annotated tag and receipt. A successful image build does not establish Android, phone, database-restore, or hosted-deployment readiness.
