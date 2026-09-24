@@ -3,7 +3,6 @@
 //! Only GET provider reads are made; no checkout, refund or dispute mutation.
 
 use std::{env, error::Error};
-use tokio_postgres::NoTls;
 use zeroize::Zeroizing;
 use zrotext_server::billing::review::{
     ReviewPage, ReviewResult, list_review_required, review_with_stripe,
@@ -13,7 +12,7 @@ use zrotext_server::billing::review::{
 async fn main() -> Result<(), Box<dyn Error>> {
     let arguments = env::args().skip(1).collect::<Vec<_>>();
     let database_url = env::var("DATABASE_URL")?;
-    let (mut db, connection) = tokio_postgres::connect(&database_url, NoTls).await?;
+    let (mut db, connection) = zrotext_server::runtime_db::connect(&database_url).await?;
     tokio::spawn(async move {
         let _ = connection.await;
     });
