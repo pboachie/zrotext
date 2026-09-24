@@ -2,7 +2,7 @@
 import { execFile } from "node:child_process";
 import { createHash, webcrypto } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { promisify } from "node:util";
 import { Aes128Gcm, CipherSuite, DhkemP256HkdfSha256, HkdfSha256 } from "@hpke/core";
 
@@ -12,7 +12,10 @@ const sdk = process.env.ANDROID_HOME;
 if (!sdk) throw new Error("ANDROID_HOME is required");
 const serial = process.env.ANDROID_SERIAL || "emulator-5554";
 if (!/^emulator-\d+$/.test(serial)) throw new Error("Only an AVD emulator serial is allowed");
-const adb = join(sdk, "platform-tools", process.platform === "win32" ? "adb.exe" : "adb");
+const platformTools = join(sdk, "platform-tools");
+const adbEnv = { ...process.env };
+const pathKey = Object.keys(adbEnv).find((key) => key.toLowerCase() === "path") ?? "PATH";
+adbEnv[pathKey] = `${platformTools}${delimiter}${adbEnv[pathKey] ?? ""}`;
 const runner = "org.zrotext.gateway.test/androidx.test.runner.AndroidJUnitRunner";
 const testClass = "org.zrotext.gateway.M2Draft02EnvelopeTest";
 const hex = (value) => Buffer.from(value).toString("hex");
@@ -25,7 +28,10 @@ const u32 = (value) => Uint8Array.of(value >>> 24, value >>> 16, value >>> 8, va
 const arrayBuffer = (value) => Uint8Array.from(value).buffer;
 
 async function adbCall(...args) {
-  return (await exec(adb, ["-s", serial, ...args], { maxBuffer: 1024 * 1024 })).stdout.trim();
+  return (await exec("adb", ["-s", serial, ...args], {
+    env: adbEnv,
+    maxBuffer: 1024 * 1024,
+  })).stdout.trim();
 }
 async function instrument(method, extras = {}) {
   const args = ["shell", "am", "instrument", "-w", "-e", "class", `${testClass}#${method}`,
