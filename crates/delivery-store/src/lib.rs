@@ -1374,6 +1374,104 @@ fn state_from_row(row: &Row) -> Result<MessageState, StoreError> {
 mod tests {
     use super::*;
 
+    // Keep the admission fixtures on the complete, reviewed schema. SQL is
+    // embedded at build time so tests never execute files discovered at runtime.
+    const TEST_MIGRATIONS: [(&str, &str); 19] = [
+        (
+            "001_foundation.sql",
+            include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
+        ),
+        (
+            "002_auth.sql",
+            include_str!("../../../deploy/compose/migrations/002_auth.sql"),
+        ),
+        (
+            "003_delivery.sql",
+            include_str!("../../../deploy/compose/migrations/003_delivery.sql"),
+        ),
+        (
+            "004_enrollment.sql",
+            include_str!("../../../deploy/compose/migrations/004_enrollment.sql"),
+        ),
+        (
+            "005_verification_outbox.sql",
+            include_str!("../../../deploy/compose/migrations/005_verification_outbox.sql"),
+        ),
+        (
+            "006_usage_metering.sql",
+            include_str!("../../../deploy/compose/migrations/006_usage_metering.sql"),
+        ),
+        (
+            "007_inbound_webhook_foundation.sql",
+            include_str!("../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"),
+        ),
+        (
+            "008_stripe_billing_foundation.sql",
+            include_str!("../../../deploy/compose/migrations/008_stripe_billing_foundation.sql"),
+        ),
+        (
+            "009_webhook_manual_replay.sql",
+            include_str!("../../../deploy/compose/migrations/009_webhook_manual_replay.sql"),
+        ),
+        (
+            "010_billing_test_entitlement.sql",
+            include_str!("../../../deploy/compose/migrations/010_billing_test_entitlement.sql"),
+        ),
+        (
+            "011_billing_payment_holds.sql",
+            include_str!("../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
+        ),
+        (
+            "012_auth_abuse_limits.sql",
+            include_str!("../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
+        ),
+        (
+            "013_owner_mfa.sql",
+            include_str!("../../../deploy/compose/migrations/013_owner_mfa.sql"),
+        ),
+        (
+            "014_owner_mfa_failure_budget.sql",
+            include_str!("../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
+        ),
+        (
+            "015_webhook_kek_commitments.sql",
+            include_str!("../../../deploy/compose/migrations/015_webhook_kek_commitments.sql"),
+        ),
+        (
+            "016_auth_abuse_atomic.sql",
+            include_str!("../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+        ),
+        (
+            "017_billing_device_caps.sql",
+            include_str!("../../../deploy/compose/migrations/017_billing_device_caps.sql"),
+        ),
+        (
+            "018_sealed_inbound_identity.sql",
+            include_str!("../../../deploy/compose/migrations/018_sealed_inbound_identity.sql"),
+        ),
+        (
+            "019_line_activation_contract.sql",
+            include_str!("../../../deploy/compose/migrations/019_line_activation_contract.sql"),
+        ),
+    ];
+
+    #[test]
+    fn admission_fixture_tracks_numbered_migrations() {
+        let migrations_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../deploy/compose/migrations");
+        let mut discovered = std::fs::read_dir(migrations_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .filter(|name| name.ends_with(".sql"))
+            .collect::<Vec<_>>();
+        discovered.sort();
+        let embedded = TEST_MIGRATIONS
+            .iter()
+            .map(|(name, _)| name.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(discovered, embedded, "update the embedded migration list");
+    }
+
     #[tokio::test]
     async fn released_attempt_cannot_change_a_new_grant() {
         let Ok(url) = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL") else {
@@ -1569,19 +1667,8 @@ mod tests {
             ))
             .await
             .unwrap();
-        let migrations_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../deploy/compose/migrations");
-        let mut migration_paths = std::fs::read_dir(migrations_dir)
-            .unwrap()
-            .map(|entry| entry.unwrap().path())
-            .filter(|path| path.extension().and_then(std::ffi::OsStr::to_str) == Some("sql"))
-            .collect::<Vec<_>>();
-        migration_paths.sort();
-        for path in migration_paths {
-            client
-                .batch_execute(&std::fs::read_to_string(path).unwrap())
-                .await
-                .unwrap();
+        for (_, migration) in TEST_MIGRATIONS {
+            client.batch_execute(migration).await.unwrap();
         }
         let account = Uuid::new_v4();
         let device = Uuid::new_v4();
@@ -1711,21 +1798,9 @@ mod tests {
             ))
             .await
             .unwrap();
-        // Apply the checkout's complete numbered schema. This admission test
-        // also runs after later migrations add accept-time metering writes.
-        let migrations_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../deploy/compose/migrations");
-        let mut migration_paths = std::fs::read_dir(migrations_dir)
-            .unwrap()
-            .map(|entry| entry.unwrap().path())
-            .filter(|path| path.extension().and_then(std::ffi::OsStr::to_str) == Some("sql"))
-            .collect::<Vec<_>>();
-        migration_paths.sort();
-        for path in migration_paths {
-            client
-                .batch_execute(&std::fs::read_to_string(path).unwrap())
-                .await
-                .unwrap();
+        // Apply the complete numbered schema, including accept-time metering.
+        for (_, migration) in TEST_MIGRATIONS {
+            client.batch_execute(migration).await.unwrap();
         }
         let account = Uuid::new_v4();
         let device = Uuid::new_v4();
