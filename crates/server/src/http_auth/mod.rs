@@ -1039,7 +1039,7 @@ mod tests {
     async fn mfa_enrollment_is_off_by_default() {
         let state = AuthHttpState::new(
             "postgres://unused".to_owned(),
-            Arc::new(TokenHasher::new(vec![7; 32]).unwrap()),
+            Arc::new(TokenHasher::new(crate::test_keys::key(7)).unwrap()),
             "https://zrotext.example".to_owned(),
             Arc::new(DisabledVerificationDispatcher),
         )
@@ -1135,7 +1135,7 @@ mod tests {
     async fn registration_fails_closed_without_delivery_and_never_returns_token() {
         let state = AuthHttpState::new(
             "postgres://unused".to_owned(),
-            Arc::new(TokenHasher::new(vec![7; 32]).unwrap()),
+            Arc::new(TokenHasher::new(crate::test_keys::key(7)).unwrap()),
             "https://zrotext.example".to_owned(),
             Arc::new(DisabledVerificationDispatcher),
         )
@@ -1162,7 +1162,7 @@ mod tests {
     async fn login_rejects_cross_origin_before_password_work() {
         let state = AuthHttpState::new(
             "postgres://unused".to_owned(),
-            Arc::new(TokenHasher::new(vec![7; 32]).unwrap()),
+            Arc::new(TokenHasher::new(crate::test_keys::key(7)).unwrap()),
             "https://zrotext.example".to_owned(),
             Arc::new(DisabledVerificationDispatcher),
         )
@@ -1234,7 +1234,7 @@ mod tests {
         let capture = Arc::new(CaptureVerification(Mutex::new(None)));
         let state = AuthHttpState::new(
             url,
-            Arc::new(TokenHasher::new(vec![42; 32]).unwrap()),
+            Arc::new(TokenHasher::new(crate::test_keys::key(42)).unwrap()),
             "https://zrotext.example".to_owned(),
             capture.clone(),
         )

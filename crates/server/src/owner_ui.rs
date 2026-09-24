@@ -70,7 +70,7 @@ mod tests {
 
         let state = AuthHttpState::new(
             "postgres://unused".into(),
-            Arc::new(TokenHasher::new(vec![7; 32]).unwrap()),
+            Arc::new(TokenHasher::new(crate::test_keys::key(7)).unwrap()),
             "https://zrotext.example".into(),
             Arc::new(DisabledVerificationDispatcher),
         )

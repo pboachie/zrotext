@@ -675,8 +675,8 @@ mod tests {
         ] {
             client.batch_execute(sql).await.unwrap();
         }
-        let auth_hasher = TokenHasher::new(vec![17; 32]).unwrap();
-        let hasher = EnrollmentHasher::new(vec![19; 32]).unwrap();
+        let auth_hasher = TokenHasher::new(crate::test_keys::key(17)).unwrap();
+        let hasher = EnrollmentHasher::new(crate::test_keys::key(19)).unwrap();
         let a = register(
             &mut client,
             &auth_hasher,

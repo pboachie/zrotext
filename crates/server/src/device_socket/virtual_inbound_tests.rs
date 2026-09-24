@@ -117,8 +117,10 @@ async fn authenticated_inbound_replay_retries_one_webhook_delivery() {
     )
     .await
     .unwrap();
-    let vault = WebhookSecretVault::new(1, Zeroizing::new(vec![7; 32])).unwrap();
-    let secret = vault.seal(account_id, endpoint_id, &[8; 32]).unwrap();
+    let vault = WebhookSecretVault::new(1, Zeroizing::new(crate::test_keys::key(7))).unwrap();
+    let secret = vault
+        .seal(account_id, endpoint_id, &crate::test_keys::key(8))
+        .unwrap();
     db.execute(
         "INSERT INTO webhook_endpoints(id,account_id,callback_url,signing_secret_ciphertext,signing_secret_key_version,enabled) \
          VALUES($1,$2,'https://hooks.example.org/inbound',$3,1,true)",
@@ -132,8 +134,8 @@ async fn authenticated_inbound_replay_retries_one_webhook_delivery() {
         site_id: "socket-test".into(),
         instance_id: "virtual-server".into(),
         deployment_epoch: 1,
-        enrollment_hasher: Arc::new(EnrollmentHasher::new(vec![9; 32]).unwrap()),
-        auth_hasher: Arc::new(TokenHasher::new(vec![10; 32]).unwrap()),
+        enrollment_hasher: Arc::new(EnrollmentHasher::new(crate::test_keys::key(9)).unwrap()),
+        auth_hasher: Arc::new(TokenHasher::new(crate::test_keys::key(10)).unwrap()),
         alpha_policy: Arc::new(AlphaPolicy::parse(None, None, None).unwrap()),
         dispatch_runtime_enabled: false,
         inbound_pilot_enabled: true,
@@ -247,7 +249,7 @@ async fn authenticated_inbound_replay_retries_one_webhook_delivery() {
                 "virtual-receiver",
                 move |url, body, secret| async move {
                     assert_eq!(url, "https://hooks.example.org/inbound");
-                    assert_eq!(secret.as_slice(), &[8_u8; 32]);
+                    assert_eq!(secret.as_slice(), crate::test_keys::key(8).as_slice());
                     let parsed: Value = serde_json::from_slice(&body).unwrap();
                     assert_eq!(parsed["event_id"], event_id.to_string());
                     assert_eq!(parsed["message_id"], message_id.to_string());
@@ -402,8 +404,8 @@ async fn socket_handshakes_share_http_enrollment_budgets() {
     .await
     .unwrap();
     db.execute("INSERT INTO device_keys(device_id,account_id,signing_key_sec1,fingerprint) VALUES($1,$2,$3,$4)", &[&device_id,&account_id,&public_key.as_bytes(),&&fingerprint[..]]).await.unwrap();
-    let auth_hasher = Arc::new(TokenHasher::new(vec![10; 32]).unwrap());
-    let enrollment_hasher = Arc::new(EnrollmentHasher::new(vec![9; 32]).unwrap());
+    let auth_hasher = Arc::new(TokenHasher::new(crate::test_keys::key(10)).unwrap());
+    let enrollment_hasher = Arc::new(EnrollmentHasher::new(crate::test_keys::key(9)).unwrap());
     let state = DeviceSocketState {
         database_url: schema_url.clone(),
         site_id: "fixture".into(),

@@ -75,10 +75,14 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
     let message = Uuid::new_v4();
     let attempt = Uuid::new_v4();
     let endpoint = Uuid::new_v4();
-    let vault =
-        crate::webhook_worker::WebhookSecretVault::new(1, zeroize::Zeroizing::new(vec![7_u8; 32]))
-            .unwrap();
-    let endpoint_secret = vault.seal(account, endpoint, &[8_u8; 32]).unwrap();
+    let vault = crate::webhook_worker::WebhookSecretVault::new(
+        1,
+        zeroize::Zeroizing::new(crate::test_keys::key(7)),
+    )
+    .unwrap();
+    let endpoint_secret = vault
+        .seal(account, endpoint, &crate::test_keys::key(8))
+        .unwrap();
     let signing = SigningKey::random(&mut OsRng);
     let public = signing
         .verifying_key()
@@ -245,7 +249,9 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
     // rejected by local policy must consume one attempt and dead-letter it.
     let policy_endpoint = Uuid::new_v4();
     let policy_delivery = Uuid::new_v4();
-    let encrypted = vault.seal(account, policy_endpoint, &[8_u8; 32]).unwrap();
+    let encrypted = vault
+        .seal(account, policy_endpoint, &crate::test_keys::key(8))
+        .unwrap();
     db.execute(
         "INSERT INTO webhook_endpoints(id,account_id,callback_url,signing_secret_ciphertext, \
          signing_secret_key_version,enabled) VALUES($1,$2,'https://example.invalid/hook',$3,1,true)",
@@ -413,7 +419,7 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
                 worker,
                 move |url, body, secret| async move {
                     assert_eq!(url, "https://hooks.example.org/hook");
-                    assert_eq!(secret.as_slice(), &[8_u8; 32]);
+                    assert_eq!(secret.as_slice(), crate::test_keys::key(8).as_slice());
                     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
                     assert_eq!(
                         json["event_id"].as_str(),
