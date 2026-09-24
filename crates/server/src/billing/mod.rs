@@ -2583,6 +2583,7 @@ mod tests {
                 "../../../../deploy/compose/migrations/024_billing_risk_operator_review.sql"
             ),
             include_str!("../../../../deploy/compose/migrations/028_billing_provider_failures.sql"),
+            include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
