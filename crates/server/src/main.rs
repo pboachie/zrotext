@@ -511,14 +511,23 @@ fn account_routes(
             let port: u16 = required("SMTP_PORT")?
                 .parse()
                 .map_err(|_| "SMTP_PORT must be a valid port")?;
+            match smtp_env_option("SMTP_SECURE")?.as_deref() {
+                None | Some("true") => {}
+                _ => return Err("SMTP_SECURE must be true; plaintext SMTP is unsupported".into()),
+            }
+            let username = required_smtp_alias("SMTP_USERNAME", "SMTP_USER")?;
+            let password = required_smtp_alias("SMTP_PASSWORD", "SMTP_PASS")?;
+            let from = required_smtp_alias("SMTP_FROM", "EMAIL_FROM")?;
+            let from_name = smtp_alias("SMTP_FROM_NAME", "EMAIL_FROM_NAME")?;
+            let reply_to = smtp_alias("SMTP_REPLY_TO", "EMAIL_REPLY_TO")?;
             Arc::new(SmtpVerificationDispatcher::new(
                 &host,
                 port,
-                required("SMTP_USERNAME")?,
-                required("SMTP_PASSWORD")?,
-                &required("SMTP_FROM")?,
-                env::var("SMTP_FROM_NAME").ok().as_deref(),
-                env::var("SMTP_REPLY_TO").ok().as_deref(),
+                username,
+                password,
+                &from,
+                from_name.as_deref(),
+                reply_to.as_deref(),
             )?)
         }
         Err(env::VarError::NotPresent) => Arc::new(DisabledVerificationDispatcher),
@@ -626,6 +635,47 @@ fn required(key: &'static str) -> Result<String, Box<dyn std::error::Error>> {
         return Err(format!("{key} must not be empty").into());
     }
     Ok(value)
+}
+
+fn smtp_env_option(key: &'static str) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    match env::var(key) {
+        Ok(value) if value.trim().is_empty() => Ok(None),
+        Ok(value) => Ok(Some(value)),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(env::VarError::NotUnicode(_)) => Err(format!("{key} must be valid UTF-8").into()),
+    }
+}
+
+fn resolve_smtp_alias(
+    primary: Option<String>,
+    alternate: Option<String>,
+) -> Result<Option<String>, &'static str> {
+    match (primary, alternate) {
+        (Some(primary), Some(alternate)) if primary != alternate => {
+            Err("conflicting SMTP setting aliases")
+        }
+        (Some(primary), _) => Ok(Some(primary)),
+        (_, Some(alternate)) => Ok(Some(alternate)),
+        (None, None) => Ok(None),
+    }
+}
+
+fn smtp_alias(
+    primary: &'static str,
+    alternate: &'static str,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    Ok(resolve_smtp_alias(
+        smtp_env_option(primary)?,
+        smtp_env_option(alternate)?,
+    )?)
+}
+
+fn required_smtp_alias(
+    primary: &'static str,
+    alternate: &'static str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    smtp_alias(primary, alternate)?
+        .ok_or_else(|| format!("{primary} or {alternate} is required").into())
 }
 
 fn optional_bool(key: &'static str) -> Result<bool, Box<dyn std::error::Error>> {
@@ -750,6 +800,19 @@ mod tests {
     use super::*;
     use p256::elliptic_curve::rand_core::{OsRng, RngCore};
     use uuid::Uuid;
+
+    #[test]
+    fn smtp_aliases_accept_supplied_names_but_reject_conflicts() {
+        assert_eq!(
+            resolve_smtp_alias(None, Some("alternate".into())).unwrap(),
+            Some("alternate".into())
+        );
+        assert_eq!(
+            resolve_smtp_alias(Some("same".into()), Some("same".into())).unwrap(),
+            Some("same".into())
+        );
+        assert!(resolve_smtp_alias(Some("one".into()), Some("two".into())).is_err());
+    }
 
     #[tokio::test]
     async fn account_startup_requires_matching_mfa_key_or_explicit_recovery_mode() {
