@@ -25,7 +25,8 @@ caps through restarts, including rolling restarts at multiple sites. The first
 start after migration, a changed mapping or reconciliation key, or re-enabling test billing resets
 test projections and queues provider reads for subscriptions whose last snapshot
 is not `canceled` or `incomplete_expired`. Terminal snapshots remain clean.
-Turning test billing off still clears its old allowances.
+When cap configuration permits test billing to be disabled, that transition
+clears its old allowances.
 
 The subscription and payment-risk queues each run every 10 seconds. Each tick
 claims up to `STRIPE_TEST_RECONCILE_BATCH_SIZE` jobs (default 25, range 1–100)
