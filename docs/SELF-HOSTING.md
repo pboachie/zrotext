@@ -100,18 +100,33 @@ registration abuse budget and mail-provider limits in place for open mode.
 
 There is no registration form in the current owner UI. For a later invited
 owner, configure SMTP and account routes, restart every API instance with the
-same allowlist and master key, then run:
+same allowlist and master key, then send these two HTTPS requests to the exact
+configured `AUTH_ORIGIN` (replace the example host and placeholders):
 
-```sh
-python3 scripts/operator_enroll.py
+```http
+POST /v1/auth/register HTTP/1.1
+Host: app.example.test
+Origin: https://app.example.test
+Content-Type: application/json
+x-zrotext-registration-token: <address-bound-invite-token>
+
+{"email":"invited@example.test","password":"<new-owner-password>"}
 ```
 
-The script prompts for the exact configured HTTPS `AUTH_ORIGIN`, invited
-email, new password, address-bound token issued above, and emailed code. It
-posts JSON to `/v1/auth/register` with that Origin and the
-`x-zrotext-registration-token` header, then posts the code to
-`/v1/auth/verify-email`. Its non-echoing prompts keep credentials out of shell
-history and process arguments; it refuses redirects.
+After the code arrives in that mailbox:
+
+```http
+POST /v1/auth/verify-email HTTP/1.1
+Host: app.example.test
+Origin: https://app.example.test
+Content-Type: application/json
+
+{"token":"<emailed-verification-code>"}
+```
+
+Use a client that takes the password, invite and code from protected input;
+keep them out of URLs, shell arguments and request logs. Reject redirects to
+another origin. The local CLI above is the executable first-owner path.
 
 `register` returns `202` even when admission is denied. A successful
 `verify-email` returns `204`. If no mail arrives, check the private policy and
