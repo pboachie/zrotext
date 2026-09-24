@@ -20,6 +20,32 @@ internal object Draft01SignaturePrimitive {
     private val signLabel = "ZTSE/sign/v1\u0000".toByteArray(Charsets.US_ASCII)
     private val keyLabel = "ZTSE/key/v1\u0000".toByteArray(Charsets.US_ASCII)
 
+    /** Strict Android/JCA DER ECDSA output to the draft's canonical fixed-width low-s r||s. */
+    fun canonicalRawFromDer(der: ByteArray): ByteArray {
+        require(der.size in 8..72 && der[0] == 0x30.toByte() &&
+            (der[1].toInt() and 0xff) == der.size - 2) { "Invalid P-256 DER sequence" }
+        var offset = 2
+        fun scalar(): BigInteger {
+            require(offset + 2 <= der.size && der[offset] == 2.toByte()) { "Invalid P-256 DER integer" }
+            val length = der[offset + 1].toInt() and 0xff
+            offset += 2
+            require(length in 1..33 && offset + length <= der.size) { "Invalid P-256 DER scalar width" }
+            val first = der[offset].toInt() and 0xff
+            require((first and 0x80) == 0) { "Negative P-256 DER scalar" }
+            if (length > 1 && first == 0) {
+                require((der[offset + 1].toInt() and 0x80) != 0) { "Nonminimal P-256 DER scalar" }
+            }
+            val value = BigInteger(1, der.copyOfRange(offset, offset + length))
+            offset += length
+            require(value.signum() > 0 && value < order) { "P-256 DER scalar out of range" }
+            return value
+        }
+        val r = scalar()
+        val s = scalar()
+        require(offset == der.size) { "Trailing P-256 DER data" }
+        return fixed32(r) + fixed32(if (s > order.shiftRight(1)) order.subtract(s) else s)
+    }
+
     /** Verify the exact received unsigned bytes, not a reconstructed envelope or prehashed input. */
     fun verifyOutboundParsed(
         envelope: ByteArray, pinnedSignerPoint: ByteArray, policy: LowSPolicy
@@ -63,5 +89,13 @@ internal object Draft01SignaturePrimitive {
         }
         val fields = integer(0) + integer(32)
         return byteArrayOf(0x30, fields.size.toByte()) + fields
+    }
+
+    private fun fixed32(value: BigInteger): ByteArray {
+        val signed = value.toByteArray()
+        val magnitude = if (signed.size == 33 && signed[0] == 0.toByte())
+            signed.copyOfRange(1, 33) else signed
+        require(magnitude.size <= 32)
+        return ByteArray(32).also { magnitude.copyInto(it, 32 - magnitude.size) }
     }
 }

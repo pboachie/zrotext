@@ -43,6 +43,11 @@ the test APKs when finished. Android does not establish signer authority from
 a trusted manifest in this harness. This is test-only custom composition, not a
 maintained production provider.
 
+`canonicalP256Signature` demonstrates a proposed low-`s` sender conversion;
+it does not alter draft-01 acceptance. The pinned outbound draft-01 signature
+is valid high-`s`. Enforcing low-`s` requires a new profile revision and
+regenerated vectors.
+
 This is one slice of ZT-010 evidence. Independent Rust cross-open, full manifest
 chain/rollback vectors, production key lifecycle, and the Q1–Q11 decisions
 remain separate gates. The candidate profile says vectors must be regenerated

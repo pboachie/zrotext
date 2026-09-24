@@ -2,6 +2,11 @@
 package org.zrotext.gateway
 
 import java.math.BigInteger
+import java.security.KeyPairGenerator
+import java.security.MessageDigest
+import java.security.Signature
+import java.security.interfaces.ECPublicKey
+import java.security.spec.ECGenParameterSpec
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -19,12 +24,40 @@ class Draft01SignaturePrimitiveTest {
         val envelope = fixture()
         assertTrue(Draft01SignaturePrimitive.verifyOutboundParsed(envelope, point, permissive))
         assertFalse(Draft01SignaturePrimitive.verifyOutboundParsed(envelope, point, lowOnly))
-        val normalized = envelope.copyOf().apply {
+        val lowS = envelope.copyOf().apply {
             val s = BigInteger(1, copyOfRange(size - 32, size))
             fixed32(order.subtract(s)).copyInto(this, size - 32)
         }
-        assertTrue(Draft01SignaturePrimitive.verifyOutboundParsed(normalized, point, lowOnly))
-        assertTrue(Draft01SignaturePrimitive.verifyOutboundParsed(normalized, point, permissive))
+        assertTrue(Draft01SignaturePrimitive.verifyOutboundParsed(lowS, point, lowOnly))
+        assertTrue(Draft01SignaturePrimitive.verifyOutboundParsed(lowS, point, permissive))
+    }
+
+    @Test fun jcaDerSigningConvertsToCanonicalWireSignature() {
+        val pair = KeyPairGenerator.getInstance("EC").run {
+            initialize(ECGenParameterSpec("secp256r1")); generateKeyPair()
+        }
+        val signerPoint = DevicePayloadKeyStore.encodePoint(pair.public as ECPublicKey)
+        val envelope = ByteArray(557)
+        byteArrayOf(0x5a, 0x54, 0x53, 0x45, 1, 1, 0, 0, 0, 157.toByte()).copyInto(envelope)
+        MessageDigest.getInstance("SHA-256").digest(
+            "ZTSE/key/v1\u0000".toByteArray(Charsets.US_ASCII) + byteArrayOf(1, 1) + signerPoint
+        ).copyInto(envelope, 114)
+        val unsigned = envelope.copyOfRange(0, envelope.size - 64)
+        val transcript = "ZTSE/sign/v1\u0000".toByteArray(Charsets.US_ASCII) +
+            byteArrayOf(0, 0, (unsigned.size ushr 8).toByte(), unsigned.size.toByte()) + unsigned
+        val der = Signature.getInstance("SHA256withECDSA").run {
+            initSign(pair.private); update(transcript); sign()
+        }
+        val raw = Draft01SignaturePrimitive.canonicalRawFromDer(der)
+        assertTrue(BigInteger(1, raw.copyOfRange(32, 64)) <= order.shiftRight(1))
+        raw.copyInto(envelope, unsigned.size)
+        assertTrue(Draft01SignaturePrimitive.verifyOutboundParsed(envelope, signerPoint, lowOnly))
+        assertThrows(IllegalArgumentException::class.java) {
+            Draft01SignaturePrimitive.canonicalRawFromDer(der + 0.toByte())
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            Draft01SignaturePrimitive.canonicalRawFromDer(der.copyOf().apply { this[0] = 0x31 })
+        }
     }
 
     @Test fun changedTranscriptIdentityAndSignatureFail() {

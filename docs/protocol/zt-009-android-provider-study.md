@@ -103,8 +103,11 @@ Q5 and the other ZT-009 gates stay open.
 
 A subsequent local-only Q6 slice makes the test receiver verify the exact
 ECDSA transcript against the fixture's pinned public signer before decryption.
-This does not authenticate that signer through a trusted manifest or resolve
-high-`s` policy. It remains a test-only receive flow and does not change Q5.
+It also tests strict JCA DER-to-low-`s` conversion as a candidate for a future
+profile. The current draft-01 test receiver still accepts the pinned valid
+high-`s` signature. This does not authenticate that signer through a trusted
+manifest or resolve the versioned high-`s` policy. It remains a test-only
+receive flow and does not change Q5.
 
 ## Remaining Q5 decision
 

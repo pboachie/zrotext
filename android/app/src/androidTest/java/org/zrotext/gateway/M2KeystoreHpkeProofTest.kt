@@ -22,7 +22,9 @@ import java.security.AlgorithmParameters
 import java.security.KeyFactory
 import java.security.KeyPairGenerator
 import java.security.KeyStore
+import java.security.MessageDigest
 import java.security.PrivateKey
+import java.security.Signature
 import java.security.interfaces.ECPublicKey
 import java.security.spec.ECFieldFp
 import java.security.spec.ECGenParameterSpec
@@ -45,6 +47,44 @@ import javax.crypto.spec.SecretKeySpec
 @RunWith(AndroidJUnit4::class)
 class M2KeystoreHpkeProofTest {
     private val browserInteropAlias = "zrotext.m2.hpke.browser-interop-test"
+
+    @Test fun keystoreDerConvertsToCanonicalRawSignature() {
+        val alias = "zrotext.m2.sig-proof.${UUID.randomUUID()}"
+        val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null, null) }
+        try {
+            val spec = KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_SIGN)
+                .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
+                .setDigests(KeyProperties.DIGEST_SHA256)
+                .build()
+            val pair = KeyPairGenerator.getInstance("EC", "AndroidKeyStore").run {
+                initialize(spec); generateKeyPair()
+            }
+            assertNull(pair.private.encoded)
+            val point = DevicePayloadKeyStore.encodePoint(pair.public as ECPublicKey)
+            val envelope = ByteArray(557)
+            byteArrayOf(0x5a, 0x54, 0x53, 0x45, 1, 1, 0, 0, 0, 157.toByte()).copyInto(envelope)
+            MessageDigest.getInstance("SHA-256").digest(
+                "ZTSE/key/v1\u0000".toByteArray(Charsets.US_ASCII) + byteArrayOf(1, 1) + point
+            ).copyInto(envelope, 114)
+            val unsigned = envelope.copyOfRange(0, envelope.size - 64)
+            val transcript = "ZTSE/sign/v1\u0000".toByteArray(Charsets.US_ASCII) +
+                byteArrayOf(0, 0, (unsigned.size ushr 8).toByte(), unsigned.size.toByte()) + unsigned
+            val der = Signature.getInstance("SHA256withECDSA").run {
+                initSign(pair.private); update(transcript); sign()
+            }
+            val raw = Draft01SignaturePrimitive.canonicalRawFromDer(der)
+            assertEquals(64, raw.size)
+            raw.copyInto(envelope, unsigned.size)
+            assertTrue(Draft01SignaturePrimitive.verifyOutboundParsed(
+                envelope, point, Draft01SignaturePrimitive.LowSPolicy.REQUIRE_LOW_S))
+            InstrumentationRegistry.getInstrumentation().sendStatus(0, Bundle().apply {
+                putString("m2_keystore_der_low_s", "PASSED")
+            })
+        } finally {
+            if (store.containsAlias(alias)) store.deleteEntry(alias)
+            assertFalse(store.containsAlias(alias))
+        }
+    }
 
     // These three methods are called in order by the emulator-only Node harness. Ordinary
     // connectedAndroidTest runs skip them and cannot leave a persistent test alias behind.
