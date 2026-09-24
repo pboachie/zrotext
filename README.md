@@ -40,7 +40,7 @@ These interface studies use synthetic devices, messages and traffic. Click an im
 
 ## Run the development stack
 
-Install Docker and Docker Compose, then copy `.env.example` to `.env`. Replace the example password in both `POSTGRES_PASSWORD` and `DATABASE_URL` with the same long random local value.
+Install Docker and Docker Compose, then copy `.env.example` to `.env`. Replace the example password in both `POSTGRES_PASSWORD` and `DATABASE_URL` with the same long random local value. Independently generate 32 random bytes as 64 hexadecimal characters for `RUNTIME_DATABASE_PASSWORD` (for example, `openssl rand -hex 32`). The API uses this restricted runtime role; the migration credential stays separate. See [database role upgrades](deploy/compose/README.md#database-role-separation) for existing volumes.
 
 ```sh
 cp .env.example .env
