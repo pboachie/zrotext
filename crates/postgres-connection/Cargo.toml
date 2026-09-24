@@ -1,0 +1,17 @@
+[package]
+name = "zrotext-postgres-connection"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio-postgres = "0.7.13"
+tokio-postgres-rustls = { version = "0.14.0", default-features = false, features = ["ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls-native-certs = "0.8"
+rustls-pemfile = "2"
+thiserror = "2.0.16"
+
+[dev-dependencies]
+tokio = { version = "1.47.1", features = ["macros", "rt-multi-thread"] }

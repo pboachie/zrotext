@@ -72,10 +72,16 @@ It refuses missing or extra M0 columns and missing primary keys or required
 indexes. Investigate any failure before retrying; do not modify
 `schema_migrations` by hand.
 
-The Compose connection is private-network PostgreSQL without transport TLS.
-This is a self-host example, not a production migration procedure. The
-deployment plan must add a protected TLS connection and backup/restore proof
-before an internet-facing launch.
+The local Compose database is named `db` and stays on its private Docker network;
+this example does not enable PostgreSQL transport TLS. Remote database URLs for
+the API, migrator, and key rewrap tool must use `sslmode=require`. The application
+verifies the server certificate and URL hostname using system trust roots, or the
+PEM bundle at `DATABASE_TLS_CA_FILE`. Mount that file into each relevant
+container when using a private CA. A URL with `sslmode=prefer` or `disable` for
+any host other than loopback, a Unix socket, or Compose `db` fails unless
+`DATABASE_ALLOW_PLAINTEXT=true` is explicitly set; that override logs a warning
+and permits unencrypted database traffic. See the
+[self-hosting guide](../../docs/SELF-HOSTING.md#postgresql-transport-tls).
 
 The application image also includes `zrotext-webhook-kek-rewrap` for a staged
 operational webhook encryption-key change. Follow the
