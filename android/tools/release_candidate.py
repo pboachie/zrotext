@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -23,6 +24,9 @@ ARTIFACT_ROOT = Path(tempfile.gettempdir()) / "zrotext-android-release"
 STORE_PASSWORD = "ZROTEXT_ANDROID_KEYSTORE_PASSWORD"
 KEY_PASSWORD = "ZROTEXT_ANDROID_KEY_PASSWORD"
 MAX_APK_BYTES = 512 * 1024 * 1024
+MAX_UNCOMPRESSED_APK_BYTES = 512 * 1024 * 1024
+MAX_APK_ENTRIES = 20_000
+MAX_CENTRAL_DIRECTORY_BYTES = 16 * 1024 * 1024
 MAX_RECEIPT_BYTES = 16 * 1024
 MAX_CHECKSUM_BYTES = 256
 SOURCE_TAG = re.compile(
@@ -153,9 +157,47 @@ def checked_artifact_file(path: Path, max_bytes: int) -> Path:
     return path
 
 
+def check_apk_directory(apk: Path) -> None:
+    """Cap ZIP metadata before ZipFile allocates an object for every entry."""
+    size = apk.stat().st_size
+    if size < 22 or size > MAX_APK_BYTES:
+        raise ValueError("APK ZIP exceeds the review size limit")
+    with apk.open("rb") as source:
+        tail_size = min(size, 22 + 65535)
+        source.seek(-tail_size, os.SEEK_END)
+        tail = source.read(tail_size)
+    offset = tail.rfind(b"PK\x05\x06")
+    if offset < 0 or len(tail) - offset < 22:
+        raise ValueError("APK ZIP end record is invalid")
+    (_, disk, directory_disk, disk_entries, entries,
+     directory_size, directory_offset, comment_size) = struct.unpack_from(
+         "<4s4H2IH", tail, offset)
+    end_position = size - tail_size + offset
+    if (disk != 0 or directory_disk != 0 or disk_entries != entries
+            or entries == 0xffff or directory_size == 0xffffffff
+            or directory_offset == 0xffffffff
+            or entries > MAX_APK_ENTRIES
+            or directory_size > MAX_CENTRAL_DIRECTORY_BYTES
+            or directory_offset + directory_size != end_position
+            or offset + 22 + comment_size != len(tail)):
+        raise ValueError("APK ZIP central directory is invalid or exceeds the review limit")
+
+
+def checked_apk_entries(archive: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
+    entries = archive.infolist()
+    if len(entries) > MAX_APK_ENTRIES or sum(entry.file_size for entry in entries) > MAX_UNCOMPRESSED_APK_BYTES:
+        raise ValueError("APK ZIP entries exceed the review size limit")
+    return entries
+
+
 def verify_source_asset(apk: Path, commit: str) -> None:
+    check_apk_directory(apk)
     with zipfile.ZipFile(apk) as archive:
-        if archive.namelist().count(ASSET) != 1 or archive.read(ASSET) != f"{commit}\n".encode("ascii"):
+        entries = checked_apk_entries(archive)
+        assets = [entry for entry in entries if entry.filename == ASSET]
+        expected = f"{commit}\n".encode("ascii")
+        if len(assets) != 1 or assets[0].file_size != len(expected) \
+                or archive.read(assets[0]) != expected:
             raise ValueError("APK source asset does not match the clean checkout")
 
 
@@ -237,8 +279,9 @@ def checked_unsigned(commit: str) -> tuple[Path, str, dict[str, str | int]]:
 
 def apk_entry_digests(apk: Path) -> dict[str, str]:
     contents = {}
+    check_apk_directory(apk)
     with zipfile.ZipFile(apk) as archive:
-        for entry in archive.infolist():
+        for entry in checked_apk_entries(archive):
             if entry.filename in contents:
                 raise ValueError("APK contains duplicate ZIP entry names")
             digest = hashlib.sha256()
@@ -252,6 +295,13 @@ def apk_entry_digests(apk: Path) -> dict[str, str]:
 def verify_apk_contents(unsigned: Path, signed: Path) -> None:
     if apk_entry_digests(unsigned) != apk_entry_digests(signed):
         raise ValueError("Signed APK entries differ from the unsigned build")
+
+
+def require_api28_signature(output: str) -> None:
+    # Android 9 (our minSdk 28) supports v3. Modern apksigner may emit only
+    # v3 even when v2 is enabled, so v2 is not a release requirement.
+    if not re.search(r"^Verified using v3 scheme .*: true$", output, re.MULTILINE):
+        raise ValueError("Signed APK did not verify with v3")
 
 
 def sign_candidate(commit: str, keystore_path: Path,
@@ -282,6 +332,7 @@ def sign_candidate(commit: str, keystore_path: Path,
             "--out", apk, aligned, env=signer_env)
         verify = run(apksigner, "verify", "--verbose", "--print-certs",
                      "--min-sdk-version", "28", apk, capture=True, env=no_secrets)
+        require_api28_signature(verify)
         run(zipalign, "-c", "4", apk, capture=True, env=no_secrets)
         verify_source_asset(apk, commit)
         verify_apk_contents(unsigned, apk)
@@ -363,10 +414,7 @@ def verify_candidate(commit: str, expected_certificate: str) -> None:
     output = run(apksigner, "verify", "--verbose", "--print-certs",
                  "--min-sdk-version", "28", apk, capture=True,
                  env=unsigned_build_env())
-    for scheme in ("v2", "v3"):
-        if not re.search(rf"^Verified using {scheme} scheme .*: true$",
-                         output, re.MULTILINE):
-            raise ValueError(f"Signed APK did not verify with {scheme}")
+    require_api28_signature(output)
     certificates = set(re.findall(r"certificate SHA-256 digest: ([0-9a-fA-F]{64})", output))
     if len(certificates) != 1 or certificates.pop().lower() != expected_certificate:
         raise ValueError("APK signing certificate differs from approved fingerprint")
