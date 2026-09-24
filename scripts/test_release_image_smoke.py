@@ -1,5 +1,6 @@
 """Release-image identity checks must fail closed before promotion."""
 
+import io
 import json
 from pathlib import Path
 import sys
@@ -15,6 +16,9 @@ DIGEST = "sha256:" + "b" * 64
 IMAGE = "ghcr.io/pboachie/zrotext@" + DIGEST
 IMAGE_ID = "sha256:" + "c" * 64
 TAG = "v0.1.0-rc.1"
+WEB_SHA = "d" * 64
+SCHEMA_SHA = "e" * 64
+MIGRATION_LAST = 21
 
 
 class ReleaseImageSmokeTest(unittest.TestCase):
@@ -23,12 +27,18 @@ class ReleaseImageSmokeTest(unittest.TestCase):
                       "ghcr.io/another/image@" + DIGEST,
                       "ghcr.io/pboachie/zrotext@sha256:bad"):
             with self.subTest(image=image), self.assertRaises(smoke.DrillError):
-                smoke.validate_image_args(image, COMMIT, TAG)
+                smoke.validate_image_args(image, COMMIT, TAG,
+                                          WEB_SHA, SCHEMA_SHA, MIGRATION_LAST)
         with self.assertRaises(smoke.DrillError):
-            smoke.validate_image_args(IMAGE, "bad", TAG)
+            smoke.validate_image_args(IMAGE, "bad", TAG,
+                                      WEB_SHA, SCHEMA_SHA, MIGRATION_LAST)
         with self.assertRaises(smoke.DrillError):
-            smoke.validate_image_args(IMAGE, COMMIT, "main")
-        smoke.validate_image_args(IMAGE, COMMIT, TAG)
+            smoke.validate_image_args(IMAGE, COMMIT, "main",
+                                      WEB_SHA, SCHEMA_SHA, MIGRATION_LAST)
+        with self.assertRaisesRegex(smoke.DrillError, "source metadata"):
+            smoke.validate_image_args(IMAGE, COMMIT, TAG)
+        smoke.validate_image_args(IMAGE, COMMIT, TAG,
+                                  WEB_SHA, SCHEMA_SHA, MIGRATION_LAST)
 
     def test_rejects_image_with_wrong_revision_label(self):
         labels = {
@@ -40,13 +50,50 @@ class ReleaseImageSmokeTest(unittest.TestCase):
         with patch.object(smoke, "run", side_effect=[json.dumps([IMAGE]),
                                                     json.dumps(labels)]):
             with self.assertRaisesRegex(smoke.DrillError, "source labels"):
-                smoke.inspect_release_image(IMAGE, COMMIT, TAG)
+                smoke.inspect_release_image(IMAGE, COMMIT, TAG,
+                                            WEB_SHA, SCHEMA_SHA, MIGRATION_LAST)
 
     def test_rejects_staged_image_without_selected_digest(self):
         with patch.object(smoke, "run", return_value=json.dumps([
                 "ghcr.io/pboachie/zrotext@sha256:" + "e" * 64])):
             with self.assertRaisesRegex(smoke.DrillError, "selected digest"):
-                smoke.inspect_release_image(IMAGE, COMMIT, TAG)
+                smoke.inspect_release_image(IMAGE, COMMIT, TAG,
+                                            WEB_SHA, SCHEMA_SHA, MIGRATION_LAST)
+
+    def test_rejects_image_with_wrong_embedded_web_digest(self):
+        labels = {
+            "org.opencontainers.image.source": smoke.SOURCE,
+            "org.opencontainers.image.revision": COMMIT,
+            "org.opencontainers.image.version": TAG,
+            "org.opencontainers.image.licenses": "AGPL-3.0-only",
+            "org.zrotext.web.static-sha256": "f" * 64,
+            "org.zrotext.device-stream.schema-sha256": SCHEMA_SHA,
+            "org.zrotext.migration.last": str(MIGRATION_LAST),
+        }
+        with patch.object(smoke, "run", side_effect=[json.dumps([IMAGE]),
+                                                    json.dumps(labels)]):
+            with self.assertRaisesRegex(smoke.DrillError, "source labels"):
+                smoke.inspect_release_image(IMAGE, COMMIT, TAG,
+                                            WEB_SHA, SCHEMA_SHA, MIGRATION_LAST)
+
+    def test_running_version_must_match_tag_commit_and_web(self):
+        class Response(io.BytesIO):
+            status = 200
+
+        fields = {
+            "bundle_version": TAG, "source_commit": COMMIT,
+            "web_static_sha256": WEB_SHA, "device_stream_protocol": "v1",
+            "device_stream_schema_sha256": SCHEMA_SHA,
+            "migration_last": str(MIGRATION_LAST),
+        }
+        with patch.object(smoke, "urlopen", return_value=Response(json.dumps(fields).encode())):
+            smoke.verify_version_endpoint(8080, COMMIT, TAG,
+                                          WEB_SHA, SCHEMA_SHA, MIGRATION_LAST)
+        fields["web_static_sha256"] = "f" * 64
+        with patch.object(smoke, "urlopen", return_value=Response(json.dumps(fields).encode())):
+            with self.assertRaisesRegex(smoke.DrillError, "version endpoint differs"):
+                smoke.verify_version_endpoint(8080, COMMIT, TAG,
+                                              WEB_SHA, SCHEMA_SHA, MIGRATION_LAST)
 
     def test_rejects_truncated_container_id(self):
         compose = ["docker", "compose", "--project-name", "synthetic"]

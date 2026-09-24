@@ -18,6 +18,13 @@ Only the repository maintainer can publish release tags. GitHub rules protect ta
 
 Publishing a GitHub Release starts the server-image workflow for that exact tag. It rechecks the annotated tag and `main` ancestry, then builds `deploy/compose/Dockerfile` for `linux/amd64` and publishes to `ghcr.io/pboachie/zrotext`. Each workflow attempt gets a distinct `TAG-runID-attempt` registry tag; the uploaded `image-receipt.json` records the source tag, commit and **immutable image digest**. Promote or deploy only the `ghcr.io/pboachie/zrotext@sha256:...` reference from a reviewed receipt, never a mutable registry tag. The workflow also publishes provenance and SBOM attestations; it does not deploy the image.
 
+The image embeds the tag, full commit, web static digest, device-stream schema
+digest and final migration number. Its `/about/version` endpoint reports those
+nonsecret build values. After independently verifying the signed Android APK
+and server image, bind their receipts to one tag and environment with the
+[release bundle procedure](RELEASE-BUNDLE.md). This metadata does not authorize
+deployment.
+
 Before writing the receipt, the workflow pulls that exact digest and boots its
 migrator and API in a disposable Compose project. It checks source labels,
 container image IDs, migrations, health, readiness, disabled dispatch and a
@@ -79,9 +86,11 @@ record. Before inspecting candidate artifacts, prepare a release approval
 manifest outside the checkout and artifact root with the selected tag,
 certificate fingerprint, and approved Android `versionCode` and `versionName`.
 Obtain those values from the reviewed release decision and certificate custody
-record, never from `candidate.json`, `unsigned.json`, or the APK. The Android
-app version can differ from the source tag; approve the exact pair for this
-distribution. A manifest prepared from candidate artifacts provides no
+record, never from `candidate.json`, `unsigned.json`, or the APK. For one
+release bundle, the Android `versionName` must share the tag's
+`MAJOR.MINOR.PATCH` core; a suffix may describe the app build. Approve the
+exact tag and app version pair for this distribution. A manifest prepared from
+candidate artifacts provides no
 independent check. For example, the separately approved file has this shape:
 
 ```json

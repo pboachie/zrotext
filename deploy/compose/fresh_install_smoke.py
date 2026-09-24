@@ -36,9 +36,11 @@ SOURCE = "https://github.com/pboachie/zrotext"
 STAGED_IMAGE = "zrotext-release-smoke:local"
 
 
-def validate_image_args(image_ref, source_commit, source_tag):
+def validate_image_args(image_ref, source_commit, source_tag,
+                        web_sha=None, schema_sha=None, migration_last=None):
     if image_ref is None:
-        if source_commit is not None or source_tag is not None:
+        if any(value is not None for value in (
+                source_commit, source_tag, web_sha, schema_sha, migration_last)):
             raise DrillError("source identity requires --image-ref")
         return
     if not IMAGE_REF.fullmatch(image_ref):
@@ -47,9 +49,14 @@ def validate_image_args(image_ref, source_commit, source_tag):
         raise DrillError("release image needs a full source commit")
     if not source_tag or not TAG.fullmatch(source_tag):
         raise DrillError("release image needs a valid source tag")
+    if not web_sha or not re.fullmatch(r"[0-9a-f]{64}", web_sha) \
+            or not schema_sha or not re.fullmatch(r"[0-9a-f]{64}", schema_sha) \
+            or type(migration_last) is not int or migration_last < 1:
+        raise DrillError("release image needs web, protocol and migration source metadata")
 
 
-def inspect_release_image(image_ref, source_commit, source_tag):
+def inspect_release_image(image_ref, source_commit, source_tag,
+                          web_sha, schema_sha, migration_last):
     raw = run(["docker", "image", "inspect", STAGED_IMAGE, "--format",
                "{{json .RepoDigests}}"], "staged image digests")
     try:
@@ -69,6 +76,9 @@ def inspect_release_image(image_ref, source_commit, source_tag):
         labels.get("org.opencontainers.image.revision") != source_commit,
         labels.get("org.opencontainers.image.version") != source_tag,
         labels.get("org.opencontainers.image.licenses") != "AGPL-3.0-only",
+        labels.get("org.zrotext.web.static-sha256") != web_sha,
+        labels.get("org.zrotext.device-stream.schema-sha256") != schema_sha,
+        labels.get("org.zrotext.migration.last") != str(migration_last),
     )):
         raise DrillError("release image source labels differ from selected release")
     image_id = run(["docker", "image", "inspect", STAGED_IMAGE, "--format",
@@ -136,13 +146,37 @@ def wait_for_endpoint(port, path, expected):
     raise DrillError(f"{path} did not report {expected}")
 
 
+def verify_version_endpoint(port, source_commit, source_tag,
+                            web_sha, schema_sha, migration_last):
+    try:
+        with urlopen(f"http://127.0.0.1:{port}/about/version", timeout=3) as response:
+            actual = json.load(response) if response.status == 200 else None
+    except (OSError, URLError, ValueError) as exc:
+        raise DrillError("release version endpoint unavailable") from exc
+    expected = {
+        "bundle_version": source_tag,
+        "source_commit": source_commit,
+        "web_static_sha256": web_sha,
+        "device_stream_protocol": "v1",
+        "device_stream_schema_sha256": schema_sha,
+        "migration_last": str(migration_last),
+    }
+    if actual != expected:
+        raise DrillError("release version endpoint differs from selected source")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image-ref", help="immutable released image digest")
     parser.add_argument("--source-commit", help="expected full source commit")
     parser.add_argument("--source-tag", help="expected version tag")
+    parser.add_argument("--web-static-sha256", help="expected embedded web digest")
+    parser.add_argument("--device-stream-schema-sha256", help="expected device protocol schema digest")
+    parser.add_argument("--migration-last", type=int, help="expected last bundled migration")
     args = parser.parse_args()
-    validate_image_args(args.image_ref, args.source_commit, args.source_tag)
+    validate_image_args(args.image_ref, args.source_commit, args.source_tag,
+                        args.web_static_sha256, args.device_stream_schema_sha256,
+                        args.migration_last)
     # Compose gives shell variables precedence over --env-file and imports
     # bare environment keys from the shell. Do not pass live account, SMTP,
     # or MFA settings into this disposable stack.
@@ -193,7 +227,9 @@ def main():
     try:
         if args.image_ref is not None:
             image_id = inspect_release_image(args.image_ref, args.source_commit,
-                                             args.source_tag)
+                                             args.source_tag, args.web_static_sha256,
+                                             args.device_stream_schema_sha256,
+                                             args.migration_last)
             override = directory / "release-image.yaml"
             override.write_text(json.dumps({"services": {
                 "app": {"image": STAGED_IMAGE},
@@ -208,6 +244,11 @@ def main():
             verify_running_image(compose, image_id)
         wait_for_endpoint(port, "/healthz", "live")
         wait_for_endpoint(port, "/readyz", "ready")
+        if image_id:
+            verify_version_endpoint(port, args.source_commit, args.source_tag,
+                                    args.web_static_sha256,
+                                    args.device_stream_schema_sha256,
+                                    args.migration_last)
         run([*compose, "exec", "-T", "app", "sh", "-ec",
              'test "$DISPATCH_ENABLED" = false'],
             "dispatch-disabled check")
