@@ -44,8 +44,8 @@ use zrotext_server::{
     device_socket::{self, DeviceSocketState},
     enrollment::{self, EnrollmentHasher},
     http_auth::{
-        self, AuthHttpState, DisabledVerificationDispatcher, SmtpVerificationDispatcher,
-        VerificationDispatcher,
+        self, AuthHttpState, DisabledVerificationDispatcher, RegistrationPolicy,
+        SmtpVerificationDispatcher, VerificationDispatcher,
     },
     http_enrollment::{self, EnrollmentHttpState},
     http_messages::{self, MessagesHttpState},
@@ -620,6 +620,14 @@ fn account_routes(
         return Ok(None);
     }
     let origin = origin.ok_or("AUTH_ORIGIN is required when account routes are enabled")?;
+    let registration_mode = smtp_env_option("REGISTRATION_MODE")?;
+    let registration_emails = smtp_env_option("REGISTRATION_ALLOWED_EMAILS")?;
+    let registration_domains = smtp_env_option("REGISTRATION_ALLOWED_DOMAINS")?;
+    let registration_policy = RegistrationPolicy::parse(
+        registration_mode.as_deref(),
+        registration_emails.as_deref(),
+        registration_domains.as_deref(),
+    )?;
     let auth_pepper = auth_pepper.ok_or("AUTH_TOKEN_PEPPER_B64 is required for account routes")?;
     let enrollment_pepper =
         enrollment_pepper.ok_or("ENROLLMENT_TOKEN_PEPPER_B64 is required for enrollment routes")?;
@@ -669,7 +677,8 @@ fn account_routes(
         auth_hasher.clone(),
         origin.clone(),
         dispatcher,
-    )?;
+    )?
+    .with_registration_policy(registration_policy);
     if let Some(encoded) = mfa_key.filter(|_| !config.mfa_recovery_only) {
         let key = STANDARD
             .decode(encoded)

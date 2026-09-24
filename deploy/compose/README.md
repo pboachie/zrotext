@@ -40,6 +40,19 @@ production promotion; follow the release verification steps in
 Set `APP_PORT` in `.env` if port 8080 is occupied for the normal local setup;
 the documented health endpoints then use that port.
 
+## Owner registration
+
+Compose passes `REGISTRATION_MODE` and its allowlists to both API services.
+The default is `closed` even if SMTP is configured. To create the first owner,
+put `REGISTRATION_MODE=allowlist` and
+`REGISTRATION_ALLOWED_EMAILS=your-controlled-address@example.test` in your
+private `.env`, configure account routes and SMTP, recreate every API service,
+register and verify that address, then clear the allowlist, set
+`REGISTRATION_MODE=closed`, and recreate the services again. Existing owners
+retain access. See
+[Self-hosting](../../docs/SELF-HOSTING.md#owner-registration) for exact matching,
+domain-wide access, and the intentionally public `open` mode.
+
 The `migrate` service applies `migrations/001_*.sql`, `002_*.sql`, and later
 consecutive numbered SQL files before the API starts. Migration files are trusted
 operator source code, not sandboxed input. The runner rejects explicit transaction
