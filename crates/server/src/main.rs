@@ -866,7 +866,7 @@ async fn device_test(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use p256::elliptic_curve::rand_core::{OsRng, RngCore};
+    use rand::{Rng, rng};
     use uuid::Uuid;
 
     #[test]
@@ -969,7 +969,7 @@ mod tests {
             .await
             .unwrap();
         let mut key = vec![0u8; 32];
-        OsRng.fill_bytes(&mut key);
+        rng().fill_bytes(&mut key);
         let cipher = MfaCipher::new(key).unwrap();
         assert!(
             ensure_mfa_startup(&database_url, None, false)

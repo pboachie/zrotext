@@ -17,7 +17,7 @@ use axum::{
     routing::{get, post},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use p256::elliptic_curve::rand_core::{OsRng, RngCore};
+use rand::{Rng, rng};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
 use tokio_postgres::{Client, error::SqlState};
@@ -651,7 +651,7 @@ async fn create(
         .to_string();
     let endpoint_id = Uuid::new_v4();
     let mut secret = Zeroizing::new([0_u8; 32]);
-    OsRng.fill_bytes(secret.as_mut());
+    rng().fill_bytes(secret.as_mut());
     let ciphertext = vault
         .seal(principal.tenant.account_id(), endpoint_id, secret.as_ref())
         .map_err(|_| EndpointError::Unavailable)?;
@@ -794,7 +794,7 @@ async fn rotate_endpoint(
         Err(response) => return response,
     };
     let mut secret = Zeroizing::new([0_u8; 32]);
-    OsRng.fill_bytes(secret.as_mut());
+    rng().fill_bytes(secret.as_mut());
     let ciphertext =
         match state
             .vault

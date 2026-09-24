@@ -1030,7 +1030,8 @@ mod tests {
     use crate::enrollment::{EnrollmentError, device_challenge_bytes};
     use futures_util::{SinkExt, StreamExt};
     use p256::ecdsa::{Signature, SigningKey, signature::Signer};
-    use p256::elliptic_curve::rand_core::OsRng;
+    use p256::elliptic_curve::Generate;
+    use rand::rng;
     use sha2::{Digest, Sha256};
     use zrotext_delivery_store::NewMessage;
 
@@ -1346,8 +1347,8 @@ mod tests {
         let message_id = Uuid::new_v4();
         let recipient = "+15555550101";
         let recipient_digest: [u8; 32] = Sha256::digest(recipient.as_bytes()).into();
-        let signing = SigningKey::random(&mut OsRng);
-        let sec1 = signing.verifying_key().to_encoded_point(false);
+        let signing = SigningKey::generate_from_rng(&mut rng());
+        let sec1 = signing.verifying_key().to_sec1_point(false);
         let fingerprint: [u8; 32] = Sha256::digest(sec1.as_bytes()).into();
         client
             .batch_execute("INSERT INTO sites(site_id) VALUES('site-a'),('site-b'); UPDATE deployment_authority SET dispatch_enabled=TRUE")
@@ -1578,8 +1579,8 @@ mod tests {
         }
         let account_id = Uuid::new_v4();
         let device_id = Uuid::new_v4();
-        let signing = SigningKey::random(&mut OsRng);
-        let sec1 = signing.verifying_key().to_encoded_point(false);
+        let signing = SigningKey::generate_from_rng(&mut rng());
+        let sec1 = signing.verifying_key().to_sec1_point(false);
         let fingerprint: [u8; 32] = Sha256::digest(sec1.as_bytes()).into();
         client
             .execute("INSERT INTO sites(site_id) VALUES('test-site')", &[])
@@ -1621,7 +1622,7 @@ mod tests {
         let bad = enrollment::issue_device_challenge(&client, &hasher, device_id)
             .await
             .unwrap();
-        let wrong_signing = SigningKey::random(&mut OsRng);
+        let wrong_signing = SigningKey::generate_from_rng(&mut rng());
         let wrong_signature: Signature = wrong_signing.sign(&device_challenge_bytes(&bad));
         assert!(matches!(
             enrollment::authenticate_device_challenge(

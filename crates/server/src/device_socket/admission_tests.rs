@@ -10,7 +10,8 @@ use super::*;
 use crate::enrollment::{DeviceChallenge, device_challenge_bytes};
 use futures_util::{SinkExt, StreamExt};
 use p256::ecdsa::{Signature, SigningKey, signature::Signer};
-use p256::elliptic_curve::rand_core::OsRng;
+use p256::elliptic_curve::Generate;
+use rand::rng;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::net::SocketAddr;
@@ -193,8 +194,8 @@ async fn saturated_handshake_budget_does_not_lock_out_enrolled_device() {
     }
     let account_id = Uuid::new_v4();
     let device_id = Uuid::new_v4();
-    let signing = SigningKey::random(&mut OsRng);
-    let public_key = signing.verifying_key().to_encoded_point(false);
+    let signing = SigningKey::generate_from_rng(&mut rng());
+    let public_key = signing.verifying_key().to_sec1_point(false);
     let fingerprint: [u8; 32] = Sha256::digest(public_key.as_bytes()).into();
     db.execute("INSERT INTO sites(site_id) VALUES('admission-test')", &[])
         .await

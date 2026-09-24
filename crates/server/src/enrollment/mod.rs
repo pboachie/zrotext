@@ -142,7 +142,7 @@ fn parse_public_key(spki_der: &[u8]) -> Result<(VerifyingKey, Vec<u8>, [u8; 32])
     // Android's PublicKey.getEncoded() is X.509 SubjectPublicKeyInfo DER.
     let key =
         VerifyingKey::from_public_key_der(spki_der).map_err(|_| EnrollmentError::InvalidInput)?;
-    let sec1 = key.to_encoded_point(false).as_bytes().to_vec();
+    let sec1 = key.to_sec1_point(false).as_bytes().to_vec();
     if sec1.len() != 65 {
         return Err(EnrollmentError::InvalidInput);
     }
@@ -725,12 +725,13 @@ mod tests {
     use crate::auth::{TokenHasher, authenticate_session, login, register, verify_email};
     use crate::billing::{self, SubscriptionSnapshot};
     use p256::ecdsa::{SigningKey, signature::Signer};
-    use p256::elliptic_curve::rand_core::OsRng;
+    use p256::elliptic_curve::Generate;
     use p256::pkcs8::EncodePublicKey;
+    use rand::rng;
 
     #[test]
     fn p256_android_spki_and_der_signature_round_trip() {
-        let signing_key = SigningKey::random(&mut OsRng);
+        let signing_key = SigningKey::generate_from_rng(&mut rng());
         let spki = signing_key.verifying_key().to_public_key_der().unwrap();
         let (_, sec1, fingerprint) = parse_public_key(spki.as_bytes()).unwrap();
         let bytes = enrollment_challenge_bytes(
@@ -840,7 +841,7 @@ mod tests {
         let pb = authenticate_session(&client, &auth_hasher, &sb.token)
             .await
             .unwrap();
-        let signing = SigningKey::random(&mut OsRng);
+        let signing = SigningKey::generate_from_rng(&mut rng());
         let spki = signing.verifying_key().to_public_key_der().unwrap();
 
         let expired = create_pairing(&client, &hasher, &pa, "Expired")
@@ -872,7 +873,7 @@ mod tests {
             claim_pairing(&mut client, &hasher, bad.id, &bad.token, spki.as_bytes()).await,
             Err(EnrollmentError::Unavailable)
         ));
-        let other_signing = SigningKey::random(&mut OsRng);
+        let other_signing = SigningKey::generate_from_rng(&mut rng());
         let (_, _, bad_fingerprint) = parse_public_key(spki.as_bytes()).unwrap();
         let bad_payload = enrollment_challenge_bytes(
             a.account_id,
@@ -1168,7 +1169,7 @@ mod tests {
         hasher: &EnrollmentHasher,
         principal: &SessionPrincipal,
     ) -> (Uuid, String, String, SigningKey) {
-        let signing = SigningKey::random(&mut OsRng);
+        let signing = SigningKey::generate_from_rng(&mut rng());
         let spki = signing.verifying_key().to_public_key_der().unwrap();
         let ticket = create_pairing(db, hasher, principal, "Virtual phone")
             .await
