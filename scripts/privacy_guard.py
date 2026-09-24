@@ -22,7 +22,8 @@ SECRET_PATTERNS = {
     "machine network folder": re.compile(r"(?<!\\)\\{2,}[A-Za-z0-9][A-Za-z0-9_.-]*\\+[^\\\s]+"),
 }
 PHONE = re.compile(r"(?<![A-Za-z0-9])(?:\+1[-. ]?)?([2-9]\d{2})[-. ]?([2-9]\d{2})[-. ]?(\d{4})(?![A-Za-z0-9])")
-ASSIGNMENT = re.compile(r'''(?:^|[\s{,;])(?:export\s+|\$env:)?["']?([A-Z][A-Z0-9_]*)["']?\s*[:=]\s*("[^"\n]*"|'[^'\n]*'|[^\s,;}]*)''')
+ASSIGNMENT_VALUE = r'''"[^"\n]*"|'[^'\n]*'|(?:\$\{\{[^\r\n]*?\}\}|\$\{[^}\r\n]*\}|<[^>\r\n]*>)[^\s,;}]*|[^\s,;}]*'''
+ASSIGNMENT = re.compile(r'''(?:^|[\s{,;])(?:export\s+|\$env:)?["']?([A-Z][A-Z0-9_]*)["']?\s*[:=]\s*(''' + ASSIGNMENT_VALUE + ")")
 CONFIG_ASSIGNMENT = re.compile(ASSIGNMENT.pattern, re.IGNORECASE)
 SENSITIVE_NAME = re.compile(r"(?:^|_)(?:PASSWORD|PASS|SECRET|TOKEN|API_KEY|ACCESS_KEY|PRIVATE_KEY|PEPPER)(?:_|$)")
 URI_PASSWORD = re.compile(r"\b[a-z][a-z0-9+.-]*://[^\s/:]+:([^\s@]+)@", re.I)
@@ -55,8 +56,17 @@ def diagnostic_text(code: str) -> str:
     return DIAGNOSTIC_MESSAGES.get(code, "unclassified privacy violation")
 
 
-def placeholder(value: str) -> bool:
-    return not value or value.startswith(("$", "<", "%", "replace-", "your-", "example", "placeholder", "changeme"))
+def placeholder(value: str, *, source: bool = False) -> bool:
+    if value in {"", "example", "placeholder", "changeme", "your-password", "your-token", "your-api-key",
+                 "replace-with-a-secret", "replace-with-a-long-random-local-secret"}:
+        return True
+    patterns = (
+        r"<[^<>\r\n]+>",
+        r"%[A-Z_][A-Z0-9_]*%",
+        r"\$\{[A-Z_][A-Z0-9_]*(?::-|:\?[^{}\r\n]*)?\}",
+        r"\$\{\{\s*(?:(?:secrets|vars|env)\.[A-Z_][A-Z0-9_]*|github\.token)\s*\}\}",
+    )
+    return any(re.fullmatch(pattern, value) for pattern in patterns) or bool(source and re.fullmatch(r"\$[A-Z_][A-Z0-9_]*", value))
 
 
 def literal_value(raw: str) -> str | None:
@@ -65,6 +75,8 @@ def literal_value(raw: str) -> str | None:
         return ""
     if raw[0] in "\"'":
         return raw[1:].split(raw[0], 1)[0]
+    if raw.startswith(("${", "<")):
+        return raw
     value = raw.split()[0].rstrip(",;")
     return value
 
@@ -91,9 +103,9 @@ def scan_line(line: str, *, infrastructure: bool = False, hygiene: bool = True, 
         extra_name = assignment[1].startswith("EXTRA_") and value == assignment[1][6:].lower()
         reference = source and (not assignment[2].lstrip().startswith(('"', "'")) or env_name or extra_name)
         synthetic = fixture and value in {"store-password", "key-password", "future-secret"}
-        if value is not None and not placeholder(value) and not reference and not synthetic:
+        if value is not None and not placeholder(value, source=source) and not reference and not synthetic:
             problems.append("embedded credential assignment")
-    if any(not placeholder(match[1]) and not (source and source_url_reference(match[1], line))
+    if any(not placeholder(match[1], source=source) and not (source and source_url_reference(match[1], line))
            for match in URI_PASSWORD.finditer(line)):
         problems.append("credential-bearing URL")
     if any(not looks_synthetic(match) for match in PHONE.finditer(line)):

@@ -70,6 +70,23 @@ class PatternTests(unittest.TestCase):
             self.assertTrue(scan_blob(filename, payload.encode()))
         self.assertEqual(scan_blob("src/field_names.py", b'password = "password"\n'), [])
 
+    def test_placeholder_prefixes_do_not_hide_values(self):
+        for value in ("$syntheticSecret123", "exampleSecret123", "%syntheticSecret123",
+                      "<syntheticSecret123", "placeholderSynthetic123", "replace-with-secret123",
+                      "${TOKEN:-syntheticSecret123}", "${TOKEN}extra"):
+            payload = "smtp_password=" + value + "\n"
+            self.assertTrue(scan_blob("config.txt", payload.encode()), "Non-placeholder prefix was accepted")
+
+    def test_complete_interpolation_and_placeholder_tokens(self):
+        for value in ("${SMTP_PASSWORD}", "${SMTP_PASSWORD:-}", "${SMTP_PASSWORD:?set SMTP_PASSWORD}",
+                      "%SMTP_PASSWORD%", "<secret-store value>", "${{ secrets.GITHUB_TOKEN }}",
+                      "${{ github.token }}", "replace-with-a-long-random-local-secret"):
+            payload = "smtp_password=" + value + "\n"
+            self.assertEqual(scan_blob("config.txt", payload.encode()), [])
+        direct = "SMTP_PASSWORD" + ' = "$SMTP_PASSWORD"\n'
+        self.assertEqual(scan_blob("src/reference.py", direct.encode()), [])
+        self.assertTrue(scan_blob("config.txt", direct.encode()))
+
     def test_private_infrastructure_and_fixtures(self):
         address = ".".join(("192", "168", "87", "19"))
         value = ("host=" + address + "\n").encode()
