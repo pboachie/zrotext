@@ -918,14 +918,17 @@ mod tests {
         ] {
             first.batch_execute(sql).await.unwrap();
         }
+        let first_password = Uuid::new_v4().to_string();
+        let second_password = Uuid::new_v4().to_string();
+        let third_password = Uuid::new_v4().to_string();
         let (a, b) = tokio::join!(
-            bootstrap_owner(&mut first, "first@example.test", "first test password"),
-            bootstrap_owner(&mut second, "second@example.test", "second test password"),
+            bootstrap_owner(&mut first, "first@example.test", &first_password),
+            bootstrap_owner(&mut second, "second@example.test", &second_password),
         );
         let (a, b) = (a.unwrap(), b.unwrap());
         assert_ne!(a, b);
         assert!(
-            !bootstrap_owner(&mut first, "third@example.test", "third test password")
+            !bootstrap_owner(&mut first, "third@example.test", &third_password)
                 .await
                 .unwrap()
         );
@@ -953,9 +956,9 @@ mod tests {
                 .get::<_, bool>(0)
         );
         let (email, password) = if a {
-            ("first@example.test", "first test password")
+            ("first@example.test", first_password.as_str())
         } else {
-            ("second@example.test", "second test password")
+            ("second@example.test", second_password.as_str())
         };
         let hasher = TokenHasher::new(crate::test_keys::key(37)).unwrap();
         assert!(login(&first, &hasher, email, password).await.is_ok());
