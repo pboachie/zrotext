@@ -4,7 +4,9 @@ from unittest.mock import patch
 
 from verify_release_image import (VerificationError, checked_receipt, ensure_local_docker,
                                   git_output,
-                                  verify_attestation, verify_image, verify_tag)
+                                  verify_attestation, verify_image,
+                                  verify_sbom_attestation, verify_tag)
+from verify_published_sbom import SbomError, spdx_predicate
 from write_image_receipt import image_receipt
 
 
@@ -12,6 +14,10 @@ TAG = "v0.1.0-rc.1"
 COMMIT = "a" * 40
 DIGEST = "sha256:" + "b" * 64
 RECEIPT = image_receipt(TAG, COMMIT, DIGEST, 123, 1)
+SPDX = {
+    "spdxVersion": "SPDX-2.3", "SPDXID": "SPDXRef-DOCUMENT",
+    "packages": [{"name": "debian-base"}],
+}
 
 
 class VerifyReleaseImageTest(unittest.TestCase):
@@ -83,6 +89,50 @@ class VerifyReleaseImageTest(unittest.TestCase):
                                                            json.dumps(labels)]):
             with self.assertRaisesRegex(VerificationError, "labels differ"):
                 verify_image(RECEIPT)
+
+    def test_verified_sbom_must_match_published_digest_and_contents(self):
+        statement = [{"verificationResult": {"statement": {
+            "predicateType": spdx_predicate(SPDX),
+            "subject": [{"name": RECEIPT["image"],
+                         "digest": {"sha256": DIGEST[7:]}}],
+            "predicate": SPDX,
+        }}}]
+        with patch("verify_release_image.published_sbom", return_value=SPDX) as lookup, \
+             patch("verify_release_image.gh_output", return_value=json.dumps(statement)) as command:
+            verify_sbom_attestation(RECEIPT)
+        lookup.assert_called_once_with(RECEIPT["image_ref"])
+        arguments = command.call_args.args[0]
+        self.assertIn("--predicate-type", arguments)
+        self.assertIn("https://spdx.dev/Document/v2.3", arguments)
+        self.assertIn("--source-digest", arguments)
+        self.assertIn(COMMIT, arguments)
+        statement[0]["verificationResult"]["statement"]["subject"][0]["digest"]["sha256"] = "c" * 64
+        with patch("verify_release_image.published_sbom", return_value=SPDX), \
+             patch("verify_release_image.gh_output", return_value=json.dumps(statement)):
+            with self.assertRaisesRegex(VerificationError, "published image digest"):
+                verify_sbom_attestation(RECEIPT)
+        statement[0]["verificationResult"]["statement"]["subject"][0]["digest"]["sha256"] = DIGEST[7:]
+        statement[0]["verificationResult"]["statement"]["predicate"] = {**SPDX, "packages": []}
+        with patch("verify_release_image.published_sbom", return_value=SPDX), \
+             patch("verify_release_image.gh_output", return_value=json.dumps(statement)):
+            with self.assertRaisesRegex(VerificationError, "published image digest"):
+                verify_sbom_attestation(RECEIPT)
+        statement[0]["verificationResult"]["statement"]["predicate"] = SPDX
+        statement[0]["verificationResult"]["statement"]["predicateType"] = \
+            "https://spdx.dev/Document/v2.2"
+        with patch("verify_release_image.published_sbom", return_value=SPDX), \
+             patch("verify_release_image.gh_output", return_value=json.dumps(statement)):
+            with self.assertRaisesRegex(VerificationError, "published image digest"):
+                verify_sbom_attestation(RECEIPT)
+        legacy = {**SPDX, "spdxVersion": "SPDX-2.2"}
+        statement[0]["verificationResult"]["statement"]["predicate"] = legacy
+        with patch("verify_release_image.published_sbom", return_value=legacy), \
+             patch("verify_release_image.gh_output", return_value=json.dumps(statement)) as command:
+            verify_sbom_attestation(RECEIPT)
+        self.assertIn("https://spdx.dev/Document/v2.2", command.call_args.args[0])
+        with patch("verify_release_image.published_sbom", side_effect=SbomError("missing")):
+            with self.assertRaisesRegex(VerificationError, "no verified SPDX SBOM"):
+                verify_sbom_attestation(RECEIPT)
 
     def test_remote_docker_context_is_rejected_before_pull(self):
         with patch.dict("os.environ", {"DOCKER_HOST": "ssh://production.example"}):

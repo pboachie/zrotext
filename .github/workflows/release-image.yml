@@ -88,12 +88,28 @@ jobs:
             --image-ref "ghcr.io/pboachie/zrotext@${IMAGE_DIGEST}" \
             --source-commit "$GITHUB_SHA" \
             --source-tag "$GITHUB_REF_NAME"
+      - name: Require SPDX SBOM from the exact published image
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          python3 scripts/verify_published_sbom.py \
+            --image-ref "ghcr.io/pboachie/zrotext@${IMAGE_DIGEST}" \
+            --output "$RUNNER_TEMP/server-sbom.spdx.json"
       - name: Attest the published image digest
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-name: ghcr.io/pboachie/zrotext
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
+      - name: Attest the published image SPDX SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-name: ghcr.io/pboachie/zrotext
+          subject-digest: ${{ steps.build.outputs.digest }}
+          sbom-path: ${{ runner.temp }}/server-sbom.spdx.json
+          push-to-registry: true
+          # GitHub storage records are limited to organization-owned repositories.
+          create-storage-record: false
       - name: Record immutable release reference
         env:
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
