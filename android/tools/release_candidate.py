@@ -22,6 +22,9 @@ SIGNING_ALIAS = "zrotext-release"
 ARTIFACT_ROOT = Path(tempfile.gettempdir()) / "zrotext-android-release"
 STORE_PASSWORD = "ZROTEXT_ANDROID_KEYSTORE_PASSWORD"
 KEY_PASSWORD = "ZROTEXT_ANDROID_KEY_PASSWORD"
+MAX_APK_BYTES = 512 * 1024 * 1024
+MAX_RECEIPT_BYTES = 16 * 1024
+MAX_CHECKSUM_BYTES = 256
 
 
 def unsigned_build_env(environment: dict[str, str] | None = None) -> dict[str, str]:
@@ -81,6 +84,14 @@ def external_artifact_path(path: Path, description: str) -> Path:
     if resolved.is_relative_to(ROOT):
         raise ValueError(f"{description} must be outside the source checkout")
     return resolved
+
+
+def checked_artifact_file(path: Path, max_bytes: int) -> Path:
+    if path.is_symlink() or not path.is_file() or path.resolve().parent != path.parent.resolve():
+        raise ValueError(f"{path.name} must be a regular file without a symlink")
+    if path.stat().st_size > max_bytes:
+        raise ValueError(f"{path.name} exceeds the review size limit")
+    return path
 
 
 def verify_source_asset(apk: Path, commit: str) -> None:
@@ -146,13 +157,17 @@ def build_unsigned(commit: str, out: Path) -> None:
     print(f"Unsigned APK SHA-256: {digest}")
 
 
-def checked_unsigned(build_dir: Path, commit: str) -> tuple[Path, str, dict[str, str | int]]:
-    receipt = json.loads((build_dir / "unsigned.json").read_text(encoding="utf-8"))
-    unsigned = build_dir / "unsigned.apk"
+def checked_unsigned(commit: str) -> tuple[Path, str, dict[str, str | int]]:
+    build_dir = ARTIFACT_ROOT / "unsigned"
+    if ARTIFACT_ROOT.is_symlink() or build_dir.is_symlink() or not build_dir.is_dir():
+        raise ValueError("Unsigned artifact directory must be a regular directory")
+    receipt_path = checked_artifact_file(build_dir / "unsigned.json", MAX_RECEIPT_BYTES)
+    unsigned = checked_artifact_file(build_dir / "unsigned.apk", MAX_APK_BYTES)
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     digest = sha256(unsigned)
     if receipt.get("source_commit") != commit or receipt.get("unsigned_apk") != unsigned.name or (
         receipt.get("unsigned_apk_sha256") != digest
-    ):
+    ) or receipt.get("embedded_asset") != ASSET:
         raise ValueError("Unsigned APK receipt does not match the clean checkout and artifact")
     verify_source_asset(unsigned, commit)
     identity = apk_identity(unsigned)
@@ -161,7 +176,26 @@ def checked_unsigned(build_dir: Path, commit: str) -> tuple[Path, str, dict[str,
     return unsigned, digest, identity
 
 
-def sign_candidate(commit: str, build_dir: Path, keystore_path: Path,
+def apk_entry_digests(apk: Path) -> dict[str, str]:
+    contents = {}
+    with zipfile.ZipFile(apk) as archive:
+        for entry in archive.infolist():
+            if entry.filename in contents:
+                raise ValueError("APK contains duplicate ZIP entry names")
+            digest = hashlib.sha256()
+            with archive.open(entry) as source:
+                for block in iter(lambda: source.read(1024 * 1024), b""):
+                    digest.update(block)
+            contents[entry.filename] = digest.hexdigest()
+    return contents
+
+
+def verify_apk_contents(unsigned: Path, signed: Path) -> None:
+    if apk_entry_digests(unsigned) != apk_entry_digests(signed):
+        raise ValueError("Signed APK entries differ from the unsigned build")
+
+
+def sign_candidate(commit: str, keystore_path: Path,
                    alias: str, out: Path) -> None:
     if not keystore_path.is_file():
         raise ValueError("Keystore file does not exist")
@@ -172,7 +206,7 @@ def sign_candidate(commit: str, build_dir: Path, keystore_path: Path,
         raise ValueError(f"{STORE_PASSWORD} and {KEY_PASSWORD} are required in the environment")
     if out.exists():
         raise ValueError("Output directory already exists; use a new directory")
-    unsigned, unsigned_hash, identity = checked_unsigned(build_dir, commit)
+    unsigned, unsigned_hash, identity = checked_unsigned(commit)
     out.mkdir(parents=True)
     apk = out / f"zrotext-android-{commit[:12]}-candidate.apk"
     aligned = out / "aligned-unsigned.apk"
@@ -191,6 +225,7 @@ def sign_candidate(commit: str, build_dir: Path, keystore_path: Path,
                      "--min-sdk-version", "28", apk, capture=True, env=no_secrets)
         run(zipalign, "-c", "4", apk, capture=True, env=no_secrets)
         verify_source_asset(apk, commit)
+        verify_apk_contents(unsigned, apk)
         if apk_identity(apk) != identity:
             raise ValueError("Signed APK identity differs from the unsigned build")
         certificates = set(re.findall(r"certificate SHA-256 digest: ([0-9a-fA-F]{64})", verify))
@@ -222,25 +257,94 @@ def sign_candidate(commit: str, build_dir: Path, keystore_path: Path,
         aligned.unlink(missing_ok=True)
 
 
+def verify_candidate(commit: str, expected_certificate: str) -> None:
+    """Independently verify transferred artifacts without signing credentials."""
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ValueError("A full expected source commit is required")
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", expected_certificate):
+        raise ValueError("An independently approved certificate SHA-256 is required")
+    expected_certificate = expected_certificate.lower()
+    candidate_dir = ARTIFACT_ROOT / "candidate"
+    if (ARTIFACT_ROOT.is_symlink() or candidate_dir.is_symlink()
+            or not candidate_dir.is_dir()):
+        raise ValueError("Artifact directories must not be symlinks")
+    external_artifact_path(ARTIFACT_ROOT, "Artifact root")
+    unsigned, unsigned_hash, identity = checked_unsigned(commit)
+    candidates = list(candidate_dir.glob("zrotext-android-*-candidate.apk"))
+    expected_name = f"zrotext-android-{commit[:12]}-candidate.apk"
+    if len(candidates) != 1 or candidates[0].name != expected_name:
+        raise ValueError("Expected exactly one signed APK for the source commit")
+    apk = checked_artifact_file(candidates[0], MAX_APK_BYTES)
+    receipt_path = checked_artifact_file(candidate_dir / "candidate.json", MAX_RECEIPT_BYTES)
+    checksums = checked_artifact_file(candidate_dir / "SHA256SUMS", MAX_CHECKSUM_BYTES)
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    artifact_hash = sha256(apk)
+    expected = {
+        "source_commit": commit,
+        "embedded_asset": ASSET,
+        "unsigned_apk_sha256": unsigned_hash,
+        "apk": apk.name,
+        "apk_sha256": artifact_hash,
+        "signing_certificate_sha256": expected_certificate,
+        "apk_identity": identity,
+        "min_sdk_verified": 28,
+    }
+    if receipt != expected:
+        raise ValueError("Signed APK receipt differs from artifacts or approved certificate")
+    if checksums.read_text(encoding="ascii") != (
+        f"{artifact_hash}  {apk.name}\n"
+    ):
+        raise ValueError("Signed APK checksum file differs from the artifact")
+    verify_source_asset(apk, commit)
+    verify_apk_contents(unsigned, apk)
+    if apk_identity(apk) != identity:
+        raise ValueError("Signed APK identity differs from the unsigned build")
+    apksigner = sdk_tool("apksigner")
+    zipalign = sdk_tool("zipalign")
+    output = run(apksigner, "verify", "--verbose", "--print-certs",
+                 "--min-sdk-version", "28", apk, capture=True,
+                 env=unsigned_build_env())
+    for scheme in ("v2", "v3"):
+        if not re.search(rf"^Verified using {scheme} scheme .*: true$",
+                         output, re.MULTILINE):
+            raise ValueError(f"Signed APK did not verify with {scheme}")
+    certificates = set(re.findall(r"certificate SHA-256 digest: ([0-9a-fA-F]{64})", output))
+    if len(certificates) != 1 or certificates.pop().lower() != expected_certificate:
+        raise ValueError("APK signing certificate differs from approved fingerprint")
+    run(zipalign, "-c", "4", apk, capture=True, env=unsigned_build_env())
+    print(f"Verified signed candidate: {apk}")
+    print(f"Source commit: {commit}")
+    print(f"Unsigned APK SHA-256: {unsigned_hash}")
+    print(f"Signed APK SHA-256: {artifact_hash}")
+    print(f"Signing certificate SHA-256: {expected_certificate}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="phase", required=True)
     build = commands.add_parser("build", help="Lint, test and assemble without signing secrets")
     sign = commands.add_parser("sign", help="Sign and verify a prior unsigned build")
+    verify = commands.add_parser("verify", help="Independently check transferred unsigned and signed APKs")
+    verify.add_argument("--source-commit", required=True)
+    verify.add_argument("--certificate-sha256", required=True,
+                        help="approved fingerprint obtained independently of candidate.json")
     args = parser.parse_args()
+    if args.phase == "verify":
+        verify_candidate(args.source_commit, args.certificate_sha256)
+        return
     commit = source_commit(os.environ.get("GITHUB_SHA"))
     if args.phase == "build":
         out = external_artifact_path(ARTIFACT_ROOT / "unsigned", "Output directory")
         build_unsigned(commit, out)
     else:
-        build_dir = external_artifact_path(ARTIFACT_ROOT / "unsigned", "Unsigned build directory")
         out = external_artifact_path(ARTIFACT_ROOT / "candidate", "Output directory")
-        sign_candidate(commit, build_dir, ARTIFACT_ROOT / "keystore.p12", SIGNING_ALIAS, out)
+        sign_candidate(commit, ARTIFACT_ROOT / "keystore.p12", SIGNING_ALIAS, out)
 
 
 if __name__ == "__main__":
     try:
         main()
-    except (subprocess.CalledProcessError, ValueError) as error:
+    except (subprocess.CalledProcessError, ValueError, OSError, UnicodeError,
+            zipfile.BadZipFile) as error:
         print(f"Release candidate failed: {error}", file=sys.stderr)
         sys.exit(1)
