@@ -62,7 +62,7 @@ Every tenant-owned table includes `account_id`. Use composite foreign keys and r
 | usage_periods, usage_ledger | Unique period/metric; transactional reservation/refund references; immutable adjustments |
 | webhook_endpoints, webhook_deliveries | Encrypted signing secret, stable event ID, attempts, next_attempt_at |
 | subscriptions, billing_events | Provider identifiers, current entitlement period, unique Stripe event ID |
-| suppression_entries | Account/normalized-recipient, source, timestamp; created from device opt-out signal/user action |
+| suppression_entries (proposed, not implemented) | Account/normalized-recipient, source, timestamp; created from device opt-out signal/user action |
 | security_audit_events | Key/device/permission changes, redacted subjects, no content |
 
 The durable outbound metering core uses an operator or billing-provisioned

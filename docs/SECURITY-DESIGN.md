@@ -57,7 +57,7 @@ Phone receives plaintext SMS, normalizes multipart events, and encrypts once to 
 
 Customer automation must decrypt in the customer's runtime using the SDK. Provide a local connector recipe; a plain Zapier webhook does not magically decrypt HPKE. Webhook HMAC proves relay authenticity, while the device event signature preserves source authentication for reviewers able to verify it.
 
-STOP/START handling occurs on the phone for configured opt-out keywords and creates an authenticated suppression metadata event without uploading body plaintext. Local suppression applies immediately; relay blocks future sends after the event. Normalize recipient numbers consistently. Keyword matching alone does not address every opt-out request; provide a reachable abuse contact.
+The proposed STOP/START flow handles configured opt-out keywords on the phone and creates an authenticated suppression metadata event without uploading body plaintext. In that design, local suppression applies immediately and the relay blocks future sends after the event. **STOP/START handling, suppression events, and relay suppression checks are not implemented.** They are required before a general send route; see [SMS compliance and current limits](SMS-COMPLIANCE.md). Normalize recipient numbers consistently. Keyword matching alone does not address every opt-out request; provide a reachable abuse contact.
 
 ## Recovery, rotation and revocation
 
