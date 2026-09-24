@@ -3,7 +3,7 @@
 //! operational secret storage, independent of password verifiers and vault keys.
 //! Every resource repository must accept a `Tenant` and filter by its account ID.
 
-use argon2::{Algorithm, Argon2, Params, PasswordHash, PasswordHasher, PasswordVerifier, Version};
+use argon2::{Algorithm, Argon2, Params, PasswordHasher, Version};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use hmac::{Hmac, Mac, digest::KeyInit};
 use sha2::Sha256;
@@ -19,6 +19,7 @@ const MAX_EMAIL_BYTES: usize = 254;
 
 pub mod abuse_limits;
 pub mod mfa;
+mod password_work;
 mod verification_outbox;
 pub use verification_outbox::{
     VerificationMail, ack_verification_mail, claim_verification_mail, request_verification_resend,
@@ -294,10 +295,7 @@ pub async fn register(
         return Err(AuthError::InvalidInput);
     }
     let email = normalize_email(email)?;
-    let password_hash = password_engine()?
-        .hash_password(password.as_bytes())
-        .map_err(|_| AuthError::Password)?
-        .to_string();
+    let password_hash = password_work::hash(password).await?;
     let account_id = Uuid::new_v4();
     let user_id = Uuid::new_v4();
     let verification_id = Uuid::new_v4();
@@ -413,13 +411,7 @@ pub async fn login(
         )
         .await?;
     let stored = row.as_ref().map(|row| row.get::<_, String>(2));
-    let parsed = PasswordHash::new(stored.as_deref().unwrap_or_else(|| dummy_password_hash()))
-        .map_err(|_| AuthError::InvalidCredentials)?;
-    #[cfg(test)]
-    tests::PASSWORD_VERIFICATIONS.with(|count| count.set(count.get() + 1));
-    Argon2::default()
-        .verify_password(password.as_bytes(), &parsed)
-        .map_err(|_| AuthError::InvalidCredentials)?;
+    password_work::verify(password, stored).await?;
     // Even a password matching the dummy verifier cannot authenticate.
     let row = row.ok_or(AuthError::InvalidCredentials)?;
     let user_id: Uuid = row.get(0);
@@ -668,9 +660,10 @@ mod tests {
     use super::*;
 
     // Tokio's default test runtime stays on one thread; separate tests cannot
-    // satisfy this counter through concurrent password checks.
+    // satisfy this counter through concurrent password checks. Capture its Arc
+    // before offloading so the blocking worker increments the originating test.
     thread_local! {
-        pub(super) static PASSWORD_VERIFICATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        pub(super) static PASSWORD_VERIFICATIONS: std::sync::Arc<std::sync::atomic::AtomicUsize> = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     }
 
     #[test]
@@ -806,12 +799,17 @@ mod tests {
             .unwrap();
         for _ in 0..2 {
             let password = Uuid::new_v4().to_string();
-            let before = PASSWORD_VERIFICATIONS.get();
+            let before = PASSWORD_VERIFICATIONS
+                .with(|count| count.load(std::sync::atomic::Ordering::SeqCst));
             assert!(matches!(
                 login(&client, &hasher, "unknown@example.test", &password).await,
                 Err(AuthError::InvalidCredentials)
             ));
-            assert_eq!(PASSWORD_VERIFICATIONS.get(), before + 1);
+            assert_eq!(
+                PASSWORD_VERIFICATIONS
+                    .with(|count| count.load(std::sync::atomic::Ordering::SeqCst)),
+                before + 1
+            );
         }
         assert_eq!(
             client

@@ -4,10 +4,9 @@
 //! a currently claimed, unexpired challenge.
 
 use super::{
-    AuthError, TokenHasher, VERIFICATION_HOURS, dummy_password_hash, normalize_email,
-    password_engine, verification_token_for_id,
+    AuthError, TokenHasher, VERIFICATION_HOURS, normalize_email, password_work,
+    verification_token_for_id,
 };
-use argon2::{PasswordHash, PasswordVerifier};
 use tokio_postgres::Client;
 use uuid::Uuid;
 
@@ -37,19 +36,12 @@ pub async fn request_verification_resend(
             &[&email],
         )
         .await?;
-    let (user_id, stored) = if let Some(row) = row {
-        (Some(row.get::<_, Uuid>(0)), row.get::<_, String>(1))
-    } else {
-        // Burn comparable Argon2 verification work for an unknown address.
-        // Initialization occurs once per process; no mail is queued.
-        (None, dummy_password_hash().to_owned())
-    };
-    let parsed = PasswordHash::new(&stored).map_err(|_| AuthError::Password)?;
-    if password_engine()?
-        .verify_password(password.as_bytes(), &parsed)
-        .is_err()
-    {
-        return Ok(false);
+    let user_id = row.as_ref().map(|row| row.get::<_, Uuid>(0));
+    let stored = row.as_ref().map(|row| row.get::<_, String>(1));
+    match password_work::verify(password, stored.clone()).await {
+        Ok(()) => {}
+        Err(AuthError::InvalidCredentials) => return Ok(false),
+        Err(error) => return Err(error),
     }
     let Some(user_id) = user_id else {
         return Ok(false);
