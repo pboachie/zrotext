@@ -20,6 +20,8 @@ Protected against in sealed mode: passive database/backup theft of bodies, accid
 
 Visible metadata includes account/device IDs, recipient and sender numbers, direction, time, size, segment information, network connection metadata, status, usage and billing. Minimize retention and log exposure. Plaintext phone numbers are a **chosen v1 routing/abuse design**, not an inherent requirement of end-to-end payload encryption or billing.
 
+Enrollment maintenance runs every 60 seconds and deletes at most 500 rows per table per pass. Device authentication challenges are removed one hour after expiry, including used challenges. Pairing requests, including approved requests, are removed 24 hours after expiry, or 24 hours after cancellation if later. Active device identity and signing keys live in the separate `devices` and `device_keys` tables. Backlogs may require multiple passes; database backups follow their own retention policy.
+
 ## Key separation
 
 | Key | Created/held by | Purpose |

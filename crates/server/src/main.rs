@@ -40,7 +40,7 @@ use zrotext_server::{
         worker::StripeTestWorker,
     },
     device_socket::{self, DeviceSocketState},
-    enrollment::EnrollmentHasher,
+    enrollment::{self, EnrollmentHasher},
     http_auth::{
         self, AuthHttpState, DisabledVerificationDispatcher, SmtpVerificationDispatcher,
         VerificationDispatcher,
@@ -254,6 +254,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             tokio::spawn(async move { let _ = connection.await; });
                             let _ = abuse_limits::prune(&client).await;
                             let _ = mfa::prune_expired_challenges(&client).await;
+                            let _ = enrollment::prune_expired(&client).await;
                         }
                     }
                     _ = abuse_drain_notify.notified() => break,
