@@ -13,6 +13,7 @@ CREATE TABLE password_resets (
 );
 CREATE INDEX password_resets_owner_live ON password_resets(account_id, user_id, created_at DESC)
     WHERE used_at IS NULL;
+CREATE INDEX password_resets_expiry ON password_resets(expires_at, id);
 
 CREATE TABLE password_reset_mail_outbox (
     reset_id uuid PRIMARY KEY REFERENCES password_resets(id) ON DELETE CASCADE,

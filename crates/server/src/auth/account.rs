@@ -270,10 +270,22 @@ pub struct ResetMail {
     pub token: String,
 }
 
+/// Remove at most one batch of expired reset codes and their queued mail.
+/// The outbox rows cascade away, so they leave the due index as well.
+pub async fn prune_expired_password_resets(client: &Client) -> Result<u64, AuthError> {
+    Ok(client
+        .execute(
+            "WITH expired AS (SELECT id FROM password_resets WHERE expires_at<=now() ORDER BY expires_at,id LIMIT 500 FOR UPDATE SKIP LOCKED) DELETE FROM password_resets r USING expired e WHERE r.id=e.id",
+            &[],
+        )
+        .await?)
+}
+
 pub async fn claim_reset_mail(
     client: &mut Client,
     hasher: &TokenHasher,
 ) -> Result<Option<ResetMail>, AuthError> {
+    prune_expired_password_resets(client).await?;
     let tx = client.transaction().await?;
     let row = tx
         .query_opt(
@@ -391,6 +403,26 @@ pub async fn ack_reset_notice(
     Ok(changed == 1)
 }
 
+/// Indexed, read-only proof for the verified rate-limit lane. It does not
+/// consume the code; confirmation rechecks everything under the user lock.
+pub async fn reset_token_is_live(
+    client: &Client,
+    hasher: &TokenHasher,
+    token: &str,
+) -> Result<bool, AuthError> {
+    if !valid_token(token, "ztr_") {
+        return Ok(false);
+    }
+    let hash = hasher.digest(b"password-reset-v1", token);
+    Ok(client
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM password_resets r JOIN users u ON u.id=r.user_id JOIN accounts a ON a.id=r.account_id WHERE r.token_hash=$1 AND r.used_at IS NULL AND r.expires_at>now() AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL)",
+            &[&&hash[..]],
+        )
+        .await?
+        .get(0))
+}
+
 pub async fn confirm_password_reset(
     client: &mut Client,
     hasher: &TokenHasher,
@@ -472,6 +504,86 @@ mod tests {
     use std::sync::Arc;
     use tokio_postgres::NoTls;
     use totp_rs::{Builder, Secret};
+
+    #[tokio::test]
+    async fn expired_reset_mail_is_pruned_in_bounded_batches_before_live_mail() {
+        let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
+            return;
+        };
+        let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let schema = format!("reset_mail_prune_{}", Uuid::new_v4().simple());
+        setup
+            .batch_execute(&format!("CREATE SCHEMA {schema}"))
+            .await
+            .unwrap();
+        let separator = if base_url.contains('?') { '&' } else { '?' };
+        let url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
+        let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        for migration in [
+            include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+            include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+            include_str!("../../../../deploy/compose/migrations/023_account_recovery.sql"),
+        ] {
+            db.batch_execute(migration).await.unwrap();
+        }
+        let hasher = TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap();
+        let owner = auth::register(
+            &mut db,
+            &hasher,
+            "owner@example.test",
+            &Uuid::new_v4().to_string(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            auth::verify_email(&mut db, &hasher, &owner.verification_token)
+                .await
+                .unwrap()
+        );
+        request_password_reset(&mut db, &hasher, "owner@example.test")
+            .await
+            .unwrap();
+        let live_id: Uuid = db
+            .query_one("SELECT id FROM password_resets WHERE expires_at>now()", &[])
+            .await
+            .unwrap()
+            .get(0);
+        db.execute(
+            "WITH seeded AS (
+                INSERT INTO password_resets(id,account_id,user_id,token_hash,expires_at,created_at)
+                SELECT gen_random_uuid(),$1,$2,
+                       decode(lpad(to_hex(i),64,'0'),'hex'),
+                       now()-interval '1 minute',now()-interval '2 hours'
+                FROM generate_series(1,1200) i RETURNING id
+             ) INSERT INTO password_reset_mail_outbox(reset_id,next_attempt_at)
+             SELECT id,now()-interval '2 hours' FROM seeded",
+            &[&owner.account_id, &owner.user_id],
+        )
+        .await
+        .unwrap();
+        let mail = claim_reset_mail(&mut db, &hasher).await.unwrap().unwrap();
+        assert_eq!(mail.reset_id, live_id);
+        let stale: i64 = db.query_one(
+            "SELECT count(*) FROM password_reset_mail_outbox o JOIN password_resets r ON r.id=o.reset_id WHERE r.expires_at<=now()",
+            &[],
+        ).await.unwrap().get(0);
+        assert_eq!(stale, 700);
+        assert_eq!(prune_expired_password_resets(&db).await.unwrap(), 500);
+        assert_eq!(prune_expired_password_resets(&db).await.unwrap(), 200);
+        assert_eq!(prune_expired_password_resets(&db).await.unwrap(), 0);
+        let queued: i64 = db
+            .query_one("SELECT count(*) FROM password_reset_mail_outbox", &[])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(queued, 1);
+        setup
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .unwrap();
+    }
 
     #[tokio::test]
     async fn api_key_mint_waits_for_recovery_lock_and_rechecks_session() {

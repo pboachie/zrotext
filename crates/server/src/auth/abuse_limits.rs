@@ -52,7 +52,7 @@ impl Limit {
             Self::Resend => ("resend", 120, 60, Some((12, 900))),
             Self::Verify => ("verify", 120, 60, None),
             Self::PasswordResetRequest => ("password_reset_request", 120, 60, Some((3, 86_400))),
-            Self::PasswordResetConfirm => ("password_reset_confirm", 120, 60, None),
+            Self::PasswordResetConfirm => ("password_reset_confirm", 120, 60, Some((8, 3_600))),
             Self::PasswordChange => ("password_change", 120, 60, Some((8, 900))),
             Self::SessionsRevokeOthers => ("sessions_revoke_others", 120, 60, Some((8, 900))),
             Self::PairClaim => ("pair_claim", 300, 60, Some((20, 60))),
@@ -173,6 +173,7 @@ pub async fn prune(client: &Client) -> Result<u64, tokio_postgres::Error> {
                 WHERE updated_at < now() - CASE scope
                     WHEN 'registration' THEN interval '25 hours'
                     WHEN 'password_reset_request' THEN interval '25 hours'
+                    WHEN 'password_reset_confirm' THEN interval '61 minutes'
                     WHEN 'api_key_create' THEN interval '25 hours'
                     WHEN 'inbound_daily' THEN interval '25 hours'
                     WHEN 'login' THEN interval '16 minutes'

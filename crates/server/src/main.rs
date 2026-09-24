@@ -286,6 +286,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let _ = mfa::prune_expired_challenges(&client).await;
                             let _ = enrollment::prune_expired(&client).await;
                             let _ = auth::prune_expired_pending_owners(&mut client).await;
+                            let _ = auth::account::prune_expired_password_resets(&client).await;
                         }
                     }
                     _ = abuse_drain_notify.notified() => break,

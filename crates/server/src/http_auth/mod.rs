@@ -1020,11 +1020,18 @@ async fn confirm_password_reset(
 ) -> Result<StatusCode, AuthHttpError> {
     require_origin(&headers, &state.canonical_origin)?;
     let mut client = connect(&state.database_url).await?;
-    if !abuse_limits::consume(&client, &state.hasher, Limit::PasswordResetConfirm, None)
-        .await
-        .map_err(|_| AuthHttpError::Unavailable)?
-    {
-        return Err(AuthHttpError::TooManyRequests);
+    let admitted = abuse_limits::consume_or_verify(
+        &client,
+        &state.hasher,
+        Limit::PasswordResetConfirm,
+        &body.token,
+        account::reset_token_is_live(&client, &state.hasher, &body.token),
+    )
+    .await
+    .map_err(map_auth)?;
+    if !admitted {
+        // A missing, expired, or rate-limited code has one outward result.
+        return Err(AuthHttpError::BadRequest);
     }
     let _permit = state
         .hash_limit
@@ -1647,7 +1654,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn verified_password_reset_survives_anonymous_budget_exhaustion() {
+    async fn verified_password_reset_survives_anonymous_request_and_confirm_exhaustion() {
         let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
             return;
         };
@@ -1666,6 +1673,8 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
             include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
             include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
+            include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
+            include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
             include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
             include_str!("../../../../deploy/compose/migrations/023_account_recovery.sql"),
         ] {
@@ -1695,7 +1704,7 @@ mod tests {
         }
         let state = AuthHttpState::new(
             url,
-            hasher,
+            hasher.clone(),
             "https://zrotext.example".to_owned(),
             Arc::new(CaptureVerification(Mutex::new(None))),
         )
@@ -1721,6 +1730,56 @@ mod tests {
             .unwrap()
             .get(0);
         assert_eq!(count, 1);
+        let reset = account::claim_reset_mail(&mut db, &hasher)
+            .await
+            .unwrap()
+            .unwrap();
+        for index in 0..120 {
+            assert!(
+                abuse_limits::consume(
+                    &db,
+                    &hasher,
+                    Limit::PasswordResetConfirm,
+                    Some(&format!("unknown-confirm-{index}")),
+                )
+                .await
+                .unwrap()
+            );
+        }
+        let invalid = format!("ztr_{}", URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>()));
+        let new_password = Uuid::new_v4().to_string();
+        let invalid_response = app
+            .clone()
+            .oneshot(json_post(
+                "/password/reset/confirm",
+                serde_json::json!({"token":invalid,"new_password":new_password}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(invalid_response.status(), StatusCode::BAD_REQUEST);
+        let valid_response = app
+            .clone()
+            .oneshot(json_post(
+                "/password/reset/confirm",
+                serde_json::json!({"token":reset.token,"new_password":new_password}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(valid_response.status(), StatusCode::NO_CONTENT);
+        let replay = app
+            .clone()
+            .oneshot(json_post(
+                "/password/reset/confirm",
+                serde_json::json!({"token":reset.token,"new_password":new_password}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(replay.status(), StatusCode::BAD_REQUEST);
+        assert!(
+            auth::login(&db, &hasher, "owner@example.test", &new_password)
+                .await
+                .is_ok()
+        );
         setup
             .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
             .await
