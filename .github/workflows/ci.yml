@@ -71,7 +71,7 @@ jobs:
           PR_CREATED_AT: ${{ github.event.pull_request.created_at }}
         run: python3 scripts/check_dco.py
       - name: Spelling
-        uses: crate-ci/typos@5e183518f8764162ed2841339af896246fccbcfd # v1.49.0
+        uses: crate-ci/typos@8a48f81b6c64dcfea44b3633223084c4be58ac5f # v1.49.0
   rust:
     runs-on: ubuntu-24.04
     services:
