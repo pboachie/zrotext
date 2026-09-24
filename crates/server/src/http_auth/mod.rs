@@ -492,10 +492,23 @@ async fn login(
     require_origin(&headers, &state.canonical_origin)?;
     let client = connect(&state.database_url).await?;
     let subject = auth::normalize_email(&body.email).ok();
-    if !abuse_limits::consume(&client, &state.hasher, Limit::Login, subject.as_deref())
-        .await
-        .map_err(|_| AuthHttpError::Unavailable)?
-    {
+    // A browser that already proved this password keeps its own budget, so
+    // anonymous guesses cannot lock the owner out by exhausting the shared
+    // route or per-address budget. Unknown browsers never learn whether the
+    // address exists: they see the same 429 either way.
+    let known_client = subject.as_deref().and_then(|email| {
+        cookie(&headers, auth::LOGIN_CLIENT_COOKIE)
+            .and_then(|value| auth::login_client_subject(&state.hasher, value, email))
+    });
+    let admitted =
+        abuse_limits::consume(&client, &state.hasher, Limit::Login, subject.as_deref()).await;
+    let admitted = match (admitted, &known_client) {
+        (Ok(false), Some(known)) => {
+            abuse_limits::consume_verified(&client, &state.hasher, Limit::Login, known).await
+        }
+        (admitted, _) => admitted,
+    };
+    if !admitted.map_err(|_| AuthHttpError::Unavailable)? {
         return Err(AuthHttpError::TooManyRequests);
     }
     let _permit = state
@@ -523,7 +536,28 @@ async fn login(
         }
         Err(error) => return Err(map_auth(error)),
     };
-    session_response(&credentials)
+    let mut response = session_response(&credentials)?;
+    if known_client.is_none() {
+        remember_login_client(&state.hasher, &body.email, &mut response)?;
+    }
+    Ok(response)
+}
+
+/// Set after a full sign-in from a browser without a valid login-client token
+/// for this address. An existing token is kept, so repeated sign-ins cannot
+/// mint fresh budgets.
+fn remember_login_client(
+    hasher: &TokenHasher,
+    email: &str,
+    response: &mut Response,
+) -> Result<(), AuthHttpError> {
+    if let Some(value) = auth::login_client_cookie(hasher, email) {
+        response.headers_mut().append(
+            header::SET_COOKIE,
+            HeaderValue::from_str(&value).map_err(|_| AuthHttpError::Internal)?,
+        );
+    }
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -544,11 +578,12 @@ async fn complete_mfa_login(
 ) -> Result<Response, AuthHttpError> {
     require_origin(&headers, &state.canonical_origin)?;
     let mut client = connect(&state.database_url).await?;
-    if !abuse_limits::consume(
+    if !abuse_limits::consume_or_verify(
         &client,
         &state.hasher,
         Limit::MfaChallenge,
-        Some(&body.challenge_token),
+        &body.challenge_token,
+        mfa::login_challenge_is_live(&client, &state.hasher, &body.challenge_token),
     )
     .await
     .map_err(|_| AuthHttpError::Unavailable)?
@@ -564,7 +599,16 @@ async fn complete_mfa_login(
     )
     .await
     .map_err(map_auth)?;
-    session_response(&credentials)
+    let mut response = session_response(&credentials)?;
+    // Best effort: a lookup failure must not undo a completed sign-in.
+    if let Ok(Some(email)) = auth::session_email(&client, credentials.id).await
+        && cookie(&headers, auth::LOGIN_CLIENT_COOKIE)
+            .and_then(|value| auth::login_client_subject(&state.hasher, value, &email))
+            .is_none()
+    {
+        remember_login_client(&state.hasher, &email, &mut response)?;
+    }
+    Ok(response)
 }
 
 fn session_response(credentials: &auth::SessionCredentials) -> Result<Response, AuthHttpError> {
@@ -1014,6 +1058,7 @@ use tokio_postgres::NoTls;
 mod tests {
     use super::*;
     use axum::{body::Body, http::Request};
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
     use std::sync::Mutex;
     use tower::ServiceExt;
 
@@ -1318,7 +1363,8 @@ mod tests {
                     .to_owned()
             })
             .collect::<Vec<_>>();
-        assert_eq!(cookies.len(), 2);
+        assert_eq!(cookies.len(), 3);
+        assert!(cookies[2].starts_with("__Host-zrotext_login_client=ztl_"));
         let cookie_header = cookies.join("; ");
         let csrf = cookies[1].split_once('=').unwrap().1;
         let session_request = Request::builder()
@@ -1894,6 +1940,223 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn owner_sign_in_survives_anonymous_login_budget_exhaustion() {
+        let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
+            return;
+        };
+        let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let schema = format!("http_login_budget_{}", Uuid::new_v4().simple());
+        setup
+            .batch_execute(&format!("CREATE SCHEMA {schema}"))
+            .await
+            .unwrap();
+        let separator = if base_url.contains('?') { '&' } else { '?' };
+        let url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
+        let (mut client, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        for migration in [
+            include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+            include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+            include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
+            include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
+            include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
+            include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+        ] {
+            client.batch_execute(migration).await.unwrap();
+        }
+        let hasher = Arc::new(TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
+        let password = Uuid::new_v4().to_string();
+        let signup = auth::register(&mut client, &hasher, "owner@example.test", &password)
+            .await
+            .unwrap();
+        assert!(
+            auth::verify_email(&mut client, &hasher, &signup.verification_token)
+                .await
+                .unwrap()
+        );
+        let other = auth::register(&mut client, &hasher, "other@example.test", &password)
+            .await
+            .unwrap();
+        assert!(
+            auth::verify_email(&mut client, &hasher, &other.verification_token)
+                .await
+                .unwrap()
+        );
+        let state = AuthHttpState::new(
+            url.clone(),
+            hasher.clone(),
+            "https://zrotext.example".to_owned(),
+            Arc::new(DisabledVerificationDispatcher),
+        )
+        .unwrap();
+        let app = router(state);
+        let login = |email: &str, cookie: Option<&str>| {
+            let mut request = json_post(
+                "/login",
+                serde_json::json!({"email":email,"password":password.as_str()}),
+            );
+            if let Some(cookie) = cookie {
+                request
+                    .headers_mut()
+                    .insert(header::COOKIE, HeaderValue::from_str(cookie).unwrap());
+            }
+            request
+        };
+        let set_cookies = |response: &Response| {
+            response
+                .headers()
+                .get_all(header::SET_COOKIE)
+                .iter()
+                .map(|v| v.to_str().unwrap().split(';').next().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        };
+        // An ordinary sign-in remembers this browser.
+        let response = app
+            .clone()
+            .oneshot(login("owner@example.test", None))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        let cookies = set_cookies(&response);
+        assert_eq!(cookies.len(), 3);
+        let known = cookies[2].clone();
+        assert!(known.starts_with("__Host-zrotext_login_client=ztl_"));
+        assert!(!known.contains("owner"));
+
+        // One anonymous source targets the owner's address, then sprays
+        // made-up addresses until the shared route budget is exhausted too.
+        for _ in 1..12 {
+            assert!(
+                abuse_limits::consume(&client, &hasher, Limit::Login, Some("owner@example.test"))
+                    .await
+                    .unwrap()
+            );
+        }
+        for index in 12..237 {
+            assert!(
+                abuse_limits::consume(
+                    &client,
+                    &hasher,
+                    Limit::Login,
+                    Some(&format!("junk-{index}@example.test")),
+                )
+                .await
+                .unwrap()
+            );
+        }
+        for index in 237..240 {
+            let response = app
+                .clone()
+                .oneshot(login(&format!("junk-{index}@example.test"), None))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+        let junk = app
+            .clone()
+            .oneshot(login("junk-final@example.test", None))
+            .await
+            .unwrap();
+        assert_eq!(junk.status(), StatusCode::TOO_MANY_REQUESTS);
+        // Without its login-client token, the owner looks like everyone else.
+        let response = app
+            .clone()
+            .oneshot(login("owner@example.test", None))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        // A forged tag, or a token presented for another address, is ignored.
+        let (id, _) = known.split_once('.').unwrap();
+        let forged = format!("{id}.{}", URL_SAFE_NO_PAD.encode([0u8; 32]));
+        let response = app
+            .clone()
+            .oneshot(login("owner@example.test", Some(&forged)))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        let response = app
+            .clone()
+            .oneshot(login("other@example.test", Some(&known)))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        // The remembered browser still signs in and keeps its token.
+        let response = app
+            .clone()
+            .oneshot(login(" OWNER@example.test ", Some(&known)))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        let cookies = set_cookies(&response);
+        assert_eq!(cookies.len(), 2);
+        assert!(cookies[0].starts_with("__Host-zrotext_session=zts_"));
+        // The remembered browser's own budget is bounded like any address.
+        let (_, value) = known.split_once('=').unwrap();
+        let own = auth::login_client_subject(&hasher, value, "owner@example.test").unwrap();
+        for _ in 1..12 {
+            assert!(
+                abuse_limits::consume_verified(&client, &hasher, Limit::Login, &own)
+                    .await
+                    .unwrap()
+            );
+        }
+        let response = app
+            .clone()
+            .oneshot(login("owner@example.test", Some(&known)))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+
+        // Second-factor completion: junk challenge tokens exhaust the route,
+        // but a live challenge still reaches factor verification.
+        client
+            .execute(
+                "UPDATE users SET mfa_enabled=true WHERE id=$1",
+                &[&signup.user_id],
+            )
+            .await
+            .unwrap();
+        let challenge =
+            mfa::begin_login_challenge(&client, &hasher, signup.account_id, signup.user_id)
+                .await
+                .unwrap();
+        for index in 0..300 {
+            abuse_limits::consume(
+                &client,
+                &hasher,
+                Limit::MfaChallenge,
+                Some(&format!("junk-{index}")),
+            )
+            .await
+            .unwrap();
+        }
+        let mfa_login = |token: &str| {
+            json_post(
+                "/login/mfa",
+                serde_json::json!({"challenge_token":token,"code":"000000"}),
+            )
+        };
+        let junk_token = format!("ztm_{}", URL_SAFE_NO_PAD.encode([7u8; 32]));
+        assert_eq!(
+            app.clone()
+                .oneshot(mfa_login(&junk_token))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        assert_eq!(
+            app.oneshot(mfa_login(&challenge)).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+        setup
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn postgres_http_mfa_never_sets_session_before_factor_and_limits_replay() {
         let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
             return;
@@ -1956,7 +2219,8 @@ mod tests {
             .iter()
             .map(|v| v.to_str().unwrap().split(';').next().unwrap().to_owned())
             .collect::<Vec<_>>();
-        assert_eq!(cookies.len(), 2);
+        assert_eq!(cookies.len(), 3);
+        assert!(cookies[2].starts_with("__Host-zrotext_login_client=ztl_"));
         let cookie_header = cookies.join("; ");
         let csrf = cookies[1].split_once('=').unwrap().1;
         let response = app
@@ -2089,7 +2353,7 @@ mod tests {
                 .get_all(header::SET_COOKIE)
                 .iter()
                 .count(),
-            2
+            3
         );
         let response = app
             .clone()
@@ -2229,7 +2493,8 @@ mod tests {
             .iter()
             .map(|v| v.to_str().unwrap().split(';').next().unwrap().to_owned())
             .collect::<Vec<_>>();
-        assert_eq!(cookies.len(), 2);
+        assert_eq!(cookies.len(), 3);
+        assert!(cookies[2].starts_with("__Host-zrotext_login_client=ztl_"));
         let cookie_header = cookies.join("; ");
         let csrf = cookies[1].split_once('=').unwrap().1;
         let response = no_key_app
