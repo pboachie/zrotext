@@ -22,7 +22,7 @@ use axum::{
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::{future::Future, sync::Arc};
 use tokio_postgres::Client;
 use uuid::Uuid;
 
@@ -90,13 +90,16 @@ async fn connect(state: &EnrollmentHttpState) -> Result<Client, Response> {
     Ok(client)
 }
 
+/// `live` runs only after anonymous callers exhaust the route budget, so junk
+/// identifiers cannot lock out a phone that holds a real device or pairing.
 async fn public_admission(
     state: &EnrollmentHttpState,
     client: &Client,
     limit: Limit,
     subject: &str,
+    live: impl Future<Output = Result<bool, EnrollmentError>>,
 ) -> Result<(), Response> {
-    match abuse_limits::consume(client, &state.auth_hasher, limit, Some(subject)).await {
+    match abuse_limits::consume_or_verify(client, &state.auth_hasher, limit, subject, live).await {
         Ok(true) => Ok(()),
         Ok(false) => Err(StatusCode::TOO_MANY_REQUESTS.into_response()),
         Err(_) => Err(StatusCode::SERVICE_UNAVAILABLE.into_response()),
@@ -272,8 +275,19 @@ async fn claim_pairing(
     let Ok(mut client) = connect(&state).await else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
-    if let Err(response) =
-        public_admission(&state, &client, Limit::PairClaim, &pairing_id.to_string()).await
+    if let Err(response) = public_admission(
+        &state,
+        &client,
+        Limit::PairClaim,
+        &pairing_id.to_string(),
+        enrollment::pairing_claim_is_live(
+            &client,
+            &state.enrollment_hasher,
+            pairing_id,
+            &body.token,
+        ),
+    )
+    .await
     {
         return response;
     }
@@ -325,8 +339,28 @@ async fn prove_pairing(
     let Ok(mut client) = connect(&state).await else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
-    if let Err(response) =
-        public_admission(&state, &client, Limit::PairProof, &pairing_id.to_string()).await
+    let live = async {
+        match decode_nonce(&body.challenge_nonce) {
+            Ok(nonce) => {
+                enrollment::pairing_proof_is_live(
+                    &client,
+                    &state.enrollment_hasher,
+                    pairing_id,
+                    &nonce,
+                )
+                .await
+            }
+            Err(_) => Ok(false),
+        }
+    };
+    if let Err(response) = public_admission(
+        &state,
+        &client,
+        Limit::PairProof,
+        &pairing_id.to_string(),
+        live,
+    )
+    .await
     {
         return response;
     }
@@ -451,6 +485,7 @@ async fn device_challenge(
         &client,
         Limit::DeviceChallenge,
         &device_id.to_string(),
+        enrollment::device_is_live(&client, device_id),
     )
     .await
     {
@@ -485,11 +520,27 @@ async fn device_authenticate(
     let Ok(mut client) = connect(&state).await else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
+    let live = async {
+        match decode_nonce(&body.nonce) {
+            Ok(nonce) => {
+                let challenge = DeviceChallenge {
+                    id: body.challenge_id,
+                    account_id: body.account_id,
+                    device_id: body.device_id,
+                    nonce,
+                };
+                enrollment::device_challenge_is_live(&client, &state.enrollment_hasher, &challenge)
+                    .await
+            }
+            Err(_) => Ok(false),
+        }
+    };
     if let Err(response) = public_admission(
         &state,
         &client,
         Limit::DeviceAuthenticate,
         &body.device_id.to_string(),
+        live,
     )
     .await
     {
@@ -656,29 +707,7 @@ mod tests {
         serde_json::from_slice(&body).unwrap()
     }
 
-    #[test]
-    fn binary_fields_have_strict_bounds() {
-        assert!(decode_nonce(&URL_SAFE_NO_PAD.encode([0u8; 32])).is_ok());
-        assert!(decode_nonce(&URL_SAFE_NO_PAD.encode([0u8; 31])).is_err());
-        assert!(decode_nonce(&format!("{}=", URL_SAFE_NO_PAD.encode([0u8; 32]))).is_err());
-        assert!(decode_bounded(&"A".repeat(215), 214, 80, 160).is_err());
-    }
-
-    #[tokio::test]
-    async fn http_pairing_requires_csrf_proves_key_and_revokes_device() {
-        let Ok(root_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
-            return;
-        };
-        assert!(root_url.starts_with("postgres://") || root_url.starts_with("postgresql://"));
-        let (mut admin, connection) = tokio_postgres::connect(&root_url, NoTls).await.unwrap();
-        tokio::spawn(async move { connection.await.unwrap() });
-        let schema = format!("http_enroll_test_{}", Uuid::new_v4().simple());
-        admin
-            .batch_execute(&format!(
-                "CREATE SCHEMA {schema}; SET search_path TO {schema}"
-            ))
-            .await
-            .unwrap();
+    async fn apply_migrations(admin: &Client) {
         for sql in [
             include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
             include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
@@ -702,6 +731,32 @@ mod tests {
         ] {
             admin.batch_execute(sql).await.unwrap();
         }
+    }
+
+    #[test]
+    fn binary_fields_have_strict_bounds() {
+        assert!(decode_nonce(&URL_SAFE_NO_PAD.encode([0u8; 32])).is_ok());
+        assert!(decode_nonce(&URL_SAFE_NO_PAD.encode([0u8; 31])).is_err());
+        assert!(decode_nonce(&format!("{}=", URL_SAFE_NO_PAD.encode([0u8; 32]))).is_err());
+        assert!(decode_bounded(&"A".repeat(215), 214, 80, 160).is_err());
+    }
+
+    #[tokio::test]
+    async fn http_pairing_requires_csrf_proves_key_and_revokes_device() {
+        let Ok(root_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
+            return;
+        };
+        assert!(root_url.starts_with("postgres://") || root_url.starts_with("postgresql://"));
+        let (mut admin, connection) = tokio_postgres::connect(&root_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let schema = format!("http_enroll_test_{}", Uuid::new_v4().simple());
+        admin
+            .batch_execute(&format!(
+                "CREATE SCHEMA {schema}; SET search_path TO {schema}"
+            ))
+            .await
+            .unwrap();
+        apply_migrations(&admin).await;
         let auth_hasher = Arc::new(TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
         let enrollment_hasher =
             Arc::new(EnrollmentHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
@@ -1178,6 +1233,266 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
 
+        admin
+            .batch_execute(&format!(
+                "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
+            ))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn phones_pair_and_reconnect_after_anonymous_budgets_are_spent() {
+        let Ok(root_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
+            return;
+        };
+        let (mut admin, connection) = tokio_postgres::connect(&root_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let schema = format!("http_enroll_budget_{}", Uuid::new_v4().simple());
+        admin
+            .batch_execute(&format!(
+                "CREATE SCHEMA {schema}; SET search_path TO {schema}"
+            ))
+            .await
+            .unwrap();
+        apply_migrations(&admin).await;
+        let auth_hasher = Arc::new(TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
+        let enrollment_hasher =
+            Arc::new(EnrollmentHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
+        let password = Uuid::new_v4().to_string();
+        let owner = register(
+            &mut admin,
+            &auth_hasher,
+            "budget-owner@example.test",
+            &password,
+        )
+        .await
+        .unwrap();
+        verify_email(&mut admin, &auth_hasher, &owner.verification_token)
+            .await
+            .unwrap();
+        let session = login(&admin, &auth_hasher, "budget-owner@example.test", &password)
+            .await
+            .unwrap();
+        let separator = if root_url.contains('?') { '&' } else { '?' };
+        let app = router(EnrollmentHttpState::new(
+            format!("{root_url}{separator}options=-csearch_path%3D{schema}"),
+            auth_hasher.clone(),
+            enrollment_hasher,
+            "https://test.example".into(),
+        ));
+        let owner_session = Some((session.token.as_str(), session.csrf_token.as_str()));
+        let response = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                "/pairings",
+                json!({"display_name":"Phone"}),
+                owner_session,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let created = json_response(response).await;
+        let pairing_id: Uuid = created["pairing_id"].as_str().unwrap().parse().unwrap();
+        let token = created["token"].as_str().unwrap().to_owned();
+
+        // One anonymous source spends every public enrollment route budget
+        // with made-up pairing and device IDs; the last few go over HTTP.
+        let signing = SigningKey::random(&mut OsRng);
+        let spki = URL_SAFE_NO_PAD.encode(
+            signing
+                .verifying_key()
+                .to_public_key_der()
+                .unwrap()
+                .as_bytes(),
+        );
+        let zero = URL_SAFE_NO_PAD.encode([0u8; 32]);
+        let junk_signature = URL_SAFE_NO_PAD.encode([0u8; 16]);
+        let junk = |route: usize| {
+            let id = Uuid::new_v4();
+            match route {
+                0 => request(
+                    Method::POST,
+                    &format!("/pairings/{id}/claim"),
+                    json!({"token":format!("ztp_{zero}"),"public_key_spki":spki}),
+                    None,
+                ),
+                1 => request(
+                    Method::POST,
+                    &format!("/pairings/{id}/prove"),
+                    json!({"challenge_nonce":zero,"signature_der":junk_signature}),
+                    None,
+                ),
+                2 => request(
+                    Method::POST,
+                    &format!("/devices/{id}/challenge"),
+                    json!({}),
+                    None,
+                ),
+                _ => request(
+                    Method::POST,
+                    "/devices/authenticate",
+                    json!({"challenge_id":Uuid::new_v4(),"account_id":owner.account_id,"device_id":id,"nonce":zero,"signature_der":junk_signature}),
+                    None,
+                ),
+            }
+        };
+        let limits = [
+            Limit::PairClaim,
+            Limit::PairProof,
+            Limit::DeviceChallenge,
+            Limit::DeviceAuthenticate,
+        ];
+        for (route, limit) in limits.into_iter().enumerate() {
+            for _ in 0..298 {
+                assert!(
+                    abuse_limits::consume(
+                        &admin,
+                        &auth_hasher,
+                        limit,
+                        Some(&Uuid::new_v4().to_string()),
+                    )
+                    .await
+                    .unwrap()
+                );
+            }
+            for _ in 0..2 {
+                let status = app.clone().oneshot(junk(route)).await.unwrap().status();
+                assert!(status == StatusCode::NOT_FOUND || status == StatusCode::OK);
+            }
+            assert_eq!(
+                app.clone().oneshot(junk(route)).await.unwrap().status(),
+                StatusCode::TOO_MANY_REQUESTS
+            );
+        }
+        // Knowing the pairing ID is not enough; its one-use token is.
+        let response = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                &format!("/pairings/{pairing_id}/claim"),
+                json!({"token":format!("ztp_{zero}"),"public_key_spki":spki}),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+
+        // The real phone still pairs.
+        let response = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                &format!("/pairings/{pairing_id}/claim"),
+                json!({"token":token,"public_key_spki":spki}),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let claim = json_response(response).await;
+        let nonce = decode_nonce(claim["challenge_nonce"].as_str().unwrap()).unwrap();
+        let fingerprint: [u8; 32] =
+            Sha256::digest(signing.verifying_key().to_encoded_point(false).as_bytes()).into();
+        let payload =
+            enrollment_challenge_bytes(owner.account_id, pairing_id, &fingerprint, &nonce);
+        let signature: Signature = signing.sign(&payload);
+        let response = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                &format!("/pairings/{pairing_id}/prove"),
+                json!({"challenge_nonce":claim["challenge_nonce"],"signature_der":URL_SAFE_NO_PAD.encode(signature.to_der().as_bytes())}),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(json_response(response).await["proof_verified"], true);
+        let response = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                &format!("/pairings/{pairing_id}/approve"),
+                json!({"comparison_code":claim["comparison_code"],"key_fingerprint":claim["key_fingerprint"]}),
+                owner_session,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let device_id: Uuid = json_response(response).await["device_id"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        // The enrolled phone still reconnects.
+        let response = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                &format!("/devices/{device_id}/challenge"),
+                json!({}),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let challenge = json_response(response).await;
+        let device_challenge = DeviceChallenge {
+            id: challenge["challenge_id"].as_str().unwrap().parse().unwrap(),
+            account_id: owner.account_id,
+            device_id,
+            nonce: decode_nonce(challenge["nonce"].as_str().unwrap()).unwrap(),
+        };
+        // A stale nonce for the real device does not pass the probe.
+        let stale = json!({
+            "challenge_id":device_challenge.id,
+            "account_id":owner.account_id,
+            "device_id":device_id,
+            "nonce":zero,
+            "signature_der":junk_signature,
+        });
+        let response = app
+            .clone()
+            .oneshot(request(Method::POST, "/devices/authenticate", stale, None))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        let signature: Signature = signing.sign(&device_challenge_bytes(&device_challenge));
+        let response = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                "/devices/authenticate",
+                json!({
+                    "challenge_id":device_challenge.id,
+                    "account_id":owner.account_id,
+                    "device_id":device_id,
+                    "nonce":challenge["nonce"],
+                    "signature_der":URL_SAFE_NO_PAD.encode(signature.to_der().as_bytes()),
+                }),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        // Junk is still refused and left no rows behind.
+        for route in 0..4 {
+            assert_eq!(
+                app.clone().oneshot(junk(route)).await.unwrap().status(),
+                StatusCode::TOO_MANY_REQUESTS
+            );
+        }
+        let rows: i64 = admin
+            .query_one("SELECT count(*) FROM auth_abuse_counters", &[])
+            .await
+            .unwrap()
+            .get(0);
+        // Per route: the anonymous budget row and 300 admitted junk subjects,
+        // plus a verified ceiling and the one real pairing or device subject.
+        assert_eq!(rows, 4 * (1 + 300) + 4 * 2);
         admin
             .batch_execute(&format!(
                 "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
