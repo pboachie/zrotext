@@ -1896,9 +1896,10 @@ mod tests {
                 .status(),
             StatusCode::UNPROCESSABLE_ENTITY
         );
+        let wrong_password = Uuid::new_v4().to_string();
         let stolen_request = owner_post(
             "/sessions/revoke-others",
-            serde_json::json!({"current_password":"wrong password"}),
+            serde_json::json!({"current_password":wrong_password}),
             &cookie_header,
             csrf,
         );

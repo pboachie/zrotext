@@ -612,8 +612,9 @@ mod tests {
         let sessions = list_sessions(&db, &principal).await.unwrap();
         assert_eq!(sessions.len(), 2);
         assert_eq!(sessions.iter().filter(|session| session.current).count(), 1);
+        let wrong_password = Uuid::new_v4().to_string();
         assert!(matches!(
-            revoke_other_sessions(&mut db, None, &hasher, &principal, "wrong password", None).await,
+            revoke_other_sessions(&mut db, None, &hasher, &principal, &wrong_password, None).await,
             Err(AuthError::InvalidCredentials)
         ));
         assert!(
