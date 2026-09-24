@@ -30,7 +30,7 @@ use zrotext_delivery_store::DeliveryStore;
 use zrotext_server::{
     alpha_policy::AlphaPolicy,
     auth::{
-        TokenHasher, abuse_limits,
+        self, TokenHasher, abuse_limits,
         mfa::{self, MfaCipher},
     },
     billing::{
@@ -71,6 +71,27 @@ struct Config {
 #[derive(Serialize)]
 struct Health {
     status: &'static str,
+}
+
+#[derive(Serialize)]
+struct BuildVersion {
+    bundle_version: Option<&'static str>,
+    source_commit: Option<&'static str>,
+    web_static_sha256: Option<&'static str>,
+    device_stream_protocol: &'static str,
+    device_stream_schema_sha256: Option<&'static str>,
+    migration_last: Option<&'static str>,
+}
+
+fn build_version() -> BuildVersion {
+    BuildVersion {
+        bundle_version: option_env!("RELEASE_VERSION"),
+        source_commit: option_env!("GIT_COMMIT"),
+        web_static_sha256: option_env!("WEB_STATIC_SHA256"),
+        device_stream_protocol: "v1",
+        device_stream_schema_sha256: option_env!("DEVICE_STREAM_SCHEMA_SHA256"),
+        migration_last: option_env!("MIGRATION_LAST"),
+    }
 }
 
 #[tokio::main]
@@ -175,6 +196,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             get(|| async { Json(Health { status: "live" }) }),
         )
         .route("/readyz", get(ready))
+        .route("/about/version", get(|| async { Json(build_version()) }))
         .route("/m0/device-test", get(device_test))
         .merge(owner_ui::source_router(source_url))
         .with_state(config.clone());
@@ -258,11 +280,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 tokio::select! {
                     _ = checks.tick() => {
                         if abuse_draining.load(Ordering::Acquire) { break; }
-                        if let Ok((client, connection)) = zrotext_server::runtime_db::connect_worker(&abuse_database).await {
+                        if let Ok((mut client, connection)) = zrotext_server::runtime_db::connect_worker(&abuse_database).await {
                             tokio::spawn(async move { let _ = connection.await; });
                             let _ = abuse_limits::prune(&client).await;
                             let _ = mfa::prune_expired_challenges(&client).await;
                             let _ = enrollment::prune_expired(&client).await;
+                            let _ = auth::prune_expired_pending_owners(&mut client).await;
                         }
                     }
                     _ = abuse_drain_notify.notified() => break,

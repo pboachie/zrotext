@@ -32,7 +32,6 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
 import org.json.JSONObject
-import java.net.URI
 import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
@@ -83,32 +82,71 @@ class AuthenticatedGatewayService : Service() {
         )
         connectivity = getSystemService(ConnectivityManager::class.java)
         connectivity.registerDefaultNetworkCallback(networkCallback)
+        processActive = true
     }
 
     @Synchronized
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_PAUSE) {
+            val rebootResumeCleared = HeartbeatResumeStore.clear(this)
             halt()
-            AuthenticatedGatewayStatus.value = "Paused"
+            if (rebootResumeCleared) {
+                AuthenticatedGatewayStatus.value = "Paused"
+                stopSelf()
+            } else {
+                AuthenticatedGatewayStatus.value = "Pause incomplete; tap Pause again before reboot"
+                val warning = notification("Pause incomplete; tap Pause again")
+                if (Build.VERSION.SDK_INT >= 29) {
+                    startForeground(NOTIFICATION_ID, warning,
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING)
+                } else {
+                    startForeground(NOTIFICATION_ID, warning)
+                }
+            }
+            return START_NOT_STICKY
+        }
+        // Every non-Pause request can arrive through startForegroundService,
+        // including a boot request whose saved configuration has disappeared.
+        // Promote before any validation path can stop the service.
+        val checking = notification("Checking heartbeat configuration")
+        if (Build.VERSION.SDK_INT >= 29) {
+            startForeground(NOTIFICATION_ID, checking,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING)
+        } else {
+            startForeground(NOTIFICATION_ID, checking)
+        }
+        val bootResume = intent?.action == ACTION_BOOT_RESUME
+        if (!bootResume && !HeartbeatResumeStore.clear(this)) {
+            halt()
+            AuthenticatedGatewayStatus.value = "Could not disable previous reboot resume; retry"
             stopSelf()
             return START_NOT_STICKY
         }
-        val url = intent?.getStringExtra(EXTRA_URL).orEmpty()
+        val saved = if (bootResume) HeartbeatResumeStore.read(this) else null
+        val url = if (bootResume) saved?.url.orEmpty() else intent?.getStringExtra(EXTRA_URL).orEmpty()
         val deviceId = try {
-            val value = intent?.getStringExtra(EXTRA_DEVICE_ID).orEmpty()
+            val value = if (bootResume) saved?.deviceId.toString()
+                else intent?.getStringExtra(EXTRA_DEVICE_ID).orEmpty()
             UUID.fromString(value).takeIf { it.toString() == value }
         } catch (_: IllegalArgumentException) {
             null
         }
         if (!validUrl(url) || deviceId == null) {
+            val rebootResumeCleared = HeartbeatResumeStore.clear(this)
             halt()
-            AuthenticatedGatewayStatus.value = "Set a WSS device stream and approved device ID"
+            AuthenticatedGatewayStatus.value = if (rebootResumeCleared)
+                "Set a WSS device stream and approved device ID"
+            else "Invalid heartbeat configuration; could not disable reboot resume. Retry Pause"
             stopSelf()
             return START_NOT_STICKY
         }
-        val armRequested = intent?.hasExtra(EXTRA_ALPHA_RECIPIENT) == true
-        val inboundUploadRequested = intent?.getBooleanExtra(EXTRA_INBOUND_UPLOAD, false) == true
-        if (armRequested && inboundUploadRequested) {
+        val armRequested = !bootResume && intent?.hasExtra(EXTRA_ALPHA_RECIPIENT) == true
+        val inboundUploadRequested = !bootResume &&
+            intent?.getBooleanExtra(EXTRA_INBOUND_UPLOAD, false) == true
+        val rebootOptInRequested = !bootResume &&
+            intent?.getBooleanExtra(EXTRA_REBOOT_RESUME, false) == true
+        if ((armRequested && inboundUploadRequested) ||
+            (rebootOptInRequested && (armRequested || inboundUploadRequested))) {
             halt()
             AuthenticatedGatewayStatus.value = "Choose one pilot mode at a time"
             stopSelf()
@@ -139,6 +177,12 @@ class AuthenticatedGatewayService : Service() {
             startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING)
         } else {
             startForeground(NOTIFICATION_ID, notification)
+        }
+        if (!bootResume) {
+            if (rebootOptInRequested) {
+                if (!HeartbeatResumeStore.save(this, HeartbeatResumeStore.Config(url, deviceId)))
+                    AuthenticatedGatewayStatus.value = "Heartbeat running; reboot resume unavailable"
+            }
         }
         endpoint = url
         approvedDevice = deviceId
@@ -583,7 +627,10 @@ class AuthenticatedGatewayService : Service() {
                     .notify(NOTIFICATION_ID, notification("Waiting for network"))
             }
             DeviceReconnectPolicy.Action.Stop -> {
-                AuthenticatedGatewayStatus.value = "Device proof or protocol rejected; restart manually"
+                val rebootResumeCleared = HeartbeatResumeStore.clear(this)
+                AuthenticatedGatewayStatus.value = if (rebootResumeCleared)
+                    "Device proof or protocol rejected; restart manually"
+                else "Device proof or protocol rejected; could not disable reboot resume. Retry Pause"
                 stopSelf()
             }
             else -> Unit
@@ -654,6 +701,7 @@ class AuthenticatedGatewayService : Service() {
 
     @Synchronized
     override fun onDestroy() {
+        processActive = false
         halt()
         connectivity.unregisterNetworkCallback(networkCallback)
         client.dispatcher.executorService.shutdown()
@@ -677,14 +725,7 @@ class AuthenticatedGatewayService : Service() {
             .build()
     }
 
-    private fun validUrl(value: String): Boolean = try {
-        val url = URI(value)
-        url.scheme == "wss" && !url.host.isNullOrBlank() &&
-            url.rawPath == "/v1/device-stream" && url.rawQuery == null &&
-            url.rawFragment == null && url.rawUserInfo == null
-    } catch (_: Exception) {
-        false
-    }
+    private fun validUrl(value: String): Boolean = HeartbeatResumeStore.validUrl(value)
 
     private fun activeSubscriptionIds(): List<Int> {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) !=
@@ -716,9 +757,12 @@ class AuthenticatedGatewayService : Service() {
         Base64.encodeToString(value, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
 
     companion object {
+        @Volatile internal var processActive = false
         const val ACTION_PAUSE = "org.zrotext.gateway.AUTH_PAUSE"
+        const val ACTION_BOOT_RESUME = "org.zrotext.gateway.AUTH_BOOT_RESUME"
         const val EXTRA_URL = "url"
         const val EXTRA_DEVICE_ID = "device_id"
+        const val EXTRA_REBOOT_RESUME = "reboot_resume"
         const val EXTRA_ALPHA_RECIPIENT = "alpha_recipient"
         const val EXTRA_ALPHA_SUBSCRIPTION_ID = "alpha_subscription_id"
         const val EXTRA_INBOUND_UPLOAD = "inbound_upload"
