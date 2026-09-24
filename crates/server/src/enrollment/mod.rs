@@ -707,6 +707,7 @@ mod tests {
             include_str!(
                 "../../../../deploy/compose/migrations/020_enrollment_retention_indexes.sql"
             ),
+            include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
         ] {
             client.batch_execute(sql).await.unwrap();
         }
@@ -1158,6 +1159,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/015_webhook_kek_commitments.sql"),
             include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
             include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
+            include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
@@ -1205,6 +1207,7 @@ mod tests {
             customer_id: "cus_captest1".into(),
             status: "active".into(),
             price_id: Some("price_plus1".into()),
+            latest_invoice_id: None,
         };
         billing::reconcile_snapshot_with_quotas(
             &mut db,

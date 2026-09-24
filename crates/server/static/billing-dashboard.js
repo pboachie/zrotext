@@ -36,7 +36,12 @@ async function loadStatus() {
     for (const subscription of result.subscriptions) {
       const item = document.createElement("li");
       const checked = new Date(subscription.reconciledAtUnix * 1000).toLocaleString();
-      item.textContent = `${subscription.stripeStatus} · ${subscription.recognizedTestPrice ? "recognized test price" : "unrecognized test price"} · checked ${checked}${subscription.reconciliationPending ? " · newer event pending" : ""}`;
+      const graceEnds = subscription.paymentGraceEndsAtUnix;
+      const paymentNotice = subscription.stripeStatus !== "past_due" ? ""
+        : Number.isSafeInteger(graceEnds) && graceEnds * 1000 > Date.now()
+          ? ` · Payment failed: new outbound pauses ${new Date(graceEnds * 1000).toLocaleString()} unless payment recovers.`
+          : " · Payment failed: new outbound is paused. Review payment in Stripe.";
+      item.textContent = `${subscription.stripeStatus} · ${subscription.recognizedTestPrice ? "recognized test price" : "unrecognized test price"} · checked ${checked}${subscription.reconciliationPending ? " · newer event pending" : ""}${paymentNotice}`;
       list.append(item);
     }
     state.textContent = result.subscriptions.length
