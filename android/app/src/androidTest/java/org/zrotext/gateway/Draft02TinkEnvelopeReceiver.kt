@@ -15,7 +15,7 @@ import javax.crypto.Cipher
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
-/** Test-only profile-02 outbound receiver. No production route or real manifest store calls it. */
+/** Test-only profile-02 outbound receiver. No production route or durable trust store calls it. */
 internal object Draft02TinkEnvelopeReceiver {
     private const val WRAP_SIZE = 146
     private val bodyLabel = "ZTSE/body/v2\u0000".toByteArray(Charsets.US_ASCII)
@@ -24,21 +24,17 @@ internal object Draft02TinkEnvelopeReceiver {
     private val keyLabel = "ZTSE/key/v1\u0000".toByteArray(Charsets.US_ASCII)
     private val order = BigInteger("FFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551", 16)
 
-    /** A synthetic, caller-pinned authorization view, not an owner-signature-verified manifest. */
+    /** Test harness carries the separately compared pin and live route expectation. */
     internal data class TrustedView(
-        val accountId: ByteArray, val deviceId: ByteArray, val lineId: ByteArray,
-        val peer: String, val manifestDigest: ByteArray, val keysetVersion: Long,
-        val signerPoint: ByteArray, val deviceKeyId: ByteArray, val archiveKeyId: ByteArray,
-        val ownerSignatureAccepted: Boolean = true,
-        val signerAuthorizedForOutbound: Boolean = true,
-        val deviceCurrentlyAuthorized: Boolean = true
+        val rootPin: ByteArray, val rootFingerprint: ByteArray, val manifest: ByteArray,
+        val deviceId: ByteArray, val lineId: ByteArray, val peer: String
     )
 
     internal data class Wrap(val role: Int, val keyId: ByteArray, val enc: ByteArray, val ct: ByteArray)
     internal data class Parsed(
         val envelope: ByteArray, val header: ByteArray, val protected: ByteArray,
         val nonce: ByteArray, val bodyCt: ByteArray, val unsignedLength: Int,
-        val deviceWrap: Wrap, val archiveWrap: Wrap,
+        val deviceWrap: Wrap, val archiveWrap: Wrap, val wraps: List<Wrap>,
         val accountId: ByteArray, val messageId: ByteArray, val deviceId: ByteArray,
         val lineId: ByteArray, val keysetVersion: Long, val manifestDigest: ByteArray,
         val signerKeyId: ByteArray, val peer: String
@@ -65,19 +61,15 @@ internal object Draft02TinkEnvelopeReceiver {
     fun openOutbound(envelope: ByteArray, trusted: TrustedView, keyStore: DevicePayloadKeyStore,
                      replay: ReplayJournal): String {
         val parsed = parseOutbound(envelope)
-        require(trusted.ownerSignatureAccepted && trusted.signerAuthorizedForOutbound &&
-            trusted.deviceCurrentlyAuthorized) { "Draft-02 manifest authorization denied" }
-        require(trusted.accountId.size == 16 && trusted.deviceId.size == 16 &&
-            trusted.lineId.size == 16 && trusted.manifestDigest.size == 32 &&
-            trusted.deviceKeyId.size == 32 && trusted.archiveKeyId.size == 32 &&
-            trusted.signerPoint.size == 65) { "Invalid trusted view" }
-        require(same(parsed.accountId, trusted.accountId) &&
+        require(trusted.deviceId.size == 16 && trusted.lineId.size == 16 &&
             same(parsed.deviceId, trusted.deviceId) && same(parsed.lineId, trusted.lineId) &&
-            same(parsed.manifestDigest, trusted.manifestDigest) &&
-            parsed.keysetVersion == trusted.keysetVersion && parsed.peer == trusted.peer &&
-            same(parsed.deviceWrap.keyId, trusted.deviceKeyId) &&
-            same(parsed.archiveWrap.keyId, trusted.archiveKeyId)) { "Draft-02 trusted view mismatch" }
-        require(verifySignature(parsed, trusted.signerPoint)) { "Draft-02 origin signature invalid" }
+            parsed.peer == trusted.peer) { "Draft-02 live route mismatch" }
+        val nowMs = System.currentTimeMillis()
+        val pin = Draft02ManifestVerifier.enroll(trusted.rootPin, trusted.rootFingerprint)
+        val manifest = Draft02ManifestVerifier.verify(trusted.manifest, pin, nowMs)
+        val signerPoint = Draft02ManifestVerifier.authorizeOutbound(
+            manifest, parsed, trusted.deviceId, trusted.lineId, nowMs)
+        require(verifySignature(parsed, signerPoint)) { "Draft-02 origin signature invalid" }
         replay.check(parsed.accountId, parsed.messageId, envelope.copyOfRange(0, parsed.unsignedLength))
         val cek = openDeviceWrap(parsed, keyStore)
         try {
@@ -132,6 +124,7 @@ internal object Draft02TinkEnvelopeReceiver {
         var device: Wrap? = null
         var archive: Wrap? = null
         var previous: Wrap? = null
+        val wraps = ArrayList<Wrap>(count)
         for (index in 0 until count) {
             val start = bodyEnd + 1 + index * WRAP_SIZE
             val role = envelope[start].toInt() and 0xff
@@ -154,13 +147,14 @@ internal object Draft02TinkEnvelopeReceiver {
                 require(archive == null) { "Duplicate archive wrap" }
                 archive = wrap
             }
+            wraps.add(wrap)
             previous = wrap
         }
         require(device != null && archive != null) { "Draft-02 recipient set" }
         return Parsed(envelope, envelope.copyOfRange(0, 10), protected,
             envelope.copyOfRange(protectedEnd, protectedEnd + 12),
             envelope.copyOfRange(protectedEnd + 16, bodyEnd), envelope.size - 64,
-            device, archive, protected.copyOfRange(0, 16), protected.copyOfRange(16, 32),
+            device, archive, wraps, protected.copyOfRange(0, 16), protected.copyOfRange(16, 32),
             protected.copyOfRange(32, 48), protected.copyOfRange(48, 64), keysetVersion,
             protected.copyOfRange(72, 104), protected.copyOfRange(104, 136),
             String(peerBytes, Charsets.US_ASCII))
@@ -171,6 +165,12 @@ internal object Draft02TinkEnvelopeReceiver {
 
     internal fun openDeviceWrap(parsed: Parsed, keyStore: DevicePayloadKeyStore,
                                 info: ByteArray = wrapInfo(parsed)): ByteArray {
+        return Draft02PublicJcaKeystoreHpke.openCek(
+            keyStore, parsed.deviceWrap.keyId, parsed.deviceWrap.enc, parsed.deviceWrap.ct, info)
+    }
+
+    /** Test-only differential oracle; Tink is not on the release runtime classpath. */
+    internal fun openDeviceWrapTink(parsed: Parsed, keyStore: DevicePayloadKeyStore): ByteArray {
         require(parsed.deviceWrap.ct.size == 48) { "Invalid draft-02 wrap ciphertext" }
         val public = keyStore.existingPublic()
         val dh = keyStore.agreeExisting(parsed.deviceWrap.enc, parsed.deviceWrap.keyId)
@@ -184,7 +184,7 @@ internal object Draft02TinkEnvelopeReceiver {
             val key = HpkePublicKey.create(params, Bytes.copyFrom(public.point), null)
             return HpkeHelperForAndroidKeystore.create(key)
                 .decryptUnauthenticatedWithEncapsulatedKeyAndP256SharedSecret(
-                    parsed.deviceWrap.enc, dh, parsed.deviceWrap.ct, 0, info)
+                    parsed.deviceWrap.enc, dh, parsed.deviceWrap.ct, 0, wrapInfo(parsed))
         } finally { dh.fill(0) }
     }
 
@@ -195,8 +195,7 @@ internal object Draft02TinkEnvelopeReceiver {
         val raw = parsed.envelope.copyOfRange(parsed.unsignedLength, parsed.envelope.size)
         val r = BigInteger(1, raw.copyOfRange(0, 32))
         val s = BigInteger(1, raw.copyOfRange(32, 64))
-        if (r.signum() == 0 || r >= order || s.signum() == 0 || s >= order) return false
-        // Q6 remains open: this proof permits both valid high-s and low-s Web Crypto signatures.
+        if (r.signum() == 0 || r >= order || s.signum() == 0 || s > order.shiftRight(1)) return false
         return Signature.getInstance("SHA256withECDSA").run {
             initVerify(point)
             update(signLabel)
