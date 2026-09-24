@@ -12,6 +12,7 @@ pub mod http_webhooks;
 pub mod inbound;
 pub mod ingress;
 pub mod owner_ui;
+pub mod retention;
 pub mod runtime_db;
 pub mod sealed_inbound;
 pub mod webhook_egress;

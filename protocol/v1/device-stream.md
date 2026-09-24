@@ -59,6 +59,30 @@ While the manually started foreground service remains alive, transport loss,
 an established session's close, or a heartbeat timeout can retry with bounded
 backoff and a fresh challenge proof and epoch. A manual synthetic-SMS arm or
 inbound-upload opt-in is consumed before retry; a reconnect is heartbeat-only.
+
+After authentication, the writer closes with `4409` when a submitted
+`radio_event` or `inbound_event` is permanently invalid for the current
+session. This includes a stale attempt fence after the writer has retired an
+old event ID. The phone durably quarantines that one local row and reconnects
+for heartbeat-only service; it never interprets the rejection as permission
+to send an SMS. A writer-side storage failure closes with `1013` and leaves
+the row eligible for retry. For older writers that close without a code, three
+immediate authenticated closes while the same row is outstanding trigger the
+same quarantine. If the phone cannot persist quarantine, it pauses the
+foreground service for repair.
+An inbound reply that arrives before its matching positive sent callback is
+available at the writer receives `1013`, so the signed inbound row can retry
+after the radio callback is uploaded. A missing or foreign attempt remains a
+permanent rejection.
+
+Every queued radio event and inbound upload is bound at capture to the
+account UUID, device UUID, and a SHA-256 hash of the WSS origin. A session
+filters on all three values. Re-pairing or changing the server quarantines
+unacknowledged rows from another identity before an upload pump selects them.
+Pre-upgrade rows without an identity remain local and are never sent by a new
+session. The hash is a routing guard, not a trust anchor or a replacement for
+TLS verification.
+
 Pause, force-stop, service/process stop, and reboot do not self-start the
 client. A Samsung loopback proxy-close/reconnect probe passed. Neither a
 session nor a heartbeat authorizes SMS.
@@ -67,8 +91,9 @@ session nor a heartbeat authorizes SMS.
 
 The Android app exposes a separate **Start inbound metadata pilot** action. It
 is off by default. The hub must separately enable `INBOUND_PILOT_ENABLED=true`.
-After authenticated session setup, the phone sends only previously captured
-`captured_local` events. It does not transmit the sender address, SMS body, PDU,
+After authenticated session setup, the phone sends previously captured
+`captured_local`, `opt_out`, `opt_out_review`, and `opt_in` events from a
+trusted reply window. It does not transmit the sender address, SMS body, PDU,
 or the local AES-GCM vault ciphertext. This pilot does not expose reply content
 to customers and has not passed a live WSS interoperability test.
 

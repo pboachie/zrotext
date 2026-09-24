@@ -794,6 +794,7 @@ mod tests {
             include_str!(
                 "../../../../deploy/compose/migrations/024_billing_risk_operator_review.sql"
             ),
+            include_str!("../../../../deploy/compose/migrations/028_billing_provider_failures.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }

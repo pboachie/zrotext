@@ -21,6 +21,7 @@ let shownWebhookCount = 0;
 let webhookLoadGeneration = 0;
 let endpointLoadGeneration = 0;
 let availableWebhookEndpointIds = new Set();
+let sessionLoadGeneration = 0;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const webhookStatusLabels = Object.freeze({ pending: "Pending", leased: "In progress", succeeded: "Succeeded", dead: "Stopped" });
 const webhookReasonLabels = Object.freeze({ failed: "Attempts exhausted", policy_rejected: "Policy rejected", retired: "Retired", legacy: "Legacy failure" });
@@ -49,8 +50,10 @@ function csrfToken() {
 async function api(path, method = "GET", body = undefined) {
   const requestEpoch = ownerEpoch;
   const headers = {};
+  const isPasswordReset = path === "/v1/auth/password/reset/request" ||
+    path === "/v1/auth/password/reset/confirm";
   if (body !== undefined) headers["content-type"] = "application/json";
-  if ((method !== "GET" && path !== "/v1/auth/login" && path !== "/v1/auth/login/mfa")
+  if ((method !== "GET" && path !== "/v1/auth/login" && path !== "/v1/auth/login/mfa" && !isPasswordReset)
       || path.startsWith("/v1/auth/api-keys")) {
     const csrf = csrfToken();
     if (!csrf) throw new Error("Your sign-in expired. Sign in again.");
@@ -63,14 +66,15 @@ async function api(path, method = "GET", body = undefined) {
   if (requestEpoch !== ownerEpoch) {
     throw new Error("Your sign-in expired. Sign in again.");
   }
-  if (response.status === 401 && path !== "/v1/auth/login" && path !== "/v1/auth/login/mfa") {
+  if (response.status === 401 && path !== "/v1/auth/login" && path !== "/v1/auth/login/mfa" && !isPasswordReset) {
     clearOwnerState();
     message("global-status", "Your sign-in expired. Sign in again.");
   }
   if (!response.ok) {
     const descriptions = {
       400: "Check the entered values and try again.",
-      401: path === "/v1/auth/login" ? "Email or password was not accepted."
+      401: isPasswordReset ? "The reset token was not accepted. Request a new one and try again."
+        : path === "/v1/auth/login" ? "Email or password was not accepted."
         : path === "/v1/auth/login/mfa" ? "Code was not accepted. Try again."
           : "Your sign-in expired. Sign in again.",
       403: "This action was refused. Refresh the page and sign in again.",
@@ -109,10 +113,11 @@ function clearMfaChallenge() {
 async function completeSignIn() {
   await api("/v1/auth/session");
   clearMfaChallenge();
+  clearResetFields();
   showSignedIn(true);
   message("login-status", "");
   message("global-status", "Signed in.");
-  await Promise.all([loadDevices(), loadDeviceCapacity(), loadMessages(), loadKeys(), loadWebhookEndpoints()]);
+  await Promise.all([loadDevices(), loadDeviceCapacity(), loadMessages(), loadKeys(), loadWebhookEndpoints(), loadSessions()]);
 }
 
 function clearPairing() {
@@ -173,6 +178,7 @@ function clearWebhookEndpoints() {
 
 function clearOwnerState() {
   ownerEpoch += 1;
+  sessionLoadGeneration += 1;
   clearMfaChallenge();
   clearPairing();
   clearKeySecret();
@@ -193,11 +199,71 @@ function clearOwnerState() {
   nextKeyCursor = null;
   shownKeyCount = 0;
   message("key-create-status", "");
+  clearPasswordFields();
+  clearResetFields();
+  message("change-password-status", "");
+  byId("session-list").replaceChildren();
+  byId("revoke-other-sessions-form").hidden = true;
+  byId("revoke-sessions-password").value = "";
+  byId("revoke-sessions-mfa-code").value = "";
+  message("session-status", "");
   showSignedIn(false);
+}
+
+function clearPasswordFields() {
+  for (const id of ["current-password", "new-password", "confirm-new-password", "password-mfa-code"]) {
+    byId(id).value = "";
+  }
+}
+
+function clearResetFields() {
+  for (const id of ["reset-email", "reset-token", "reset-new-password", "reset-confirm-password"]) {
+    byId(id).value = "";
+  }
 }
 
 function dateText(milliseconds) {
   return milliseconds === null ? "Never" : new Date(milliseconds).toLocaleString();
+}
+
+function validSession(session) {
+  return session && uuidPattern.test(session.id) && typeof session.current === "boolean" &&
+    Number.isSafeInteger(session.created_at_ms) && Number.isSafeInteger(session.expires_at_ms) &&
+    (session.last_used_at_ms === null || Number.isSafeInteger(session.last_used_at_ms));
+}
+
+async function loadSessions() {
+  const requestEpoch = ownerEpoch;
+  const generation = ++sessionLoadGeneration;
+  message("session-status", "Loading sessions…");
+  try {
+    const result = await api("/v1/auth/sessions");
+    if (requestEpoch !== ownerEpoch || generation !== sessionLoadGeneration) return;
+    if (!result || !Array.isArray(result.sessions) || result.sessions.length > 100 ||
+        !result.sessions.every(validSession) ||
+        result.sessions.filter((session) => session.current).length !== 1) {
+      throw new Error("The session response was invalid.");
+    }
+    byId("session-list").replaceChildren();
+    for (const session of result.sessions) {
+      const item = document.createElement("li");
+      const heading = document.createElement("strong");
+      const detail = document.createElement("span");
+      heading.textContent = session.current ? "This session" : "Other session";
+      detail.textContent = `Created ${dateText(session.created_at_ms)} · Last used ${dateText(session.last_used_at_ms)} · Expires ${dateText(session.expires_at_ms)}`;
+      item.append(heading, detail);
+      byId("session-list").append(item);
+    }
+    const otherCount = result.sessions.filter((session) => !session.current).length;
+    byId("revoke-other-sessions-form").hidden = otherCount === 0;
+    message("session-status", otherCount === 0 ? "Only this session is active." :
+      `${otherCount} other session${otherCount === 1 ? "" : "s"} active.`);
+  } catch (error) {
+    if (requestEpoch !== ownerEpoch || generation !== sessionLoadGeneration) return;
+    byId("session-list").replaceChildren();
+    byId("revoke-other-sessions-form").hidden = true;
+    message("session-status", `Could not load sessions. ${error.message}`);
+  }
 }
 
 function inboundDateText(milliseconds) {
@@ -677,6 +743,99 @@ byId("logout").addEventListener("click", async () => {
   }
 });
 
+byId("reset-request-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const email = byId("reset-email").value.trim();
+  const submit = byId("reset-request-submit");
+  submit.disabled = true;
+  message("reset-request-status", "Sending instructions…");
+  try {
+    await api("/v1/auth/password/reset/request", "POST", { email });
+    byId("reset-email").value = "";
+    message("reset-request-status", "If this address has an owner account, reset instructions will arrive by email.");
+  } catch (error) {
+    message("reset-request-status", `Could not request a reset. ${error.message}`);
+  } finally {
+    submit.disabled = false;
+  }
+});
+
+byId("reset-confirm-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const token = byId("reset-token").value.trim();
+  const newPassword = byId("reset-new-password").value;
+  const confirmed = byId("reset-confirm-password").value;
+  byId("reset-new-password").value = "";
+  byId("reset-confirm-password").value = "";
+  if (newPassword !== confirmed) {
+    message("reset-confirm-status", "New passwords do not match. Enter them again.");
+    return;
+  }
+  const submit = byId("reset-confirm-submit");
+  submit.disabled = true;
+  message("reset-confirm-status", "Resetting password…");
+  try {
+    await api("/v1/auth/password/reset/confirm", "POST", { token, new_password: newPassword });
+    byId("reset-token").value = "";
+    message("reset-confirm-status", "Password reset. Sign in with your new password.");
+  } catch (error) {
+    message("reset-confirm-status", `Could not reset password. ${error.message}`);
+  } finally {
+    submit.disabled = false;
+  }
+});
+
+byId("change-password-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const currentPassword = byId("current-password").value;
+  const newPassword = byId("new-password").value;
+  const confirmed = byId("confirm-new-password").value;
+  const code = byId("password-mfa-code").value.trim();
+  clearPasswordFields();
+  if (newPassword !== confirmed) {
+    message("change-password-status", "New passwords do not match. Enter them again.");
+    return;
+  }
+  const submit = byId("change-password-submit");
+  submit.disabled = true;
+  message("change-password-status", "Changing password…");
+  try {
+    await api("/v1/auth/password", "POST", {
+      current_password: currentPassword, new_password: newPassword,
+      ...(code ? { code } : {}),
+    });
+    clearOwnerState();
+    message("global-status", "Password changed. Sign in again. All sessions and API keys were revoked; reissue keys used by integrations.");
+  } catch (error) {
+    message("change-password-status", `Could not change password. ${error.message}`);
+  } finally {
+    submit.disabled = false;
+  }
+});
+
+byId("refresh-sessions").addEventListener("click", loadSessions);
+byId("revoke-other-sessions-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!window.confirm("Sign out all other sessions?")) return;
+  const currentPassword = byId("revoke-sessions-password").value;
+  const code = byId("revoke-sessions-mfa-code").value.trim();
+  byId("revoke-sessions-password").value = "";
+  byId("revoke-sessions-mfa-code").value = "";
+  byId("revoke-other-sessions").disabled = true;
+  message("session-status", "Signing out other sessions…");
+  try {
+    await api("/v1/auth/sessions/revoke-others", "POST", {
+      current_password: currentPassword,
+      ...(code ? { code } : {}),
+    });
+    await loadSessions();
+  } catch (error) {
+    message("session-status", `Could not sign out other sessions. ${error.message}`);
+  } finally {
+    byId("revoke-other-sessions").disabled = false;
+  }
+});
+
 byId("create-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   if (activePairingId) {
@@ -744,6 +903,7 @@ byId("refresh-keys").addEventListener("click", loadKeys);
 byId("more-keys").addEventListener("click", () => loadKeys(false));
 byId("dismiss-key-secret").addEventListener("click", clearKeySecret);
 window.addEventListener("pagehide", clearKeySecret);
+window.addEventListener("pagehide", () => { clearPasswordFields(); clearResetFields(); });
 byId("inbound-history-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const messageId = byId("inbound-message-id").value.trim();
@@ -799,8 +959,9 @@ byId("key-create-form").addEventListener("submit", async (event) => {
 (async () => {
   try {
     await api("/v1/auth/session");
+    clearResetFields();
     showSignedIn(true);
-    await Promise.all([loadDevices(), loadDeviceCapacity(), loadMessages(), loadKeys(), loadWebhookEndpoints()]);
+    await Promise.all([loadDevices(), loadDeviceCapacity(), loadMessages(), loadKeys(), loadWebhookEndpoints(), loadSessions()]);
   } catch (error) {
     showSignedIn(false);
     message("global-status", error.message.startsWith("Your sign-in") ? "Sign in to manage devices." : `Could not verify session. ${error.message}`);

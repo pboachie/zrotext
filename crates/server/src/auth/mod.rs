@@ -24,6 +24,7 @@ const PENDING_PRUNE_BATCH: i64 = 100;
 const MAX_EMAIL_BYTES: usize = 254;
 
 pub mod abuse_limits;
+pub mod account;
 pub mod mfa;
 mod password_work;
 mod verification_outbox;
@@ -506,7 +507,7 @@ pub async fn login(
         )
         .await?;
     let stored = row.as_ref().map(|row| row.get::<_, String>(2));
-    password_work::verify(password, stored).await?;
+    password_work::verify(password, stored.clone()).await?;
     // Even a password matching the dummy verifier cannot authenticate.
     let row = row.ok_or(AuthError::InvalidCredentials)?;
     let user_id: Uuid = row.get(0);
@@ -527,15 +528,29 @@ pub async fn login(
     let id = Uuid::new_v4();
     let inserted = client
         .execute(
-            "INSERT INTO sessions(id,account_id,user_id,token_hash,csrf_hash,expires_at) SELECT $1,$2,$3,$4,$5,now()+($6::integer * interval '1 day') FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE u.id=$3 AND m.account_id=$2 AND NOT u.mfa_enabled AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL FOR UPDATE OF u",
-            &[&id, &account_id, &user_id, &&token_hash[..], &&csrf_hash[..], &SESSION_DAYS],
+            "INSERT INTO sessions(id,account_id,user_id,token_hash,csrf_hash,expires_at) SELECT $1,$2,$3,$4,$5,now()+($6::integer * interval '1 day') FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE u.id=$3 AND m.account_id=$2 AND u.password_hash=$7 AND NOT u.mfa_enabled AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL FOR UPDATE OF u",
+            &[&id, &account_id, &user_id, &&token_hash[..], &&csrf_hash[..], &SESSION_DAYS, &stored],
         )
         .await?;
     if inserted != 1 {
-        return Err(AuthError::MfaRequired {
-            account_id,
-            user_id,
-        });
+        let current = client
+            .query_opt(
+                "SELECT u.password_hash,u.mfa_enabled FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE u.id=$1 AND m.account_id=$2 AND a.disabled_at IS NULL",
+                &[&user_id, &account_id],
+            )
+            .await?
+            .ok_or(AuthError::InvalidCredentials)?;
+        if Some(current.get::<_, String>(0)) != stored {
+            return Err(AuthError::InvalidCredentials);
+        }
+        return if current.get::<_, bool>(1) {
+            Err(AuthError::MfaRequired {
+                account_id,
+                user_id,
+            })
+        } else {
+            Err(AuthError::InvalidCredentials)
+        };
     }
     Ok(SessionCredentials {
         id,
@@ -562,8 +577,15 @@ pub async fn authenticate_session(
         .ok_or(AuthError::Unauthorized)?;
     let csrf: Vec<u8> = row.get(3);
     let csrf_hash: [u8; 32] = csrf.try_into().map_err(|_| AuthError::Unauthorized)?;
+    // Coarse activity metadata for the owner's session inventory. The guard
+    // avoids a row rewrite on every authenticated request.
+    let session_id: Uuid = row.get(0);
+    client.execute(
+        "UPDATE sessions SET last_used_at=now() WHERE id=$1 AND revoked_at IS NULL AND (last_used_at IS NULL OR last_used_at<now()-interval '15 minutes')",
+        &[&session_id],
+    ).await?;
     Ok(SessionPrincipal {
-        session_id: row.get(0),
+        session_id,
         tenant: Tenant {
             account_id: row.get(1),
         },
@@ -587,7 +609,7 @@ pub async fn revoke_session(
 }
 
 pub async fn create_api_key(
-    client: &Client,
+    client: &mut Client,
     hasher: &TokenHasher,
     principal: &SessionPrincipal,
     scopes: &[Scope],
@@ -611,7 +633,17 @@ pub async fn create_api_key(
     let public_prefix = token.chars().skip(4).take(12).collect::<String>();
     let hash = hasher.digest(b"api-key-v1", &token);
     let id = Uuid::new_v4();
-    let inserted = client
+    // Recovery locks this same user row before revoking keys and sessions.
+    // The lock closes the race where a pre-reset session mints a key after
+    // recovery has already revoked the keys it could see.
+    let tx = client.transaction().await?;
+    tx.query_opt(
+        "SELECT u.id FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE u.id=$1 AND m.account_id=$2 AND a.disabled_at IS NULL FOR UPDATE OF u",
+        &[&principal.user_id, &principal.tenant.account_id()],
+    )
+    .await?
+    .ok_or(AuthError::Unauthorized)?;
+    let inserted = tx
         .execute(
             "INSERT INTO api_keys(id,account_id,created_by_user_id,public_prefix,token_hash,scopes,bound_device_id,expires_at) SELECT $1,$2,$3,$4,$5,$6,$7,CASE WHEN $8::integer IS NULL THEN NULL ELSE now()+($8::integer * interval '1 day') END FROM sessions s WHERE s.id=$9 AND s.account_id=$2 AND s.user_id=$3 AND s.revoked_at IS NULL AND s.expires_at>now()",
             &[&id, &principal.tenant.account_id, &principal.user_id, &public_prefix, &&hash[..], &scope_names, &bound_device_id, &lifetime_days, &principal.session_id],
@@ -620,6 +652,7 @@ pub async fn create_api_key(
     if inserted != 1 {
         return Err(AuthError::Unauthorized);
     }
+    tx.commit().await?;
     Ok(ApiKeyCredentials {
         id,
         token,
@@ -992,7 +1025,7 @@ mod tests {
         assert!(!revoke_session(&client, &pb, sa.id).await.unwrap());
         let bound_device = Uuid::new_v4();
         let key = create_api_key(
-            &client,
+            &mut client,
             &hasher,
             &pa,
             &[Scope::MessagesSend],
@@ -1018,7 +1051,7 @@ mod tests {
             Err(AuthError::Unauthorized)
         ));
         assert!(matches!(
-            create_api_key(&client, &hasher, &pa, &[Scope::BillingRead], None, None).await,
+            create_api_key(&mut client, &hasher, &pa, &[Scope::BillingRead], None, None).await,
             Err(AuthError::Unauthorized)
         ));
         assert!(revoke_api_key(&client, &pa, key.id).await.unwrap());
