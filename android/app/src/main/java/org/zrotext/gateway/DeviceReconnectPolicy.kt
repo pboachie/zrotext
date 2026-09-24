@@ -99,10 +99,12 @@ internal class DeviceReconnectPolicy(private val jitter: () -> Double) {
 
 /** A broken TLS stream is retryable; an untrusted peer or invalid protocol is not. */
 internal object DeviceDisconnectClassifier {
-    fun closed(code: Int, authenticated: Boolean): DeviceReconnectPolicy.Loss =
-        if (authenticated && code in listOf(1000, 1001, 1005, 1006, 1011, 1012, 1013))
+    fun closed(code: Int, authenticated: Boolean): DeviceReconnectPolicy.Loss = when {
+        code in listOf(1011, 1012, 1013) -> DeviceReconnectPolicy.Loss.TRANSPORT
+        authenticated && code in listOf(1000, 1001, 1005, 1006) ->
             DeviceReconnectPolicy.Loss.ACTIVE_CLOSE
-        else DeviceReconnectPolicy.Loss.AUTH_REJECTED
+        else -> DeviceReconnectPolicy.Loss.AUTH_REJECTED
+    }
 
     fun failed(error: Throwable, httpStatus: Int?): DeviceReconnectPolicy.Loss {
         val causes = generateSequence(error as Throwable?) { it.cause }.toList()
