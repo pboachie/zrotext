@@ -35,7 +35,11 @@ Set `APP_PORT` in `.env` if port 8080 is occupied for the normal local setup;
 the documented health endpoints then use that port.
 
 The `migrate` service applies `migrations/001_*.sql`, `002_*.sql`, and later
-consecutive numbered SQL files before the API starts. It holds a PostgreSQL
+consecutive numbered SQL files before the API starts. Migration files are trusted
+operator source code, not sandboxed input. The runner rejects explicit transaction
+control under both PostgreSQL ordinary-string escaping modes; use explicit
+`E'...'` escapes or dollar quoting when ordinary backslash strings are ambiguous.
+It holds a PostgreSQL
 advisory lock, records a SHA-256 checksum for each version, and commits each
 file with its ledger row in one transaction. A failed migration stops Compose
 startup with a nonzero exit. Never edit an applied file; add the next number.
