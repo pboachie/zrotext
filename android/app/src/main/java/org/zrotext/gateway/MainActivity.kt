@@ -133,7 +133,7 @@ class MainActivity : ComponentActivity() {
                         startService(Intent(this@MainActivity, AuthenticatedGatewayService::class.java)
                             .setAction(AuthenticatedGatewayService.ACTION_PAUSE))
                     }) { Text("Pause authenticated heartbeat") }
-                    Text("Inbound pilot: explicitly start a device session that uploads signed metadata for locally captured, consented replies. The sender number and SMS body stay on this phone.")
+                    Text("Inbound pilot: capture carrier SMS replies and upload signed metadata. RCS replies do not reach this SMS receiver. Before using a dedicated gateway line, verify that a sender with unchanged messaging settings can send an SMS reply and this app acknowledges it. The sender number and SMS body stay on this phone.")
                     Button(onClick = {
                         stopService(Intent(this@MainActivity, GatewayService::class.java))
                         val intent = Intent(this@MainActivity, AuthenticatedGatewayService::class.java)
