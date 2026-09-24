@@ -20,12 +20,14 @@ pub enum Limit {
     MfaChallenge,
     MfaManage,
     BillingSession,
+    ApiKeyCreate,
 }
 
 impl Limit {
     fn policy(self) -> (&'static str, i32, i32, Option<(i32, i32)>) {
         // (scope, global attempts, global window seconds, subject policy)
         match self {
+            Self::ApiKeyCreate => ("api_key_create", 600, 60, Some((20, 86_400))),
             Self::Registration => ("registration", 120, 3_600, Some((3, 86_400))),
             Self::Login => ("login", 240, 60, Some((12, 900))),
             Self::Resend => ("resend", 120, 60, Some((12, 900))),
@@ -83,6 +85,7 @@ pub async fn prune(client: &Client) -> Result<u64, tokio_postgres::Error> {
                 SELECT scope,subject_hash FROM auth_abuse_counters
                 WHERE updated_at < now() - CASE scope
                     WHEN 'registration' THEN interval '25 hours'
+                    WHEN 'api_key_create' THEN interval '25 hours'
                     WHEN 'login' THEN interval '16 minutes'
                     WHEN 'resend' THEN interval '16 minutes'
                     WHEN 'mfa_manage' THEN interval '16 minutes'
