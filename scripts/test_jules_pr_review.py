@@ -11,6 +11,7 @@ import jules_pr_review as review
 
 SHA = "a" * 40
 BASE_SHA = "b" * 40
+SOURCE_NAME = "sources/github-pboachie-zrotext"
 
 
 def pull_request(*, draft=False, owner="pboachie", head_repo=review.REPO,
@@ -105,7 +106,7 @@ class ReviewRoutingTests(unittest.TestCase):
             raise AssertionError(url)
 
         with patch.object(review, "pages", return_value=[]), \
-             patch.object(review, "source_branches", return_value={"codex/owner-ui"}), \
+             patch.object(review, "source_branches", return_value=(SOURCE_NAME, {"codex/owner-ui"})), \
              patch.object(review, "request_json", side_effect=fake_request):
             review.start_review(74, "review", "dispatch-1", "github-test", "jules-test")
 
@@ -113,17 +114,43 @@ class ReviewRoutingTests(unittest.TestCase):
         self.assertIn(f"head={SHA} base={BASE_SHA} mode=review", posted[0]["body"])
 
     def test_source_preflight_reads_connected_repository_and_branches(self):
+        calls = []
+
         def fake_request(url, **kwargs):
-            self.assertEqual(url, f"{review.JULES}/{review.SOURCE}")
+            calls.append(url)
             self.assertEqual(kwargs["method"] if "method" in kwargs else "GET", "GET")
-            return {"name": review.SOURCE,
-                    "githubRepo": {"owner": "pboachie", "repo": "zrotext",
-                                   "branches": [{"displayName": "main"},
-                                                {"displayName": "codex/owner-ui"}]}}
+            if url == f"{review.JULES}/sources?pageSize=100":
+                return {"sources": [{"name": "sources/another-repo",
+                                     "githubRepo": {"owner": "elsewhere", "repo": "repo"}},
+                                    {"name": SOURCE_NAME,
+                                     "githubRepo": {"owner": "pboachie", "repo": "zrotext"}}]}
+            if url == f"{review.JULES}/{SOURCE_NAME}":
+                return {"name": SOURCE_NAME,
+                        "githubRepo": {"owner": "pboachie", "repo": "zrotext",
+                                       "branches": [{"displayName": "main"},
+                                                    {"displayName": "codex/owner-ui"}]}}
+            raise AssertionError(url)
 
         with patch.object(review, "request_json", side_effect=fake_request):
             self.assertEqual(review.source_branches("jules-test"),
-                             {"main", "codex/owner-ui"})
+                             (SOURCE_NAME, {"main", "codex/owner-ui"}))
+        self.assertEqual(calls, [f"{review.JULES}/sources?pageSize=100",
+                                 f"{review.JULES}/{SOURCE_NAME}"])
+
+    def test_source_listing_paginates_and_rejects_ambiguous_repo(self):
+        def fake_request(url, **_kwargs):
+            if url == f"{review.JULES}/sources?pageSize=100":
+                return {"sources": [], "nextPageToken": "page-two"}
+            if url == f"{review.JULES}/sources?pageSize=100&pageToken=page-two":
+                return {"sources": [{"name": SOURCE_NAME,
+                                     "githubRepo": {"owner": "pboachie", "repo": "zrotext"}},
+                                    {"name": "sources/github/pboachie/zrotext",
+                                     "githubRepo": {"owner": "pboachie", "repo": "zrotext"}}]}
+            raise AssertionError(url)
+
+        with patch.object(review, "request_json", side_effect=fake_request):
+            with self.assertRaisesRegex(RuntimeError, "missing or ambiguous"):
+                review.source_branches("jules-test")
 
     def test_unavailable_branch_defers_without_creating_a_paid_session(self):
         requests = []
@@ -132,8 +159,11 @@ class ReviewRoutingTests(unittest.TestCase):
             requests.append(url)
             if url == f"{review.GITHUB}/pulls/74":
                 return pull_request()
-            if url == f"{review.JULES}/{review.SOURCE}":
-                return {"name": review.SOURCE,
+            if url == f"{review.JULES}/sources?pageSize=100":
+                return {"sources": [{"name": SOURCE_NAME,
+                                     "githubRepo": {"owner": "pboachie", "repo": "zrotext"}}]}
+            if url == f"{review.JULES}/{SOURCE_NAME}":
+                return {"name": SOURCE_NAME,
                         "githubRepo": {"owner": "pboachie", "repo": "zrotext",
                                        "branches": [{"displayName": "main"}]}}
             raise AssertionError(url)
@@ -143,7 +173,8 @@ class ReviewRoutingTests(unittest.TestCase):
             self.assertFalse(review.start_review(74, "review", "dispatch-1",
                                                  "github-test", "jules-test"))
         self.assertEqual(requests, [f"{review.GITHUB}/pulls/74",
-                                    f"{review.JULES}/{review.SOURCE}"])
+                                    f"{review.JULES}/sources?pageSize=100",
+                                    f"{review.JULES}/{SOURCE_NAME}"])
 
     def test_400_error_is_categorized_without_echoing_untrusted_data(self):
         secret = "private-api-key-in-error"
@@ -180,7 +211,7 @@ class ReviewRoutingTests(unittest.TestCase):
             }[path]
 
         with patch.object(review, "pages", side_effect=fake_pages), \
-             patch.object(review, "source_branches", return_value={"codex/owner-ui"}), \
+             patch.object(review, "source_branches", return_value=(SOURCE_NAME, {"codex/owner-ui"})), \
              patch.object(review, "start_review", side_effect=lambda *args, **kwargs: started.append(args) or True):
             review.start_missing_reviews("github-test", "jules-test")
 
@@ -383,7 +414,7 @@ class AddressFeedbackTrustTests(unittest.TestCase):
             raise AssertionError(url)
 
         with patch.object(review, "pages", side_effect=lambda path, _token: data[path]), \
-             patch.object(review, "source_branches", return_value={"codex/owner-ui"}), \
+             patch.object(review, "source_branches", return_value=(SOURCE_NAME, {"codex/owner-ui"})), \
              patch.object(review, "request_json", side_effect=fake_request):
             review.start_review(74, "address", "comment-8", "github-test", "jules-test")
 

@@ -23,7 +23,6 @@ ACTIONS_BOT_ID = 41898282
 FEEDBACK_ENTRY_LIMIT = 1800
 JULES_REVIEW_LIMIT = 7500
 FEEDBACK_LIMIT = 16000
-SOURCE = "sources/github/pboachie/zrotext"
 GITHUB = f"https://api.github.com/repos/{REPO}"
 JULES = "https://jules.googleapis.com/v1alpha"
 START = re.compile(
@@ -266,10 +265,41 @@ def prompt_for(pr: dict, mode: str, feedback: str = "") -> str:
             "BEGIN FEEDBACK JSON\n" + feedback + "\nEND FEEDBACK JSON")
 
 
-def source_branches(jules_key: str) -> set[str]:
-    """Read the connected source and fail closed if it is not this repository."""
-    source = request_json(f"{JULES}/{SOURCE}", token=jules_key, service="jules")
-    if not isinstance(source, dict) or source.get("name") != SOURCE:
+def source_branches(jules_key: str) -> tuple[str, set[str]]:
+    """Resolve the connected repository by identity, not an assumed source ID."""
+    matches: set[str] = set()
+    token = ""
+    seen_tokens: set[str] = set()
+    for _ in range(20):
+        query = {"pageSize": 100}
+        if token:
+            query["pageToken"] = token
+        listing = request_json(f"{JULES}/sources?{urlencode(query)}",
+                               token=jules_key, service="jules")
+        if not isinstance(listing, dict) or not isinstance(listing.get("sources", []), list):
+            raise RuntimeError("Jules source listing is invalid")
+        for item in listing.get("sources", []):
+            if not isinstance(item, dict):
+                raise RuntimeError("Jules source listing is invalid")
+            repo = item.get("githubRepo")
+            if isinstance(repo, dict) and (repo.get("owner"), repo.get("repo")) == tuple(REPO.split("/")):
+                name = item.get("name")
+                if not isinstance(name, str) or not re.fullmatch(r"sources/[A-Za-z0-9][A-Za-z0-9._/-]{0,255}", name):
+                    raise RuntimeError("Jules repository source name is invalid")
+                matches.add(name)
+        token = listing.get("nextPageToken", "")
+        if not isinstance(token, str) or len(token) > 2048 or token in seen_tokens:
+            raise RuntimeError("Jules source pagination is invalid")
+        if not token:
+            break
+        seen_tokens.add(token)
+    else:
+        raise RuntimeError("Jules source listing exceeded the page limit")
+    if len(matches) != 1:
+        raise RuntimeError("Jules repository source is missing or ambiguous")
+    name = matches.pop()
+    source = request_json(f"{JULES}/{name}", token=jules_key, service="jules")
+    if not isinstance(source, dict) or source.get("name") != name:
         raise RuntimeError("Jules source preflight returned a different source")
     github_repo = source.get("githubRepo")
     if not isinstance(github_repo, dict) or (github_repo.get("owner"), github_repo.get("repo")) != tuple(REPO.split("/")):
@@ -279,11 +309,11 @@ def source_branches(jules_key: str) -> set[str]:
                                              not isinstance(item.get("displayName"), str)
                                              for item in branches):
         raise RuntimeError("Jules source preflight returned invalid branch data")
-    return {item["displayName"] for item in branches}
+    return name, {item["displayName"] for item in branches}
 
 
 def start_review(number: int, mode: str, trigger: str, github_token: str,
-                 jules_key: str, *, available_branches: set[str] | None = None) -> bool:
+                 jules_key: str, *, available_source: tuple[str, set[str]] | None = None) -> bool:
     pr = request_json(f"{GITHUB}/pulls/{number}", token=github_token, service="github")
     if not isinstance(pr, dict) or not eligible_pr(pr):
         print(f"PR #{number} is not an eligible open same-repository owner or Dependabot branch; skipped.")
@@ -297,7 +327,7 @@ def start_review(number: int, mode: str, trigger: str, github_token: str,
            for item in existing):
         print(f"PR #{number} already has this Jules request.")
         return False
-    branches = available_branches if available_branches is not None else source_branches(jules_key)
+    source_name, branches = available_source if available_source is not None else source_branches(jules_key)
     if pr["head"]["ref"] not in branches:
         print(f"PR #{number} deferred: its head branch is not yet available in the Jules source.")
         return False
@@ -306,7 +336,7 @@ def start_review(number: int, mode: str, trigger: str, github_token: str,
                            method="POST", payload={
                                "title": f"ZROtext PR #{number} {mode}",
                                "prompt": prompt_for(pr, mode, feedback),
-                               "sourceContext": {"source": SOURCE,
+                               "sourceContext": {"source": source_name,
                                                  "githubRepoContext": {"startingBranch": pr["head"]["ref"]}},
                            })
     session = created.get("name", "") if isinstance(created, dict) else ""
@@ -328,7 +358,7 @@ def start_review(number: int, mode: str, trigger: str, github_token: str,
 def start_missing_reviews(github_token: str, jules_key: str, *, maximum: int = 2) -> None:
     """Gradually cover ready same-repository PRs from the trusted schedule."""
     started = 0
-    branches: set[str] | None = None
+    source: tuple[str, set[str]] | None = None
     for pr in reversed(pages("/pulls?state=open", github_token)):
         if started >= maximum:
             break
@@ -343,10 +373,10 @@ def start_missing_reviews(github_token: str, jules_key: str, *, maximum: int = 2
                match.group(2) == sha and match.group(4) == "review"
                for item in comments):
             continue
-        if branches is None:
-            branches = source_branches(jules_key)
+        if source is None:
+            source = source_branches(jules_key)
         if start_review(number, "review", f"scheduled-{sha[:12]}",
-                        github_token, jules_key, available_branches=branches):
+                        github_token, jules_key, available_source=source):
             started += 1
 
 
