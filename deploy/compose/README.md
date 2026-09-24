@@ -4,7 +4,11 @@ Run `python deploy/compose/fresh_install_smoke.py` from the repository root to
 check a disposable fresh installation and logical restore. The script generates
 its own local credentials and Compose project, chooses an available loopback
 port, and removes its containers and database volume afterward. It does not
-read the repository `.env` or enable message dispatch.
+read the repository `.env` or enable message dispatch. After checking an empty
+install, it stops the API, inserts two synthetic tenants with device identities,
+message payloads and states, an attempt and event, an ungranted dispatch job,
+an idempotency key, and usage records. The restore rehearsal verifies those
+exact records in both the source and the database-only restore target.
 
 For a release image, pass its immutable digest plus the expected public source
 identity:
@@ -20,7 +24,7 @@ python3 deploy/compose/fresh_install_smoke.py \
 This mode checks that the staged local alias has the requested repository digest
 and source labels, then verifies that both the migrator and API containers ran
 that same image before checking migrations,
-health, readiness, dispatch isolation, and logical restore. The release-image
+health, readiness, dispatch isolation, and a seeded logical restore. The release-image
 workflow runs it before attesting or writing a promotion receipt. A failed
 smoke may leave the uniquely tagged image in GHCR, but no reviewed receipt is
 produced. The script does not verify a registry attestation or authorize
@@ -108,3 +112,8 @@ quiescent snapshot if rows change and counts return to the same values. Keep
 writers stopped for this drill. This local test does not establish off-site
 recovery, encrypted archival, a measured RPO/RTO, or safe production
 re-enablement of dispatch after a real restore.
+
+The fresh-install smoke uses `--expect-synthetic-fixture` when it invokes this
+drill. That flag checks the checked-in synthetic fixture on both sides of the
+restore and is intended for disposable projects only. Leave it off when
+rehearsing a real self-host database.
