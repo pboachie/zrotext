@@ -802,10 +802,11 @@ mod tests {
         let b = register(&mut client, &hasher, "b@example.test", "correct horse 456")
             .await
             .unwrap();
-        for password in ["wrong-password", "unregistered-account"] {
+        for _ in 0..2 {
+            let password = Uuid::new_v4().to_string();
             let before = PASSWORD_VERIFICATIONS.get();
             assert!(matches!(
-                login(&client, &hasher, "unknown@example.test", password).await,
+                login(&client, &hasher, "unknown@example.test", &password).await,
                 Err(AuthError::InvalidCredentials)
             ));
             assert_eq!(PASSWORD_VERIFICATIONS.get(), before + 1);
