@@ -99,6 +99,41 @@ mod tests {
     }
 
     #[test]
+    fn recipient_lookalikes_and_account_changes_do_not_match() {
+        let account = Uuid::new_v4();
+        let policy = AlphaPolicy::parse(
+            Some("true"),
+            Some(&account.to_string()),
+            Some("+15555550101"),
+        )
+        .unwrap();
+        for recipient in [
+            "15555550101",
+            "+15555550101 ",
+            " +15555550101",
+            "+15555550101\n",
+            "+15555550101\0",
+            "+15555550101;15555550102",
+            "+15555550101,15555550102",
+            "+１５５５５５５０１０１",
+            "+15555550102",
+        ] {
+            assert!(!policy.allows(account, recipient));
+            let digest: [u8; 32] = Sha256::digest(recipient.as_bytes()).into();
+            assert!(!policy.allows_recipient_digest(account, &digest));
+        }
+        let approved: [u8; 32] = Sha256::digest(b"+15555550101").into();
+        let revoked = AlphaPolicy::parse(
+            Some("true"),
+            Some(&account.to_string()),
+            Some("+15555550102"),
+        )
+        .unwrap();
+        assert!(!revoked.allows_recipient_digest(account, &approved));
+        assert!(!policy.allows_recipient_digest(Uuid::new_v4(), &approved));
+    }
+
+    #[test]
     fn enabled_policy_requires_exact_allowlists() {
         let account = Uuid::new_v4();
         let policy = AlphaPolicy::parse(

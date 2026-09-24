@@ -9,6 +9,7 @@ use tokio_postgres::Client;
 
 #[derive(Clone, Copy, Debug)]
 pub enum Limit {
+    OutboundAccept,
     Registration,
     Login,
     Resend,
@@ -28,6 +29,7 @@ impl Limit {
         // (scope, global attempts, global window seconds, subject policy)
         match self {
             Self::ApiKeyCreate => ("api_key_create", 600, 60, Some((20, 86_400))),
+            Self::OutboundAccept => ("alpha_send", 600, 60, Some((60, 60))),
             Self::Registration => ("registration", 120, 3_600, Some((3, 86_400))),
             Self::Login => ("login", 240, 60, Some((12, 900))),
             Self::Resend => ("resend", 120, 60, Some((12, 900))),
