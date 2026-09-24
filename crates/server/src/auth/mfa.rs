@@ -253,11 +253,7 @@ async fn check_owner_password(
         &[&principal.tenant.account_id(), &principal.user_id, &principal.session_id],
     ).await?.ok_or(AuthError::Unauthorized)?;
     let stored: String = row.get(0);
-    let parsed = argon2::PasswordHash::new(&stored).map_err(|_| AuthError::InvalidCredentials)?;
-    use argon2::PasswordVerifier;
-    argon2::Argon2::default()
-        .verify_password(password.as_bytes(), &parsed)
-        .map_err(|_| AuthError::InvalidCredentials)
+    super::password_work::verify(password, Some(stored)).await
 }
 
 async fn require_live_session(
