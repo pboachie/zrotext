@@ -2,7 +2,9 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const { randomBytes } = require("node:crypto");
 const test = require("node:test");
+const testPassword = randomBytes(20).toString("hex");
 
 function response(status, body = {}) {
   return {
@@ -69,13 +71,13 @@ async function submit(element) {
 test("invited registration sends credentials in JSON and invite only in a header", async () => {
   const { element, calls } = await accountPage();
   element("register-email").value = "invited@example.test";
-  element("register-password").value = "private passphrase";
+  element("register-password").value = testPassword;
   element("register-token").value = " address-bound-token ";
   await submit(element("register-form"));
   const call = calls.at(-1);
   assert.equal(call.path, "/v1/auth/register");
   assert.deepEqual(JSON.parse(call.options.body), {
-    email: "invited@example.test", password: "private passphrase",
+    email: "invited@example.test", password: testPassword,
   });
   assert.equal(call.options.headers["x-zrotext-registration-token"], "address-bound-token");
   assert.equal(call.options.headers["x-zrotext-csrf"], undefined);
@@ -94,10 +96,10 @@ test("verification and resend never put a code or password in a URL", async () =
   assert.deepEqual(JSON.parse(calls.at(-1).options.body), { token: "code from email" });
   assert.equal(element("verification-code").value, "");
   element("resend-email").value = "owner@example.test";
-  element("resend-password").value = "private passphrase";
+  element("resend-password").value = testPassword;
   await submit(element("resend-form"));
   assert.deepEqual(JSON.parse(calls.at(-1).options.body), {
-    email: "owner@example.test", password: "private passphrase",
+    email: "owner@example.test", password: testPassword,
   });
   assert.equal(element("resend-password").value, "");
   replies.set("/v1/auth/verify-email", response(400));
@@ -110,7 +112,7 @@ test("verification and resend never put a code or password in a URL", async () =
 test("MFA setup requires CSRF and clears one-time secrets", async () => {
   const { element, calls, windowListeners } = await accountPage({ signedIn: true });
   assert.equal(element("mfa-section").hidden, false);
-  element("mfa-enroll-password").value = "private passphrase";
+  element("mfa-enroll-password").value = testPassword;
   await submit(element("mfa-enroll-form"));
   assert.equal(calls.at(-1).path, "/v1/auth/mfa/enroll");
   assert.equal(calls.at(-1).options.headers["x-zrotext-csrf"], "ztc_synthetic");
@@ -132,17 +134,17 @@ test("MFA setup requires CSRF and clears one-time secrets", async () => {
 
 test("MFA disable uses password and code in JSON and handles missing CSRF", async () => {
   const page = await accountPage({ signedIn: true });
-  page.element("mfa-enroll-password").value = "private passphrase";
+  page.element("mfa-enroll-password").value = testPassword;
   await submit(page.element("mfa-enroll-form"));
   page.element("mfa-confirm-code").value = "123456";
   await submit(page.element("mfa-confirm-form"));
-  page.element("mfa-disable-password").value = "private passphrase";
+  page.element("mfa-disable-password").value = testPassword;
   page.element("mfa-disable-code").value = "unused-recovery";
   await submit(page.element("mfa-disable-form"));
   const call = page.calls.at(-2);
   assert.equal(call.path, "/v1/auth/mfa/disable");
   assert.deepEqual(JSON.parse(call.options.body), {
-    password: "private passphrase", code: "unused-recovery",
+    password: testPassword, code: "unused-recovery",
   });
   assert.equal(page.element("mfa-disable-password").value, "");
   assert.equal(page.element("mfa-disable-code").value, "");
@@ -150,7 +152,7 @@ test("MFA disable uses password and code in JSON and handles missing CSRF", asyn
 
   const noCsrf = await accountPage({ signedIn: true, cookie: "" });
   const count = noCsrf.calls.length;
-  noCsrf.element("mfa-enroll-password").value = "private passphrase";
+  noCsrf.element("mfa-enroll-password").value = testPassword;
   await submit(noCsrf.element("mfa-enroll-form"));
   assert.equal(noCsrf.calls.length, count);
   assert.match(noCsrf.element("mfa-status").textContent, /Sign in before managing MFA/);
@@ -160,7 +162,7 @@ test("a late enrollment response cannot restore a secret after leaving", async (
   const { element, replies, windowListeners } = await accountPage({ signedIn: true });
   let release;
   replies.set("/v1/auth/mfa/enroll", new Promise((resolve) => { release = resolve; }));
-  element("mfa-enroll-password").value = "private passphrase";
+  element("mfa-enroll-password").value = testPassword;
   const pending = submit(element("mfa-enroll-form"));
   windowListeners.pagehide();
   release(response(200, {
