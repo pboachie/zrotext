@@ -52,17 +52,30 @@ the session row lock until commit, or recheck the session under lock inside the
 insert transaction. Calling the current helper in autocommit mode and then
 inserting later is insufficient against session fencing.
 
-The approval and device-confirmation digest columns are reserved audit
-anchors. Their presence does **not** prove that the physical SIM was
-identified or that either party signed a valid statement. A future enrollment
-flow must define canonical signed bytes, verify both proofs, show the owner the
-selected line and device, reject ambiguous or changed multi-SIM observations,
-and activate a new binding generation in one transaction while revoking the
-old one. A phone must block sealed send/reply if it cannot unambiguously map
+The approval and device-confirmation digest columns are audit anchors. Their
+presence alone does **not** prove that the physical SIM was identified or that
+either party signed a valid statement; SQL fixtures can populate them. A
+future enrollment flow must source a trusted owner key, show the owner the
+selected line and device, and reject ambiguous or changed multi-SIM
+observations. A phone must block sealed send/reply if it cannot unambiguously map
 its selected local subscription to the currently approved `line_id` and
 generation. A different local subscription index must not silently inherit
 the binding. The founder's sealed-mode device floor is Android API 31+; the M1
 gateway keeps its existing API range.
+
+[Migration 019 and the internal activation transaction](line-activation-contract.md)
+add exact signed proof bytes, a one-use challenge, and atomic generation
+activation. They have no HTTP/WSS caller and no trusted owner-key bootstrap or
+Android observation implementation. Their single-active-subscription rule is
+an interim fail-closed rule for virtual contract testing, not proof of which
+physical SIM is present. The original digest columns remain audit anchors;
+direct SQL fixtures can still bypass application verification. No sealed
+content route or product claim follows.
+
+Migration 019 tracks the last **issued** generation separately from the
+currently active generation. A missing pending device can be superseded and
+its generation burned without interrupting the old active binding. A late
+proof for the superseded generation is rejected.
 
 ## Required next ingest gate
 
