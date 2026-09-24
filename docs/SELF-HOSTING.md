@@ -26,15 +26,22 @@ Production packaging and upgrade instructions will expand as release artifacts b
 
 ### Database privileges
 
-The development Compose stack uses the PostgreSQL bootstrap `zrotext` role for
-both migrations and the app. That role is a database superuser; the stack does
-not provision a restricted production runtime role. Before public deployment,
-use separate migration and runtime credentials. The runtime role should have
-only required table/sequence access, no superuser, role/database creation or
-schema DDL privileges, and a connection limit sized for the number of hubs.
-Validate startup, backup/restore and upgrade operations with those roles; the
-runtime connection budgets below do not establish least-privilege database
-permissions. Automated production role provisioning remains outstanding.
+Use separate migration and runtime credentials before public deployment. The
+runtime role should have only required application data, sequence and function
+access, no superuser, role/database creation or schema DDL privileges, and a
+connection limit sized for the number of hubs.
+
+[PR #105](https://github.com/pboachie/zrotext/pull/105) supplies Compose runtime
+role provisioning with separate `RUNTIME_DATABASE_PASSWORD` credentials. Follow
+the [Compose guide](../deploy/compose/README.md#database-role-separation) for
+provisioning, existing-volume validation and restore order when using that
+change. Versions without that provisioning require equivalent operator-managed
+role separation; do not give the API the migration owner's credentials.
+
+Validate startup, backup/restore and upgrade operations with the restricted
+role. Runtime connection budgets below do not establish least-privilege database
+permissions, and role separation does not isolate tenants within shared
+application tables.
 
 ### Runtime database and device capacity
 
