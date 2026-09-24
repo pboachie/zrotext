@@ -152,6 +152,21 @@ class ReleaseCandidateTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "review size limit"):
                 release_candidate.release_approval(manifest.read_bytes())
 
+    def test_hosted_unsigned_cli_requires_matching_attestation(self):
+        unsigned = Path("/tmp/zrotext-android-release/unsigned/unsigned.apk")
+        digest = "a" * 64
+        with patch.object(sys, "argv", ["release_candidate.py", "verify-unsigned"]), \
+             patch.object(release_candidate, "source_commit", return_value=self.COMMIT), \
+             patch.object(release_candidate, "checked_unsigned",
+                          return_value=(unsigned, digest, self.IDENTITY, "b" * 64, self.BOM)), \
+             patch.object(release_candidate, "verify_unsigned_sbom_attestation") as attestation, \
+             redirect_stdout(io.StringIO()):
+            release_candidate.main()
+            attestation.assert_called_once_with(unsigned, digest, self.COMMIT, self.BOM)
+            attestation.side_effect = ValueError("Unsigned APK SBOM attestation verification failed")
+            with self.assertRaisesRegex(ValueError, "attestation verification failed"):
+                release_candidate.main()
+
     def test_reviewed_tag_ignores_hostile_git_environment(self):
         with tempfile.TemporaryDirectory() as directory, \
              patch.object(release_candidate, "ROOT", Path(directory)):
