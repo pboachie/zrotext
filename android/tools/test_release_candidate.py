@@ -122,6 +122,43 @@ class ReleaseCandidateTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "symlink"):
                     release_candidate.checked_artifact_file(root / "candidate.json", 100)
 
+    def test_compressed_apk_cannot_expand_beyond_review_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            apk = Path(directory) / "compressed.apk"
+            with zipfile.ZipFile(apk, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr(release_candidate.ASSET, self.COMMIT + "\n")
+                archive.writestr("classes.dex", b"X" * 4096)
+            with patch.object(release_candidate, "MAX_UNCOMPRESSED_APK_BYTES", 1024):
+                with self.assertRaisesRegex(ValueError, "review size limit"):
+                    release_candidate.verify_source_asset(apk, self.COMMIT)
+                with self.assertRaisesRegex(ValueError, "review size limit"):
+                    release_candidate.apk_entry_digests(apk)
+
+    def test_apk_directory_is_bounded_before_zipfile_opens(self):
+        with tempfile.TemporaryDirectory() as directory:
+            apk = Path(directory) / "many-entries.apk"
+            with zipfile.ZipFile(apk, "w") as archive:
+                archive.writestr(release_candidate.ASSET, self.COMMIT + "\n")
+                archive.writestr("classes.dex", "synthetic")
+            with patch.object(release_candidate, "MAX_APK_ENTRIES", 1), \
+                 patch.object(release_candidate.zipfile, "ZipFile",
+                              side_effect=AssertionError("ZipFile opened")):
+                with self.assertRaisesRegex(ValueError, "central directory"):
+                    release_candidate.verify_source_asset(apk, self.COMMIT)
+            with patch.object(release_candidate, "MAX_CENTRAL_DIRECTORY_BYTES", 1), \
+                 patch.object(release_candidate.zipfile, "ZipFile",
+                              side_effect=AssertionError("ZipFile opened")):
+                with self.assertRaisesRegex(ValueError, "central directory"):
+                    release_candidate.apk_entry_digests(apk)
+
+    def test_api28_signature_accepts_v3_without_v2(self):
+        output = ("Verified using v2 scheme (APK Signature Scheme v2): false\n"
+                  "Verified using v3 scheme (APK Signature Scheme v3): true\n")
+        release_candidate.require_api28_signature(output)
+        with self.assertRaisesRegex(ValueError, "did not verify with v3"):
+            release_candidate.require_api28_signature(
+                output.replace("Scheme v3): true", "Scheme v3): false"))
+
     def make_candidate(self, directory):
         build_dir = Path(directory) / "unsigned"
         candidate_dir = Path(directory) / "candidate"

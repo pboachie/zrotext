@@ -67,7 +67,8 @@ record, not from `candidate.json`:
 Place the two directories at the tool's fixed external artifact root:
 `<system temporary directory>/zrotext-android-release/unsigned` and
 `<system temporary directory>/zrotext-android-release/candidate`. The tool
-rejects symlinked or oversized artifact files.
+rejects symlinked or oversized artifact files, caps central-directory metadata
+before opening APK ZIPs, and caps uncompressed entries before reading them.
 
 ```sh
 git fetch origin main --tags
@@ -79,10 +80,10 @@ python3 android/tools/release_candidate.py verify \
 The verifier requires an annotated version tag whose object matches the
 published `origin` tag, a fresh fetched `origin/main`, and tag commit ancestry
 on that branch. It then checks both receipts and checksums against that tag's
-source commit,
-package and SDK identity, every uncompressed APK ZIP entry, ZIP alignment,
-the v2 and v3 signatures with `apksigner`, and the approved certificate
-fingerprint. Install Android SDK build tools (`aapt`, `zipalign`, and
+source commit, package and SDK identity, every uncompressed APK ZIP entry,
+ZIP alignment, the v3 signature (supported by the app's API 28 minimum) with
+`apksigner`, and the approved certificate fingerprint. Install Android SDK
+build tools (`aapt`, `zipalign`, and
 `apksigner`) before running it. The unsigned APK, signed APK, and receipts must
 remain outside the source checkout. This check does not authorize publication
 or replace a physical-device acceptance test.
