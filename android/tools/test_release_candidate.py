@@ -4,6 +4,7 @@ import io
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -22,6 +23,84 @@ class ReleaseCandidateTest(unittest.TestCase):
     }
     COMMIT = "a" * 40
     CERTIFICATE = "b" * 64
+
+    @staticmethod
+    def make_tagged_repository(directory):
+        repository = Path(directory)
+
+        def git(*args):
+            return subprocess.check_output(
+                ["git", *args], cwd=repository, text=True, stderr=subprocess.DEVNULL,
+            ).strip()
+
+        git("init", "-b", "main")
+        git("-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+            "commit", "--allow-empty", "-m", "synthetic source")
+        main = git("rev-parse", "HEAD")
+        git("update-ref", "refs/remotes/origin/main", main)
+        git("-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+            "tag", "-a", "v0.1.0-rc.1", "-m", "synthetic annotated tag")
+        git("init", "--bare", str(repository / "origin.git"))
+        git("remote", "add", "origin", str(repository / "origin.git"))
+        git("push", "origin", "main", "v0.1.0-rc.1")
+        return git, main
+
+    def test_reviewed_tag_requires_annotated_main_commit(self):
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(release_candidate, "ROOT", Path(directory)):
+            git, main = self.make_tagged_repository(directory)
+            self.assertEqual(release_candidate.reviewed_tag_commit("v0.1.0-rc.1"), main)
+            git("tag", "v0.1.0-rc.2")
+            with self.assertRaisesRegex(ValueError, "annotated"):
+                release_candidate.reviewed_tag_commit("v0.1.0-rc.2")
+            with self.assertRaisesRegex(ValueError, "valid independently selected"):
+                release_candidate.reviewed_tag_commit("main")
+            original_tag = git("rev-parse", "refs/tags/v0.1.0-rc.1")
+            git("-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                "tag", "-f", "-a", "v0.1.0-rc.1", "-m", "changed local tag")
+            with self.assertRaisesRegex(ValueError, "differs from the published"):
+                release_candidate.reviewed_tag_commit("v0.1.0-rc.1")
+            git("update-ref", "refs/tags/v0.1.0-rc.1", original_tag)
+            git("switch", "-c", "feature")
+            git("-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                "commit", "--allow-empty", "-m", "off-main source")
+            git("update-ref", "refs/remotes/origin/main", git("rev-parse", "HEAD"))
+            with self.assertRaisesRegex(ValueError, "Fetched origin/main differs"):
+                release_candidate.reviewed_tag_commit("v0.1.0-rc.1")
+            git("update-ref", "refs/remotes/origin/main", main)
+            git("-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                "tag", "-a", "v0.1.0-rc.3", "-m", "off-main annotated tag")
+            git("push", "origin", "v0.1.0-rc.3")
+            with self.assertRaisesRegex(ValueError, "not on fetched main"):
+                release_candidate.reviewed_tag_commit("v0.1.0-rc.3")
+
+    def test_reviewed_tag_commit_must_match_apk_receipts(self):
+        with tempfile.TemporaryDirectory() as repository, \
+             tempfile.TemporaryDirectory() as artifacts, \
+             patch.object(release_candidate, "ROOT", Path(repository)), \
+             patch.object(release_candidate, "ARTIFACT_ROOT", Path(artifacts)):
+            self.make_tagged_repository(repository)
+            self.make_candidate(artifacts)  # Receipt names a different source SHA.
+            with self.assertRaisesRegex(ValueError, "Unsigned APK receipt"):
+                release_candidate.verify_reviewed_candidate(
+                    "v0.1.0-rc.1", self.CERTIFICATE,
+                )
+
+    def test_reviewed_tag_ignores_hostile_git_environment(self):
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(release_candidate, "ROOT", Path(directory)):
+            _, main = self.make_tagged_repository(directory)
+            hostile = {
+                "GIT_DIR": str(Path(directory) / "origin.git"),
+                "GIT_WORK_TREE": str(Path(directory) / "other"),
+                "GIT_OBJECT_DIRECTORY": str(Path(directory) / "other-objects"),
+                "GIT_CONFIG_COUNT": "1",
+                "GIT_CONFIG_KEY_0": "remote.origin.url",
+                "GIT_CONFIG_VALUE_0": str(Path(directory) / "attacker.git"),
+            }
+            with patch.dict(os.environ, hostile):
+                self.assertEqual(release_candidate.reviewed_tag_commit(
+                    "v0.1.0-rc.1"), main)
 
     def test_artifact_files_must_be_regular_and_bounded(self):
         with tempfile.TemporaryDirectory() as directory:
