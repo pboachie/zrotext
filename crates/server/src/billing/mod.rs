@@ -9,6 +9,7 @@ use thiserror::Error;
 use tokio_postgres::{Client, Transaction};
 use uuid::Uuid;
 
+pub mod drain;
 pub mod http;
 pub mod owner;
 pub mod risk;
@@ -504,13 +505,43 @@ pub fn parse_test_quota_plans(
     Ok(plans)
 }
 
-/// Startup always drops previously projected test allowances and requests a
-/// fresh provider read. A changed or removed local price mapping cannot keep
-/// granting the old limit after restart.
+/// Hash the effective entitlement configuration, independent of input order.
+pub fn quota_configuration_fingerprint(
+    prices: &[String],
+    plans: &[TestQuotaPlan],
+    reader_key: &str,
+) -> [u8; 32] {
+    let mut prices = prices.to_vec();
+    prices.sort();
+    let mut plans = plans.to_vec();
+    plans.sort_by(|left, right| left.price_id.cmp(&right.price_id));
+    let mut hash = Sha256::new();
+    hash.update(b"stripe-test-entitlements-v1\0");
+    for price in prices {
+        hash.update((price.len() as u64).to_be_bytes());
+        hash.update(price.as_bytes());
+    }
+    hash.update(b"\0plans\0");
+    for plan in plans {
+        hash.update((plan.price_id.len() as u64).to_be_bytes());
+        hash.update(plan.price_id.as_bytes());
+        hash.update(plan.outbound_limit.to_be_bytes());
+        hash.update(plan.device_limit.unwrap_or(-1).to_be_bytes());
+    }
+    // Test keys are high-entropy credentials. A changed reader key must force
+    // a new provider read; only this one-way digest is stored in PostgreSQL.
+    hash.update(b"\0reader-key\0");
+    hash.update(reader_key.as_bytes());
+    hash.finalize().into()
+}
+
+/// Only a changed test entitlement configuration invalidates prior projections.
+/// The singleton row serializes rolling starts across server instances.
 pub async fn reset_test_quotas_on_start(
     database_url: &str,
     require_schema: bool,
     device_caps_enabled: bool,
+    config_fingerprint: Option<&[u8; 32]>,
 ) -> Result<(), BillingError> {
     let (mut db, connection) = crate::runtime_db::connect_worker(database_url).await?;
     tokio::spawn(async move {
@@ -544,7 +575,23 @@ pub async fn reset_test_quotas_on_start(
     if require_schema && !payment_grace_available {
         return Err(BillingError::InvalidEvent);
     }
+    if require_schema && config_fingerprint.is_none() {
+        return Err(BillingError::InvalidEvent);
+    }
+    let config_available: bool = db
+        .query_one("SELECT to_regclass('billing_test_config') IS NOT NULL", &[])
+        .await?
+        .get(0);
+    if require_schema && !config_available {
+        return Err(BillingError::InvalidEvent);
+    }
     let tx = db.transaction().await?;
+    // Use one database lock for startup across all sites, including the first
+    // start when the singleton row does not exist yet.
+    if config_available {
+        tx.query_one("SELECT pg_advisory_xact_lock(139025)", &[])
+            .await?;
+    }
     if device_caps_available {
         let enabled: bool = tx.query_one(
             "UPDATE billing_device_cap_config SET enabled=enabled OR $1,updated_at=now() WHERE singleton=true RETURNING enabled",
@@ -555,10 +602,28 @@ pub async fn reset_test_quotas_on_start(
             return Err(BillingError::InvalidEvent);
         }
     }
-    tx.execute(
-        "UPDATE billing_reconciliations SET dirty_generation=dirty_generation+1,next_attempt_at=now(),updated_at=now()",
-        &[],
-    ).await?;
+    if let Some(fingerprint) = config_fingerprint {
+        let current = tx
+            .query_opt(
+                "SELECT configuration_sha256 FROM billing_test_config WHERE singleton=true",
+                &[],
+            )
+            .await?;
+        if current.is_some_and(|row| row.get::<_, Vec<u8>>(0) == fingerprint) {
+            tx.commit().await?;
+            return Ok(());
+        }
+        tx.execute("INSERT INTO billing_test_config(singleton,configuration_sha256) VALUES(true,$1) ON CONFLICT(singleton) DO UPDATE SET configuration_sha256=EXCLUDED.configuration_sha256,updated_at=clock_timestamp()", &[&fingerprint.as_slice()]).await?;
+    } else if config_available {
+        tx.execute("DELETE FROM billing_test_config WHERE singleton=true", &[])
+            .await?;
+    }
+    if config_fingerprint.is_some() {
+        tx.execute(
+            "UPDATE billing_reconciliations r SET dirty_generation=r.dirty_generation+1,next_attempt_at=now(),updated_at=now() WHERE NOT EXISTS (SELECT 1 FROM billing_subscriptions s WHERE s.stripe_subscription_id=r.stripe_subscription_id AND s.stripe_status IN ('canceled','incomplete_expired'))",
+            &[],
+        ).await?;
+    }
     tx.execute(
         "INSERT INTO billing_quota_audit(account_id,reconciliation_generation,previous_limit_units,limit_units,reason) SELECT account_id,0,limit_units,0,'startup_reset' FROM usage_quota_policies WHERE source='stripe_test' AND limit_units<>0",
         &[],
@@ -891,6 +956,45 @@ mod tests {
         }
     }
 
+    #[test]
+    fn quota_configuration_fingerprint_tracks_effective_mapping() {
+        let prices = vec!["price_a".into(), "price_b".into()];
+        let plans = vec![
+            TestQuotaPlan {
+                price_id: "price_a".into(),
+                outbound_limit: 100,
+                device_limit: Some(2),
+            },
+            TestQuotaPlan {
+                price_id: "price_b".into(),
+                outbound_limit: 200,
+                device_limit: Some(4),
+            },
+        ];
+        let original = quota_configuration_fingerprint(&prices, &plans, "rk_test_fixture123456");
+        let mut reordered_prices = prices.clone();
+        reordered_prices.reverse();
+        let mut reordered_plans = plans.clone();
+        reordered_plans.reverse();
+        assert_eq!(
+            original,
+            quota_configuration_fingerprint(
+                &reordered_prices,
+                &reordered_plans,
+                "rk_test_fixture123456"
+            )
+        );
+        reordered_plans[0].outbound_limit += 1;
+        assert_ne!(
+            original,
+            quota_configuration_fingerprint(&prices, &reordered_plans, "rk_test_fixture123456")
+        );
+        assert_ne!(
+            original,
+            quota_configuration_fingerprint(&prices, &plans, "rk_test_fixture654321")
+        );
+    }
+
     fn signed_header(timestamp: i64, mac: HmacSha256) -> String {
         let digest = mac.finalize().into_bytes();
         let hex = digest
@@ -1060,6 +1164,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/018_sealed_inbound_identity.sql"),
             include_str!("../../../../deploy/compose/migrations/019_line_activation_contract.sql"),
             include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+            include_str!("../../../../deploy/compose/migrations/025_billing_test_config.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
@@ -1474,6 +1579,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
             include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
             include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+            include_str!("../../../../deploy/compose/migrations/025_billing_test_config.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
@@ -1777,6 +1883,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
             include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
             include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+            include_str!("../../../../deploy/compose/migrations/025_billing_test_config.sql"),
         ] {
             probe.batch_execute(sql).await.unwrap();
         }
@@ -1931,6 +2038,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
             include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
             include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+            include_str!("../../../../deploy/compose/migrations/025_billing_test_config.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
@@ -2213,6 +2321,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
             include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
             include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+            include_str!("../../../../deploy/compose/migrations/025_billing_test_config.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
@@ -2320,7 +2429,7 @@ mod tests {
                 Err(StoreError::QuotaExceeded)
             ));
         }
-        reset_test_quotas_on_start(&scoped_url, true, false)
+        reset_test_quotas_on_start(&scoped_url, true, false, Some(&[1; 32]))
             .await
             .unwrap();
         {
@@ -2490,6 +2599,37 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(row.get::<_, i64>(0), 8);
+        let before = db.query("SELECT stripe_subscription_id,dirty_generation,processed_generation FROM billing_reconciliations WHERE account_id=$1 ORDER BY stripe_subscription_id", &[&account]).await.unwrap();
+        reset_test_quotas_on_start(&scoped_url, true, false, Some(&[1; 32]))
+            .await
+            .unwrap();
+        let unchanged = db.query("SELECT stripe_subscription_id,dirty_generation,processed_generation FROM billing_reconciliations WHERE account_id=$1 ORDER BY stripe_subscription_id", &[&account]).await.unwrap();
+        for (old, new) in before.iter().zip(&unchanged) {
+            assert_eq!(old.get::<_, i64>(1), new.get::<_, i64>(1));
+            assert_eq!(old.get::<_, i64>(2), new.get::<_, i64>(2));
+        }
+        let preserved: i64 = db
+            .query_one(
+                "SELECT limit_units FROM usage_quota_policies WHERE account_id=$1",
+                &[&account],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(preserved, 2, "same config must preserve active quota");
+        reset_test_quotas_on_start(&scoped_url, true, false, Some(&[2; 32]))
+            .await
+            .unwrap();
+        let changed = db.query("SELECT stripe_subscription_id,dirty_generation,processed_generation FROM billing_reconciliations WHERE account_id=$1 ORDER BY stripe_subscription_id", &[&account]).await.unwrap();
+        for (old, new) in before.iter().zip(&changed) {
+            let subscription: String = new.get(0);
+            let expected = old.get::<_, i64>(1) + i64::from(subscription != "sub_entitlement2");
+            assert_eq!(
+                new.get::<_, i64>(1),
+                expected,
+                "terminal subscription must not be redirtied"
+            );
+        }
         // A rolling upgrade can temporarily have entitlement migration 010
         // without risk migration 011. Disabling billing still clears its old
         // allowance, while enabling billing requires both schemas.
@@ -2497,11 +2637,11 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            reset_test_quotas_on_start(&scoped_url, true, false)
+            reset_test_quotas_on_start(&scoped_url, true, false, Some(&[1; 32]))
                 .await
                 .is_err()
         );
-        reset_test_quotas_on_start(&scoped_url, false, false)
+        reset_test_quotas_on_start(&scoped_url, false, false, None)
             .await
             .unwrap();
         let limit: i64 = db
@@ -2550,6 +2690,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
             include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
             include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+            include_str!("../../../../deploy/compose/migrations/025_billing_test_config.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
@@ -2721,6 +2862,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
             include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
             include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+            include_str!("../../../../deploy/compose/migrations/025_billing_test_config.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }

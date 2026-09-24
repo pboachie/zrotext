@@ -92,6 +92,8 @@ enum MessageHttpError {
     QueueFull,
     RateLimited,
     QuotaExceeded,
+    BillingPending,
+    PaymentHold,
     Unavailable,
 }
 
@@ -106,13 +108,21 @@ impl IntoResponse for MessageHttpError {
             Self::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
             Self::QueueFull => (StatusCode::TOO_MANY_REQUESTS, "queue_full"),
             Self::QuotaExceeded => (StatusCode::TOO_MANY_REQUESTS, "quota_exceeded"),
+            Self::BillingPending => (StatusCode::SERVICE_UNAVAILABLE, "billing_pending"),
+            Self::PaymentHold => (StatusCode::PAYMENT_REQUIRED, "payment_hold"),
             Self::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
         };
         let mut response = (status, Json(ErrorBody { code })).into_response();
-        if status == StatusCode::TOO_MANY_REQUESTS {
+        if status == StatusCode::TOO_MANY_REQUESTS || code == "billing_pending" {
             response.headers_mut().insert(
                 header::RETRY_AFTER,
-                "60".parse().expect("static retry-after"),
+                if code == "billing_pending" {
+                    "10"
+                } else {
+                    "60"
+                }
+                .parse()
+                .expect("static retry-after"),
             );
         }
         response
@@ -143,11 +153,11 @@ fn map_store(error: StoreError) -> MessageHttpError {
         | StoreError::MessageIdConflict
         | StoreError::InvalidTransition => MessageHttpError::Conflict,
         StoreError::NotFound | StoreError::Revoked => MessageHttpError::NotFound,
-        StoreError::Database(_)
-        | StoreError::DispatchDisabled
-        | StoreError::StaleFence
-        | StoreError::PaymentHold
-        | StoreError::QuotaNotConfigured => MessageHttpError::Unavailable,
+        StoreError::Database(_) | StoreError::DispatchDisabled | StoreError::StaleFence => {
+            MessageHttpError::Unavailable
+        }
+        StoreError::PaymentHold => MessageHttpError::PaymentHold,
+        StoreError::QuotaNotConfigured => MessageHttpError::BillingPending,
         StoreError::QuotaExceeded => MessageHttpError::QuotaExceeded,
         StoreError::DeviceBusy | StoreError::EventIdConflict => MessageHttpError::Conflict,
         StoreError::QueueFull => MessageHttpError::QueueFull,
@@ -482,6 +492,39 @@ mod tests {
         assert!(valid_e164("+15555550101"));
         assert!(!valid_e164("+0123"));
         assert!(!valid_e164("+1 555"));
+    }
+
+    #[tokio::test]
+    async fn billing_denials_have_distinct_http_codes() {
+        for (error, status, code, retry_after) in [
+            (
+                StoreError::QuotaNotConfigured,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "billing_pending",
+                Some("10"),
+            ),
+            (
+                StoreError::PaymentHold,
+                StatusCode::PAYMENT_REQUIRED,
+                "payment_hold",
+                None,
+            ),
+        ] {
+            let response = map_store(error).into_response();
+            assert_eq!(response.status(), status);
+            assert_eq!(
+                response
+                    .headers()
+                    .get(header::RETRY_AFTER)
+                    .map(|value| value.to_str().unwrap()),
+                retry_after
+            );
+            let body = to_bytes(response.into_body(), 2048).await.unwrap();
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&body).unwrap()["code"],
+                code
+            );
+        }
     }
 
     #[tokio::test]
@@ -1056,7 +1099,7 @@ mod tests {
         let body = to_bytes(response.into_body(), 2048).await.unwrap();
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&body).unwrap()["code"],
-            "unavailable"
+            "billing_pending"
         );
         let row = client
             .query_one(
@@ -1158,7 +1201,12 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.status(), StatusCode::PAYMENT_REQUIRED);
+        let body = to_bytes(response.into_body(), 2048).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&body).unwrap()["code"],
+            "payment_hold"
+        );
         let risk_counts = client
             .query_one(
                 "SELECT (SELECT count(*) FROM messages WHERE account_id=$1),

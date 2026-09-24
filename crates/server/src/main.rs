@@ -34,8 +34,10 @@ use zrotext_server::{
         mfa::{self, MfaCipher},
     },
     billing::{
+        drain::drain_billing_batch,
         http::{self as billing_http, BillingHttpState},
-        owner as billing_owner, parse_test_quota_plans, reset_test_quotas_on_start,
+        owner as billing_owner, parse_test_quota_plans, quota_configuration_fingerprint,
+        reset_test_quotas_on_start,
         sessions::{self as billing_sessions, SessionState},
         worker::StripeTestWorker,
     },
@@ -96,6 +98,21 @@ fn build_version() -> BuildVersion {
     }
 }
 
+fn bounded_worker_setting(
+    name: &str,
+    default: usize,
+    maximum: usize,
+) -> Result<usize, &'static str> {
+    match env::var(name) {
+        Err(env::VarError::NotPresent) => Ok(default),
+        Ok(value) => match value.parse::<usize>() {
+            Ok(value) if (1..=maximum).contains(&value) => Ok(value),
+            _ => Err("invalid Stripe test reconciliation worker setting"),
+        },
+        Err(_) => Err("invalid Stripe test reconciliation worker setting"),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let hosted_sessions_enabled = optional_bool("STRIPE_TEST_HOSTED_SESSIONS_ENABLED")?;
@@ -116,11 +133,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &prices,
             )?;
             let device_caps_enabled = plans.iter().any(|plan| plan.device_limit.is_some());
+            let batch_size = bounded_worker_setting("STRIPE_TEST_RECONCILE_BATCH_SIZE", 25, 100)?;
+            let concurrency = bounded_worker_setting("STRIPE_TEST_RECONCILE_CONCURRENCY", 2, 4)?;
             let legacy_key = optional_secret("STRIPE_TEST_SECRET_KEY")?;
             let reader_key = select_stripe_test_key(
                 optional_secret("STRIPE_TEST_RECONCILE_SECRET_KEY")?,
                 legacy_key.clone(),
             )?;
+            let config_fingerprint = quota_configuration_fingerprint(&prices, &plans, &reader_key);
             let session_candidate = optional_secret("STRIPE_TEST_SESSION_SECRET_KEY")?;
             let session_key = if hosted_sessions_enabled {
                 Some(select_stripe_test_key(session_candidate, legacy_key)?)
@@ -134,6 +154,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 session_key,
                 prices,
                 device_caps_enabled,
+                config_fingerprint,
+                batch_size,
+                concurrency,
             ))
         }
         _ => return Err("invalid STRIPE_BILLING_TEST_ENABLED".into()),
@@ -258,6 +281,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &config.database_url,
             billing_test.is_some(),
             billing_test.as_ref().is_some_and(|billing| billing.4),
+            billing_test.as_ref().map(|billing| &billing.5),
         )
         .await?;
         quotas_reset = true;
@@ -427,11 +451,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         return Err("account and enrollment routes are required for enabled features".into());
     }
-    if let Some((endpoint_secret, worker, session_key, prices, device_caps_enabled)) = billing_test
+    if let Some((
+        endpoint_secret,
+        worker,
+        session_key,
+        prices,
+        device_caps_enabled,
+        config_fingerprint,
+        batch_size,
+        concurrency,
+    )) = billing_test
     {
         let billing_database = config.database_url.clone();
         if !quotas_reset {
-            reset_test_quotas_on_start(&billing_database, true, device_caps_enabled).await?;
+            reset_test_quotas_on_start(
+                &billing_database,
+                true,
+                device_caps_enabled,
+                Some(&config_fingerprint),
+            )
+            .await?;
         }
         let mut billing_routes = billing_http::router(BillingHttpState {
             database_url: billing_database.clone(),
@@ -457,6 +496,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         app = app.nest("/v1/billing", billing_routes);
         let billing_draining = config.draining.clone();
         let billing_notify = config.drain_notify.clone();
+        let worker = Arc::new(worker);
         tokio::spawn(async move {
             let mut checks = tokio::time::interval(Duration::from_secs(10));
             checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -465,22 +505,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 tokio::select! {
                     _ = checks.tick() => {
                         if billing_draining.load(Ordering::Acquire) { break; }
-                        match worker.reconcile_one(&billing_database).await {
-                            Ok(_) => unavailable_logged = false,
-                            Err(_) if !unavailable_logged => {
+                        let subscription_failed = drain_billing_batch(&worker, &billing_database, batch_size, concurrency, false, &billing_draining).await;
+                        if subscription_failed && !unavailable_logged {
                                 eprintln!("Stripe test reconciliation unavailable");
                                 unavailable_logged = true;
-                            }
-                            Err(_) => {}
                         }
-                        match worker.reconcile_risk_one(&billing_database).await {
-                            Ok(_) => unavailable_logged = false,
-                            Err(_) if !unavailable_logged => {
+                        let risk_failed = drain_billing_batch(&worker, &billing_database, batch_size, concurrency, true, &billing_draining).await;
+                        if risk_failed && !unavailable_logged {
                                 eprintln!("Stripe test payment-risk reconciliation unavailable");
                                 unavailable_logged = true;
-                            }
-                            Err(_) => {}
                         }
+                        if !subscription_failed && !risk_failed { unavailable_logged = false; }
                     }
                     _ = billing_notify.notified() => break,
                 }

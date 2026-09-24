@@ -16,6 +16,7 @@ pub struct StripeTestWorker {
     secret_key: String,
     recognized_prices: Vec<String>,
     quota_plans: Vec<TestQuotaPlan>,
+    api_base_url: String,
 }
 
 impl StripeTestWorker {
@@ -53,7 +54,21 @@ impl StripeTestWorker {
             secret_key,
             recognized_prices,
             quota_plans,
+            api_base_url: "https://api.stripe.com".into(),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_test_server(mut self, api_base_url: String) -> Self {
+        self.http = HttpClient::builder()
+            .no_proxy()
+            .redirect(redirect::Policy::none())
+            .retry(retry::never())
+            .timeout(Duration::from_secs(10))
+            .build()
+            .expect("fake Stripe client");
+        self.api_base_url = api_base_url;
+        self
     }
 
     pub async fn reconcile_one(&self, database_url: &str) -> Result<bool, BillingError> {
@@ -140,7 +155,7 @@ impl StripeTestWorker {
         subscription_id: &str,
     ) -> Result<SubscriptionSnapshot, BillingError> {
         valid_id(subscription_id, "sub_")?;
-        let url = format!("https://api.stripe.com/v1/subscriptions/{subscription_id}");
+        let url = format!("{}/v1/subscriptions/{subscription_id}", self.api_base_url);
         let mut response = self
             .http
             .get(url)
