@@ -85,7 +85,7 @@ def jules_review(item: dict) -> bool:
 
 
 def request_json(url: str, *, token: str, service: str, method: str = "GET",
-                 payload: dict | None = None) -> dict | list:
+                 payload: dict | None = None, phase: str = "") -> dict | list:
     headers = {"Accept": "application/json", "User-Agent": "zrotext-jules-review"}
     if service == "github":
         headers["Authorization"] = f"Bearer {token}"
@@ -103,6 +103,10 @@ def request_json(url: str, *, token: str, service: str, method: str = "GET",
         # Never log API error bodies, request URLs or headers: they can contain
         # credentials, private repository names, or untrusted text.
         detail = f" ({jules_error_category(error)})" if service == "jules" else ""
+        # Only fixed internal labels can identify a failing step. Never echo a
+        # provider URL, response body, or caller-supplied string into Actions.
+        if service == "jules" and phase in {"sources-list", "source-get", "session-create"}:
+            detail += f" at {phase}"
         raise RuntimeError(f"{service} request failed with HTTP {error.code}{detail}") from None
     except URLError:
         raise RuntimeError(f"{service} request could not connect") from None
@@ -275,7 +279,7 @@ def source_branches(jules_key: str) -> tuple[str, set[str]]:
         if token:
             query["pageToken"] = token
         listing = request_json(f"{JULES}/sources?{urlencode(query)}",
-                               token=jules_key, service="jules")
+                               token=jules_key, service="jules", phase="sources-list")
         if not isinstance(listing, dict) or not isinstance(listing.get("sources", []), list):
             raise RuntimeError("Jules source listing is invalid")
         for item in listing.get("sources", []):
@@ -298,7 +302,8 @@ def source_branches(jules_key: str) -> tuple[str, set[str]]:
     if len(matches) != 1:
         raise RuntimeError("Jules repository source is missing or ambiguous")
     name = matches.pop()
-    source = request_json(f"{JULES}/{name}", token=jules_key, service="jules")
+    source = request_json(f"{JULES}/{name}", token=jules_key, service="jules",
+                          phase="source-get")
     if not isinstance(source, dict) or source.get("name") != name:
         raise RuntimeError("Jules source preflight returned a different source")
     github_repo = source.get("githubRepo")
@@ -333,7 +338,7 @@ def start_review(number: int, mode: str, trigger: str, github_token: str,
         return False
     feedback = recent_feedback(number, github_token) if mode == "address" else ""
     created = request_json(f"{JULES}/sessions", token=jules_key, service="jules",
-                           method="POST", payload={
+                           method="POST", phase="session-create", payload={
                                "title": f"ZROtext PR #{number} {mode}",
                                "prompt": prompt_for(pr, mode, feedback),
                                "sourceContext": {"source": source_name,
