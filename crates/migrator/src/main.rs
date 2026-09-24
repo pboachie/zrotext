@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use std::{env, path::PathBuf, process::ExitCode};
-use tokio_postgres::NoTls;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -29,7 +28,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let directory = env::var_os("MIGRATIONS_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("deploy/compose/migrations"));
-    let (mut client, connection) = tokio_postgres::connect(&url, NoTls).await?;
+    let (mut client, connection) = zrotext_postgres_connection::connect(&url).await?;
     tokio::spawn(async move {
         if let Err(error) = connection.await {
             eprintln!("database connection ended: {error}");
