@@ -548,6 +548,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="phase", required=True)
     build = commands.add_parser("build", help="Lint, test and assemble without signing secrets")
+    commands.add_parser("verify-unsigned", help="Verify the hosted unsigned APK, receipt and SBOM attestation")
     sign = commands.add_parser("sign", help="Sign and verify a prior unsigned build")
     verify = commands.add_parser("verify", help="Independently check transferred unsigned and signed APKs")
     verify.add_argument("--source-tag", required=True,
@@ -569,6 +570,10 @@ def main() -> None:
     if args.phase == "build":
         out = external_artifact_path(ARTIFACT_ROOT / "unsigned", "Output directory")
         build_unsigned(commit, out)
+    elif args.phase == "verify-unsigned":
+        unsigned, digest, _, _, bom = checked_unsigned(commit)
+        verify_unsigned_sbom_attestation(unsigned, digest, commit, bom)
+        print(f"Verified attested unsigned candidate from {commit}: {digest}")
     else:
         out = external_artifact_path(ARTIFACT_ROOT / "candidate", "Output directory")
         sign_candidate(commit, ARTIFACT_ROOT / "keystore.p12", SIGNING_ALIAS, out)

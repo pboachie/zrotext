@@ -58,8 +58,9 @@ unsigned APK, its CycloneDX release-runtime SBOM, and a receipt containing both
 SHA-256 digests. The pinned CycloneDX Gradle task resolves only
 `releaseRuntimeClasspath`; test, KSP, and other build-only dependencies remain
 in the Gradle lockfile and dependency graph, outside this shipped-app
-inventory. GitHub attests the SBOM as a predicate of the exact unsigned APK
-before uploading the files. Artifacts from this public
+inventory. GitHub attests the SBOM as a predicate of the exact unsigned APK and
+verifies the receipt, APK identity, SBOM inventory, and signed attestation against
+the checked-out source commit before uploading the files. Artifacts from this public
 repository can be downloaded by readers, so do not put an Android signing key
 or a signed APK into its Actions artifacts. The local
 `android/tools/release_candidate.py sign` command verifies an unsigned build
