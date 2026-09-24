@@ -19,6 +19,22 @@ use uuid::Uuid;
 const PAIRING_LIFETIME_SECS: i32 = 300;
 const AUTH_CHALLENGE_LIFETIME_SECS: i32 = 60;
 
+/// Remove at most 500 rows from each table per maintenance tick. Challenges
+/// have a one-hour grace period; pairing requests are retained for 24 hours
+/// after expiry (or cancellation, if that happened later). Approved pairings
+/// use the same window: the durable device/key records hold their active state.
+pub async fn prune_expired(client: &Client) -> Result<u64, tokio_postgres::Error> {
+    let challenges = client.execute(
+        "WITH stale AS (SELECT id FROM device_auth_challenges WHERE expires_at < now()-interval '1 hour' ORDER BY expires_at,id LIMIT 500 FOR UPDATE SKIP LOCKED) DELETE FROM device_auth_challenges c USING stale s WHERE c.id=s.id",
+        &[],
+    ).await?;
+    let pairings = client.execute(
+        "WITH stale AS (SELECT id FROM pairing_requests WHERE expires_at < now()-interval '24 hours' AND (cancelled_at IS NULL OR cancelled_at < now()-interval '24 hours') ORDER BY expires_at,id LIMIT 500 FOR UPDATE SKIP LOCKED) DELETE FROM pairing_requests p USING stale s WHERE p.id=s.id",
+        &[],
+    ).await?;
+    Ok(challenges + pairings)
+}
+
 #[derive(Debug, Error)]
 pub enum EnrollmentError {
     #[error("invalid input")]
@@ -688,6 +704,9 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
             include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
             include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
+            include_str!(
+                "../../../../deploy/compose/migrations/020_enrollment_retention_indexes.sql"
+            ),
         ] {
             client.batch_execute(sql).await.unwrap();
         }
@@ -943,6 +962,71 @@ mod tests {
             .await,
             Err(EnrollmentError::Unauthorized)
         ));
+        let stale_pairing = create_pairing(&client, &hasher, &pa, "Stale")
+            .await
+            .unwrap();
+        client.execute(
+            "UPDATE pairing_requests SET created_at=now()-interval '26 hours',expires_at=now()-interval '25 hours' WHERE id=$1",
+            &[&stale_pairing.id],
+        ).await.unwrap();
+        let cancelled_pairing = create_pairing(&client, &hasher, &pa, "Cancelled")
+            .await
+            .unwrap();
+        assert!(
+            cancel_pairing(&client, &pa, cancelled_pairing.id)
+                .await
+                .unwrap()
+        );
+        client.execute(
+            "UPDATE pairing_requests SET created_at=now()-interval '26 hours',expires_at=now()-interval '25 hours' WHERE id=$1",
+            &[&cancelled_pairing.id],
+        ).await.unwrap();
+        let old_challenge = issue_device_challenge(&client, &hasher, device_id)
+            .await
+            .unwrap();
+        client.execute(
+            "UPDATE device_auth_challenges SET created_at=now()-interval '3 hours',expires_at=now()-interval '2 hours' WHERE id=$1",
+            &[&old_challenge.id],
+        ).await.unwrap();
+        let live_challenge = issue_device_challenge(&client, &hasher, device_id)
+            .await
+            .unwrap();
+        assert_eq!(prune_expired(&client).await.unwrap(), 2);
+        for (table, id, expected) in [
+            ("pairing_requests", stale_pairing.id, 0_i64),
+            ("pairing_requests", cancelled_pairing.id, 1),
+            ("pairing_requests", expired.id, 1),
+            ("device_auth_challenges", old_challenge.id, 0),
+            ("device_auth_challenges", live_challenge.id, 1),
+        ] {
+            let count: i64 = client
+                .query_one(&format!("SELECT count(*) FROM {table} WHERE id=$1"), &[&id])
+                .await
+                .unwrap()
+                .get(0);
+            assert_eq!(count, expected, "{table} {id}");
+        }
+        client
+            .execute(
+                "UPDATE pairing_requests SET cancelled_at=now()-interval '25 hours' WHERE id=$1",
+                &[&cancelled_pairing.id],
+            )
+            .await
+            .unwrap();
+        assert_eq!(prune_expired(&client).await.unwrap(), 1);
+        let live_signature: Signature = signing.sign(&device_challenge_bytes(&live_challenge));
+        assert_eq!(
+            authenticate_device_challenge(
+                &mut client,
+                &hasher,
+                &live_challenge,
+                live_signature.to_der().as_bytes()
+            )
+            .await
+            .unwrap()
+            .device_id,
+            device_id
+        );
         let expired_challenge = issue_device_challenge(&client, &hasher, device_id)
             .await
             .unwrap();
