@@ -22,7 +22,7 @@ use lettre::{
 use serde::{Deserialize, Serialize};
 use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 use tokio::sync::Semaphore;
-use tokio_postgres::{Client, NoTls};
+use tokio_postgres::Client;
 use uuid::Uuid;
 
 const SESSION_COOKIE: &str = "__Host-zrotext_session";
@@ -255,7 +255,7 @@ fn map_auth(error: AuthError) -> AuthHttpError {
 }
 
 async fn connect(database_url: &str) -> Result<Client, AuthHttpError> {
-    let (client, connection) = tokio_postgres::connect(database_url, NoTls)
+    let (client, connection) = crate::runtime_db::connect(database_url)
         .await
         .map_err(|_| AuthHttpError::Unavailable)?;
     tokio::spawn(async move {
@@ -1003,6 +1003,8 @@ async fn revoke_api_key(
     }
 }
 
+#[cfg(test)]
+use tokio_postgres::NoTls;
 #[cfg(test)]
 mod tests {
     use super::*;
