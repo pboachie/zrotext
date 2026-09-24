@@ -793,6 +793,7 @@ mod tests {
             ),
             include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
             include_str!("../../../../deploy/compose/migrations/025_billing_test_config.sql"),
+            include_str!("../../../../deploy/compose/migrations/026_billing_provider_failures.sql"),
         ] {
             client.batch_execute(sql).await.unwrap();
         }
@@ -1246,6 +1247,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
             include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
             include_str!("../../../../deploy/compose/migrations/025_billing_test_config.sql"),
+            include_str!("../../../../deploy/compose/migrations/026_billing_provider_failures.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
