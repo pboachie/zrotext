@@ -319,6 +319,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             instance_id: config.instance_id.clone(),
             deployment_epoch: config.deployment_epoch,
             enrollment_hasher: enrollment_state.enrollment_hasher.clone(),
+            auth_hasher: auth_state.hasher.clone(),
             alpha_policy: config.alpha_policy.clone(),
             dispatch_runtime_enabled: config.dispatch_runtime_enabled,
             inbound_pilot_enabled,
