@@ -25,6 +25,10 @@ KEY_PASSWORD = "ZROTEXT_ANDROID_KEY_PASSWORD"
 MAX_APK_BYTES = 512 * 1024 * 1024
 MAX_RECEIPT_BYTES = 16 * 1024
 MAX_CHECKSUM_BYTES = 256
+SOURCE_TAG = re.compile(
+    r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\."
+    r"(?:0|[1-9][0-9]*)(?:-rc\.[1-9][0-9]*)?\Z"
+)
 
 
 def unsigned_build_env(environment: dict[str, str] | None = None) -> dict[str, str]:
@@ -69,6 +73,61 @@ def source_commit(expected: str | None) -> str:
            capture=True, env=safe_env):
         raise ValueError("Source checkout must be clean, including untracked files")
     return commit
+
+
+def reviewed_tag_commit(tag: str) -> str:
+    """Resolve an independently selected annotated release tag on main."""
+    if not SOURCE_TAG.fullmatch(tag):
+        raise ValueError("A valid independently selected release tag is required")
+    ref = f"refs/tags/{tag}"
+    # Git environment overrides can redirect the repository, object store, or
+    # remote even with cwd pinned to ROOT. Keep this stricter scope local to
+    # independent verification; build/sign retain their existing environment.
+    safe_env = {key: value for key, value in unsigned_build_env().items()
+                if not key.upper().startswith("GIT_")}
+    safe_env.update({
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_TERMINAL_PROMPT": "0",
+    })
+
+    def git(*args: str) -> subprocess.CompletedProcess[str]:
+        try:
+            return subprocess.run(["git", *args], cwd=ROOT, env=safe_env,
+                                  capture_output=True, text=True, timeout=30,
+                                  check=False, shell=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise ValueError("Release tag lookup could not finish") from exc
+
+    kind = git("cat-file", "-t", ref)
+    if kind.returncode or kind.stdout.strip() != "tag":
+        raise ValueError("Release tag must be annotated")
+    object_lookup = git("rev-parse", ref)
+    tag_object = object_lookup.stdout.strip()
+    if object_lookup.returncode or not re.fullmatch(r"[0-9a-f]{40}", tag_object):
+        raise ValueError("Release tag object is invalid")
+    remote = git("ls-remote", "--refs", "--tags", "origin", ref)
+    if remote.returncode or remote.stdout.strip() != f"{tag_object}\t{ref}":
+        raise ValueError("Local release tag differs from the published origin tag")
+    resolved = git("rev-parse", f"{ref}^{{commit}}")
+    commit = resolved.stdout.strip()
+    if resolved.returncode or not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ValueError("Release tag does not resolve to a commit")
+    local_main = git("rev-parse", "refs/remotes/origin/main")
+    published_main = git("ls-remote", "--refs", "origin", "refs/heads/main")
+    main_commit = local_main.stdout.strip()
+    if (local_main.returncode or published_main.returncode
+            or not re.fullmatch(r"[0-9a-f]{40}", main_commit)
+            or published_main.stdout.strip() != f"{main_commit}\trefs/heads/main"):
+        raise ValueError("Fetched origin/main differs from published main; fetch again")
+    if git("merge-base", "--is-ancestor", commit,
+           "refs/remotes/origin/main").returncode:
+        raise ValueError("Release tag commit is not on fetched main")
+    return commit
+
+
+def verify_reviewed_candidate(tag: str, expected_certificate: str) -> None:
+    verify_candidate(reviewed_tag_commit(tag), expected_certificate)
 
 
 def sha256(path: Path) -> str:
@@ -325,12 +384,13 @@ def main() -> None:
     build = commands.add_parser("build", help="Lint, test and assemble without signing secrets")
     sign = commands.add_parser("sign", help="Sign and verify a prior unsigned build")
     verify = commands.add_parser("verify", help="Independently check transferred unsigned and signed APKs")
-    verify.add_argument("--source-commit", required=True)
+    verify.add_argument("--source-tag", required=True,
+                        help="independently selected annotated release tag on fetched main")
     verify.add_argument("--certificate-sha256", required=True,
                         help="approved fingerprint obtained independently of candidate.json")
     args = parser.parse_args()
     if args.phase == "verify":
-        verify_candidate(args.source_commit, args.certificate_sha256)
+        verify_reviewed_candidate(args.source_tag, args.certificate_sha256)
         return
     commit = source_commit(os.environ.get("GITHUB_SHA"))
     if args.phase == "build":
