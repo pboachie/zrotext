@@ -77,8 +77,8 @@ async function manifest(f, options = {}) {
   return join(unsigned, await sign(options.signer ?? f.root, "ZTSE/manifest/v2", unsigned));
 }
 function pin(root) {
-  return { accountId: account, generation: 1n, rootPoint: root.point,
-    version: 0n, digest: zero32, anchorDigest: zero32 };
+  return { accountId: Uint8Array.from(account), generation: 1n, rootPoint: Uint8Array.from(root.point),
+    version: 0n, digest: Uint8Array.from(zero32), anchorDigest: Uint8Array.from(zero32) };
 }
 async function rootPinBytes(root, accountId = account) {
   const bytes = join(encoder.encode("ZTRP"), Uint8Array.of(2), accountId, u64(1n), root.point);
@@ -130,6 +130,28 @@ test("out-of-band root pin binds account, generation and point", async () => {
   const alternate = await rootPinBytes(otherRoot);
   await assert.rejects(enrollRootPin02(alternate.bytes, enrollment.fingerprint), /root pin comparison/);
   await assert.rejects(enrollRootPin02(enrollment.bytes.subarray(0, 93), enrollment.fingerprint), /root pin size/);
+});
+
+test("trust advancement and authority use private verified snapshots, not mutable caller arrays", async () => {
+  const f = await fixture();
+  const initial = pin(f.root);
+  const accepted = await verifyManifest02(await manifest(f), initial, now);
+  const semanticDigest = Uint8Array.from(accepted.digest);
+  const claims = {
+    accountId: Uint8Array.from(account), deviceId: device, lineId: line,
+    manifestDigest: semanticDigest, keysetVersion: 1n,
+    signerKeyId: f.records[2].keyId,
+    wraps: [{ role: 1, keyId: f.records[0].keyId }, { role: 2, keyId: f.records[1].keyId }],
+  };
+  accepted.digest.fill(0);
+  accepted.bytes.fill(0);
+  accepted.keys.find((record) => record.role === 5).state = 2;
+  assert.deepEqual(advanceManifestTrust02(initial, accepted).digest, semanticDigest);
+  assert.doesNotThrow(() => authorizeOutbound02(accepted, claims, now));
+  assert.throws(() => advanceManifestTrust02(initial, { ...accepted }), /just-verified/);
+  assert.throws(() => authorizeOutbound02({ ...accepted }, claims, now), /just-verified/);
+  initial.accountId.fill(0);
+  assert.throws(() => advanceManifestTrust02(initial, accepted), /advance pin mismatch/);
 });
 
 test("forged, altered, high-s, stale, future and wrong-account manifests fail", async () => {

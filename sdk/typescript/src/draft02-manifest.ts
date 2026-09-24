@@ -26,6 +26,21 @@ export type ManifestTrust02 = Readonly<{
   version: bigint; digest: Uint8Array; anchorDigest: Uint8Array;
 }>;
 
+type VerifiedSnapshot = Readonly<{ before: ManifestTrust02; after: ManifestTrust02; authority: Manifest02 }>;
+const verifiedSnapshots = new WeakMap<Manifest02, VerifiedSnapshot>();
+function copyTrust(pin: ManifestTrust02): ManifestTrust02 {
+  return { accountId: Uint8Array.from(pin.accountId), generation: pin.generation,
+    rootPoint: Uint8Array.from(pin.rootPoint), version: pin.version,
+    digest: Uint8Array.from(pin.digest), anchorDigest: Uint8Array.from(pin.anchorDigest) };
+}
+function copyManifest(value: Manifest02): Manifest02 {
+  return { ...value, bytes: Uint8Array.from(value.bytes), digest: Uint8Array.from(value.digest),
+    accountId: Uint8Array.from(value.accountId), previousDigest: Uint8Array.from(value.previousDigest),
+    rootPoint: Uint8Array.from(value.rootPoint), keys: value.keys.map((key) => ({ ...key,
+      keyId: Uint8Array.from(key.keyId), point: Uint8Array.from(key.point),
+      deviceId: Uint8Array.from(key.deviceId), lineId: Uint8Array.from(key.lineId) })) };
+}
+
 function fail(why: string): never { throw new Error(`ZTSE draft-02 manifest: ${why}`); }
 function same(a: Uint8Array, b: Uint8Array): boolean {
   return a.length === b.length && a.every((x, i) => x === b[i]);
@@ -116,6 +131,7 @@ function timeWindow(issued: bigint, expires: bigint, now: bigint): void {
 
 /** Syntax, point, key-ID, owner signature, pin, chain, and freshness validation. */
 export async function verifyManifest02(input: Uint8Array, pin: ManifestTrust02, nowMs: bigint): Promise<Manifest02> {
+  const trustedPin = copyTrust(pin);
   if (input.length < 364 || input.length > 9751) fail("size");
   const bytes = Uint8Array.from(input);
   if (!same(bytes.subarray(0, 5), Uint8Array.of(0x5a, 0x54, 0x4d, 0x41, 2))) fail("magic/profile");
@@ -130,7 +146,7 @@ export async function verifyManifest02(input: Uint8Array, pin: ManifestTrust02, 
   const previousDigest = bytes.subarray(53, 85);
   const rootPoint = bytes.subarray(85, 150);
   if (generation === 0n || version === 0n || same(accountId, zero16)) fail("identity/version");
-  if (!same(accountId, pin.accountId) || generation !== pin.generation || !same(rootPoint, pin.rootPoint)) fail("pin mismatch");
+  if (!same(accountId, trustedPin.accountId) || generation !== trustedPin.generation || !same(rootPoint, trustedPin.rootPoint)) fail("pin mismatch");
   timeWindow(issuedMs, expiresMs, nowMs);
   await pointKey(rootPoint);
   const keys: ManifestKey02[] = [];
@@ -168,14 +184,19 @@ export async function verifyManifest02(input: Uint8Array, pin: ManifestTrust02, 
   await verify(rootPoint, signature, "ZTSE/manifest/v2", bytes.subarray(0, bytes.length - 64));
   // Signature randomness and the valid (r, n-s) twin must not change keyset identity.
   const manifestDigest = await digest(bytes.subarray(0, bytes.length - 64));
-  if (pin.version === 0n) {
-    if (version !== 1n || !same(previousDigest, pin.anchorDigest)) fail("genesis/transition chain");
-  } else if (version === pin.version && same(manifestDigest, pin.digest)) {
+  if (trustedPin.version === 0n) {
+    if (version !== 1n || !same(previousDigest, trustedPin.anchorDigest)) fail("genesis/transition chain");
+  } else if (version === trustedPin.version && same(manifestDigest, trustedPin.digest)) {
     // Distinct valid signatures over the same unsigned fields are the same keyset.
-  } else if (version !== pin.version + 1n || !same(previousDigest, pin.digest)) {
+  } else if (version !== trustedPin.version + 1n || !same(previousDigest, trustedPin.digest)) {
     fail("rollback, fork, or chain gap");
   }
-  return { bytes, digest: manifestDigest, accountId, generation, version, issuedMs, expiresMs, previousDigest, rootPoint, keys };
+  const accepted: Manifest02 = { bytes, digest: manifestDigest, accountId, generation, version,
+    issuedMs, expiresMs, previousDigest, rootPoint, keys };
+  verifiedSnapshots.set(accepted, { before: trustedPin,
+    after: { ...copyTrust(trustedPin), version, digest: Uint8Array.from(manifestDigest) },
+    authority: copyManifest(accepted) });
+  return accepted;
 }
 
 function compare(a: Uint8Array, b: Uint8Array): number {
@@ -185,15 +206,19 @@ function compare(a: Uint8Array, b: Uint8Array): number {
 
 /** Persist this new high-water atomically before accepting envelope effects. */
 export function advanceManifestTrust02(pin: ManifestTrust02, accepted: Manifest02): ManifestTrust02 {
-  if (!same(pin.accountId, accepted.accountId) || pin.generation !== accepted.generation || !same(pin.rootPoint, accepted.rootPoint)) fail("advance pin mismatch");
-  if (pin.version === 0n ? accepted.version !== 1n || !same(accepted.previousDigest, pin.anchorDigest) :
-      !(accepted.version === pin.version && same(accepted.digest, pin.digest)) &&
-      !(accepted.version === pin.version + 1n && same(accepted.previousDigest, pin.digest))) fail("advance chain mismatch");
-  return { ...pin, version: accepted.version, digest: Uint8Array.from(accepted.digest) };
+  const snapshot = verifiedSnapshots.get(accepted);
+  if (!snapshot) fail("advance requires a just-verified manifest");
+  const before = snapshot.before;
+  if (!same(pin.accountId, before.accountId) || pin.generation !== before.generation ||
+      !same(pin.rootPoint, before.rootPoint) || pin.version !== before.version ||
+      !same(pin.digest, before.digest) || !same(pin.anchorDigest, before.anchorDigest)) fail("advance pin mismatch");
+  return copyTrust(snapshot.after);
 }
 
 /** Both old and new roots sign the same exact 215-byte transition body. */
 export async function verifyRootTransition02(input: Uint8Array, pin: ManifestTrust02, nowMs: bigint, expectedNewRoot: Uint8Array): Promise<ManifestTrust02> {
+  const trustedPin = copyTrust(pin);
+  const comparedNewRoot = Uint8Array.from(expectedNewRoot);
   if (input.length !== 343) fail("transition size");
   const bytes = Uint8Array.from(input);
   if (!same(bytes.subarray(0, 5), Uint8Array.of(0x5a, 0x54, 0x52, 0x54, 2))) fail("transition magic/profile");
@@ -206,9 +231,9 @@ export async function verifyRootTransition02(input: Uint8Array, pin: ManifestTru
   const lastDigest = bytes.subarray(167, 199);
   const issued = u64(view, 199);
   const expires = u64(view, 207);
-  if (pin.version === 0n || !same(account, pin.accountId) || oldGeneration !== pin.generation ||
-      newGeneration !== oldGeneration + 1n || !same(oldRoot, pin.rootPoint) ||
-      !same(newRoot, expectedNewRoot) || same(newRoot, oldRoot) || !same(lastDigest, pin.digest)) fail("transition pin/chain");
+  if (trustedPin.version === 0n || !same(account, trustedPin.accountId) || oldGeneration !== trustedPin.generation ||
+      newGeneration !== oldGeneration + 1n || !same(oldRoot, trustedPin.rootPoint) ||
+      !same(newRoot, comparedNewRoot) || same(newRoot, oldRoot) || !same(lastDigest, trustedPin.digest)) fail("transition pin/chain");
   timeWindow(issued, expires, nowMs);
   const unsigned = bytes.subarray(0, 215);
   await verify(oldRoot, bytes.subarray(215, 279), "ZTSE/root-transition/v2", unsigned);
@@ -222,17 +247,19 @@ export function authorizeOutbound02(manifest: Manifest02, claims: {
   accountId: Uint8Array; deviceId: Uint8Array; lineId: Uint8Array; manifestDigest: Uint8Array;
   keysetVersion: bigint; signerKeyId: Uint8Array; wraps: readonly { role: number; keyId: Uint8Array }[];
 }, nowMs: bigint): void {
-  timeWindow(manifest.issuedMs, manifest.expiresMs, nowMs);
-  if (!same(claims.accountId, manifest.accountId) || !same(claims.manifestDigest, manifest.digest) ||
-      claims.keysetVersion !== manifest.version || nowMs >= manifest.expiresMs) fail("envelope manifest binding");
+  const bound = verifiedSnapshots.get(manifest)?.authority;
+  if (!bound) fail("authorization requires a just-verified manifest");
+  timeWindow(bound.issuedMs, bound.expiresMs, nowMs);
+  if (!same(claims.accountId, bound.accountId) || !same(claims.manifestDigest, bound.digest) ||
+      claims.keysetVersion !== bound.version || nowMs >= bound.expiresMs) fail("envelope manifest binding");
   const active = (key: ManifestKey02): boolean => key.state === 1 && key.fromMs <= nowMs && nowMs < key.untilMs;
-  const signer = manifest.keys.find((key) => key.role === 5 && same(key.keyId, claims.signerKeyId));
+  const signer = bound.keys.find((key) => key.role === 5 && same(key.keyId, claims.signerKeyId));
   if (!signer || !active(signer) || signer.scope !== 1) fail("outbound signer authority");
   let deviceCount = 0;
   let archiveCount = 0;
   let integrationCount = 0;
   for (const wrap of claims.wraps) {
-    const key = manifest.keys.find((candidate) => candidate.role === wrap.role && same(candidate.keyId, wrap.keyId));
+    const key = bound.keys.find((candidate) => candidate.role === wrap.role && same(candidate.keyId, wrap.keyId));
     if (!key || !active(key) || !(key.scope & 4)) fail("reader authority");
     if (wrap.role === 1) {
       if (!same(key.deviceId, claims.deviceId) || !same(key.lineId, claims.lineId)) fail("selected device/line");
