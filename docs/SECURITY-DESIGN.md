@@ -72,7 +72,7 @@ OPAQUE is defined in **RFC 9807**, not RFC 9380 (hash-to-curve). It may improve 
 
 ## Baseline controls
 
-Use 256-bit random API tokens, prefix lookup, constant-time verification, revocation and scopes. HMAC-SHA256 with a separately stored server pepper is suitable for high-entropy token verification; the old allegation that all fast hashes need password-style salts is too broad. Passwords use a password KDF. API keys never enter query strings, analytics, QR device enrollment, or logs.
+Use 256-bit random API tokens, prefix lookup, constant-time verification, revocation and scopes. HMAC-SHA256 with a separately stored server pepper is suitable for high-entropy token verification; the old allegation that all fast hashes need password-style salts is too broad. Passwords use a password KDF. Password hashing and verification run on blocking workers behind one process-wide two-worker semaphore, including registration, login, verification resend, MFA password proofs, and initialization of the unknown-account verifier. Admission occurs before submitting blocking work; cancellation retains the permit until that work finishes. HTTP admission and abuse limits still bound pending requests, while the worker gate keeps expensive password work off the async runtime. API keys never enter query strings, analytics, QR device enrollment, or logs.
 
 TLS 1.3 preferred; minimum TLS policy follows the tested Android support matrix. Strict origin checks and CSRF protection for cookie-based requests; non-browser APIs use explicit bearer authentication. Rate-limit registration, login, pairing, exports, bulk metadata reads, recipient velocity and device claims. Default-deny operator message access; sealed content cannot be inspected by support.
 
