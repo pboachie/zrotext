@@ -551,6 +551,7 @@ class GatewayApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         val app = applicationContext
+        HeartbeatResumeStore.eligibleAfterUserStop(app)
         JournalRuntime.io.execute {
             val now = System.currentTimeMillis()
             val dao = SmsJournalDatabase.get(app).attempts()
