@@ -48,9 +48,8 @@ the GitHub CLI, and registry access to the image and its attestations. A
 receipt or mutable registry tag alone is insufficient. Confirm the package is
 publicly readable without registry credentials before offering it to
 self-hosters. A successful image verification does not establish Android,
-phone, database-restore, or hosted-deployment readiness. The Android candidate
-workflow currently has no APK SBOM or signed APK SBOM attestation. BuildKit's
-default SBOM inventories the final server image, not build-stage dependencies.
+phone, database-restore, or hosted-deployment readiness. BuildKit's default
+SBOM inventories the final server image, not build-stage dependencies.
 
 ## Android candidate custody
 
