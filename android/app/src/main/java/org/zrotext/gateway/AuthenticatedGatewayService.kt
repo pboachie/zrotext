@@ -119,24 +119,21 @@ class AuthenticatedGatewayService : Service() {
         if (!bootResume && !HeartbeatResumeStore.clear(this)) {
             halt()
             AuthenticatedGatewayStatus.value = "Could not disable previous reboot resume; retry"
+            stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return START_NOT_STICKY
         }
         val saved = if (bootResume) HeartbeatResumeStore.read(this) else null
         val url = if (bootResume) saved?.url.orEmpty() else intent?.getStringExtra(EXTRA_URL).orEmpty()
-        val deviceId = try {
-            val value = if (bootResume) saved?.deviceId.toString()
-                else intent?.getStringExtra(EXTRA_DEVICE_ID).orEmpty()
-            UUID.fromString(value).takeIf { it.toString() == value }
-        } catch (_: IllegalArgumentException) {
-            null
-        }
+        val deviceId = GatewayInputValidation.deviceId(if (bootResume) saved?.deviceId.toString()
+            else intent?.getStringExtra(EXTRA_DEVICE_ID).orEmpty())
         if (!validUrl(url) || deviceId == null) {
             val rebootResumeCleared = HeartbeatResumeStore.clear(this)
             halt()
             AuthenticatedGatewayStatus.value = if (rebootResumeCleared)
                 "Set a WSS device stream and approved device ID"
             else "Invalid heartbeat configuration; could not disable reboot resume. Retry Pause"
+            stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return START_NOT_STICKY
         }
@@ -149,6 +146,7 @@ class AuthenticatedGatewayService : Service() {
             (rebootOptInRequested && (armRequested || inboundUploadRequested))) {
             halt()
             AuthenticatedGatewayStatus.value = "Choose one pilot mode at a time"
+            stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return START_NOT_STICKY
         }
@@ -159,15 +157,22 @@ class AuthenticatedGatewayService : Service() {
             EXTRA_ALPHA_SUBSCRIPTION_ID, SubscriptionManager.INVALID_SUBSCRIPTION_ID
         ) ?: SubscriptionManager.INVALID_SUBSCRIPTION_ID
         if (armRequested) {
+            if (getSharedPreferences("alpha_pilot", MODE_PRIVATE).getBoolean("attempt_used", false)) {
+                halt()
+                AuthenticatedGatewayStatus.value = "Alpha arm refused: one test attempt already used"
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+                return START_NOT_STICKY
+            }
             val selected = getSharedPreferences("gateway_selection", MODE_PRIVATE)
                 .getInt("subscription_id", SubscriptionManager.INVALID_SUBSCRIPTION_ID)
             val active = activeSubscriptionIds()
             if (!armRecipient.matches(Regex("^\\+[1-9][0-9]{1,14}$")) ||
                 selected != armSubscriptionId ||
-                !SimSelection.isActive(armSubscriptionId, active) ||
-                getSharedPreferences("alpha_pilot", MODE_PRIVATE).getBoolean("attempt_used", false)) {
+                !SimSelection.isActive(armSubscriptionId, active)) {
                 halt()
                 AuthenticatedGatewayStatus.value = "Alpha arm refused: check recipient, SIM and unused test attempt"
+                stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
                 return START_NOT_STICKY
             }
