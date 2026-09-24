@@ -671,11 +671,12 @@ mod tests {
         body::{Body, to_bytes},
         http::{Method, Request},
     };
-    use p256::elliptic_curve::rand_core::OsRng;
+    use p256::elliptic_curve::Generate;
     use p256::{
         ecdsa::{Signature, SigningKey, signature::Signer},
         pkcs8::EncodePublicKey,
     };
+    use rand::rng;
     use serde_json::{Value, json};
     use sha2::{Digest, Sha256};
     use tower::ServiceExt;
@@ -869,7 +870,7 @@ mod tests {
         let pairing_id: Uuid = created["pairing_id"].as_str().unwrap().parse().unwrap();
         let token = created["token"].as_str().unwrap();
 
-        let signing = SigningKey::random(&mut OsRng);
+        let signing = SigningKey::generate_from_rng(&mut rng());
         let spki = signing.verifying_key().to_public_key_der().unwrap();
         let response = app
             .clone()
@@ -886,7 +887,7 @@ mod tests {
         assert_eq!(claim["account_id"], a.account_id.to_string());
         let nonce = decode_nonce(claim["challenge_nonce"].as_str().unwrap()).unwrap();
         let fingerprint: [u8; 32] =
-            Sha256::digest(signing.verifying_key().to_encoded_point(false).as_bytes()).into();
+            Sha256::digest(signing.verifying_key().to_sec1_point(false).as_bytes()).into();
         let payload = enrollment_challenge_bytes(a.account_id, pairing_id, &fingerprint, &nonce);
         let signature: Signature = signing.sign(&payload);
         let response = app
@@ -1130,7 +1131,7 @@ mod tests {
         assert_eq!(revoked_device["devices"][0]["active_socket_lease"], false);
 
         // Listing stays bounded and the cursor cannot cross tenant scope.
-        let sec1 = signing.verifying_key().to_encoded_point(false);
+        let sec1 = signing.verifying_key().to_sec1_point(false);
         for index in 0..51 {
             let extra_id = Uuid::new_v4();
             admin
@@ -1299,7 +1300,7 @@ mod tests {
 
         // One anonymous source spends every public enrollment route budget
         // with made-up pairing and device IDs; the last few go over HTTP.
-        let signing = SigningKey::random(&mut OsRng);
+        let signing = SigningKey::generate_from_rng(&mut rng());
         let spki = URL_SAFE_NO_PAD.encode(
             signing
                 .verifying_key()
@@ -1394,7 +1395,7 @@ mod tests {
         let claim = json_response(response).await;
         let nonce = decode_nonce(claim["challenge_nonce"].as_str().unwrap()).unwrap();
         let fingerprint: [u8; 32] =
-            Sha256::digest(signing.verifying_key().to_encoded_point(false).as_bytes()).into();
+            Sha256::digest(signing.verifying_key().to_sec1_point(false).as_bytes()).into();
         let payload =
             enrollment_challenge_bytes(owner.account_id, pairing_id, &fingerprint, &nonce);
         let signature: Signature = signing.sign(&payload);
