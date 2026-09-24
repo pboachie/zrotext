@@ -20,7 +20,7 @@ use tokio_postgres::Client;
 use uuid::Uuid;
 
 const MAX_FAILURES: i32 = 10;
-static LAST_DIAGNOSTIC: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
+static LAST_DIAGNOSTIC: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
 
 #[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderFailure {
@@ -194,9 +194,12 @@ impl StripeTestWorker {
                 {
                     let state = backoff(&db, &subscription_id, generation, "local").await?;
                     if state.as_deref() == Some("needs_review") {
-                        eprintln!(
-                            "Stripe test reconciliation needs review row_ref={}",
-                            opaque_ref(&subscription_id)
+                        diagnostic_class(
+                            "needs_review",
+                            7,
+                            "none",
+                            &subscription_id,
+                            "subscription",
                         );
                     }
                     return Err(error);
@@ -237,10 +240,7 @@ impl StripeTestWorker {
                 let class = self.record_failure(&error, &subscription_id, "subscription");
                 let state = backoff(&db, &subscription_id, generation, class).await?;
                 if state.as_deref() == Some("needs_review") {
-                    eprintln!(
-                        "Stripe test reconciliation needs review class={class} row_ref={}",
-                        opaque_ref(&subscription_id)
-                    );
+                    diagnostic_class("needs_review", 7, "none", &subscription_id, "subscription");
                 }
                 return Ok(true);
             }
@@ -296,10 +296,7 @@ impl StripeTestWorker {
                 let class = self.record_failure(&error, &event_id, "risk");
                 let state = risk::backoff(&db, &event_id, class).await?;
                 if state.as_deref() == Some("needs_review") {
-                    eprintln!(
-                        "Stripe test risk needs review class={class} row_ref={}",
-                        opaque_ref(&event_id)
-                    );
+                    diagnostic_class("needs_review", 7, "none", &event_id, "risk");
                 }
                 // A provider read, unresolved binding or attribution failure
                 // is retained for retry and later review.
