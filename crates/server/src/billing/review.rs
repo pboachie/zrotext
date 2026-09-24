@@ -565,9 +565,9 @@ mod tests {
     }
 
     fn signed(body: &[u8]) -> crate::billing::VerifiedEvent {
-        const SECRET: &str = "whsec_review_fixture";
+        let secret = format!("whsec_{}", Uuid::new_v4().simple());
         let now = 1_750_000_000;
-        let mut mac = <HmacSha256 as hmac::KeyInit>::new_from_slice(SECRET.as_bytes()).unwrap();
+        let mut mac = <HmacSha256 as hmac::KeyInit>::new_from_slice(secret.as_bytes()).unwrap();
         mac.update(format!("{now}.").as_bytes());
         mac.update(body);
         let signature = mac
@@ -576,7 +576,7 @@ mod tests {
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
-        verify_event(body, &format!("t={now},v1={signature}"), SECRET, now).unwrap()
+        verify_event(body, &format!("t={now},v1={signature}"), &secret, now).unwrap()
     }
 
     fn refund_provider(
