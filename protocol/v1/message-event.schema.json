@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://zrotext.org/protocol/v1/message-event.schema.json",
+  "$id": "https://zrotext.com/protocol/v1/message-event.schema.json",
   "title": "ZROtext message event v1 metadata contract",
   "type": "object",
   "additionalProperties": false,

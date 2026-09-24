@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://zrotext.org/protocol/v1/execution-grant.schema.json",
+  "$id": "https://zrotext.com/protocol/v1/execution-grant.schema.json",
   "title": "ZROtext execution grant v1 metadata contract",
   "type": "object",
   "additionalProperties": false,
