@@ -74,6 +74,7 @@ struct Health {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let hosted_sessions_enabled = optional_bool("STRIPE_TEST_HOSTED_SESSIONS_ENABLED")?;
     let billing_test = match env::var("STRIPE_BILLING_TEST_ENABLED").ok().as_deref() {
         None | Some("false") => None,
         Some("true") => {
@@ -91,25 +92,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &prices,
             )?;
             let device_caps_enabled = plans.iter().any(|plan| plan.device_limit.is_some());
-            let secret_key = required("STRIPE_TEST_SECRET_KEY")?;
-            let worker =
-                StripeTestWorker::new_with_quotas(secret_key.clone(), prices.clone(), plans)?;
+            let legacy_key = optional_secret("STRIPE_TEST_SECRET_KEY")?;
+            let reader_key = select_stripe_test_key(
+                optional_secret("STRIPE_TEST_RECONCILE_SECRET_KEY")?,
+                legacy_key.clone(),
+            )?;
+            let session_candidate = optional_secret("STRIPE_TEST_SESSION_SECRET_KEY")?;
+            let session_key = if hosted_sessions_enabled {
+                Some(select_stripe_test_key(session_candidate, legacy_key)?)
+            } else {
+                None
+            };
+            let worker = StripeTestWorker::new_with_quotas(reader_key, prices.clone(), plans)?;
             Some((
                 endpoint_secret,
                 worker,
-                secret_key,
+                session_key,
                 prices,
                 device_caps_enabled,
             ))
         }
         _ => return Err("invalid STRIPE_BILLING_TEST_ENABLED".into()),
     };
-    if billing_test.is_none()
-        && env::var("STRIPE_TEST_HOSTED_SESSIONS_ENABLED")
-            .ok()
-            .as_deref()
-            == Some("true")
-    {
+    if billing_test.is_none() && hosted_sessions_enabled {
         return Err("Stripe hosted sessions require STRIPE_BILLING_TEST_ENABLED=true".into());
     }
     let (webhook_vault, webhook_delivery_enabled) = webhook_config()?;
@@ -353,7 +358,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         return Err("account and enrollment routes are required for enabled features".into());
     }
-    if let Some((endpoint_secret, worker, secret_key, prices, device_caps_enabled)) = billing_test {
+    if let Some((endpoint_secret, worker, session_key, prices, device_caps_enabled)) = billing_test
+    {
         let billing_database = config.database_url.clone();
         if !quotas_reset {
             reset_test_quotas_on_start(&billing_database, true, device_caps_enabled).await?;
@@ -362,28 +368,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             database_url: billing_database.clone(),
             endpoint_secret,
         });
-        match env::var("STRIPE_TEST_HOSTED_SESSIONS_ENABLED")
-            .ok()
-            .as_deref()
-        {
-            None | Some("false") => {}
-            Some("true") => {
-                let auth =
-                    billing_auth_state.ok_or("Stripe hosted sessions require account routes")?;
-                let price_id = required("STRIPE_TEST_CHECKOUT_PRICE_ID")?;
-                if !prices.contains(&price_id) {
-                    return Err(
-                        "Stripe Checkout price must be in the recognized test prices".into(),
-                    );
-                }
-                let sessions = SessionState::new(auth.clone(), secret_key, price_id)?;
-                billing_routes = billing_routes.merge(billing_sessions::router(sessions));
-                billing_routes = billing_routes.merge(billing_owner::status_router(auth.clone()));
-                app = app
-                    .merge(billing_sessions::return_router())
-                    .merge(billing_owner::page_router(auth));
+        if hosted_sessions_enabled {
+            let auth = billing_auth_state.ok_or("Stripe hosted sessions require account routes")?;
+            let price_id = required("STRIPE_TEST_CHECKOUT_PRICE_ID")?;
+            if !prices.contains(&price_id) {
+                return Err("Stripe Checkout price must be in the recognized test prices".into());
             }
-            _ => return Err("invalid STRIPE_TEST_HOSTED_SESSIONS_ENABLED".into()),
+            let sessions = SessionState::new(
+                auth.clone(),
+                session_key.ok_or("Stripe test session key missing")?,
+                price_id,
+            )?;
+            billing_routes = billing_routes.merge(billing_sessions::router(sessions));
+            billing_routes = billing_routes.merge(billing_owner::status_router(auth.clone()));
+            app = app
+                .merge(billing_sessions::return_router())
+                .merge(billing_owner::page_router(auth));
         }
         app = app.nest("/v1/billing", billing_routes);
         let billing_draining = config.draining.clone();
@@ -630,7 +630,7 @@ async fn shutdown_signal(config: Arc<Config>) {
 }
 
 fn required(key: &'static str) -> Result<String, Box<dyn std::error::Error>> {
-    let value = env::var(key)?;
+    let value = env::var(key).map_err(|error| redacted_env_error(key, error))?;
     if value.trim().is_empty() {
         return Err(format!("{key} must not be empty").into());
     }
@@ -676,6 +676,41 @@ fn required_smtp_alias(
 ) -> Result<String, Box<dyn std::error::Error>> {
     smtp_alias(primary, alternate)?
         .ok_or_else(|| format!("{primary} or {alternate} is required").into())
+}
+
+fn optional_secret(key: &'static str) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    match env::var(key) {
+        Ok(value) if !value.trim().is_empty() => {
+            validate_stripe_test_key(&value)?;
+            Ok(Some(value))
+        }
+        Ok(_) => Err(format!("{key} must not be empty").into()),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(error) => Err(redacted_env_error(key, error).into()),
+    }
+}
+
+fn redacted_env_error(key: &'static str, error: env::VarError) -> String {
+    match error {
+        env::VarError::NotPresent => format!("{key} is required"),
+        env::VarError::NotUnicode(_) => format!("{key} must be valid UTF-8"),
+    }
+}
+
+fn select_stripe_test_key(
+    scoped: Option<String>,
+    legacy: Option<String>,
+) -> Result<String, &'static str> {
+    let key = scoped.or(legacy).ok_or("Stripe test API key missing")?;
+    validate_stripe_test_key(&key)?;
+    Ok(key)
+}
+
+fn validate_stripe_test_key(key: &str) -> Result<(), &'static str> {
+    if !(key.starts_with("sk_test_") || key.starts_with("rk_test_")) || key.len() < 16 {
+        return Err("Stripe test API key must be a test-mode key");
+    }
+    Ok(())
 }
 
 fn optional_bool(key: &'static str) -> Result<bool, Box<dyn std::error::Error>> {
@@ -812,6 +847,41 @@ mod tests {
             Some("same".into())
         );
         assert!(resolve_smtp_alias(Some("one".into()), Some("two".into())).is_err());
+    }
+
+    #[test]
+    fn stripe_test_keys_select_scoped_reader_and_writer_independently() {
+        let legacy = "sk_test_legacyfixture".to_owned();
+        let reader = "rk_test_readfixture".to_owned();
+        let writer = "rk_test_writefixture".to_owned();
+        assert_eq!(
+            select_stripe_test_key(Some(reader.clone()), Some(legacy.clone())).unwrap(),
+            reader
+        );
+        assert_eq!(
+            select_stripe_test_key(Some(writer.clone()), Some(legacy.clone())).unwrap(),
+            writer
+        );
+        assert_eq!(
+            select_stripe_test_key(None, Some(legacy.clone())).unwrap(),
+            legacy
+        );
+        assert!(select_stripe_test_key(None, None).is_err());
+        assert!(select_stripe_test_key(Some("sk_live_fixture1234".into()), None).is_err());
+        assert!(select_stripe_test_key(Some("rk_test_short".into()), None).is_err());
+        assert!(select_stripe_test_key(Some("sk_live_fixture1234".into()), Some(legacy)).is_err());
+        assert!(validate_stripe_test_key("sk_live_unused_fixture1234").is_err());
+    }
+
+    #[test]
+    fn malformed_secret_env_error_does_not_echo_value() {
+        let error = env::VarError::NotUnicode(std::ffi::OsString::from("secret-canary"));
+        let message = redacted_env_error("STRIPE_TEST_SESSION_SECRET_KEY", error);
+        assert_eq!(
+            message,
+            "STRIPE_TEST_SESSION_SECRET_KEY must be valid UTF-8"
+        );
+        assert!(!message.contains("secret-canary"));
     }
 
     #[tokio::test]
