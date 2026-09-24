@@ -23,8 +23,9 @@ The [device-stream contract](../protocol/v1/device-stream.md) documents the auth
 
 ## Virtual inbound receiver check
 
-On a freshly booted `sdk_gphone` emulator with neither gateway APK installed, build
-the debug app and test APKs, then run:
+On a freshly booted `sdk_gphone` emulator with neither gateway APK installed,
+put Android SDK `platform-tools` (including `adb`) on `PATH`, build the debug
+app and test APKs, then run:
 
 ```sh
 cd android
