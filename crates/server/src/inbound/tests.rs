@@ -36,11 +36,10 @@ fn metadata_signature_bytes_match_android_pilot_vector() {
 }
 
 #[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
-    let Ok(url) = std::env::var("ZT_INBOUND_TEST_DATABASE_URL") else {
-        eprintln!("set ZT_INBOUND_TEST_DATABASE_URL to run inbound database test");
-        return;
-    };
+    let url = std::env::var("ZT_INBOUND_TEST_DATABASE_URL")
+        .expect("set ZT_INBOUND_TEST_DATABASE_URL for PostgreSQL-backed tests");
     let (mut db, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
         .await
         .unwrap();
@@ -700,11 +699,10 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
 }
 
 #[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn fresh_signed_events_share_a_durable_budget_and_replays_are_free() {
-    let Ok(url) = std::env::var("ZT_INBOUND_TEST_DATABASE_URL") else {
-        eprintln!("set ZT_INBOUND_TEST_DATABASE_URL to run inbound database test");
-        return;
-    };
+    let url = std::env::var("ZT_INBOUND_TEST_DATABASE_URL")
+        .expect("set ZT_INBOUND_TEST_DATABASE_URL for PostgreSQL-backed tests");
     let (mut db, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
         .await
         .unwrap();

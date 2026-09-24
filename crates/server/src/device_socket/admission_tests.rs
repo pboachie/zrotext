@@ -166,11 +166,10 @@ async fn silent_socket_is_closed_by_hello_step_timeout() {
 }
 
 #[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn saturated_handshake_budget_does_not_lock_out_enrolled_device() {
-    let Ok(url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
-        eprintln!("set ZT_AUTH_TEST_DATABASE_URL to run device socket admission test");
-        return;
-    };
+    let url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+        .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
     let (admin, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
     let schema = format!("socket_admission_{}", Uuid::new_v4().simple());

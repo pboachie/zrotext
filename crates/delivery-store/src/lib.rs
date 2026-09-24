@@ -1498,11 +1498,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn released_attempt_cannot_change_a_new_grant() {
-        let Ok(url) = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL") else {
-            eprintln!("set ZT_DELIVERY_TEST_DATABASE_URL to run the database fault test");
-            return;
-        };
+        let url = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL")
+            .expect("set ZT_DELIVERY_TEST_DATABASE_URL for PostgreSQL-backed tests");
         let (mut client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
             .await
             .unwrap();
@@ -1676,11 +1675,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn exact_alpha_replay_survives_customer_binding_without_new_work() {
-        let Ok(url) = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL") else {
-            eprintln!("set ZT_DELIVERY_TEST_DATABASE_URL for alpha replay database test");
-            return;
-        };
+        let url = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL")
+            .expect("set ZT_DELIVERY_TEST_DATABASE_URL for PostgreSQL-backed tests");
         let (mut client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
             .await
             .unwrap();
@@ -1808,10 +1806,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn parallel_acceptance_respects_pending_queue_capacity() {
-        let Ok(url) = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL") else {
-            return;
-        };
+        let url = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL")
+            .expect("set ZT_DELIVERY_TEST_DATABASE_URL for PostgreSQL-backed tests");
         let (client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
             .await
             .unwrap();
@@ -2003,11 +2001,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn postgres_fences_unknown_and_tenant_idempotency() {
-        let Ok(url) = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL") else {
-            eprintln!("set ZT_DELIVERY_TEST_DATABASE_URL to run the database fault test");
-            return;
-        };
+        let url = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL")
+            .expect("set ZT_DELIVERY_TEST_DATABASE_URL for PostgreSQL-backed tests");
         let (mut client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
             .await
             .unwrap();

@@ -743,10 +743,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn http_pairing_requires_csrf_proves_key_and_revokes_device() {
-        let Ok(root_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
-            return;
-        };
+        let root_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
         assert!(root_url.starts_with("postgres://") || root_url.starts_with("postgresql://"));
         let (mut admin, connection) = tokio_postgres::connect(&root_url, NoTls).await.unwrap();
         tokio::spawn(async move { connection.await.unwrap() });
@@ -1243,10 +1243,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn phones_pair_and_reconnect_after_anonymous_budgets_are_spent() {
-        let Ok(root_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
-            return;
-        };
+        let root_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
         let (mut admin, connection) = tokio_postgres::connect(&root_url, NoTls).await.unwrap();
         tokio::spawn(async move { connection.await.unwrap() });
         let schema = format!("http_enroll_budget_{}", Uuid::new_v4().simple());

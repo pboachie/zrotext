@@ -146,10 +146,10 @@ mod tests {
         ));
     }
     #[tokio::test]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn cancelled_query_retains_capacity_until_driver_stops() {
-        let Ok(url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
-            return;
-        };
+        let url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
         let slots = Arc::new(Semaphore::new(1));
         let (client, connection) = connect_with(&url, slots.clone()).await.unwrap();
         let driver = tokio::spawn(connection);
