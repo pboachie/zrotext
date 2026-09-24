@@ -59,9 +59,10 @@ not a published app release; approve the exact APK digest and distribution
 channel separately before sharing it.
 
 After the unsigned and signed directories have been transferred to a trusted
-review machine, verify them without loading the signing key. Obtain the source
-commit from the reviewed annotated tag and the signing certificate SHA-256 from
-an independently approved custody record, not from `candidate.json`:
+review machine, verify them without loading the signing key. Select the source
+tag independently from the reviewed GitHub Release, fetch it and `main`, and
+obtain the signing certificate SHA-256 from an independently approved custody
+record, not from `candidate.json`:
 
 Place the two directories at the tool's fixed external artifact root:
 `<system temporary directory>/zrotext-android-release/unsigned` and
@@ -69,12 +70,16 @@ Place the two directories at the tool's fixed external artifact root:
 rejects symlinked or oversized artifact files.
 
 ```sh
+git fetch origin main --tags
 python3 android/tools/release_candidate.py verify \
-  --source-commit <full-tag-commit-sha> \
+  --source-tag v0.1.0-rc.1 \
   --certificate-sha256 <approved-64-character-hex-fingerprint>
 ```
 
-The verifier checks both receipts and checksums, the embedded source commit,
+The verifier requires an annotated version tag whose object matches the
+published `origin` tag, a fresh fetched `origin/main`, and tag commit ancestry
+on that branch. It then checks both receipts and checksums against that tag's
+source commit,
 package and SDK identity, every uncompressed APK ZIP entry, ZIP alignment,
 the v2 and v3 signatures with `apksigner`, and the approved certificate
 fingerprint. Install Android SDK build tools (`aapt`, `zipalign`, and
