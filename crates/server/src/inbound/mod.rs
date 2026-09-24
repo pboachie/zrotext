@@ -109,6 +109,8 @@ pub enum InboundError {
     SequenceConflict,
     #[error("webhook delivery lease is stale")]
     StaleLease,
+    #[error("inbound storage budget exhausted")]
+    BudgetExhausted,
     #[error("inbound storage failed")]
     Database(#[from] tokio_postgres::Error),
 }
@@ -294,6 +296,12 @@ pub async fn ingest(
             queued_deliveries: 0,
         });
     }
+    // Charge only a fresh, authenticated event, in the insertion transaction.
+    // Replays above remain free so a lost ACK can be recovered at the limit.
+    // Tenant-local account keys prevent one tenant exhausting another's budget.
+    if !consume_storage_budget(&tx, session.account_id, session.device_id).await? {
+        return Err(InboundError::BudgetExhausted);
+    }
     let queued = tx
         .execute(
             "INSERT INTO webhook_deliveries (id,account_id,endpoint_id,event_id) \
@@ -315,6 +323,30 @@ pub async fn ingest(
         created: true,
         queued_deliveries: queued,
     })
+}
+
+fn budget_key(kind: &str, id: Uuid) -> Vec<u8> {
+    Sha256::digest(format!("zrotext-inbound-budget-v1:{kind}:{id}").as_bytes()).to_vec()
+}
+
+async fn consume_storage_budget<C: tokio_postgres::GenericClient>(
+    client: &C,
+    account_id: Uuid,
+    device_id: Uuid,
+) -> Result<bool, tokio_postgres::Error> {
+    // Durable fixed 24-hour pilot windows: 1,000/account and 200/device.
+    // UUIDs are already public random identifiers; hash namespaces keep their
+    // two roles disjoint without depending on a rotating operational pepper.
+    Ok(client
+        .query_one(
+            "SELECT auth_abuse_consume('inbound_daily',$1,$2,1000,86400,200,86400)",
+            &[
+                &budget_key("account", account_id),
+                &budget_key("device", device_id),
+            ],
+        )
+        .await?
+        .get(0))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -88,6 +88,7 @@ pub async fn prune(client: &Client) -> Result<u64, tokio_postgres::Error> {
                 WHERE updated_at < now() - CASE scope
                     WHEN 'registration' THEN interval '25 hours'
                     WHEN 'api_key_create' THEN interval '25 hours'
+                    WHEN 'inbound_daily' THEN interval '25 hours'
                     WHEN 'login' THEN interval '16 minutes'
                     WHEN 'resend' THEN interval '16 minutes'
                     WHEN 'mfa_manage' THEN interval '16 minutes'
