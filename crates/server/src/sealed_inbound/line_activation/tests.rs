@@ -7,9 +7,40 @@ use p256::{
     ecdsa::{Signature, SigningKey, signature::Signer},
     elliptic_curve::rand_core::OsRng,
 };
-use std::path::Path;
 use tokio::time::{Duration, sleep};
 use tokio_postgres::NoTls;
+
+macro_rules! migration {
+    ($name:literal) => {
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../deploy/compose/migrations/",
+            $name
+        ))
+    };
+}
+
+const TEST_MIGRATIONS: [&str; 19] = [
+    migration!("001_foundation.sql"),
+    migration!("002_auth.sql"),
+    migration!("003_delivery.sql"),
+    migration!("004_enrollment.sql"),
+    migration!("005_verification_outbox.sql"),
+    migration!("006_usage_metering.sql"),
+    migration!("007_inbound_webhook_foundation.sql"),
+    migration!("008_stripe_billing_foundation.sql"),
+    migration!("009_webhook_manual_replay.sql"),
+    migration!("010_billing_test_entitlement.sql"),
+    migration!("011_billing_payment_holds.sql"),
+    migration!("012_auth_abuse_limits.sql"),
+    migration!("013_owner_mfa.sql"),
+    migration!("014_owner_mfa_failure_budget.sql"),
+    migration!("015_webhook_kek_commitments.sql"),
+    migration!("016_auth_abuse_atomic.sql"),
+    migration!("017_billing_device_caps.sql"),
+    migration!("018_sealed_inbound_identity.sql"),
+    migration!("019_line_activation_contract.sql"),
+];
 
 fn signatures(
     challenge: &LineChallenge,
@@ -62,7 +93,7 @@ fn transcript_is_role_separated_and_rejects_ambiguous_or_old_android() {
         device_id: Uuid::new_v4(),
         generation: 1,
         id: Uuid::new_v4(),
-        nonce: [7_u8; 32],
+        nonce: rand::random(),
     };
     let good_observation = SimObservation {
         android_api_level: 31,
@@ -138,42 +169,25 @@ async fn migration_preserves_pending_generation_high_water_mark() {
     ))
     .await
     .unwrap();
-    let migration_dir =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/compose/migrations");
-    let mut migrations: Vec<_> = std::fs::read_dir(&migration_dir)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| path.extension().is_some_and(|extension| extension == "sql"))
-        .collect();
-    migrations.sort();
-    for path in migrations.iter().filter(|path| {
-        path.file_name()
-            .is_some_and(|name| name.to_string_lossy().as_ref() < "019_")
-    }) {
-        db.batch_execute(&std::fs::read_to_string(path).unwrap())
-            .await
-            .unwrap();
+    for migration in TEST_MIGRATIONS.iter().take(18) {
+        db.batch_execute(migration).await.unwrap();
     }
-    let hasher = TokenHasher::new(vec![7; 32]).unwrap();
+    let hasher = TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap();
+    let password = format!("test-{}", Uuid::new_v4());
     let owner = register(
         &mut db,
         &hasher,
         "upgrade-line-owner@example.test",
-        "correct horse 123",
+        &password,
     )
     .await
     .unwrap();
     verify_email(&mut db, &hasher, &owner.verification_token)
         .await
         .unwrap();
-    let login = login(
-        &db,
-        &hasher,
-        "upgrade-line-owner@example.test",
-        "correct horse 123",
-    )
-    .await
-    .unwrap();
+    let login = login(&db, &hasher, "upgrade-line-owner@example.test", &password)
+        .await
+        .unwrap();
     let principal = authenticate_session(&db, &hasher, &login.token)
         .await
         .unwrap();
@@ -211,10 +225,7 @@ async fn migration_preserves_pending_generation_high_water_mark() {
     )
     .await
     .unwrap();
-    let migration_019 = migration_dir.join("019_line_activation_contract.sql");
-    db.batch_execute(&std::fs::read_to_string(migration_019).unwrap())
-        .await
-        .unwrap();
+    db.batch_execute(TEST_MIGRATIONS[18]).await.unwrap();
     let issued: i64 = db
         .query_one(
             "SELECT last_issued_generation FROM phone_lines WHERE account_id=$1 AND id=$2",
@@ -292,36 +303,23 @@ async fn signed_activation_fences_owner_device_generation_and_replay() {
     ))
     .await
     .unwrap();
-    let migration_dir =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/compose/migrations");
-    let mut migrations: Vec<_> = std::fs::read_dir(migration_dir)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| path.extension().is_some_and(|extension| extension == "sql"))
-        .collect();
-    migrations.sort();
-    for path in migrations {
-        db.batch_execute(&std::fs::read_to_string(path).unwrap())
-            .await
-            .unwrap();
+    for migration in TEST_MIGRATIONS {
+        db.batch_execute(migration).await.unwrap();
     }
     db.execute("INSERT INTO sites(site_id) VALUES('virtual-line-hub')", &[])
         .await
         .unwrap();
-    let hasher = TokenHasher::new(vec![7; 32]).unwrap();
-    let owner = register(
-        &mut db,
-        &hasher,
-        "line-owner@example.test",
-        "correct horse 123",
-    )
-    .await
-    .unwrap();
+    let hasher = TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap();
+    let owner_password = format!("test-{}", Uuid::new_v4());
+    let other_password = format!("test-{}", Uuid::new_v4());
+    let owner = register(&mut db, &hasher, "line-owner@example.test", &owner_password)
+        .await
+        .unwrap();
     let other = register(
         &mut db,
         &hasher,
         "other-line-owner@example.test",
-        "correct horse 456",
+        &other_password,
     )
     .await
     .unwrap();
@@ -331,14 +329,14 @@ async fn signed_activation_fences_owner_device_generation_and_replay() {
     verify_email(&mut db, &hasher, &other.verification_token)
         .await
         .unwrap();
-    let owner_login = login(&db, &hasher, "line-owner@example.test", "correct horse 123")
+    let owner_login = login(&db, &hasher, "line-owner@example.test", &owner_password)
         .await
         .unwrap();
     let other_login = login(
         &db,
         &hasher,
         "other-line-owner@example.test",
-        "correct horse 456",
+        &other_password,
     )
     .await
     .unwrap();
@@ -411,7 +409,7 @@ async fn signed_activation_fences_owner_device_generation_and_replay() {
     ));
     assert!(!line_binding_ready(&db, session, line, 1).await.unwrap());
     let (device_sig, owner_sig) = signatures(&challenge, &device_key, &owner_key, 7);
-    let stale_owner_login = login(&db, &hasher, "line-owner@example.test", "correct horse 123")
+    let stale_owner_login = login(&db, &hasher, "line-owner@example.test", &owner_password)
         .await
         .unwrap();
     let stale_owner = authenticate_session(&db, &hasher, &stale_owner_login.token)
@@ -599,7 +597,7 @@ async fn signed_activation_fences_owner_device_generation_and_replay() {
     // A generation held by a missing phone must not pin this line forever.
     // Start an activation while the line row is locked, then let its nonce,
     // owner session, and device lease expire during the wait.
-    let timed_login = login(&db, &hasher, "line-owner@example.test", "correct horse 123")
+    let timed_login = login(&db, &hasher, "line-owner@example.test", &owner_password)
         .await
         .unwrap();
     let (mut attempt_db, attempt_connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
@@ -676,7 +674,7 @@ async fn signed_activation_fences_owner_device_generation_and_replay() {
         sleep(Duration::from_millis(50)).await;
     }
     assert!(saw_lock_wait, "activation never reached the line lock");
-    sleep(Duration::from_secs(6)).await;
+    lock_db.query_one("SELECT pg_sleep(6)", &[]).await.unwrap();
     lock_db.batch_execute("COMMIT").await.unwrap();
     assert!(matches!(
         blocked_activation.await.unwrap(),
@@ -800,7 +798,7 @@ async fn signed_activation_fences_owner_device_generation_and_replay() {
 
     // Hold the *old active binding* after the initial time checks. The final
     // wall-clock check must roll back the row updates after this late wait.
-    let late_login = login(&db, &hasher, "line-owner@example.test", "correct horse 123")
+    let late_login = login(&db, &hasher, "line-owner@example.test", &owner_password)
         .await
         .unwrap();
     let (mut late_db, late_connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
@@ -812,6 +810,7 @@ async fn signed_activation_fences_owner_device_generation_and_replay() {
     let late_owner = authenticate_session(&late_db, &hasher, &late_login.token)
         .await
         .unwrap();
+    let late_owner_session_id = late_owner.session_id;
     let late_pid: i32 = late_db
         .query_one("SELECT pg_backend_pid()", &[])
         .await
@@ -875,12 +874,26 @@ async fn signed_activation_fences_owner_device_generation_and_replay() {
         saw_late_wait,
         "activation never reached the old-binding lock"
     );
-    sleep(Duration::from_secs(6)).await;
+    lock_db.query_one("SELECT pg_sleep(6)", &[]).await.unwrap();
+    let expired = lock_db
+        .query_one(
+            "SELECT \
+             (SELECT expires_at<=clock_timestamp() FROM line_activation_challenges WHERE id=$1), \
+             (SELECT expires_at<=clock_timestamp() FROM sessions WHERE id=$2), \
+             (SELECT lease_until<=clock_timestamp() FROM device_sessions WHERE device_id=$3)",
+            &[&late.id, &late_owner_session_id, &device],
+        )
+        .await
+        .unwrap();
+    assert!(expired.get::<_, bool>(0), "challenge did not expire");
+    assert!(expired.get::<_, bool>(1), "owner session did not expire");
+    assert!(expired.get::<_, bool>(2), "device lease did not expire");
     lock_db.batch_execute("COMMIT").await.unwrap();
-    assert!(matches!(
-        late_activation.await.unwrap(),
-        Err(LineActivationError::Unavailable)
-    ));
+    let late_result = late_activation.await.unwrap();
+    assert!(
+        matches!(late_result, Err(LineActivationError::Unavailable)),
+        "late activation returned {late_result:?}"
+    );
     db.execute(
         "UPDATE device_sessions SET lease_until=clock_timestamp()+interval '10 minutes' \
          WHERE account_id=$1 AND device_id=$2",

@@ -40,7 +40,7 @@ async fn sealed_identity_requires_live_writer_and_active_same_tenant_line() {
         eprintln!("set ZT_INBOUND_TEST_DATABASE_URL for sealed identity database test");
         return;
     };
-    let (db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
     let schema = format!("sealed_identity_{}", Uuid::new_v4().simple());
     db.batch_execute(&format!(
@@ -227,6 +227,30 @@ async fn sealed_identity_requires_live_writer_and_active_same_tenant_line() {
     .await
     .unwrap();
     assert!(line_binding_ready(&db, session, line, 1).await.unwrap());
+
+    // `now()` is fixed at transaction start. An ingest preflight must reject
+    // a writer whose lease expires while the transaction remains open.
+    let tx = db.transaction().await.unwrap();
+    tx.execute(
+        "UPDATE device_sessions SET lease_until=now()+interval '100 milliseconds' \
+         WHERE account_id=$1 AND device_id=$2",
+        &[&account, &device],
+    )
+    .await
+    .unwrap();
+    tx.query_one("SELECT pg_sleep(0.5)", &[]).await.unwrap();
+    let times = tx
+        .query_one(
+            "SELECT lease_until<=clock_timestamp(),lease_until<=now() \
+             FROM device_sessions WHERE device_id=$1",
+            &[&device],
+        )
+        .await
+        .unwrap();
+    assert!(times.get::<_, bool>(0));
+    assert!(!times.get::<_, bool>(1));
+    assert!(!line_binding_ready(&tx, session, line, 1).await.unwrap());
+    tx.rollback().await.unwrap();
 
     let rollback = db
         .execute(

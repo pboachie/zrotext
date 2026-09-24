@@ -4,7 +4,7 @@
 //! sealed envelope, prove which SIM received an SMS, or authorize a webhook.
 
 use crate::inbound::InboundSession;
-use tokio_postgres::Client;
+use tokio_postgres::GenericClient;
 use uuid::Uuid;
 
 pub mod line_activation;
@@ -15,9 +15,10 @@ pub mod line_activation;
 /// manifest and exact device-signed sealed envelope before storage. The
 /// caller must keep this preflight and its insert in one transaction, or
 /// recheck the session in the insert transaction; the insert trigger checks
-/// active line state but not the session epoch.
-pub async fn line_binding_ready(
-    client: &Client,
+/// active line state but not the session epoch. Recheck the wall-clock lease
+/// immediately before commit, since a lease can expire after this returns.
+pub async fn line_binding_ready<C: GenericClient>(
+    client: &C,
     session: InboundSession<'_>,
     line_id: Uuid,
     binding_generation: i64,
@@ -25,7 +26,7 @@ pub async fn line_binding_ready(
     if line_id.is_nil() || binding_generation <= 0 {
         return Ok(false);
     }
-    Ok(client
+    if client
         .query_opt(
             "SELECT 1 FROM device_sessions s \
              JOIN devices d ON (d.account_id,d.id)=(s.account_id,s.device_id) \
@@ -38,7 +39,7 @@ pub async fn line_binding_ready(
                (b.account_id,b.line_id,b.device_id)=(d.account_id,l.id,d.id) \
              WHERE s.account_id=$1 AND s.device_id=$2 AND s.site_id=$3 \
                AND s.instance_id=$4 AND s.connection_epoch=$5 \
-               AND s.deployment_epoch=$6 AND s.lease_until>now() \
+               AND s.deployment_epoch=$6 AND s.lease_until>clock_timestamp() \
                AND d.revoked_at IS NULL AND k.revoked_at IS NULL \
                AND a.disabled_at IS NULL AND t.enabled=TRUE AND t.draining=FALSE \
                AND p.epoch=$6 AND NOT pg_is_in_recovery() \
@@ -58,6 +59,29 @@ pub async fn line_binding_ready(
                 &session.deployment_epoch,
                 &line_id,
                 &binding_generation,
+            ],
+        )
+        .await?
+        .is_none()
+    {
+        return Ok(false);
+    }
+    // The first query may wait on a row lock after evaluating its lease
+    // predicate. Recheck against wall time after all its locks are held.
+    Ok(client
+        .query_opt(
+            "SELECT 1 FROM device_sessions s \
+             WHERE s.account_id=$1 AND s.device_id=$2 AND s.site_id=$3 \
+               AND s.instance_id=$4 AND s.connection_epoch=$5 \
+               AND s.deployment_epoch=$6 AND s.lease_until>clock_timestamp() \
+             FOR SHARE OF s",
+            &[
+                &session.account_id,
+                &session.device_id,
+                &session.site_id,
+                &session.instance_id,
+                &session.connection_epoch,
+                &session.deployment_epoch,
             ],
         )
         .await?
