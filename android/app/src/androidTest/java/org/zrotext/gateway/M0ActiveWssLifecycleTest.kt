@@ -57,6 +57,21 @@ class M0ActiveWssLifecycleTest {
         assertNull(HeartbeatResumeStore.read(app))
     }
 
+    @Test fun missingBootConfigStopsForegroundLaunchCleanly() {
+        val args = InstrumentationRegistry.getArguments()
+        assumeTrue(args.getString("m0BootOptIn") == "true")
+        val app = InstrumentationRegistry.getInstrumentation().targetContext
+        assertTrue(HeartbeatResumeStore.clear(app))
+        ContextCompat.startForegroundService(app,
+            Intent(app, AuthenticatedGatewayService::class.java)
+                .setAction(AuthenticatedGatewayService.ACTION_BOOT_RESUME))
+        // Android reports a missed foreground-service promotion asynchronously.
+        Thread.sleep(7_000L)
+        assertNull(HeartbeatResumeStore.read(app))
+        assertTrue("invalid boot resume must not leave a service active",
+            !AuthenticatedGatewayService.processActive)
+    }
+
     @Test fun switchingToVisibleTestSessionClearsRebootResume() {
         val args = InstrumentationRegistry.getArguments()
         assumeTrue(args.getString("m0BootOptIn") == "true")

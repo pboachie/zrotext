@@ -61,6 +61,8 @@ internal object HeartbeatResumeStore {
             context.getSystemService(ActivityManager::class.java)
                 ?.getHistoricalProcessExitReasons(null, 0, 0)
         }.getOrNull()
+        // Missing exit history cannot prove that the user did not stop the app.
+        // Revoke the opt-in rather than resume a service after an unknown stop.
         if (exits == null || exits.any {
                 it.reason == ApplicationExitInfo.REASON_USER_REQUESTED &&
                     it.timestamp >= config.optedInAtMs

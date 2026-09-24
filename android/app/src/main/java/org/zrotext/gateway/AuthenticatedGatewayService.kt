@@ -105,6 +105,16 @@ class AuthenticatedGatewayService : Service() {
             }
             return START_NOT_STICKY
         }
+        // Every non-Pause request can arrive through startForegroundService,
+        // including a boot request whose saved configuration has disappeared.
+        // Promote before any validation path can stop the service.
+        val checking = notification("Checking heartbeat configuration")
+        if (Build.VERSION.SDK_INT >= 29) {
+            startForeground(NOTIFICATION_ID, checking,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING)
+        } else {
+            startForeground(NOTIFICATION_ID, checking)
+        }
         val bootResume = intent?.action == ACTION_BOOT_RESUME
         if (!bootResume && !HeartbeatResumeStore.clear(this)) {
             halt()
