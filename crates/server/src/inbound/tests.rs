@@ -66,6 +66,7 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
         include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
         include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
         include_str!("../../../../deploy/compose/migrations/015_webhook_kek_commitments.sql"),
+        include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }
@@ -695,4 +696,328 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
     ))
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn fresh_signed_events_share_a_durable_budget_and_replays_are_free() {
+    let Ok(url) = std::env::var("ZT_INBOUND_TEST_DATABASE_URL") else {
+        eprintln!("set ZT_INBOUND_TEST_DATABASE_URL to run inbound database test");
+        return;
+    };
+    let (mut db, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let schema = format!("inbound_budget_test_{}", Uuid::new_v4().simple());
+    db.batch_execute(&format!(
+        "CREATE SCHEMA {schema}; SET search_path TO {schema}"
+    ))
+    .await
+    .unwrap();
+    for migration in [
+        include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
+        include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+        include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
+        include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
+        include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+        include_str!("../../../../deploy/compose/migrations/006_usage_metering.sql"),
+        include_str!("../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"),
+        include_str!("../../../../deploy/compose/migrations/008_stripe_billing_foundation.sql"),
+        include_str!("../../../../deploy/compose/migrations/009_webhook_manual_replay.sql"),
+        include_str!("../../../../deploy/compose/migrations/010_billing_test_entitlement.sql"),
+        include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
+        include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
+        include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
+        include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
+        include_str!("../../../../deploy/compose/migrations/015_webhook_kek_commitments.sql"),
+        include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+    ] {
+        db.batch_execute(migration).await.unwrap();
+    }
+    let account = Uuid::new_v4();
+    let other_account = Uuid::new_v4();
+    let device = Uuid::new_v4();
+    let message = Uuid::new_v4();
+    let attempt = Uuid::new_v4();
+    let endpoint = Uuid::new_v4();
+    let vault =
+        crate::webhook_worker::WebhookSecretVault::new(1, zeroize::Zeroizing::new(vec![7_u8; 32]))
+            .unwrap();
+    let endpoint_secret = vault.seal(account, endpoint, &[8_u8; 32]).unwrap();
+    let signing = SigningKey::random(&mut OsRng);
+    let public = signing
+        .verifying_key()
+        .to_encoded_point(false)
+        .as_bytes()
+        .to_vec();
+    db.execute(
+        "INSERT INTO accounts(id) VALUES($1),($2)",
+        &[&account, &other_account],
+    )
+    .await
+    .unwrap();
+    db.execute("INSERT INTO sites(site_id) VALUES('test')", &[])
+        .await
+        .unwrap();
+    db.execute(
+        "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'fixture')",
+        &[&device, &account],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO device_keys(device_id,account_id,signing_key_sec1,fingerprint) \
+         VALUES($1,$2,$3,$4)",
+        &[&device, &account, &public, &vec![1u8; 32]],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO device_sessions(device_id,account_id,site_id,instance_id,connection_epoch,lease_until,deployment_epoch) \
+         VALUES($1,$2,'test','instance',2,now()+interval '10 minutes',1)",
+        &[&device, &account],
+    ).await.unwrap();
+    db.execute(
+        "INSERT INTO messages(id,account_id,device_id,recipient_e164,recipient_digest, \
+         transport_mode,transport_payload,request_digest,state,expires_at) \
+         VALUES($1,$2,$3,'+15551234567',$4,'synthetic_alpha',$5,$6,'submitted',now()+interval '1 hour')",
+        &[&message, &account, &device, &vec![2u8;32], &b"fixture".as_slice(), &vec![3u8;32]],
+    ).await.unwrap();
+    db.execute(
+        "INSERT INTO message_attempts(id,account_id,message_id,device_id,generation, \
+         session_epoch,deployment_epoch,status) VALUES($1,$2,$3,$4,1,2,1,'submitted')",
+        &[&attempt, &account, &message, &device],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO message_events(id,account_id,message_id,attempt_id,evidence_code, \
+         event_digest,observed_at,resulting_state,segment_index,segment_count) \
+         VALUES($1,$2,$3,$4,'sent_callback_ok',$5,now(),'submitted',0,1)",
+        &[
+            &Uuid::new_v4(),
+            &account,
+            &message,
+            &attempt,
+            &vec![4u8; 32],
+        ],
+    )
+    .await
+    .unwrap();
+    // A synthetic endpoint is enough to exercise durable fanout and a fake
+    // transport below; no external webhook request is made.
+    db.execute(
+        "INSERT INTO webhook_endpoints(id,account_id,callback_url,signing_secret_ciphertext, \
+         signing_secret_key_version,enabled) VALUES($1,$2,'https://hooks.example.org/hook',$3,1,true)",
+        &[&endpoint, &account, &endpoint_secret],
+    ).await.unwrap();
+
+    let session = InboundSession {
+        account_id: account,
+        device_id: device,
+        site_id: "test",
+        instance_id: "instance",
+        connection_epoch: 2,
+        deployment_epoch: 1,
+    };
+    let unsigned = InboundEvent {
+        event_id: Uuid::new_v4(),
+        sequence: 1,
+        message_id: message,
+        attempt_id: attempt,
+        classification: Classification::CapturedLocal,
+        observed_at_ms: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64,
+        part_count: 1,
+        content: Content::MetadataOnly,
+        signature_der: &[],
+    };
+    let sig: Signature = signing.sign(&signed_event_bytes(session, &unsigned));
+    let sig_bytes = sig.to_der().as_bytes().to_vec();
+    let signed = InboundEvent {
+        signature_der: &sig_bytes,
+        ..unsigned
+    };
+
+    // Concurrent authenticated sockets target the same legitimate source.
+    for sequence in 1..=180_i64 {
+        let event = InboundEvent {
+            event_id: Uuid::new_v4(),
+            sequence,
+            ..unsigned
+        };
+        let sig: Signature = signing.sign(&signed_event_bytes(session, &event));
+        let sig = sig.to_der();
+        ingest(
+            &mut db,
+            session,
+            &InboundEvent {
+                signature_der: sig.as_bytes(),
+                ..event
+            },
+        )
+        .await
+        .unwrap();
+    }
+    let mut tasks = Vec::new();
+    for sequence in 181..=204_i64 {
+        let url = url.clone();
+        let schema = schema.clone();
+        let signing = signing.clone();
+        let unsigned = InboundEvent {
+            event_id: Uuid::new_v4(),
+            sequence,
+            ..unsigned
+        };
+        tasks.push(tokio::spawn(async move {
+            let (mut db, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+                .await
+                .unwrap();
+            tokio::spawn(async move { connection.await.unwrap() });
+            db.batch_execute(&format!("SET search_path TO {schema}"))
+                .await
+                .unwrap();
+            let sig: Signature = signing.sign(&signed_event_bytes(session, &unsigned));
+            let sig = sig.to_der();
+            let event = InboundEvent {
+                signature_der: sig.as_bytes(),
+                ..unsigned
+            };
+            let result = ingest(&mut db, session, &event).await;
+            assert!(result.is_ok() || matches!(result, Err(InboundError::BudgetExhausted)));
+            (
+                unsigned.event_id,
+                unsigned.sequence,
+                sig.as_bytes().to_vec(),
+                result.is_ok(),
+            )
+        }));
+    }
+    let mut accepted = Vec::new();
+    for task in tasks {
+        let row = task.await.unwrap();
+        if row.3 {
+            accepted.push(row);
+        }
+    }
+    assert_eq!(
+        accepted.len(),
+        20,
+        "fresh signed UUIDs must not evade the device budget"
+    );
+    let row = db.query_one("SELECT (SELECT count(*) FROM inbound_events),(SELECT count(*) FROM webhook_deliveries)", &[]).await.unwrap();
+    assert_eq!((row.get::<_, i64>(0), row.get::<_, i64>(1)), (200, 200));
+    let replay = InboundEvent {
+        event_id: accepted[0].0,
+        sequence: accepted[0].1,
+        signature_der: &accepted[0].2,
+        ..unsigned
+    };
+    assert_eq!(
+        ingest(&mut db, session, &replay).await.unwrap(),
+        IngestOutcome {
+            created: false,
+            queued_deliveries: 0
+        }
+    );
+    // A bad signature cannot burn another charge, nor can an exact replay.
+    let invalid = InboundEvent {
+        event_id: Uuid::new_v4(),
+        sequence: 500,
+        ..signed
+    };
+    assert!(matches!(
+        ingest(&mut db, session, &invalid).await,
+        Err(InboundError::InvalidSignature)
+    ));
+    assert!(matches!(
+        ingest(&mut db, session, &signed).await,
+        Err(InboundError::SequenceConflict)
+    ));
+    let counters = db
+        .query(
+            "SELECT attempts FROM auth_abuse_counters WHERE scope='inbound_daily'",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(counters.len(), 2);
+    assert!(counters.iter().all(|r| r.get::<_, i32>(0) == 200));
+    // Cleanup must preserve budgets beyond the generic two-minute retention.
+    db.execute("UPDATE auth_abuse_counters SET updated_at=now()-interval '3 minutes' WHERE scope='inbound_daily'", &[]).await.unwrap();
+    crate::auth::abuse_limits::prune(&db).await.unwrap();
+    assert_eq!(
+        db.query_one(
+            "SELECT count(*) FROM auth_abuse_counters WHERE scope='inbound_daily'",
+            &[]
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0),
+        2
+    );
+    // Seed the account's last slot while this device still has allowance.
+    db.execute("UPDATE auth_abuse_counters SET attempts=999 WHERE scope='inbound_daily' AND subject_hash=$1", &[&budget_key("account", account)]).await.unwrap();
+    db.execute(
+        "UPDATE auth_abuse_counters SET attempts=1 WHERE scope='inbound_daily' AND subject_hash=$1",
+        &[&budget_key("device", device)],
+    )
+    .await
+    .unwrap();
+    for sequence in 501..=502 {
+        let event = InboundEvent {
+            event_id: Uuid::new_v4(),
+            sequence,
+            ..unsigned
+        };
+        let sig: Signature = signing.sign(&signed_event_bytes(session, &event));
+        let sig = sig.to_der();
+        let result = ingest(
+            &mut db,
+            session,
+            &InboundEvent {
+                signature_der: sig.as_bytes(),
+                ..event
+            },
+        )
+        .await;
+        if sequence == 501 {
+            assert!(result.unwrap().created);
+        } else {
+            assert!(matches!(result, Err(InboundError::BudgetExhausted)));
+        }
+    }
+    assert_eq!(db.query_one("SELECT attempts FROM auth_abuse_counters WHERE scope='inbound_daily' AND subject_hash=$1", &[&budget_key("device", device)]).await.unwrap().get::<_,i32>(0), 2);
+    let row = db.query_one("SELECT (SELECT count(*) FROM inbound_events),(SELECT count(*) FROM webhook_deliveries)", &[]).await.unwrap();
+    assert_eq!((row.get::<_, i64>(0), row.get::<_, i64>(1)), (201, 201));
+    // Rotating device identities cannot bypass a saturated account or grow counters.
+    assert!(
+        !consume_storage_budget(&db, account, Uuid::new_v4())
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        db.query_one(
+            "SELECT count(*) FROM auth_abuse_counters WHERE scope='inbound_daily'",
+            &[]
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0),
+        2
+    );
+    assert!(
+        consume_storage_budget(&db, other_account, Uuid::new_v4())
+            .await
+            .unwrap()
+    );
+    // Window renewal uses database wall time, independent of device timestamps.
+    db.execute("UPDATE auth_abuse_counters SET window_started_at=now()-interval '25 hours' WHERE scope='inbound_daily'", &[]).await.unwrap();
+    assert!(consume_storage_budget(&db, account, device).await.unwrap());
+    assert_eq!(db.query_one("SELECT attempts FROM auth_abuse_counters WHERE scope='inbound_daily' AND subject_hash=$1", &[&budget_key("account", account)]).await.unwrap().get::<_,i32>(0), 1);
+    db.batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
 }
