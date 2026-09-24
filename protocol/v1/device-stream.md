@@ -31,6 +31,13 @@ challenge ID, account, device, nonce, version, or epoch. Base64url values
 have no padding. Client frames reject unknown fields; frames are limited to
 4 KiB and the hello/proof steps to 10 seconds each.
 
+Challenge issuance and proof verification each share their PostgreSQL request
+budget with the corresponding HTTP enrollment route: 30 attempts per device
+and 300 attempts globally per 60 seconds, across all hub instances. The hub
+closes the socket when a budget is exhausted or its storage is unavailable.
+Reconnecting or switching transports does not reset a budget. Established
+session heartbeats do not consume these handshake budgets.
+
 The hub checks session status against PostgreSQL on every heartbeat and at
 most 10 seconds between heartbeats. A new valid connection fences the older
 epoch; release of an old socket cannot clear the newer lease. A drained,

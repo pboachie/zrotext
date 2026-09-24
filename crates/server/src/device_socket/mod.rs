@@ -3,6 +3,10 @@
 
 use crate::{
     alpha_policy::AlphaPolicy,
+    auth::{
+        TokenHasher,
+        abuse_limits::{self, Limit},
+    },
     enrollment::{self, AuthenticatedDevice, EnrollmentHasher},
     inbound::{self, Content, InboundEvent, InboundSession},
 };
@@ -53,6 +57,7 @@ pub struct DeviceSocketState {
     pub instance_id: String,
     pub deployment_epoch: i64,
     pub enrollment_hasher: Arc<EnrollmentHasher>,
+    pub auth_hasher: Arc<TokenHasher>,
     pub alpha_policy: Arc<AlphaPolicy>,
     pub dispatch_runtime_enabled: bool,
     pub inbound_pilot_enabled: bool,
@@ -291,6 +296,20 @@ async fn run_socket(mut socket: WebSocket, state: DeviceSocketState) {
         let _ = socket.send(Message::Close(None)).await;
         return;
     };
+    // Share the HTTP enrollment budgets across transports and server instances.
+    // A concurrent-socket cap alone cannot bound rapid hello/close cycles.
+    if !abuse_limits::consume(
+        &client,
+        &state.auth_hasher,
+        Limit::DeviceChallenge,
+        Some(&device_id.to_string()),
+    )
+    .await
+    .unwrap_or(false)
+    {
+        let _ = socket.send(Message::Close(None)).await;
+        return;
+    }
     let Ok(challenge) =
         enrollment::issue_device_challenge(&client, &state.enrollment_hasher, device_id).await
     else {
@@ -339,6 +358,18 @@ async fn run_socket(mut socket: WebSocket, state: DeviceSocketState) {
         || device_id != challenge.device_id
         || decoded_nonce != challenge.nonce
         || signature.len() > 80
+    {
+        let _ = socket.send(Message::Close(None)).await;
+        return;
+    }
+    if !abuse_limits::consume(
+        &client,
+        &state.auth_hasher,
+        Limit::DeviceAuthenticate,
+        Some(&device_id.to_string()),
+    )
+    .await
+    .unwrap_or(false)
     {
         let _ = socket.send(Message::Close(None)).await;
         return;
@@ -1028,6 +1059,7 @@ mod tests {
             instance_id: "hub-a".into(),
             deployment_epoch: 1,
             enrollment_hasher: Arc::new(EnrollmentHasher::new(vec![77; 32]).unwrap()),
+            auth_hasher: Arc::new(TokenHasher::new(vec![78; 32]).unwrap()),
             alpha_policy: policy,
             dispatch_runtime_enabled: true,
             inbound_pilot_enabled: false,
@@ -1259,6 +1291,7 @@ mod tests {
             instance_id: "test-hub".into(),
             deployment_epoch: 1,
             enrollment_hasher: hasher.clone(),
+            auth_hasher: Arc::new(TokenHasher::new(vec![78; 32]).unwrap()),
             alpha_policy: Arc::new(AlphaPolicy::parse(None, None, None).unwrap()),
             dispatch_runtime_enabled: false,
             inbound_pilot_enabled: false,
