@@ -203,7 +203,9 @@ function clearOwnerState() {
   clearResetFields();
   message("change-password-status", "");
   byId("session-list").replaceChildren();
-  byId("revoke-other-sessions").hidden = true;
+  byId("revoke-other-sessions-form").hidden = true;
+  byId("revoke-sessions-password").value = "";
+  byId("revoke-sessions-mfa-code").value = "";
   message("session-status", "");
   showSignedIn(false);
 }
@@ -253,13 +255,13 @@ async function loadSessions() {
       byId("session-list").append(item);
     }
     const otherCount = result.sessions.filter((session) => !session.current).length;
-    byId("revoke-other-sessions").hidden = otherCount === 0;
+    byId("revoke-other-sessions-form").hidden = otherCount === 0;
     message("session-status", otherCount === 0 ? "Only this session is active." :
       `${otherCount} other session${otherCount === 1 ? "" : "s"} active.`);
   } catch (error) {
     if (requestEpoch !== ownerEpoch || generation !== sessionLoadGeneration) return;
     byId("session-list").replaceChildren();
-    byId("revoke-other-sessions").hidden = true;
+    byId("revoke-other-sessions-form").hidden = true;
     message("session-status", `Could not load sessions. ${error.message}`);
   }
 }
@@ -802,8 +804,8 @@ byId("change-password-form").addEventListener("submit", async (event) => {
       current_password: currentPassword, new_password: newPassword,
       ...(code ? { code } : {}),
     });
-    message("change-password-status", "Password changed. Other sessions have been signed out.");
-    await loadSessions();
+    clearOwnerState();
+    message("global-status", "Password changed. Sign in again. All sessions and API keys were revoked; reissue keys used by integrations.");
   } catch (error) {
     message("change-password-status", `Could not change password. ${error.message}`);
   } finally {
@@ -812,12 +814,20 @@ byId("change-password-form").addEventListener("submit", async (event) => {
 });
 
 byId("refresh-sessions").addEventListener("click", loadSessions);
-byId("revoke-other-sessions").addEventListener("click", async () => {
+byId("revoke-other-sessions-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
   if (!window.confirm("Sign out all other sessions?")) return;
+  const currentPassword = byId("revoke-sessions-password").value;
+  const code = byId("revoke-sessions-mfa-code").value.trim();
+  byId("revoke-sessions-password").value = "";
+  byId("revoke-sessions-mfa-code").value = "";
   byId("revoke-other-sessions").disabled = true;
   message("session-status", "Signing out other sessions…");
   try {
-    await api("/v1/auth/sessions/revoke-others", "POST", {});
+    await api("/v1/auth/sessions/revoke-others", "POST", {
+      current_password: currentPassword,
+      ...(code ? { code } : {}),
+    });
     await loadSessions();
   } catch (error) {
     message("session-status", `Could not sign out other sessions. ${error.message}`);

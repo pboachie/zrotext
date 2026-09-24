@@ -30,6 +30,7 @@ pub enum Limit {
     PasswordResetRequest,
     PasswordResetConfirm,
     PasswordChange,
+    SessionsRevokeOthers,
     PairClaim,
     PairProof,
     DeviceChallenge,
@@ -53,6 +54,7 @@ impl Limit {
             Self::PasswordResetRequest => ("password_reset_request", 120, 60, Some((3, 86_400))),
             Self::PasswordResetConfirm => ("password_reset_confirm", 120, 60, None),
             Self::PasswordChange => ("password_change", 120, 60, Some((8, 900))),
+            Self::SessionsRevokeOthers => ("sessions_revoke_others", 120, 60, Some((8, 900))),
             Self::PairClaim => ("pair_claim", 300, 60, Some((20, 60))),
             Self::PairProof => ("pair_proof", 300, 60, Some((20, 60))),
             Self::DeviceChallenge => ("device_challenge", 300, 60, Some((30, 60))),
@@ -177,6 +179,7 @@ pub async fn prune(client: &Client) -> Result<u64, tokio_postgres::Error> {
                     WHEN 'resend' THEN interval '16 minutes'
                     WHEN 'mfa_manage' THEN interval '16 minutes'
                     WHEN 'password_change' THEN interval '16 minutes'
+                    WHEN 'sessions_revoke_others' THEN interval '16 minutes'
                     WHEN 'mfa_challenge' THEN interval '6 minutes'
                     ELSE interval '2 minutes' END
                 ORDER BY updated_at LIMIT 5000 FOR UPDATE SKIP LOCKED

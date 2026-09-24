@@ -47,17 +47,42 @@ pub async fn list_sessions(
 
 pub async fn revoke_other_sessions(
     client: &mut Client,
+    cipher: Option<&mfa::MfaCipher>,
+    hasher: &TokenHasher,
     owner: &SessionPrincipal,
+    current_password: &str,
+    code: Option<&str>,
 ) -> Result<u64, AuthError> {
-    let tx = client.transaction().await?;
     let account_id = owner.tenant.account_id();
-    tx.query_opt(
-        "SELECT u.id FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE u.id=$1 AND m.account_id=$2 AND a.disabled_at IS NULL FOR UPDATE OF u",
-        &[&owner.user_id, &account_id],
+    let old_hash: String = client.query_opt(
+        "SELECT u.password_hash FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id JOIN sessions s ON s.account_id=m.account_id AND s.user_id=u.id WHERE u.id=$1 AND m.account_id=$2 AND s.id=$3 AND s.revoked_at IS NULL AND s.expires_at>now() AND a.disabled_at IS NULL",
+        &[&owner.user_id, &account_id, &owner.session_id],
     )
     .await?
-    .ok_or(AuthError::Unauthorized)?;
+    .ok_or(AuthError::Unauthorized)?
+    .get(0);
+    password_work::verify(current_password, Some(old_hash.clone())).await?;
+    let tx = client.transaction().await?;
+    let row = tx
+        .query_opt(
+            "SELECT password_hash,mfa_enabled FROM users WHERE id=$1 FOR UPDATE",
+            &[&owner.user_id],
+        )
+        .await?
+        .ok_or(AuthError::Unauthorized)?;
+    if row.get::<_, String>(0) != old_hash {
+        return Err(AuthError::InvalidCredentials);
+    }
     require_live_session(&tx, owner).await?;
+    if row.get::<_, bool>(1) {
+        let code = code.ok_or(AuthError::InvalidCredentials)?;
+        mfa::ensure_factor_budget(&tx, account_id, owner.user_id).await?;
+        if !mfa::use_factor(&tx, cipher, hasher, account_id, owner.user_id, code).await? {
+            mfa::record_failed_factor(&tx, account_id, owner.user_id).await?;
+            tx.commit().await?;
+            return Err(AuthError::InvalidCredentials);
+        }
+    }
     let revoked = tx
         .execute(
             "UPDATE sessions SET revoked_at=now() WHERE account_id=$1 AND user_id=$2 AND id<>$3 AND revoked_at IS NULL",
@@ -138,8 +163,13 @@ pub async fn change_password(
     )
     .await?;
     tx.execute(
-        "UPDATE sessions SET revoked_at=now() WHERE account_id=$1 AND user_id=$2 AND id<>$3 AND revoked_at IS NULL",
-        &[&account_id, &owner.user_id, &owner.session_id],
+        "UPDATE sessions SET revoked_at=now() WHERE account_id=$1 AND user_id=$2 AND revoked_at IS NULL",
+        &[&account_id, &owner.user_id],
+    )
+    .await?;
+    tx.execute(
+        "UPDATE api_keys SET revoked_at=now() WHERE account_id=$1 AND created_by_user_id=$2 AND revoked_at IS NULL",
+        &[&account_id, &owner.user_id],
     )
     .await?;
     tx.execute(
@@ -411,6 +441,11 @@ pub async fn confirm_password_reset(
     )
     .await?;
     tx.execute(
+        "UPDATE api_keys SET revoked_at=now() WHERE account_id=$1 AND created_by_user_id=$2 AND revoked_at IS NULL",
+        &[&account_id, &user_id],
+    )
+    .await?;
+    tx.execute(
         "UPDATE owner_mfa_login_challenges SET consumed_at=now() WHERE account_id=$1 AND user_id=$2 AND consumed_at IS NULL",
         &[&account_id, &user_id],
     )
@@ -433,9 +468,100 @@ pub async fn confirm_password_reset(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::{self, TokenHasher};
+    use crate::auth::{self, Scope, TokenHasher};
+    use std::sync::Arc;
     use tokio_postgres::NoTls;
     use totp_rs::{Builder, Secret};
+
+    #[tokio::test]
+    async fn api_key_mint_waits_for_recovery_lock_and_rechecks_session() {
+        let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
+            return;
+        };
+        let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let schema = format!("key_recovery_lock_{}", Uuid::new_v4().simple());
+        setup
+            .batch_execute(&format!("CREATE SCHEMA {schema}"))
+            .await
+            .unwrap();
+        let separator = if base_url.contains('?') { '&' } else { '?' };
+        let url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
+        let (mut recovery_db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let (mut mint_db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        for migration in [
+            include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+            include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+            include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
+            include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
+        ] {
+            recovery_db.batch_execute(migration).await.unwrap();
+        }
+        let hasher = Arc::new(TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
+        let password = Uuid::new_v4().to_string();
+        let owner = auth::register(&mut recovery_db, &hasher, "owner@example.test", &password)
+            .await
+            .unwrap();
+        assert!(
+            auth::verify_email(&mut recovery_db, &hasher, &owner.verification_token)
+                .await
+                .unwrap()
+        );
+        let session = auth::login(&recovery_db, &hasher, "owner@example.test", &password)
+            .await
+            .unwrap();
+        let principal = auth::authenticate_session(&recovery_db, &hasher, &session.token)
+            .await
+            .unwrap();
+        let tx = recovery_db.transaction().await.unwrap();
+        tx.query_one(
+            "SELECT id FROM users WHERE id=$1 FOR UPDATE",
+            &[&owner.user_id],
+        )
+        .await
+        .unwrap();
+        let mint_hasher = hasher.clone();
+        let mut mint = tokio::spawn(async move {
+            auth::create_api_key(
+                &mut mint_db,
+                &mint_hasher,
+                &principal,
+                &[Scope::MessagesRead],
+                None,
+                None,
+            )
+            .await
+        });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), &mut mint)
+                .await
+                .is_err()
+        );
+        tx.execute(
+            "UPDATE sessions SET revoked_at=now() WHERE account_id=$1 AND user_id=$2",
+            &[&owner.account_id, &owner.user_id],
+        )
+        .await
+        .unwrap();
+        tx.execute("UPDATE api_keys SET revoked_at=now() WHERE account_id=$1 AND created_by_user_id=$2 AND revoked_at IS NULL", &[&owner.account_id, &owner.user_id]).await.unwrap();
+        tx.commit().await.unwrap();
+        assert!(matches!(mint.await.unwrap(), Err(AuthError::Unauthorized)));
+        let key_count: i64 = recovery_db
+            .query_one(
+                "SELECT count(*) FROM api_keys WHERE revoked_at IS NULL",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(key_count, 0);
+        setup
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .unwrap();
+    }
 
     #[tokio::test]
     async fn postgres_password_session_and_reset_lifecycle() {
@@ -486,7 +612,21 @@ mod tests {
         let sessions = list_sessions(&db, &principal).await.unwrap();
         assert_eq!(sessions.len(), 2);
         assert_eq!(sessions.iter().filter(|session| session.current).count(), 1);
-        assert_eq!(revoke_other_sessions(&mut db, &principal).await.unwrap(), 1);
+        assert!(matches!(
+            revoke_other_sessions(&mut db, None, &hasher, &principal, "wrong password", None).await,
+            Err(AuthError::InvalidCredentials)
+        ));
+        assert!(
+            auth::authenticate_session(&db, &hasher, &second.token)
+                .await
+                .is_ok()
+        );
+        assert_eq!(
+            revoke_other_sessions(&mut db, None, &hasher, &principal, &old_password, None)
+                .await
+                .unwrap(),
+            1
+        );
         assert!(
             auth::authenticate_session(&db, &hasher, &second.token)
                 .await
@@ -495,6 +635,16 @@ mod tests {
         let third = auth::login(&db, &hasher, "owner@example.test", &old_password)
             .await
             .unwrap();
+        let old_key = auth::create_api_key(
+            &mut db,
+            &hasher,
+            &principal,
+            &[Scope::MessagesRead],
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         change_password(
             &mut db,
             None,
@@ -519,11 +669,29 @@ mod tests {
         assert!(
             auth::authenticate_session(&db, &hasher, &first.token)
                 .await
-                .is_ok()
+                .is_err()
+        );
+        assert!(
+            auth::authenticate_api_key(&db, &hasher, &old_key.token)
+                .await
+                .is_err()
         );
         let fourth = auth::login(&db, &hasher, "owner@example.test", &changed_password)
             .await
             .unwrap();
+        let fourth_principal = auth::authenticate_session(&db, &hasher, &fourth.token)
+            .await
+            .unwrap();
+        let reset_key = auth::create_api_key(
+            &mut db,
+            &hasher,
+            &fourth_principal,
+            &[Scope::MessagesRead],
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         request_password_reset(&mut db, &hasher, "unknown@example.test")
             .await
@@ -556,6 +724,11 @@ mod tests {
         );
         assert!(
             auth::authenticate_session(&db, &hasher, &fourth.token)
+                .await
+                .is_err()
+        );
+        assert!(
+            auth::authenticate_api_key(&db, &hasher, &reset_key.token)
                 .await
                 .is_err()
         );
@@ -612,6 +785,31 @@ mod tests {
         let recovery = mfa::confirm_enrollment(&mut db, &cipher, &hasher, &mfa_owner, &code)
             .await
             .unwrap();
+        assert!(matches!(
+            revoke_other_sessions(
+                &mut db,
+                Some(&cipher),
+                &hasher,
+                &mfa_owner,
+                &reset_password,
+                None,
+            )
+            .await,
+            Err(AuthError::InvalidCredentials)
+        ));
+        assert_eq!(
+            revoke_other_sessions(
+                &mut db,
+                Some(&cipher),
+                &hasher,
+                &mfa_owner,
+                &reset_password,
+                Some(&recovery.codes[2]),
+            )
+            .await
+            .unwrap(),
+            0
+        );
         assert!(matches!(
             auth::login(&db, &hasher, "owner@example.test", &reset_password).await,
             Err(AuthError::MfaRequired { .. })
@@ -686,4 +884,3 @@ mod tests {
             .unwrap();
     }
 }
-

@@ -609,7 +609,7 @@ pub async fn revoke_session(
 }
 
 pub async fn create_api_key(
-    client: &Client,
+    client: &mut Client,
     hasher: &TokenHasher,
     principal: &SessionPrincipal,
     scopes: &[Scope],
@@ -633,7 +633,17 @@ pub async fn create_api_key(
     let public_prefix = token.chars().skip(4).take(12).collect::<String>();
     let hash = hasher.digest(b"api-key-v1", &token);
     let id = Uuid::new_v4();
-    let inserted = client
+    // Recovery locks this same user row before revoking keys and sessions.
+    // The lock closes the race where a pre-reset session mints a key after
+    // recovery has already revoked the keys it could see.
+    let tx = client.transaction().await?;
+    tx.query_opt(
+        "SELECT u.id FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE u.id=$1 AND m.account_id=$2 AND a.disabled_at IS NULL FOR UPDATE OF u",
+        &[&principal.user_id, &principal.tenant.account_id()],
+    )
+    .await?
+    .ok_or(AuthError::Unauthorized)?;
+    let inserted = tx
         .execute(
             "INSERT INTO api_keys(id,account_id,created_by_user_id,public_prefix,token_hash,scopes,bound_device_id,expires_at) SELECT $1,$2,$3,$4,$5,$6,$7,CASE WHEN $8::integer IS NULL THEN NULL ELSE now()+($8::integer * interval '1 day') END FROM sessions s WHERE s.id=$9 AND s.account_id=$2 AND s.user_id=$3 AND s.revoked_at IS NULL AND s.expires_at>now()",
             &[&id, &principal.tenant.account_id, &principal.user_id, &public_prefix, &&hash[..], &scope_names, &bound_device_id, &lifetime_days, &principal.session_id],
@@ -642,6 +652,7 @@ pub async fn create_api_key(
     if inserted != 1 {
         return Err(AuthError::Unauthorized);
     }
+    tx.commit().await?;
     Ok(ApiKeyCredentials {
         id,
         token,
@@ -1014,7 +1025,7 @@ mod tests {
         assert!(!revoke_session(&client, &pb, sa.id).await.unwrap());
         let bound_device = Uuid::new_v4();
         let key = create_api_key(
-            &client,
+            &mut client,
             &hasher,
             &pa,
             &[Scope::MessagesSend],
@@ -1040,7 +1051,7 @@ mod tests {
             Err(AuthError::Unauthorized)
         ));
         assert!(matches!(
-            create_api_key(&client, &hasher, &pa, &[Scope::BillingRead], None, None).await,
+            create_api_key(&mut client, &hasher, &pa, &[Scope::BillingRead], None, None).await,
             Err(AuthError::Unauthorized)
         ));
         assert!(revoke_api_key(&client, &pa, key.id).await.unwrap());

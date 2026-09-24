@@ -837,9 +837,16 @@ async fn list_sessions(
     Ok(Json(SessionsBody { sessions }))
 }
 
+#[derive(Deserialize)]
+struct RevokeOtherSessionsBody {
+    current_password: String,
+    code: Option<String>,
+}
+
 async fn revoke_other_sessions(
     State(state): State<Arc<AuthHttpState>>,
     headers: HeaderMap,
+    Json(body): Json<RevokeOtherSessionsBody>,
 ) -> Result<StatusCode, AuthHttpError> {
     let mut client = connect(&state.database_url).await?;
     let owner = require_owner(
@@ -850,9 +857,36 @@ async fn revoke_other_sessions(
         true,
     )
     .await?;
-    account::revoke_other_sessions(&mut client, &owner)
-        .await
-        .map_err(map_auth)?;
+    if !abuse_limits::consume(
+        &client,
+        &state.hasher,
+        Limit::SessionsRevokeOthers,
+        Some(&owner.user_id.to_string()),
+    )
+    .await
+    .map_err(|_| AuthHttpError::Unavailable)?
+    {
+        return Err(AuthHttpError::TooManyRequests);
+    }
+    let _permit = state
+        .hash_limit
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| AuthHttpError::TooManyRequests)?;
+    match account::revoke_other_sessions(
+        &mut client,
+        state.mfa_cipher.as_deref(),
+        &state.hasher,
+        &owner,
+        &body.current_password,
+        body.code.as_deref(),
+    )
+    .await
+    {
+        Ok(_) => {}
+        Err(AuthError::InvalidCredentials) => return Err(AuthHttpError::BadRequest),
+        Err(error) => return Err(map_auth(error)),
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -867,7 +901,7 @@ async fn change_password(
     State(state): State<Arc<AuthHttpState>>,
     headers: HeaderMap,
     Json(body): Json<ChangePasswordBody>,
-) -> Result<StatusCode, AuthHttpError> {
+) -> Result<Response, AuthHttpError> {
     let mut client = connect(&state.database_url).await?;
     let owner = require_owner(
         &client,
@@ -909,7 +943,22 @@ async fn change_password(
         Err(AuthError::InvalidCredentials) => return Err(AuthHttpError::BadRequest),
         Err(error) => return Err(map_auth(error)),
     }
-    Ok(StatusCode::NO_CONTENT)
+    cleared_session_response()
+}
+
+fn cleared_session_response() -> Result<Response, AuthHttpError> {
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    for name in [SESSION_COOKIE, CSRF_COOKIE] {
+        response.headers_mut().append(
+            header::SET_COOKIE,
+            HeaderValue::from_str(&format!(
+                "{name}=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0"
+            ))
+            .map_err(|_| AuthHttpError::Internal)?,
+        );
+    }
+    no_store(&mut response);
+    Ok(response)
 }
 
 #[derive(Deserialize)]
@@ -928,15 +977,28 @@ async fn request_password_reset(
     }
     let mut client = connect(&state.database_url).await?;
     let subject = auth::normalize_email(&body.email).ok();
-    if !abuse_limits::consume(
-        &client,
-        &state.hasher,
-        Limit::PasswordResetRequest,
-        subject.as_deref(),
-    )
-    .await
-    .map_err(|_| AuthHttpError::Unavailable)?
-    {
+    let admitted = if let Some(subject) = subject.as_deref() {
+        abuse_limits::consume_or_verify(
+            &client,
+            &state.hasher,
+            Limit::PasswordResetRequest,
+            subject,
+            async {
+                client
+                    .query_one(
+                        "SELECT EXISTS(SELECT 1 FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE u.email=$1 AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL)",
+                        &[&subject],
+                    )
+                    .await
+                    .map(|row| row.get::<_, bool>(0))
+            },
+        )
+        .await
+    } else {
+        abuse_limits::consume(&client, &state.hasher, Limit::PasswordResetRequest, None).await
+    }
+    .map_err(|_| AuthHttpError::Unavailable)?;
+    if !admitted {
         return Ok(StatusCode::ACCEPTED);
     }
     account::request_password_reset(&mut client, &state.hasher, &body.email)
@@ -1172,18 +1234,7 @@ async fn logout(
     auth::revoke_session(&client, &owner, owner.session_id)
         .await
         .map_err(map_auth)?;
-    let mut response = StatusCode::NO_CONTENT.into_response();
-    for name in [SESSION_COOKIE, CSRF_COOKIE] {
-        response.headers_mut().append(
-            header::SET_COOKIE,
-            HeaderValue::from_str(&format!(
-                "{name}=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0"
-            ))
-            .map_err(|_| AuthHttpError::Internal)?,
-        );
-    }
-    no_store(&mut response);
-    Ok(response)
+    cleared_session_response()
 }
 
 #[derive(Deserialize)]
@@ -1303,7 +1354,7 @@ async fn create_api_key(
         .iter()
         .map(|name| parse_scope(name).ok_or(AuthHttpError::BadRequest))
         .collect::<Result<Vec<_>, _>>()?;
-    let client = connect(&state.database_url).await?;
+    let mut client = connect(&state.database_url).await?;
     let owner = require_owner(
         &client,
         &state.hasher,
@@ -1326,7 +1377,7 @@ async fn create_api_key(
         return Err(AuthHttpError::TooManyRequests);
     }
     let key = auth::create_api_key(
-        &client,
+        &mut client,
         &state.hasher,
         &owner,
         &scopes,
@@ -1389,6 +1440,10 @@ mod tests {
             true
         }
 
+        fn password_reset_ready(&self) -> bool {
+            true
+        }
+
         fn dispatch<'a>(
             &'a self,
             _email: &'a str,
@@ -1397,6 +1452,32 @@ mod tests {
             *self.0.lock().unwrap() = Some(token.to_owned());
             Box::pin(async { Ok(()) })
         }
+    }
+
+    #[test]
+    fn password_change_response_clears_both_cookies() {
+        let response = cleared_session_response().unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        let cookies = response
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .map(|value| value.to_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(cookies.len(), 2);
+        assert!(
+            cookies
+                .iter()
+                .any(|cookie| cookie.starts_with("__Host-zrotext_session=;")
+                    && cookie.contains("Max-Age=0"))
+        );
+        assert!(
+            cookies
+                .iter()
+                .any(|cookie| cookie.starts_with("__Host-zrotext_csrf=;")
+                    && cookie.contains("Max-Age=0"))
+        );
     }
 
     fn json_post(uri: &str, body: serde_json::Value) -> Request<Body> {
@@ -1566,6 +1647,87 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn verified_password_reset_survives_anonymous_budget_exhaustion() {
+        let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
+            return;
+        };
+        let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let schema = format!("http_reset_budget_{}", Uuid::new_v4().simple());
+        setup
+            .batch_execute(&format!("CREATE SCHEMA {schema}"))
+            .await
+            .unwrap();
+        let separator = if base_url.contains('?') { '&' } else { '?' };
+        let url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
+        let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        for migration in [
+            include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+            include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+            include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
+            include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+            include_str!("../../../../deploy/compose/migrations/023_account_recovery.sql"),
+        ] {
+            db.batch_execute(migration).await.unwrap();
+        }
+        let hasher = Arc::new(TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
+        let password = Uuid::new_v4().to_string();
+        let owner = auth::register(&mut db, &hasher, "owner@example.test", &password)
+            .await
+            .unwrap();
+        assert!(
+            auth::verify_email(&mut db, &hasher, &owner.verification_token)
+                .await
+                .unwrap()
+        );
+        for index in 0..120 {
+            assert!(
+                abuse_limits::consume(
+                    &db,
+                    &hasher,
+                    Limit::PasswordResetRequest,
+                    Some(&format!("unknown-{index}@example.test")),
+                )
+                .await
+                .unwrap()
+            );
+        }
+        let state = AuthHttpState::new(
+            url,
+            hasher,
+            "https://zrotext.example".to_owned(),
+            Arc::new(CaptureVerification(Mutex::new(None))),
+        )
+        .unwrap();
+        let app = router(state);
+        for email in ["unknown-final@example.test", "owner@example.test"] {
+            let response = app
+                .clone()
+                .oneshot(json_post(
+                    "/password/reset/request",
+                    serde_json::json!({"email":email}),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::ACCEPTED);
+        }
+        let count: i64 = db
+            .query_one(
+                "SELECT count(*) FROM password_reset_mail_outbox WHERE canceled_at IS NULL",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(count, 1);
+        setup
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn postgres_http_account_lifecycle_enforces_csrf_and_revocation() {
         let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
             return;
@@ -1696,6 +1858,87 @@ mod tests {
             app.clone().oneshot(session_request).await.unwrap().status(),
             StatusCode::OK
         );
+        let second = app
+            .clone()
+            .oneshot(json_post(
+                "/login",
+                serde_json::json!({"email":"owner@example.test","password":"correct horse 123"}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(second.status(), StatusCode::NO_CONTENT);
+        let second_cookie = second
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .map(|value| {
+                value
+                    .to_str()
+                    .unwrap()
+                    .split(';')
+                    .next()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        let copied_cookie_only = owner_post(
+            "/sessions/revoke-others",
+            serde_json::json!({}),
+            &cookie_header,
+            csrf,
+        );
+        assert_eq!(
+            app.clone()
+                .oneshot(copied_cookie_only)
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        let stolen_request = owner_post(
+            "/sessions/revoke-others",
+            serde_json::json!({"current_password":"wrong password"}),
+            &cookie_header,
+            csrf,
+        );
+        assert_eq!(
+            app.clone().oneshot(stolen_request).await.unwrap().status(),
+            StatusCode::BAD_REQUEST
+        );
+        let second_session = || {
+            Request::builder()
+                .uri("/session")
+                .header(header::COOKIE, &second_cookie)
+                .body(Body::empty())
+                .unwrap()
+        };
+        assert_eq!(
+            app.clone()
+                .oneshot(second_session())
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        let proven_request = owner_post(
+            "/sessions/revoke-others",
+            serde_json::json!({"current_password":"correct horse 123"}),
+            &cookie_header,
+            csrf,
+        );
+        assert_eq!(
+            app.clone().oneshot(proven_request).await.unwrap().status(),
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            app.clone()
+                .oneshot(second_session())
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
         let body = serde_json::json!({"scopes":["messages:read"],"lifetime_days":30});
         let mut request = json_post("/api-keys", body.clone());
         request.headers_mut().insert(
@@ -1824,7 +2067,7 @@ mod tests {
                 .await
                 .unwrap();
         let foreign_key = auth::create_api_key(
-            &outsider,
+            &mut outsider,
             &state.hasher,
             &foreign_owner,
             &[Scope::MessagesRead],
@@ -1973,7 +2216,8 @@ mod tests {
             app.oneshot(request).await.unwrap().status(),
             StatusCode::UNAUTHORIZED
         );
-        for _ in 0..11 {
+        // The stolen-cookie regression above signs in a second browser.
+        for _ in 0..10 {
             assert!(
                 auth::abuse_limits::consume(
                     &test_client,
@@ -2476,6 +2720,32 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         }
+        // Under a busy parallel suite the 60-second route window may roll
+        // while the password workers run. Top it up so the rescue assertion
+        // still exercises an exhausted anonymous ceiling.
+        for index in 0..240 {
+            if !abuse_limits::consume(
+                &client,
+                &hasher,
+                Limit::Login,
+                Some(&format!("topup-{index}@example.test")),
+            )
+            .await
+            .unwrap()
+            {
+                break;
+            }
+        }
+        assert!(
+            !abuse_limits::consume(
+                &client,
+                &hasher,
+                Limit::Login,
+                Some("topup-final@example.test"),
+            )
+            .await
+            .unwrap()
+        );
         let junk = app
             .clone()
             .oneshot(login("junk-final@example.test", None))
@@ -2540,10 +2810,15 @@ mod tests {
             )
             .await
             .unwrap();
-        let challenge =
-            mfa::begin_login_challenge(&client, &hasher, signup.account_id, signup.user_id)
-                .await
-                .unwrap();
+        let challenge = mfa::begin_login_challenge(
+            &client,
+            &hasher,
+            signup.account_id,
+            signup.user_id,
+            &password,
+        )
+        .await
+        .unwrap();
         for index in 0..300 {
             abuse_limits::consume(
                 &client,

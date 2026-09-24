@@ -152,13 +152,19 @@ test("password change uses CSRF and sessions can be reviewed and revoked", async
     created_at_ms: 3000, expires_at_ms: 100000, last_used_at_ms: null });
   await element("refresh-sessions").listeners.click();
   assert.equal(element("session-list").children.length, 2);
-  assert.equal(element("revoke-other-sessions").hidden, false);
+  assert.equal(element("revoke-other-sessions-form").hidden, false);
   globalThis.window.confirm = () => true;
-  await element("revoke-other-sessions").listeners.click();
+  element("revoke-sessions-password").value = "old-password";
+  element("revoke-sessions-mfa-code").value = "123456";
+  await element("revoke-other-sessions-form").listeners.submit({ preventDefault() {} });
   assert.equal(state.authRequests[0].url, "/v1/auth/sessions/revoke-others");
   assert.equal(state.authRequests[0].options.headers["x-zrotext-csrf"], "ztc_synthetic");
+  assert.deepEqual(JSON.parse(state.authRequests[0].options.body), {
+    current_password: "old-password", code: "123456",
+  });
+  assert.equal(element("revoke-sessions-password").value, "");
   assert.equal(element("session-list").children.length, 1);
-  assert.equal(element("revoke-other-sessions").hidden, true);
+  assert.equal(element("revoke-other-sessions-form").hidden, true);
 
   element("current-password").value = "old-password";
   element("new-password").value = "new-long-password";
@@ -173,6 +179,8 @@ test("password change uses CSRF and sessions can be reviewed and revoked", async
   assert.equal(element("current-password").value, "");
   assert.equal(element("new-password").value, "");
   assert.equal(element("password-mfa-code").value, "");
+  assert.equal(element("owner-content").hidden, true);
+  assert.match(element("global-status").textContent, /Sign in again.*API keys/);
 });
 
 test("a 401 clears a displayed one-time key and hides owner content", async () => {
