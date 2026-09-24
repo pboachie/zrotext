@@ -106,10 +106,10 @@ dependencies {
     // These constraints affect local unit tests and AGP's lint tools. None of
     // these libraries is present in the app's release runtime classpath.
     constraints {
-        testImplementation("org.bouncycastle:bcprov-jdk18on:1.85")
-        add("androidLintTool", "org.bouncycastle:bcprov-jdk18on:1.85")
-        add("androidLintTool", "org.bouncycastle:bcpkix-jdk18on:1.85")
-        add("androidLintTool", "org.bouncycastle:bcutil-jdk18on:1.85")
+        testImplementation("org.bouncycastle:bcprov-jdk18on:1.86")
+        add("androidLintTool", "org.bouncycastle:bcprov-jdk18on:1.86")
+        add("androidLintTool", "org.bouncycastle:bcpkix-jdk18on:1.86")
+        add("androidLintTool", "org.bouncycastle:bcutil-jdk18on:1.86")
         add("androidLintTool", "org.apache.commons:commons-lang3:3.18.0")
         add("androidLintTool", "org.apache.httpcomponents:httpclient:4.5.14")
     }
