@@ -10,3 +10,4 @@ sha2 = "0.11.0"
 thiserror = "2.0.16"
 tokio = { version = "1.47.1", features = ["macros", "rt-multi-thread"] }
 tokio-postgres = "0.7.13"
+zrotext-postgres-connection = { path = "../postgres-connection" }

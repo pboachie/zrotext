@@ -24,6 +24,31 @@ Use separate secrets and a private database network, terminate HTTPS and WSS at 
 
 Production packaging and upgrade instructions will expand as release artifacts become available. For now, use this stack as a development environment and check the repository's releases for supported versions.
 
+### PostgreSQL transport TLS
+
+For a database outside the local Compose network, use a DNS name in each
+`DATABASE_URL` that matches the server certificate and append `sslmode=require`.
+The API, migrator, and `zrotext-webhook-kek-rewrap` then require TLS and verify
+both the certificate chain and hostname. By default they trust the host's
+system root store. Set `DATABASE_TLS_CA_PEM_B64` to the base64 encoding of a
+private PEM CA bundle instead; pass it to every relevant container. Restart
+processes after changing CA trust. For example:
+
+```sh
+DATABASE_URL='postgres://zrotext_runtime:<secret>@writer.example.com:5432/zrotext?sslmode=require'
+DATABASE_TLS_CA_PEM_B64='<base64-encoded-PEM-CA-bundle>'
+```
+
+Do not put a real credential in the repository. A connection with
+`sslmode=prefer` or `disable` can carry credentials and metadata without TLS.
+Such modes are allowed for loopback, a Unix socket, and the local Compose `db`
+service. To use them with another host, an operator must set
+`DATABASE_ALLOW_PLAINTEXT=true`; the process warns on startup. A private IP
+address alone does not bypass the TLS requirement. The CA bundle is public trust
+material, but verify its source before encoding it. The same settings apply to
+migration and webhook key rewrap jobs, not just the server. Test CA trust and
+hostname verification before directing production traffic to a new writer.
+
 ### Database privileges
 
 Use separate migration and runtime credentials before public deployment. The

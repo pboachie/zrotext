@@ -117,6 +117,11 @@ jobs:
         run: |
           cargo run --locked -p zrotext-migrator
           cargo run --locked -p zrotext-migrator
+      - name: Verify PostgreSQL TLS and certificate failures
+        run: |
+          python3 -m venv /tmp/zrotext-postgres-tls-venv
+          /tmp/zrotext-postgres-tls-venv/bin/pip install --disable-pip-version-check cryptography==46.0.4
+          /tmp/zrotext-postgres-tls-venv/bin/python scripts/test_postgres_tls.py
       - name: Simulator timeline
         run: cargo run --locked -p zrotext-device-sim
   android:
