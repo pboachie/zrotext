@@ -8,7 +8,7 @@ use aes_gcm::{
     aead::{Aead, KeyInit, Payload},
 };
 use base64::Engine;
-use p256::elliptic_curve::rand_core::{OsRng, RngCore};
+use rand::{Rng, rng};
 use std::time::{SystemTime, UNIX_EPOCH};
 use subtle::ConstantTimeEq;
 use tokio_postgres::{Client, Transaction};
@@ -48,7 +48,7 @@ impl MfaCipher {
     ) -> Result<(Vec<u8>, Vec<u8>), AuthError> {
         let cipher = Aes256Gcm::new_from_slice(&self.0[..]).map_err(|_| AuthError::Crypto)?;
         let mut nonce = [0u8; 12];
-        OsRng.fill_bytes(&mut nonce);
+        rng().fill_bytes(&mut nonce);
         let nonce_array = Nonce::try_from(nonce.as_slice()).map_err(|_| AuthError::Crypto)?;
         let ciphertext = cipher
             .encrypt(
@@ -203,7 +203,7 @@ fn valid_recovery_code(code: &str) -> bool {
 
 fn new_recovery_code() -> String {
     let mut bytes = [0u8; 16];
-    OsRng.fill_bytes(&mut bytes);
+    rng().fill_bytes(&mut bytes);
     format!(
         "zrc_{}",
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
@@ -600,12 +600,12 @@ mod tests {
     #[test]
     fn encrypted_secret_is_bound_to_owner_identity() {
         let mut key = vec![0u8; 32];
-        OsRng.fill_bytes(&mut key);
+        rng().fill_bytes(&mut key);
         let cipher = MfaCipher::new(key).unwrap();
         let account = Uuid::new_v4();
         let user = Uuid::new_v4();
         let mut secret = [0u8; 20];
-        OsRng.fill_bytes(&mut secret);
+        rng().fill_bytes(&mut secret);
         let (nonce, ciphertext) = cipher.seal(account, user, &secret).unwrap();
         assert!(cipher.open(account, user, &nonce, &ciphertext).is_ok());
         assert!(
@@ -846,7 +846,7 @@ mod tests {
             Err(AuthError::Crypto)
         ));
         let mut wrong_key = vec![0u8; 32];
-        OsRng.fill_bytes(&mut wrong_key);
+        rng().fill_bytes(&mut wrong_key);
         let wrong_cipher = MfaCipher::new(wrong_key).unwrap();
         assert!(matches!(
             validate_runtime_key(&client, Some(&wrong_cipher), false).await,

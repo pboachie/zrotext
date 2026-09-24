@@ -1,6 +1,7 @@
 use super::*;
 use p256::ecdsa::{SigningKey, signature::Signer};
-use p256::elliptic_curve::rand_core::OsRng;
+use p256::elliptic_curve::Generate;
+use rand::rng;
 
 #[test]
 fn metadata_signature_bytes_match_android_pilot_vector() {
@@ -84,10 +85,10 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
     let endpoint_secret = vault
         .seal(account, endpoint, &crate::test_keys::key(8))
         .unwrap();
-    let signing = SigningKey::random(&mut OsRng);
+    let signing = SigningKey::generate_from_rng(&mut rng());
     let public = signing
         .verifying_key()
-        .to_encoded_point(false)
+        .to_sec1_point(false)
         .as_bytes()
         .to_vec();
     db.execute(
@@ -744,10 +745,10 @@ async fn fresh_signed_events_share_a_durable_budget_and_replays_are_free() {
         crate::webhook_worker::WebhookSecretVault::new(1, zeroize::Zeroizing::new(vec![7_u8; 32]))
             .unwrap();
     let endpoint_secret = vault.seal(account, endpoint, &[8_u8; 32]).unwrap();
-    let signing = SigningKey::random(&mut OsRng);
+    let signing = SigningKey::generate_from_rng(&mut rng());
     let public = signing
         .verifying_key()
-        .to_encoded_point(false)
+        .to_sec1_point(false)
         .as_bytes()
         .to_vec();
     db.execute(
