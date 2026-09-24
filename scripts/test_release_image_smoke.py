@@ -48,13 +48,44 @@ class ReleaseImageSmokeTest(unittest.TestCase):
             with self.assertRaisesRegex(smoke.DrillError, "selected digest"):
                 smoke.inspect_release_image(IMAGE, COMMIT, TAG)
 
-    def test_requires_both_containers_to_run_selected_image(self):
+    def test_rejects_truncated_container_id(self):
+        compose = ["docker", "compose", "--project-name", "synthetic"]
+        with patch.object(smoke, "run", return_value="d" * 12) as command:
+            with self.assertRaisesRegex(smoke.DrillError, "migrate container is missing"):
+                smoke.verify_running_image(compose, IMAGE_ID)
+        command.assert_called_once_with(
+            [*compose, "ps", "--no-trunc", "-aq", "migrate"],
+            "migrate container lookup",
+        )
+
+    def test_rejects_migrate_image_mismatch_before_app_lookup(self):
+        compose = ["docker", "compose", "--project-name", "synthetic"]
+        container = "d" * 64
+        with patch.object(smoke, "run", side_effect=[container, "sha256:" + "e" * 64]) as command:
+            with self.assertRaisesRegex(smoke.DrillError, "migrate did not run"):
+                smoke.verify_running_image(compose, IMAGE_ID)
+        self.assertEqual(command.call_count, 2)
+        command.assert_any_call(
+            [*compose, "ps", "--no-trunc", "-aq", "migrate"],
+            "migrate container lookup",
+        )
+        command.assert_any_call(
+            ["docker", "inspect", "--format", "{{.Image}}", container],
+            "migrate image lookup",
+        )
+
+    def test_rejects_app_image_mismatch_after_migrate_matches(self):
         compose = ["docker", "compose", "--project-name", "synthetic"]
         container = "d" * 64
         with patch.object(smoke, "run", side_effect=[container, IMAGE_ID,
-                                                      container, "sha256:" + "e" * 64]):
-            with self.assertRaisesRegex(smoke.DrillError, "migrate did not|app did not"):
+                                                      container, "sha256:" + "e" * 64]) as command:
+            with self.assertRaisesRegex(smoke.DrillError, "app did not run"):
                 smoke.verify_running_image(compose, IMAGE_ID)
+        self.assertEqual(command.call_count, 4)
+        command.assert_any_call(
+            [*compose, "ps", "--no-trunc", "-aq", "app"],
+            "app container lookup",
+        )
 
 
 if __name__ == "__main__":

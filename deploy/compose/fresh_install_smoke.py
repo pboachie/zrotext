@@ -80,7 +80,7 @@ def inspect_release_image(image_ref, source_commit, source_tag):
 
 def verify_running_image(compose, image_id):
     for service in ("migrate", "app"):
-        container = run([*compose, "ps", "-aq", service],
+        container = run([*compose, "ps", "--no-trunc", "-aq", service],
                         f"{service} container lookup").strip()
         if not re.fullmatch(r"[0-9a-f]{64}", container):
             raise DrillError(f"{service} container is missing")
