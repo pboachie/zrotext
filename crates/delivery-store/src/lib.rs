@@ -1389,7 +1389,7 @@ mod tests {
 
     // Keep the admission fixtures on the complete, reviewed schema. SQL is
     // embedded at build time so tests never execute files discovered at runtime.
-    const TEST_MIGRATIONS: [(&str, &str); 22] = [
+    const TEST_MIGRATIONS: [(&str, &str); 24] = [
         (
             "001_foundation.sql",
             include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
@@ -1477,6 +1477,16 @@ mod tests {
         (
             "022_pending_owner_expiry.sql",
             include_str!("../../../deploy/compose/migrations/022_pending_owner_expiry.sql"),
+        ),
+        (
+            "023_billing_py_charge_and_unsupported.sql",
+            include_str!(
+                "../../../deploy/compose/migrations/023_billing_py_charge_and_unsupported.sql"
+            ),
+        ),
+        (
+            "024_billing_risk_operator_review.sql",
+            include_str!("../../../deploy/compose/migrations/024_billing_risk_operator_review.sql"),
         ),
     ];
 
