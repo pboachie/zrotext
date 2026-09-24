@@ -5,7 +5,13 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 function response(status, body = {}) {
-  return { status, ok: status >= 200 && status < 300, json: async () => body };
+  return {
+    status, ok: status >= 200 && status < 300,
+    json: async () => {
+      if (status === 202 || status === 204) throw new Error("empty response has no JSON body");
+      return body;
+    },
+  };
 }
 
 async function accountPage({ signedIn = false, cookie = "__Host-zrotext_csrf=ztc_synthetic" } = {}) {

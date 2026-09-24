@@ -51,7 +51,7 @@ async function request(path, method = "GET", body = undefined, invite = "") {
     error.status = response.status;
     throw error;
   }
-  return response.status === 204 ? null : response.json();
+  return response.status === 202 || response.status === 204 ? null : response.json();
 }
 
 async function refreshMfa() {
