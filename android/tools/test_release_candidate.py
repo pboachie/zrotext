@@ -15,6 +15,12 @@ import release_candidate
 
 
 class ReleaseCandidateTest(unittest.TestCase):
+    BOM = {
+        "bomFormat": "CycloneDX", "specVersion": "1.6",
+        "metadata": {"component": {"type": "application"}},
+        "components": [{"type": "library", "name": "okhttp",
+                        "purl": "pkg:maven/com.squareup.okhttp3/okhttp@4.12.0"}],
+    }
     IDENTITY = {
         "package": "org.zrotext.gateway",
         "version_code": 6,
@@ -235,17 +241,24 @@ class ReleaseCandidateTest(unittest.TestCase):
                     archive.comment = b"disposable fake signing block"
         unsigned_hash = release_candidate.sha256(unsigned)
         signed_hash = release_candidate.sha256(signed)
+        sbom = build_dir / release_candidate.SBOM_NAME
+        sbom.write_text(json.dumps(self.BOM), encoding="utf-8")
+        sbom_hash = release_candidate.sha256(sbom)
         (build_dir / "unsigned.json").write_text(json.dumps({
             "source_commit": self.COMMIT,
             "unsigned_apk": unsigned.name,
             "unsigned_apk_sha256": unsigned_hash,
             "embedded_asset": release_candidate.ASSET,
             "apk_identity": self.IDENTITY,
+            "sbom": sbom.name,
+            "sbom_sha256": sbom_hash,
+            "sbom_configuration": release_candidate.SBOM_CONFIGURATION,
         }), encoding="utf-8")
         receipt = {
             "source_commit": self.COMMIT,
             "embedded_asset": release_candidate.ASSET,
             "unsigned_apk_sha256": unsigned_hash,
+            "sbom_sha256": sbom_hash,
             "apk": signed.name,
             "apk_sha256": signed_hash,
             "signing_certificate_sha256": self.CERTIFICATE,
@@ -266,10 +279,12 @@ class ReleaseCandidateTest(unittest.TestCase):
             build_dir, candidate_dir, signed = self.make_candidate(directory)
             with patch.object(release_candidate, "apk_identity", return_value=self.IDENTITY), \
                  patch.object(release_candidate, "sdk_tool", side_effect=lambda name: Path(name)), \
+                 patch.object(release_candidate, "verify_unsigned_sbom_attestation") as sbom_attestation, \
                  patch.object(release_candidate, "run", side_effect=[output, ""]) as command:
                 with redirect_stdout(io.StringIO()):
                     self.verify_test_candidate(self.COMMIT,
                                                self.CERTIFICATE.upper())
+            sbom_attestation.assert_called_once()
             self.assertEqual(command.call_count, 2)
             self.assertEqual(command.call_args_list[0].args[1:3], ("verify", "--verbose"))
             extra = candidate_dir / "zrotext-android-cccccccccccc-candidate.apk"
@@ -368,7 +383,13 @@ class ReleaseCandidateTest(unittest.TestCase):
                 "unsigned_apk_sha256": release_candidate.sha256(apk),
                 "embedded_asset": release_candidate.ASSET,
                 "apk_identity": self.IDENTITY,
+                "sbom": release_candidate.SBOM_NAME,
+                "sbom_sha256": "",
+                "sbom_configuration": release_candidate.SBOM_CONFIGURATION,
             }
+            sbom = build_dir / release_candidate.SBOM_NAME
+            sbom.write_text(json.dumps(self.BOM), encoding="utf-8")
+            receipt["sbom_sha256"] = release_candidate.sha256(sbom)
             (build_dir / "unsigned.json").write_text(json.dumps(receipt), encoding="utf-8")
             with patch.object(release_candidate, "apk_identity", return_value=self.IDENTITY):
                 self.assertEqual(release_candidate.checked_unsigned(commit)[1],
@@ -377,6 +398,68 @@ class ReleaseCandidateTest(unittest.TestCase):
                     output.write(b"changed after build")
                 with self.assertRaisesRegex(ValueError, "Unsigned APK receipt"):
                     release_candidate.checked_unsigned(commit)
+
+    def test_release_sbom_hash_and_scope_reject_stale_inventory(self):
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(release_candidate, "ARTIFACT_ROOT", Path(directory)), \
+             patch.object(release_candidate, "apk_identity", return_value=self.IDENTITY):
+            build_dir, candidate_dir, _ = self.make_candidate(directory)
+            release_candidate.checked_unsigned(self.COMMIT)
+            sbom = build_dir / release_candidate.SBOM_NAME
+            sbom.write_text(json.dumps({**self.BOM, "components": []}), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "no usable dependency inventory"):
+                release_candidate.checked_unsigned(self.COMMIT)
+            sbom.write_text(json.dumps({**self.BOM, "components": [
+                {"type": "library", "name": "different",
+                 "purl": "pkg:maven/example/different@1.0"}]}), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "Unsigned APK receipt"):
+                release_candidate.checked_unsigned(self.COMMIT)
+            sbom.write_text(json.dumps(self.BOM), encoding="utf-8")
+            receipt_path = build_dir / "unsigned.json"
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            receipt["sbom_configuration"] = "debugRuntimeClasspath"
+            receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "Unsigned APK receipt"):
+                release_candidate.checked_unsigned(self.COMMIT)
+            receipt["sbom_configuration"] = release_candidate.SBOM_CONFIGURATION
+            receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+            signed_receipt = candidate_dir / "candidate.json"
+            candidate = json.loads(signed_receipt.read_text(encoding="utf-8"))
+            candidate["sbom_sha256"] = "0" * 64
+            signed_receipt.write_text(json.dumps(candidate), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "Signed APK receipt differs"):
+                release_candidate.verify_candidate(self.COMMIT, self.CERTIFICATE)
+
+    def test_unsigned_sbom_attestation_binds_exact_apk_digest_and_inventory(self):
+        digest = "a" * 64
+        statement = [{"verificationResult": {"statement": {
+            "predicateType": release_candidate.SBOM_PREDICATE,
+            "subject": [{"name": "unsigned.apk", "digest": {"sha256": digest}}],
+            "predicate": self.BOM,
+        }}}]
+        result = type("Result", (), {"returncode": 0,
+                                     "stdout": json.dumps(statement)})()
+        with patch.object(release_candidate.subprocess, "run", return_value=result) as command:
+            release_candidate.verify_unsigned_sbom_attestation(
+                Path("unsigned.apk"), digest, self.COMMIT, self.BOM)
+        arguments = command.call_args.args[0]
+        self.assertIn("--predicate-type", arguments)
+        self.assertIn(release_candidate.SBOM_PREDICATE, arguments)
+        self.assertIn("--source-digest", arguments)
+        self.assertIn(self.COMMIT, arguments)
+        statement[0]["verificationResult"]["statement"]["subject"][0]["digest"]["sha256"] = "b" * 64
+        result.stdout = json.dumps(statement)
+        with patch.object(release_candidate.subprocess, "run", return_value=result):
+            with self.assertRaisesRegex(ValueError, "differs from the candidate"):
+                release_candidate.verify_unsigned_sbom_attestation(
+                    Path("unsigned.apk"), digest, self.COMMIT, self.BOM)
+        statement[0]["verificationResult"]["statement"]["subject"][0]["digest"]["sha256"] = digest
+        statement[0]["verificationResult"]["statement"]["predicate"] = {**self.BOM, "components": []}
+        result.stdout = json.dumps(statement)
+        with patch.object(release_candidate.subprocess, "run", return_value=result):
+            with self.assertRaisesRegex(ValueError, "differs from the candidate"):
+                release_candidate.verify_unsigned_sbom_attestation(
+                    Path("unsigned.apk"), digest, self.COMMIT, self.BOM)
 
     def test_artifacts_must_remain_outside_checkout(self):
         with self.assertRaisesRegex(ValueError, "outside the source checkout"):

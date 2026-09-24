@@ -28,7 +28,12 @@ MAX_UNCOMPRESSED_APK_BYTES = 512 * 1024 * 1024
 MAX_APK_ENTRIES = 20_000
 MAX_CENTRAL_DIRECTORY_BYTES = 16 * 1024 * 1024
 MAX_RECEIPT_BYTES = 16 * 1024
+MAX_SBOM_BYTES = 16 * 1024 * 1024
 MAX_CHECKSUM_BYTES = 256
+SBOM_NAME = "release-runtime.cdx.json"
+SBOM_CONFIGURATION = "releaseRuntimeClasspath"
+SBOM_PREDICATE = "https://cyclonedx.org/bom"
+ATTESTATION_WORKFLOW = "pboachie/zrotext/.github/workflows/android-release-candidate.yml"
 SOURCE_TAG = re.compile(
     r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\."
     r"(?:0|[1-9][0-9]*)(?:-rc\.[1-9][0-9]*)?\Z"
@@ -270,11 +275,35 @@ def apk_identity(apk: Path) -> dict[str, str | int]:
     return parse_apk_identity(badging)
 
 
+def checked_sbom(path: Path) -> tuple[str, dict[str, object]]:
+    checked_artifact_file(path, MAX_SBOM_BYTES)
+    raw = path.read_bytes()
+    try:
+        bom = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeError) as exc:
+        raise ValueError("Release runtime SBOM is not JSON") from exc
+    if (not isinstance(bom, dict) or bom.get("bomFormat") != "CycloneDX"
+            or bom.get("specVersion") != "1.6"
+            or not isinstance(bom.get("metadata"), dict)
+            or not isinstance(bom["metadata"].get("component"), dict)
+            or bom["metadata"]["component"].get("type") != "application"
+            or not isinstance(bom.get("components"), list)
+            or not bom["components"]
+            or not all(isinstance(component, dict)
+                       and component.get("type") == "library"
+                       and isinstance(component.get("purl"), str)
+                       and component["purl"].startswith("pkg:maven/")
+                       for component in bom["components"])):
+        raise ValueError("Release runtime SBOM has no usable dependency inventory")
+    return hashlib.sha256(raw).hexdigest(), bom
+
+
 def build_unsigned(commit: str, out: Path) -> None:
     if out.exists():
         raise ValueError("Output directory already exists; use a new directory")
     gradle = ANDROID / ("gradlew.bat" if os.name == "nt" else "gradlew")
     run(gradle, ":app:lintRelease", ":app:testDebugUnitTest", ":app:assembleRelease",
+        ":app:cyclonedxDirectBom",
         "--no-daemon", "--console=plain", f"-PzrotextSourceCommit={commit}",
         cwd=ANDROID, env=unsigned_build_env())
     source_commit(commit)  # Gradle must leave the tracked checkout clean.
@@ -283,39 +312,82 @@ def build_unsigned(commit: str, out: Path) -> None:
         raise ValueError("Gradle did not produce the expected unsigned release APK")
     verify_source_asset(unsigned, commit)
     identity = apk_identity(unsigned)
+    generated_sbom = ANDROID / "app/build/reports/cyclonedx-direct/bom.json"
+    checked_sbom(generated_sbom)
     out.mkdir(parents=True)
     copy = out / "unsigned.apk"
     shutil.copyfile(unsigned, copy)
     digest = sha256(copy)
+    sbom_copy = out / SBOM_NAME
+    shutil.copyfile(generated_sbom, sbom_copy)
+    sbom_hash, _ = checked_sbom(sbom_copy)
     (out / "unsigned.json").write_text(json.dumps({
         "source_commit": commit,
         "unsigned_apk": copy.name,
         "unsigned_apk_sha256": digest,
         "embedded_asset": ASSET,
         "apk_identity": identity,
+        "sbom": SBOM_NAME,
+        "sbom_sha256": sbom_hash,
+        "sbom_configuration": SBOM_CONFIGURATION,
     }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(f"Unsigned candidate: {copy}")
     print(f"Source commit: {commit}")
     print(f"Unsigned APK SHA-256: {digest}")
 
 
-def checked_unsigned(commit: str) -> tuple[Path, str, dict[str, str | int]]:
+def checked_unsigned(
+        commit: str) -> tuple[Path, str, dict[str, str | int], str, dict[str, object]]:
     build_dir = ARTIFACT_ROOT / "unsigned"
     if ARTIFACT_ROOT.is_symlink() or build_dir.is_symlink() or not build_dir.is_dir():
         raise ValueError("Unsigned artifact directory must be a regular directory")
     receipt_path = checked_artifact_file(build_dir / "unsigned.json", MAX_RECEIPT_BYTES)
     unsigned = checked_artifact_file(build_dir / "unsigned.apk", MAX_APK_BYTES)
+    sbom_hash, bom = checked_sbom(build_dir / SBOM_NAME)
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     digest = sha256(unsigned)
     if receipt.get("source_commit") != commit or receipt.get("unsigned_apk") != unsigned.name or (
         receipt.get("unsigned_apk_sha256") != digest
-    ) or receipt.get("embedded_asset") != ASSET:
+    ) or receipt.get("embedded_asset") != ASSET \
+            or receipt.get("sbom") != SBOM_NAME \
+            or receipt.get("sbom_sha256") != sbom_hash \
+            or receipt.get("sbom_configuration") != SBOM_CONFIGURATION:
         raise ValueError("Unsigned APK receipt does not match the clean checkout and artifact")
     verify_source_asset(unsigned, commit)
     identity = apk_identity(unsigned)
     if receipt.get("apk_identity") != identity:
         raise ValueError("Unsigned APK identity does not match its receipt")
-    return unsigned, digest, identity
+    return unsigned, digest, identity, sbom_hash, bom
+
+
+def verify_unsigned_sbom_attestation(unsigned: Path, digest: str,
+                                     commit: str, bom: dict[str, object]) -> None:
+    """Require GitHub's signed SBOM for these exact unsigned APK bytes."""
+    try:
+        result = subprocess.run([
+            "gh", "attestation", "verify", str(unsigned),
+            "--repo", "pboachie/zrotext", "--hostname", "github.com",
+            "--signer-workflow", ATTESTATION_WORKFLOW,
+            "--source-ref", "refs/heads/main", "--source-digest", commit,
+            "--predicate-type", SBOM_PREDICATE, "--format", "json",
+        ], capture_output=True, text=True, timeout=180, check=False, shell=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ValueError("Unsigned APK SBOM attestation lookup could not finish") from exc
+    if result.returncode:
+        raise ValueError("Unsigned APK SBOM attestation verification failed")
+    try:
+        verified = json.loads(result.stdout)
+        if not isinstance(verified, list) or not any(
+            statement.get("predicateType") == SBOM_PREDICATE
+            and statement.get("predicate") == bom
+            and any(subject.get("digest", {}).get("sha256") == digest
+                    for subject in statement["subject"])
+            for item in verified
+            for statement in [item["verificationResult"]["statement"]]
+        ):
+            raise ValueError("SBOM subject or predicate mismatch")
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise ValueError("Unsigned APK SBOM attestation differs from the candidate") from exc
 
 
 def apk_entry_digests(apk: Path) -> dict[str, str]:
@@ -356,7 +428,7 @@ def sign_candidate(commit: str, keystore_path: Path,
         raise ValueError(f"{STORE_PASSWORD} and {KEY_PASSWORD} are required in the environment")
     if out.exists():
         raise ValueError("Output directory already exists; use a new directory")
-    unsigned, unsigned_hash, identity = checked_unsigned(commit)
+    unsigned, unsigned_hash, identity, sbom_hash, _ = checked_unsigned(commit)
     out.mkdir(parents=True)
     apk = out / f"zrotext-android-{commit[:12]}-candidate.apk"
     aligned = out / "aligned-unsigned.apk"
@@ -389,6 +461,7 @@ def sign_candidate(commit: str, keystore_path: Path,
             "source_commit": commit,
             "embedded_asset": ASSET,
             "unsigned_apk_sha256": unsigned_hash,
+            "sbom_sha256": sbom_hash,
             "apk": apk.name,
             "apk_sha256": artifact_hash,
             "signing_certificate_sha256": certificate_hash,
@@ -426,7 +499,7 @@ def verify_candidate(commit: str, expected_certificate: str,
             or not candidate_dir.is_dir()):
         raise ValueError("Artifact directories must not be symlinks")
     external_artifact_path(ARTIFACT_ROOT, "Artifact root")
-    unsigned, unsigned_hash, identity = checked_unsigned(commit)
+    unsigned, unsigned_hash, identity, sbom_hash, bom = checked_unsigned(commit)
     if (identity["version_code"] != expected_version_code
             or identity["version_name"] != expected_version_name):
         raise ValueError("APK version differs from independently approved release metadata")
@@ -443,6 +516,7 @@ def verify_candidate(commit: str, expected_certificate: str,
         "source_commit": commit,
         "embedded_asset": ASSET,
         "unsigned_apk_sha256": unsigned_hash,
+        "sbom_sha256": sbom_hash,
         "apk": apk.name,
         "apk_sha256": artifact_hash,
         "signing_certificate_sha256": expected_certificate,
@@ -469,6 +543,7 @@ def verify_candidate(commit: str, expected_certificate: str,
     if len(certificates) != 1 or certificates.pop().lower() != expected_certificate:
         raise ValueError("APK signing certificate differs from approved fingerprint")
     run(zipalign, "-c", "4", apk, capture=True, env=unsigned_build_env())
+    verify_unsigned_sbom_attestation(unsigned, unsigned_hash, commit, bom)
     print(f"Verified signed candidate: {apk}")
     print(f"Source commit: {commit}")
     print(f"Unsigned APK SHA-256: {unsigned_hash}")

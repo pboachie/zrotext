@@ -47,7 +47,12 @@ hosted-deployment readiness.
 ## Android candidate custody
 
 The manual `android-release-candidate.yml` workflow builds and uploads only an
-unsigned APK and its source/identity receipt. Artifacts from this public
+unsigned APK, its CycloneDX release-runtime SBOM, and a receipt containing both
+SHA-256 digests. The pinned CycloneDX Gradle task resolves only
+`releaseRuntimeClasspath`; test, KSP, and other build-only dependencies remain
+in the Gradle lockfile and dependency graph, outside this shipped-app
+inventory. GitHub attests the SBOM as a predicate of the exact unsigned APK
+before uploading the files. Artifacts from this public
 repository can be downloaded by readers, so do not put an Android signing key
 or a signed APK into its Actions artifacts. The local
 `android/tools/release_candidate.py sign` command verifies an unsigned build
@@ -97,10 +102,14 @@ python3 android/tools/release_candidate.py verify \
 The verifier requires an annotated version tag whose object matches the
 published `origin` tag, a fresh fetched `origin/main`, and tag commit ancestry
 on that branch. It then checks both receipts and checksums against that tag's
-source commit, approved app version, package and SDK identity, every
-uncompressed APK ZIP entry, ZIP alignment, the v3 signature (supported by the
-app's API 28 minimum) with `apksigner`, and the approved certificate
-fingerprint. Install Android SDK build tools (`aapt`, `zipalign`, and
+source commit, approved app version, package and SDK identity, the hashed release-runtime SBOM,
+GitHub's verified CycloneDX attestation for the exact unsigned APK digest and
+source commit, every uncompressed APK ZIP entry, ZIP alignment, the v3
+signature (supported by the app's API 28 minimum) with `apksigner`, and the
+approved certificate fingerprint. Matching APK contents links the attested
+unsigned artifact to the privately signed candidate. Install the GitHub CLI
+with attestation access and Android SDK
+build tools (`aapt`, `zipalign`, and
 `apksigner`) before running it. The unsigned APK, signed APK, and receipts must
 remain outside the source checkout. This check does not authorize publication
 or replace a physical-device acceptance test.
