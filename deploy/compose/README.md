@@ -10,20 +10,26 @@ message payloads and states, an attempt and event, an ungranted dispatch job,
 an idempotency key, and usage records. The restore rehearsal verifies those
 exact records in both the source and the database-only restore target.
 
-For a release image, pass its immutable digest plus the expected public source
-identity:
+For a release image, use a checkout of its exact annotated source tag. Run
+`python3 scripts/release_source_metadata.py` there to obtain the web digest,
+device-stream schema digest and final migration number. Pass those values with
+the immutable image digest and expected public source identity:
 
 ```sh
 docker pull ghcr.io/pboachie/zrotext@sha256:<digest>
 docker tag ghcr.io/pboachie/zrotext@sha256:<digest> zrotext-release-smoke:local
 python3 deploy/compose/fresh_install_smoke.py \
   --image-ref ghcr.io/pboachie/zrotext@sha256:<digest> \
-  --source-commit <full-commit-sha> --source-tag v0.1.0-rc.1
+  --source-commit <full-commit-sha> --source-tag v0.1.0-rc.1 \
+  --web-static-sha256 <web-digest> \
+  --device-stream-schema-sha256 <schema-digest> \
+  --migration-last <final-migration-number>
 ```
 
 This mode checks that the staged local alias has the requested repository digest
 and source labels, then verifies that both the migrator and API containers ran
-that same image before checking migrations,
+that same image and that `/about/version` reports its source metadata before
+checking migrations,
 health, readiness, dispatch isolation, and a seeded logical restore. The release-image
 workflow runs it before attesting or writing a promotion receipt. A failed
 smoke may leave the uniquely tagged image in GHCR, but no reviewed receipt is
