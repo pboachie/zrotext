@@ -428,7 +428,7 @@ class ReleaseCandidateTest(unittest.TestCase):
             candidate["sbom_sha256"] = "0" * 64
             signed_receipt.write_text(json.dumps(candidate), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "Signed APK receipt differs"):
-                release_candidate.verify_candidate(self.COMMIT, self.CERTIFICATE)
+                self.verify_test_candidate(self.COMMIT, self.CERTIFICATE)
 
     def test_unsigned_sbom_attestation_binds_exact_apk_digest_and_inventory(self):
         digest = "a" * 64
