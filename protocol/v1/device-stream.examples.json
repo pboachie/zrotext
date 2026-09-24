@@ -1,0 +1,14 @@
+[
+  {"type":"hello","v":1,"device_id":"00000000-0000-4000-8000-000000000001"},
+  {"type":"proof","v":1,"challenge_id":"00000000-0000-4000-8000-000000000001","account_id":"00000000-0000-4000-8000-000000000001","device_id":"00000000-0000-4000-8000-000000000001","nonce":"AQ","signature_der":"Ag"},
+  {"type":"heartbeat","v":1},
+  {"type":"alpha_ready","v":1,"connection_epoch":7,"recipient_digest":"AQ"},
+  {"type":"radio_event","v":1,"connection_epoch":7,"event_id":"00000000-0000-4000-8000-000000000001","message_id":"00000000-0000-4000-8000-000000000001","attempt_id":"00000000-0000-4000-8000-000000000001","evidence":"durable_submit_intent","observed_at_ms":1700000000000},
+  {"type":"inbound_event","v":1,"connection_epoch":7,"event_id":"00000000-0000-4000-8000-000000000001","sequence":1,"message_id":"00000000-0000-4000-8000-000000000001","attempt_id":"00000000-0000-4000-8000-000000000001","classification":"captured_local","observed_at_ms":1700000000000,"part_count":1,"signature_der":"Ag"},
+  {"type":"challenge","v":1,"challenge_id":"00000000-0000-4000-8000-000000000001","account_id":"00000000-0000-4000-8000-000000000001","device_id":"00000000-0000-4000-8000-000000000001","nonce":"AQ"},
+  {"type":"session","v":1,"connection_epoch":7,"heartbeat_seconds":30},
+  {"type":"heartbeat_ack","v":1,"connection_epoch":7},
+  {"type":"synthetic_grant","v":1,"message_id":"00000000-0000-4000-8000-000000000001","attempt_id":"00000000-0000-4000-8000-000000000001","device_id":"00000000-0000-4000-8000-000000000001","generation":1,"connection_epoch":7,"deployment_epoch":1,"recipient_digest":"AQ","expires_at_ms":1700000000000,"recipient_e164":"+15555550101","body":"ZROtext synthetic test: case_1"},
+  {"type":"radio_event_ack","v":1,"event_id":"00000000-0000-4000-8000-000000000001","state":"submitting","submit_permitted":true},
+  {"type":"inbound_event_ack","v":1,"event_id":"00000000-0000-4000-8000-000000000001","created":true,"queued_deliveries":0}
+]
