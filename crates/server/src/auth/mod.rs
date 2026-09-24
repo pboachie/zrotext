@@ -887,10 +887,10 @@ mod tests {
         );
     }
     #[tokio::test]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn postgres_tenant_revocation_and_scope_contract() {
-        let Ok(url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
-            return;
-        };
+        let url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
         let (mut client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
             .await
             .unwrap();
@@ -1082,10 +1082,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn postgres_expired_unverified_signup_releases_its_email() {
-        let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
-            return;
-        };
+        let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
         let schema = format!("pending_signup_test_{}", Uuid::new_v4().simple());
         let (setup, mut client, _) = pending_signup_schema(&base_url, &schema).await;
         let hasher = TokenHasher::new(crate::test_keys::key(13)).unwrap();
@@ -1259,10 +1259,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn postgres_concurrent_signups_replace_a_stale_record_once() {
-        let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
-            return;
-        };
+        let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
         let schema = format!("pending_race_test_{}", Uuid::new_v4().simple());
         let (setup, mut client, url) = pending_signup_schema(&base_url, &schema).await;
         let hasher = TokenHasher::new(crate::test_keys::key(17)).unwrap();
@@ -1314,10 +1314,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn postgres_prune_removes_only_expired_unverified_owners() {
-        let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
-            return;
-        };
+        let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
         let schema = format!("pending_prune_test_{}", Uuid::new_v4().simple());
         let (setup, mut client, _) = pending_signup_schema(&base_url, &schema).await;
         let hasher = TokenHasher::new(crate::test_keys::key(19)).unwrap();

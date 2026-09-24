@@ -1029,11 +1029,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn manual_replay_is_owner_scoped_csrf_protected_bounded_and_idempotent() {
-        let Ok(root_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
-            eprintln!("set ZT_AUTH_TEST_DATABASE_URL to run webhook replay database test");
-            return;
-        };
+        let root_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
         let (mut admin, connection) = tokio_postgres::connect(&root_url, NoTls).await.unwrap();
         tokio::spawn(async move { connection.await.unwrap() });
         let schema = format!("webhook_replay_test_{}", Uuid::new_v4().simple());
@@ -1499,11 +1498,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn delivery_history_is_bounded_tenant_scoped_and_content_free() {
-        let Ok(root_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
-            eprintln!("set ZT_AUTH_TEST_DATABASE_URL to run webhook history database test");
-            return;
-        };
+        let root_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
         let (mut admin, connection) = tokio_postgres::connect(&root_url, NoTls).await.unwrap();
         tokio::spawn(async move { connection.await.unwrap() });
         let schema = format!("webhook_history_test_{}", Uuid::new_v4().simple());
@@ -1882,11 +1880,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn endpoint_lifecycle_is_tenant_bound_and_retires_queued_deliveries() {
-        let Ok(root_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
-            eprintln!("set ZT_AUTH_TEST_DATABASE_URL to run webhook endpoint database test");
-            return;
-        };
+        let root_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
         let (mut admin, connection) = tokio_postgres::connect(&root_url, NoTls).await.unwrap();
         tokio::spawn(async move { connection.await.unwrap() });
         let schema = format!("webhook_endpoint_test_{}", Uuid::new_v4().simple());

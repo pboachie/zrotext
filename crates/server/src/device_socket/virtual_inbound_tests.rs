@@ -38,11 +38,10 @@ async fn send_json(socket: &mut TestSocket, value: Value) {
 }
 
 #[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn authenticated_inbound_replay_retries_one_webhook_delivery() {
-    let Ok(url) = std::env::var("ZT_INBOUND_TEST_DATABASE_URL") else {
-        eprintln!("set ZT_INBOUND_TEST_DATABASE_URL to run virtual inbound socket test");
-        return;
-    };
+    let url = std::env::var("ZT_INBOUND_TEST_DATABASE_URL")
+        .expect("set ZT_INBOUND_TEST_DATABASE_URL for PostgreSQL-backed tests");
     let (admin, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
     let schema = format!("inbound_socket_{}", Uuid::new_v4().simple());
@@ -370,6 +369,7 @@ async fn authenticated_inbound_replay_retries_one_webhook_delivery() {
 }
 
 #[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn socket_handshakes_share_http_enrollment_budgets() {
     use crate::http_enrollment::{self, EnrollmentHttpState};
     use axum::{
@@ -378,9 +378,8 @@ async fn socket_handshakes_share_http_enrollment_budgets() {
     };
     use tower::ServiceExt;
 
-    let Ok(url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
-        return;
-    };
+    let url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+        .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
     let (admin, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
     let schema = format!("socket_budget_{}", Uuid::new_v4().simple());
@@ -544,10 +543,10 @@ async fn socket_handshakes_share_http_enrollment_budgets() {
 }
 
 #[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn enrolled_phone_reconnects_after_junk_spends_handshake_budgets() {
-    let Ok(url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
-        return;
-    };
+    let url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+        .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
     let (admin, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
     let schema = format!("socket_junk_{}", Uuid::new_v4().simple());
