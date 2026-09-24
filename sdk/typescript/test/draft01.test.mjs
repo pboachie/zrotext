@@ -120,12 +120,15 @@ test("valid re-signatures cannot relocate existing ciphertext to new protected b
   }
 });
 
-test("re-signed invalid encapsulated point still fails cryptographic validation", async () => {
+test("re-signed invalid encapsulated point rejects the complete envelope for either recipient", async () => {
   const good = envelope("outbound");
   const parsed = parseDraftEnvelope(good);
   const firstWrapAt = parsed.unsigned.length - parsed.wraps.length * 146;
   const changed = patch(good, firstWrapAt + 34, 0xff);
-  await assert.rejects(openDraftEnvelope(await resign(changed), await context(1)));
+  const resigned = await resign(changed);
+  await assert.rejects(openDraftEnvelope(resigned, await context(1)));
+  // Every signed wrap must carry a valid P-256 point, including another recipient's wrap.
+  await assert.rejects(openDraftEnvelope(resigned, await context(2)));
 });
 
 async function resign(envelopeBytes) {
