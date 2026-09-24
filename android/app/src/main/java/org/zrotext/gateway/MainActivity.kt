@@ -109,7 +109,7 @@ class MainActivity : ComponentActivity() {
                     Button(onClick = {
                         startService(Intent(this@MainActivity, GatewayService::class.java).setAction(GatewayService.ACTION_PAUSE))
                     }) { Text("Pause gateway") }
-                    Text("Keep this dedicated phone plugged in for a screen-off connection test. Reopen the app after a stop or reboot; automatic recovery is not available yet.")
+                    Text("Keep this dedicated phone plugged in for a screen-off connection test. The test-token session requires a manual restart after a stop or reboot.")
                     HorizontalDivider()
                     Text("Authenticated device heartbeat", style = MaterialTheme.typography.titleMedium)
                     Text("After owner approval, enter the approved device UUID and trusted WSS origin. The heartbeat button only proves the phone's Keystore key and exchanges heartbeats.")
@@ -118,17 +118,13 @@ class MainActivity : ComponentActivity() {
                         label = { Text("WSS device stream URL") })
                     OutlinedTextField(value = approvedDeviceId, onValueChange = { approvedDeviceId = it },
                         label = { Text("Approved device UUID") })
-                    Button(onClick = {
-                        if (selectedSim == null) {
-                            AuthenticatedGatewayStatus.value = "Select a SIM first"
-                        } else {
-                            stopService(Intent(this@MainActivity, GatewayService::class.java))
-                            val intent = Intent(this@MainActivity, AuthenticatedGatewayService::class.java)
-                                .putExtra(AuthenticatedGatewayService.EXTRA_URL, deviceStreamEndpoint)
-                                .putExtra(AuthenticatedGatewayService.EXTRA_DEVICE_ID, approvedDeviceId.trim())
-                            ContextCompat.startForegroundService(this@MainActivity, intent)
-                        }
-                    }) { Text("Start authenticated heartbeat") }
+                    Button(onClick = { startHeartbeat(rebootResume = false) }) {
+                        Text("Start authenticated heartbeat")
+                    }
+                    Button(onClick = { startHeartbeat(rebootResume = true) }) {
+                        Text("Start heartbeat and resume after reboot")
+                    }
+                    Text("Reboot resume is heartbeat-only and must be chosen explicitly. Pause clears it. A force-stop requires reopening the app and starting a session again.")
                     Button(onClick = {
                         startService(Intent(this@MainActivity, AuthenticatedGatewayService::class.java)
                             .setAction(AuthenticatedGatewayService.ACTION_PAUSE))
@@ -216,6 +212,19 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    private fun startHeartbeat(rebootResume: Boolean) {
+        if (selectedSim == null) {
+            AuthenticatedGatewayStatus.value = "Select a SIM first"
+            return
+        }
+        stopService(Intent(this, GatewayService::class.java))
+        val intent = Intent(this, AuthenticatedGatewayService::class.java)
+            .putExtra(AuthenticatedGatewayService.EXTRA_URL, deviceStreamEndpoint)
+            .putExtra(AuthenticatedGatewayService.EXTRA_DEVICE_ID, approvedDeviceId.trim())
+            .putExtra(AuthenticatedGatewayService.EXTRA_REBOOT_RESUME, rebootResume)
+        ContextCompat.startForegroundService(this, intent)
     }
 
     private fun askPermissions() {
