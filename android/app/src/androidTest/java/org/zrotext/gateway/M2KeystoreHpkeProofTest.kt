@@ -12,6 +12,7 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -85,6 +86,42 @@ class M2KeystoreHpkeProofTest {
                 putString("m2_browser_to_keystore_open", "PASSED")
             })
             expectedCek.fill(0)
+        } finally {
+            if (store.containsAlias(browserInteropAlias)) store.deleteEntry(browserInteropAlias)
+            assertFalse(store.containsAlias(browserInteropAlias))
+        }
+    }
+
+    @Test fun openBrowserInteropEnvelope() {
+        assumeBrowserInteropHarness()
+        val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null, null) }
+        val keyStore = DevicePayloadKeyStore(browserInteropAlias)
+        try {
+            val envelope = hexBytes(requireNotNull(InstrumentationRegistry.getArguments().getString("m2_envelope_hex")))
+            val keyId = keyStore.existingPublic().keyId
+            val expected = Draft01KeystoreReceiver.Expected(
+                ByteArray(16) { 0xa1.toByte() }, ByteArray(16) { 0xd1.toByte() },
+                ByteArray(16) { 0xb1.toByte() }, "+12", ByteArray(32) { 0x4d.toByte() }, keyId)
+            assertEquals("Draft outbound ✉", Draft01KeystoreReceiver.openOutbound(envelope, expected, keyStore))
+            val parsed = Draft01KeystoreReceiver.parseOutbound(envelope)
+            val info = Draft01KeystoreReceiver.wrapInfo(parsed)
+            val aad = Draft01KeystoreReceiver.wrapAad(parsed)
+            rejects { Draft01KeystoreReceiver.openDeviceWrap(parsed, keyStore, info + 1, aad) }
+            rejects { Draft01KeystoreReceiver.openDeviceWrap(parsed, keyStore, info, aad + 1) }
+            rejects { Draft01KeystoreReceiver.openDeviceWrap(parsed.copy(deviceWrap =
+                parsed.deviceWrap.copy(enc = ByteArray(65))), keyStore) }
+            rejects { Draft01KeystoreReceiver.openDeviceWrap(parsed.copy(deviceWrap =
+                parsed.deviceWrap.copy(keyId = ByteArray(32))), keyStore) }
+            rejects { Draft01KeystoreReceiver.parseOutbound(envelope.copyOf(envelope.size - 1)) }
+            rejects { Draft01KeystoreReceiver.parseOutbound(envelope + 0.toByte()) }
+            store.deleteEntry(browserInteropAlias)
+            assertThrows(IllegalStateException::class.java) {
+                Draft01KeystoreReceiver.openOutbound(envelope, expected, keyStore)
+            }
+            InstrumentationRegistry.getInstrumentation().sendStatus(0, Bundle().apply {
+                putString("m2_browser_envelope_open", "PASSED")
+                putString("m2_browser_envelope_lost_key_denied", "PASSED")
+            })
         } finally {
             if (store.containsAlias(browserInteropAlias)) store.deleteEntry(browserInteropAlias)
             assertFalse(store.containsAlias(browserInteropAlias))
@@ -262,7 +299,7 @@ class M2KeystoreHpkeProofTest {
             }
     }
 
-    private object HpkeOneShot {
+    internal object HpkeOneShot {
         private val kemSuite = "KEM".toByteArray(Charsets.US_ASCII) + byteArrayOf(0, 16)
         private val suite = "HPKE".toByteArray(Charsets.US_ASCII) + byteArrayOf(0, 16, 0, 1, 0, 1)
         private val prefix = "HPKE-v1".toByteArray(Charsets.US_ASCII)

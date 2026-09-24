@@ -27,15 +27,20 @@ content keys, nonce and HPKE ephemeral inputs. Web Crypto ECDSA signing may
 produce a different valid signature when regenerated; committed signature
 bytes are fixed for consumers.
 
-For an optional **emulator-only** browser-to-Keystore wrap check, build
+For an optional **emulator-only** browser-to-Keystore outbound envelope check, build
 `android/:app:assembleDebug` and `:app:assembleDebugAndroidTest`, install those
 two APKs onto an API 31+ AVD at `emulator-5554`, set `ANDROID_HOME`, then run
 `npm run test:android-keystore` here. The script checks `ro.kernel.qemu=1` and
 refuses a physical serial. It generates a temporary non-exportable P-256
-Keystore key, seals with independent `@hpke/core` using draft-01 nonempty
-`info` and AAD, opens on Android, tests changed `info`/AAD, and removes the
-test alias in a `finally` cleanup. Uninstall the test APKs when finished. This
-is still test-only custom composition, not a maintained production provider.
+Keystore key, replaces the device wrap in the pinned outbound draft fixture
+using independent `@hpke/core` and its nonempty `info` and AAD, then signs the
+new envelope with the fixture's public test identity. Android parses bounded
+envelope bytes, opens the device wrap and body, rejects altered HPKE inputs,
+invalid encapsulation, wrong key ID, truncation, trailing bytes and a lost
+recipient key, and removes the test alias in a `finally` cleanup. Uninstall
+the test APKs when finished. Android does not verify the origin signature or
+manifest in this harness. This is test-only custom composition, not a
+maintained production provider.
 
 This is one slice of ZT-010 evidence. Independent Rust cross-open, full manifest
 chain/rollback vectors, production key lifecycle, and the Q1–Q11 decisions

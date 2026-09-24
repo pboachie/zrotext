@@ -75,6 +75,32 @@ this run makes no supported-phone claim. JVM API-floor/key-ID tests, seven
 TypeScript tests, two Python vector checks and Android test-APK compilation
 passed. No SMS or physical phone test ran in this slice.
 
+## Draft-01 outbound envelope receive proof (2026-09-24)
+
+An additional Android **test-source-only** receiver now parses the complete
+bounded outbound wire form and uses the dormant `DevicePayloadKeyStore` to open
+the device wrap. The host harness replaces the device wrap in the pinned
+draft-01 fixture with a fresh `@hpke/core` P-256/HKDF-SHA256/AES-128-GCM wrap
+to a generated API 36 Pixel AVD Keystore key, signs the changed bytes with the
+fixture's public test signer, and passes the exact envelope bytes to Android.
+Android reconstructs the distinct nonempty RFC 9180 `info` and AAD, opens the
+32-byte CEK, and decrypts the fixture AES-256-GCM body with the exact draft body
+AAD. The harness printed `PASS`; the instrumented class reported `OK (7
+tests)`, including harness-skipped methods. Gradle debug/test APK builds and
+JVM tests passed; the TypeScript RFC/draft suite passed 7/7. The harness
+rejected altered HPKE `info`/AAD, invalid `enc`, wrong pinned key ID, shortened
+or extended envelope bytes, and opening after recipient-key deletion. It
+removed the temporary alias and both emulator APKs; no physical/radio test ran.
+
+This demonstrates only candidate wire interoperability and fail-closed
+decryption behavior. The Android receiver does **not** verify the ECDSA origin
+signature, trusted manifest, grant, freshness or replay state; it is never
+called from production code. The AVD reports `SOFTWARE` security level and
+cannot establish hardware backing. No maintained high-level API was found in
+the evaluated paths that combines this draft's nonempty HPKE AAD with the
+non-exportable API 31+ P-256 key. The HPKE JCA composition remains test-only;
+Q5 and the other ZT-009 gates stay open.
+
 ## Remaining Q5 decision
 
 The platform can perform the cryptographic operation, but none of the
