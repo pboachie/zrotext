@@ -87,14 +87,30 @@ class AuthenticatedGatewayService : Service() {
     @Synchronized
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_PAUSE) {
-            HeartbeatResumeStore.clear(this)
+            val rebootResumeCleared = HeartbeatResumeStore.clear(this)
             halt()
-            AuthenticatedGatewayStatus.value = "Paused"
-            stopSelf()
+            if (rebootResumeCleared) {
+                AuthenticatedGatewayStatus.value = "Paused"
+                stopSelf()
+            } else {
+                AuthenticatedGatewayStatus.value = "Pause incomplete; tap Pause again before reboot"
+                val warning = notification("Pause incomplete; tap Pause again")
+                if (Build.VERSION.SDK_INT >= 29) {
+                    startForeground(NOTIFICATION_ID, warning,
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING)
+                } else {
+                    startForeground(NOTIFICATION_ID, warning)
+                }
+            }
             return START_NOT_STICKY
         }
         val bootResume = intent?.action == ACTION_BOOT_RESUME
-        if (!bootResume) HeartbeatResumeStore.clear(this)
+        if (!bootResume && !HeartbeatResumeStore.clear(this)) {
+            halt()
+            AuthenticatedGatewayStatus.value = "Could not disable previous reboot resume; retry"
+            stopSelf()
+            return START_NOT_STICKY
+        }
         val saved = if (bootResume) HeartbeatResumeStore.read(this) else null
         val url = if (bootResume) saved?.url.orEmpty() else intent?.getStringExtra(EXTRA_URL).orEmpty()
         val deviceId = try {
@@ -105,9 +121,11 @@ class AuthenticatedGatewayService : Service() {
             null
         }
         if (!validUrl(url) || deviceId == null) {
-            HeartbeatResumeStore.clear(this)
+            val rebootResumeCleared = HeartbeatResumeStore.clear(this)
             halt()
-            AuthenticatedGatewayStatus.value = "Set a WSS device stream and approved device ID"
+            AuthenticatedGatewayStatus.value = if (rebootResumeCleared)
+                "Set a WSS device stream and approved device ID"
+            else "Invalid heartbeat configuration; could not disable reboot resume. Retry Pause"
             stopSelf()
             return START_NOT_STICKY
         }
@@ -598,7 +616,10 @@ class AuthenticatedGatewayService : Service() {
                     .notify(NOTIFICATION_ID, notification("Waiting for network"))
             }
             DeviceReconnectPolicy.Action.Stop -> {
-                AuthenticatedGatewayStatus.value = "Device proof or protocol rejected; restart manually"
+                val rebootResumeCleared = HeartbeatResumeStore.clear(this)
+                AuthenticatedGatewayStatus.value = if (rebootResumeCleared)
+                    "Device proof or protocol rejected; restart manually"
+                else "Device proof or protocol rejected; could not disable reboot resume. Retry Pause"
                 stopSelf()
             }
             else -> Unit

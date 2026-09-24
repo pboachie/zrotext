@@ -13,17 +13,29 @@ import androidx.core.content.ContextCompat
 class HeartbeatBootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
+        val saved = HeartbeatResumeStore.read(context) ?: return
+        if (!HeartbeatResumeStore.eligibleAfterUserStop(context)) return
+        // Android 15 can replay BOOT_COMPLETED after force-stop without a reboot.
+        // The opt-in is valid only for a later device boot.
+        if (HeartbeatResumeStore.currentBootCount(context) <= saved.bootCount) {
+            if (!HeartbeatResumeStore.clear(context)) {
+                Log.e("ZTBoot", "Could not clear heartbeat resume after non-reboot broadcast")
+            }
+            return
+        }
         // Android 15+ also delivers BOOT_COMPLETED when a user opens an app
         // after force-stop. That is not a device reboot or consent to resume.
         if (Build.VERSION.SDK_INT >= 35) {
             val start = context.getSystemService(ActivityManager::class.java)
-                .getHistoricalProcessStartReasons(1).firstOrNull()
+                ?.getHistoricalProcessStartReasons(1)?.firstOrNull()
+            // Unknown history cannot prove this was a real device reboot.
             if (start?.wasForceStopped() != false) {
-                HeartbeatResumeStore.clear(context)
+                if (!HeartbeatResumeStore.clear(context)) {
+                    Log.e("ZTBoot", "Could not clear heartbeat resume after force-stop")
+                }
                 return
             }
         }
-        if (HeartbeatResumeStore.read(context) == null) return
         try {
             ContextCompat.startForegroundService(context,
                 Intent(context, AuthenticatedGatewayService::class.java)

@@ -97,12 +97,10 @@ class MainActivity : ComponentActivity() {
                     Button(onClick = {
                         if (selectedSim == null) {
                             GatewayStatus.value = "Select a SIM first"
+                        } else if (!GatewaySessionSelection.startVisibleTestSession(
+                                this@MainActivity, endpoint, testToken)) {
+                            GatewayStatus.value = "Could not disable heartbeat reboot resume; try again"
                         } else {
-                            stopService(Intent(this@MainActivity, AuthenticatedGatewayService::class.java))
-                            val intent = Intent(this@MainActivity, GatewayService::class.java)
-                                .putExtra(GatewayService.EXTRA_URL, endpoint)
-                                .putExtra(GatewayService.EXTRA_TOKEN, testToken)
-                            ContextCompat.startForegroundService(this@MainActivity, intent)
                             testToken = ""
                         }
                     }) { Text("Start visible gateway session") }
