@@ -220,12 +220,13 @@ try {
     m2_draft02_body_aad_mutant_hex: hex(bodyAadMutant),
   });
   if (!opened.includes("m2_draft02_full_envelope_open=PASSED") ||
+      !opened.includes("m2_draft02_public_jca_tink_equivalence=PASSED") ||
       !opened.includes("m2_draft02_signed_manifest_denials=PASSED") ||
       !opened.includes("m2_draft02_envelope_alias_removed=PASSED")) {
     throw new Error("Android did not confirm full draft-02 envelope and denials");
   }
   cek.fill(0);
-  console.log("PASS: @hpke/core signed draft-02 envelope opened with Tink and Android Keystore");
+  console.log("PASS: @hpke/core signed draft-02 envelope opened with public JCA and Android Keystore; Tink CEK matched");
 } finally {
   const cleaned = await instrument("cleanupRecipient");
   if (!cleaned.includes("m2_draft02_envelope_alias_removed=PASSED")) {

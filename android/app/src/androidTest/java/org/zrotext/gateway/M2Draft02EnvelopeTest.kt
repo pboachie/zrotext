@@ -74,6 +74,16 @@ class M2Draft02EnvelopeTest {
                     forgedTransition, verifiedManifest.nextTrust, rotatedRoot, now)
             }
             val replay = Draft02TinkEnvelopeReceiver.ReplayJournal()
+            val parsedNormal = Draft02TinkEnvelopeReceiver.parseOutbound(envelope)
+            val jcaCek = Draft02TinkEnvelopeReceiver.openDeviceWrap(parsedNormal, keyStore)
+            val tinkCek = Draft02TinkEnvelopeReceiver.openDeviceWrapTink(parsedNormal, keyStore)
+            try {
+                assertArrayEquals(ByteArray(32) { 0xc2.toByte() }, jcaCek)
+                assertArrayEquals(tinkCek, jcaCek)
+            } finally {
+                jcaCek.fill(0)
+                tinkCek.fill(0)
+            }
             assertEquals("Draft02 outbound ✓", Draft02TinkEnvelopeReceiver.openOutbound(
                 envelope, trusted, keyStore, replay))
             assertThrows(IllegalArgumentException::class.java) {
@@ -153,11 +163,11 @@ class M2Draft02EnvelopeTest {
                         it[23] = (it[23].toInt() xor 1).toByte()
                     })
             }
-            assertThrows(GeneralSecurityException::class.java) {
+            assertThrows(IllegalArgumentException::class.java) {
                 Draft02TinkEnvelopeReceiver.openDeviceWrap(parsed, keyStore,
                     Draft02TinkEnvelopeReceiver.wrapInfo(parsed).copyOf().also { it[180] = 2 })
             }
-            assertThrows(GeneralSecurityException::class.java) {
+            assertThrows(IllegalArgumentException::class.java) {
                 Draft02TinkEnvelopeReceiver.openDeviceWrap(parsed, keyStore,
                     Draft02TinkEnvelopeReceiver.wrapInfo(parsed).copyOf().also {
                         it[it.lastIndex] = (it.last().toInt() xor 1).toByte()
@@ -167,12 +177,19 @@ class M2Draft02EnvelopeTest {
                 Draft02TinkEnvelopeReceiver.openDeviceWrap(parsed.copy(deviceWrap =
                     parsed.deviceWrap.copy(keyId = ByteArray(32))), keyStore)
             }
+            assertThrows(GeneralSecurityException::class.java) {
+                Draft02TinkEnvelopeReceiver.openDeviceWrap(parsed.copy(deviceWrap =
+                    parsed.deviceWrap.copy(ct = parsed.deviceWrap.ct.copyOf().also {
+                        it[it.lastIndex] = (it.last().toInt() xor 1).toByte()
+                    })), keyStore)
+            }
             store.deleteEntry(alias)
             assertThrows(IllegalStateException::class.java) {
                 Draft02TinkEnvelopeReceiver.openOutbound(envelope, trusted, keyStore, fresh())
             }
             InstrumentationRegistry.getInstrumentation().sendStatus(0, Bundle().apply {
                 putString("m2_draft02_full_envelope_open", "PASSED")
+                putString("m2_draft02_public_jca_tink_equivalence", "PASSED")
                 putString("m2_draft02_signed_manifest_denials", "PASSED")
                 putString("m2_draft02_envelope_alias_removed", "PASSED")
             })
