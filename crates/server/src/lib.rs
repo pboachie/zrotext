@@ -10,6 +10,7 @@ pub mod http_messages;
 pub mod http_owner_messages;
 pub mod http_webhooks;
 pub mod inbound;
+pub mod ingress;
 pub mod owner_ui;
 pub mod sealed_inbound;
 pub mod webhook_egress;

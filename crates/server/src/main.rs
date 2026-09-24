@@ -423,7 +423,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.site_id, config.instance_id
     );
     let listener = tokio::net::TcpListener::bind(bind).await?;
-    axum::serve(listener, app)
+    axum::serve(listener, zrotext_server::ingress::protect(app))
         .with_graceful_shutdown(shutdown_signal(config))
         .await?;
     Ok(())

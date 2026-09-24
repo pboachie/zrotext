@@ -943,6 +943,19 @@ async fn create_api_key(
         true,
     )
     .await?;
+    // Charge the account, not its session or live key count: logging in again
+    // and revoking issued keys must not reset the database growth budget.
+    if !abuse_limits::consume(
+        &client,
+        &state.hasher,
+        Limit::ApiKeyCreate,
+        Some(&owner.tenant.account_id().to_string()),
+    )
+    .await
+    .map_err(|_| AuthHttpError::Unavailable)?
+    {
+        return Err(AuthHttpError::TooManyRequests);
+    }
     let key = auth::create_api_key(
         &client,
         &state.hasher,
@@ -1607,6 +1620,148 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        setup
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn api_key_issuance_budget_survives_concurrency_revocation_and_new_sessions() {
+        let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
+            return;
+        };
+        let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let schema = format!("key_budget_{}", Uuid::new_v4().simple());
+        setup
+            .batch_execute(&format!("CREATE SCHEMA {schema}"))
+            .await
+            .unwrap();
+        let url = format!("{base_url}?options=-csearch_path%3D{schema}");
+        let (mut client, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        for migration in [
+            include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+            include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+            include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
+            include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
+            include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
+            include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+        ] {
+            client.batch_execute(migration).await.unwrap();
+        }
+        let hasher = Arc::new(TokenHasher::new(vec![42; 32]).unwrap());
+        let password = format!("synthetic-{}", Uuid::new_v4());
+        let mut sessions = Vec::new();
+        for email in ["owner@example.test", "other@example.test"] {
+            let signup = auth::register(&mut client, &hasher, email, &password)
+                .await
+                .unwrap();
+            auth::verify_email(&mut client, &hasher, &signup.verification_token)
+                .await
+                .unwrap();
+            sessions.push(
+                auth::login(&client, &hasher, email, &password)
+                    .await
+                    .unwrap(),
+            );
+        }
+        let state = AuthHttpState::new(
+            url,
+            hasher.clone(),
+            "https://zrotext.example".into(),
+            Arc::new(DisabledVerificationDispatcher),
+        )
+        .unwrap();
+        let apps = [router(state.clone()), router(state)];
+        let request_for = |session: &auth::SessionCredentials| {
+            owner_post(
+                "/api-keys",
+                serde_json::json!({"scopes":["messages:read"]}),
+                &format!(
+                    "{SESSION_COOKIE}={}; {CSRF_COOKIE}={}",
+                    session.token, session.csrf_token
+                ),
+                &session.csrf_token,
+            )
+        };
+        let mut tasks = Vec::new();
+        for index in 0..32 {
+            let app = apps[index % 2].clone();
+            let request = request_for(&sessions[0]);
+            tasks.push(tokio::spawn(async move {
+                app.oneshot(request).await.unwrap().status()
+            }));
+        }
+        let mut created = 0;
+        for task in tasks {
+            match task.await.unwrap() {
+                StatusCode::CREATED => created += 1,
+                StatusCode::TOO_MANY_REQUESTS => {}
+                status => panic!("unexpected status {status}"),
+            }
+        }
+        assert_eq!(created, 20);
+        let count: i64 = client
+            .query_one("SELECT count(*) FROM api_keys", &[])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(count, 20);
+        client
+            .execute("UPDATE api_keys SET revoked_at=now()", &[])
+            .await
+            .unwrap();
+        let fresh = auth::login(&client, &hasher, "owner@example.test", &password)
+            .await
+            .unwrap();
+        assert_eq!(
+            apps[0]
+                .clone()
+                .oneshot(request_for(&fresh))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        assert_eq!(
+            apps[1]
+                .clone()
+                .oneshot(request_for(&sessions[1]))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::CREATED
+        );
+        // Cleanup must retain a daily subject budget beyond the generic two-minute window.
+        client
+            .execute(
+                "UPDATE auth_abuse_counters SET updated_at=now()-interval '3 minutes'",
+                &[],
+            )
+            .await
+            .unwrap();
+        abuse_limits::prune(&client).await.unwrap();
+        assert_eq!(
+            apps[0]
+                .clone()
+                .oneshot(request_for(&fresh))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        client.batch_execute("DROP FUNCTION auth_abuse_consume(text,bytea,bytea,integer,integer,integer,integer)").await.unwrap();
+        assert_eq!(
+            apps[1]
+                .clone()
+                .oneshot(request_for(&sessions[1]))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
         setup
             .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
             .await
