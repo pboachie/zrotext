@@ -278,10 +278,18 @@ fn read_migrations(directory: &Path) -> Result<Vec<Migration>, MigrationError> {
 // the start of a SQL statement so no file can commit before its ledger row.
 // Ignore comments and quoted/dollar-quoted text, including PL/pgSQL bodies.
 fn contains_transaction_control(sql: &str) -> bool {
+    // Files are validated before connecting, and the session setting can vary.
+    // Reject control statements under either standard_conforming_strings mode.
+    scan_transaction_control(sql, false) || scan_transaction_control(sql, true)
+}
+
+fn scan_transaction_control(sql: &str, ordinary_backslash_escapes: bool) -> bool {
     fn controlled(words: &[String]) -> bool {
         match words.first().map(String::as_str) {
-            Some("BEGIN" | "COMMIT" | "END" | "ROLLBACK" | "ABORT" | "SAVEPOINT") => true,
-            Some("START" | "PREPARE" | "RELEASE") => words
+            Some("BEGIN" | "COMMIT" | "END" | "ROLLBACK" | "ABORT" | "SAVEPOINT" | "RELEASE") => {
+                true
+            }
+            Some("START" | "PREPARE") => words
                 .get(1)
                 .is_some_and(|second| second == "TRANSACTION" || second == "SAVEPOINT"),
             _ => false,
@@ -303,7 +311,7 @@ fn contains_transaction_control(sql: &str) -> bool {
         if bytes[i..].starts_with(b"--") {
             word_end(&mut word, &mut words);
             i += 2;
-            while i < bytes.len() && bytes[i] != b'\n' {
+            while i < bytes.len() && !matches!(bytes[i], b'\n' | b'\r') {
                 i += 1;
             }
         } else if bytes[i..].starts_with(b"/*") {
@@ -322,6 +330,8 @@ fn contains_transaction_control(sql: &str) -> bool {
                 }
             }
         } else if bytes[i] == b'\'' || bytes[i] == b'"' {
+            let backslash_escapes =
+                ordinary_backslash_escapes || (word.len() == 1 && matches!(word[0], b'e' | b'E'));
             word_end(&mut word, &mut words);
             let quote = bytes[i];
             i += 1;
@@ -333,13 +343,13 @@ fn contains_transaction_control(sql: &str) -> bool {
                         i += 1;
                         break;
                     }
-                } else if bytes[i] == b'\\' && quote == b'\'' {
+                } else if bytes[i] == b'\\' && quote == b'\'' && backslash_escapes {
                     i = (i + 2).min(bytes.len());
                 } else {
                     i += 1;
                 }
             }
-        } else if bytes[i] == b'$' {
+        } else if bytes[i] == b'$' && word.is_empty() {
             let mut end = i + 1;
             while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
                 end += 1;
@@ -358,7 +368,10 @@ fn contains_transaction_control(sql: &str) -> bool {
                 word_end(&mut word, &mut words);
                 i += 1;
             }
-        } else if bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' {
+        } else if bytes[i].is_ascii_alphanumeric()
+            || bytes[i] >= 0x80
+            || matches!(bytes[i], b'_' | b'$')
+        {
             word.push(bytes[i]);
             i += 1;
         } else {
@@ -519,6 +532,27 @@ mod tests {
         assert!(!contains_transaction_control(
             "DO $$ BEGIN RAISE NOTICE 'COMMIT;'; END $$;"
         ));
+        assert!(!contains_transaction_control(
+            r"SELECT E'escaped\'; COMMIT;';"
+        ));
+        assert!(!contains_transaction_control(
+            r"SELECT 'COMMIT;', $$COMMIT;$$;"
+        ));
+        assert!(!contains_transaction_control(
+            "CREATE TABLE probe$tag$(id int);"
+        ));
+    }
+
+    #[test]
+    fn postgres_lexical_boundaries_cannot_hide_transaction_control() {
+        for sql in [
+            r"SELECT '\'; COMMIT;",
+            "SELECT 1; -- comment\rCOMMIT;",
+            "CREATE TABLE probe$tag$(id int); COMMIT; -- $tag$",
+            "RELEASE checkpoint;",
+        ] {
+            assert!(contains_transaction_control(sql), "missed {sql:?}");
+        }
     }
 
     #[test]
