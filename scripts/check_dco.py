@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 
 SIGNOFF = re.compile(r"^Signed-off-by:\s+.+\s+<([^<>\s]+@[^<>\s]+)>\s*$", re.I | re.M)
 BOT_EMAILS = {"49699333+dependabot[bot]@users.noreply.github.com"}
+GITHUB_COMMITTER_EMAILS = {"noreply@github.com"}
 POLICY_START = datetime(2026, 9, 23, 14, 32, tzinfo=timezone.utc)
 
 
@@ -38,6 +39,12 @@ def main() -> int:
     for sha in commits:
         author = git("show", "-s", "--format=%ae", sha)
         if author.lower() in BOT_EMAILS:
+            continue
+        # GitHub's web UI ("Update branch", the merge button) cannot add a
+        # sign-off trailer, so its merge commits are exempt; the commits they
+        # combine are checked individually. Locally created merges can carry
+        # a trailer and stay subject to the policy.
+        if len(git("show", "-s", "--format=%P", sha).split()) > 1 and git("show", "-s", "--format=%ce", sha).lower() in GITHUB_COMMITTER_EMAILS:
             continue
         # Existing open PRs retain their historical commits; new commits on them
         # and every commit on newly opened PRs follow the current policy.
