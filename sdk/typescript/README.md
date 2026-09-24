@@ -35,11 +35,12 @@ refuses a physical serial. It generates a temporary non-exportable P-256
 Keystore key, replaces the device wrap in the pinned outbound draft fixture
 using independent `@hpke/core` and its nonempty `info` and AAD, then signs the
 new envelope with the fixture's public test identity. Android parses bounded
-envelope bytes, opens the device wrap and body, rejects altered HPKE inputs,
+envelope bytes, checks the exact signature transcript against the pinned public
+fixture signer, opens the device wrap and body, rejects altered HPKE inputs,
 invalid encapsulation, wrong key ID, truncation, trailing bytes and a lost
 recipient key, and removes the test alias in a `finally` cleanup. Uninstall
-the test APKs when finished. Android does not verify the origin signature or
-manifest in this harness. This is test-only custom composition, not a
+the test APKs when finished. Android does not establish signer authority from
+a trusted manifest in this harness. This is test-only custom composition, not a
 maintained production provider.
 
 This is one slice of ZT-010 evidence. Independent Rust cross-open, full manifest

@@ -101,8 +101,16 @@ class M2KeystoreHpkeProofTest {
             val keyId = keyStore.existingPublic().keyId
             val expected = Draft01KeystoreReceiver.Expected(
                 ByteArray(16) { 0xa1.toByte() }, ByteArray(16) { 0xd1.toByte() },
-                ByteArray(16) { 0xb1.toByte() }, "+12", ByteArray(32) { 0x4d.toByte() }, keyId)
+                ByteArray(16) { 0xb1.toByte() }, "+12", ByteArray(32) { 0x4d.toByte() }, keyId,
+                hexBytes("0451590b7a515140d2d784c85608668fdfef8c82fd1f5be52421554a0dc3d033ed" +
+                    "e0c17da8904a727d8ae1bf36bf8a79260d012f00d4d80888d1d0bb44fda16da4"))
             assertEquals("Draft outbound ✉", Draft01KeystoreReceiver.openOutbound(envelope, expected, keyStore))
+            rejects { Draft01KeystoreReceiver.openOutbound(envelope.copyOf().also {
+                it[it.lastIndex] = (it.last().toInt() xor 1).toByte()
+            }, expected, keyStore) }
+            rejects { Draft01KeystoreReceiver.openOutbound(envelope.copyOf().also {
+                it[10 + 157 + 16] = (it[10 + 157 + 16].toInt() xor 1).toByte()
+            }, expected, keyStore) }
             val parsed = Draft01KeystoreReceiver.parseOutbound(envelope)
             val info = Draft01KeystoreReceiver.wrapInfo(parsed)
             val aad = Draft01KeystoreReceiver.wrapAad(parsed)

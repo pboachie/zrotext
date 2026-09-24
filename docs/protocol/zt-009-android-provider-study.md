@@ -92,14 +92,19 @@ rejected altered HPKE `info`/AAD, invalid `enc`, wrong pinned key ID, shortened
 or extended envelope bytes, and opening after recipient-key deletion. It
 removed the temporary alias and both emulator APKs; no physical/radio test ran.
 
-This demonstrates only candidate wire interoperability and fail-closed
-decryption behavior. The Android receiver does **not** verify the ECDSA origin
+This initial proof demonstrates only candidate wire interoperability and fail-closed
+decryption behavior. At this point the Android receiver did **not** verify the ECDSA origin
 signature, trusted manifest, grant, freshness or replay state; it is never
 called from production code. The AVD reports `SOFTWARE` security level and
 cannot establish hardware backing. No maintained high-level API was found in
 the evaluated paths that combines this draft's nonempty HPKE AAD with the
 non-exportable API 31+ P-256 key. The HPKE JCA composition remains test-only;
 Q5 and the other ZT-009 gates stay open.
+
+A subsequent local-only Q6 slice makes the test receiver verify the exact
+ECDSA transcript against the fixture's pinned public signer before decryption.
+This does not authenticate that signer through a trusted manifest or resolve
+high-`s` policy. It remains a test-only receive flow and does not change Q5.
 
 ## Remaining Q5 decision
 

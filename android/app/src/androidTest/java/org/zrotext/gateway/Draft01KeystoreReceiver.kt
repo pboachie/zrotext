@@ -11,8 +11,9 @@ import javax.crypto.spec.SecretKeySpec
 
 /**
  * Test-only draft-01 receiver. It checks bounded syntax and opens the selected device wrap using
- * a non-exportable Keystore key. It does NOT authenticate the signer, manifest, grant or replay
- * state, and must never be called by the production gateway or radio path.
+ * a non-exportable Keystore key. It checks the signature against a caller-pinned test point, but
+ * does NOT authenticate that point through a manifest, grant or replay state. It must never be
+ * called by the production gateway or radio path.
  */
 internal object Draft01KeystoreReceiver {
     private const val WRAP_SIZE = 146
@@ -24,7 +25,8 @@ internal object Draft01KeystoreReceiver {
 
     internal data class Expected(
         val accountId: ByteArray, val deviceId: ByteArray, val lineId: ByteArray,
-        val peer: String, val manifestDigest: ByteArray, val deviceKeyId: ByteArray
+        val peer: String, val manifestDigest: ByteArray, val deviceKeyId: ByteArray,
+        val signerPoint: ByteArray
     )
 
     internal data class Wrap(val role: Int, val keyId: ByteArray, val enc: ByteArray, val ct: ByteArray)
@@ -40,11 +42,16 @@ internal object Draft01KeystoreReceiver {
         val parsed = parseOutbound(envelope)
         require(expected.accountId.size == 16 && expected.deviceId.size == 16 &&
             expected.lineId.size == 16 && expected.manifestDigest.size == 32 &&
-            expected.deviceKeyId.size == 32) { "Invalid pinned draft identity" }
+            expected.deviceKeyId.size == 32 && expected.signerPoint.size == 65) {
+            "Invalid pinned draft identity"
+        }
         require(same(parsed.accountId, expected.accountId) &&
             same(parsed.deviceId, expected.deviceId) && same(parsed.lineId, expected.lineId) &&
             same(parsed.manifestDigest, expected.manifestDigest) && parsed.peer == expected.peer &&
             same(parsed.deviceWrap.keyId, expected.deviceKeyId)) { "Draft identity mismatch" }
+        require(Draft01SignaturePrimitive.verifyOutboundParsed(
+            envelope, expected.signerPoint, Draft01SignaturePrimitive.LowSPolicy.ALLOW_BOTH_FOR_INTEROP
+        )) { "Draft origin signature invalid" }
         val cek = openDeviceWrap(parsed, keyStore)
         try {
             check(cek.size == 32) { "Invalid content-key width" }
