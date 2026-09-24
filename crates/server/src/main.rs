@@ -70,6 +70,7 @@ struct Config {
     retention: RetentionPolicy,
     draining: Arc<AtomicBool>,
     drain_notify: Arc<Notify>,
+    billing_provider_authorized: Option<(Arc<AtomicBool>, Arc<AtomicBool>)>,
 }
 
 #[derive(Serialize)]
@@ -190,6 +191,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if mfa_recovery_only && mfa_enrollment_enabled {
         return Err("MFA enrollment cannot be enabled in recovery-only mode".into());
     }
+    let billing_provider_authorized = billing_test
+        .as_ref()
+        .map(|(_, worker, _, _, _)| worker.authorization_state());
     let config = Arc::new(Config {
         database_url: required("DATABASE_URL")?,
         site_id: required("SITE_ID")?,
@@ -205,6 +209,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         retention: RetentionPolicy::from_env()?,
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),
+        billing_provider_authorized,
     });
     let bind: SocketAddr = env::var("BIND_ADDR")
         .unwrap_or_else(|_| "0.0.0.0:8080".to_owned())
@@ -826,9 +831,23 @@ async fn ready(
             }),
         );
     }
+    if config
+        .billing_provider_authorized
+        .as_ref()
+        .is_some_and(|(subscription, risk)| {
+            !subscription.load(Ordering::Acquire) || !risk.load(Ordering::Acquire)
+        })
+    {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(Health {
+                status: "unavailable",
+            }),
+        );
+    }
     // A frontend is write-ready only while it can reach the configured single
-    // writer and observe the expected deployment epoch. This M0 service has no
-    // dispatch endpoints; worker readiness is a later, separate contract.
+    // writer, observe the expected deployment epoch, and, when billing is
+    // enabled, has no unresolved provider authorization failure.
     let status = match zrotext_server::runtime_db::connect(&config.database_url).await {
         Ok((client, connection)) => {
             tokio::spawn(async move {
@@ -836,7 +855,7 @@ async fn ready(
                     eprintln!("database connection closed");
                 }
             });
-            client
+            let authority_ready = client
                 .query_one(
                     "SELECT NOT pg_is_in_recovery(), epoch, \
                     COALESCE((SELECT enabled AND NOT draining FROM sites WHERE site_id=$1),TRUE) \
@@ -849,7 +868,17 @@ async fn ready(
                         && row.get::<_, i64>(1) == config.deployment_epoch
                         && row.get::<_, bool>(2)
                 })
-                .unwrap_or(false)
+                .unwrap_or(false);
+            if !authority_ready {
+                false
+            } else if config.billing_provider_authorized.is_some() {
+                client.query_one(
+                    "SELECT NOT EXISTS(SELECT 1 FROM billing_reconciliations WHERE dirty_generation>processed_generation AND last_failure_class='authorization') AND NOT EXISTS(SELECT 1 FROM billing_risk_events WHERE state IN ('queued','needs_review') AND last_failure_class='authorization')",
+                    &[],
+                ).await.map(|row| row.get::<_, bool>(0)).unwrap_or(false)
+            } else {
+                true
+            }
         }
         Err(_) => false,
     };
@@ -1082,11 +1111,60 @@ mod tests {
             retention: RetentionPolicy::default(),
             draining: Arc::new(AtomicBool::new(false)),
             drain_notify: Arc::new(Notify::new()),
+            billing_provider_authorized: None,
         };
         ensure_local_site(&config).await.unwrap();
         ensure_local_site(&config).await.unwrap();
         assert_eq!(
             ready(State(Arc::new(config.clone()))).await.0,
+            StatusCode::OK
+        );
+        client.batch_execute("CREATE TABLE billing_reconciliations(dirty_generation bigint,processed_generation bigint,last_failure_class text); CREATE TABLE billing_risk_events(state text,last_failure_class text)").await.unwrap();
+        let provider_authorized = Arc::new(AtomicBool::new(false));
+        let mut provider_config = config.clone();
+        provider_config.billing_provider_authorized =
+            Some((provider_authorized.clone(), Arc::new(AtomicBool::new(true))));
+        assert_eq!(
+            ready(State(Arc::new(provider_config.clone()))).await.0,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        provider_authorized.store(true, Ordering::Release);
+        assert_eq!(
+            ready(State(Arc::new(provider_config.clone()))).await.0,
+            StatusCode::OK
+        );
+        client
+            .execute(
+                "INSERT INTO billing_reconciliations VALUES(2,1,'authorization')",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            ready(State(Arc::new(provider_config.clone()))).await.0,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        client
+            .execute("DELETE FROM billing_reconciliations", &[])
+            .await
+            .unwrap();
+        client
+            .execute(
+                "INSERT INTO billing_risk_events VALUES('needs_review','authorization')",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            ready(State(Arc::new(provider_config.clone()))).await.0,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        client
+            .execute("DELETE FROM billing_risk_events", &[])
+            .await
+            .unwrap();
+        assert_eq!(
+            ready(State(Arc::new(provider_config))).await.0,
             StatusCode::OK
         );
         client

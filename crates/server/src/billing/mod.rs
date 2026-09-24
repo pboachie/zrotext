@@ -33,6 +33,8 @@ pub enum BillingError {
     InvalidSignature,
     #[error("invalid Stripe event")]
     InvalidEvent,
+    #[error("Stripe test provider read failed: {0}")]
+    Provider(#[from] worker::ProviderFailure),
     #[error("Stripe event ID was previously recorded with different bytes")]
     EventConflict,
     #[error("billing storage unavailable")]
@@ -372,7 +374,7 @@ async fn queue_subscription(
         return Ok(false);
     }
     let changed = tx.execute(
-        "INSERT INTO billing_reconciliations(stripe_subscription_id,account_id,stripe_customer_id) VALUES($1,$2,$3) ON CONFLICT(stripe_subscription_id) DO UPDATE SET dirty_generation=billing_reconciliations.dirty_generation+1,next_attempt_at=now(),updated_at=now() WHERE billing_reconciliations.account_id=EXCLUDED.account_id AND billing_reconciliations.stripe_customer_id=EXCLUDED.stripe_customer_id",
+        "INSERT INTO billing_reconciliations(stripe_subscription_id,account_id,stripe_customer_id) VALUES($1,$2,$3) ON CONFLICT(stripe_subscription_id) DO UPDATE SET dirty_generation=billing_reconciliations.dirty_generation+1,state='queued',failed_attempts=0,last_failure_class=NULL,next_attempt_at=now(),updated_at=now() WHERE billing_reconciliations.account_id=EXCLUDED.account_id AND billing_reconciliations.stripe_customer_id=EXCLUDED.stripe_customer_id",
         &[&subscription_id, &account_id, &customer_id],
     ).await?;
     Ok(changed == 1)
@@ -620,7 +622,11 @@ pub async fn reset_test_quotas_on_start(
     }
     if config_fingerprint.is_some() {
         tx.execute(
-            "UPDATE billing_reconciliations r SET dirty_generation=r.dirty_generation+1,next_attempt_at=now(),updated_at=now() WHERE NOT EXISTS (SELECT 1 FROM billing_subscriptions s WHERE s.stripe_subscription_id=r.stripe_subscription_id AND s.stripe_status IN ('canceled','incomplete_expired'))",
+            "UPDATE billing_reconciliations r SET dirty_generation=r.dirty_generation+1,state='queued',failed_attempts=0,last_failure_class=NULL,next_attempt_at=now(),updated_at=now() WHERE NOT EXISTS (SELECT 1 FROM billing_subscriptions s WHERE s.stripe_subscription_id=r.stripe_subscription_id AND s.stripe_status IN ('canceled','incomplete_expired','provider_deleted'))",
+            &[],
+        ).await?;
+        tx.execute(
+            "UPDATE billing_risk_events SET state='queued',failed_attempts=0,last_failure_class=NULL,next_attempt_at=now() WHERE state='needs_review'",
             &[],
         ).await?;
     }
@@ -742,6 +748,7 @@ pub async fn reconcile_snapshot_with_quotas(
             | "canceled"
             | "unpaid"
             | "paused"
+            | "provider_deleted"
     ) {
         return Err(BillingError::InvalidEvent);
     }
@@ -805,7 +812,7 @@ pub async fn reconcile_snapshot_with_quotas(
         &[&snapshot.subscription_id, &account_id, &snapshot.customer_id, &snapshot.status, &snapshot.price_id, &recognized, &grace_started_at, &snapshot.latest_invoice_id, &grace_invoice_id],
     ).await?;
     tx.execute(
-        "UPDATE billing_reconciliations SET processed_generation=$3,failed_attempts=0,updated_at=now() WHERE stripe_subscription_id=$1 AND account_id=$2",
+        "UPDATE billing_reconciliations SET processed_generation=$3,failed_attempts=0,state='queued',last_failure_class=NULL,updated_at=now() WHERE stripe_subscription_id=$1 AND account_id=$2",
         &[&snapshot.subscription_id, &account_id, &expected_generation],
     ).await?;
     if !quota_plans.is_empty() {
@@ -815,6 +822,7 @@ pub async fn reconcile_snapshot_with_quotas(
             &snapshot.subscription_id,
             expected_generation,
             quota_plans,
+            snapshot.status == "provider_deleted",
         )
         .await?;
     }
@@ -828,6 +836,7 @@ async fn project_test_quota(
     changed_subscription: &str,
     generation: i64,
     plans: &[TestQuotaPlan],
+    provider_deleted: bool,
 ) -> Result<(), BillingError> {
     let rows = tx.query(
         "SELECT stripe_status,stripe_price_id,recognized_price,payment_grace_started_at IS NOT NULL AND payment_grace_invoice_id IS NOT DISTINCT FROM latest_invoice_id AND payment_grace_started_at+interval '7 days'>clock_timestamp() FROM billing_subscriptions WHERE account_id=$1",
@@ -839,7 +848,10 @@ async fn project_test_quota(
         .iter()
         .filter(|row| {
             let status: String = row.get(0);
-            !matches!(status.as_str(), "canceled" | "incomplete_expired")
+            !matches!(
+                status.as_str(),
+                "canceled" | "incomplete_expired" | "provider_deleted"
+            )
         })
         .collect();
     let (limit, reason) = if nonterminal.len() == 1 {
@@ -868,7 +880,14 @@ async fn project_test_quota(
             (0, "inactive")
         }
     } else if nonterminal.is_empty() {
-        (0, "inactive")
+        (
+            0,
+            if provider_deleted {
+                "provider_deleted"
+            } else {
+                "inactive"
+            },
+        )
     } else {
         (0, "ambiguous")
     };
@@ -879,7 +898,7 @@ async fn project_test_quota(
     let changed = previous.as_ref().is_none_or(|row| {
         row.get::<_, i64>(0) != limit || row.get::<_, String>(1) != "stripe_test"
     });
-    if changed {
+    if changed || reason == "provider_deleted" {
         tx.execute(
             "INSERT INTO usage_quota_policies(account_id,metric,limit_units,source) VALUES($1,'outbound_message',$2,'stripe_test') ON CONFLICT(account_id,metric) DO UPDATE SET limit_units=EXCLUDED.limit_units,source='stripe_test',updated_at=now()",
             &[&account_id, &limit],
@@ -1165,6 +1184,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/019_line_activation_contract.sql"),
             include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
             include_str!("../../../../deploy/compose/migrations/025_billing_test_config.sql"),
+            include_str!("../../../../deploy/compose/migrations/026_billing_provider_failures.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
@@ -1580,6 +1600,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
             include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
             include_str!("../../../../deploy/compose/migrations/025_billing_test_config.sql"),
+            include_str!("../../../../deploy/compose/migrations/026_billing_provider_failures.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
@@ -1884,6 +1905,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
             include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
             include_str!("../../../../deploy/compose/migrations/025_billing_test_config.sql"),
+            include_str!("../../../../deploy/compose/migrations/026_billing_provider_failures.sql"),
         ] {
             probe.batch_execute(sql).await.unwrap();
         }
@@ -2039,6 +2061,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
             include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
             include_str!("../../../../deploy/compose/migrations/025_billing_test_config.sql"),
+            include_str!("../../../../deploy/compose/migrations/026_billing_provider_failures.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
@@ -2322,6 +2345,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
             include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
             include_str!("../../../../deploy/compose/migrations/025_billing_test_config.sql"),
+            include_str!("../../../../deploy/compose/migrations/026_billing_provider_failures.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
@@ -2691,6 +2715,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
             include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
             include_str!("../../../../deploy/compose/migrations/025_billing_test_config.sql"),
+            include_str!("../../../../deploy/compose/migrations/026_billing_provider_failures.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
@@ -2724,7 +2749,7 @@ mod tests {
         assert_eq!((row.get::<_, i64>(0), row.get::<_, i64>(1)), (1, 0));
         assert_eq!(
             worker::claim(&mut db).await.unwrap(),
-            Some((a, "sub_fixture1".into(), 1))
+            Some((a, "sub_fixture1".into(), "cus_fixture1".into(), 1))
         );
         assert!(worker::claim(&mut db).await.unwrap().is_none());
         let mut newer = event.clone();
@@ -2863,6 +2888,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
             include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
             include_str!("../../../../deploy/compose/migrations/025_billing_test_config.sql"),
+            include_str!("../../../../deploy/compose/migrations/026_billing_provider_failures.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }

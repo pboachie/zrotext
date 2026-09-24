@@ -22,6 +22,8 @@ struct BillingStatus {
     mode: &'static str,
     customer_bound: bool,
     pending_reconciliations: i64,
+    review_reconciliations: i64,
+    review_risk_events: i64,
     nonterminal_subscriptions: i64,
     subscriptions: Vec<SubscriptionView>,
     more_subscriptions: bool,
@@ -56,6 +58,7 @@ struct SubscriptionView {
     stripe_status: String,
     recognized_test_price: bool,
     reconciliation_pending: bool,
+    needs_review: bool,
     reconciled_at_unix: i64,
     payment_grace_ends_at_unix: Option<i64>,
 }
@@ -129,6 +132,19 @@ async fn status(
         .await
         .map_err(|_| AuthHttpError::Unavailable)?
         .get(0);
+    let review_reconciliations: i64 = db
+        .query_one("SELECT count(*) FROM billing_reconciliations WHERE account_id=$1 AND state='needs_review' AND dirty_generation>processed_generation", &[&account_id])
+        .await
+        .map_err(|_| AuthHttpError::Unavailable)?
+        .get(0);
+    let review_risk_events: i64 = db
+        .query_one(
+            "SELECT count(*) FROM billing_risk_events WHERE account_id=$1 AND state='needs_review'",
+            &[&account_id],
+        )
+        .await
+        .map_err(|_| AuthHttpError::Unavailable)?
+        .get(0);
     let capacity = db
         .query_one(
             "SELECT (SELECT limit_devices FROM billing_device_caps WHERE account_id=$1), (SELECT count(*) FROM devices WHERE account_id=$1 AND revoked_at IS NULL), (SELECT enabled FROM billing_device_cap_config WHERE singleton=true)",
@@ -145,7 +161,7 @@ async fn status(
     let active: i64 = capacity.get(1);
     let projection = db
         .query_one(
-            "SELECT (SELECT count(*) FROM billing_subscriptions WHERE account_id=$1 AND stripe_status NOT IN ('canceled','incomplete_expired')), (SELECT reason FROM billing_quota_audit WHERE account_id=$1 ORDER BY changed_at DESC, id DESC LIMIT 1), (SELECT limit_units FROM usage_quota_policies WHERE account_id=$1 AND metric='outbound_message' AND source='stripe_test'), (SELECT EXISTS(SELECT 1 FROM billing_payment_holds WHERE account_id=$1))",
+            "SELECT (SELECT count(*) FROM billing_subscriptions WHERE account_id=$1 AND stripe_status NOT IN ('canceled','incomplete_expired','provider_deleted')), (SELECT reason FROM billing_quota_audit WHERE account_id=$1 ORDER BY changed_at DESC, id DESC LIMIT 1), (SELECT limit_units FROM usage_quota_policies WHERE account_id=$1 AND metric='outbound_message' AND source='stripe_test'), (SELECT EXISTS(SELECT 1 FROM billing_payment_holds WHERE account_id=$1))",
             &[&account_id],
         )
         .await
@@ -153,7 +169,7 @@ async fn status(
     let nonterminal_subscriptions: i64 = projection.get(0);
     let rows = db
         .query(
-            "SELECT s.stripe_status,s.recognized_price,r.dirty_generation>r.processed_generation,extract(epoch from s.reconciled_at)::bigint,CASE WHEN s.stripe_status='past_due' AND s.payment_grace_invoice_id=s.latest_invoice_id THEN extract(epoch from s.payment_grace_started_at+interval '7 days')::bigint ELSE NULL END FROM billing_subscriptions s JOIN billing_reconciliations r ON r.stripe_subscription_id=s.stripe_subscription_id AND r.account_id=s.account_id WHERE s.account_id=$1 ORDER BY s.reconciled_at DESC,s.stripe_subscription_id LIMIT 21",
+            "SELECT s.stripe_status,s.recognized_price,r.dirty_generation>r.processed_generation,extract(epoch from s.reconciled_at)::bigint,CASE WHEN s.stripe_status='past_due' AND s.payment_grace_invoice_id=s.latest_invoice_id THEN extract(epoch from s.payment_grace_started_at+interval '7 days')::bigint ELSE NULL END,r.state='needs_review' FROM billing_subscriptions s JOIN billing_reconciliations r ON r.stripe_subscription_id=s.stripe_subscription_id AND r.account_id=s.account_id WHERE s.account_id=$1 ORDER BY s.reconciled_at DESC,s.stripe_subscription_id LIMIT 21",
             &[&account_id],
         )
         .await
@@ -166,6 +182,7 @@ async fn status(
             stripe_status: row.get(0),
             recognized_test_price: row.get(1),
             reconciliation_pending: row.get(2),
+            needs_review: row.get(5),
             reconciled_at_unix: row.get(3),
             payment_grace_ends_at_unix: row.get(4),
         })
@@ -174,6 +191,8 @@ async fn status(
         mode: "test",
         customer_bound,
         pending_reconciliations,
+        review_reconciliations,
+        review_risk_events,
         nonterminal_subscriptions,
         subscriptions,
         more_subscriptions,
@@ -278,6 +297,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
             include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
             include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+            include_str!("../../../../deploy/compose/migrations/026_billing_provider_failures.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
@@ -545,6 +565,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
             include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
             include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+            include_str!("../../../../deploy/compose/migrations/026_billing_provider_failures.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }

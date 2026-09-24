@@ -250,7 +250,7 @@ async fn subscription_exists(db: &mut Client, account_id: Uuid) -> Result<bool, 
     .map_err(|_| AuthHttpError::Unavailable)?;
     let blocked: bool = tx
         .query_one(
-            "SELECT EXISTS(SELECT 1 FROM billing_subscriptions WHERE account_id=$1 AND stripe_status NOT IN ('canceled','incomplete_expired')) OR EXISTS(SELECT 1 FROM billing_reconciliations WHERE account_id=$1 AND dirty_generation>processed_generation)",
+            "SELECT EXISTS(SELECT 1 FROM billing_subscriptions WHERE account_id=$1 AND stripe_status NOT IN ('canceled','incomplete_expired','provider_deleted')) OR EXISTS(SELECT 1 FROM billing_reconciliations WHERE account_id=$1 AND dirty_generation>processed_generation)",
             &[&account_id],
         )
         .await
@@ -1199,6 +1199,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/018_sealed_inbound_identity.sql"),
             include_str!("../../../../deploy/compose/migrations/019_line_activation_contract.sql"),
             include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+            include_str!("../../../../deploy/compose/migrations/026_billing_provider_failures.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }

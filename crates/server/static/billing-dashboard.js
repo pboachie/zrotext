@@ -21,6 +21,7 @@ const entitlementReasons = {
   ambiguous: "ambiguous: more than one live subscription",
   unmapped: "subscription price not mapped",
   startup_reset: "reset at server startup, pending reconciliation",
+  provider_deleted: "subscription deleted at Stripe",
 };
 
 function csrfToken() {
@@ -53,12 +54,15 @@ async function loadStatus() {
         : Number.isSafeInteger(graceEnds) && graceEnds * 1000 > Date.now()
           ? ` · Payment failed: new outbound pauses ${new Date(graceEnds * 1000).toLocaleString()} unless payment recovers.`
           : " · Payment failed: new outbound is paused. Review payment in Stripe.";
-      item.textContent = `${subscription.stripeStatus} · ${subscription.recognizedTestPrice ? "recognized test price" : "unrecognized test price"} · checked ${checked}${subscription.reconciliationPending ? " · newer event pending" : ""}${paymentNotice}`;
+      item.textContent = `${subscription.stripeStatus} · ${subscription.recognizedTestPrice ? "recognized test price" : "unrecognized test price"} · checked ${checked}${subscription.reconciliationPending ? " · newer event pending" : ""}${subscription.needsReview ? " · provider read needs operator review" : ""}${paymentNotice}`;
       list.append(item);
     }
     state.textContent = result.subscriptions.length
       ? `Last reconciled provider snapshots. ${result.pendingReconciliations} pending reconciliation(s). No access is confirmed here.`
       : `No reconciled subscription. ${result.pendingReconciliations} pending reconciliation(s). No access is confirmed here.`;
+    if (result.reviewReconciliations || result.reviewRiskEvents) {
+      state.textContent += ` Operator review required: ${result.reviewReconciliations || 0} subscription read(s), ${result.reviewRiskEvents || 0} payment-risk read(s).`;
+    }
     const entitlement = result.projectedEntitlement;
     if (entitlement) {
       const reason = entitlement.reason === null || entitlement.reason === undefined

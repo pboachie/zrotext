@@ -80,3 +80,33 @@ duplicate subscription that would project zero quota and a zero device cap.
 Subscription reconciliation requires a complete Stripe items list with
 `object=list` and `has_more=false`. A partial or malformed provider response
 leaves reconciliation pending and cannot grant outbound quota or device caps.
+
+Provider reads keep HTTP status classes separate from transport and invalid
+response failures. The worker emits one content-free diagnostic per failure
+class per minute with an HTTP status (when available) and a short hash of the
+queue row ID. It never logs the API key, response body, or provider IDs. A
+401/403 from either subscription or risk reads makes `/readyz` return 503 until
+a later successful read of the same job type establishes that permission works. Because this
+signal is process local, every replica needs its own worker and readiness
+check; it is not a startup credential probe.
+
+A subscription 404 is reconciled as `provider_deleted` using the stored tenant
+binding. It is terminal, projects no quota or device capacity when there is no
+other active subscription, clears that reconciliation's pending generation,
+and writes `provider_deleted` to the entitlement audit when quota plans are
+configured. Other provider errors retry at most ten times. The row then moves
+to `needs_review`, remains admission blocking, and stops automatic retries.
+The owner billing status exposes `reviewReconciliations`, `reviewRiskEvents`,
+and per-subscription `needsReview`; an operator can count all pending review
+rows, including risk events that are not yet tenant-bound, with:
+
+```sql
+SELECT count(*) FROM billing_reconciliations
+WHERE state='needs_review' AND dirty_generation>processed_generation;
+SELECT count(*) FROM billing_risk_events WHERE state='needs_review';
+```
+
+Migration 026 must be applied before starting this worker. A new verified
+subscription event requeues its row. A changed billing configuration also
+requeues subscription and payment-risk review rows through the configuration reset transaction; an ordinary
+restart retains review state so a permanently failing read cannot loop forever.
