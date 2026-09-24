@@ -22,8 +22,11 @@ Before writing the receipt, the workflow pulls that exact digest and boots its
 migrator and API in a disposable Compose project. It checks source labels,
 container image IDs, migrations, health, readiness, disabled dispatch and a
 seeded logical restore with two synthetic tenants and persisted delivery and
-usage state. A failed rehearsal leaves no promotion receipt. The registry
-may retain the uniquely tagged image after a failure; do not promote it.
+usage state. It also retrieves the BuildKit SPDX SBOM from the published digest,
+requires a nonempty package inventory, and signs that exact SBOM as a GitHub
+attestation for the same digest. A failed rehearsal or missing SBOM leaves no
+promotion receipt. The registry may retain the uniquely tagged image after a
+failure; do not promote it.
 
 Before linking an image from the GitHub Release, review the workflow result and
 download its `image-receipt.json`. From a checkout with fetched release tags,
@@ -36,18 +39,28 @@ python3 scripts/verify_release_image.py --tag v0.1.0-rc.1 \
 ```
 
 Select the tag independently of the receipt. This verifies the receipt's
-derived fields, annotated tag and `main` ancestry, GitHub's attestation for
-the exact image digest with the release workflow and source ref/SHA pinned,
-then pulls that digest and checks its source labels. A receipt or mutable
-registry tag alone is insufficient. Confirm the package is publicly readable
-without registry credentials before offering it to self-hosters. A successful
-image verification does not establish Android, phone, database-restore, or
-hosted-deployment readiness.
+derived fields, annotated tag and `main` ancestry, GitHub's provenance
+attestation for the exact image digest with the release workflow and source
+ref/SHA pinned, and a separately verified SPDX SBOM attestation whose content
+matches the BuildKit SBOM retrieved from that same published digest. It then
+pulls that digest and checks its source labels. This requires Docker Buildx,
+the GitHub CLI, and registry access to the image and its attestations. A
+receipt or mutable registry tag alone is insufficient. Confirm the package is
+publicly readable without registry credentials before offering it to
+self-hosters. A successful image verification does not establish Android,
+phone, database-restore, or hosted-deployment readiness. BuildKit's default
+SBOM inventories the final server image, not build-stage dependencies.
 
 ## Android candidate custody
 
 The manual `android-release-candidate.yml` workflow builds and uploads only an
-unsigned APK and its source/identity receipt. Artifacts from this public
+unsigned APK, its CycloneDX release-runtime SBOM, and a receipt containing both
+SHA-256 digests. The pinned CycloneDX Gradle task resolves only
+`releaseRuntimeClasspath`; test, KSP, and other build-only dependencies remain
+in the Gradle lockfile and dependency graph, outside this shipped-app
+inventory. GitHub attests the SBOM as a predicate of the exact unsigned APK and
+verifies the receipt, APK identity, SBOM inventory, and signed attestation against
+the checked-out source commit before uploading the files. Artifacts from this public
 repository can be downloaded by readers, so do not put an Android signing key
 or a signed APK into its Actions artifacts. The local
 `android/tools/release_candidate.py sign` command verifies an unsigned build
@@ -62,7 +75,23 @@ After the unsigned and signed directories have been transferred to a trusted
 review machine, verify them without loading the signing key. Select the source
 tag independently from the reviewed GitHub Release, fetch it and `main`, and
 obtain the signing certificate SHA-256 from an independently approved custody
-record, not from `candidate.json`:
+record. Before inspecting candidate artifacts, prepare a release approval
+manifest outside the checkout and artifact root with the selected tag,
+certificate fingerprint, and approved Android `versionCode` and `versionName`.
+Obtain those values from the reviewed release decision and certificate custody
+record, never from `candidate.json`, `unsigned.json`, or the APK. The Android
+app version can differ from the source tag; approve the exact pair for this
+distribution. A manifest prepared from candidate artifacts provides no
+independent check. For example, the separately approved file has this shape:
+
+```json
+{
+  "source_tag": "v0.1.0-rc.1",
+  "certificate_sha256": "<approved-64-character-hex-fingerprint>",
+  "version_code": 1,
+  "version_name": "<approved-app-version>"
+}
+```
 
 Place the two directories at the tool's fixed external artifact root:
 `<system temporary directory>/zrotext-android-release/unsigned` and
@@ -74,15 +103,25 @@ before opening APK ZIPs, and caps uncompressed entries before reading them.
 git fetch origin main --tags
 python3 android/tools/release_candidate.py verify \
   --source-tag v0.1.0-rc.1 \
-  --certificate-sha256 <approved-64-character-hex-fingerprint>
+  --certificate-sha256 <approved-64-character-hex-fingerprint> \
+  --approval-stdin < /trusted/review/release-approval.json
 ```
+
+The verifier reads the bounded approval record from standard input. Keep the
+approved file outside the checkout and artifact root; select and redirect it
+on the review machine. On PowerShell, use `Get-Content -Raw -Encoding utf8`
+to pipe the file into the same verifier command.
 
 The verifier requires an annotated version tag whose object matches the
 published `origin` tag, a fresh fetched `origin/main`, and tag commit ancestry
 on that branch. It then checks both receipts and checksums against that tag's
-source commit, package and SDK identity, every uncompressed APK ZIP entry,
-ZIP alignment, the v3 signature (supported by the app's API 28 minimum) with
-`apksigner`, and the approved certificate fingerprint. Install Android SDK
+source commit, approved app version, package and SDK identity, the hashed release-runtime SBOM,
+GitHub's verified CycloneDX attestation for the exact unsigned APK digest and
+source commit, every uncompressed APK ZIP entry, ZIP alignment, the v3
+signature (supported by the app's API 28 minimum) with `apksigner`, and the
+approved certificate fingerprint. Matching APK contents links the attested
+unsigned artifact to the privately signed candidate. Install the GitHub CLI
+with attestation access and Android SDK
 build tools (`aapt`, `zipalign`, and
 `apksigner`) before running it. The unsigned APK, signed APK, and receipts must
 remain outside the source checkout. This check does not authorize publication

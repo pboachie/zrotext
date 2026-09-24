@@ -20,7 +20,7 @@ macro_rules! migration {
     };
 }
 
-const TEST_MIGRATIONS: [&str; 19] = [
+const TEST_MIGRATIONS: [&str; 20] = [
     migration!("001_foundation.sql"),
     migration!("002_auth.sql"),
     migration!("003_delivery.sql"),
@@ -40,6 +40,7 @@ const TEST_MIGRATIONS: [&str; 19] = [
     migration!("017_billing_device_caps.sql"),
     migration!("018_sealed_inbound_identity.sql"),
     migration!("019_line_activation_contract.sql"),
+    migration!("021_billing_payment_grace.sql"),
 ];
 
 fn signatures(

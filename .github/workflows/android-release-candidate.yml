@@ -3,6 +3,8 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+  id-token: write
+  attestations: write
 concurrency:
   group: android-release-candidate
   cancel-in-progress: false
@@ -28,6 +30,15 @@ jobs:
         run: python3 -m unittest discover -s android/tools -p 'test_*.py'
       - name: Build unsigned candidate without signing secrets
         run: python3 android/tools/release_candidate.py build
+      - name: Attest release runtime SBOM for the exact unsigned APK
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: /tmp/zrotext-android-release/unsigned/unsigned.apk
+          sbom-path: /tmp/zrotext-android-release/unsigned/release-runtime.cdx.json
+      - name: Verify unsigned APK, receipt and SBOM attestation before upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 android/tools/release_candidate.py verify-unsigned
       # Actions artifacts from this public repository are publicly readable.
       # Keep signing keys and signed candidates in an approved private channel.
       - name: Store unsigned candidate for manual review
