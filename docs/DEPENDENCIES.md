@@ -18,7 +18,7 @@ CI actions are pinned to commit hashes. The [dependency graph workflow](../.gith
 
 ## Android verification and refresh
 
-The Android CI job and unsigned release-candidate workflow run Gradle's [wrapper validation action](https://github.com/gradle/actions/blob/v6.3.0/docs/wrapper-validation.md) after checkout, before any Gradle invocation. It rejects a wrapper JAR with an unknown checksum. The distribution ZIP also has a pinned SHA-256 in `gradle-wrapper.properties`. Gradle verifies plugins, libraries, and their POM/module metadata using `verification-metadata.xml` in strict mode, so missing or changed artifact hashes fail the build. Version locks and checksum verification serve different purposes; update both when dependencies change.
+The Android CI, dependency-graph, and unsigned release-candidate workflows run Gradle's [wrapper validation action](https://github.com/gradle/actions/blob/v6.3.0/docs/wrapper-validation.md) after checkout, before any Gradle invocation. It rejects a wrapper JAR with an unknown checksum. The distribution ZIP also has a pinned SHA-256 in `gradle-wrapper.properties`. Gradle verifies plugins, libraries, and their POM/module metadata using `verification-metadata.xml` in strict mode, so missing or changed artifact hashes fail the build. Version locks and checksum verification serve different purposes; update both when dependencies change.
 
 For an Android plugin, library, or Dependabot update:
 
