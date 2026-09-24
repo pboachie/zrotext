@@ -31,7 +31,8 @@ clears its old allowances.
 The subscription and payment-risk queues each run every 10 seconds. Each tick
 claims up to `STRIPE_TEST_RECONCILE_BATCH_SIZE` jobs (default 25, range 1–100)
 with at most `STRIPE_TEST_RECONCILE_CONCURRENCY` simultaneous provider reads
-(default 2, range 1–4). With fast provider responses, 200 ready jobs at the
+across both queues (default 2, range 1–4). Risk work is probed every 10 seconds
+even while a slow subscription batch remains active. With fast provider responses, 200 ready jobs at the
 default batch size need about eight ticks, or 70–80 seconds from the first tick.
 With slower responses, allow roughly `ceil(jobs / batch_size)` ticks plus the
 time for each batch's provider reads and database work. Failed jobs wait for

@@ -34,7 +34,7 @@ use zrotext_server::{
         mfa::{self, MfaCipher},
     },
     billing::{
-        drain::drain_billing_batch,
+        drain::run_billing_queue,
         http::{self as billing_http, BillingHttpState},
         owner as billing_owner, parse_test_quota_plans, quota_configuration_fingerprint,
         reset_test_quotas_on_start,
@@ -497,30 +497,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let billing_draining = config.draining.clone();
         let billing_notify = config.drain_notify.clone();
         let worker = Arc::new(worker);
-        tokio::spawn(async move {
-            let mut checks = tokio::time::interval(Duration::from_secs(10));
-            checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            let mut unavailable_logged = false;
-            loop {
-                tokio::select! {
-                    _ = checks.tick() => {
-                        if billing_draining.load(Ordering::Acquire) { break; }
-                        let subscription_failed = drain_billing_batch(&worker, &billing_database, batch_size, concurrency, false, &billing_draining).await;
-                        if subscription_failed && !unavailable_logged {
-                                eprintln!("Stripe test reconciliation unavailable");
-                                unavailable_logged = true;
-                        }
-                        let risk_failed = drain_billing_batch(&worker, &billing_database, batch_size, concurrency, true, &billing_draining).await;
-                        if risk_failed && !unavailable_logged {
-                                eprintln!("Stripe test payment-risk reconciliation unavailable");
-                                unavailable_logged = true;
-                        }
-                        if !subscription_failed && !risk_failed { unavailable_logged = false; }
-                    }
-                    _ = billing_notify.notified() => break,
-                }
-            }
-        });
+        let permits = Arc::new(tokio::sync::Semaphore::new(concurrency));
+        for risk in [false, true] {
+            tokio::spawn(run_billing_queue(
+                worker.clone(),
+                billing_database.clone(),
+                batch_size,
+                concurrency,
+                risk,
+                billing_draining.clone(),
+                billing_notify.clone(),
+                permits.clone(),
+            ));
+        }
     }
     eprintln!(
         "zrotext site={} instance={} listening={bind}",

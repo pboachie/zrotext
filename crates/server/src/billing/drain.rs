@@ -2,21 +2,129 @@
 //! Bounded Stripe TEST reconciliation work per scheduler tick.
 
 use super::{BillingError, worker::StripeTestWorker};
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    future::Future,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
 };
-use tokio::task::JoinSet;
+use tokio::{
+    sync::{Notify, Semaphore},
+    task::JoinSet,
+};
+
+trait BillingJobs: Send + Sync + 'static {
+    fn reconcile(
+        &self,
+        database_url: String,
+        risk: bool,
+    ) -> impl Future<Output = Result<bool, BillingError>> + Send;
+}
+
+impl BillingJobs for StripeTestWorker {
+    async fn reconcile(&self, database_url: String, risk: bool) -> Result<bool, BillingError> {
+        if risk {
+            self.reconcile_risk_one(&database_url).await
+        } else {
+            self.reconcile_one(&database_url).await
+        }
+    }
+}
+
+/// Each queue has its own 10-second clock. A shared semaphore limits total
+/// work, while a slow batch in either queue cannot delay the other's polling.
+pub async fn run_billing_queue(
+    worker: Arc<StripeTestWorker>,
+    database_url: String,
+    batch_size: usize,
+    concurrency: usize,
+    risk: bool,
+    draining: Arc<AtomicBool>,
+    notify: Arc<Notify>,
+    permits: Arc<Semaphore>,
+) {
+    run_queue(
+        worker,
+        database_url,
+        batch_size,
+        concurrency,
+        draining,
+        notify,
+        permits,
+        risk,
+        Duration::from_secs(10),
+    )
+    .await
+}
+
+async fn run_queue<T: BillingJobs>(
+    worker: Arc<T>,
+    database_url: String,
+    batch_size: usize,
+    concurrency: usize,
+    draining: Arc<AtomicBool>,
+    notify: Arc<Notify>,
+    permits: Arc<Semaphore>,
+    risk: bool,
+    interval: Duration,
+) {
+    let mut checks = tokio::time::interval(interval);
+    checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut unavailable_logged = false;
+    loop {
+        if draining.load(Ordering::Acquire) {
+            break;
+        }
+        tokio::select! {
+            _ = checks.tick() => {
+                let failed = drain_jobs(&worker, &database_url, batch_size, concurrency, risk, &draining, &permits).await;
+                if failed && !unavailable_logged {
+                    if risk { eprintln!("Stripe test payment-risk reconciliation unavailable"); }
+                    else { eprintln!("Stripe test reconciliation unavailable"); }
+                    unavailable_logged = true;
+                } else if !failed {
+                    unavailable_logged = false;
+                }
+            }
+            _ = notify.notified() => break,
+        }
+    }
+}
 
 /// Returns whether any job failed. One false result means the queue was empty;
 /// already claimed jobs still finish before the tick ends.
+#[cfg(test)]
 pub async fn drain_billing_batch(
     worker: &Arc<StripeTestWorker>,
     database_url: &str,
     batch_size: usize,
     concurrency: usize,
     risk: bool,
-    draining: &AtomicBool,
+    draining: &Arc<AtomicBool>,
+) -> bool {
+    let permits = Arc::new(Semaphore::new(concurrency));
+    drain_jobs(
+        worker,
+        database_url,
+        batch_size,
+        concurrency,
+        risk,
+        draining,
+        &permits,
+    )
+    .await
+}
+
+async fn drain_jobs<T: BillingJobs>(
+    worker: &Arc<T>,
+    database_url: &str,
+    batch_size: usize,
+    concurrency: usize,
+    risk: bool,
+    draining: &Arc<AtomicBool>,
+    permits: &Arc<Semaphore>,
 ) -> bool {
     let mut jobs = JoinSet::new();
     let mut started = 0;
@@ -24,7 +132,14 @@ pub async fn drain_billing_batch(
         if draining.load(Ordering::Acquire) {
             break;
         }
-        spawn_job(&mut jobs, worker.clone(), database_url.to_owned(), risk);
+        spawn_job(
+            &mut jobs,
+            worker.clone(),
+            database_url.to_owned(),
+            risk,
+            draining.clone(),
+            permits.clone(),
+        );
         started += 1;
     }
     let mut failed = false;
@@ -36,33 +151,51 @@ pub async fn drain_billing_batch(
             Ok(Err(_)) | Err(_) => failed = true,
         }
         if !empty && !failed && started < batch_size && !draining.load(Ordering::Acquire) {
-            spawn_job(&mut jobs, worker.clone(), database_url.to_owned(), risk);
+            spawn_job(
+                &mut jobs,
+                worker.clone(),
+                database_url.to_owned(),
+                risk,
+                draining.clone(),
+                permits.clone(),
+            );
             started += 1;
         }
     }
     failed
 }
 
-fn spawn_job(
+fn spawn_job<T: BillingJobs>(
     jobs: &mut JoinSet<Result<bool, BillingError>>,
-    worker: Arc<StripeTestWorker>,
+    worker: Arc<T>,
     database_url: String,
     risk: bool,
+    draining: Arc<AtomicBool>,
+    permits: Arc<Semaphore>,
 ) {
     jobs.spawn(async move {
-        if risk {
-            worker.reconcile_risk_one(&database_url).await
-        } else {
-            worker.reconcile_one(&database_url).await
+        let _permit = permits
+            .acquire_owned()
+            .await
+            .expect("billing semaphore remains open");
+        if draining.load(Ordering::Acquire) {
+            return Ok(false);
         }
+        worker.reconcile(database_url, risk).await
     });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{Json, Router, extract::Path, routing::get};
+    use axum::{
+        Json, Router,
+        extract::{Path, State},
+        http::StatusCode,
+        routing::get,
+    };
     use serde_json::json;
+    use std::sync::atomic::AtomicUsize;
     use tokio_postgres::NoTls;
     use uuid::Uuid;
 
@@ -144,7 +277,7 @@ mod tests {
             .unwrap()
             .with_test_server(format!("http://{address}")),
         );
-        let draining = AtomicBool::new(false);
+        let draining = Arc::new(AtomicBool::new(false));
         tokio::time::timeout(std::time::Duration::from_secs(60), async {
             for tick in 1..=8 {
                 assert!(!drain_billing_batch(&worker, &scoped_url, 25, 2, false, &draining).await);
@@ -159,5 +292,145 @@ mod tests {
             .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
             .await
             .unwrap();
+    }
+
+    #[derive(Default)]
+    struct ProviderProbe {
+        active: AtomicUsize,
+        peak: AtomicUsize,
+    }
+
+    async fn provider_response(probe: &ProviderProbe, delay: std::time::Duration) -> StatusCode {
+        let active = probe.active.fetch_add(1, Ordering::SeqCst) + 1;
+        probe.peak.fetch_max(active, Ordering::SeqCst);
+        tokio::time::sleep(delay).await;
+        probe.active.fetch_sub(1, Ordering::SeqCst);
+        StatusCode::OK
+    }
+
+    struct SlowFakeJobs {
+        http: reqwest::Client,
+        base_url: String,
+        subscriptions_done: AtomicUsize,
+        risk_started_after: AtomicUsize,
+        risk_available: AtomicBool,
+        initial_empty: tokio::sync::Notify,
+    }
+
+    impl BillingJobs for SlowFakeJobs {
+        async fn reconcile(&self, _database_url: String, risk: bool) -> Result<bool, BillingError> {
+            if risk {
+                if !self.risk_available.load(Ordering::SeqCst) {
+                    self.initial_empty.notify_one();
+                    return Ok(false);
+                }
+                let _ = self.risk_started_after.compare_exchange(
+                    usize::MAX,
+                    self.subscriptions_done.load(Ordering::SeqCst),
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                );
+                self.http
+                    .get(format!("{}/risk", self.base_url))
+                    .send()
+                    .await
+                    .map_err(|_| BillingError::InvalidEvent)?;
+                Ok(false)
+            } else {
+                self.http
+                    .get(format!("{}/subscription", self.base_url))
+                    .send()
+                    .await
+                    .map_err(|_| BillingError::InvalidEvent)?;
+                self.subscriptions_done.fetch_add(1, Ordering::SeqCst);
+                Ok(true)
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn slow_provider_does_not_starve_risk_queue() {
+        let probe = Arc::new(ProviderProbe::default());
+        let app = Router::new()
+            .route(
+                "/subscription",
+                get(|State(probe): State<Arc<ProviderProbe>>| async move {
+                    provider_response(&probe, std::time::Duration::from_millis(80)).await
+                }),
+            )
+            .route(
+                "/risk",
+                get(|State(probe): State<Arc<ProviderProbe>>| async move {
+                    provider_response(&probe, std::time::Duration::from_millis(5)).await
+                }),
+            )
+            .with_state(probe.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let worker = Arc::new(SlowFakeJobs {
+            http: reqwest::Client::builder().no_proxy().build().unwrap(),
+            base_url: format!("http://{address}"),
+            subscriptions_done: AtomicUsize::new(0),
+            risk_started_after: AtomicUsize::new(usize::MAX),
+            risk_available: AtomicBool::new(false),
+            initial_empty: tokio::sync::Notify::new(),
+        });
+        let draining = Arc::new(AtomicBool::new(false));
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let permits = Arc::new(Semaphore::new(1));
+        let initial_empty = worker.initial_empty.notified();
+        let subscriptions = tokio::spawn(run_queue(
+            worker.clone(),
+            "unused".into(),
+            20,
+            1,
+            draining.clone(),
+            notify.clone(),
+            permits.clone(),
+            false,
+            std::time::Duration::from_millis(20),
+        ));
+        let risks = tokio::spawn(run_queue(
+            worker.clone(),
+            "unused".into(),
+            20,
+            1,
+            draining.clone(),
+            notify.clone(),
+            permits,
+            true,
+            std::time::Duration::from_millis(20),
+        ));
+        tokio::time::timeout(std::time::Duration::from_secs(1), initial_empty)
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        worker.risk_available.store(true, Ordering::SeqCst);
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while worker.risk_started_after.load(Ordering::SeqCst) == usize::MAX {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            worker.risk_started_after.load(Ordering::SeqCst) < 20,
+            "risk started after the subscription batch"
+        );
+        draining.store(true, Ordering::SeqCst);
+        notify.notify_waiters();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            subscriptions.await.unwrap();
+            risks.await.unwrap();
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            probe.peak.load(Ordering::SeqCst),
+            1,
+            "queues exceeded the shared concurrency cap"
+        );
+        server.abort();
     }
 }
