@@ -4,11 +4,10 @@
 //! a currently claimed, unexpired challenge.
 
 use super::{
-    AuthError, TokenHasher, VERIFICATION_HOURS, normalize_email, password_engine,
-    verification_token_for_id,
+    AuthError, TokenHasher, VERIFICATION_HOURS, dummy_password_hash, normalize_email,
+    password_engine, verification_token_for_id,
 };
-use argon2::{PasswordHash, PasswordHasher, PasswordVerifier};
-use std::sync::OnceLock;
+use argon2::{PasswordHash, PasswordVerifier};
 use tokio_postgres::Client;
 use uuid::Uuid;
 
@@ -19,8 +18,6 @@ pub struct VerificationMail {
     /// Secret: never place in logs, URLs, response bodies, or metrics.
     pub token: String,
 }
-
-static DUMMY_PASSWORD_HASH: OnceLock<String> = OnceLock::new();
 
 /// Password proof prevents third parties from repeatedly mailing an address.
 /// A generic HTTP response must be used for all `false` results. This database
@@ -45,14 +42,7 @@ pub async fn request_verification_resend(
     } else {
         // Burn comparable Argon2 verification work for an unknown address.
         // Initialization occurs once per process; no mail is queued.
-        let dummy = DUMMY_PASSWORD_HASH.get_or_init(|| {
-            password_engine()
-                .expect("fixed Argon2 parameters")
-                .hash_password(b"unregistered-account")
-                .expect("fixed Argon2 parameters and random salt")
-                .to_string()
-        });
-        (None, dummy.clone())
+        (None, dummy_password_hash().to_owned())
     };
     let parsed = PasswordHash::new(&stored).map_err(|_| AuthError::Password)?;
     if password_engine()?
