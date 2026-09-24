@@ -39,8 +39,9 @@ def git_output(args: list[str], stage: str) -> str:
 def gh_output(args: list[str], stage: str) -> str:
     try:
         result = subprocess.run(["gh", *args], capture_output=True, text=True,
+                                encoding="utf-8",
                                 timeout=180, check=False, shell=False)
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except (OSError, UnicodeError, subprocess.TimeoutExpired) as exc:
         raise VerificationError(f"{stage} could not finish") from exc
     return result_output(result, stage)
 

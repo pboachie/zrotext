@@ -475,6 +475,26 @@ class ReleaseCandidateTest(unittest.TestCase):
                 release_candidate.verify_unsigned_sbom_attestation(
                     Path("unsigned.apk"), digest, self.COMMIT, self.BOM)
 
+    def test_attested_non_ascii_sbom_survives_windows_default_encoding(self):
+        bom = {**self.BOM, "components": [{**self.BOM["components"][0],
+                                         "description": "Square’s HTTP client"}]}
+        statement = [{"verificationResult": {"statement": {
+            "predicateType": release_candidate.SBOM_PREDICATE,
+            "subject": [{"digest": {"sha256": "a" * 64}}],
+            "predicate": bom,
+        }}}]
+        raw = json.dumps(statement, ensure_ascii=False).encode("utf-8")
+
+        def windows_like_run(*_args, **kwargs):
+            return type("Result", (), {"returncode": 0,
+                                        "stdout": raw.decode(kwargs.get("encoding") or "cp1252")})()
+
+        with patch.object(release_candidate.subprocess, "run",
+                          side_effect=windows_like_run) as command:
+            release_candidate.verify_unsigned_sbom_attestation(
+                Path("unsigned.apk"), "a" * 64, self.COMMIT, bom)
+        self.assertEqual(command.call_args.kwargs["encoding"], "utf-8")
+
     def test_artifacts_must_remain_outside_checkout(self):
         with self.assertRaisesRegex(ValueError, "outside the source checkout"):
             release_candidate.external_artifact_path(

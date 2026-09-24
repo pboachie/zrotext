@@ -54,9 +54,10 @@ def published_sbom(image_ref: str) -> dict[str, object]:
         result = subprocess.run(
             ["docker", "buildx", "imagetools", "inspect", image_ref,
              "--format", "{{ json .SBOM.SPDX }}"],
-            capture_output=True, text=True, timeout=180, check=False, shell=False,
+            capture_output=True, text=True, encoding="utf-8", timeout=180,
+            check=False, shell=False,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except (OSError, UnicodeError, subprocess.TimeoutExpired) as exc:
         raise SbomError("published image SBOM lookup could not finish") from exc
     if result.returncode:
         raise SbomError("published image SBOM lookup failed")
