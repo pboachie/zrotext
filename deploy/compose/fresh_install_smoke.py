@@ -146,7 +146,7 @@ def main():
     # Compose gives shell variables precedence over --env-file and imports
     # bare environment keys from the shell. Do not pass live account, SMTP,
     # or MFA settings into this disposable stack.
-    for name in ("POSTGRES_PASSWORD", "DATABASE_URL", "APP_PORT", "SITE_ID",
+    for name in ("POSTGRES_PASSWORD", "DATABASE_URL", "RUNTIME_DATABASE_PASSWORD", "APP_PORT", "SITE_ID",
                  "INSTANCE_ID", "DEPLOYMENT_EPOCH", "DISPATCH_ENABLED",
                  "SYNTHETIC_ALPHA_ENABLED", "M0_TEST_TOKEN", "COMPOSE_PROFILES",
                  "COMPOSE_ENV_FILES", "COMPOSE_PROJECT_NAME", "COMPOSE_FILE",
@@ -176,6 +176,7 @@ def main():
         raise
     os.environ.update({
         "POSTGRES_PASSWORD": secret,
+        "RUNTIME_DATABASE_PASSWORD": secrets.token_hex(32),
         "DATABASE_URL": f"postgres://zrotext:{secret}@db:5432/zrotext",
         "APP_PORT": str(port),
         "SITE_ID": "local-a", "INSTANCE_ID": "api-1", "DEPLOYMENT_EPOCH": "1",
@@ -217,6 +218,12 @@ def main():
              'test -z "$SMTP_PASS" && '
              'test -z "$MFA_ENCRYPTION_KEY_B64"'],
             "disposable credential isolation")
+        role_check = Path(__file__).with_name("verify_runtime_role.sql")
+        run([*compose, "run", "--rm", "--no-deps", "-T", "--entrypoint", "sh",
+             "db-runtime", "-ec", 'PGPASSWORD="$RUNTIME_DATABASE_PASSWORD" '
+             'PGUSER=zrotext_runtime exec psql -X -q -v ON_ERROR_STOP=1 -f -'],
+            "runtime database privilege check",
+            input_data=role_check.read_text(encoding="utf-8"))
         database = summary(project, env_file)
         migrations = verify_ledger(database["ledger"])
         if database["tenants"] or database["messages"]:

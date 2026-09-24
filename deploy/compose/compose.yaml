@@ -7,7 +7,7 @@ x-app: &app
   depends_on:
     db:
       condition: service_healthy
-    migrate:
+    db-runtime:
       condition: service_completed_successfully
   read_only: true
   security_opt: [no-new-privileges:true]
@@ -46,10 +46,30 @@ services:
     cap_drop: [ALL]
     restart: "no"
     networks: [private]
+  # Provision after migrations; explicitly rerun on upgrades as documented.
+  db-runtime:
+    image: postgres:18.6-bookworm
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      PGHOST: db
+      PGUSER: zrotext
+      PGDATABASE: zrotext
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      RUNTIME_DATABASE_PASSWORD: ${RUNTIME_DATABASE_PASSWORD:?set a separate 64-character hexadecimal RUNTIME_DATABASE_PASSWORD}
+    entrypoint: ["psql", "-X", "-q", "-v", "ON_ERROR_STOP=1", "-f", "/opt/runtime-role.sql"]
+    volumes:
+      - ./runtime-role.sql:/opt/runtime-role.sql:ro
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    restart: "no"
+    networks: [private]
   app:
     <<: *app
     environment:
-      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
+      DATABASE_URL: postgres://zrotext_runtime:${RUNTIME_DATABASE_PASSWORD:?set RUNTIME_DATABASE_PASSWORD}@db:5432/zrotext
       SITE_ID: ${SITE_ID:-local-a}
       INSTANCE_ID: ${INSTANCE_ID:-api-1}
       DEPLOYMENT_EPOCH: ${DEPLOYMENT_EPOCH:-1}
@@ -80,7 +100,7 @@ services:
     <<: *app
     profiles: [two-hub]
     environment:
-      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
+      DATABASE_URL: postgres://zrotext_runtime:${RUNTIME_DATABASE_PASSWORD:?set RUNTIME_DATABASE_PASSWORD}@db:5432/zrotext
       SITE_ID: local-b
       INSTANCE_ID: api-2
       DEPLOYMENT_EPOCH: ${DEPLOYMENT_EPOCH:-1}
