@@ -162,6 +162,7 @@ def main():
         cert_file = directory / "local-ca.pem"
         cert_file.write_text(root_pem, encoding="ascii")
         context = ssl.create_default_context(cafile=str(cert_file))
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
         wait_for_tls(https_port, context)
         expect_login_status(https_port, context,
                             f"https://localhost:{https_port}", 401)
