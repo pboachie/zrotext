@@ -78,6 +78,38 @@ evidence using existing deduplication. Device implementations should pace backlo
 replay and use reconnect backoff. These are resource limits, not per-account abuse
 or billing quotas.
 
+## Data retention
+
+The API starts a retention worker at startup. Every 15
+seconds, each hub processes at most 100 rows per table, using `SKIP LOCKED` so
+concurrent hubs can divide the work. The first run occurs at startup. Backlogs
+are reduced over successive ticks; the configured age is an eligibility cutoff,
+not a hard deletion deadline. Values below are calendar days and must be integers
+from 1 through 3650. An invalid value prevents server startup.
+
+| Setting | Default | Action and cutoff |
+|---|---:|---|
+| `ZT_IDEMPOTENCY_RETENTION_DAYS` | 7 | New keys expire after this many days; expired keys are ignored for replay and removed. Changing the setting does not rewrite existing expiry timestamps. |
+| `ZT_MESSAGE_CONTENT_RETENTION_DAYS` | 30 | Null the E.164 recipient and synthetic payload on delivered, failed, cancelled, or expired messages after this many days since their last state update. |
+| `ZT_MESSAGE_EVENTS_RETENTION_DAYS` | 90 | Delete message event rows after this many days since receipt when their message is eligible for terminal retention. |
+| `ZT_WEBHOOK_HISTORY_RETENTION_DAYS` | 30 | Delete succeeded/dead deliveries and their attempts and manual replay requests after this many days since the delivery's last update. |
+| `ZT_INBOUND_CONTENT_RETENTION_DAYS` | 30 | Redact M1 opaque pilot ciphertext after this many days since receipt, once every related webhook delivery has been removed. |
+| `ZT_SEALED_INBOUND_CONTENT_RETENTION_DAYS` | 30 | Null sealed inbound envelopes after this many days since receipt. |
+
+The message, event, webhook, and M1 inbound actions require an eligible terminal
+outbound message and no dispatch fence. `unknown`, `delivery_unknown`, other
+nonterminal states, and fenced messages retain their data until resolved. Pending
+and leased webhook deliveries also remain until terminal. The M1 and sealed
+inbound event rows keep their IDs, device sequence fences, and digests after
+content redaction, so replay cannot recreate a purged body. Message IDs, state,
+attempts, digests, and usage records remain; this worker is not an account-erasure
+API. Backups, WAL, replicas, and PostgreSQL dead tuples need their own lifecycle
+policy. A database row update or deletion does not immediately erase old pages.
+
+When changing these settings across multiple hubs, deploy the same values to
+every hub. A shorter value can make data eligible immediately, while a longer
+value cannot restore content already redacted or history already deleted.
+
 ## Source for modified deployments
 
 The server's HTML pages link to `/source`. Published release images point this link to the exact upstream commit used for the build. If you modify ZROtext and let people use your server over a network, set `SOURCE_URL` to a downloadable copy of the full corresponding source for **your running version**, including your changes and applicable build instructions. A link to the unmodified upstream repository is insufficient for a modified deployment. See [AGPL-3.0 section 13](https://www.gnu.org/licenses/agpl-3.0.en.html). Review the license for your situation.

@@ -143,11 +143,25 @@ pub struct RadioEvent {
 
 pub struct DeliveryStore<'a> {
     client: &'a mut Client,
+    idempotency_days: i32,
 }
 
 impl<'a> DeliveryStore<'a> {
     pub fn new(client: &'a mut Client) -> Self {
-        Self { client }
+        Self {
+            client,
+            idempotency_days: 7,
+        }
+    }
+
+    /// The runtime validates the configured window at startup. Existing keys
+    /// retain their persisted expiry when this setting changes.
+    pub fn with_idempotency_days(client: &'a mut Client, days: i32) -> Self {
+        assert!((1..=3650).contains(&days));
+        Self {
+            client,
+            idempotency_days: days,
+        }
     }
 
     /// Every caller supplies the authenticated tenant ID; a cross-tenant ID
@@ -277,15 +291,34 @@ impl<'a> DeliveryStore<'a> {
         let new_key = tx
             .query_opt(
                 "INSERT INTO idempotency_keys (account_id, key, request_digest, message_id, expires_at) \
-                 VALUES ($1,$2,$3,$4,now() + interval '7 days') \
-                 ON CONFLICT DO NOTHING RETURNING message_id",
-                &[&input.account_id, &input.idempotency_key, &digest, &input.client_message_id],
+                 VALUES ($1,$2,$3,$4,now() + $5::int * interval '1 day') \
+                 ON CONFLICT (account_id,key) DO UPDATE SET \
+                   request_digest=EXCLUDED.request_digest,message_id=EXCLUDED.message_id, \
+                   expires_at=EXCLUDED.expires_at \
+                 WHERE idempotency_keys.expires_at<=now() RETURNING message_id",
+                &[&input.account_id, &input.idempotency_key, &digest, &input.client_message_id,
+                  &self.idempotency_days],
             )
-            .await?;
+            .await;
+        let new_key = match new_key {
+            Ok(value) => value,
+            Err(error)
+                if error.as_db_error().is_some_and(|db| {
+                    db.code() == &SqlState::UNIQUE_VIOLATION
+                        && db.constraint() == Some("idempotency_message_id")
+                }) =>
+            {
+                // Preserve expired-new-request validation precedence from #153.
+                validate_new_expiry(input.expires_at_ms, metering)?;
+                return Err(StoreError::MessageIdConflict);
+            }
+            Err(error) => return Err(StoreError::Database(error)),
+        };
         if new_key.is_none() {
             let row = tx
                 .query_opt(
-                    "SELECT message_id, request_digest FROM idempotency_keys WHERE account_id=$1 AND key=$2",
+                    "SELECT message_id, request_digest FROM idempotency_keys \
+                     WHERE account_id=$1 AND key=$2 AND expires_at>now()",
                     &[&input.account_id, &input.idempotency_key],
                 )
                 .await?;
@@ -1400,7 +1433,7 @@ mod tests {
 
     // Keep the admission fixtures on the complete, reviewed schema. SQL is
     // embedded at build time so tests never execute files discovered at runtime.
-    const TEST_MIGRATIONS: [(&str, &str); 22] = [
+    const TEST_MIGRATIONS: [(&str, &str); 24] = [
         (
             "001_foundation.sql",
             include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
@@ -1488,6 +1521,14 @@ mod tests {
         (
             "022_pending_owner_expiry.sql",
             include_str!("../../../deploy/compose/migrations/022_pending_owner_expiry.sql"),
+        ),
+        (
+            "023_account_recovery.sql",
+            include_str!("../../../deploy/compose/migrations/023_account_recovery.sql"),
+        ),
+        (
+            "024_data_retention.sql",
+            include_str!("../../../deploy/compose/migrations/024_data_retention.sql"),
         ),
     ];
 
@@ -1790,6 +1831,29 @@ mod tests {
                 .get(0);
             assert_eq!(count, 1, "{table} changed after expired retry");
         }
+        client.execute(
+            "UPDATE idempotency_keys SET expires_at=now()-interval '1 second' WHERE account_id=$1 AND key='expired-replay'",
+            &[&account],
+        ).await.unwrap();
+        let replacement_id = Uuid::new_v4();
+        let replacement = DeliveryStore::with_idempotency_days(&mut client, 1)
+            .accept(NewMessage {
+                client_message_id: replacement_id,
+                synthetic_payload: b"new request after key expiry",
+                expires_at_ms: now_ms() + 60_000,
+                ..input()
+            })
+            .await
+            .unwrap();
+        assert!(replacement.created);
+        assert_eq!(replacement.message_id, replacement_id);
+        let row = client.query_one(
+            "SELECT message_id,expires_at>now()+interval '23 hours' AND expires_at<now()+interval '25 hours' \
+             FROM idempotency_keys WHERE account_id=$1 AND key='expired-replay'",
+            &[&account],
+        ).await.unwrap();
+        assert_eq!(row.get::<_, Uuid>(0), replacement_id);
+        assert!(row.get::<_, bool>(1));
         client
             .batch_execute(&format!(
                 "SET search_path TO public; DROP SCHEMA {schema} CASCADE"

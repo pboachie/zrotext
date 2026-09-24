@@ -50,6 +50,7 @@ use zrotext_server::{
     http_owner_messages::{self, OwnerMessagesState},
     http_webhooks::{self, WebhookHttpState},
     owner_ui,
+    retention::{self, RetentionPolicy},
     webhook_worker::{self, WebhookSecretVault},
 };
 
@@ -64,6 +65,7 @@ struct Config {
     dispatch_runtime_enabled: bool,
     mfa_recovery_only: bool,
     mfa_enrollment_enabled: bool,
+    retention: RetentionPolicy,
     draining: Arc<AtomicBool>,
     drain_notify: Arc<Notify>,
 }
@@ -177,6 +179,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         dispatch_runtime_enabled,
         mfa_recovery_only,
         mfa_enrollment_enabled,
+        retention: RetentionPolicy::from_env()?,
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),
     });
@@ -200,6 +203,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/m0/device-test", get(device_test))
         .merge(owner_ui::source_router(source_url))
         .with_state(config.clone());
+    let retention_database = config.database_url.clone();
+    let retention_policy = config.retention;
+    let retention_draining = config.draining.clone();
+    let retention_notify = config.drain_notify.clone();
+    tokio::spawn(async move {
+        let mut checks = tokio::time::interval(Duration::from_secs(15));
+        checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut unavailable_logged = false;
+        loop {
+            tokio::select! {
+                _ = checks.tick() => {
+                    if retention_draining.load(Ordering::Acquire) { break; }
+                    let result = async {
+                        let (mut client, connection) =
+                            zrotext_server::runtime_db::connect_worker(&retention_database).await?;
+                        tokio::spawn(async move { let _ = connection.await; });
+                        retention::prune(&mut client, retention_policy, retention::BATCH_SIZE).await?;
+                        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+                    }.await;
+                    match result {
+                        Ok(()) => unavailable_logged = false,
+                        Err(_) if !unavailable_logged => {
+                            eprintln!("data retention worker unavailable");
+                            unavailable_logged = true;
+                        }
+                        Err(_) => {}
+                    }
+                }
+                _ = retention_notify.notified() => break,
+            }
+        }
+    });
     let mut quotas_reset = false;
     let mut billing_auth_state = None;
     if let Some((auth_state, enrollment_state)) = account_routes(&config)? {
@@ -381,7 +416,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 message_hasher,
                 config.alpha_policy.clone(),
                 billing_test.is_some(),
-            )?;
+            )?
+            .with_idempotency_days(config.retention.idempotency_days);
             app = app.nest("/v1/alpha", http_messages::router(message_state));
         }
     } else if config.alpha_policy.enabled()
@@ -1019,6 +1055,7 @@ mod tests {
             dispatch_runtime_enabled: false,
             mfa_recovery_only: false,
             mfa_enrollment_enabled: false,
+            retention: RetentionPolicy::default(),
             draining: Arc::new(AtomicBool::new(false)),
             drain_notify: Arc::new(Notify::new()),
         };

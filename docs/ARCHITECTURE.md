@@ -56,11 +56,12 @@ Every tenant-owned table includes `account_id`. Use composite foreign keys and r
 | pairing_requests | One-use hashed secret, 5-minute expiry, short human comparison code, approved key fingerprint |
 | messages | UUID, account/device, direction, recipient metadata, envelope bytes/version, expiry, state_version, timestamps |
 | message_attempts | Unique attempt ID, claim generation, lease, submitted evidence, per-segment results |
-| message_events | Append-only event ID, sequence, observed_at and received_at, bounded evidence |
+| message_events | Event ID, sequence, observed_at and received_at; eligible terminal history pruned after 90 days by default |
 | dispatch_jobs | Message/attempt ID, next_attempt_at, lease_owner, lease_until, fencing generation |
-| idempotency_keys | Unique account/key, canonical request digest, message ID, retained 7 days |
+| idempotency_keys | Unique account/key, canonical request digest, message ID; expiry enforced on replay and pruned in batches (7 days by default) |
 | usage_periods, usage_ledger | Unique period/metric; transactional reservation/refund references; immutable adjustments |
-| webhook_endpoints, webhook_deliveries | Encrypted signing secret, stable event ID, attempts, next_attempt_at |
+| webhook_endpoints, webhook_deliveries | Encrypted signing secret, stable event ID, attempts, next_attempt_at; terminal delivery history pruned after 30 days by default |
+| inbound_events, sealed_inbound_events | Ciphertext or envelope has a 30-day default window; ID, device sequence and digest remain as replay tombstones |
 | subscriptions, billing_events | Provider identifiers, current entitlement period, unique Stripe event ID |
 | suppression_entries (proposed, not implemented) | Account/normalized-recipient, source, timestamp; created from device opt-out signal/user action |
 | security_audit_events | Key/device/permission changes, redacted subjects, no content |
@@ -77,7 +78,7 @@ changes during a period need an explicit, audited adjustment path before
 billing uses them. The private synthetic-alpha HTTP route still uses unmetered
 acceptance and is not a customer billing path.
 
-Index queue due times and `(account_id, created_at DESC, id)`. Cursor pagination only. Body history and recipient metadata expire together by plan; retain content-free usage totals as needed and document financial-record obligations separately. Default API body limit 32 KiB; one-recipient SMS; payload cannot exceed six radio segments after decryption. Keep ingress limits before expensive crypto/parsing.
+Index queue due times and `(account_id, created_at DESC, id)`. Cursor pagination only. The retention worker redacts terminal, unfenced message recipients and synthetic payloads after 30 days by default, counted from the last state update. It preserves recipient and request digests, message identity, state and attempts. It removes eligible message events after 90 days, terminal webhook delivery/attempt/replay history after 30 days, and inbound ciphertext after 30 days once related webhook history is gone. M1 inbound event IDs, device sequences, digests and signatures remain as replay tombstones. Sealed inbound envelopes are redacted after 30 days while ID, device sequence and unsigned digest remain. Unknown and fenced outbound messages and their related history/content are deferred. See [self-hosting retention settings](SELF-HOSTING.md#data-retention). Default API body limit 32 KiB; one-recipient SMS; payload cannot exceed six radio segments after decryption. Keep ingress limits before expensive crypto/parsing.
 
 ## Message semantics and the duplicate-send problem
 

@@ -33,6 +33,7 @@ pub struct MessagesHttpState {
     hasher: Arc<TokenHasher>,
     policy: Arc<AlphaPolicy>,
     metered: bool,
+    idempotency_days: i32,
 }
 
 impl MessagesHttpState {
@@ -52,7 +53,13 @@ impl MessagesHttpState {
             hasher,
             policy,
             metered,
+            idempotency_days: 7,
         })
+    }
+
+    pub fn with_idempotency_days(mut self, days: i32) -> Self {
+        self.idempotency_days = days;
+        self
     }
 }
 
@@ -289,7 +296,7 @@ async fn accept(
         synthetic_payload: synthetic_body.as_bytes(),
         expires_at_ms: body.expires_at_ms,
     };
-    let mut store = DeliveryStore::new(&mut client);
+    let mut store = DeliveryStore::with_idempotency_days(&mut client, state.idempotency_days);
     let outcome = store
         .accept_alpha(input, state.metered)
         .await
