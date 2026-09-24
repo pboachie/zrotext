@@ -48,6 +48,26 @@ jobs:
             org.opencontainers.image.licenses=AGPL-3.0-only
           provenance: mode=max
           sbom: true
+      - name: Stage the exact published image
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          if [[ ! "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo 'Release image digest is invalid' >&2
+            exit 1
+          fi
+          image_ref="ghcr.io/pboachie/zrotext@${IMAGE_DIGEST}"
+          docker pull "$image_ref"
+          docker tag "$image_ref" zrotext-release-smoke:local
+      - name: Rehearse the exact published image
+        timeout-minutes: 25
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          python3 deploy/compose/fresh_install_smoke.py \
+            --image-ref "ghcr.io/pboachie/zrotext@${IMAGE_DIGEST}" \
+            --source-commit "$GITHUB_SHA" \
+            --source-tag "$GITHUB_REF_NAME"
       - name: Attest the published image digest
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
