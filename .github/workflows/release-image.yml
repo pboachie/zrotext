@@ -40,6 +40,8 @@ jobs:
           file: ./deploy/compose/Dockerfile
           platforms: linux/amd64
           push: true
+          build-args: |
+            GIT_COMMIT=${{ github.sha }}
           tags: ghcr.io/pboachie/zrotext:${{ github.ref_name }}-run${{ github.run_id }}-${{ github.run_attempt }}
           labels: |
             org.opencontainers.image.source=https://github.com/pboachie/zrotext
