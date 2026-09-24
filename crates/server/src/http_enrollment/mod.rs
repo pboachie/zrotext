@@ -1259,25 +1259,21 @@ mod tests {
         let auth_hasher = Arc::new(TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
         let enrollment_hasher =
             Arc::new(EnrollmentHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
+        let password = Uuid::new_v4().to_string();
         let owner = register(
             &mut admin,
             &auth_hasher,
             "budget-owner@example.test",
-            "correct horse 123",
+            &password,
         )
         .await
         .unwrap();
         verify_email(&mut admin, &auth_hasher, &owner.verification_token)
             .await
             .unwrap();
-        let session = login(
-            &admin,
-            &auth_hasher,
-            "budget-owner@example.test",
-            "correct horse 123",
-        )
-        .await
-        .unwrap();
+        let session = login(&admin, &auth_hasher, "budget-owner@example.test", &password)
+            .await
+            .unwrap();
         let separator = if root_url.contains('?') { '&' } else { '?' };
         let app = router(EnrollmentHttpState::new(
             format!("{root_url}{separator}options=-csearch_path%3D{schema}"),
