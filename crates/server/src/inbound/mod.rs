@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Device-signed inbound storage foundation. No route calls this module yet.
-//! Android's current inbound pilot is local-only; a sealed-content protocol,
-//! endpoint management and egress-safe webhook worker are separate gates.
+//! Device-signed inbound metadata storage called by the opt-in device stream.
+//! Sealed content remains a separate protocol and route.
 
 use p256::ecdsa::{Signature, VerifyingKey, signature::Verifier};
 use sha2::{Digest, Sha256};

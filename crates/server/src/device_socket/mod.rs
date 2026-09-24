@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Authenticated, heartbeat-only device stream. No message or radio commands.
+//! Authenticated device stream with heartbeat, opt-in synthetic grants, radio
+//! evidence and inbound metadata frames.
 
 use crate::{
     alpha_policy::AlphaPolicy,
@@ -1024,6 +1025,84 @@ mod tests {
         };
         assert_eq!(u16::from(frame.code), close_code::POLICY);
         server.abort();
+    }
+
+    #[test]
+    fn stream_schema_examples_match_serde_frames() {
+        let examples: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+            "../../../../protocol/v1/device-stream.examples.json"
+        ))
+        .unwrap();
+        assert_eq!(examples.len(), 12);
+        for frame in &examples[..6] {
+            let parsed: ClientFrame = serde_json::from_value(frame.clone()).unwrap();
+            assert_eq!(frame["v"], 1);
+            let variant = match parsed {
+                ClientFrame::Hello { .. } => "hello",
+                ClientFrame::Proof { .. } => "proof",
+                ClientFrame::Heartbeat { .. } => "heartbeat",
+                ClientFrame::AlphaReady { .. } => "alpha_ready",
+                ClientFrame::RadioEvent { .. } => "radio_event",
+                ClientFrame::InboundEvent { .. } => "inbound_event",
+            };
+            assert_eq!(frame["type"], variant);
+        }
+        let id = Uuid::parse_str("00000000-0000-4000-8000-000000000001").unwrap();
+        let server_frames = [
+            ServerFrame::Challenge {
+                v: 1,
+                challenge_id: id,
+                account_id: id,
+                device_id: id,
+                nonce: "AQ".into(),
+            },
+            ServerFrame::Session {
+                v: 1,
+                connection_epoch: 7,
+                heartbeat_seconds: 30,
+            },
+            ServerFrame::HeartbeatAck {
+                v: 1,
+                connection_epoch: 7,
+            },
+            ServerFrame::SyntheticGrant {
+                v: 1,
+                message_id: id,
+                attempt_id: id,
+                device_id: id,
+                generation: 1,
+                connection_epoch: 7,
+                deployment_epoch: 1,
+                recipient_digest: "AQ".into(),
+                expires_at_ms: 1_700_000_000_000,
+                recipient_e164: "+15555550101".into(),
+                body: "ZROtext synthetic test: case_1".into(),
+            },
+            ServerFrame::RadioEventAck {
+                v: 1,
+                event_id: id,
+                state: MessageState::Submitting,
+                submit_permitted: true,
+            },
+            ServerFrame::InboundEventAck {
+                v: 1,
+                event_id: id,
+                created: true,
+                queued_deliveries: 0,
+            },
+        ];
+        for (actual, documented) in server_frames.into_iter().zip(&examples[6..]) {
+            let variant = match &actual {
+                ServerFrame::Challenge { .. } => "challenge",
+                ServerFrame::Session { .. } => "session",
+                ServerFrame::HeartbeatAck { .. } => "heartbeat_ack",
+                ServerFrame::SyntheticGrant { .. } => "synthetic_grant",
+                ServerFrame::RadioEventAck { .. } => "radio_event_ack",
+                ServerFrame::InboundEventAck { .. } => "inbound_event_ack",
+            };
+            assert_eq!(documented["type"], variant);
+            assert_eq!(serde_json::to_value(actual).unwrap(), *documented);
+        }
     }
 
     #[test]
