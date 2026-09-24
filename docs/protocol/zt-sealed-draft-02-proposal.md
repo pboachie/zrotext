@@ -31,6 +31,8 @@ signature = ECDSA-P-256-SHA256(signature_input), raw r[32] || s[32]
 
 The origin signature covers the body nonce/ciphertext and every wrap role, key ID, `enc`, and `ct`. It is checked against an authorized manifest signer and its permitted role/scope; a valid signature alone is not authorization. Body AAD binds the whole protected context again to body plaintext. Retries replay the same full envelope; they do not create a new HPKE context or body nonce. Q2/Q4/Q6–Q11 and grant/radio release gates remain open.
 
+The [Rust structural test reader](../../crates/server/tests/ztse_envelope_structure.rs) selects draft 01 or 02 explicitly, checks the shared outbound/inbound grammar and profile-02 low-`s` candidate, and exercises the draft-01 fixtures plus syntax-only profile-02 derivatives. Its adversarial corpus covers exact size and offset bounds, role sets, ordering, points, protected fields, and signatures. The derived bytes are not signed profile-02 vectors, and this test reader is not linked to a production route or a cryptographic acceptance path.
+
 [RFC 9180 section 8.1](https://www.rfc-editor.org/rfc/rfc9180.html#section-8.1) specifically recommends putting auxiliary authenticated information in Setup `info` for single-shot APIs. Draft 02 uses one `Seal` per wrap, so no varying per-context message AAD is needed. The profile change is explicit because draft-01 `info`/AAD ciphertexts are not interoperable with these inputs.
 
 ## Android provider feasibility and limit
