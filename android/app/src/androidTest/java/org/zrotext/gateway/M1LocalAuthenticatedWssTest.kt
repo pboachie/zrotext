@@ -18,6 +18,7 @@ import java.io.File
 import java.util.UUID
 import org.json.JSONArray
 import org.json.JSONObject
+import java.net.URI
 
 /** Opt-in loopback probe. Only a public key is exported; no alpha send is armed. */
 @RunWith(AndroidJUnit4::class)
@@ -52,6 +53,43 @@ class M1LocalAuthenticatedWssTest {
                 "expected 3 authenticated heartbeats; ${AuthenticatedGatewayStatus.value}: ${AuthenticatedGatewayStatus.heartbeats}",
                 AuthenticatedGatewayStatus.heartbeats >= 3
             )
+        } finally {
+            app.stopService(Intent(app, AuthenticatedGatewayService::class.java))
+        }
+    }
+
+    /** Opt-in external WSS probe. No alpha, inbound, or radio extras are armed. */
+    @Test fun authenticatedHeartbeatOverExternalTlsWithoutRadio() {
+        val args = InstrumentationRegistry.getArguments()
+        assumeTrue("requires an external WSS fixture", args.getString("m1ExternalWss") == "true")
+        val deviceId = args.getString("m1DeviceId")
+        require(!deviceId.isNullOrBlank()) { "disposable enrolled device ID required" }
+        UUID.fromString(deviceId)
+        val url = args.getString("m1ExternalWssUrl")
+        require(!url.isNullOrBlank()) { "external WSS URL required" }
+        val endpoint = URI(url)
+        require(endpoint.scheme == "wss" && !endpoint.host.isNullOrBlank() &&
+            endpoint.host.lowercase() !in setOf("localhost", "127.0.0.1", "::1") &&
+            endpoint.rawPath == "/v1/device-stream" && endpoint.rawQuery == null &&
+            endpoint.rawFragment == null && endpoint.rawUserInfo == null) {
+            "external WSS URL must be a secure device-stream endpoint"
+        }
+        val app = InstrumentationRegistry.getInstrumentation().targetContext
+        val priorAlphaUse = app.getSharedPreferences("alpha_pilot", 0)
+            .getBoolean("attempt_used", false)
+        AuthenticatedGatewayStatus.authenticatedSessions = 0
+        AuthenticatedGatewayStatus.heartbeats = 0
+        val start = Intent(app, AuthenticatedGatewayService::class.java)
+            .putExtra(AuthenticatedGatewayService.EXTRA_URL, url)
+            .putExtra(AuthenticatedGatewayService.EXTRA_DEVICE_ID, deviceId)
+        try {
+            ContextCompat.startForegroundService(app, start)
+            awaitPhase(105_000, "three authenticated external WSS heartbeats") {
+                AuthenticatedGatewayStatus.authenticatedSessions == 1 &&
+                    AuthenticatedGatewayStatus.heartbeats >= 3
+            }
+            assertEquals(priorAlphaUse, app.getSharedPreferences("alpha_pilot", 0)
+                .getBoolean("attempt_used", false))
         } finally {
             app.stopService(Intent(app, AuthenticatedGatewayService::class.java))
         }
