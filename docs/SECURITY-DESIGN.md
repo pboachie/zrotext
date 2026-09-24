@@ -89,3 +89,22 @@ Open protocol questions include concrete suite/library support, canonical encodi
 Test altered AAD, wrong recipient/account/device, old manifests, revoked keys, duplicated command/event, nonce misuse vectors, truncated/oversized envelopes, invalid points, malformed HPKE inputs, signature forgery, cross-tenant object IDs, CSRF, redirect/DNS-rebinding SSRF, and billing event replay/out-of-order delivery. Use published known-answer vectors and differential interoperability among browser, TypeScript SDK and Android.
 
 Seed synthetic canary message bodies, run a full send/reply/backup/error cycle, and scan relay database, logs, traces, analytics, dumps and webhook envelopes for those plaintext canaries. This verifies a useful property; it is not proof against every malicious operator or client compromise.
+
+### HTTP resource admission and API key issuance
+
+The API admits at most 64 concurrent HTTP handlers per process and rejects
+excess requests with 503 and Retry-After before authentication, body extraction,
+or database connection setup. A 30-second handler deadline bounds slow request
+bodies; timed-out requests return 408. This is per-process admission, not a
+fleet-wide database connection pool. A canceled handler can leave a PostgreSQL
+query running until its connection driver receives the result, so this is not a
+hard bound on outstanding database queries or connections. Deployments must still bound incoming
+sockets/headers at the edge and size PostgreSQL for HTTP, upgraded WebSockets,
+and background workers across all API instances. A timed-out mutation may have
+committed; callers must reconcile state before retrying non-idempotent actions.
+
+API key creation consumes an atomic PostgreSQL budget of 20 attempts per account
+per 24-hour window and 600 globally per minute. Sessions and API instances share
+the budget; key revocation does not refund it. Exhaustion returns 429, and budget
+storage failure returns 503 without creating a key. This bounds issuance rate,
+not the lifetime retention of audit metadata for previously created keys.
