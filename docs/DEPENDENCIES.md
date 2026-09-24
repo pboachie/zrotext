@@ -33,7 +33,7 @@ For an Android plugin, library, or Dependabot update:
      -PzrotextSourceCommit="$(git rev-parse HEAD)" --no-daemon
    ```
 
-3. Review every new or changed coordinate and checksum in `gradle/verification-metadata.xml` against the intended dependency update. The generation command records the bytes currently served by repositories; it does not establish their authenticity. Investigate unexpected checksum changes for an unchanged version. Commit the reviewed metadata and lockfile with the dependency change.
+3. When Android Gradle Plugin or AAPT2 changes, run the metadata command on both Linux (the CI runner) and Windows: AAPT2 resolves a different JAR for each host. Review every new or changed coordinate and checksum in `gradle/verification-metadata.xml` against the intended dependency update. The generation command records the bytes currently served by repositories; it does not establish their authenticity. Investigate unexpected checksum changes for an unchanged version. Commit the reviewed metadata and lockfile with the dependency change.
 4. Run the same task set without `--write-verification-metadata` and confirm strict verification passes. Do not set verification to `lenient` or `off` in CI or release jobs.
 
 When upgrading Gradle itself, check the intended version's wrapper JAR and distribution ZIP SHA-256 at [Gradle's checksum list](https://gradle.org/release-checksums/). Run the `wrapper` task twice as [Gradle directs](https://docs.gradle.org/9.7.1/userguide/gradle_wrapper.html#sec:upgrading_wrapper) so the JAR and scripts are updated, passing the published binary ZIP checksum each time:
