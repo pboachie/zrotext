@@ -22,6 +22,64 @@ The smoke stops its API before inserting synthetic tenants, devices, queued and 
 
 Use separate secrets and a private database network, terminate HTTPS and WSS at a trusted edge, keep migrations serialized, and retain recoverable database backups. The server, Android gateway, and device protocol are evolving; test the exact release and phone model you intend to run. The [architecture](ARCHITECTURE.md) describes the database and device ownership model, while [MULTI-LOCATION.md](MULTI-LOCATION.md) describes how a second site can join without creating an independent writer.
 
+### Public HTTPS and device WSS
+
+The optional Compose `edge` profile runs Caddy in front of the API. Point a DNS
+name at the host and allow inbound TCP 80 and 443 for certificate issuance and
+HTTPS. In your private `.env`, set `EDGE_DOMAIN` to that name and set
+`AUTH_ORIGIN=https://<that exact name>` (no trailing slash). Generate independent
+random `AUTH_TOKEN_PEPPER_B64` and `ENROLLMENT_TOKEN_PEPPER_B64` values as
+described in `.env.example`, keep them stable across restarts and restores, and
+configure verification SMTP before registering an owner. Then run:
+
+```sh
+docker compose --env-file .env --profile edge -f deploy/compose/compose.yaml up -d --build
+curl https://<your-domain>/healthz
+curl https://<your-domain>/readyz
+```
+
+`AUTH_ORIGIN` must equal the browser's exact public HTTPS origin, including a
+port when using a nonstandard public HTTPS port. Account mutations reject any
+other `Origin`. The API remains bound to host loopback on `APP_PORT`; Caddy
+forwards `Host` and WebSocket upgrades to `app:8080`. The Android gateway uses
+`wss://<your-domain>/v1/device-stream` and needs a certificate issued by a CA
+the phone already trusts. A local Caddy certificate or a user-installed CA is
+only suitable for local tests; ordinary Android apps do not trust user-added CAs
+by default. Keep the `caddy_data` volume so certificate state survives restarts.
+The edge permits long-lived streams for up to 24 hours and delays forced closure
+for five minutes during a Caddy reload; gateway reconnection still remains
+necessary. Apply per-source connection limits upstream before exposing the
+device stream broadly, as described under runtime capacity below.
+
+For an existing nginx TLS edge, proxy ordinary requests and
+`/v1/device-stream` to `http://127.0.0.1:8080`. Preserve the original `Host` and
+`Origin` headers; for the device path use HTTP/1.1, forward `Upgrade` and
+`Connection: upgrade`, and set read and send timeouts above the 30-second
+heartbeat (for example, 90 seconds). A minimal device location is:
+
+```nginx
+location /v1/device-stream {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_http_version 1.1;
+    proxy_set_header Host $http_host;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_read_timeout 90s;
+    proxy_send_timeout 90s;
+}
+```
+
+The nginx server also needs its trusted `ssl_certificate` and
+`ssl_certificate_key`, a normal `location /` proxy to the same API, and the same
+canonical public origin in `AUTH_ORIGIN`. To test the Compose edge without a
+public domain or a phone, install Python's `cryptography` package with Argon2id
+support, then run `python deploy/compose/edge_smoke.py`. It creates
+a disposable loopback-only stack, trusts only its temporary Caddy local CA,
+creates a synthetic verified owner with a freshly generated passphrase in its
+own database, checks HTTPS sign-in,
+secure session cookies and exact-Origin handling, then performs a WSS upgrade
+and removes the test containers and volumes. It does not send mail or SMS.
+
 Production packaging and upgrade instructions will expand as release artifacts become available. For now, use this stack as a development environment and check the repository's releases for supported versions.
 
 ### PostgreSQL transport TLS

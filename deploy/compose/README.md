@@ -40,6 +40,16 @@ production promotion; follow the release verification steps in
 Set `APP_PORT` in `.env` if port 8080 is occupied for the normal local setup;
 the documented health endpoints then use that port.
 
+The `app` and `app_b` services forward the documented server settings in
+`.env.example`, including synthetic-alpha, inbound-pilot, webhook, and Stripe
+TEST settings. Uncomment an optional setting in `.env` only when configuring
+that feature; unset keys are omitted from the container. Compose uses
+`POSTGRES_PASSWORD` for `db`, `RUNTIME_DATABASE_PASSWORD` to build the API
+database URL, and `APP_PORT` for the host-side port. `DATABASE_URL` goes to the
+migrator; `MIGRATIONS_DIR` in `.env.example` is for a local binary. Compose
+always sets `DISPATCH_ENABLED=false` for both API services, regardless of the
+value in `.env`.
+
 ## Owner registration
 
 Compose passes `REGISTRATION_MODE`, allowlists, and the optional enrollment
