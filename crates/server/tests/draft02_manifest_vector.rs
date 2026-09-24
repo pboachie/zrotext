@@ -9,6 +9,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 const VECTOR: &str = include_str!("../../../sdk/typescript/test/vectors/draft02-genesis.json");
+const ROTATION_VECTOR: &str =
+    include_str!("../../../sdk/typescript/test/vectors/draft02-rotation.json");
 const HALF_ORDER: [u8; 32] = [
     0x7f, 0xff, 0xff, 0xff, 0x80, 0x00, 0x00, 0x00, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
     0xde, 0x73, 0x7d, 0x56, 0xd3, 0x8b, 0xcf, 0x42, 0x79, 0xdc, 0xe5, 0x61, 0x7e, 0x31, 0x92, 0xa8,
@@ -81,6 +83,18 @@ fn validate(
     manifest: &[u8],
     now: u64,
 ) -> Result<Validated, &'static str> {
+    validate_chain(pin, fingerprint, manifest, now, 1, 1, &[0; 32])
+}
+
+fn validate_chain(
+    pin: &[u8],
+    fingerprint: &[u8],
+    manifest: &[u8],
+    now: u64,
+    expected_generation: u64,
+    expected_version: u64,
+    expected_previous: &[u8; 32],
+) -> Result<Validated, &'static str> {
     if pin.len() != 94 || &pin[..5] != b"ZTRP\x02" {
         return Err("pin shape");
     }
@@ -91,7 +105,7 @@ fn validate(
         return Err("pin fingerprint");
     }
     let account: [u8; 16] = pin[5..21].try_into().map_err(|_| "pin account")?;
-    if account == [0; 16] || u64_be(&pin[21..29])? != 1 {
+    if account == [0; 16] || u64_be(&pin[21..29])? != expected_generation {
         return Err("pin identity");
     }
     VerifyingKey::from_sec1_bytes(&pin[29..94]).map_err(|_| "pin curve")?;
@@ -110,8 +124,11 @@ fn validate(
     let version = u64_be(&manifest[29..37])?;
     let issued = u64_be(&manifest[37..45])?;
     let expires = u64_be(&manifest[45..53])?;
-    if generation != 1 || version != 1 || manifest[53..85] != [0; 32] {
-        return Err("genesis chain");
+    if generation != expected_generation
+        || version != expected_version
+        || manifest[53..85] != expected_previous[..]
+    {
+        return Err("manifest chain");
     }
     if issued == 0
         || expires <= issued
@@ -208,6 +225,52 @@ fn validate(
     })
 }
 
+fn validate_transition(
+    transition: &[u8],
+    old: &Validated,
+    old_root: &[u8],
+    expected_new_root: &[u8],
+    now: u64,
+) -> Result<[u8; 32], &'static str> {
+    if transition.len() != 343 || &transition[..5] != b"ZTRT\x02" {
+        return Err("transition shape");
+    }
+    if transition[5..21] != old.account
+        || u64_be(&transition[21..29])? != old.generation
+        || u64_be(&transition[29..37])? != old.generation + 1
+        || transition[37..102] != old_root[..]
+        || transition[102..167] != expected_new_root[..]
+        || transition[102..167] == transition[37..102]
+        || transition[167..199] != old.digest
+    {
+        return Err("transition pin/chain");
+    }
+    let issued = u64_be(&transition[199..207])?;
+    let expires = u64_be(&transition[207..215])?;
+    if issued == 0
+        || expires <= issued
+        || expires - issued > DAY_MS
+        || issued > now.saturating_add(300_000)
+        || now >= expires
+    {
+        return Err("transition freshness");
+    }
+    let unsigned = &transition[..215];
+    verify_signature(
+        old_root,
+        &transition[215..279],
+        b"ZTSE/root-transition/v2\0",
+        unsigned,
+    )?;
+    verify_signature(
+        expected_new_root,
+        &transition[279..343],
+        b"ZTSE/root-transition/v2\0",
+        unsigned,
+    )?;
+    Ok(Sha256::digest(unsigned).into())
+}
+
 fn high_s_twin(manifest: &mut [u8]) {
     let start = manifest.len() - 32;
     let mut borrow = 0i16;
@@ -274,5 +337,105 @@ fn rust_rejects_pin_mismatch_high_s_twin_and_changed_record() {
     assert_eq!(
         validate(&pin, &fingerprint, &manifest, now).unwrap_err(),
         "role/scope/subject"
+    );
+}
+
+#[test]
+fn python_generated_dual_signed_rotation_is_independently_verified_in_rust() {
+    let rotation: Value = serde_json::from_str(ROTATION_VECTOR).expect("public rotation vector");
+    let pin = field(&rotation, "old_root_pin_b64");
+    let fingerprint = field(&rotation, "old_root_fingerprint_b64");
+    let old_manifest = field(&rotation, "old_manifest_b64");
+    let transition = field(&rotation, "transition_b64");
+    let new_root = field(&rotation, "new_root_point_b64");
+    let new_pin = field(&rotation, "new_root_pin_b64");
+    let new_fingerprint = field(&rotation, "new_root_fingerprint_b64");
+    let new_manifest = field(&rotation, "new_manifest_b64");
+    let now = rotation["now_ms"].as_u64().expect("now");
+
+    let old = validate(&pin, &fingerprint, &old_manifest, now).expect("old genesis");
+    assert_eq!(
+        old.digest.as_slice(),
+        field(&rotation, "old_semantic_manifest_digest_b64")
+    );
+    let anchor = validate_transition(&transition, &old, &pin[29..94], &new_root, now)
+        .expect("dual-signed rotation");
+    assert_eq!(
+        anchor.as_slice(),
+        field(&rotation, "transition_anchor_digest_b64")
+    );
+    assert_eq!(&new_pin[29..94], new_root);
+    let new = validate_chain(
+        &new_pin,
+        &new_fingerprint,
+        &new_manifest,
+        now,
+        2,
+        1,
+        &anchor,
+    )
+    .expect("linked new-generation manifest");
+    assert_eq!(
+        new.digest.as_slice(),
+        field(&rotation, "new_semantic_manifest_digest_b64")
+    );
+    assert_eq!((new.generation, new.version), (2, 1));
+    assert_eq!(
+        new.roles.iter().map(|key| key.role).collect::<Vec<_>>(),
+        [1, 2, 5, 6]
+    );
+}
+
+#[test]
+fn rust_rejects_rotation_substitution_high_s_and_broken_anchor() {
+    let rotation: Value = serde_json::from_str(ROTATION_VECTOR).expect("public rotation vector");
+    let pin = field(&rotation, "old_root_pin_b64");
+    let fingerprint = field(&rotation, "old_root_fingerprint_b64");
+    let old_manifest = field(&rotation, "old_manifest_b64");
+    let transition = field(&rotation, "transition_b64");
+    let new_root = field(&rotation, "new_root_point_b64");
+    let new_pin = field(&rotation, "new_root_pin_b64");
+    let new_fingerprint = field(&rotation, "new_root_fingerprint_b64");
+    let new_manifest = field(&rotation, "new_manifest_b64");
+    let now = rotation["now_ms"].as_u64().expect("now");
+    let old = validate(&pin, &fingerprint, &old_manifest, now).expect("old genesis");
+
+    assert_eq!(
+        validate_transition(&transition, &old, &pin[29..94], &pin[29..94], now).unwrap_err(),
+        "transition pin/chain"
+    );
+    for offset in [215, 279] {
+        let mut twin = transition.clone();
+        high_s_twin(&mut twin[..offset + 64]);
+        assert_eq!(
+            validate_transition(&twin, &old, &pin[29..94], &new_root, now).unwrap_err(),
+            "high-s signature"
+        );
+    }
+    let mut broken_digest = old.digest;
+    broken_digest[0] ^= 1;
+    let broken_old = Validated {
+        digest: broken_digest,
+        ..old
+    };
+    assert_eq!(
+        validate_transition(&transition, &broken_old, &pin[29..94], &new_root, now).unwrap_err(),
+        "transition pin/chain"
+    );
+    let anchor: [u8; 32] = Sha256::digest(&transition[..215]).into();
+    let mut wrong_anchor = anchor;
+    wrong_anchor[0] ^= 1;
+    assert_eq!(
+        validate_chain(
+            &new_pin,
+            &new_fingerprint,
+            &new_manifest,
+            now,
+            2,
+            1,
+            &wrong_anchor
+        )
+        .unwrap_err(),
+        "manifest chain"
     );
 }
