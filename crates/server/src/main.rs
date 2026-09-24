@@ -30,7 +30,7 @@ use zrotext_delivery_store::DeliveryStore;
 use zrotext_server::{
     alpha_policy::AlphaPolicy,
     auth::{
-        TokenHasher, abuse_limits,
+        self, TokenHasher, abuse_limits,
         mfa::{self, MfaCipher},
     },
     billing::{
@@ -258,11 +258,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 tokio::select! {
                     _ = checks.tick() => {
                         if abuse_draining.load(Ordering::Acquire) { break; }
-                        if let Ok((client, connection)) = zrotext_server::runtime_db::connect_worker(&abuse_database).await {
+                        if let Ok((mut client, connection)) = zrotext_server::runtime_db::connect_worker(&abuse_database).await {
                             tokio::spawn(async move { let _ = connection.await; });
                             let _ = abuse_limits::prune(&client).await;
                             let _ = mfa::prune_expired_challenges(&client).await;
                             let _ = enrollment::prune_expired(&client).await;
+                            let _ = auth::prune_expired_pending_owners(&mut client).await;
                         }
                     }
                     _ = abuse_drain_notify.notified() => break,

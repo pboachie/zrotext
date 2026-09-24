@@ -21,6 +21,8 @@ pub struct VerificationMail {
 /// Password proof prevents third parties from repeatedly mailing an address.
 /// A generic HTTP response must be used for all `false` results. This database
 /// throttle permits at most three resends per 24-hour window, 60 seconds apart.
+/// Resends never extend the pending window that began at sign-up; after it
+/// elapses the owner must sign up again, which replaces the expired record.
 pub async fn request_verification_resend(
     client: &mut Client,
     hasher: &TokenHasher,
@@ -32,8 +34,8 @@ pub async fn request_verification_resend(
     };
     let row = client
         .query_opt(
-            "SELECT u.id,u.password_hash FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE u.email=$1 AND u.email_verified_at IS NULL AND a.disabled_at IS NULL",
-            &[&email],
+            "SELECT u.id,u.password_hash FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE u.email=$1 AND u.email_verified_at IS NULL AND u.created_at>now()-($2::integer * interval '1 hour') AND a.disabled_at IS NULL",
+            &[&email, &VERIFICATION_HOURS],
         )
         .await?;
     let user_id = row.as_ref().map(|row| row.get::<_, Uuid>(0));
@@ -49,8 +51,8 @@ pub async fn request_verification_resend(
     let tx = client.transaction().await?;
     let permitted = tx
         .query_opt(
-            "UPDATE users SET verification_resend_count=CASE WHEN verification_resend_window_at IS NULL OR verification_resend_window_at <= now()-interval '24 hours' THEN 1 ELSE verification_resend_count+1 END, verification_resend_window_at=CASE WHEN verification_resend_window_at IS NULL OR verification_resend_window_at <= now()-interval '24 hours' THEN now() ELSE verification_resend_window_at END, verification_resend_last_at=now() WHERE id=$1 AND password_hash=$2 AND email_verified_at IS NULL AND (verification_resend_last_at IS NULL OR verification_resend_last_at <= now()-interval '60 seconds') AND (verification_resend_window_at IS NULL OR verification_resend_window_at <= now()-interval '24 hours' OR verification_resend_count<3) RETURNING id",
-            &[&user_id, &stored],
+            "UPDATE users SET verification_resend_count=CASE WHEN verification_resend_window_at IS NULL OR verification_resend_window_at <= now()-interval '24 hours' THEN 1 ELSE verification_resend_count+1 END, verification_resend_window_at=CASE WHEN verification_resend_window_at IS NULL OR verification_resend_window_at <= now()-interval '24 hours' THEN now() ELSE verification_resend_window_at END, verification_resend_last_at=now() WHERE id=$1 AND password_hash=$2 AND email_verified_at IS NULL AND created_at>now()-($3::integer * interval '1 hour') AND (verification_resend_last_at IS NULL OR verification_resend_last_at <= now()-interval '60 seconds') AND (verification_resend_window_at IS NULL OR verification_resend_window_at <= now()-interval '24 hours' OR verification_resend_count<3) RETURNING id",
+            &[&user_id, &stored, &VERIFICATION_HOURS],
         )
         .await?
         .is_some();
@@ -90,8 +92,9 @@ pub async fn request_verification_resend(
             )
             .await?
             .get(0);
+        // A replacement code expires with the pending window, not after it.
         tx.execute(
-            "INSERT INTO email_verifications(id,account_id,user_id,token_hash,expires_at) VALUES($1,$2,$3,$4,now()+($5::integer * interval '1 hour'))",
+            "INSERT INTO email_verifications(id,account_id,user_id,token_hash,expires_at) SELECT $1,$2,u.id,$4,u.created_at+($5::integer * interval '1 hour') FROM users u WHERE u.id=$3",
             &[&id, &account_id, &user_id, &&token_hash[..], &VERIFICATION_HOURS],
         )
         .await?;
@@ -114,8 +117,8 @@ pub async fn claim_verification_mail(
     let tx = client.transaction().await?;
     let row = tx
         .query_opt(
-            "SELECT o.verification_id,u.email,v.token_hash FROM verification_mail_outbox o JOIN email_verifications v ON v.id=o.verification_id JOIN users u ON u.id=v.user_id JOIN accounts a ON a.id=v.account_id WHERE o.delivered_at IS NULL AND o.canceled_at IS NULL AND o.dead_at IS NULL AND o.attempt_count<6 AND o.next_attempt_at<=now() AND (o.leased_until IS NULL OR o.leased_until<=now()) AND v.used_at IS NULL AND v.expires_at>now() AND u.email_verified_at IS NULL AND a.disabled_at IS NULL ORDER BY o.next_attempt_at,o.verification_id LIMIT 1 FOR UPDATE OF o SKIP LOCKED",
-            &[],
+            "SELECT o.verification_id,u.email,v.token_hash FROM verification_mail_outbox o JOIN email_verifications v ON v.id=o.verification_id JOIN users u ON u.id=v.user_id JOIN accounts a ON a.id=v.account_id WHERE o.delivered_at IS NULL AND o.canceled_at IS NULL AND o.dead_at IS NULL AND o.attempt_count<6 AND o.next_attempt_at<=now() AND (o.leased_until IS NULL OR o.leased_until<=now()) AND v.used_at IS NULL AND v.expires_at>now() AND u.email_verified_at IS NULL AND u.created_at>now()-($1::integer * interval '1 hour') AND a.disabled_at IS NULL ORDER BY o.next_attempt_at,o.verification_id LIMIT 1 FOR UPDATE OF o SKIP LOCKED",
+            &[&VERIFICATION_HOURS],
         )
         .await?;
     let Some(row) = row else {
