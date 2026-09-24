@@ -6,7 +6,9 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
+import release_bundle as release_module
 from release_bundle import (WEB_FILES, file_set_digest, migrations, read_json,
                             release_bundle, verify_tag)
 
@@ -113,6 +115,16 @@ class ReleaseBundleTest(unittest.TestCase):
             (migration_dir / "invalid.sql").write_text("SELECT 2;", encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "Invalid migration filename"):
                 migrations(root)
+
+    def test_receipts_require_private_fixed_artifact_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            private = root / ".zrotext" / "release-bundle"
+            with patch.object(release_module, "ARTIFACT_DIR", private):
+                with self.assertRaisesRegex(ValueError, "missing or linked"):
+                    release_module.checked_artifact_dir()
+                private.mkdir(parents=True, mode=0o700)
+                release_module.checked_artifact_dir()
 
     def test_tag_must_be_annotated_on_main_and_exact_checkout(self):
         with tempfile.TemporaryDirectory() as directory:

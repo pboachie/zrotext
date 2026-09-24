@@ -19,6 +19,10 @@ from check_release_tag import VERSION
 
 
 ROOT = Path(__file__).resolve().parent.parent
+ARTIFACT_DIR = Path.home() / ".zrotext" / "release-bundle"
+CANDIDATE_RECEIPT = ARTIFACT_DIR / "candidate.json"
+IMAGE_RECEIPT = ARTIFACT_DIR / "image-receipt.json"
+MANIFEST = ARTIFACT_DIR / "release-bundle.json"
 HEX = re.compile(r"[0-9a-f]{64}\Z")
 COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 ENVIRONMENTS = {"test", "staging", "production", "self-hosted"}
@@ -56,6 +60,14 @@ def read_json(path: Path) -> tuple[dict[str, object], str]:
     if not isinstance(value, dict):
         raise ValueError("Receipt must be a JSON object")
     return value, sha256(raw)
+
+
+def checked_artifact_dir() -> None:
+    parent = ARTIFACT_DIR.parent
+    if parent.is_symlink() or ARTIFACT_DIR.is_symlink() or not ARTIFACT_DIR.is_dir():
+        raise ValueError("Private release artifact directory is missing or linked")
+    if os.name != "nt" and ARTIFACT_DIR.stat().st_mode & 0o077:
+        raise ValueError("Private release artifact directory must be owner-only")
 
 
 def file_set_digest(root: Path, paths: tuple[str, ...]) -> str:
@@ -124,7 +136,8 @@ def validated_image(value: dict[str, object], tag: str, commit: str) -> None:
     if set(value) != {
         "schema_version", "source_tag", "source_commit", "image", "build_tag",
         "image_digest", "image_ref", "workflow_run_id", "workflow_run_attempt",
-    } or value["schema_version"] != 1 or value["source_tag"] != tag \
+    } or type(value["schema_version"]) is not int or value["schema_version"] != 1 \
+            or value["source_tag"] != tag \
             or value["source_commit"] != commit or value["image"] != "ghcr.io/pboachie/zrotext":
         raise ValueError("Server image receipt source or shape differs")
     digest = value["image_digest"]
@@ -220,21 +233,18 @@ def main() -> None:
     parser.add_argument("--tag", required=True)
     parser.add_argument("--commit", required=True)
     parser.add_argument("--environment", required=True, choices=sorted(ENVIRONMENTS))
-    parser.add_argument("--candidate-receipt", required=True, type=Path)
-    parser.add_argument("--image-receipt", required=True, type=Path)
-    parser.add_argument("--manifest", required=True, type=Path)
     args = parser.parse_args()
     verify_tag(ROOT, args.tag, args.commit)
-    candidate, candidate_sha = read_json(args.candidate_receipt)
-    image, image_sha = read_json(args.image_receipt)
+    checked_artifact_dir()
+    candidate, candidate_sha = read_json(CANDIDATE_RECEIPT)
+    image, image_sha = read_json(IMAGE_RECEIPT)
     expected = release_bundle(ROOT, args.tag, args.commit, args.environment,
                               candidate, candidate_sha, image, image_sha)
     serialized = json.dumps(expected, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
-    target = args.manifest
-    if target.is_symlink() or ROOT in target.resolve().parents:
-        raise ValueError("Bundle manifest must remain outside the source checkout")
+    target = MANIFEST
+    if target.is_symlink():
+        raise ValueError("Bundle manifest must not be a link")
     if args.mode == "create":
-        target.parent.mkdir(parents=True, exist_ok=True)
         with target.open("x", encoding="utf-8", newline="\n") as output:
             output.write(serialized)
             output.flush()
