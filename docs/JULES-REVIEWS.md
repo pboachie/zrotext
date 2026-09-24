@@ -6,4 +6,6 @@ A `/jules address` session receives only two kinds of feedback: Jules' latest re
 
 The integration runs from the trusted `main` workflow. It does not check out PR code in Actions. The API key is stored in the repository's `JULES_API_KEY` Actions secret and is sent only to Jules over HTTPS. Workflow dispatch with a PR number and mode is also available to repository maintainers.
 
+Before starting a session, the workflow lists Jules sources, selects the single connected source whose GitHub owner and repository match this project, and checks that Jules has indexed the PR branch. A missing or ambiguous source fails closed; an unindexed branch defers the review. API failures report only a bounded status category, never the provider's message or request headers.
+
 Reviews are limited to branches in this repository. For a stacked PR, Jules reviews the change against that PR's base commit rather than all parent changes. A review is marked stale if the PR head or its base commit changes while Jules is working. The schedule avoids repeated sessions for the same head when its base changes; request a new review after updating the parent branch. Treat Jules findings as a second opinion alongside CI and maintainer review.
