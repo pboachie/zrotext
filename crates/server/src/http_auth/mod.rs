@@ -1246,10 +1246,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn postgres_http_account_lifecycle_enforces_csrf_and_revocation() {
-        let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
-            return;
-        };
+        let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
         let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
         tokio::spawn(async move { connection.await.unwrap() });
         let schema = format!("http_auth_test_{}", Uuid::new_v4().simple());
@@ -1680,10 +1680,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn api_key_issuance_budget_survives_concurrency_revocation_and_new_sessions() {
-        let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
-            return;
-        };
+        let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
         let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
         tokio::spawn(async move { connection.await.unwrap() });
         let schema = format!("key_budget_{}", Uuid::new_v4().simple());
@@ -1822,10 +1822,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn postgres_http_expired_pending_signup_is_replaced_with_uniform_responses() {
-        let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
-            return;
-        };
+        let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
         let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
         tokio::spawn(async move { connection.await.unwrap() });
         let schema = format!("http_pending_test_{}", Uuid::new_v4().simple());
@@ -1925,10 +1925,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn valid_verification_survives_anonymous_invalid_code_exhaustion() {
-        let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
-            return;
-        };
+        let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
         let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
         tokio::spawn(async move { connection.await.unwrap() });
         let schema = format!("http_verify_test_{}", Uuid::new_v4().simple());
@@ -2043,10 +2043,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn owner_sign_in_survives_anonymous_login_budget_exhaustion() {
-        let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
-            return;
-        };
+        let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
         let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
         tokio::spawn(async move { connection.await.unwrap() });
         let schema = format!("http_login_budget_{}", Uuid::new_v4().simple());
@@ -2260,10 +2260,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn postgres_http_mfa_never_sets_session_before_factor_and_limits_replay() {
-        let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
-            return;
-        };
+        let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
         let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
         tokio::spawn(async move { connection.await.unwrap() });
         let schema = format!("http_mfa_test_{}", Uuid::new_v4().simple());

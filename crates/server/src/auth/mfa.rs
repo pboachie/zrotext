@@ -621,10 +621,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn postgres_enrollment_challenge_replay_recovery_and_disable() {
-        let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
-            return;
-        };
+        let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
         let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
         tokio::spawn(async move { connection.await.unwrap() });
         let schema = format!("mfa_test_{}", Uuid::new_v4().simple());

@@ -1321,10 +1321,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn lost_intent_ack_across_hubs_needs_no_radio_proof_before_regrant() {
-        let Ok(url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
-            return;
-        };
+        let url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
         let (mut client, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
         tokio::spawn(async move { connection.await.unwrap() });
         let schema = format!("hub_recovery_test_{}", Uuid::new_v4().simple());
@@ -1556,10 +1556,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn writer_claim_replay_epoch_and_revocation() {
-        let Ok(url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
-            return;
-        };
+        let url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
         let (mut client, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
         tokio::spawn(async move { connection.await.unwrap() });
         let schema = format!("socket_test_{}", Uuid::new_v4().simple());

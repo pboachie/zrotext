@@ -756,10 +756,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn postgres_one_use_tenant_replay_expiry_and_revocation() {
-        let Ok(url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
-            return;
-        };
+        let url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
         let (mut client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
             .await
             .unwrap();
@@ -1204,10 +1204,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn postgres_device_cap_downgrade_grandfathers_and_serializes_approval() {
-        let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
-            return;
-        };
+        let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
         let (setup, connection) = tokio_postgres::connect(&base_url, tokio_postgres::NoTls)
             .await
             .unwrap();

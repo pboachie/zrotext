@@ -158,11 +158,10 @@ fn transcript_is_role_separated_and_rejects_ambiguous_or_old_android() {
 }
 
 #[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn migration_preserves_pending_generation_high_water_mark() {
-    let Ok(url) = std::env::var("ZT_INBOUND_TEST_DATABASE_URL") else {
-        eprintln!("set ZT_INBOUND_TEST_DATABASE_URL for line activation database test");
-        return;
-    };
+    let url = std::env::var("ZT_INBOUND_TEST_DATABASE_URL")
+        .expect("set ZT_INBOUND_TEST_DATABASE_URL for PostgreSQL-backed tests");
     let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
     let schema = format!("line_upgrade_{}", Uuid::new_v4().simple());
@@ -292,11 +291,10 @@ async fn migration_preserves_pending_generation_high_water_mark() {
 }
 
 #[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn signed_activation_fences_owner_device_generation_and_replay() {
-    let Ok(url) = std::env::var("ZT_INBOUND_TEST_DATABASE_URL") else {
-        eprintln!("set ZT_INBOUND_TEST_DATABASE_URL for line activation database test");
-        return;
-    };
+    let url = std::env::var("ZT_INBOUND_TEST_DATABASE_URL")
+        .expect("set ZT_INBOUND_TEST_DATABASE_URL for PostgreSQL-backed tests");
     let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
     let schema = format!("line_activation_{}", Uuid::new_v4().simple());

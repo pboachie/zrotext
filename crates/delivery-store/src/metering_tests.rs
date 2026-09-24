@@ -21,8 +21,9 @@ async fn connect(url: &str) -> Client {
 }
 
 impl TestDb {
-    async fn new() -> Option<Self> {
-        let root_url = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL").ok()?;
+    async fn new() -> Self {
+        let root_url = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL")
+            .expect("set ZT_DELIVERY_TEST_DATABASE_URL for PostgreSQL-backed tests");
         assert!(root_url.starts_with("postgres://") || root_url.starts_with("postgresql://"));
         let admin = connect(&root_url).await;
         let schema = format!("metering_test_{}", Uuid::new_v4().simple());
@@ -50,12 +51,12 @@ impl TestDb {
         ] {
             client.batch_execute(migration).await.unwrap();
         }
-        Some(Self {
+        Self {
             admin,
             client,
             schema,
             scoped_url,
-        })
+        }
     }
 
     async fn account_and_device(&self) -> (Uuid, Uuid) {
@@ -117,10 +118,9 @@ async fn timestamp_ms(client: &Client, value: &str) -> i64 {
 }
 
 #[tokio::test]
+#[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn reservation_is_idempotent_and_refund_stays_in_original_utc_period() {
-    let Some(mut db) = TestDb::new().await else {
-        return;
-    };
+    let mut db = TestDb::new().await;
     let (account, device) = db.account_and_device().await;
     let (other_account, other_device) = db.account_and_device().await;
     let january = timestamp_ms(&db.client, "2026-01-31 23:59:59+00").await;
@@ -292,10 +292,9 @@ async fn reservation_is_idempotent_and_refund_stays_in_original_utc_period() {
 }
 
 #[tokio::test]
+#[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn one_remaining_unit_accepts_only_one_of_one_hundred_contenders() {
-    let Some(db) = TestDb::new().await else {
-        return;
-    };
+    let db = TestDb::new().await;
     let (account, device) = db.account_and_device().await;
     db.policy(account, 1).await;
     let expiry = now_ms() + 3_600_000;
