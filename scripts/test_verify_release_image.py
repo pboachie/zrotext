@@ -134,6 +134,26 @@ class VerifyReleaseImageTest(unittest.TestCase):
             with self.assertRaisesRegex(VerificationError, "no verified SPDX SBOM"):
                 verify_sbom_attestation(RECEIPT)
 
+    def test_attested_non_ascii_spdx_survives_windows_default_encoding(self):
+        spdx = {**SPDX, "packages": [{"name": "Debian’s base"}]}
+        statement = [{"verificationResult": {"statement": {
+            "predicateType": spdx_predicate(spdx),
+            "subject": [{"name": RECEIPT["image"],
+                         "digest": {"sha256": DIGEST[7:]}}],
+            "predicate": spdx,
+        }}}]
+        raw = json.dumps(statement, ensure_ascii=False).encode("utf-8")
+
+        def windows_like_run(*_args, **kwargs):
+            return type("Result", (), {"returncode": 0,
+                                        "stdout": raw.decode(kwargs.get("encoding") or "cp1252")})()
+
+        with patch("verify_release_image.published_sbom", return_value=spdx), \
+             patch("verify_release_image.subprocess.run",
+                   side_effect=windows_like_run) as command:
+            verify_sbom_attestation(RECEIPT)
+        self.assertEqual(command.call_args.kwargs["encoding"], "utf-8")
+
     def test_remote_docker_context_is_rejected_before_pull(self):
         with patch.dict("os.environ", {"DOCKER_HOST": "ssh://production.example"}):
             with self.assertRaisesRegex(VerificationError, "local Docker daemon"):

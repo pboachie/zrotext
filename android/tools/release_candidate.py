@@ -363,8 +363,9 @@ def verify_unsigned_sbom_attestation(unsigned: Path, digest: str,
             "--signer-workflow", ATTESTATION_WORKFLOW,
             "--source-ref", "refs/heads/main", "--source-digest", commit,
             "--predicate-type", SBOM_PREDICATE, "--format", "json",
-        ], capture_output=True, text=True, timeout=180, check=False, shell=False)
-    except (OSError, subprocess.TimeoutExpired) as exc:
+        ], capture_output=True, text=True, encoding="utf-8", timeout=180,
+            check=False, shell=False)
+    except (OSError, UnicodeError, subprocess.TimeoutExpired) as exc:
         raise ValueError("Unsigned APK SBOM attestation lookup could not finish") from exc
     if result.returncode:
         raise ValueError("Unsigned APK SBOM attestation verification failed")

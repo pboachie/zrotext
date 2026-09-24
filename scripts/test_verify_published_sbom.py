@@ -37,6 +37,20 @@ class VerifyPublishedSbomTest(unittest.TestCase):
         with self.assertRaisesRegex(SbomError, "no usable SPDX"):
             checked_spdx(json.dumps({**SPDX, "packages": []}))
 
+    def test_non_ascii_spdx_survives_windows_default_encoding(self):
+        spdx = {**SPDX, "packages": [{"SPDXID": "SPDXRef-Package-debian",
+                                      "name": "Debian’s base"}]}
+        raw = json.dumps(spdx, ensure_ascii=False).encode("utf-8")
+
+        def windows_like_run(*_args, **kwargs):
+            return type("Result", (), {"returncode": 0,
+                                        "stdout": raw.decode(kwargs.get("encoding") or "cp1252")})()
+
+        with patch("verify_published_sbom.subprocess.run",
+                   side_effect=windows_like_run) as command:
+            self.assertEqual(published_sbom(IMAGE_REF), spdx)
+        self.assertEqual(command.call_args.kwargs["encoding"], "utf-8")
+
     def test_spdx_version_selects_the_exact_signed_predicate(self):
         self.assertEqual(spdx_predicate(checked_spdx(json.dumps(SPDX))),
                          "https://spdx.dev/Document/v2.3")
