@@ -24,6 +24,7 @@
         <button type="submit">Sign in</button>
       </form>
       <p id="login-status" role="status" aria-live="polite"></p>
+      <p>Need to register or verify your email? <a href="/owner/account">Open account setup</a>.</p>
       <form id="mfa-form" method="post" action="/v1/auth/login/mfa" hidden>
         <p>Enter a code from your authenticator, or one unused recovery code.</p>
         <label for="mfa-code">Authenticator or recovery code</label>
@@ -63,6 +64,7 @@
     <div id="owner-content" hidden>
       <section aria-labelledby="account-security-title">
         <h2 id="account-security-title">Account security</h2>
+        <p>Manage your authenticator and recovery codes on the <a href="/owner/account">account setup page</a>.</p>
         <h3>Change password</h3>
         <p>Changing or resetting your password signs out every session and revokes your API keys. Sign in again and reissue keys used by integrations.</p>
         <form id="change-password-form" method="post" action="/v1/auth/password">
@@ -89,7 +91,6 @@
           <button id="revoke-other-sessions" type="submit" class="quiet">Sign out other sessions</button>
         </form>
       </section>
-
       <section aria-labelledby="pair-title">
         <h2 id="pair-title">Pair a phone</h2>
         <p>Create a five-minute, one-use ticket. Enter the server origin, ID and token in the gateway app. The token is shown only now and stays on this page until you finish or leave.</p>

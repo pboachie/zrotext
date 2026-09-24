@@ -83,7 +83,7 @@ already migrated private database through the runtime role. It creates **one
 verified owner** only if `accounts` is empty, and sends no verification mail.
 Configure `AUTH_ORIGIN`, `AUTH_TOKEN_PEPPER_B64`, and
 `ENROLLMENT_TOKEN_PEPPER_B64` before starting the API. The account can sign in
-at `/owner/devices.html` once it is running.
+at `/owner/devices` once it is running.
 Further invocations refuse to create another owner; inspect an existing
 database before attempting bootstrap again. For two hubs, restart `app_b`
 with `--profile two-hub` after the CLI succeeds. Keep the operator CLI and
@@ -123,10 +123,17 @@ allowlists/key supplied in `closed` or `open` mode stop server startup.
 can reach the route and verify an email address. Keep the normal
 registration abuse budget and mail-provider limits in place for open mode.
 
-There is no registration form in the current owner UI. For a later invited
-owner, configure SMTP and account routes, restart every API instance with the
-same allowlist and master key, then send these two HTTPS requests to the exact
-configured `AUTH_ORIGIN` (replace the example host and placeholders):
+For a later invited owner, configure SMTP and account routes, then restart
+every API instance with the same allowlist and master key. The registrant opens
+`/owner/account` on the exact configured HTTPS `AUTH_ORIGIN`, enters their
+email, a new password and the address-bound invite token, then enters the
+emailed code in the verification form on that page. The page also offers a
+resend form. It sends JSON with the token in a request header; no credentials
+or codes go in URLs. A successful request still returns generic `202`, so the
+page cannot tell a denied invitation from an accepted one.
+
+For a headless setup, send these two HTTPS requests to that same origin
+(replace the example host and placeholders):
 
 ```http
 POST /v1/auth/register HTTP/1.1
@@ -152,6 +159,12 @@ Content-Type: application/json
 Use a client that takes the password, invite and code from protected input;
 keep them out of URLs, shell arguments and request logs. Reject redirects to
 another origin. The local CLI above is the executable first-owner path.
+
+After signing in at `/owner/devices`, open `/owner/account` to enroll, confirm
+or disable an authenticator. Enrollment requires `MFA_ENROLLMENT_ENABLED=true`
+and the shared MFA encryption key on every API instance. The page shows the
+manual secret and one-time recovery codes only during setup and clears them
+when the page is left. Save the recovery codes before leaving.
 
 `register` returns `202` even when admission is denied. A successful
 `verify-email` returns `204`. If no mail arrives, check the private policy and

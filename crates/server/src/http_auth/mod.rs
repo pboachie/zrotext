@@ -88,6 +88,12 @@ pub struct SmtpVerificationDispatcher {
     transport: AsyncSmtpTransport<Tokio1Executor>,
 }
 
+fn verification_email_body(token: &str) -> String {
+    format!(
+        "Your ZROtext email verification code is:\n\n{token}\n\nOpen /owner/account#verify on your ZROtext server and enter this code. It expires in 24 hours.\n"
+    )
+}
+
 impl SmtpVerificationDispatcher {
     pub fn new(
         host: &str,
@@ -151,9 +157,7 @@ impl VerificationDispatcher for SmtpVerificationDispatcher {
             }
             let message = builder
                 .subject("Verify your ZROtext email")
-                .body(format!(
-                    "Your ZROtext email verification code is:\n\n{token}\n\nEnter this code in the ZROtext verification form. It expires in 24 hours.\n"
-                ))
+                .body(verification_email_body(token))
                 .map_err(|_| ())?;
             self.transport.send(message).await.map_err(|_| ())?;
             Ok(())
@@ -1926,6 +1930,14 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn verification_mail_names_the_shipped_form_without_a_code_url() {
+        let body = verification_email_body("synthetic-code");
+        assert!(body.contains("/owner/account#verify"));
+        assert!(body.contains("synthetic-code"));
+        assert!(!body.contains("?token="));
     }
 
     #[tokio::test]
