@@ -77,6 +77,67 @@ operational webhook encryption-key change. Follow the
 example does not configure webhook delivery or supply the required private
 keys.
 
+## Database role separation
+
+The Compose API services use `zrotext_runtime`, with a separate
+`RUNTIME_DATABASE_PASSWORD`. Generate this as 32 random bytes encoded as exactly
+64 hexadecimal characters, for example with `openssl rand -hex 32`. It must
+differ from `POSTGRES_PASSWORD`. Compose constructs the runtime URL itself;
+`DATABASE_URL` is used only by `migrate` and must refer to the Compose `zrotext`
+database and its `zrotext` migration owner, using `POSTGRES_PASSWORD`.
+Do not put the migration credential in an API's environment.
+
+After migrations, `db-runtime` provisions the login before either API starts.
+This runs against the current database, not an init directory that would be
+skipped for existing volumes. It grants data CRUD, sequence use, and application
+function execution, but no migration ledger access, object ownership, schema
+creation, temporary tables, truncation, role administration, or server file
+access. It also removes public grants in this dedicated application database.
+Future tables, sequences, and functions created by the same migration owner
+inherit runtime grants. Review new functions for privilege requirements; do not
+add `SECURITY DEFINER` functions without a separate security review. A migration
+using another object owner needs an explicit grant review.
+
+For an **existing Compose volume**, back up first and stop both API services.
+Keep the existing admin password and URL, and add the independent runtime secret
+to the private `.env`. Do not delete or reinitialize the volume. For this upgrade
+and later migration or runtime-password changes, run from the repository root:
+
+```sh
+docker compose --env-file .env -f deploy/compose/compose.yaml stop app app_b
+docker compose --env-file .env -f deploy/compose/compose.yaml up -d db
+docker compose --env-file .env -f deploy/compose/compose.yaml build migrate app
+docker compose --env-file .env -f deploy/compose/compose.yaml run --rm migrate
+docker compose --env-file .env -f deploy/compose/compose.yaml run --rm --no-deps db-runtime
+docker compose --env-file .env -f deploy/compose/compose.yaml up -d --force-recreate app
+```
+
+Require each command to succeed before proceeding. For the two-hub profile,
+also build and recreate `app_b` with `--profile two-hub`. Explicit provisioning
+avoids relying on Compose to rerun an unchanged, previously completed one-shot
+container. Password changes require restarting every API connection pool.
+Provisioning is transactional and repeatable; it refuses a pre-existing runtime
+role that owns objects, has role memberships, or holds unexpected grants or
+database settings outside the provisioned scope. Investigate and explicitly
+reassign ownership/revoke unsafe grants as an administrator before retrying.
+This assumes an administrator-controlled PostgreSQL cluster; custom public
+grants or privileged extensions elsewhere require their own review.
+
+Backups made with `--no-owner --no-acl` intentionally omit these grants. After a
+real restore, run migrations and `db-runtime` before starting any API. The restore
+rehearsal remains database-only and never enables a restored API. The fresh
+install smoke additionally checks runtime CRUD and application functions and
+rejects DDL, ledger writes, admin role switching, and server file/program access.
+Run `python scripts/test_runtime_db_role.py` to exercise repeat provisioning,
+future migration grants, unsafe existing roles, and invalid/reused secrets in a
+new disposable local PostgreSQL container.
+
+This reduces database privileges of a compromised API; it does not isolate
+tenants within the shared runtime role or prevent access to application rows.
+The migration owner remains an administrative credential for this template;
+restrict it to operator-controlled migration/provisioning jobs. Database hosts,
+backups, secret stores, and production TLS still need deployment controls.
+
 ## Disposable logical restore rehearsal
 
 With an existing Compose database and its private `.env` file, quiesce all
