@@ -102,6 +102,8 @@ pub enum InboundError {
     InvalidSignature,
     #[error("outbound attempt is unavailable to this device")]
     UnknownSource,
+    #[error("outbound attempt has not yet produced positive sent evidence")]
+    SourcePending,
     #[error("event ID was reused with different content")]
     EventConflict,
     #[error("device sequence was reused by another event")]
@@ -204,15 +206,17 @@ pub async fn ingest(
         .map_err(|_| InboundError::InvalidSignature)?;
 
     // A reply can be associated only with a message attempt from this tenant
-    // and device that already has positive sent-callback evidence.
+    // and device that already has positive sent-callback evidence. An early
+    // reply may reach the writer before the callback event; preserve it for
+    // retry. A submitted attempt with no callback row is permanently stale
+    // (for example, after event retention).
     let source = tx
         .query_opt(
-            "SELECT 1 FROM message_attempts ma \
+            "SELECT ma.status, EXISTS (SELECT 1 FROM message_events me \
+                WHERE me.attempt_id=ma.id AND me.evidence_code='sent_callback_ok') FROM message_attempts ma \
          JOIN messages m ON (m.account_id,m.id)=(ma.account_id,ma.message_id) \
          WHERE ma.id=$1 AND ma.account_id=$2 AND ma.device_id=$3 \
-         AND ma.message_id=$4 AND ma.status='submitted' \
-         AND EXISTS (SELECT 1 FROM message_events me \
-             WHERE me.attempt_id=ma.id AND me.evidence_code='sent_callback_ok') \
+         AND ma.message_id=$4 \
          FOR SHARE OF ma,m",
             &[
                 &event.attempt_id,
@@ -222,8 +226,9 @@ pub async fn ingest(
             ],
         )
         .await?;
-    if source.is_none() {
-        return Err(InboundError::UnknownSource);
+    match source {
+        Some(row) => source_readiness(Some(row.get::<_, String>(0).as_str()), row.get(1))?,
+        None => source_readiness(None, false)?,
     }
 
     let digest = Sha256::digest(&signed).to_vec();
@@ -368,6 +373,17 @@ pub async fn ingest(
         created: true,
         queued_deliveries: queued,
     })
+}
+
+fn source_readiness(
+    status: Option<&str>,
+    positive_sent_callback: bool,
+) -> Result<(), InboundError> {
+    match status {
+        Some("submitted") if positive_sent_callback => Ok(()),
+        Some("granted" | "submitting" | "unknown") => Err(InboundError::SourcePending),
+        _ => Err(InboundError::UnknownSource),
+    }
 }
 
 fn verify_exact_replay(

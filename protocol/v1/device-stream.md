@@ -70,6 +70,10 @@ the row eligible for retry. For older writers that close without a code, three
 immediate authenticated closes while the same row is outstanding trigger the
 same quarantine. If the phone cannot persist quarantine, it pauses the
 foreground service for repair.
+An inbound reply that arrives before its matching positive sent callback is
+available at the writer receives `1013`, so the signed inbound row can retry
+after the radio callback is uploaded. A missing or foreign attempt remains a
+permanent rejection.
 
 Every queued radio event and inbound upload is bound at capture to the
 account UUID, device UUID, and a SHA-256 hash of the WSS origin. A session

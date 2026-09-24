@@ -389,9 +389,10 @@ fn inbound_evidence_close_code(error: &InboundError) -> u16 {
         | InboundError::EventConflict
         | InboundError::SequenceConflict => EVIDENCE_REJECTED,
         InboundError::Unauthorized => close_code::POLICY,
-        InboundError::StaleLease | InboundError::BudgetExhausted | InboundError::Database(_) => {
-            RETRY_LATER
-        }
+        InboundError::SourcePending
+        | InboundError::StaleLease
+        | InboundError::BudgetExhausted
+        | InboundError::Database(_) => RETRY_LATER,
     }
 }
 
@@ -1158,6 +1159,14 @@ mod tests {
         assert_eq!(
             inbound_evidence_close_code(&InboundError::EventConflict),
             EVIDENCE_REJECTED
+        );
+        assert_eq!(
+            inbound_evidence_close_code(&InboundError::UnknownSource),
+            EVIDENCE_REJECTED
+        );
+        assert_eq!(
+            inbound_evidence_close_code(&InboundError::SourcePending),
+            RETRY_LATER
         );
         assert_eq!(
             inbound_evidence_close_code(&InboundError::Unauthorized),

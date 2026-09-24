@@ -4,6 +4,27 @@ use p256::elliptic_curve::Generate;
 use rand::rng;
 
 #[test]
+fn early_reply_waits_for_sent_evidence_but_missing_source_is_permanent() {
+    assert!(matches!(
+        source_readiness(Some("submitting"), false),
+        Err(InboundError::SourcePending)
+    ));
+    assert!(matches!(
+        source_readiness(Some("unknown"), false),
+        Err(InboundError::SourcePending)
+    ));
+    assert!(source_readiness(Some("submitted"), true).is_ok());
+    assert!(matches!(
+        source_readiness(Some("submitted"), false),
+        Err(InboundError::UnknownSource)
+    ));
+    assert!(matches!(
+        source_readiness(None, false),
+        Err(InboundError::UnknownSource)
+    ));
+}
+
+#[test]
 fn metadata_signature_bytes_match_android_pilot_vector() {
     let session = InboundSession {
         account_id: Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap(),
@@ -181,6 +202,42 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
         signature_der: &sig_bytes,
         ..unsigned
     };
+    db.execute(
+        "DELETE FROM message_events WHERE attempt_id=$1",
+        &[&attempt],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "UPDATE message_attempts SET status='submitting' WHERE id=$1",
+        &[&attempt],
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        ingest(&mut db, session, &signed).await,
+        Err(InboundError::SourcePending)
+    ));
+    db.execute(
+        "INSERT INTO message_events(id,account_id,message_id,attempt_id,evidence_code, \
+         event_digest,observed_at,resulting_state,segment_index,segment_count) \
+         VALUES($1,$2,$3,$4,'sent_callback_ok',$5,now(),'submitted',0,1)",
+        &[
+            &Uuid::new_v4(),
+            &account,
+            &message,
+            &attempt,
+            &vec![4u8; 32],
+        ],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "UPDATE message_attempts SET status='submitted' WHERE id=$1",
+        &[&attempt],
+    )
+    .await
+    .unwrap();
     assert_eq!(
         ingest(&mut db, session, &signed).await.unwrap(),
         IngestOutcome {
