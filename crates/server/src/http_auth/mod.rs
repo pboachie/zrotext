@@ -2099,14 +2099,10 @@ mod tests {
             client.batch_execute(migration).await.unwrap();
         }
         let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(44)).unwrap());
-        auth::register(
-            &mut client,
-            &hasher,
-            "owner@example.test",
-            "correct horse 123",
-        )
-        .await
-        .unwrap();
+        let test_password = Uuid::new_v4().to_string();
+        auth::register(&mut client, &hasher, "owner@example.test", &test_password)
+            .await
+            .unwrap();
         let state = AuthHttpState::new(
             database_url,
             hasher,
