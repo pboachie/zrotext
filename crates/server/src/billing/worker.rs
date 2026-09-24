@@ -187,6 +187,11 @@ pub(super) fn parse_subscription(body: &[u8]) -> Result<SubscriptionSnapshot, Bi
         .as_str()
         .ok_or(BillingError::InvalidEvent)?
         .to_owned();
+    // A partial or malformed list cannot prove the single-price entitlement.
+    // Leave reconciliation pending so metered sends remain blocked.
+    if value["items"]["object"] != "list" || value["items"]["has_more"] != false {
+        return Err(BillingError::InvalidEvent);
+    }
     let items = value["items"]["data"]
         .as_array()
         .ok_or(BillingError::InvalidEvent)?;
@@ -249,11 +254,34 @@ mod tests {
 
     #[test]
     fn parses_current_test_subscription_shape() {
-        let fixture = br#"{"id":"sub_fixture1","object":"subscription","livemode":false,"customer":"cus_fixture1","status":"past_due","items":{"object":"list","data":[{"price":{"id":"price_fixture1"}}]}}"#;
+        let fixture = br#"{"id":"sub_fixture1","object":"subscription","livemode":false,"customer":"cus_fixture1","status":"past_due","items":{"object":"list","has_more":false,"data":[{"price":{"id":"price_fixture1"}}]}}"#;
         let parsed = parse_subscription(fixture).unwrap();
         assert_eq!(parsed.status, "past_due");
         assert_eq!(parsed.price_id.as_deref(), Some("price_fixture1"));
         assert!(parse_subscription(&fixture.replace_bytes(b"false", b"true")).is_err());
+    }
+
+    #[test]
+    fn incomplete_subscription_items_cannot_grant_a_recognized_plan() {
+        let complete = serde_json::json!({
+            "id": "sub_fixture1", "object": "subscription", "livemode": false,
+            "customer": "cus_fixture1", "status": "active",
+            "items": {"object": "list", "has_more": false,
+                "data": [{"price": {"id": "price_fixture1"}}]}
+        });
+        assert!(parse_subscription(&serde_json::to_vec(&complete).unwrap()).is_ok());
+        for invalid in [
+            serde_json::json!(true),
+            serde_json::Value::Null,
+            serde_json::json!("false"),
+        ] {
+            let mut value = complete.clone();
+            value["items"]["has_more"] = invalid;
+            assert!(parse_subscription(&serde_json::to_vec(&value).unwrap()).is_err());
+        }
+        let mut value = complete;
+        value["items"]["object"] = serde_json::json!("subscription_item");
+        assert!(parse_subscription(&serde_json::to_vec(&value).unwrap()).is_err());
     }
 
     trait ReplaceBytes {

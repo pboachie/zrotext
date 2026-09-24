@@ -15,3 +15,13 @@ Signed test-mode refund and dispute events enter a separate risk queue. A bound 
 Checkout and Portal flows remain separate features. Consult the [server implementation](../../crates/server/src/billing/mod.rs) and its tests for the current behavior.
 
 References: [Stripe signature verification](https://docs.stripe.com/webhooks#verify-signature), [event ordering](https://docs.stripe.com/webhooks#event-ordering), and [subscription events](https://docs.stripe.com/billing/subscriptions/webhooks).
+
+Hosted Checkout and Portal requests share an atomic database budget: eight
+requests per account per minute and 120 across the deployment per minute.
+Requests exceeding either budget return HTTP 429 before calling Stripe.
+Changing owner sessions, Checkout idempotency keys, or API instances does not
+reset the account budget. Database errors fail closed with HTTP 503.
+
+Subscription reconciliation requires a complete Stripe items list with
+`object=list` and `has_more=false`. A partial or malformed provider response
+leaves reconciliation pending and cannot grant outbound quota or device caps.

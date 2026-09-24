@@ -19,6 +19,7 @@ pub enum Limit {
     DeviceAuthenticate,
     MfaChallenge,
     MfaManage,
+    BillingSession,
 }
 
 impl Limit {
@@ -35,6 +36,7 @@ impl Limit {
             Self::DeviceAuthenticate => ("device_authenticate", 300, 60, Some((30, 60))),
             Self::MfaChallenge => ("mfa_challenge", 300, 60, Some((5, 300))),
             Self::MfaManage => ("mfa_manage", 120, 60, Some((8, 900))),
+            Self::BillingSession => ("billing_session", 120, 60, Some((8, 60))),
         }
     }
 }

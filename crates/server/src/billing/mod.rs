@@ -998,9 +998,9 @@ mod tests {
         let prices = vec!["price_lifecycle1".into(), "price_lifecycle2".into()];
         let plans =
             parse_test_quota_plans("price_lifecycle1:2,price_lifecycle2:1", &prices).unwrap();
-        let active = worker::parse_subscription(br#"{"id":"sub_lifecycle1","object":"subscription","livemode":false,"customer":"cus_lifecycle1","status":"active","items":{"object":"list","data":[{"price":{"id":"price_lifecycle1"}}]}}"#).unwrap();
-        let past_due = worker::parse_subscription(br#"{"id":"sub_lifecycle1","object":"subscription","livemode":false,"customer":"cus_lifecycle1","status":"past_due","items":{"object":"list","data":[{"price":{"id":"price_lifecycle1"}}]}}"#).unwrap();
-        let downgraded = worker::parse_subscription(br#"{"id":"sub_lifecycle1","object":"subscription","livemode":false,"customer":"cus_lifecycle1","status":"active","items":{"object":"list","data":[{"price":{"id":"price_lifecycle2"}}]}}"#).unwrap();
+        let active = worker::parse_subscription(br#"{"id":"sub_lifecycle1","object":"subscription","livemode":false,"customer":"cus_lifecycle1","status":"active","items":{"object":"list","has_more":false,"data":[{"price":{"id":"price_lifecycle1"}}]}}"#).unwrap();
+        let past_due = worker::parse_subscription(br#"{"id":"sub_lifecycle1","object":"subscription","livemode":false,"customer":"cus_lifecycle1","status":"past_due","items":{"object":"list","has_more":false,"data":[{"price":{"id":"price_lifecycle1"}}]}}"#).unwrap();
+        let downgraded = worker::parse_subscription(br#"{"id":"sub_lifecycle1","object":"subscription","livemode":false,"customer":"cus_lifecycle1","status":"active","items":{"object":"list","has_more":false,"data":[{"price":{"id":"price_lifecycle2"}}]}}"#).unwrap();
         let expiry = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -1980,7 +1980,29 @@ mod tests {
         assert!(worker::claim(&mut db).await.unwrap().is_none());
         let mut newer = event.clone();
         newer.event_id = "evt_fixture2".into();
-        assert_eq!(ingest(&mut db, &newer).await.unwrap(), IngestResult::Queued);
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(16));
+        let mut replays = tokio::task::JoinSet::new();
+        for _ in 0..16 {
+            let event = newer.clone();
+            let url = database_url.clone();
+            let barrier = barrier.clone();
+            replays.spawn(async move {
+                let (mut client, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+                tokio::spawn(async move { connection.await.unwrap() });
+                barrier.wait().await;
+                ingest(&mut client, &event).await.unwrap()
+            });
+        }
+        let mut queued = 0;
+        let mut duplicate = 0;
+        while let Some(result) = replays.join_next().await {
+            match result.unwrap() {
+                IngestResult::Queued => queued += 1,
+                IngestResult::Duplicate => duplicate += 1,
+                other => panic!("unexpected replay disposition: {other:?}"),
+            }
+        }
+        assert_eq!((queued, duplicate), (1, 15));
         let active = SubscriptionSnapshot {
             subscription_id: "sub_fixture1".into(),
             customer_id: "cus_fixture1".into(),

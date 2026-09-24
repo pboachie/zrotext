@@ -3,6 +3,7 @@
 //! Browser input never selects a Stripe customer, price, or return URL.
 
 use super::{bind_customer, is_test_api_key, valid_id};
+use crate::auth::abuse_limits::{self, Limit};
 use crate::http_auth::{self, AuthHttpError, AuthHttpState};
 use axum::{
     Json, Router,
@@ -186,6 +187,7 @@ async fn checkout(
         &state.success_url,
         &state.cancel_url,
     )?;
+    consume_session_budget(&db, &state, account_id).await?;
     let customer_id = match bound_customer(&db, account_id).await? {
         Some(id) => id,
         None => {
@@ -234,11 +236,34 @@ async fn portal(
     let customer_id = bound_customer(&db, owner.tenant.account_id())
         .await?
         .ok_or(AuthHttpError::NotFound)?;
+    consume_session_budget(&db, &state, owner.tenant.account_id()).await?;
     let url = state
         .stripe
         .create_portal(&customer_id, &state.portal_return_url)
         .await?;
     Ok(Json(SessionUrl { url }))
+}
+
+// Shared across routes, owner sessions and API instances. Charge only after
+// owner/CSRF and request validation, but before any external provider work.
+async fn consume_session_budget(
+    db: &Client,
+    state: &SessionState,
+    account_id: Uuid,
+) -> Result<(), AuthHttpError> {
+    if abuse_limits::consume(
+        db,
+        &state.auth.hasher,
+        Limit::BillingSession,
+        Some(&account_id.to_string()),
+    )
+    .await
+    .map_err(|_| AuthHttpError::Unavailable)?
+    {
+        Ok(())
+    } else {
+        Err(AuthHttpError::TooManyRequests)
+    }
 }
 
 fn checkout_retry_key(
@@ -830,6 +855,35 @@ mod tests {
                 .1
                 .contains("return_url=https%3A%2F%2Fzrotext.example%2Fbilling")
         );
+        // Independent requests alternate routes and rotate checkout keys.
+        // The two successful sessions above have already spent two of eight
+        // account slots. Rejections must never reach the external provider.
+        let mut attempts = tokio::task::JoinSet::new();
+        for index in 0..16 {
+            let app = app.clone();
+            let request = owner_request(
+                if index % 2 == 0 {
+                    "/checkout"
+                } else {
+                    "/portal"
+                },
+                &owner.token,
+                &owner.csrf_token,
+                true,
+            );
+            attempts.spawn(async move { app.oneshot(request).await.unwrap().status() });
+        }
+        let mut accepted = 0;
+        let mut limited = 0;
+        while let Some(result) = attempts.join_next().await {
+            match result.unwrap() {
+                StatusCode::OK => accepted += 1,
+                StatusCode::TOO_MANY_REQUESTS => limited += 1,
+                status => panic!("unexpected hosted-session status: {status}"),
+            }
+        }
+        assert_eq!((accepted, limited), (6, 10));
+        assert_eq!(mock.calls.lock().unwrap().len(), 9);
         server.abort();
         drop(db);
         setup
