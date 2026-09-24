@@ -36,6 +36,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Test owner browser flows
         run: node --test web/owner/*.test.js
+      - name: Test draft sealed-content vectors and TypeScript reader
+        working-directory: sdk/typescript
+        run: npm ci --ignore-scripts && npm test
   quality:
     runs-on: ubuntu-24.04
     steps:
@@ -56,6 +59,8 @@ jobs:
           python3 -m venv /tmp/zrotext-schema-venv
           /tmp/zrotext-schema-venv/bin/pip install --disable-pip-version-check jsonschema==4.25.1
           /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_device_stream_schema.py'
+      - name: Shared draft vector shape tests
+        run: python3 -m unittest discover -s protocol/v1/tests -p 'test_ztse_draft_vectors.py'
       - name: JavaScript syntax
         run: node --check web/owner/devices.js
       - name: Commit sign-off
