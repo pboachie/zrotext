@@ -184,11 +184,22 @@ class ReviewRoutingTests(unittest.TestCase):
                           "Bad Request", None, BytesIO(body))
         with patch.object(review, "urlopen", side_effect=error):
             with self.assertRaisesRegex(RuntimeError,
-                                        r"jules request failed with HTTP 400 \(INVALID_ARGUMENT; branch\)") as caught:
+                                        r"jules request failed with HTTP 400 \(INVALID_ARGUMENT; branch\) at session-create") as caught:
                 review.request_json(f"{review.JULES}/sessions", token=secret,
-                                    service="jules", method="POST", payload={"prompt": "test"})
+                                    service="jules", method="POST", payload={"prompt": "test"},
+                                    phase="session-create")
         self.assertNotIn(secret, str(caught.exception))
         self.assertNotIn("startingBranch unavailable", str(caught.exception))
+
+        untrusted_phase = f"source-get; {secret}"
+        with patch.object(review, "urlopen", side_effect=HTTPError(
+                "https://jules.googleapis.com/", 400, "Bad Request", None,
+                BytesIO(b'{"error":{"status":"FAILED_PRECONDITION"}}'))):
+            with self.assertRaises(RuntimeError) as caught:
+                review.request_json(f"{review.JULES}/sources", token=secret,
+                                    service="jules", phase=untrusted_phase)
+        self.assertNotIn(secret, str(caught.exception))
+        self.assertNotIn(" at ", str(caught.exception))
 
         quota = HTTPError("https://jules.googleapis.com/", 400, "Bad Request", None,
                           BytesIO(b'{"error":{"status":"RESOURCE_EXHAUSTED","message":"Daily quota exceeded"}}'))
