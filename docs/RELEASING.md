@@ -25,7 +25,24 @@ seeded logical restore with two synthetic tenants and persisted delivery and
 usage state. A failed rehearsal leaves no promotion receipt. The registry
 may retain the uniquely tagged image after a failure; do not promote it.
 
-Before linking an image from the GitHub Release, review the workflow result and receipt, verify the image attestation against this repository and the release-image workflow, and confirm the package is publicly readable if it is offered to self-hosters. For example, after authenticating to GHCR, run `gh attestation verify oci://ghcr.io/pboachie/zrotext@sha256:<digest> -R pboachie/zrotext --signer-workflow pboachie/zrotext/.github/workflows/release-image.yml`. Compare the attested source ref and SHA with the annotated tag and receipt. A successful image build does not establish Android, phone, database-restore, or hosted-deployment readiness.
+Before linking an image from the GitHub Release, review the workflow result and
+download its `image-receipt.json`. From a checkout with fetched release tags,
+authenticated `gh` access to the attestation and GHCR, and local Docker, run:
+
+```sh
+git fetch origin main --tags
+python3 scripts/verify_release_image.py --tag v0.1.0-rc.1 \
+  < /trusted/review/image-receipt.json
+```
+
+Select the tag independently of the receipt. This verifies the receipt's
+derived fields, annotated tag and `main` ancestry, GitHub's attestation for
+the exact image digest with the release workflow and source ref/SHA pinned,
+then pulls that digest and checks its source labels. A receipt or mutable
+registry tag alone is insufficient. Confirm the package is publicly readable
+without registry credentials before offering it to self-hosters. A successful
+image verification does not establish Android, phone, database-restore, or
+hosted-deployment readiness.
 
 ## Android candidate custody
 
@@ -40,3 +57,27 @@ certificate receipt outside the repository. Run it only in an approved private
 signing environment after reviewing the unsigned build. A signed candidate is
 not a published app release; approve the exact APK digest and distribution
 channel separately before sharing it.
+
+After the unsigned and signed directories have been transferred to a trusted
+review machine, verify them without loading the signing key. Obtain the source
+commit from the reviewed annotated tag and the signing certificate SHA-256 from
+an independently approved custody record, not from `candidate.json`:
+
+Place the two directories at the tool's fixed external artifact root:
+`<system temporary directory>/zrotext-android-release/unsigned` and
+`<system temporary directory>/zrotext-android-release/candidate`. The tool
+rejects symlinked or oversized artifact files.
+
+```sh
+python3 android/tools/release_candidate.py verify \
+  --source-commit <full-tag-commit-sha> \
+  --certificate-sha256 <approved-64-character-hex-fingerprint>
+```
+
+The verifier checks both receipts and checksums, the embedded source commit,
+package and SDK identity, every uncompressed APK ZIP entry, ZIP alignment,
+the v2 and v3 signatures with `apksigner`, and the approved certificate
+fingerprint. Install Android SDK build tools (`aapt`, `zipalign`, and
+`apksigner`) before running it. The unsigned APK, signed APK, and receipts must
+remain outside the source checkout. This check does not authorize publication
+or replace a physical-device acceptance test.
