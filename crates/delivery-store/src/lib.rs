@@ -1599,8 +1599,8 @@ mod tests {
             include_str!("../../../deploy/compose/migrations/034_delivery_sweep_index.sql"),
         ),
         (
-            "034_sms_owner_key_ceremony.sql",
-            include_str!("../../../deploy/compose/migrations/034_sms_owner_key_ceremony.sql"),
+            "035_sms_owner_key_ceremony.sql",
+            include_str!("../../../deploy/compose/migrations/035_sms_owner_key_ceremony.sql"),
         ),
     ];
 

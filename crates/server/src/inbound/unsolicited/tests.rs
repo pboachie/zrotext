@@ -40,7 +40,7 @@ const TEST_MIGRATIONS: [&str; 23] = [
     migration!("031_recipient_suppression.sql"),
     migration!("032_line_opt_out_events.sql"),
     migration!("033_sms_line_binding_scope.sql"),
-    migration!("034_sms_owner_key_ceremony.sql"),
+    migration!("035_sms_owner_key_ceremony.sql"),
 ];
 
 fn observed_now() -> i64 {

@@ -1,6 +1,6 @@
 # Internal SMS line activation contract
 
-**Prerequisite only.** Migrations 033–034 and the `issue_sms_line_challenge`,
+**Prerequisite only.** Migrations 033–035 and the `issue_sms_line_challenge`,
 `activate_sms_line_binding`, and `sms_line_binding_ready` functions define a
 separate SMS-only line scope for Android API 28+. No HTTP or device-stream route
 calls these functions. The owner can provision an SMS approval public key through
