@@ -45,7 +45,7 @@ import javax.crypto.spec.SecretKeySpec
  * AndroidKeyStore. The RFC test vector uses a separate public, deterministic software test key.
  */
 @RunWith(AndroidJUnit4::class)
-class M2KeystoreHpkeProofTest {
+class KeystoreHpkeProofDeviceTest {
     private val browserInteropAlias = "zrotext.m2.hpke.browser-interop-test"
 
     @Test fun keystoreDerConvertsToCanonicalRawSignature() {

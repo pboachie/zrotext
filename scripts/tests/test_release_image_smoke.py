@@ -7,7 +7,7 @@ import sys
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "deploy" / "compose"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "deploy" / "compose"))
 import fresh_install_smoke as smoke  # noqa: E402
 
 
@@ -135,7 +135,7 @@ class ReleaseImageSmokeTest(unittest.TestCase):
         )
 
     def test_release_image_must_bundle_source_license_and_dependency_notices(self):
-        license_text = (Path(__file__).resolve().parent.parent / "LICENSE").read_text(
+        license_text = (Path(__file__).resolve().parents[2] / "LICENSE").read_text(
             encoding="utf-8")
         notices = "License: MIT\naxum 0.8.6\ntokio-postgres 0.7.13\n" + "text\n" * 250
         with patch.object(smoke, "run", side_effect=[license_text, notices]) as command:

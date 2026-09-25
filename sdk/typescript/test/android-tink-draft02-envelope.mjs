@@ -18,7 +18,7 @@ const adbEnv = { ...process.env };
 const pathKey = Object.keys(adbEnv).find((key) => key.toLowerCase() === "path") ?? "PATH";
 adbEnv[pathKey] = `${platformTools}${delimiter}${adbEnv[pathKey] ?? ""}`;
 const runner = "org.zrotext.gateway.test/androidx.test.runner.AndroidJUnitRunner";
-const testClass = "org.zrotext.gateway.M2Draft02EnvelopeTest";
+const testClass = "org.zrotext.gateway.Draft02EnvelopeDeviceTest";
 const hex = (value) => Buffer.from(value).toString("hex");
 const bytes = (value) => Uint8Array.from(Buffer.from(value, "hex"));
 const ascii = (value) => new TextEncoder().encode(value);

@@ -29,7 +29,7 @@ claim that no other library or future provider could work.
 
 ## Test-only interoperability evidence
 
-The [Android instrumentation proof](../../android/app/src/androidTest/java/org/zrotext/gateway/M2KeystoreHpkeProofTest.kt)
+The [Android instrumentation proof](../../android/app/src/androidTest/java/org/zrotext/gateway/KeystoreHpkeProofDeviceTest.kt)
 uses Keystore `PURPOSE_AGREE_KEY` and a test-only RFC 9180 composition. It
 opened the official [P-256 known answer](https://www.rfc-editor.org/rfc/rfc9180.html#appendix-A.3.1)
 with nonempty AAD, then opened a draft-shaped wrap with a generated

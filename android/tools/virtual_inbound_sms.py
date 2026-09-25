@@ -25,7 +25,7 @@ TEST_APP = "org.zrotext.gateway.test"
 # Canonical, literal serials prevent arbitrary user input from entering an ADB command.
 EMULATOR_SERIALS = tuple(f"emulator-{port}" for port in range(5554, 5594, 2))
 TEST = (
-    "org.zrotext.gateway.M1VirtualInboundSmsDeviceTest"
+    "org.zrotext.gateway.VirtualInboundSmsDeviceTest"
     "#emulatorSmsBroadcastCreatesOneEncryptedUpload"
 )
 RUNNER = f"{TEST_APP}/androidx.test.runner.AndroidJUnitRunner"
@@ -93,7 +93,7 @@ def run(serial: str) -> None:
             if process.poll() is not None:
                 stdout, stderr = process.communicate(timeout=5)
                 raise RuntimeError(f"instrumentation stopped before ready: {stdout.strip()} {stderr.strip()}")
-            log = call(serial, "logcat", "-d", "-s", "M1VirtualInbound:I", "*:S")
+            log = call(serial, "logcat", "-d", "-s", "VirtualInboundSms:I", "*:S")
             if ready in log:
                 break
             time.sleep(0.5)
@@ -103,7 +103,7 @@ def run(serial: str) -> None:
         # Emulator console injection enters Android's SMS stack without a carrier send.
         call(serial, "emu", "sms", "send", "+12025550199", "ZT VIRTUAL INBOUND 1")
         stdout, stderr = process.communicate(timeout=110)
-        log = call(serial, "logcat", "-d", "-s", "M1VirtualInbound:I", "*:S")
+        log = call(serial, "logcat", "-d", "-s", "VirtualInboundSms:I", "*:S")
         if process.returncode or "OK (1 test)" not in stdout or f"PASS {run_id}" not in log:
             raise RuntimeError(f"inbound test failed: {stdout.strip()} {stderr.strip()}")
         print("PASS: one synthetic emulator SMS became an encrypted local event and pending upload")
