@@ -84,6 +84,7 @@ async fn sealed_identity_requires_live_writer_and_active_same_tenant_line() {
         include_str!("../../../../deploy/compose/migrations/032_line_opt_out_events.sql"),
         include_str!("../../../../deploy/compose/migrations/033_sms_line_binding_scope.sql"),
         include_str!("../../../../deploy/compose/migrations/035_sms_owner_key_ceremony.sql"),
+        include_str!("../../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }
