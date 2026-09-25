@@ -1195,3 +1195,81 @@ async fn release_session(
 use tokio_postgres::NoTls;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod admission_tests;
+#[cfg(test)]
+mod line_opt_out_wire_tests;
+#[cfg(test)]
+mod virtual_inbound_tests;
+#[cfg(test)]
+mod virtual_line_opt_out_tests;
+
+#[cfg(test)]
+mod frame_budget_tests {
+    use super::*;
+    #[tokio::test]
+    async fn control_frame_flood_closes_real_socket() {
+        use futures_util::SinkExt;
+        let closed = Arc::new(Notify::new());
+        let observed = closed.clone();
+        let app = Router::new().route(
+            "/",
+            get(move |upgrade: WebSocketUpgrade| {
+                let closed = closed.clone();
+                async move {
+                    upgrade.on_upgrade(move |mut socket| async move {
+                        let mut budget = FrameBudget::new(Instant::now());
+                        assert!(receive_frame(&mut socket, &mut budget).await.is_none());
+                        closed.notify_one();
+                    })
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}/"))
+            .await
+            .unwrap();
+        let sender = tokio::spawn(async move {
+            for _ in 0..4096 {
+                if socket
+                    .send(tokio_tungstenite::tungstenite::Message::Pong(
+                        Vec::new().into(),
+                    ))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        timeout(Duration::from_secs(2), observed.notified())
+            .await
+            .unwrap();
+        sender.abort();
+        server.abort();
+    }
+    #[test]
+    fn replay_burst_is_bounded_and_replenishes_without_unbounded_credit() {
+        let now = Instant::now();
+        let mut budget = FrameBudget::new(now);
+        for _ in 0..256 {
+            assert!(budget.admit(now));
+        }
+        assert!(!budget.admit(now));
+        let later = now + Duration::from_secs(1);
+        for _ in 0..64 {
+            assert!(budget.admit(later));
+        }
+        assert!(!budget.admit(later));
+        let later = later + Duration::from_secs(3600);
+        for _ in 0..256 {
+            assert!(budget.admit(later));
+        }
+        assert!(!budget.admit(later));
+    }
+}

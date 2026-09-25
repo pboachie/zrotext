@@ -93,6 +93,7 @@ async fn handshake_closes_with_retry_code_when_database_is_down() {
         alpha_policy: Arc::new(AlphaPolicy::parse(None, None, None).unwrap()),
         dispatch_runtime_enabled: false,
         inbound_pilot_enabled: false,
+        line_opt_out_enabled: false,
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),
     };
@@ -151,8 +152,8 @@ fn stream_schema_examples_match_serde_frames() {
         "../../../../protocol/v1/device-stream.examples.json"
     ))
     .unwrap();
-    assert_eq!(examples.len(), 12);
-    for frame in &examples[..6] {
+    assert_eq!(examples.len(), 14);
+    for frame in &examples[..7] {
         let parsed: ClientFrame = serde_json::from_value(frame.clone()).unwrap();
         assert_eq!(frame["v"], 1);
         let variant = match parsed {
@@ -162,6 +163,7 @@ fn stream_schema_examples_match_serde_frames() {
             ClientFrame::AlphaReady { .. } => "alpha_ready",
             ClientFrame::RadioEvent { .. } => "radio_event",
             ClientFrame::InboundEvent { .. } => "inbound_event",
+            ClientFrame::LineOptOut { .. } => "line_opt_out",
         };
         assert_eq!(frame["type"], variant);
     }
@@ -209,8 +211,13 @@ fn stream_schema_examples_match_serde_frames() {
             queued_deliveries: 0,
             suppression_cleared: false,
         },
+        ServerFrame::LineOptOutAck {
+            v: 1,
+            event_id: id,
+            created: true,
+        },
     ];
-    for (actual, documented) in server_frames.into_iter().zip(&examples[6..]) {
+    for (actual, documented) in server_frames.into_iter().zip(&examples[7..]) {
         let variant = match &actual {
             ServerFrame::Challenge { .. } => "challenge",
             ServerFrame::Session { .. } => "session",
@@ -218,6 +225,7 @@ fn stream_schema_examples_match_serde_frames() {
             ServerFrame::SyntheticGrant { .. } => "synthetic_grant",
             ServerFrame::RadioEventAck { .. } => "radio_event_ack",
             ServerFrame::InboundEventAck { .. } => "inbound_event_ack",
+            ServerFrame::LineOptOutAck { .. } => "line_opt_out_ack",
         };
         assert_eq!(documented["type"], variant);
         assert_eq!(serde_json::to_value(actual).unwrap(), *documented);
@@ -397,9 +405,9 @@ async fn lost_intent_ack_across_hubs_needs_no_radio_proof_before_regrant() {
     let sec1 = signing.verifying_key().to_sec1_point(false);
     let fingerprint: [u8; 32] = Sha256::digest(sec1.as_bytes()).into();
     client
-            .batch_execute("INSERT INTO sites(site_id) VALUES('site-a'),('site-b'); UPDATE deployment_authority SET dispatch_enabled=TRUE")
-            .await
-            .unwrap();
+        .batch_execute("INSERT INTO sites(site_id) VALUES('site-a'),('site-b'); UPDATE deployment_authority SET dispatch_enabled=TRUE")
+        .await
+        .unwrap();
     client
         .execute("INSERT INTO accounts(id) VALUES($1)", &[&account_id])
         .await
@@ -412,9 +420,9 @@ async fn lost_intent_ack_across_hubs_needs_no_radio_proof_before_regrant() {
         .await
         .unwrap();
     client.execute(
-            "INSERT INTO device_keys(device_id,account_id,signing_key_sec1,fingerprint) VALUES($1,$2,$3,$4)",
-            &[&device_id, &account_id, &sec1.as_bytes(), &&fingerprint[..]],
-        ).await.unwrap();
+        "INSERT INTO device_keys(device_id,account_id,signing_key_sec1,fingerprint) VALUES($1,$2,$3,$4)",
+        &[&device_id, &account_id, &sec1.as_bytes(), &&fingerprint[..]],
+    ).await.unwrap();
     let policy = Arc::new(
         AlphaPolicy::parse(Some("true"), Some(&account_id.to_string()), Some(recipient)).unwrap(),
     );
@@ -428,6 +436,7 @@ async fn lost_intent_ack_across_hubs_needs_no_radio_proof_before_regrant() {
         alpha_policy: policy,
         dispatch_runtime_enabled: true,
         inbound_pilot_enabled: false,
+        line_opt_out_enabled: false,
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),
     };
@@ -537,9 +546,9 @@ async fn lost_intent_ack_across_hubs_needs_no_radio_proof_before_regrant() {
     );
     let before: (i64, i64) = {
         let row = client.query_one(
-                "SELECT (SELECT count(*) FROM message_attempts WHERE message_id=$1), (SELECT count(*) FROM dispatch_fences WHERE message_id=$1)",
-                &[&message_id],
-            ).await.unwrap();
+            "SELECT (SELECT count(*) FROM message_attempts WHERE message_id=$1), (SELECT count(*) FROM dispatch_fences WHERE message_id=$1)",
+            &[&message_id],
+        ).await.unwrap();
         (row.get(0), row.get(1))
     };
     assert_eq!(before, (1, 1));
@@ -581,9 +590,9 @@ async fn lost_intent_ack_across_hubs_needs_no_radio_proof_before_regrant() {
     assert_eq!(second_wire["generation"], 2);
     assert_eq!(second_wire["connection_epoch"], 2);
     let row = client.query_one(
-            "SELECT (SELECT count(*) FROM message_attempts WHERE message_id=$1), (SELECT count(*) FROM dispatch_fences WHERE message_id=$1), (SELECT count(*) FROM message_events WHERE message_id=$1 AND evidence_code='proved_no_submit')",
-            &[&message_id],
-        ).await.unwrap();
+        "SELECT (SELECT count(*) FROM message_attempts WHERE message_id=$1), (SELECT count(*) FROM dispatch_fences WHERE message_id=$1), (SELECT count(*) FROM message_events WHERE message_id=$1 AND evidence_code='proved_no_submit')",
+        &[&message_id],
+    ).await.unwrap();
     assert_eq!(
         (
             row.get::<_, i64>(0),
@@ -646,12 +655,12 @@ async fn writer_claim_replay_epoch_and_revocation() {
         .await
         .unwrap();
     client
-            .execute(
-                "INSERT INTO device_keys(device_id,account_id,signing_key_sec1,fingerprint) VALUES($1,$2,$3,$4)",
-                &[&device_id, &account_id, &sec1.as_bytes(), &&fingerprint[..]],
-            )
-            .await
-            .unwrap();
+        .execute(
+            "INSERT INTO device_keys(device_id,account_id,signing_key_sec1,fingerprint) VALUES($1,$2,$3,$4)",
+            &[&device_id, &account_id, &sec1.as_bytes(), &&fingerprint[..]],
+        )
+        .await
+        .unwrap();
     let hasher = Arc::new(EnrollmentHasher::new(crate::test_keys::key(77)).unwrap());
     let state = DeviceSocketState {
         database_url: url,
@@ -663,6 +672,7 @@ async fn writer_claim_replay_epoch_and_revocation() {
         alpha_policy: Arc::new(AlphaPolicy::parse(None, None, None).unwrap()),
         dispatch_runtime_enabled: false,
         inbound_pilot_enabled: false,
+        line_opt_out_enabled: false,
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),
     };
@@ -698,12 +708,12 @@ async fn writer_claim_replay_epoch_and_revocation() {
         .await
         .unwrap();
     client
-            .execute(
-                "UPDATE device_auth_challenges SET created_at=now()-interval '2 minutes',expires_at=now()-interval '1 minute' WHERE id=$1",
-                &[&expired.id],
-            )
-            .await
-            .unwrap();
+        .execute(
+            "UPDATE device_auth_challenges SET created_at=now()-interval '2 minutes',expires_at=now()-interval '1 minute' WHERE id=$1",
+            &[&expired.id],
+        )
+        .await
+        .unwrap();
     let expired_signature: Signature = signing.sign(&device_challenge_bytes(&expired));
     assert!(matches!(
         enrollment::authenticate_device_challenge(
@@ -895,12 +905,12 @@ async fn writer_claim_replay_epoch_and_revocation() {
         .unwrap()
     );
     client
-            .execute(
-                "UPDATE dispatch_fences SET grant_expires_at=now()-interval '1 second' WHERE attempt_id=$1",
-                &[&attempt_id],
-            )
-            .await
-            .unwrap();
+        .execute(
+            "UPDATE dispatch_fences SET grant_expires_at=now()-interval '1 second' WHERE attempt_id=$1",
+            &[&attempt_id],
+        )
+        .await
+        .unwrap();
     assert!(
         !grant_still_current(
             &client,
@@ -985,12 +995,12 @@ async fn writer_claim_replay_epoch_and_revocation() {
         .await
         .unwrap();
     client
-            .execute(
-                "INSERT INTO device_keys(device_id,account_id,signing_key_sec1,fingerprint) VALUES($1,$2,$3,$4)",
-                &[&other_device, &account_id, &sec1.as_bytes(), &&fingerprint[..]],
-            )
-            .await
-            .unwrap();
+        .execute(
+            "INSERT INTO device_keys(device_id,account_id,signing_key_sec1,fingerprint) VALUES($1,$2,$3,$4)",
+            &[&other_device, &account_id, &sec1.as_bytes(), &&fingerprint[..]],
+        )
+        .await
+        .unwrap();
     let other_session = claim_session(
         &mut client,
         AuthenticatedDevice {
