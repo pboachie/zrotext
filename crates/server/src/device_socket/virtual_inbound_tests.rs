@@ -141,6 +141,7 @@ async fn authenticated_inbound_replay_retries_one_webhook_delivery() {
         alpha_policy: Arc::new(AlphaPolicy::parse(None, None, None).unwrap()),
         dispatch_runtime_enabled: false,
         inbound_pilot_enabled: true,
+        line_opt_out_enabled: false,
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),
     };
@@ -430,6 +431,7 @@ async fn socket_handshakes_share_http_enrollment_budgets() {
         alpha_policy: Arc::new(AlphaPolicy::parse(None, None, None).unwrap()),
         dispatch_runtime_enabled: false,
         inbound_pilot_enabled: false,
+        line_opt_out_enabled: false,
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),
     };
@@ -599,6 +601,7 @@ async fn enrolled_phone_reconnects_after_junk_spends_handshake_budgets() {
         alpha_policy: Arc::new(AlphaPolicy::parse(None, None, None).unwrap()),
         dispatch_runtime_enabled: false,
         inbound_pilot_enabled: false,
+        line_opt_out_enabled: false,
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),
     };
