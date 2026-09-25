@@ -243,7 +243,7 @@ Make ZROtext practical to run, upgrade and build against.
 - [x] Route outline and sealed send shape ([outline](ARCHITECTURE.md#planned-api-v1-outline))
 - [x] Versioned device stream schema aligned with the wire format
 - [ ] OpenAPI contract for `/v1/messages`, `/v1/devices`, `/v1/webhooks` and `/v1/usage`
-- [ ] TypeScript SDK with local encryption, after the sealed protocol is reviewed
+- [ ] TypeScript SDK with local encryption, after the sealed protocol is finalized
 
 </details>
 
@@ -284,7 +284,7 @@ Keep message content out of reach of the server, and give owners control of thei
 - [x] Draft protocol and validation gates
 - [x] TypeScript and Android test vectors, including signed manifests and root rotation
 - [x] Test-only envelope parser and Android Keystore boundary
-- [ ] External review of the chosen suite
+- [ ] Cross-client interoperability and adversarial security tests
 - [ ] Recovery and unlock flows
 - [ ] Enabled in the gateway for real messages
 

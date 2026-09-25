@@ -38,9 +38,9 @@ Enrollment maintenance runs every 60 seconds and deletes at most 500 rows per ta
 | API bearer token | Customer runtime; server verifier | Transport authorization, scopes, quotas; not decryption |
 | Webhook signing secret | Server and customer receiver | Authenticates ciphertext events; encrypted at rest on server |
 
-Use maintained crypto libraries, not home-written primitives. Candidate portable envelope suite: HPKE DHKEM(P-256, HKDF-SHA256) / HKDF-SHA256 / AES-128-GCM for wrapping a random 256-bit content-encryption key; AES-256-GCM for one message body. This is a **candidate pending library/API interoperability review**, not an instruction to compose an ad hoc ECDH scheme. Record exact standardized suite IDs, encoding, nonce generation, test vectors, and library versions in a reviewed protocol revision. [HPKE](https://www.rfc-editor.org/rfc/rfc9180.html)
+Use maintained crypto libraries, not home-written primitives. Candidate portable envelope suite: HPKE DHKEM(P-256, HKDF-SHA256) / HKDF-SHA256 / AES-128-GCM for wrapping a random 256-bit content-encryption key; AES-256-GCM for one message body. This remains a **candidate until library/API interoperability tests pass**, not an instruction to compose an ad hoc ECDH scheme. Record exact standardized suite IDs, encoding, nonce generation, test vectors, and library versions in a versioned protocol revision. [HPKE](https://www.rfc-editor.org/rfc/rfc9180.html)
 
-Browser support for a primitive is not support for HPKE/OPAQUE as a complete protocol. A small reviewed JS/WASM crypto module and its dependencies are expected. Do not advertise “zero JS supply chain” while using HTMX and cryptography. Vendored assets, CSP, no third-party dashboard scripts, a reproducible bundle and pinned native/SDK clients reduce exposure but do not eliminate the active served-code attack.
+Browser support for a primitive is not support for HPKE/OPAQUE as a complete protocol. A small maintained JS/WASM crypto module with pinned dependencies and cross-client tests is expected. Do not advertise “zero JS supply chain” while using HTMX and cryptography. Vendored assets, CSP, no third-party dashboard scripts, a reproducible bundle and pinned native/SDK clients reduce exposure but do not eliminate the active served-code attack.
 
 ## Proposed outbound flow
 
