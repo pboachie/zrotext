@@ -16,7 +16,7 @@ import org.junit.runner.RunWith
 
 /** Opt-in preflight only. It selects one active SIM but never arms or calls the radio. */
 @RunWith(AndroidJUnit4::class)
-class M1LocalRadioPreflightDeviceTest {
+class LocalRadioPreflightDeviceTest {
     @Test fun selectExactlyOneConsentedActiveSimForPrivatePilot() {
         val args = InstrumentationRegistry.getArguments()
         assumeTrue("requires private pilot preflight", args.getString("m1RadioPreflight") == "true")

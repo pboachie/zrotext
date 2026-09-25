@@ -22,7 +22,7 @@ import java.net.URI
 
 /** Opt-in loopback probe. Only a public key is exported; no alpha send is armed. */
 @RunWith(AndroidJUnit4::class)
-class M1LocalAuthenticatedWssTest {
+class LocalAuthenticatedWssDeviceTest {
     @Test fun exportPublicKeyForDisposableLocalEnrollment() {
         val args = InstrumentationRegistry.getArguments()
         assumeTrue("requires a private local M1 fixture", args.getString("m1LocalWss") == "true")

@@ -176,7 +176,7 @@ real restore, run migrations and `db-runtime` before starting any API. The resto
 rehearsal remains database-only and never enables a restored API. The fresh
 install smoke additionally checks runtime CRUD and application functions and
 rejects DDL, ledger writes, admin role switching, and server file/program access.
-Run `python scripts/test_runtime_db_role.py` to exercise repeat provisioning,
+Run `python scripts/tests/test_runtime_db_role.py` to exercise repeat provisioning,
 future migration grants, unsafe existing roles, and invalid/reused secrets in a
 new disposable local PostgreSQL container.
 
