@@ -838,11 +838,21 @@ impl<'a> DeliveryStore<'a> {
         if device.get::<_, bool>(0) {
             return Err(StoreError::Revoked);
         }
+        // Serialize dispatch with both signed opt-outs and owner holds. A
+        // withdrawal that wins this lock must prevent any later radio grant.
+        tx.query_opt(
+            "SELECT id FROM accounts WHERE id=$1 AND disabled_at IS NULL FOR NO KEY UPDATE",
+            &[&claim.account_id],
+        )
+        .await?
+        .ok_or(StoreError::StaleFence)?;
+        // No session fields change here. SHARE fences reconnects while staying
+        // compatible with signed inbound readers that take the account lock.
         let current_session = tx
             .query_opt(
-                "SELECT ds.connection_epoch,ds.site_id,ds.instance_id,ds.lease_until>now() AS live, \
+                "SELECT ds.connection_epoch,ds.site_id,ds.instance_id,ds.lease_until>clock_timestamp() AS live, \
                   s.enabled,s.draining FROM device_sessions ds JOIN sites s ON s.site_id=ds.site_id \
-                  WHERE ds.account_id=$1 AND ds.device_id=$2 FOR UPDATE OF ds",
+                  WHERE ds.account_id=$1 AND ds.device_id=$2 FOR SHARE OF ds",
                 &[&session.account_id, &session.device_id],
             )
             .await?
@@ -858,8 +868,8 @@ impl<'a> DeliveryStore<'a> {
         }
         let job = tx
             .query_opt(
-                "SELECT j.generation,j.lease_owner,j.lease_until>now(),j.grant_issued_at IS NULL, \
-                        m.state,m.expires_at>now(),m.recipient_digest \
+                "SELECT j.generation,j.lease_owner,j.lease_until>clock_timestamp(),j.grant_issued_at IS NULL, \
+                        m.state,m.expires_at>clock_timestamp(),m.recipient_digest,m.recipient_e164 \
                  FROM dispatch_jobs j JOIN messages m ON m.id=j.message_id \
                  WHERE j.account_id=$1 AND j.message_id=$2 AND j.device_id=$3 FOR UPDATE OF j,m",
                 &[&claim.account_id, &claim.message_id, &claim.device_id],
@@ -875,6 +885,18 @@ impl<'a> DeliveryStore<'a> {
         {
             return Err(StoreError::StaleFence);
         }
+        let recipient: Option<String> = job.get(7);
+        let recipient = recipient.ok_or(StoreError::StaleFence)?;
+        if tx.query_opt(
+            "SELECT 1 FROM recipient_suppressions WHERE account_id=$1 AND recipient_e164=$2 AND active=TRUE \
+             UNION ALL SELECT 1 FROM owner_recipient_holds \
+             WHERE account_id=$1 AND recipient_e164=$2 AND released_at IS NULL LIMIT 1",
+            &[&claim.account_id, &recipient],
+        ).await?.is_some() {
+            cancel_pre_grant(&tx, claim.account_id, claim.message_id).await?;
+            tx.commit().await?;
+            return Err(StoreError::RecipientSuppressed);
+        }
         let recipient_digest: Vec<u8> = job.get(6);
         tx.execute(
             "INSERT INTO message_attempts (id,account_id,message_id,device_id,generation,session_epoch,deployment_epoch,status) \
@@ -886,7 +908,7 @@ impl<'a> DeliveryStore<'a> {
         let inserted = tx.query_one(
             "INSERT INTO dispatch_fences (message_id,account_id,device_id,attempt_id,generation,session_epoch, \
               deployment_epoch,recipient_digest,grant_expires_at,outcome) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,now()+interval '30 seconds','granted') \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,clock_timestamp()+interval '30 seconds','granted') \
              RETURNING (extract(epoch FROM grant_expires_at)*1000)::bigint",
             &[&claim.message_id, &claim.account_id, &claim.device_id, &attempt_id,
               &claim.generation, &session.epoch, &deployment_epoch, &recipient_digest],
@@ -1305,7 +1327,7 @@ async fn refund_outbound(
     tx: &Transaction<'_>,
     account_id: Uuid,
     message_id: Uuid,
-) -> Result<bool, StoreError> {
+) -> Result<bool, tokio_postgres::Error> {
     let refund = tx
         .query_opt(
             "INSERT INTO usage_ledger(account_id,message_id,metric,period_start,entry_kind,units) \
@@ -1328,6 +1350,55 @@ async fn refund_outbound(
     )
     .await?;
     Ok(true)
+}
+
+/// Cancel queued/claimed work for a withdrawal in the same transaction as its
+/// hold or suppression. Already granted work is ambiguous and stays untouched.
+/// Taking the account lock before job locks matches grant issuance/admission.
+pub async fn cancel_pending_recipient(
+    tx: &Transaction<'_>,
+    account_id: Uuid,
+    recipient: &str,
+) -> Result<u64, tokio_postgres::Error> {
+    tx.query_one(
+        "SELECT id FROM accounts WHERE id=$1 FOR NO KEY UPDATE",
+        &[&account_id],
+    )
+    .await?;
+    let rows = tx
+        .query(
+            "SELECT j.message_id FROM dispatch_jobs j JOIN messages m ON m.id=j.message_id \
+         WHERE j.account_id=$1 AND m.account_id=$1 AND m.recipient_e164=$2 \
+         AND j.grant_issued_at IS NULL AND j.finished_at IS NULL \
+         AND m.state IN ('queued','claimed') ORDER BY j.message_id FOR UPDATE OF j,m",
+            &[&account_id, &recipient],
+        )
+        .await?;
+    for row in &rows {
+        cancel_pre_grant(tx, account_id, row.get(0)).await?;
+    }
+    Ok(rows.len() as u64)
+}
+
+// The caller holds the dispatch job/message locks and has verified no grant.
+async fn cancel_pre_grant(
+    tx: &Transaction<'_>,
+    account_id: Uuid,
+    message_id: Uuid,
+) -> Result<(), tokio_postgres::Error> {
+    tx.execute(
+        "UPDATE messages SET state='cancelled',state_version=state_version+1,updated_at=clock_timestamp() \
+         WHERE account_id=$1 AND id=$2",
+        &[&account_id, &message_id],
+    ).await?;
+    tx.execute(
+        "UPDATE dispatch_jobs SET lease_owner=NULL,lease_until=NULL,finished_at=clock_timestamp() \
+         WHERE account_id=$1 AND message_id=$2",
+        &[&account_id, &message_id],
+    )
+    .await?;
+    refund_outbound(tx, account_id, message_id).await?;
+    Ok(())
 }
 
 fn validate_new_expiry(expires_at_ms: i64, metering: MeteringTime) -> Result<(), StoreError> {

@@ -1055,7 +1055,9 @@ async fn poll_synthetic_grant(
     let record = store_session(session, state);
     let grant = match store.issue_grant(&claim, &record, Uuid::new_v4()).await {
         Ok(grant) => grant,
-        Err(StoreError::DeviceBusy | StoreError::DispatchDisabled) => return Ok(None),
+        Err(
+            StoreError::DeviceBusy | StoreError::DispatchDisabled | StoreError::RecipientSuppressed,
+        ) => return Ok(None),
         Err(error) => return Err(error),
     };
     let payload = store.synthetic_payload_for_grant(&grant, &record).await?;

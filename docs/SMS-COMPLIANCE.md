@@ -18,9 +18,11 @@ The pilot recognizes exact, case-insensitive STOP, STOPALL, UNSUBSCRIBE, CANCEL,
 
 An authenticated owner can view active ambiguous SMS suppressions at `/owner/devices` in a review queue. The queue shows the recipient number, whether the signed action matched a pilot reply window, event times and any owner decision; it never shows SMS content.
 
-The owner API also records two kinds of durable owner input. Every write needs the owner session, the exact Origin and the CSRF token, and each is written with an append-only audit record:
+The owner dashboard at `/owner/devices` and its API record two kinds of durable owner input. Every write needs the owner session, the exact Origin and the CSRF token, and each is written with an append-only audit record:
 
 - **Off-channel holds.** `POST /v1/owner/opt-out-holds` records that a recipient withdrew consent outside a signed SMS, for example by email or a phone call. The request carries only the E.164 number, a channel code (`email`, `phone_call`, `web_form`, `postal_mail`, `in_person`, `other`), a reason code (`opt_out`, `consent_withdrawn`, `complaint`, `wrong_number`) and the report time. Free-text notes are rejected. A hold is stored apart from signed suppressions, and acceptance checks both under the same account lock, so a hold also rejects an exact retry. Only verified new consent releases a hold: a signed START reply from that recipient observed after the hold was recorded. No owner action releases it. `GET /v1/owner/opt-out-holds` lists active holds 20 at a time.
 - **Review decisions.** `POST /v1/owner/opt-out-review/decisions` records one immutable decision, `confirmed_opt_out` or `not_opt_out`, for an item in the review queue. A decision never changes the suppression. A signed STOP is not a review item and cannot receive a decision.
+
+Recording a new hold or a signed opt-out also cancels queued and claimed messages that have no radio grant, returning their reserved usage once. The writer checks both kinds of block again before issuing a grant under the same account lock. A grant that wins that lock first may already be in progress and is not reported as cancelled. A later START never resurrects cancelled messages. The hold creation response includes `cancelled_messages`; list pages contain metadata only.
 
 Neither path establishes consent or lifts a block. A non-allowlisted route still requires production line activation and end-to-end device evidence. Keep the general route closed until those gaps are resolved.

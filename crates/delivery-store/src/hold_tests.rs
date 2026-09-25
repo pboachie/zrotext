@@ -243,3 +243,6 @@ async fn hold_and_admission_serialize_on_the_account_lock() {
     ));
     db.close().await;
 }
+
+#[path = "hold_dispatch_tests.rs"]
+mod dispatch;

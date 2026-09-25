@@ -175,6 +175,7 @@ async fn authenticated_line_opt_out_replays_and_rejects_wrong_line_epoch_and_seq
         include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
         include_str!("../../../../deploy/compose/migrations/018_sealed_inbound_identity.sql"),
         include_str!("../../../../deploy/compose/migrations/019_line_activation_contract.sql"),
+        include_str!("../../../../deploy/compose/migrations/030_terminal_dispatch_jobs.sql"),
         include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
         include_str!("../../../../deploy/compose/migrations/032_line_opt_out_events.sql"),
         include_str!("../../../../deploy/compose/migrations/033_sms_line_binding_scope.sql"),
