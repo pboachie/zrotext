@@ -222,7 +222,7 @@ async fn dashboard(
     owner_id(&state, &headers).await?;
     Ok((
         [
-            (header::CONTENT_SECURITY_POLICY, "default-src 'none'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"),
+            (header::CONTENT_SECURITY_POLICY, "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"),
             (header::REFERRER_POLICY, "no-referrer"),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
             (header::STRICT_TRANSPORT_SECURITY, "max-age=63072000; includeSubDomains"),
@@ -237,6 +237,10 @@ async fn script() -> impl IntoResponse {
         [
             (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            (
+                header::STRICT_TRANSPORT_SECURITY,
+                "max-age=63072000; includeSubDomains",
+            ),
         ],
         include_str!("../../static/billing-dashboard.js"),
     )

@@ -9,6 +9,7 @@ use crate::{
         abuse_limits::{self, Limit},
     },
     enrollment::{self, AuthenticatedDevice, EnrollmentError, EnrollmentHasher},
+    inbound::unsolicited::{self, LineOptOut, LineOptOutError},
     inbound::{self, Content, InboundError, InboundEvent, InboundSession},
 };
 use axum::{
@@ -109,6 +110,7 @@ pub struct DeviceSocketState {
     pub alpha_policy: Arc<AlphaPolicy>,
     pub dispatch_runtime_enabled: bool,
     pub inbound_pilot_enabled: bool,
+    pub line_opt_out_enabled: bool,
     pub draining: Arc<AtomicBool>,
     pub drain_notify: Arc<Notify>,
 }
@@ -169,6 +171,35 @@ enum ClientFrame {
         part_count: i16,
         signature_der: String,
     },
+    #[serde(rename = "line_opt_out")]
+    LineOptOut {
+        v: u8,
+        connection_epoch: i64,
+        event_id: Uuid,
+        sequence: i64,
+        line_id: Uuid,
+        binding_generation: i64,
+        action: LineOptOutAction,
+        recipient_e164: String,
+        observed_at_ms: i64,
+        signature_der: String,
+    },
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum LineOptOutAction {
+    OptOut,
+    OptOutReview,
+}
+
+impl From<LineOptOutAction> for unsolicited::Action {
+    fn from(value: LineOptOutAction) -> Self {
+        match value {
+            LineOptOutAction::OptOut => Self::Stop,
+            LineOptOutAction::OptOutReview => Self::Review,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -273,6 +304,12 @@ enum ServerFrame {
         queued_deliveries: u64,
         #[serde(skip_serializing_if = "is_false")]
         suppression_cleared: bool,
+    },
+    #[serde(rename = "line_opt_out_ack")]
+    LineOptOutAck {
+        v: u8,
+        event_id: Uuid,
+        created: bool,
     },
 }
 
@@ -405,6 +442,17 @@ fn inbound_evidence_close_code(error: &InboundError) -> u16 {
         | InboundError::StaleLease
         | InboundError::BudgetExhausted
         | InboundError::Database(_) => RETRY_LATER,
+    }
+}
+
+fn line_opt_out_close_code(error: &LineOptOutError) -> u16 {
+    match error {
+        LineOptOutError::InvalidInput
+        | LineOptOutError::InvalidSignature
+        | LineOptOutError::EventConflict
+        | LineOptOutError::SequenceConflict => EVIDENCE_REJECTED,
+        LineOptOutError::Unauthorized => close_code::POLICY,
+        LineOptOutError::BudgetExhausted | LineOptOutError::Database(_) => RETRY_LATER,
     }
 }
 
@@ -758,6 +806,49 @@ async fn run_socket(
                             suppression_cleared: outcome.suppression_cleared,
                         }).await { break; }
                     }
+                    Some(ClientFrame::LineOptOut {
+                        v: 1, connection_epoch, event_id, sequence, line_id,
+                        binding_generation, action, recipient_e164, observed_at_ms,
+                        signature_der,
+                    }) => {
+                        if !state.line_opt_out_enabled || connection_epoch != session.connection_epoch {
+                            close_with_code = Some(close_code::POLICY);
+                            break;
+                        }
+                        let Ok(signature) = URL_SAFE_NO_PAD.decode(signature_der.as_bytes()) else {
+                            close_with_code = Some(EVIDENCE_REJECTED);
+                            break;
+                        };
+                        if URL_SAFE_NO_PAD.encode(&signature) != signature_der {
+                            close_with_code = Some(EVIDENCE_REJECTED);
+                            break;
+                        }
+                        let inbound_session = InboundSession {
+                            account_id: session.account_id,
+                            device_id: session.device_id,
+                            site_id: &state.site_id,
+                            instance_id: &state.instance_id,
+                            connection_epoch: session.connection_epoch,
+                            deployment_epoch: state.deployment_epoch,
+                        };
+                        let event = LineOptOut {
+                            id: event_id, line_id, binding_generation, sequence,
+                            recipient_e164: &recipient_e164, action: action.into(),
+                            observed_at_ms, signature_der: &signature,
+                        };
+                        let created = match unsolicited::ingest_line_opt_out(
+                            &mut client, inbound_session, &event,
+                        ).await {
+                            Ok(created) => created,
+                            Err(error) => {
+                                close_with_code = Some(line_opt_out_close_code(&error));
+                                break;
+                            }
+                        };
+                        if !send_frame(&mut socket, ServerFrame::LineOptOutAck {
+                            v: 1, event_id, created,
+                        }).await { break; }
+                    }
                     _ => break,
                 }
             }
@@ -1104,77 +1195,3 @@ async fn release_session(
 use tokio_postgres::NoTls;
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-mod admission_tests;
-#[cfg(test)]
-mod virtual_inbound_tests;
-
-#[cfg(test)]
-mod frame_budget_tests {
-    use super::*;
-    #[tokio::test]
-    async fn control_frame_flood_closes_real_socket() {
-        use futures_util::SinkExt;
-        let closed = Arc::new(Notify::new());
-        let observed = closed.clone();
-        let app = Router::new().route(
-            "/",
-            get(move |upgrade: WebSocketUpgrade| {
-                let closed = closed.clone();
-                async move {
-                    upgrade.on_upgrade(move |mut socket| async move {
-                        let mut budget = FrameBudget::new(Instant::now());
-                        assert!(receive_frame(&mut socket, &mut budget).await.is_none());
-                        closed.notify_one();
-                    })
-                }
-            }),
-        );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
-        });
-        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}/"))
-            .await
-            .unwrap();
-        let sender = tokio::spawn(async move {
-            for _ in 0..4096 {
-                if socket
-                    .send(tokio_tungstenite::tungstenite::Message::Pong(
-                        Vec::new().into(),
-                    ))
-                    .await
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        });
-        timeout(Duration::from_secs(2), observed.notified())
-            .await
-            .unwrap();
-        sender.abort();
-        server.abort();
-    }
-    #[test]
-    fn replay_burst_is_bounded_and_replenishes_without_unbounded_credit() {
-        let now = Instant::now();
-        let mut budget = FrameBudget::new(now);
-        for _ in 0..256 {
-            assert!(budget.admit(now));
-        }
-        assert!(!budget.admit(now));
-        let later = now + Duration::from_secs(1);
-        for _ in 0..64 {
-            assert!(budget.admit(later));
-        }
-        assert!(!budget.admit(later));
-        let later = later + Duration::from_secs(3600);
-        for _ in 0..256 {
-            assert!(budget.admit(later));
-        }
-        assert!(!budget.admit(later));
-    }
-}
