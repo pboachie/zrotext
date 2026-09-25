@@ -1,0 +1,26 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'none'; form-action 'none'; base-uri 'none'">
+  <title>ZROtext · Text receptionist demo</title>
+  <link rel="stylesheet" href="receptionist-demo.css">
+  <script src="receptionist-demo.js" defer></script>
+</head>
+<body>
+<main>
+  <header><a class="wordmark" href="../../README.md"><strong>ZRO</strong>text</a><span class="badge">Interactive concept · synthetic data</span></header>
+  <div class="intro"><p class="eyebrow">FROM A TEXT TO A NEXT STEP</p><h1>A little help.<br>A human in control.</h1><p>Explore a text receptionist that organizes an inquiry, drafts a reply, and waits for your approval.</p></div>
+  <aside class="notice">This is a local simulation. No SMS, AI provider, calendar, or contact is connected. Drafts are scripted. Nothing you enter is saved or sent.</aside>
+  <div class="toolbar"><label for="scenario">Try a workflow</label><select id="scenario"><option value="service">Business · service inquiry</option><option value="wedding">Individual · wedding RSVP</option><option value="assistant">Individual · text your assistant</option></select><button id="reset" type="button">Start again</button></div>
+  <div class="workspace">
+    <section class="panel conversation" aria-labelledby="conversation-title"><div class="panel-head"><p class="eyebrow">01 / INBOX</p><h2 id="conversation-title">The conversation</h2></div><p id="scenario-context" class="muted"></p><ol id="conversation" aria-label="Synthetic conversation"></ol><div class="events"><h3>Try an interruption</h3><button id="opt-out" type="button">Simulate recipient opt-out</button><button id="takeover" type="button">Hand off to a person</button></div></section>
+    <section class="panel" aria-labelledby="work-title"><div class="panel-head"><p class="eyebrow">02 / YOUR WORKSPACE</p><h2 id="work-title">Review the next step</h2></div><dl id="intake"></dl><label for="draft">Suggested reply</label><textarea id="draft" rows="5" maxlength="480" spellcheck="true"></textarea><p class="muted small">Edit the reply before approval. Editing an approved reply requires approval again. Use synthetic text only.</p><div class="actions"><button id="approve" class="primary" type="button">Approve this draft</button><button id="queue" type="button">Queue simulated reply</button></div><p id="status" class="status" role="status" aria-live="polite"></p><div class="delivery"><h3>Delivery simulation</h3><p id="delivery-detail" class="muted"></p><div class="actions"><button id="advance" type="button">Simulate phone submission</button><button id="receipt" type="button">Simulate delivery receipt</button><button id="unknown" type="button">Simulate missing outcome</button></div></div></section>
+  </div>
+  <section class="panel learn" aria-labelledby="learn-title"><h2 id="learn-title">One pattern, several useful services</h2><div class="ideas"><div><h3>Small teams</h3><p>Collect job details and preferred times before a person confirms availability.</p></div><div><h3>Event hosts</h3><p>Organize replies and missing RSVP details. A bulk invitation sender still needs consent, pacing, and cancellation controls.</p></div><div><h3>Personal assistants</h3><p>Turn a text into a proposed task. External actions need a connected provider and explicit approval.</p></div></div><p class="muted">The production workflow is planned. This demo does not prove carrier delivery or readiness for general sending. <a href="../../docs/RECEPTIONIST-DEMO.md">Read the implementation gaps</a>.</p></section>
+  <footer>ZROtext · Your phone. Your number. Your SMS API.</footer>
+</main>
+</body>
+</html>
