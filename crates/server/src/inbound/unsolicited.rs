@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Internal attempt-free, line-bound STOP/review transaction. No transport
-//! invokes this yet. The sender is a signed device declaration, not an
+//! Internal attempt-free, line-bound STOP/review transaction. The sender is a
+//! signed device declaration, not an
 //! independently verified carrier identity; no SMS body is stored.
 
 use super::{InboundSession, consume_storage_budget};
-use crate::sealed_inbound::line_binding_ready;
+use crate::sealed_inbound::sms_line_binding_ready;
 use p256::ecdsa::{Signature, VerifyingKey, signature::Verifier};
 use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -165,7 +165,7 @@ pub async fn ingest_line_opt_out(
         )
         .await?
         .is_none()
-        || !line_binding_ready(&tx, session, event.line_id, event.binding_generation).await?
+        || !sms_line_binding_ready(&tx, session, event.line_id, event.binding_generation).await?
     {
         return Err(LineOptOutError::Unauthorized);
     }
@@ -213,7 +213,7 @@ pub async fn ingest_line_opt_out(
         if account != session.account_id || device != session.device_id || saved != proof_digest {
             return Err(LineOptOutError::EventConflict);
         }
-        if !line_binding_ready(&tx, session, event.line_id, event.binding_generation).await? {
+        if !sms_line_binding_ready(&tx, session, event.line_id, event.binding_generation).await? {
             return Err(LineOptOutError::Unauthorized);
         }
         tx.commit().await?;
@@ -291,7 +291,7 @@ pub async fn ingest_line_opt_out(
         ],
     )
     .await?;
-    if !line_binding_ready(&tx, session, event.line_id, event.binding_generation).await? {
+    if !sms_line_binding_ready(&tx, session, event.line_id, event.binding_generation).await? {
         return Err(LineOptOutError::Unauthorized);
     }
     tx.commit().await?;

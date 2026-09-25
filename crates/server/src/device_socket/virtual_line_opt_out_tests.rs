@@ -177,6 +177,7 @@ async fn authenticated_line_opt_out_replays_and_rejects_wrong_line_epoch_and_seq
         include_str!("../../../../deploy/compose/migrations/019_line_activation_contract.sql"),
         include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
         include_str!("../../../../deploy/compose/migrations/032_line_opt_out_events.sql"),
+        include_str!("../../../../deploy/compose/migrations/033_sms_line_binding_scope.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }
@@ -221,8 +222,8 @@ async fn authenticated_line_opt_out_replays_and_rejects_wrong_line_epoch_and_seq
         if active {
             db.execute("INSERT INTO phone_lines(id,account_id,state,approved_at,current_binding_generation,last_issued_generation) \
                 VALUES($1,$2,'active',clock_timestamp(),1,1)", &[&line_id,&account_id]).await.unwrap();
-            db.execute("INSERT INTO device_line_bindings(account_id,line_id,device_id,generation,state,owner_approval_digest,device_confirmation_digest,activated_at) \
-                VALUES($1,$2,$3,1,'active',$4,$5,clock_timestamp()-interval '1 second')",
+            db.execute("INSERT INTO device_line_bindings(account_id,line_id,device_id,generation,state,purpose,owner_approval_digest,device_confirmation_digest,activated_at) \
+                VALUES($1,$2,$3,1,'active','sms',$4,$5,clock_timestamp()-interval '1 second')",
                 &[&account_id,&line_id,&device_id,&vec![1_u8;32],&vec![2_u8;32]]).await.unwrap();
         } else {
             db.execute(
