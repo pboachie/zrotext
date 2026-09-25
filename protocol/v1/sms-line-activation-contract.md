@@ -4,8 +4,8 @@
 `activate_sms_line_binding`, and `sms_line_binding_ready` functions define a
 separate SMS-only line scope for Android API 28+. The owner can provision an SMS
 approval public key through the account API. The activation exchange below is
-off unless the hub sets `SMS_LINE_ACTIVATION_ENABLED=true`, and the Android app
-does not yet answer its frames. General sending stays closed.
+off unless the hub sets `SMS_LINE_ACTIVATION_ENABLED=true`. General sending
+stays closed.
 
 An authenticated owner session issues a five-minute challenge for an enrolled
 device and a stable owner-assigned line UUID. A distinct SMS owner approval key
@@ -123,5 +123,10 @@ Stored proofs, acknowledgements and cleared nonces are write-once in the
 database. The server never receives the owner's private key.
 
 The current PostgreSQL tests use synthetic keys and declared subscription
-values. Android frame handling, an owner browser signing flow, physical SIM
-testing, and a real carrier receive test are still required.
+values. The Android gateway answers a pushed challenge only for API 29+ with
+exactly one selected, active physical SIM, keeps the prepared proof in memory,
+and installs its local line binding only from an `sms_line_activated` frame
+whose digests match that proof and a fresh SIM observation. A restarted app
+cannot install an earlier proof; the owner opens a new activation. An owner
+browser signing flow, physical SIM testing, and a real carrier receive test are
+still required.

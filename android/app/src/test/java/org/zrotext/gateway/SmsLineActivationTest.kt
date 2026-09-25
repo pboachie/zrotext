@@ -39,7 +39,7 @@ class SmsLineActivationTest {
             sign()
         }
 
-    /** The constructor has no production factory until an authenticated route exists. */
+    /** Reflection also builds the rejected (accepted = false) case, which no frame produces. */
     private fun ack(proof: PreparedSmsLineActivation, accepted: Boolean = true,
                     challenge: UUID = challengeId, signatureDigest: ByteArray =
                         sha256(proof.deviceSignatureDer())): AuthenticatedSmsLineActivationAck {

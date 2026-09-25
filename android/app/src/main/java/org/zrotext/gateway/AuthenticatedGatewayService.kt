@@ -79,6 +79,8 @@ class AuthenticatedGatewayService : Service() {
     @Volatile private var lineOptOutPaused = false
     @Volatile private var quarantinedEvidenceNotice = false
     @Volatile private var activeGrant: AlphaGrantValidator.Grant? = null
+    /** In memory only: a restarted app cannot install an activation it did not just prove. */
+    @Volatile private var smsLineActivation: PreparedSmsLineActivation? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -423,6 +425,25 @@ class AuthenticatedGatewayService : Service() {
                             handleInboundAck(webSocket, currentGeneration,
                                 uuid(frame, "event_id").toString(), frame.optBoolean("suppression_cleared", false))
                         }
+                        "sms_line_challenge" -> {
+                            check(machine.phase == DeviceStreamMachine.Phase.ACTIVE)
+                            handleSmsLineChallenge(webSocket, machine, keys, currentGeneration,
+                                SmsLineActivationFrames.challenge(frame))
+                        }
+                        "sms_line_proof_ack" -> {
+                            check(machine.phase == DeviceStreamMachine.Phase.ACTIVE)
+                            val ack = SmsLineActivationFrames.proofAck(frame)
+                            val pending = smsLineActivation
+                            if (!ack.accepted && pending?.challenge?.challengeId == ack.challengeId) {
+                                smsLineActivation = null
+                                AuthenticatedGatewayStatus.value = "SMS line proof refused"
+                            }
+                        }
+                        "sms_line_activated" -> {
+                            check(machine.phase == DeviceStreamMachine.Phase.ACTIVE)
+                            handleSmsLineActivated(machine, keys, currentGeneration,
+                                SmsLineActivationFrames.activated(frame))
+                        }
                         "line_opt_out_ack" -> {
                             check(lineOptOutUploadRequested &&
                                 machine.phase == DeviceStreamMachine.Phase.ACTIVE)
@@ -655,6 +676,67 @@ class AuthenticatedGatewayService : Service() {
                 // Never discard a STOP when a local key, journal or writer check fails.
                 pauseLineOptOutUpload()
             }
+        }
+    }
+
+    /**
+     * Answers an owner-opened challenge with a signed declaration of the selected
+     * physical SIM. An ineligible SIM or selection declines silently; the owner sees
+     * the challenge stay unanswered. A re-pushed challenge resends the same proof.
+     */
+    private fun handleSmsLineChallenge(webSocket: WebSocket, machine: DeviceStreamMachine,
+                                       keys: DeviceSigningKeyStore, currentGeneration: Int,
+                                       challenge: SmsLineChallenge) {
+        JournalRuntime.io.execute {
+            if (generation != currentGeneration) return@execute
+            try {
+                val epoch = machine.heartbeatEpoch()
+                val existing = smsLineActivation
+                val proof = if (existing != null && sameChallenge(existing.challenge, challenge)) existing
+                else SmsLineActivationDevice.forGateway(applicationContext, keys)
+                    .prepare(challenge, machine.activeAccountId(), machine.activeDeviceId())
+                if (proof == null) {
+                    AuthenticatedGatewayStatus.value =
+                        "SMS line activation declined: select one eligible physical SIM"
+                    return@execute
+                }
+                if (generation != currentGeneration || machine.heartbeatEpoch() != epoch) return@execute
+                smsLineActivation = proof
+                AuthenticatedGatewayStatus.value = "SMS line proof sent; waiting for owner approval"
+                if (!webSocket.send(SmsLineActivationFrames.proof(epoch, proof)))
+                    disconnect(currentGeneration, DeviceReconnectPolicy.Loss.TRANSPORT)
+            } catch (_: Exception) {
+                smsLineActivation = null
+                AuthenticatedGatewayStatus.value = "SMS line activation could not be prepared"
+            }
+        }
+    }
+
+    private fun sameChallenge(a: SmsLineChallenge, b: SmsLineChallenge): Boolean =
+        a.challengeId == b.challengeId && a.accountId == b.accountId && a.lineId == b.lineId &&
+            a.deviceId == b.deviceId && a.generation == b.generation &&
+            a.expiresAtMs == b.expiresAtMs && a.nonce.contentEquals(b.nonce)
+
+    /** Installs the local line binding only for the exact proof this process sent. */
+    private fun handleSmsLineActivated(machine: DeviceStreamMachine, keys: DeviceSigningKeyStore,
+                                       currentGeneration: Int,
+                                       ack: AuthenticatedSmsLineActivationAck) {
+        JournalRuntime.io.execute {
+            if (generation != currentGeneration) return@execute
+            val proof = smsLineActivation
+            if (proof == null || !ack.matches(proof)) {
+                AuthenticatedGatewayStatus.value =
+                    "SMS line approved for a proof this app no longer holds; start a new activation"
+                return@execute
+            }
+            smsLineActivation = null
+            val installed = try {
+                SmsLineActivationDevice.forGateway(applicationContext, keys).installAfterAuthenticatedAck(
+                    SmsJournalDatabase.get(applicationContext).attempts(), proof, ack,
+                    machine.activeAccountId(), machine.activeDeviceId())
+            } catch (_: Exception) { false }
+            AuthenticatedGatewayStatus.value = if (installed) "SMS line activated on this phone"
+                else "SMS line approved, but the SIM changed; start a new activation"
         }
     }
 
