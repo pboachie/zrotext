@@ -1193,21 +1193,27 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
     )
     .await
     .unwrap();
-    // Migration 038: a hold starts unreleased at the insert time.
-    let backdated = Uuid::new_v4();
-    for statement in [
-        "INSERT INTO owner_recipient_holds(id,account_id,recipient_e164,channel,reason,reported_at,created_by,created_at) \
-         VALUES($1,$2,'+15551234567','phone_call','consent_withdrawn',clock_timestamp()-interval '1 hour',$3,clock_timestamp()-interval '1 hour')",
-        "INSERT INTO owner_recipient_holds(id,account_id,recipient_e164,channel,reason,reported_at,created_by,released_at,release_event_id) \
-         VALUES($1,$2,'+15551234567','phone_call','consent_withdrawn',clock_timestamp(),$3,clock_timestamp(),NULL)",
-    ] {
-        assert!(
-            db.execute(statement, &[&backdated, &account, &hold_owner])
-                .await
-                .is_err(),
-            "a hold cannot be backdated or start released"
-        );
-    }
+    // Migration 038: a hold starts unreleased at the insert time. Both inserts
+    // pass migration 036's own constraints; only the 038 guard rejects them.
+    let rejected = Uuid::new_v4();
+    assert!(
+        db.execute(
+            "INSERT INTO owner_recipient_holds(id,account_id,recipient_e164,channel,reason,reported_at,created_by,created_at)              VALUES($1,$2,'+15551234567','phone_call','consent_withdrawn',clock_timestamp()-interval '1 hour',$3,clock_timestamp()-interval '1 hour')",
+            &[&rejected, &account, &hold_owner],
+        )
+        .await
+        .is_err(),
+        "a hold cannot be backdated"
+    );
+    assert!(
+        db.execute(
+            "INSERT INTO owner_recipient_holds(id,account_id,recipient_e164,channel,reason,reported_at,created_by,released_at,release_event_id)              VALUES($1,$2,'+15551234567','phone_call','consent_withdrawn',clock_timestamp(),$3,clock_timestamp(),$4)",
+            &[&rejected, &account, &hold_owner, &stop.event_id],
+        )
+        .await
+        .is_err(),
+        "a hold cannot start released"
+    );
     // Test setup only: record a hold two minutes before the STOP. Production
     // inserts always pass the guard above.
     let earlier_hold = Uuid::new_v4();
@@ -2003,6 +2009,16 @@ async fn fresh_signed_events_share_a_durable_budget_and_replays_are_free() {
     db.batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
         .await
         .unwrap();
+}
+
+#[test]
+fn hold_release_skew_matches_the_database_guard() {
+    // Migration 038 hardcodes the same bound; change both together.
+    assert_eq!(MAX_FUTURE_MS, 5 * 60 * 1000);
+    assert!(
+        include_str!("../../../../deploy/compose/migrations/038_owner_opt_out_hold_guards.sql")
+            .contains("e.observed_at > OLD.created_at + interval '5 minutes'")
+    );
 }
 
 async fn hold_release_event(db: &tokio_postgres::Client, hold: Uuid) -> Option<Uuid> {

@@ -8,6 +8,8 @@
 --    fast could otherwise release the hold and resume sending to a recipient
 --    who withdrew consent. A START inside that window leaves the hold in
 --    place; a later START releases it.
+--    The bound trusts the phone clock at upload time; a phone whose clock runs
+--    more than five minutes fast and that uploads late is not covered.
 -- 2. The 036 guard covered UPDATE and DELETE only. A direct INSERT could
 --    create a hold that was already released, or backdate created_at so an
 --    older START would release it. New holds now start unreleased at the
