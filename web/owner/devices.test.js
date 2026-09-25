@@ -28,6 +28,7 @@ async function ownerPage() {
     unauthorized: false, pendingCreate: null, nextCreateResponse: null, pendingHistory: null,
     historyPages: [], historyRequests: [], webhookPages: [], webhookRequests: [], pendingWebhook: null,
     endpoints: [], pendingEndpoints: null, pendingDevices: null, messages: [],
+    reviewPages: [], reviewRequests: [], pendingReview: null,
     devices: [], deletedDevices: [], billingCapacity: null, approveResponse: response(409),
     authRequests: [], sessions: [{ id: "11111111-1111-4111-8111-111111111111", current: true,
       created_at_ms: 1000, expires_at_ms: 100000, last_used_at_ms: 2000 }],
@@ -65,6 +66,12 @@ async function ownerPage() {
       return response(204);
     }
     if (url === "/v1/owner/messages") return response(200, { messages: state.messages, next_cursor: null });
+    if (url.startsWith("/v1/owner/opt-out-review")) {
+      state.reviewRequests.push({ url, options });
+      if (state.pendingReview) return state.pendingReview;
+      return state.unauthorized ? response(401)
+        : response(200, state.reviewPages.shift() || { holds: [], next_cursor: null });
+    }
     if (url === "/v1/auth/api-keys" && options.method === "GET") {
       return response(200, { keys: [], next_cursor: null });
     }
@@ -123,6 +130,50 @@ function delivery(id = deliveryId) {
 function visibleText(element) {
   return [element.textContent, ...element.children.map(visibleText)].join(" ");
 }
+
+test("opt-out review pages active holds without showing SMS content and clears on sign-out", async () => {
+  const { element, state } = await ownerPage();
+  const cursor = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+  state.reviewPages.push({ holds: [{
+    recipient_e164: "+15551234567", source: "sms_review", observed_at_ms: 1000,
+    changed_at_ms: 2000, body: "PRIVATE_BODY", signature_der: "PRIVATE_SIGNATURE",
+  }], next_cursor: cursor });
+  state.reviewPages.push({ holds: [{
+    recipient_e164: "+15557654321", source: "sms_unsolicited_review",
+    observed_at_ms: 3000, changed_at_ms: 4000,
+  }], next_cursor: null });
+  await element("refresh-opt-out-review").listeners.click();
+  assert.equal(state.reviewRequests.at(-1).url, "/v1/owner/opt-out-review");
+  assert.equal(state.reviewRequests.at(-1).options.method, "GET");
+  assert.equal(state.reviewRequests.at(-1).options.cache, "no-store");
+  assert.equal(state.reviewRequests.at(-1).options.credentials, "same-origin");
+  assert.equal(element("more-opt-out-review").hidden, false);
+  await element("more-opt-out-review").listeners.click();
+  assert.equal(state.reviewRequests.at(-1).url, `/v1/owner/opt-out-review?before=${cursor}`);
+  assert.equal(element("opt-out-review-list").children.length, 2);
+  const rendered = visibleText(element("opt-out-review-list"));
+  assert.match(rendered, /\+15551234567/);
+  assert.match(rendered, /outside a pilot reply window/);
+  assert.equal(rendered.includes("PRIVATE_BODY"), false);
+  assert.equal(rendered.includes("PRIVATE_SIGNATURE"), false);
+  await element("logout").listeners.click();
+  assert.equal(element("opt-out-review-list").children.length, 0);
+  assert.equal(element("owner-content").hidden, true);
+});
+
+test("opt-out review ignores a late response after session expiry", async () => {
+  const { element, state } = await ownerPage();
+  let resolveReview;
+  state.pendingReview = new Promise((resolve) => { resolveReview = resolve; });
+  const pending = element("refresh-opt-out-review").listeners.click();
+  state.unauthorized = true;
+  await element("refresh-devices").listeners.click();
+  resolveReview(response(200, { holds: [{ recipient_e164: "+15551234567",
+    source: "sms_review", observed_at_ms: 1000, changed_at_ms: 2000 }], next_cursor: null }));
+  await pending;
+  assert.equal(element("opt-out-review-list").children.length, 0);
+  assert.equal(element("owner-content").hidden, true);
+});
 
 test("password reset keeps the token out of URLs and clears entered passwords", async () => {
   const { element, state } = await ownerPage();
