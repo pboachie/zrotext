@@ -15,14 +15,14 @@
             ["#9", "https://github.com/pboachie/zrotext/pull/9"],
             ["#24", "https://github.com/pboachie/zrotext/pull/24"],
             ["#160", "https://github.com/pboachie/zrotext/pull/160"],
-            ["hardware record", "ANDROID-HARDWARE-EVIDENCE-2026-09-24.md"]
+            ["device compatibility", "DEVICE-COMPATIBILITY.md"]
           ],
           "done": [
             "One-use pairing with code and key-fingerprint comparison",
             "P-256 device keys in Android Keystore with challenge-response sign-in",
             "Authenticated WebSocket stream with heartbeats, fenced session epochs and bounded reconnects",
             "Opt-in heartbeat resumes after a phone reboot",
-            "Controlled test on one Samsung device and SIM ([record](ANDROID-HARDWARE-EVIDENCE-2026-09-24.md))"
+            "Controlled test on one Samsung device and SIM ([compatibility notes](DEVICE-COMPATIBILITY.md))"
           ],
           "todo": [
             "Longer liveness runs across networks, carriers and device models",
@@ -233,8 +233,8 @@
           "short": "Sealed-content protocol",
           "stage": "design",
           "evidence": [
-            ["Draft 01", "protocol/zt-sealed-draft-01.md"],
-            ["draft 02 proposal", "protocol/zt-sealed-draft-02-proposal.md"],
+            ["Draft 01", "../protocol/drafts/zt-sealed-draft-01.md"],
+            ["draft 02 proposal", "../protocol/drafts/zt-sealed-draft-02-proposal.md"],
             ["#159", "https://github.com/pboachie/zrotext/pull/159"],
             ["#162", "https://github.com/pboachie/zrotext/pull/162"]
           ],

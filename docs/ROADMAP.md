@@ -136,7 +136,7 @@ Connect a dedicated Android phone and SIM, send and receive SMS through the serv
 
 | Capability | Stage | Evidence |
 |---|---|---|
-| Phone + SIM enrollment and device stream | Restricted pilot | [#9](https://github.com/pboachie/zrotext/pull/9), [#24](https://github.com/pboachie/zrotext/pull/24), [#160](https://github.com/pboachie/zrotext/pull/160), [hardware record](ANDROID-HARDWARE-EVIDENCE-2026-09-24.md) |
+| Phone + SIM enrollment and device stream | Restricted pilot | [#9](https://github.com/pboachie/zrotext/pull/9), [#24](https://github.com/pboachie/zrotext/pull/24), [#160](https://github.com/pboachie/zrotext/pull/160), [device compatibility](DEVICE-COMPATIBILITY.md) |
 | Outbound send with honest delivery states | Restricted pilot | [#17](https://github.com/pboachie/zrotext/pull/17), [#19](https://github.com/pboachie/zrotext/pull/19), [#21](https://github.com/pboachie/zrotext/pull/21) |
 | Opt-out handling and recipient suppression | Restricted pilot | [#207](https://github.com/pboachie/zrotext/pull/207), [#210](https://github.com/pboachie/zrotext/pull/210) |
 | Inbound capture and signed webhooks | Restricted pilot | [#25](https://github.com/pboachie/zrotext/pull/25), [#29](https://github.com/pboachie/zrotext/pull/29), [#39](https://github.com/pboachie/zrotext/pull/39), [#80](https://github.com/pboachie/zrotext/pull/80) |
@@ -149,7 +149,7 @@ Connect a dedicated Android phone and SIM, send and receive SMS through the serv
 - [x] P-256 device keys in Android Keystore with challenge-response sign-in
 - [x] Authenticated WebSocket stream with heartbeats, fenced session epochs and bounded reconnects
 - [x] Opt-in heartbeat resumes after a phone reboot
-- [x] Controlled test on one Samsung device and SIM ([record](ANDROID-HARDWARE-EVIDENCE-2026-09-24.md))
+- [x] Controlled test on one Samsung device and SIM ([compatibility notes](DEVICE-COMPATIBILITY.md))
 - [ ] Longer liveness runs across networks, carriers and device models
 - [ ] Supported-device guidance
 
@@ -264,7 +264,7 @@ Keep message content out of reach of the server, and give owners control of thei
 | Capability | Stage | Evidence |
 |---|---|---|
 | Owner accounts, MFA and scoped API keys | Build | [#43](https://github.com/pboachie/zrotext/pull/43), [#172](https://github.com/pboachie/zrotext/pull/172), [#175](https://github.com/pboachie/zrotext/pull/175), [MFA operations](MFA-OPERATIONS.md) |
-| Sealed-content protocol (client-side keys) | Design | [Draft 01](protocol/zt-sealed-draft-01.md), [draft 02 proposal](protocol/zt-sealed-draft-02-proposal.md), [#159](https://github.com/pboachie/zrotext/pull/159), [#162](https://github.com/pboachie/zrotext/pull/162) |
+| Sealed-content protocol (client-side keys) | Design | [Draft 01](../protocol/drafts/zt-sealed-draft-01.md), [draft 02 proposal](../protocol/drafts/zt-sealed-draft-02-proposal.md), [#159](https://github.com/pboachie/zrotext/pull/159), [#162](https://github.com/pboachie/zrotext/pull/162) |
 | Data export and account deletion | Planned | [Data retention](SELF-HOSTING.md#data-retention) covers history pruning only |
 
 <details>
@@ -356,7 +356,7 @@ timeline
 > [!TIP]
 > Useful contributions right now:
 > - Device test reports from other Android models and carriers. Follow [Android testing](ANDROID-TESTING.md) and keep personal numbers out of reports.
-> - Review of the [sealed-content drafts](protocol/zt-sealed-draft-02-proposal.md).
+> - Review of the [sealed-content drafts](../protocol/drafts/zt-sealed-draft-02-proposal.md).
 > - Accessibility feedback on the owner pages in `web/owner`.
 > - Self-hosting feedback from the [Compose guide](../deploy/compose/README.md).
 >
