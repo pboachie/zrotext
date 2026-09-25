@@ -24,7 +24,7 @@ import java.util.UUID
 import javax.crypto.spec.SecretKeySpec
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [28])
+@Config(sdk = [30])
 class LineOptOutUploadTest {
     private val account = UUID.fromString("11111111-1111-4111-8111-111111111111")
     private val device = UUID.fromString("22222222-2222-4222-8222-222222222222")
@@ -83,28 +83,37 @@ class LineOptOutUploadTest {
     @Test fun uploadGateRejectsMissingChangedOrAmbiguousLineAndOldEvidence() {
         val binding = LocalLineBinding(accountId = account.toString(),
             deviceId = device.toString(), lineId = line, generation = 7,
-            subscriptionId = 7, installedAtMs = 1699999999000L)
+            subscriptionId = 7, installedAtMs = 1699999999000L, cardId = 42)
         val now = 1700000001000L
         assertTrue(LineOptOutUploadGate.allows(row(), binding, account, device, 7,
-            listOf(7), now))
+            listOf(ActiveSimCard(7, 42)), now))
         assertFalse(LineOptOutUploadGate.allows(row(), null, account, device, 7,
-            listOf(7), now))
+            listOf(ActiveSimCard(7, 42)), now))
         assertFalse(LineOptOutUploadGate.allows(row(), binding, account, device, 7,
-            listOf(7, 8), now))
+            listOf(ActiveSimCard(7, 42), ActiveSimCard(8, 43)), now))
         assertFalse(LineOptOutUploadGate.allows(row(), binding, account, device, 8,
-            listOf(7), now))
+            listOf(ActiveSimCard(7, 42)), now))
         assertFalse(LineOptOutUploadGate.allows(row().copy(observedSubscriptionId = null),
-            binding, account, device, 7, listOf(7), now))
+            binding, account, device, 7, listOf(ActiveSimCard(7, 42)), now))
         assertFalse(LineOptOutUploadGate.allows(row().copy(bindingGeneration = 6),
-            binding, account, device, 7, listOf(7), now))
+            binding, account, device, 7, listOf(ActiveSimCard(7, 42)), now))
         assertFalse(LineOptOutUploadGate.allows(row().copy(encryptedSender = null),
-            binding, account, device, 7, listOf(7), now))
+            binding, account, device, 7, listOf(ActiveSimCard(7, 42)), now))
         assertFalse(LineOptOutUploadGate.allows(row(), binding.copy(accountId =
-            "55555555-5555-4555-8555-555555555555"), account, device, 7, listOf(7), now))
+            "55555555-5555-4555-8555-555555555555"), account, device, 7,
+            listOf(ActiveSimCard(7, 42)), now))
         assertFalse(LineOptOutUploadGate.allows(row(), binding.copy(installedAtMs = now),
-            account, device, 7, listOf(7), now))
+            account, device, 7, listOf(ActiveSimCard(7, 42)), now))
         assertFalse(LineOptOutUploadGate.allows(row(), binding, account, device, 7,
-            listOf(7), now + 7L * 24 * 60 * 60 * 1000))
+            listOf(ActiveSimCard(7, 42)), now + 7L * 24 * 60 * 60 * 1000))
+        assertFalse(LineOptOutUploadGate.allows(row(), binding, account, device, 7,
+            listOf(ActiveSimCard(7, 43)), now))
+        assertFalse(LineOptOutUploadGate.allows(row(), binding.copy(cardId = null),
+            account, device, 7, listOf(ActiveSimCard(7, 42)), now))
+        assertFalse(LineOptOutUploadGate.allows(row(), binding, account, device, 7,
+            listOf(ActiveSimCard(7, -2)), now))
+        assertFalse(LineOptOutUploadGate.allows(row(), binding, account, device, 7,
+            null, now))
     }
 
     @Test fun senderRecoveryFailsClosedOnMissingCiphertextAndWrongToken() {
@@ -181,9 +190,10 @@ class LineOptOutUploadTest {
             val dao = first.attempts()
             assertTrue(dao.installVerifiedLineBinding(LocalLineBinding(accountId =
                 account.toString(), deviceId = device.toString(), lineId = line,
-                generation = 7, subscriptionId = 7, installedAtMs = 1000), listOf(7)))
+                generation = 7, subscriptionId = 7, installedAtMs = 1000, cardId = 42),
+                listOf(ActiveSimCard(7, 42))))
             assertTrue(dao.recordLocalWithdrawal(dedupe, senderToken,
-                InboundClassification.OPT_OUT, 7, listOf(7), 2000,
+                InboundClassification.OPT_OUT, 7, listOf(ActiveSimCard(7, 42)), 2000,
                 sealed.ciphertext, sealed.nonce))
             original = dao.nextLineOptOut(0)!!
             val bytes = LineOptOutUploadFrame.signedBytes(account, device, original, recipient)
@@ -201,6 +211,11 @@ class LineOptOutUploadTest {
         try {
             val dao = reopened.attempts()
             val pending = dao.nextLineOptOut(0)!!
+            assertEquals(42, dao.currentLineBinding()?.cardId)
+            assertTrue(LineOptOutUploadGate.allows(pending, dao.currentLineBinding(),
+                account, device, 7, listOf(ActiveSimCard(7, 42)), 3000))
+            assertFalse(LineOptOutUploadGate.allows(pending, dao.currentLineBinding(),
+                account, device, 7, listOf(ActiveSimCard(7, 43)), 3000))
             assertEquals(original.eventId, pending.eventId)
             assertEquals(original.deviceSequence, pending.deviceSequence)
             assertEquals(original.receivedAtMs, pending.receivedAtMs)

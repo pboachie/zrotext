@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 package org.zrotext.gateway
 
+import android.os.Build
 import org.json.JSONObject
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
@@ -79,16 +80,18 @@ internal object LineOptOutUploadFrame {
 internal object LineOptOutUploadGate {
     fun allows(entry: LocalInboundWithdrawal, binding: LocalLineBinding?,
                accountId: UUID, deviceId: UUID, selectedSubscriptionId: Int,
-               activeSubscriptionIds: Collection<Int>, nowMs: Long): Boolean {
-        if (binding == null || entry.acknowledgedAtMs != null ||
+               activeSimCards: List<ActiveSimCard>?, nowMs: Long): Boolean {
+        if (binding == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ||
+            entry.acknowledgedAtMs != null ||
             binding.accountId != accountId.toString() ||
             binding.deviceId != deviceId.toString() ||
             entry.lineId != binding.lineId ||
             entry.bindingGeneration != binding.generation ||
             entry.observedSubscriptionId != binding.subscriptionId ||
             selectedSubscriptionId != binding.subscriptionId ||
-            activeSubscriptionIds.size != 1 ||
-            activeSubscriptionIds.single() != binding.subscriptionId ||
+            !SimCardContinuity.matches(binding.cardId?.let {
+                ActivatedSimCard(binding.subscriptionId, it)
+            }, activeSimCards) ||
             entry.encryptedSender == null || entry.senderNonce == null ||
             entry.encryptedSender.size !in 17..128 || entry.senderNonce.size != 12 ||
             entry.eventId == null || entry.deviceSequence == null ||

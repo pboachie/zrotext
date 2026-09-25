@@ -4,6 +4,7 @@ package org.zrotext.gateway
 import android.app.Activity
 import android.app.Application
 import android.content.Context
+import android.os.Build
 import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Database
@@ -156,7 +157,9 @@ data class LocalLineBinding(
     val lineId: String,
     val generation: Long,
     val subscriptionId: Int,
-    val installedAtMs: Long
+    val installedAtMs: Long,
+    /** Null for pre-v11 bindings: those remain local-only until renewed owner approval. */
+    @ColumnInfo(defaultValue = "NULL") val cardId: Int? = null
 )
 
 /** A tombstone reserves an independent, never-reused sequence for later authenticated upload. */
@@ -292,11 +295,13 @@ abstract class SmsAttemptDao {
     /** Called only with the result of an authenticated activation, never a UI-selected SIM alone. */
     @Transaction
     open fun installVerifiedLineBinding(binding: LocalLineBinding,
-                                        activeSubscriptionIds: Collection<Int>): Boolean {
+                                        activeSimCards: List<ActiveSimCard>?): Boolean {
         if (binding.slot != 1 || binding.generation <= 0 || binding.subscriptionId < 0 ||
             binding.installedAtMs <= 0 ||
-            activeSubscriptionIds.size != 1 ||
-            activeSubscriptionIds.single() != binding.subscriptionId ||
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ||
+            !SimCardContinuity.matches(binding.cardId?.let {
+                ActivatedSimCard(binding.subscriptionId, it)
+            }, activeSimCards) ||
             listOf(binding.accountId, binding.deviceId, binding.lineId).any {
                 runCatching { UUID.fromString(it).toString() != it }.getOrDefault(true)
             }) return false
@@ -312,7 +317,7 @@ abstract class SmsAttemptDao {
     @Transaction
     open fun recordLocalWithdrawal(dedupeToken: String, senderToken: String,
                                    classification: String, observedSubscriptionId: Int?,
-                                   activeSubscriptionIds: Collection<Int>, now: Long,
+                                   activeSimCards: List<ActiveSimCard>?, now: Long,
                                    encryptedSender: ByteArray? = null,
                                    senderNonce: ByteArray? = null): Boolean {
         require(dedupeToken.matches(Regex("[0-9a-f]{64}")) &&
@@ -328,15 +333,20 @@ abstract class SmsAttemptDao {
             return false
         }
         val binding = currentLineBinding()?.takeIf {
-            observedSubscriptionId != null && it.subscriptionId == observedSubscriptionId &&
-                activeSubscriptionIds.size == 1 && activeSubscriptionIds.single() == it.subscriptionId
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                now >= it.installedAtMs && observedSubscriptionId != null &&
+                it.subscriptionId == observedSubscriptionId &&
+                SimCardContinuity.matches(it.cardId?.let { id ->
+                    ActivatedSimCard(it.subscriptionId, id)
+                }, activeSimCards)
         }
         val eventId = UUID.randomUUID().toString()
         val sequence = reserveLocalWithdrawalSequence(LocalWithdrawalSequence(eventId = eventId))
         check(sequence > 0)
         insertLocalWithdrawal(LocalInboundWithdrawal(dedupeToken, senderToken,
             classification, observedSubscriptionId, binding?.lineId, binding?.generation, now,
-            eventId, sequence, encryptedSender, senderNonce))
+            eventId, sequence, encryptedSender.takeIf { binding != null },
+            senderNonce.takeIf { binding != null }))
         suppressRecipient(LocalRecipientSuppression(senderToken, now))
         return true
     }
@@ -695,7 +705,7 @@ private const val INBOUND_PILOT_WINDOW_MS = 24L * 60 * 60 * 1000
 @Database(entities = [SmsAttempt::class, SmsSegment::class, AlphaRadioEvent::class,
     InboundWindow::class, InboundEvent::class, InboundUpload::class,
     LocalRecipientSuppression::class, LocalLineBinding::class,
-    LocalInboundWithdrawal::class, LocalWithdrawalSequence::class], version = 10, exportSchema = false)
+    LocalInboundWithdrawal::class, LocalWithdrawalSequence::class], version = 11, exportSchema = false)
 abstract class SmsJournalDatabase : RoomDatabase() {
     abstract fun attempts(): SmsAttemptDao
 
@@ -706,7 +716,8 @@ abstract class SmsJournalDatabase : RoomDatabase() {
             instance ?: Room.databaseBuilder(
                 context.applicationContext, SmsJournalDatabase::class.java, "sms_attempts.db"
             ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
-                MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
+                MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10,
+                MIGRATION_10_11)
                 .build().also { instance = it }
         }
 
@@ -793,6 +804,13 @@ abstract class SmsJournalDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE local_inbound_withdrawals ADD COLUMN acknowledgedAtMs INTEGER DEFAULT NULL")
                 db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_local_inbound_withdrawals_eventId ON local_inbound_withdrawals(eventId)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_local_inbound_withdrawals_acknowledgedAtMs_deviceSequence ON local_inbound_withdrawals(acknowledgedAtMs, deviceSequence)")
+            }
+        }
+
+        /** An old subscription-only binding must never gain a card identity by migration. */
+        internal val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE local_line_binding ADD COLUMN cardId INTEGER DEFAULT NULL")
             }
         }
     }

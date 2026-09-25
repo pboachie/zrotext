@@ -617,7 +617,7 @@ class AuthenticatedGatewayService : Service() {
                     .getInt("subscription_id", SubscriptionManager.INVALID_SUBSCRIPTION_ID)
                 val binding = dao.currentLineBinding()
                 if (!LineOptOutUploadGate.allows(pending, binding, accountId, deviceId,
-                        selected, activeSubscriptionIds(), now)) {
+                        selected, SimCardContinuity.observe(applicationContext), now)) {
                     pauseLineOptOutUpload()
                     return@execute
                 }
@@ -641,7 +641,8 @@ class AuthenticatedGatewayService : Service() {
                 val currentSelected = getSharedPreferences("gateway_selection", MODE_PRIVATE)
                     .getInt("subscription_id", SubscriptionManager.INVALID_SUBSCRIPTION_ID)
                 if (!LineOptOutUploadGate.allows(signed, currentBinding, accountId, deviceId,
-                        currentSelected, activeSubscriptionIds(), System.currentTimeMillis()) ||
+                        currentSelected, SimCardContinuity.observe(applicationContext),
+                        System.currentTimeMillis()) ||
                     generation != currentGeneration || machine.heartbeatEpoch() != epoch) {
                     pauseLineOptOutUpload()
                     return@execute

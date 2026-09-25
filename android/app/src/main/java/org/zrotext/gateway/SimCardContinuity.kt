@@ -8,7 +8,7 @@ import android.os.Build
 import android.telephony.SubscriptionManager
 
 /** Public, device-local identifiers only. A subscription ID alone cannot establish continuity. */
-internal data class ActiveSimCard(val subscriptionId: Int, val cardId: Int?)
+data class ActiveSimCard(val subscriptionId: Int, val cardId: Int?)
 
 /** Snapshot taken at an owner-approved activation, never inferred from the saved SIM selection. */
 internal data class ActivatedSimCard(val subscriptionId: Int, val cardId: Int)
