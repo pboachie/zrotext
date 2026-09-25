@@ -9,7 +9,7 @@ import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
-/** Supplied by a future authenticated owner challenge route; no route invokes this today. */
+/** Parsed from an authenticated `sms_line_challenge` device-stream frame. */
 internal data class SmsLineChallenge(
     val challengeId: UUID,
     val accountId: UUID,
@@ -73,7 +73,7 @@ internal class PreparedSmsLineActivation internal constructor(
         statementBytes, signatureBytes)
 }
 
-/** No runtime factory exists until an authenticated server confirmation route is implemented. */
+/** Built only from an authenticated `sms_line_activated` frame on the device stream. */
 internal class AuthenticatedSmsLineActivationAck private constructor(
     val accepted: Boolean,
     val challengeId: UUID,
@@ -98,9 +98,20 @@ internal class AuthenticatedSmsLineActivationAck private constructor(
 
     private fun sha256(bytes: ByteArray): ByteArray =
         MessageDigest.getInstance("SHA-256").digest(bytes)
+
+    internal companion object {
+        /** The server sends this only after the owner approved this exact proof. */
+        fun fromActivatedFrame(challengeId: UUID, accountId: UUID, lineId: UUID, deviceId: UUID,
+                               generation: Long, deviceStatementSha256: ByteArray,
+                               deviceSignatureSha256: ByteArray): AuthenticatedSmsLineActivationAck {
+            require(deviceStatementSha256.size == 32 && deviceSignatureSha256.size == 32)
+            return AuthenticatedSmsLineActivationAck(true, challengeId, accountId, lineId,
+                deviceId, generation, deviceStatementSha256, deviceSignatureSha256)
+        }
+    }
 }
 
-/** No UI, HTTP, or device-stream handler currently calls this dormant proof/installation path. */
+/** Driven by the authenticated gateway stream when the hub enables SMS line activation. */
 internal class SmsLineActivationDevice(
     private val apiLevel: () -> Int,
     private val selectedSubscriptionId: () -> Int,
@@ -139,7 +150,9 @@ internal class SmsLineActivationDevice(
         val challenge = proof.challenge
         val now = nowMs()
         val active = observe()
-        if (!ack.matches(proof) || now <= 0 || now >= challenge.expiresAtMs ||
+        // The hub activates only before expiry, then repeats the acknowledgement on
+        // each connection for ACK_GRACE_MS so a dropped stream cannot strand it.
+        if (!ack.matches(proof) || now <= 0 || now >= challenge.expiresAtMs + ACK_GRACE_MS ||
             challenge.expiresAtMs - now > CHALLENGE_LIFETIME_MS ||
             apiLevel() != proof.apiLevel || proof.apiLevel < 29 ||
             selectedSubscriptionId() != proof.selectedSubscriptionId ||
@@ -156,6 +169,8 @@ internal class SmsLineActivationDevice(
 
     companion object {
         private val CHALLENGE_LIFETIME_MS = TimeUnit.MINUTES.toMillis(5)
+        /** Matches the hub's acknowledgement resend window. */
+        internal val ACK_GRACE_MS = TimeUnit.MINUTES.toMillis(15)
 
         fun forGateway(context: Context, keys: DeviceSigningKeyStore): SmsLineActivationDevice =
             SmsLineActivationDevice(
