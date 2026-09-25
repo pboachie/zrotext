@@ -74,6 +74,9 @@ class AuthenticatedGatewayService : Service() {
     @Volatile private var awaitingEventSentAtNanos = 0L
     @Volatile private var awaitingInboundId: String? = null
     @Volatile private var inboundSentAtNanos = 0L
+    @Volatile private var awaitingLineOptOutId: String? = null
+    @Volatile private var lineOptOutSentAtNanos = 0L
+    @Volatile private var lineOptOutPaused = false
     @Volatile private var quarantinedEvidenceNotice = false
     @Volatile private var activeGrant: AlphaGrantValidator.Grant? = null
 
@@ -142,10 +145,14 @@ class AuthenticatedGatewayService : Service() {
         val armRequested = !bootResume && intent?.hasExtra(EXTRA_ALPHA_RECIPIENT) == true
         val inboundUploadRequested = !bootResume &&
             intent?.getBooleanExtra(EXTRA_INBOUND_UPLOAD, false) == true
+        val lineOptOutUploadRequested = !bootResume &&
+            intent?.getBooleanExtra(EXTRA_LINE_OPT_OUT_UPLOAD, false) == true
         val rebootOptInRequested = !bootResume &&
             intent?.getBooleanExtra(EXTRA_REBOOT_RESUME, false) == true
-        if ((armRequested && inboundUploadRequested) ||
-            (rebootOptInRequested && (armRequested || inboundUploadRequested))) {
+        if ((if (armRequested) 1 else 0) + (if (inboundUploadRequested) 1 else 0) +
+            (if (lineOptOutUploadRequested) 1 else 0) > 1 ||
+            (rebootOptInRequested && (armRequested || inboundUploadRequested ||
+                lineOptOutUploadRequested))) {
             halt()
             AuthenticatedGatewayStatus.value = "Choose one pilot mode at a time"
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -198,13 +205,15 @@ class AuthenticatedGatewayService : Service() {
         val pilotMode = when {
             armRequested -> DeviceReconnectPolicy.PilotMode.ALPHA_ONCE
             inboundUploadRequested -> DeviceReconnectPolicy.PilotMode.INBOUND_UPLOAD
+            lineOptOutUploadRequested -> DeviceReconnectPolicy.PilotMode.LINE_OPT_OUT_UPLOAD
             else -> DeviceReconnectPolicy.PilotMode.HEARTBEAT_ONLY
         }
         when (val action = reconnect.start(hasNetwork(observedNetwork), pilotMode)) {
             is DeviceReconnectPolicy.Action.Connect -> openConnection(
                 url, deviceId, action.pilotMode == DeviceReconnectPolicy.PilotMode.ALPHA_ONCE,
                 armRecipient, armSubscriptionId, armStartedAtNanos,
-                action.pilotMode == DeviceReconnectPolicy.PilotMode.INBOUND_UPLOAD)
+                action.pilotMode == DeviceReconnectPolicy.PilotMode.INBOUND_UPLOAD,
+                action.pilotMode == DeviceReconnectPolicy.PilotMode.LINE_OPT_OUT_UPLOAD)
             DeviceReconnectPolicy.Action.WaitForNetwork ->
                 AuthenticatedGatewayStatus.value = "Waiting for network"
             else -> error("Unexpected reconnect start")
@@ -216,7 +225,8 @@ class AuthenticatedGatewayService : Service() {
     private fun openConnection(
         url: String, deviceId: UUID, armRequested: Boolean = false,
         armRecipient: String = "", armSubscriptionId: Int = SubscriptionManager.INVALID_SUBSCRIPTION_ID,
-        armStartedAtNanos: Long = 0L, inboundUploadRequested: Boolean = false
+        armStartedAtNanos: Long = 0L, inboundUploadRequested: Boolean = false,
+        lineOptOutUploadRequested: Boolean = false
     ) {
         generation += 1
         val currentGeneration = generation
@@ -229,6 +239,9 @@ class AuthenticatedGatewayService : Service() {
         awaitingEventSentAtNanos = 0L
         awaitingInboundId = null
         inboundSentAtNanos = 0L
+        awaitingLineOptOutId = null
+        lineOptOutSentAtNanos = 0L
+        lineOptOutPaused = false
         activeGrant = null
         val keys = DeviceSigningKeyStore(applicationContext)
         val machine = DeviceStreamMachine(deviceId) { account, device, challenge, nonce ->
@@ -297,6 +310,7 @@ class AuthenticatedGatewayService : Service() {
                                 (when {
                                     armRequested -> "Armed for one synthetic grant"
                                     inboundUploadRequested -> "Inbound metadata pilot active"
+                                    lineOptOutUploadRequested -> "Line opt-out upload pilot active"
                                     else -> "Authenticated heartbeat only"
                                 }) + if (quarantinedEvidenceNotice)
                                     "; stale evidence quarantined" else ""
@@ -307,6 +321,7 @@ class AuthenticatedGatewayService : Service() {
                                     when {
                                         armRequested -> "Armed one-send alpha test"
                                         inboundUploadRequested -> "Inbound metadata pilot"
+                                        lineOptOutUploadRequested -> "Line opt-out upload pilot"
                                         else -> "Authenticated heartbeat"
                                     }))
                             lastAckAtNanos = System.nanoTime()
@@ -334,11 +349,14 @@ class AuthenticatedGatewayService : Service() {
                             }, 15, 15, TimeUnit.SECONDS)
                             eventPump = scheduler.scheduleAtFixedRate({
                                 if (generation == currentGeneration) {
-                                    if (!inboundUploadRequested) {
+                                    if (!inboundUploadRequested && !lineOptOutUploadRequested) {
                                         pumpAlphaEvents(webSocket, machine, url, currentGeneration)
                                     }
                                     if (inboundUploadRequested) {
                                         pumpInboundEvents(webSocket, machine, keys, url, currentGeneration)
+                                    }
+                                    if (lineOptOutUploadRequested) {
+                                        pumpLineOptOutEvents(webSocket, machine, keys, currentGeneration)
                                     }
                                 }
                             }, 0, 3, TimeUnit.SECONDS)
@@ -404,6 +422,12 @@ class AuthenticatedGatewayService : Service() {
                                 (deliveries as Number).toLong() >= 0)
                             handleInboundAck(webSocket, currentGeneration,
                                 uuid(frame, "event_id").toString(), frame.optBoolean("suppression_cleared", false))
+                        }
+                        "line_opt_out_ack" -> {
+                            check(lineOptOutUploadRequested &&
+                                machine.phase == DeviceStreamMachine.Phase.ACTIVE)
+                            handleLineOptOutAck(webSocket, currentGeneration,
+                                LineOptOutUploadFrame.ackEventId(frame))
                         }
                         else -> error("Unexpected device frame")
                     }
@@ -571,6 +595,96 @@ class AuthenticatedGatewayService : Service() {
         }
     }
 
+    private fun pumpLineOptOutEvents(webSocket: WebSocket, machine: DeviceStreamMachine,
+                                      keys: DeviceSigningKeyStore, currentGeneration: Int) {
+        JournalRuntime.io.execute {
+            if (generation != currentGeneration || lineOptOutPaused) return@execute
+            try {
+                val epoch = machine.heartbeatEpoch()
+                val accountId = machine.activeAccountId()
+                val deviceId = machine.activeDeviceId()
+                val dao = SmsJournalDatabase.get(applicationContext).attempts()
+                // Older records remain local blocks, not invalid late uploads.
+                val now = System.currentTimeMillis()
+                val pending = dao.nextLineOptOut(now - TimeUnit.DAYS.toMillis(6))
+                    ?: return@execute
+                val eventId = checkNotNull(pending.eventId)
+                if (awaitingLineOptOutId != null && awaitingLineOptOutId != eventId) return@execute
+                if (awaitingLineOptOutId == eventId &&
+                    System.nanoTime() - lineOptOutSentAtNanos < TimeUnit.SECONDS.toNanos(30))
+                    return@execute
+                val selected = getSharedPreferences("gateway_selection", MODE_PRIVATE)
+                    .getInt("subscription_id", SubscriptionManager.INVALID_SUBSCRIPTION_ID)
+                val binding = dao.currentLineBinding()
+                if (!LineOptOutUploadGate.allows(pending, binding, accountId, deviceId,
+                        selected, SimCardContinuity.observe(applicationContext), now)) {
+                    pauseLineOptOutUpload()
+                    return@execute
+                }
+                // Open the E.164 sender only at the signing boundary. It never enters Room/logs.
+                val recipient = LineOptOutSender.recover(pending, InboundVault::openSender) {
+                    InboundVault.token("sender-v1", it.toByteArray(Charsets.US_ASCII))
+                }
+                if (recipient == null) {
+                    pauseLineOptOutUpload()
+                    return@execute
+                }
+                val signed = if (pending.signatureDer == null) {
+                    val signature = keys.signLineOptOut(accountId, deviceId, pending, recipient)
+                    check(signature.size in 8..80)
+                    check(dao.signLineOptOut(eventId, checkNotNull(pending.lineId),
+                        checkNotNull(pending.bindingGeneration), signature) == 1)
+                    dao.lineOptOutByEventId(eventId) ?: error("Missing signed withdrawal")
+                } else pending
+                // Re-read the line and SIM immediately before queuing the exact signed row.
+                val currentBinding = dao.currentLineBinding()
+                val currentSelected = getSharedPreferences("gateway_selection", MODE_PRIVATE)
+                    .getInt("subscription_id", SubscriptionManager.INVALID_SUBSCRIPTION_ID)
+                if (!LineOptOutUploadGate.allows(signed, currentBinding, accountId, deviceId,
+                        currentSelected, SimCardContinuity.observe(applicationContext),
+                        System.currentTimeMillis()) ||
+                    generation != currentGeneration || machine.heartbeatEpoch() != epoch) {
+                    pauseLineOptOutUpload()
+                    return@execute
+                }
+                awaitingLineOptOutId = eventId
+                lineOptOutSentAtNanos = System.nanoTime()
+                if (!webSocket.send(LineOptOutUploadFrame.encode(epoch, signed, recipient)))
+                    disconnect(currentGeneration, DeviceReconnectPolicy.Loss.TRANSPORT)
+            } catch (_: Exception) {
+                // Never discard a STOP when a local key, journal or writer check fails.
+                pauseLineOptOutUpload()
+            }
+        }
+    }
+
+    private fun handleLineOptOutAck(webSocket: WebSocket, currentGeneration: Int,
+                                     eventId: String) {
+        JournalRuntime.io.execute {
+            if (generation != currentGeneration) return@execute
+            try {
+                val dao = SmsJournalDatabase.get(applicationContext).attempts()
+                val event = dao.lineOptOutByEventId(eventId) ?: error("Unknown withdrawal ack")
+                if (awaitingLineOptOutId != eventId) {
+                    check(event.acknowledgedAtMs != null)
+                    return@execute
+                }
+                check(event.acknowledgedAtMs == null)
+                check(dao.acknowledgeLineOptOut(eventId, System.currentTimeMillis()) == 1)
+                awaitingLineOptOutId = null
+                lineOptOutSentAtNanos = 0L
+                reconnect.clearEvidenceCloseStreak()
+            } catch (_: Exception) {
+                fail(webSocket, currentGeneration)
+            }
+        }
+    }
+
+    private fun pauseLineOptOutUpload() {
+        lineOptOutPaused = true
+        AuthenticatedGatewayStatus.value = "Line opt-out upload paused; check line and local evidence"
+    }
+
     private fun handleAlphaAck(
         webSocket: WebSocket, machine: DeviceStreamMachine, currentGeneration: Int,
         eventId: String, state: String, permitted: Boolean
@@ -684,6 +798,8 @@ class AuthenticatedGatewayService : Service() {
         awaitingEventSentAtNanos = 0L
         awaitingInboundId = null
         inboundSentAtNanos = 0L
+        awaitingLineOptOutId = null
+        lineOptOutSentAtNanos = 0L
         when (val action = reconnect.lost(reason, SystemClock.elapsedRealtime())) {
             is DeviceReconnectPolicy.Action.RetryAfter -> {
                 AuthenticatedGatewayStatus.value = if (reason ==
@@ -751,6 +867,8 @@ class AuthenticatedGatewayService : Service() {
                     awaitingEventSentAtNanos = 0L
                     awaitingInboundId = null
                     inboundSentAtNanos = 0L
+                    awaitingLineOptOutId = null
+                    lineOptOutSentAtNanos = 0L
                     AuthenticatedGatewayStatus.value = "Disconnected; waiting for network"
                     getSystemService(NotificationManager::class.java)
                         .notify(NOTIFICATION_ID, notification("Waiting for network"))
@@ -781,6 +899,8 @@ class AuthenticatedGatewayService : Service() {
         awaitingEventSentAtNanos = 0L
         awaitingInboundId = null
         inboundSentAtNanos = 0L
+        awaitingLineOptOutId = null
+        lineOptOutSentAtNanos = 0L
     }
 
     private fun cancelTimers() {
@@ -857,6 +977,7 @@ class AuthenticatedGatewayService : Service() {
         const val EXTRA_ALPHA_RECIPIENT = "alpha_recipient"
         const val EXTRA_ALPHA_SUBSCRIPTION_ID = "alpha_subscription_id"
         const val EXTRA_INBOUND_UPLOAD = "inbound_upload"
+        const val EXTRA_LINE_OPT_OUT_UPLOAD = "line_opt_out_upload"
         const val EXTRA_HEARTBEAT_TIMING_TRACE = "heartbeat_timing_trace"
         private const val CHANNEL = "authenticated_gateway"
         private const val NOTIFICATION_ID = 1002

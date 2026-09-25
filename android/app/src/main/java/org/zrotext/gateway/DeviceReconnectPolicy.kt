@@ -12,7 +12,7 @@ import kotlin.math.min
 
 /** One visible foreground run. A process restart never restores this state. */
 internal class DeviceReconnectPolicy(private val jitter: () -> Double) {
-    enum class PilotMode { HEARTBEAT_ONLY, ALPHA_ONCE, INBOUND_UPLOAD }
+    enum class PilotMode { HEARTBEAT_ONLY, ALPHA_ONCE, INBOUND_UPLOAD, LINE_OPT_OUT_UPLOAD }
 
     sealed interface Action {
         data class Connect(val pilotMode: PilotMode) : Action
