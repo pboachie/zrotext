@@ -63,6 +63,9 @@ registration/verification procedure are in
 [Self-hosting](../../docs/SELF-HOSTING.md#owner-registration). Allowlist mode
 requires an independent private master key. `zrotext-admin issue-invite`
 derives an address-bound token from it; `open` is intentionally public.
+Instances without SMTP recover a forgotten owner password with
+`zrotext-admin reset-password`; see
+[Self-hosting](../../docs/SELF-HOSTING.md#owner-password-recovery).
 
 The `migrate` service applies `migrations/001_*.sql`, `002_*.sql`, and later
 consecutive numbered SQL files before the API starts. Migration files are trusted
