@@ -58,6 +58,8 @@ const DISPATCH_POLL_SECONDS: u64 = 5;
 const MIN_SECONDS_BETWEEN_GRANTS: u64 = 60;
 const ALPHA_READY_SECONDS: u64 = 300;
 const SMS_LINE_POLL_SECONDS: u64 = 3;
+const SMS_LINE_RETIRE_EVERY_TICKS: u32 = 20;
+const MAX_SMS_LINE_ACKS_PER_CONNECTION: usize = 64;
 static DEVICE_SOCKET_ADMISSION: LazyLock<SocketAdmission> = LazyLock::new(|| {
     SocketAdmission::new(
         MAX_HANDSHAKING_DEVICE_SOCKETS,
@@ -705,6 +707,8 @@ async fn run_socket(
     dispatch_checks.tick().await;
     let mut sms_line_checks = interval(Duration::from_secs(SMS_LINE_POLL_SECONDS));
     sms_line_checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut sms_line_acks_sent: Vec<Uuid> = Vec::new();
+    let mut sms_line_ticks: u32 = 0;
     let mut last_grant_at: Option<Instant> = None;
     let mut alpha_ready: Option<([u8; 32], Instant)> = None;
     let mut alpha_ready_used = false;
@@ -974,7 +978,11 @@ async fn run_socket(
                     connection_epoch: session.connection_epoch,
                     deployment_epoch: state.deployment_epoch,
                 };
-                if !push_sms_line_frames(&mut socket, &client, inbound_session).await {
+                // Retire finished exchanges on the first poll and about once a minute.
+                let retire = sms_line_ticks.is_multiple_of(SMS_LINE_RETIRE_EVERY_TICKS);
+                sms_line_ticks = sms_line_ticks.wrapping_add(1);
+                if !push_sms_line_frames(&mut socket, &client, inbound_session,
+                    &mut sms_line_acks_sent, retire).await {
                     close_reason = "sms_line_push_failed";
                     break;
                 }
@@ -1002,12 +1010,22 @@ async fn run_socket(
 }
 
 /// Pushes at most one pending SMS line challenge and one activation
-/// acknowledgement. Each is marked only after its frame was written.
+/// acknowledgement. A challenge is marked pushed only after its frame was
+/// written; an acknowledgement repeats on each new connection until retired.
 async fn push_sms_line_frames(
     socket: &mut WebSocket,
     client: &Client,
     session: InboundSession<'_>,
+    acks_sent: &mut Vec<Uuid>,
+    retire: bool,
 ) -> bool {
+    if retire
+        && exchange::retire(client, session, exchange::ACK_RESEND_SECONDS)
+            .await
+            .is_err()
+    {
+        return false;
+    }
     let Ok(challenge) = exchange::next_challenge(client, session).await else {
         return false;
     };
@@ -1030,7 +1048,10 @@ async fn push_sms_line_frames(
             return false;
         }
     }
-    let Ok(ack) = exchange::next_ack(client, session).await else {
+    if acks_sent.len() >= MAX_SMS_LINE_ACKS_PER_CONNECTION {
+        return true;
+    }
+    let Ok(ack) = exchange::next_ack(client, session, acks_sent).await else {
         return false;
     };
     if let Some(ack) = ack {
@@ -1044,13 +1065,10 @@ async fn push_sms_line_frames(
             device_statement_sha256: URL_SAFE_NO_PAD.encode(ack.device_statement_sha256),
             device_signature_sha256: URL_SAFE_NO_PAD.encode(ack.device_signature_sha256),
         };
-        if !send_frame(socket, frame).await
-            || exchange::mark_ack_sent(client, session, ack.challenge_id)
-                .await
-                .is_err()
-        {
+        if !send_frame(socket, frame).await {
             return false;
         }
+        acks_sent.push(ack.challenge_id);
     }
     true
 }
@@ -1355,6 +1373,8 @@ mod line_opt_out_wire_tests;
 mod virtual_inbound_tests;
 #[cfg(test)]
 mod virtual_line_opt_out_tests;
+#[cfg(test)]
+mod virtual_sms_line_activation_tests;
 
 #[cfg(test)]
 mod frame_budget_tests {

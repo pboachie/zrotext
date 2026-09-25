@@ -379,7 +379,7 @@ async fn postgres_sms_line_activation_exchange_binds_owner_device_and_live_sessi
             .unwrap()
     );
     assert!(next_challenge(&db, reconnected).await.unwrap().is_none());
-    assert!(next_ack(&db, session).await.unwrap().is_none());
+    assert!(next_ack(&db, session, &[]).await.unwrap().is_none());
 
     let status = json(app.clone().oneshot(view(&owner)).await.unwrap()).await;
     assert_eq!(status["status"], "awaiting_owner");
@@ -466,8 +466,8 @@ async fn postgres_sms_line_activation_exchange_binds_owner_device_and_live_sessi
     assert_eq!(status["status"], "activated");
     assert!(status.get("owner_statement_b64").is_none());
 
-    // The device learns of activation once, bound to its exact proof.
-    let ack = next_ack(&db, reconnected).await.unwrap().unwrap();
+    // Each connection learns of the activation, bound to its exact proof.
+    let ack = next_ack(&db, reconnected, &[]).await.unwrap().unwrap();
     assert_eq!(
         ack,
         ActivationAck {
@@ -480,8 +480,17 @@ async fn postgres_sms_line_activation_exchange_binds_owner_device_and_live_sessi
             device_signature_sha256: digest(&device_der),
         }
     );
-    mark_ack_sent(&db, reconnected, challenge_id).await.unwrap();
-    assert!(next_ack(&db, session).await.unwrap().is_none());
+    assert!(
+        next_ack(&db, reconnected, &[challenge_id])
+            .await
+            .unwrap()
+            .is_none()
+    );
+    // A dropped connection does not lose it: the next one is told again.
+    assert_eq!(next_ack(&db, session, &[]).await.unwrap(), Some(ack));
+    assert_eq!(retire(&db, session, ACK_RESEND_SECONDS).await.unwrap(), 0);
+    assert_eq!(retire(&db, session, 0).await.unwrap(), 1);
+    assert!(next_ack(&db, session, &[]).await.unwrap().is_none());
     assert_eq!(
         json(app.clone().oneshot(view(&owner)).await.unwrap()).await["status"],
         "activated"
@@ -588,7 +597,54 @@ async fn postgres_sms_line_activation_exchange_binds_owner_device_and_live_sessi
             .status(),
         StatusCode::FORBIDDEN
     );
-    assert!(next_ack(&db, reconnected).await.unwrap().is_none());
+    assert!(next_ack(&db, reconnected, &[]).await.unwrap().is_none());
+    // The owner is told the stored proof can no longer be approved.
+    let second_view = format!("/sms-lines/{second_line}/activations/{second_id}");
+    assert_eq!(
+        json(
+            app.clone()
+                .oneshot(request(&owner, "GET", &second_view, None))
+                .await
+                .unwrap()
+        )
+        .await["status"],
+        "closed"
+    );
+    // A superseded exchange loses its nonce without recording an acknowledgement.
+    let third = json(
+        app.clone()
+            .oneshot(request(
+                &owner,
+                "POST",
+                &format!("/sms-lines/{second_line}/activations"),
+                Some(serde_json::json!({ "device_id": device })),
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let third_id = Uuid::parse_str(third["challenge_id"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        retire(&db, reconnected, ACK_RESEND_SECONDS).await.unwrap(),
+        1
+    );
+    let rows = db
+        .query(
+            "SELECT challenge_id,nonce IS NULL,ack_sent_at IS NULL \
+             FROM sms_line_activation_exchanges WHERE challenge_id = ANY($1)",
+            &[&vec![second_id, third_id]],
+        )
+        .await
+        .unwrap();
+    for row in rows {
+        let id: Uuid = row.get(0);
+        assert_eq!(
+            row.get::<_, bool>(1),
+            id == second_id,
+            "nonce cleared only when superseded"
+        );
+        assert!(row.get::<_, bool>(2));
+    }
 
     setup
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
