@@ -687,10 +687,7 @@ pub async fn reset_test_quotas_on_start(
     device_caps_enabled: bool,
     config_fingerprint: Option<&[u8; 32]>,
 ) -> Result<(), BillingError> {
-    let (mut db, connection) = crate::runtime_db::connect_worker(database_url).await?;
-    tokio::spawn(async move {
-        let _ = connection.await;
-    });
+    let mut db = crate::runtime_db::connect_worker(database_url).await?;
     let schema = db
         .query_one(
             "SELECT to_regclass('billing_quota_audit') IS NOT NULL, to_regclass('billing_risk_events') IS NOT NULL AND to_regclass('billing_payment_holds') IS NOT NULL, to_regclass('billing_device_cap_config') IS NOT NULL AND to_regclass('billing_device_caps') IS NOT NULL AND to_regclass('billing_device_cap_audit') IS NOT NULL, EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='billing_subscriptions' AND column_name='payment_grace_started_at') AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='billing_subscriptions' AND column_name='last_non_past_due_at') AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='billing_subscriptions' AND column_name='latest_invoice_id') AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='billing_subscriptions' AND column_name='payment_grace_invoice_id') AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='billing_events' AND column_name='payment_failed_at')",

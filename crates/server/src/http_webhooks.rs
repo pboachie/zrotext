@@ -91,14 +91,12 @@ impl IntoResponse for EndpointError {
     }
 }
 
-async fn connect(state: &WebhookHttpState) -> Result<Client, EndpointError> {
-    let (client, connection) = crate::runtime_db::connect(&state.database_url)
+async fn connect(
+    state: &WebhookHttpState,
+) -> Result<crate::runtime_db::PooledClient, EndpointError> {
+    crate::runtime_db::connect(&state.database_url)
         .await
-        .map_err(|_| EndpointError::Unavailable)?;
-    tokio::spawn(async move {
-        let _ = connection.await;
-    });
-    Ok(client)
+        .map_err(|_| EndpointError::Unavailable)
 }
 
 async fn owner(

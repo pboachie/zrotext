@@ -53,12 +53,9 @@ async fn receive(
         }
         Err(_) => return StatusCode::SERVICE_UNAVAILABLE,
     };
-    let Ok((mut client, connection)) = crate::runtime_db::connect(&state.database_url).await else {
+    let Ok(mut client) = crate::runtime_db::connect(&state.database_url).await else {
         return StatusCode::SERVICE_UNAVAILABLE;
     };
-    tokio::spawn(async move {
-        let _ = connection.await;
-    });
     match ingest(&mut client, &event).await {
         Ok(_) => StatusCode::OK,
         Err(BillingError::EventConflict) => StatusCode::CONFLICT,

@@ -1,6 +1,16 @@
 use super::*;
 use tokio_postgres::{NoTls, error::SqlState};
 
+#[test]
+fn only_a_full_batch_requests_another_pass() {
+    let mut counts = RetentionCounts::default();
+    assert!(!counts.any_full(BATCH_SIZE));
+    counts.webhook_deliveries = BATCH_SIZE as u64 - 1;
+    assert!(!counts.any_full(BATCH_SIZE));
+    counts.sealed_inbound_events = BATCH_SIZE as u64;
+    assert!(counts.any_full(BATCH_SIZE));
+}
+
 async fn message(db: &Client, account: Uuid, device: Uuid, state: &str, age: i32) -> Uuid {
     let id = Uuid::new_v4();
     db.execute(
