@@ -65,9 +65,24 @@ async fn sealed_identity_requires_live_writer_and_active_same_tenant_line() {
         include_str!("../../../../deploy/compose/migrations/015_webhook_kek_commitments.sql"),
         include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
         include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
-        include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
         include_str!("../../../../deploy/compose/migrations/018_sealed_inbound_identity.sql"),
+        include_str!("../../../../deploy/compose/migrations/019_line_activation_contract.sql"),
+        include_str!("../../../../deploy/compose/migrations/020_enrollment_retention_indexes.sql"),
+        include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+        include_str!("../../../../deploy/compose/migrations/022_pending_owner_expiry.sql"),
+        include_str!(
+            "../../../../deploy/compose/migrations/023_billing_py_charge_and_unsupported.sql"
+        ),
+        include_str!("../../../../deploy/compose/migrations/024_billing_risk_operator_review.sql"),
+        include_str!("../../../../deploy/compose/migrations/025_account_recovery.sql"),
+        include_str!("../../../../deploy/compose/migrations/026_data_retention.sql"),
+        include_str!("../../../../deploy/compose/migrations/027_billing_test_config.sql"),
+        include_str!("../../../../deploy/compose/migrations/028_billing_provider_failures.sql"),
+        include_str!("../../../../deploy/compose/migrations/029_webhook_dispatch_fairness.sql"),
+        include_str!("../../../../deploy/compose/migrations/030_terminal_dispatch_jobs.sql"),
         include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
+        include_str!("../../../../deploy/compose/migrations/032_line_opt_out_events.sql"),
+        include_str!("../../../../deploy/compose/migrations/033_sms_line_binding_scope.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }
@@ -214,7 +229,7 @@ async fn sealed_identity_requires_live_writer_and_active_same_tenant_line() {
     // These are synthetic SQL fixtures, not evidence of real SIM enrollment.
     db.execute(
         "UPDATE phone_lines SET state='active',approved_at=now(), \
-         current_binding_generation=1 WHERE id=$1",
+         current_binding_generation=1,last_issued_generation=1 WHERE id=$1",
         &[&line],
     )
     .await
@@ -328,7 +343,7 @@ async fn sealed_identity_requires_live_writer_and_active_same_tenant_line() {
     .await
     .unwrap();
     db.execute(
-        "UPDATE phone_lines SET current_binding_generation=2 WHERE id=$1",
+        "UPDATE phone_lines SET current_binding_generation=2,last_issued_generation=2 WHERE id=$1",
         &[&line],
     )
     .await

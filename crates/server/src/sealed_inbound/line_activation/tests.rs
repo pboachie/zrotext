@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     auth::{TokenHasher, authenticate_session, login, register, verify_email},
-    sealed_inbound::line_binding_ready,
+    sealed_inbound::{line_binding_ready, sms_line_binding_ready},
 };
 use p256::{
     ecdsa::{Signature, SigningKey, signature::Signer},
@@ -21,7 +21,7 @@ macro_rules! migration {
     };
 }
 
-const TEST_MIGRATIONS: [&str; 20] = [
+const TEST_MIGRATIONS: [&str; 33] = [
     migration!("001_foundation.sql"),
     migration!("002_auth.sql"),
     migration!("003_delivery.sql"),
@@ -41,7 +41,20 @@ const TEST_MIGRATIONS: [&str; 20] = [
     migration!("017_billing_device_caps.sql"),
     migration!("018_sealed_inbound_identity.sql"),
     migration!("019_line_activation_contract.sql"),
+    migration!("020_enrollment_retention_indexes.sql"),
     migration!("021_billing_payment_grace.sql"),
+    migration!("022_pending_owner_expiry.sql"),
+    migration!("023_billing_py_charge_and_unsupported.sql"),
+    migration!("024_billing_risk_operator_review.sql"),
+    migration!("025_account_recovery.sql"),
+    migration!("026_data_retention.sql"),
+    migration!("027_billing_test_config.sql"),
+    migration!("028_billing_provider_failures.sql"),
+    migration!("029_webhook_dispatch_fairness.sql"),
+    migration!("030_terminal_dispatch_jobs.sql"),
+    migration!("031_recipient_suppression.sql"),
+    migration!("032_line_opt_out_events.sql"),
+    migration!("033_sms_line_binding_scope.sql"),
 ];
 
 fn signatures(
@@ -143,7 +156,7 @@ fn transcript_is_role_separated_and_rejects_ambiguous_or_old_android() {
         &good,
         signed.to_der().as_bytes()
     ));
-    let mut tampered = good;
+    let mut tampered = good.clone();
     tampered[DEVICE_DOMAIN.len()] ^= 1;
     assert!(!verify_der(
         sec1.as_bytes(),
@@ -155,6 +168,76 @@ fn transcript_is_role_separated_and_rejects_ambiguous_or_old_android() {
         &owner_line_statement(&tampered, signed.to_der().as_bytes()),
         signed.to_der().as_bytes()
     ));
+
+    for api in [28, 29, 30] {
+        let sms = sms_device_line_statement(
+            &challenge,
+            SimObservation {
+                android_api_level: api,
+                ..good_observation
+            },
+        )
+        .unwrap();
+        assert!(sms.starts_with(SMS_DEVICE_DOMAIN));
+        assert!(!sms.starts_with(DEVICE_DOMAIN));
+        assert!(
+            device_line_statement(
+                &challenge,
+                SimObservation {
+                    android_api_level: api,
+                    ..good_observation
+                },
+            )
+            .is_err()
+        );
+        let signed: Signature = key.sign(&sms);
+        let der = signed.to_der();
+        assert!(!verify_der(sec1.as_bytes(), &good, der.as_bytes()));
+        let sms_owner = sms_owner_line_statement(&sms, der.as_bytes());
+        assert!(sms_owner.starts_with(SMS_OWNER_DOMAIN));
+        assert_ne!(sms_owner, owner_line_statement(&sms, der.as_bytes()));
+    }
+    assert!(
+        sms_device_line_statement(
+            &challenge,
+            SimObservation {
+                android_api_level: 27,
+                ..good_observation
+            },
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn sms_transcript_matches_published_fixed_vector() {
+    let vector: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../protocol/v1/sms-line-activation.vector.json"
+    ))
+    .unwrap();
+    let nonce_hex = vector["nonce_hex"].as_str().unwrap();
+    let nonce_vec: Vec<u8> = nonce_hex
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+        .collect();
+    let nonce: [u8; 32] = nonce_vec.try_into().unwrap();
+    let challenge = LineChallenge {
+        id: Uuid::parse_str(vector["challenge_id"].as_str().unwrap()).unwrap(),
+        account_id: Uuid::parse_str(vector["account_id"].as_str().unwrap()).unwrap(),
+        line_id: Uuid::parse_str(vector["line_id"].as_str().unwrap()).unwrap(),
+        device_id: Uuid::parse_str(vector["device_id"].as_str().unwrap()).unwrap(),
+        generation: vector["generation"].as_i64().unwrap(),
+        nonce,
+    };
+    let observation = SimObservation {
+        android_api_level: vector["android_api_level"].as_u64().unwrap() as u16,
+        active_subscription_count: vector["active_subscription_count"].as_u64().unwrap() as u8,
+        selected_subscription_id: vector["selected_subscription_id"].as_i64().unwrap() as i32,
+    };
+    let statement = sms_device_line_statement(&challenge, observation).unwrap();
+    let actual: String = statement.iter().map(|byte| format!("{byte:02x}")).collect();
+    assert_eq!(actual, vector["device_statement_hex"].as_str().unwrap());
 }
 
 #[tokio::test]
@@ -226,7 +309,9 @@ async fn migration_preserves_pending_generation_high_water_mark() {
     )
     .await
     .unwrap();
-    db.batch_execute(TEST_MIGRATIONS[18]).await.unwrap();
+    for migration in TEST_MIGRATIONS.iter().skip(18) {
+        db.batch_execute(migration).await.unwrap();
+    }
     let issued: i64 = db
         .query_one(
             "SELECT last_issued_generation FROM phone_lines WHERE account_id=$1 AND id=$2",
@@ -1014,6 +1099,456 @@ async fn signed_activation_fences_owner_device_generation_and_replay() {
         issue_line_challenge(&mut db, &principal, line, device).await,
         Err(LineActivationError::Unavailable)
     ));
+    db.batch_execute(&format!(
+        "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
+    ))
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn sms_activation_is_signed_line_scoped_and_cannot_authorize_sealed_storage() {
+    let url = std::env::var("ZT_INBOUND_TEST_DATABASE_URL")
+        .expect("set ZT_INBOUND_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let schema = format!("sms_line_activation_{}", Uuid::new_v4().simple());
+    db.batch_execute(&format!(
+        "CREATE SCHEMA {schema}; SET search_path TO {schema}"
+    ))
+    .await
+    .unwrap();
+    for migration in TEST_MIGRATIONS {
+        db.batch_execute(migration).await.unwrap();
+    }
+    db.execute("INSERT INTO sites(site_id) VALUES('virtual-sms-hub')", &[])
+        .await
+        .unwrap();
+    let hasher = TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap();
+    let password = format!("test-{}", Uuid::new_v4());
+    let owner = register(&mut db, &hasher, "sms-line-owner@example.test", &password)
+        .await
+        .unwrap();
+    verify_email(&mut db, &hasher, &owner.verification_token)
+        .await
+        .unwrap();
+    let login = login(&db, &hasher, "sms-line-owner@example.test", &password)
+        .await
+        .unwrap();
+    let principal = authenticate_session(&db, &hasher, &login.token)
+        .await
+        .unwrap();
+    let device = Uuid::new_v4();
+    let line = Uuid::new_v4();
+    let device_key = SigningKey::generate_from_rng(&mut rng());
+    let sms_owner_key = SigningKey::generate_from_rng(&mut rng());
+    let device_sec1 = device_key.verifying_key().to_sec1_point(false);
+    let owner_sec1 = sms_owner_key.verifying_key().to_sec1_point(false);
+    db.execute(
+        "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'virtual sms device')",
+        &[&device, &owner.account_id],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO device_keys(device_id,account_id,signing_key_sec1,fingerprint) \
+         VALUES($1,$2,$3,$4)",
+        &[
+            &device,
+            &owner.account_id,
+            &device_sec1.as_bytes(),
+            &&digest(device_sec1.as_bytes())[..],
+        ],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO sms_line_owner_approval_keys(account_id,fingerprint,signing_key_sec1) \
+         VALUES($1,$2,$3)",
+        &[
+            &owner.account_id,
+            &&digest(owner_sec1.as_bytes())[..],
+            &owner_sec1.as_bytes(),
+        ],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO device_sessions(device_id,account_id,site_id,instance_id, \
+         connection_epoch,lease_until,deployment_epoch) \
+         VALUES($1,$2,'virtual-sms-hub','virtual-hub',1,now()+interval '10 minutes',1)",
+        &[&device, &owner.account_id],
+    )
+    .await
+    .unwrap();
+    let session = InboundSession {
+        account_id: owner.account_id,
+        device_id: device,
+        site_id: "virtual-sms-hub",
+        instance_id: "virtual-hub",
+        connection_epoch: 1,
+        deployment_epoch: 1,
+    };
+    let challenge = issue_sms_line_challenge(&mut db, &principal, line, device)
+        .await
+        .unwrap();
+    let observation = SimObservation {
+        android_api_level: 28,
+        active_subscription_count: 1,
+        selected_subscription_id: 7,
+    };
+    let statement = sms_device_line_statement(&challenge, observation).unwrap();
+    let device_signature: Signature = device_key.sign(&statement);
+    let device_der = device_signature.to_der();
+    let owner_statement = sms_owner_line_statement(&statement, device_der.as_bytes());
+    let owner_signature: Signature = sms_owner_key.sign(&owner_statement);
+    let owner_der = owner_signature.to_der();
+    macro_rules! sms_proof {
+        ($owner_sig:expr, $observation:expr) => {
+            LineActivationProof {
+                challenge_id: challenge.id,
+                nonce: challenge.nonce,
+                observation: $observation,
+                device_signature_der: device_der.as_bytes(),
+                owner_signature_der: $owner_sig,
+            }
+        };
+    }
+    assert!(matches!(
+        activate_line_binding(
+            &mut db,
+            &principal,
+            session,
+            line,
+            challenge.generation,
+            sms_proof!(owner_der.as_bytes(), observation)
+        )
+        .await,
+        Err(LineActivationError::InvalidInput)
+    ));
+    assert!(matches!(
+        activate_sms_line_binding(
+            &mut db,
+            &principal,
+            session,
+            line,
+            challenge.generation,
+            sms_proof!(
+                owner_der.as_bytes(),
+                SimObservation {
+                    selected_subscription_id: 8,
+                    ..observation
+                }
+            )
+        )
+        .await,
+        Err(LineActivationError::Unavailable)
+    ));
+    let wrong_owner_statement = owner_line_statement(&statement, device_der.as_bytes());
+    let wrong_owner_signature: Signature = sms_owner_key.sign(&wrong_owner_statement);
+    let wrong_owner_der = wrong_owner_signature.to_der();
+    assert!(matches!(
+        activate_sms_line_binding(
+            &mut db,
+            &principal,
+            session,
+            line,
+            challenge.generation,
+            sms_proof!(wrong_owner_der.as_bytes(), observation)
+        )
+        .await,
+        Err(LineActivationError::Unavailable)
+    ));
+    assert!(
+        !sms_line_binding_ready(&db, session, line, challenge.generation)
+            .await
+            .unwrap()
+    );
+    activate_sms_line_binding(
+        &mut db,
+        &principal,
+        session,
+        line,
+        challenge.generation,
+        sms_proof!(owner_der.as_bytes(), observation),
+    )
+    .await
+    .unwrap();
+    assert!(
+        sms_line_binding_ready(&db, session, line, challenge.generation)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !line_binding_ready(&db, session, line, challenge.generation)
+            .await
+            .unwrap()
+    );
+    assert!(matches!(
+        activate_sms_line_binding(
+            &mut db,
+            &principal,
+            session,
+            line,
+            challenge.generation,
+            sms_proof!(owner_der.as_bytes(), observation)
+        )
+        .await,
+        Err(LineActivationError::Unavailable)
+    ));
+    let purpose_edit = db
+        .execute(
+            "UPDATE device_line_bindings SET purpose='sealed' WHERE account_id=$1 AND line_id=$2",
+            &[&owner.account_id, &line],
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        purpose_edit.code(),
+        Some(&tokio_postgres::error::SqlState::CHECK_VIOLATION)
+    );
+    let mut envelope = vec![0_u8; 426];
+    envelope[..6].copy_from_slice(&[0x5a, 0x54, 0x53, 0x45, 1, 2]);
+    let sealed_insert = db
+        .execute(
+            "INSERT INTO sealed_inbound_events(id,account_id,device_id,line_id,binding_generation, \
+         device_sequence,observed_at,part_count,envelope,unsigned_digest) \
+         VALUES($1,$2,$3,$4,$5,1,now(),1,$6,$7)",
+            &[
+                &Uuid::new_v4(),
+                &owner.account_id,
+                &device,
+                &line,
+                &challenge.generation,
+                &envelope,
+                &vec![9_u8; 32],
+            ],
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        sealed_insert.code(),
+        Some(&tokio_postgres::error::SqlState::CHECK_VIOLATION)
+    );
+
+    // This is a direct SQL trigger fixture, not a signed ingest route.
+    db.execute(
+        "INSERT INTO line_opt_out_events(id,account_id,device_id,line_id,binding_generation, \
+         device_sequence,recipient_e164,classification,observed_at,event_digest,signature_der) \
+         VALUES($1,$2,$3,$4,$5,1,'+12025550199','opt_out',now(),$6,$7)",
+        &[
+            &Uuid::new_v4(),
+            &owner.account_id,
+            &device,
+            &line,
+            &challenge.generation,
+            &vec![9_u8; 32],
+            &device_der.as_bytes(),
+        ],
+    )
+    .await
+    .unwrap();
+
+    // Owner approval keys have independent roles. Registering the same SEC1
+    // key in the sealed owner table blocks a new SMS activation, even though
+    // both signatures and the current SMS writer are otherwise valid.
+    db.execute(
+        "INSERT INTO line_owner_approval_keys(account_id,fingerprint,signing_key_sec1) \
+         VALUES($1,$2,$3)",
+        &[
+            &owner.account_id,
+            &&digest(owner_sec1.as_bytes())[..],
+            &owner_sec1.as_bytes(),
+        ],
+    )
+    .await
+    .unwrap();
+    let aliased = issue_sms_line_challenge(&mut db, &principal, line, device)
+        .await
+        .unwrap();
+    let aliased_statement = sms_device_line_statement(&aliased, observation).unwrap();
+    let aliased_device_sig: Signature = device_key.sign(&aliased_statement);
+    let aliased_device_der = aliased_device_sig.to_der();
+    let aliased_owner_statement =
+        sms_owner_line_statement(&aliased_statement, aliased_device_der.as_bytes());
+    let aliased_owner_sig: Signature = sms_owner_key.sign(&aliased_owner_statement);
+    let aliased_owner_der = aliased_owner_sig.to_der();
+    assert!(matches!(
+        activate_sms_line_binding(
+            &mut db,
+            &principal,
+            session,
+            line,
+            aliased.generation,
+            LineActivationProof {
+                challenge_id: aliased.id,
+                nonce: aliased.nonce,
+                observation,
+                device_signature_der: aliased_device_der.as_bytes(),
+                owner_signature_der: aliased_owner_der.as_bytes(),
+            }
+        )
+        .await,
+        Err(LineActivationError::Unavailable)
+    ));
+    assert!(
+        sms_line_binding_ready(&db, session, line, challenge.generation)
+            .await
+            .unwrap()
+    );
+    db.execute(
+        "UPDATE line_owner_approval_keys SET revoked_at=now() WHERE account_id=$1",
+        &[&owner.account_id],
+    )
+    .await
+    .unwrap();
+
+    // Upgrading the same line to sealed revokes the SMS-only generation, but
+    // its stronger proof continues to authorize the SMS STOP channel.
+    let sealed_owner_key = SigningKey::generate_from_rng(&mut rng());
+    let sealed_sec1 = sealed_owner_key.verifying_key().to_sec1_point(false);
+    db.execute(
+        "INSERT INTO line_owner_approval_keys(account_id,fingerprint,signing_key_sec1) \
+         VALUES($1,$2,$3)",
+        &[
+            &owner.account_id,
+            &&digest(sealed_sec1.as_bytes())[..],
+            &sealed_sec1.as_bytes(),
+        ],
+    )
+    .await
+    .unwrap();
+    let sealed_challenge = issue_line_challenge(&mut db, &principal, line, device)
+        .await
+        .unwrap();
+    let (sealed_device_sig, sealed_owner_sig) =
+        signatures(&sealed_challenge, &device_key, &sealed_owner_key, 7);
+    activate_line_binding(
+        &mut db,
+        &principal,
+        session,
+        line,
+        sealed_challenge.generation,
+        proof(&sealed_challenge, &sealed_device_sig, &sealed_owner_sig),
+    )
+    .await
+    .unwrap();
+    assert!(
+        !sms_line_binding_ready(&db, session, line, challenge.generation)
+            .await
+            .unwrap()
+    );
+    assert!(
+        line_binding_ready(&db, session, line, sealed_challenge.generation)
+            .await
+            .unwrap()
+    );
+    assert!(
+        sms_line_binding_ready(&db, session, line, sealed_challenge.generation)
+            .await
+            .unwrap()
+    );
+    db.execute(
+        "INSERT INTO line_opt_out_events(id,account_id,device_id,line_id,binding_generation, \
+         device_sequence,recipient_e164,classification,observed_at,event_digest,signature_der) \
+         VALUES($1,$2,$3,$4,$5,2,'+12025550199','opt_out',now(),$6,$7)",
+        &[
+            &Uuid::new_v4(),
+            &owner.account_id,
+            &device,
+            &line,
+            &sealed_challenge.generation,
+            &vec![8_u8; 32],
+            &sealed_device_sig,
+        ],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO sealed_inbound_events(id,account_id,device_id,line_id,binding_generation, \
+         device_sequence,observed_at,part_count,envelope,unsigned_digest) \
+         VALUES($1,$2,$3,$4,$5,1,now(),1,$6,$7)",
+        &[
+            &Uuid::new_v4(),
+            &owner.account_id,
+            &device,
+            &line,
+            &sealed_challenge.generation,
+            &envelope,
+            &vec![9_u8; 32],
+        ],
+    )
+    .await
+    .unwrap();
+
+    assert!(matches!(
+        issue_sms_line_challenge(&mut db, &principal, line, device).await,
+        Err(LineActivationError::Unavailable)
+    ));
+    let old_stop = db
+        .execute(
+            "INSERT INTO line_opt_out_events(id,account_id,device_id,line_id,binding_generation, \
+         device_sequence,recipient_e164,classification,observed_at,event_digest,signature_der) \
+         VALUES($1,$2,$3,$4,$5,3,'+12025550199','opt_out',now(),$6,$7)",
+            &[
+                &Uuid::new_v4(),
+                &owner.account_id,
+                &device,
+                &line,
+                &challenge.generation,
+                &vec![7_u8; 32],
+                &device_der.as_bytes(),
+            ],
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        old_stop.code(),
+        Some(&tokio_postgres::error::SqlState::CHECK_VIOLATION)
+    );
+
+    // The database guard also rejects an accidental direct SQL downgrade.
+    let tx = db.transaction().await.unwrap();
+    tx.execute(
+        "UPDATE device_line_bindings SET state='revoked' WHERE account_id=$1 AND line_id=$2 AND generation=$3",
+        &[&owner.account_id, &line, &sealed_challenge.generation],
+    ).await.unwrap();
+    let downgraded_generation = sealed_challenge.generation + 1;
+    tx.execute(
+        "INSERT INTO device_line_bindings(account_id,line_id,device_id,generation,purpose) \
+         VALUES($1,$2,$3,$4,'sms')",
+        &[&owner.account_id, &line, &device, &downgraded_generation],
+    )
+    .await
+    .unwrap();
+    let downgrade = tx
+        .execute(
+            "UPDATE device_line_bindings SET state='active',activated_at=clock_timestamp(), \
+         owner_approval_digest=$5,device_confirmation_digest=$6 \
+         WHERE account_id=$1 AND line_id=$2 AND device_id=$3 AND generation=$4",
+            &[
+                &owner.account_id,
+                &line,
+                &device,
+                &downgraded_generation,
+                &vec![2_u8; 32],
+                &vec![3_u8; 32],
+            ],
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        downgrade.code(),
+        Some(&tokio_postgres::error::SqlState::CHECK_VIOLATION)
+    );
+    tx.rollback().await.unwrap();
+    assert!(
+        line_binding_ready(&db, session, line, sealed_challenge.generation)
+            .await
+            .unwrap()
+    );
+
     db.batch_execute(&format!(
         "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
     ))

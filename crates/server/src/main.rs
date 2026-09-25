@@ -204,6 +204,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some("true") => true,
         Some(_) => return Err("INBOUND_PILOT_ENABLED must be true or false".into()),
     };
+    let line_opt_out_enabled = optional_bool("LINE_OPT_OUT_ENABLED")?;
     let mfa_recovery_only = optional_bool("MFA_RECOVERY_ONLY")?;
     let mfa_enrollment_enabled = optional_bool("MFA_ENROLLMENT_ENABLED")?;
     if mfa_recovery_only && mfa_enrollment_enabled {
@@ -499,6 +500,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             alpha_policy: config.alpha_policy.clone(),
             dispatch_runtime_enabled: config.dispatch_runtime_enabled,
             inbound_pilot_enabled,
+            line_opt_out_enabled,
             draining: config.draining.clone(),
             drain_notify: config.drain_notify.clone(),
         };
@@ -525,6 +527,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     } else if config.alpha_policy.enabled()
         || inbound_pilot_enabled
+        || line_opt_out_enabled
         || webhook_delivery_enabled
         || webhook_management_configured
     {

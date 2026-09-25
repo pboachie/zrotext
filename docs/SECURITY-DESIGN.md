@@ -2,7 +2,7 @@
 
 This document describes a proposed sealed-content protocol. It is not an implemented or audited cryptosystem. The design separates intended protections from choices still under discussion.
 
-The [ZT-009 review package](protocol/zt-009-review.md) includes a [versioned byte profile draft](protocol/zt-sealed-draft-01.md), threat diagram, candidate libraries and unresolved review questions. Neither document approves production crypto or closes ZT-009.
+The [ZT-009 review package](../protocol/drafts/zt-009-review.md) includes a [versioned byte profile draft](../protocol/drafts/zt-sealed-draft-01.md), threat diagram, candidate libraries and unresolved review questions. Neither document approves production crypto or closes ZT-009.
 
 ## Claims and trust boundaries
 

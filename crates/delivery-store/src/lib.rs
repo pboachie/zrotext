@@ -1591,8 +1591,12 @@ mod tests {
             include_str!("../../../deploy/compose/migrations/032_line_opt_out_events.sql"),
         ),
         (
-            "033_delivery_sweep_index.sql",
-            include_str!("../../../deploy/compose/migrations/033_delivery_sweep_index.sql"),
+            "033_sms_line_binding_scope.sql",
+            include_str!("../../../deploy/compose/migrations/033_sms_line_binding_scope.sql"),
+        ),
+        (
+            "034_delivery_sweep_index.sql",
+            include_str!("../../../deploy/compose/migrations/034_delivery_sweep_index.sql"),
         ),
     ];
 

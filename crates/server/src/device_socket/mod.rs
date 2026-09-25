@@ -9,6 +9,7 @@ use crate::{
         abuse_limits::{self, Limit},
     },
     enrollment::{self, AuthenticatedDevice, EnrollmentError, EnrollmentHasher},
+    inbound::unsolicited::{self, LineOptOut, LineOptOutError},
     inbound::{self, Content, InboundError, InboundEvent, InboundSession},
     runtime_db::{self, PooledClient},
 };
@@ -110,6 +111,7 @@ pub struct DeviceSocketState {
     pub alpha_policy: Arc<AlphaPolicy>,
     pub dispatch_runtime_enabled: bool,
     pub inbound_pilot_enabled: bool,
+    pub line_opt_out_enabled: bool,
     pub draining: Arc<AtomicBool>,
     pub drain_notify: Arc<Notify>,
 }
@@ -170,6 +172,35 @@ enum ClientFrame {
         part_count: i16,
         signature_der: String,
     },
+    #[serde(rename = "line_opt_out")]
+    LineOptOut {
+        v: u8,
+        connection_epoch: i64,
+        event_id: Uuid,
+        sequence: i64,
+        line_id: Uuid,
+        binding_generation: i64,
+        action: LineOptOutAction,
+        recipient_e164: String,
+        observed_at_ms: i64,
+        signature_der: String,
+    },
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum LineOptOutAction {
+    OptOut,
+    OptOutReview,
+}
+
+impl From<LineOptOutAction> for unsolicited::Action {
+    fn from(value: LineOptOutAction) -> Self {
+        match value {
+            LineOptOutAction::OptOut => Self::Stop,
+            LineOptOutAction::OptOutReview => Self::Review,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -274,6 +305,12 @@ enum ServerFrame {
         queued_deliveries: u64,
         #[serde(skip_serializing_if = "is_false")]
         suppression_cleared: bool,
+    },
+    #[serde(rename = "line_opt_out_ack")]
+    LineOptOutAck {
+        v: u8,
+        event_id: Uuid,
+        created: bool,
     },
 }
 
@@ -396,6 +433,17 @@ fn inbound_evidence_close_code(error: &InboundError) -> u16 {
         | InboundError::StaleLease
         | InboundError::BudgetExhausted
         | InboundError::Database(_) => RETRY_LATER,
+    }
+}
+
+fn line_opt_out_close_code(error: &LineOptOutError) -> u16 {
+    match error {
+        LineOptOutError::InvalidInput
+        | LineOptOutError::InvalidSignature
+        | LineOptOutError::EventConflict
+        | LineOptOutError::SequenceConflict => EVIDENCE_REJECTED,
+        LineOptOutError::Unauthorized => close_code::POLICY,
+        LineOptOutError::BudgetExhausted | LineOptOutError::Database(_) => RETRY_LATER,
     }
 }
 
@@ -747,6 +795,49 @@ async fn run_socket(
                             created: outcome.created,
                             queued_deliveries: outcome.queued_deliveries,
                             suppression_cleared: outcome.suppression_cleared,
+                        }).await { break; }
+                    }
+                    Some(ClientFrame::LineOptOut {
+                        v: 1, connection_epoch, event_id, sequence, line_id,
+                        binding_generation, action, recipient_e164, observed_at_ms,
+                        signature_der,
+                    }) => {
+                        if !state.line_opt_out_enabled || connection_epoch != session.connection_epoch {
+                            close_with_code = Some(close_code::POLICY);
+                            break;
+                        }
+                        let Ok(signature) = URL_SAFE_NO_PAD.decode(signature_der.as_bytes()) else {
+                            close_with_code = Some(EVIDENCE_REJECTED);
+                            break;
+                        };
+                        if URL_SAFE_NO_PAD.encode(&signature) != signature_der {
+                            close_with_code = Some(EVIDENCE_REJECTED);
+                            break;
+                        }
+                        let inbound_session = InboundSession {
+                            account_id: session.account_id,
+                            device_id: session.device_id,
+                            site_id: &state.site_id,
+                            instance_id: &state.instance_id,
+                            connection_epoch: session.connection_epoch,
+                            deployment_epoch: state.deployment_epoch,
+                        };
+                        let event = LineOptOut {
+                            id: event_id, line_id, binding_generation, sequence,
+                            recipient_e164: &recipient_e164, action: action.into(),
+                            observed_at_ms, signature_der: &signature,
+                        };
+                        let created = match unsolicited::ingest_line_opt_out(
+                            &mut client, inbound_session, &event,
+                        ).await {
+                            Ok(created) => created,
+                            Err(error) => {
+                                close_with_code = Some(line_opt_out_close_code(&error));
+                                break;
+                            }
+                        };
+                        if !send_frame(&mut socket, ServerFrame::LineOptOutAck {
+                            v: 1, event_id, created,
                         }).await { break; }
                     }
                     _ => break,
@@ -1190,6 +1281,7 @@ mod tests {
             alpha_policy: Arc::new(AlphaPolicy::parse(None, None, None).unwrap()),
             dispatch_runtime_enabled: false,
             inbound_pilot_enabled: false,
+            line_opt_out_enabled: false,
             draining: Arc::new(AtomicBool::new(false)),
             drain_notify: Arc::new(Notify::new()),
         };
@@ -1248,8 +1340,8 @@ mod tests {
             "../../../../protocol/v1/device-stream.examples.json"
         ))
         .unwrap();
-        assert_eq!(examples.len(), 12);
-        for frame in &examples[..6] {
+        assert_eq!(examples.len(), 14);
+        for frame in &examples[..7] {
             let parsed: ClientFrame = serde_json::from_value(frame.clone()).unwrap();
             assert_eq!(frame["v"], 1);
             let variant = match parsed {
@@ -1259,6 +1351,7 @@ mod tests {
                 ClientFrame::AlphaReady { .. } => "alpha_ready",
                 ClientFrame::RadioEvent { .. } => "radio_event",
                 ClientFrame::InboundEvent { .. } => "inbound_event",
+                ClientFrame::LineOptOut { .. } => "line_opt_out",
             };
             assert_eq!(frame["type"], variant);
         }
@@ -1306,8 +1399,13 @@ mod tests {
                 queued_deliveries: 0,
                 suppression_cleared: false,
             },
+            ServerFrame::LineOptOutAck {
+                v: 1,
+                event_id: id,
+                created: true,
+            },
         ];
-        for (actual, documented) in server_frames.into_iter().zip(&examples[6..]) {
+        for (actual, documented) in server_frames.into_iter().zip(&examples[7..]) {
             let variant = match &actual {
                 ServerFrame::Challenge { .. } => "challenge",
                 ServerFrame::Session { .. } => "session",
@@ -1315,6 +1413,7 @@ mod tests {
                 ServerFrame::SyntheticGrant { .. } => "synthetic_grant",
                 ServerFrame::RadioEventAck { .. } => "radio_event_ack",
                 ServerFrame::InboundEventAck { .. } => "inbound_event_ack",
+                ServerFrame::LineOptOutAck { .. } => "line_opt_out_ack",
             };
             assert_eq!(documented["type"], variant);
             assert_eq!(serde_json::to_value(actual).unwrap(), *documented);
@@ -1528,6 +1627,7 @@ mod tests {
             alpha_policy: policy,
             dispatch_runtime_enabled: true,
             inbound_pilot_enabled: false,
+            line_opt_out_enabled: false,
             draining: Arc::new(AtomicBool::new(false)),
             drain_notify: Arc::new(Notify::new()),
         };
@@ -1765,6 +1865,7 @@ mod tests {
             alpha_policy: Arc::new(AlphaPolicy::parse(None, None, None).unwrap()),
             dispatch_runtime_enabled: false,
             inbound_pilot_enabled: false,
+            line_opt_out_enabled: false,
             draining: Arc::new(AtomicBool::new(false)),
             drain_notify: Arc::new(Notify::new()),
         };
@@ -2274,7 +2375,11 @@ mod tests {
 #[cfg(test)]
 mod admission_tests;
 #[cfg(test)]
+mod line_opt_out_wire_tests;
+#[cfg(test)]
 mod virtual_inbound_tests;
+#[cfg(test)]
+mod virtual_line_opt_out_tests;
 
 #[cfg(test)]
 mod frame_budget_tests {

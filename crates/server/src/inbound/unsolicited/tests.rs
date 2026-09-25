@@ -17,7 +17,7 @@ macro_rules! migration {
     };
 }
 
-const TEST_MIGRATIONS: [&str; 21] = [
+const TEST_MIGRATIONS: [&str; 22] = [
     migration!("001_foundation.sql"),
     migration!("002_auth.sql"),
     migration!("003_delivery.sql"),
@@ -39,6 +39,7 @@ const TEST_MIGRATIONS: [&str; 21] = [
     migration!("019_line_activation_contract.sql"),
     migration!("031_recipient_suppression.sql"),
     migration!("032_line_opt_out_events.sql"),
+    migration!("033_sms_line_binding_scope.sql"),
 ];
 
 fn observed_now() -> i64 {
@@ -165,8 +166,8 @@ async fn signed_unsolicited_stop_is_attempt_free_line_bound_and_serialized() {
         &[&device, &account]).await.unwrap();
     db.execute("INSERT INTO phone_lines(id,account_id,state,approved_at,current_binding_generation,last_issued_generation) \
         VALUES($1,$2,'active',clock_timestamp(),1,1)", &[&line, &account]).await.unwrap();
-    db.execute("INSERT INTO device_line_bindings(account_id,line_id,device_id,generation,state,owner_approval_digest,device_confirmation_digest,activated_at) \
-        VALUES($1,$2,$3,1,'active',$4,$5,clock_timestamp()-interval '1 second')",
+    db.execute("INSERT INTO device_line_bindings(account_id,line_id,device_id,generation,state,purpose,owner_approval_digest,device_confirmation_digest,activated_at) \
+        VALUES($1,$2,$3,1,'active','sms',$4,$5,clock_timestamp()-interval '1 second')",
         &[&account, &line, &device, &vec![1_u8;32], &vec![2_u8;32]]).await.unwrap();
     let session = InboundSession {
         account_id: account,
