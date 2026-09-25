@@ -8,8 +8,10 @@
 //! 3. The owner signs over that declaration and approves. Activation runs
 //!    under the stored session, so the delivering connection must still hold
 //!    a live lease.
-//! 4. The device stream sends an acknowledgement bound to the exact statement
-//!    and signature digests, then clears the stored nonce.
+//! 4. Each device connection sends an acknowledgement bound to the exact
+//!    statement and signature digests, until [`ACK_RESEND_SECONDS`] after
+//!    activation. [`retire`] then records it and clears the stored nonce, as
+//!    it does for exchanges that can no longer activate.
 //!
 //! A signed declaration is not independent evidence of physical SIM identity.
 
@@ -22,6 +24,10 @@ use crate::{auth::SessionPrincipal, inbound::InboundSession};
 use thiserror::Error;
 use tokio_postgres::{Client, Row};
 use uuid::Uuid;
+
+/// A dropped connection must not lose the activation acknowledgement, so each
+/// new connection resends it for this long after activation.
+pub const ACK_RESEND_SECONDS: i32 = 900;
 
 #[derive(Debug, Error)]
 pub enum ExchangeError {
@@ -170,8 +176,8 @@ pub async fn next_challenge(
              JOIN line_activation_challenges c ON c.id=e.challenge_id \
              JOIN device_line_bindings b ON (b.account_id,b.line_id,b.device_id,b.generation) \
                =(e.account_id,e.line_id,e.device_id,e.generation) \
-             WHERE e.account_id=$1 AND e.device_id=$2 AND e.proof_received_at IS NULL \
-               AND e.nonce IS NOT NULL \
+             WHERE e.account_id=$1 AND e.device_id=$2 AND e.ack_sent_at IS NULL \
+               AND e.proof_received_at IS NULL AND e.nonce IS NOT NULL \
                AND e.pushed_connection_epoch IS DISTINCT FROM $3 \
                AND c.consumed_at IS NULL AND c.expires_at>clock_timestamp() \
                AND b.state='pending' AND b.purpose='sms' \
@@ -418,9 +424,30 @@ pub async fn view(
     // After the acknowledgement clears the nonce the statement cannot be
     // rebuilt; an acknowledgement is only sent for this exact proof.
     let acked_active = active && acked;
+    let delivering_session_live = match &stored {
+        Some(stored) => client
+            .query_opt(
+                "SELECT 1 FROM device_sessions WHERE account_id=$1 AND device_id=$2 \
+                 AND site_id=$3 AND instance_id=$4 AND connection_epoch=$5 \
+                 AND deployment_epoch=$6 AND lease_until>clock_timestamp()",
+                &[
+                    &account_id,
+                    &stored.device_id,
+                    &stored.site_id,
+                    &stored.instance_id,
+                    &stored.connection_epoch,
+                    &stored.deployment_epoch,
+                ],
+            )
+            .await?
+            .is_some(),
+        None => false,
+    };
     let status = if activated_by_this_proof || acked_active {
         ExchangeStatus::Activated
-    } else if !live {
+    } else if !live || (stored.is_some() && !delivering_session_live) {
+        // Approval runs under the delivering session; after it ends the
+        // stored proof can never activate. The owner opens a new challenge.
         ExchangeStatus::Closed
     } else if stored.is_some() {
         ExchangeStatus::AwaitingOwner
@@ -500,11 +527,35 @@ pub async fn approve(
     Ok(())
 }
 
-/// The next activation this device has not been told about. Only an
-/// activation made from this exchange's exact proof is acknowledged.
+fn activated_ack(row: &Row, account_id: Uuid) -> Option<ActivationAck> {
+    let challenge_id: Uuid = row.get(12);
+    let confirmation: Option<Vec<u8>> = row.get(13);
+    let stored = stored_proof(row)?;
+    let statement = sms_device_line_statement(
+        &stored.challenge(challenge_id, account_id),
+        stored.observation,
+    )
+    .ok()?;
+    (confirmation.as_deref() == Some(&proof_digest(&statement, &stored.signature_der)[..])).then(
+        || ActivationAck {
+            challenge_id,
+            account_id,
+            line_id: stored.line_id,
+            device_id: stored.device_id,
+            generation: stored.generation,
+            device_statement_sha256: digest(&statement),
+            device_signature_sha256: digest(&stored.signature_der),
+        },
+    )
+}
+
+/// The next activation to acknowledge on this connection, skipping those
+/// already sent on it. Only an activation made from this exchange's exact
+/// proof is acknowledged; [`retire`] ends the resend window.
 pub async fn next_ack(
     client: &Client,
     session: InboundSession<'_>,
+    sent_on_connection: &[Uuid],
 ) -> Result<Option<ActivationAck>, tokio_postgres::Error> {
     let rows = client
         .query(
@@ -516,53 +567,75 @@ pub async fn next_ack(
                  WHERE e.account_id=$1 AND e.device_id=$2 AND e.ack_sent_at IS NULL \
                    AND e.proof_received_at IS NOT NULL AND b.state='active' \
                    AND b.activated_at IS NOT NULL AND b.purpose='sms' \
+                   AND NOT (e.challenge_id = ANY($3)) \
                  ORDER BY e.created_at LIMIT 4"
             ),
-            &[&session.account_id, &session.device_id],
+            &[&session.account_id, &session.device_id, &sent_on_connection],
         )
         .await?;
-    for row in rows {
-        let challenge_id: Uuid = row.get(12);
-        let confirmation: Option<Vec<u8>> = row.get(13);
-        let Some(stored) = stored_proof(&row) else {
-            continue;
-        };
-        let Ok(statement) = sms_device_line_statement(
-            &stored.challenge(challenge_id, session.account_id),
-            stored.observation,
-        ) else {
-            continue;
-        };
-        if confirmation.as_deref() != Some(&proof_digest(&statement, &stored.signature_der)[..]) {
-            continue;
-        }
-        return Ok(Some(ActivationAck {
-            challenge_id,
-            account_id: session.account_id,
-            line_id: stored.line_id,
-            device_id: stored.device_id,
-            generation: stored.generation,
-            device_statement_sha256: digest(&statement),
-            device_signature_sha256: digest(&stored.signature_der),
-        }));
-    }
-    Ok(None)
+    Ok(rows
+        .iter()
+        .find_map(|row| activated_ack(row, session.account_id)))
 }
 
-/// Records the sent acknowledgement and discards the nonce.
-pub async fn mark_ack_sent(
+/// Closes finished exchanges for this device and clears their nonces: an
+/// acknowledged activation `grace_seconds` after activation, and an exchange
+/// that can no longer activate (superseded, revoked, or expired
+/// `grace_seconds` ago). Returns how many rows were retired.
+pub async fn retire(
     client: &Client,
     session: InboundSession<'_>,
-    challenge_id: Uuid,
-) -> Result<(), tokio_postgres::Error> {
-    client
-        .execute(
-            "UPDATE sms_line_activation_exchanges SET ack_sent_at=clock_timestamp(),nonce=NULL \
-             WHERE challenge_id=$1 AND account_id=$2 AND device_id=$3 AND ack_sent_at IS NULL",
-            &[&challenge_id, &session.account_id, &session.device_id],
+    grace_seconds: i32,
+) -> Result<u64, tokio_postgres::Error> {
+    let rows = client
+        .query(
+            &format!(
+                "SELECT {STORED_PROOF_COLUMNS},e.challenge_id,b.device_confirmation_digest, \
+                   (b.state='active' AND b.activated_at IS NOT NULL \
+                    AND b.activated_at>=clock_timestamp()-make_interval(secs=>$3)) \
+                 FROM sms_line_activation_exchanges e \
+                 JOIN line_activation_challenges c ON c.id=e.challenge_id \
+                 JOIN device_line_bindings b ON (b.account_id,b.line_id,b.device_id,b.generation) \
+                   =(e.account_id,e.line_id,e.device_id,e.generation) \
+                 WHERE e.account_id=$1 AND e.device_id=$2 AND e.ack_sent_at IS NULL \
+                   AND e.nonce IS NOT NULL \
+                   AND (b.state='revoked' \
+                        OR c.expires_at<clock_timestamp()-make_interval(secs=>$3) \
+                        OR (b.state='active' AND b.activated_at IS NOT NULL \
+                            AND b.activated_at<clock_timestamp()-make_interval(secs=>$3))) \
+                 ORDER BY e.created_at LIMIT 16"
+            ),
+            &[
+                &session.account_id,
+                &session.device_id,
+                &f64::from(grace_seconds.max(0)),
+            ],
         )
         .await?;
-    Ok(())
+    let mut retired = 0;
+    for row in rows {
+        let challenge_id: Uuid = row.get(12);
+        let resending: bool = row.get(14);
+        if resending {
+            continue;
+        }
+        // Only an activation from this exact proof records an acknowledgement;
+        // every other finished exchange just loses its nonce.
+        let statement = if activated_ack(&row, session.account_id).is_some() {
+            "UPDATE sms_line_activation_exchanges SET ack_sent_at=clock_timestamp(),nonce=NULL \
+             WHERE challenge_id=$1 AND account_id=$2 AND device_id=$3 AND ack_sent_at IS NULL"
+        } else {
+            "UPDATE sms_line_activation_exchanges SET nonce=NULL \
+             WHERE challenge_id=$1 AND account_id=$2 AND device_id=$3 AND ack_sent_at IS NULL"
+        };
+        retired += client
+            .execute(
+                statement,
+                &[&challenge_id, &session.account_id, &session.device_id],
+            )
+            .await?;
+    }
+    Ok(retired)
 }
 
 #[cfg(test)]
