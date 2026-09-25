@@ -63,6 +63,9 @@ registration/verification procedure are in
 [Self-hosting](../../docs/SELF-HOSTING.md#owner-registration). Allowlist mode
 requires an independent private master key. `zrotext-admin issue-invite`
 derives an address-bound token from it; `open` is intentionally public.
+Instances without SMTP recover a forgotten owner password with
+`zrotext-admin reset-password`; see
+[Self-hosting](../../docs/SELF-HOSTING.md#owner-password-recovery).
 
 The `migrate` service applies `migrations/001_*.sql`, `002_*.sql`, and later
 consecutive numbered SQL files before the API starts. Migration files are trusted
@@ -73,6 +76,27 @@ It holds a PostgreSQL
 advisory lock, records a SHA-256 checksum for each version, and commits each
 file with its ledger row in one transaction. A failed migration stops Compose
 startup with a nonzero exit. Never edit an applied file; add the next number.
+
+Migration 034 is a narrow online-index exception. After the runner validates the
+existing ledger, it prepares `messages_in_flight_updated` with
+`CREATE INDEX CONCURRENTLY` in autocommit mode while holding the migration
+advisory lock. The numbered 034 SQL file then validates the exact index shape
+and readiness and records its checksum in the normal transaction. This also runs
+automatically on fresh databases. If an interrupted build leaves an invalid
+index with the expected shape, rerunning `migrate` drops that invalid index
+concurrently and retries. An index with the same name and a different definition
+stops migration without being replaced. Once 034 is recorded, later migrator
+runs and dispatch-enabled API readiness fail if the index becomes absent,
+invalid, or different.
+
+A concurrent build permits message writes but may wait for older transactions;
+monitor `pg_stat_progress_create_index` and allow migration to finish before
+starting API workers. If application rollback is needed, the valid index can
+remain; keep the migration package containing this 034 file so a rolled-back
+API does not rerun an older migrator with a mismatched checksum. Removing the
+index later requires a separately planned
+`DROP INDEX CONCURRENTLY` outside a transaction, after workers that depend on
+it are stopped. Do not repair the migration ledger by hand.
 
 For a **new database**, use the normal documented `docker compose up -d --build`
 command. The old `docker-entrypoint-initdb.d` mount is no longer used.
@@ -119,7 +143,7 @@ one-off process on the private Compose network with the runtime database URL;
 `list [--after evt_ID]` needs no provider key. For `resolve`, supply a TEST-only
 `STRIPE_BILLING_RECONCILIATION_KEY` through a temporary protected environment,
 not a Compose file, command argument or image layer. See the
-[billing review procedure](../../docs/protocol/stripe-test-billing-foundation.md)
+[billing review procedure](../../docs/STRIPE-TEST-BILLING.md)
 for the decision and audit rules. The Compose example does not enable billing.
 
 ## Database role separation

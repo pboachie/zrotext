@@ -16,3 +16,7 @@ __pycache__/
 .vscode/
 /sdk/typescript/node_modules/
 /sdk/typescript/dist/
+# Local agent and worktree state
+/.worktrees/
+/.codex-remote-attachments/
+/.claude/settings.local.json

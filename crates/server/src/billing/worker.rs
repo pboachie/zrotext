@@ -170,10 +170,7 @@ impl StripeTestWorker {
     }
 
     pub async fn reconcile_one(&self, database_url: &str) -> Result<bool, BillingError> {
-        let (mut db, connection) = crate::runtime_db::connect_worker(database_url).await?;
-        tokio::spawn(async move {
-            let _ = connection.await;
-        });
+        let mut db = crate::runtime_db::connect_worker(database_url).await?;
         let Some((account_id, subscription_id, customer_id, generation)) = claim(&mut db).await?
         else {
             return Ok(false);
@@ -251,10 +248,7 @@ impl StripeTestWorker {
     /// One bounded payment-risk job per tick. A known customer's queued risk
     /// blocks new metered reservations while the provider chain is resolved.
     pub async fn reconcile_risk_one(&self, database_url: &str) -> Result<bool, BillingError> {
-        let (mut db, connection) = crate::runtime_db::connect_worker(database_url).await?;
-        tokio::spawn(async move {
-            let _ = connection.await;
-        });
+        let mut db = crate::runtime_db::connect_worker(database_url).await?;
         let Some((event_id, charge_id, payment_intent_id, kind)) = risk::claim(&mut db).await?
         else {
             return Ok(false);

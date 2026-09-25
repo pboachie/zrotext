@@ -128,8 +128,9 @@ fn return_page(title: &'static str, message: &'static str) -> Response {
         [
             ("cache-control", "no-store"),
             ("referrer-policy", "no-referrer"),
-            ("content-security-policy", "default-src 'none'; base-uri 'none'; form-action 'none'"),
+            ("content-security-policy", "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"),
             ("x-content-type-options", "nosniff"),
+            ("strict-transport-security", "max-age=63072000; includeSubDomains"),
         ],
         Html(format!("<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><title>{title}</title><main><h1>{title}</h1><p>{message}</p><p><a href=\"/billing\">Billing status</a></p></main><footer><a href=\"/source\">Source code for this server</a></footer></html>")),
     ).into_response()
@@ -338,14 +339,10 @@ fn checkout_retry_key(
     Ok(format!("zt-checkout-v2-{account_id}-{profile}-{uuid}"))
 }
 
-async fn connect(database_url: &str) -> Result<Client, AuthHttpError> {
-    let (db, connection) = crate::runtime_db::connect(database_url)
+async fn connect(database_url: &str) -> Result<crate::runtime_db::PooledClient, AuthHttpError> {
+    crate::runtime_db::connect(database_url)
         .await
-        .map_err(|_| AuthHttpError::Unavailable)?;
-    tokio::spawn(async move {
-        let _ = connection.await;
-    });
-    Ok(db)
+        .map_err(|_| AuthHttpError::Unavailable)
 }
 
 async fn bound_customer(db: &Client, account_id: Uuid) -> Result<Option<String>, AuthHttpError> {

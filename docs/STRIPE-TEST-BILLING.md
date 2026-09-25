@@ -31,17 +31,17 @@ Apply migration 023 before enabling non-card risk handling. Stripe documents tha
 
 After migration 024, a privileged local operator can run `zrotext-billing-risk-review list` and `zrotext-billing-risk-review resolve evt_ID --operator OPERATOR_ID` with `DATABASE_URL` and a TEST-only `STRIPE_BILLING_RECONCILIATION_KEY`. The list command returns at most 100 rows and prints `next_after=evt_ID` when more remain; run `list --after evt_ID` repeatedly until no cursor appears. Listing reads only local state and needs no Stripe key. The key needs Events, Refunds, Disputes, Charges, InvoicePayments and Invoices read permissions for the applicable event type. This command is not a tenant HTTP route. It reads the Stripe Event and current Refund, Dispute or Charge through fixed-host GET requests, then validates the Charge, paid InvoicePayment, subscription Invoice and local customer binding before appending a payment hold. A verified customer without a local binding remains in `needs_review`; the command records its customer pointer so later trusted binding blocks metered admission, then the operator reruns resolution. A currently `failed` or `canceled` Refund can be closed only with the additional `--close-failed-refund` flag after validating its Event, Refund and Charge; no other review state is automatically released. The append-only `billing_risk_review_actions` table records the claimed operator ID, decision and selected provider IDs without raw payloads or secrets. Local possession of the database credentials and TEST read key is the command's privilege boundary; the operator ID labels the audit entry rather than authenticating the caller. If any provider read is missing, ambiguous, inconsistent, live-mode or older than Stripe's guaranteed Event retrieval window, the review row remains open. The command performs no Stripe write.
 
-Checkout and Portal flows remain separate features. Consult the [server implementation](../../crates/server/src/billing/mod.rs) and its tests for the current behavior.
+Checkout and Portal flows remain separate features. Consult the [server implementation](../crates/server/src/billing/mod.rs) and its tests for the current behavior.
 
 ## Restart recovery
 
-Apply migration 025 after 023 and 024 before starting this server version. The
+Apply migration 027 (`027_billing_test_config.sql`) after 023 and 024 before starting this server version. The
 server stores a one-way hash of the test price allowlist, quota plan mapping,
 and reconciliation key in PostgreSQL; it never stores the key itself. An unchanged configuration keeps existing outbound quotas and device
 caps through restarts, including rolling restarts at multiple sites. The first
 start after migration, a changed mapping or reconciliation key, or re-enabling test billing resets
 test projections and queues provider reads for subscriptions whose last snapshot
-is not `canceled` or `incomplete_expired`. Terminal snapshots remain clean.
+is not `canceled`, `incomplete_expired`, or `provider_deleted`. Terminal snapshots remain clean.
 When cap configuration permits test billing to be disabled, that transition
 clears its old allowances.
 
@@ -82,7 +82,7 @@ in-flight projection and cannot both observe a pre-commit state.
 
 `GET /v1/billing/status` reports the projected entitlement that
 reconciliation currently applies: the audited `reason` (`active`, `grace`,
-`inactive`, `ambiguous`, `unmapped`, `startup_reset`, or null before the
+`inactive`, `ambiguous`, `unmapped`, `startup_reset`, `provider_deleted`, or null before the
 first projection), the `outboundLimit` from the current `stripe_test` quota
 policy, the effective `deviceCap`, whether a payment hold is active
 (`paymentHold`), and the count of nonterminal subscriptions. The owner
@@ -120,7 +120,7 @@ WHERE state='needs_review' AND dirty_generation>processed_generation;
 SELECT count(*) FROM billing_risk_events WHERE state='needs_review';
 ```
 
-Migration 026 must be applied before starting this worker. A new verified
+Migration 028 (`028_billing_provider_failures.sql`) must be applied before starting this worker. A new verified
 subscription event requeues its row. A changed billing configuration also
 requeues subscription and payment-risk review rows through the configuration reset transaction; an ordinary
 restart retains review state so a permanently failing read cannot loop forever.

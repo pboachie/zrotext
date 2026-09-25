@@ -47,8 +47,10 @@ class M1VirtualInboundSmsDeviceTest {
         val attempt = UUID.randomUUID().toString()
         val message = UUID.randomUUID().toString()
         val intent = UUID.randomUUID().toString()
+        val identity = EvidenceIdentity.fromStream(
+            UUID.randomUUID(), UUID.randomUUID(), "wss://m1-virtual.invalid")
         val now = System.currentTimeMillis()
-        dao.reserveAlpha(attempt, message, subId, 1, intent, now, senderToken)
+        dao.reserveAlpha(attempt, message, subId, 1, intent, now, senderToken, identity)
         assertTrue(dao.acknowledgeAlphaIntent(intent, true, now + 1))
         assertEquals(1, dao.consumeRadioStart(attempt, message, subId, 1, now + 2))
         dao.recordCallback(attempt, 0, false, Activity.RESULT_OK, null, now + 3)
@@ -72,7 +74,8 @@ class M1VirtualInboundSmsDeviceTest {
         assertEquals("ZT VIRTUAL INBOUND 1", InboundVault.open(
             InboundVault.Sealed(checkNotNull(event.encryptedBody), checkNotNull(event.nonce)),
             event.dedupeToken))
-        val upload = checkNotNull(dao.nextInboundUpload(0)) { "captured event has no upload row" }
+        val upload = checkNotNull(dao.nextInboundUpload(0, identity.accountId,
+            identity.deviceId, identity.originHash)) { "captured event has no upload row" }
         assertEquals(event.eventId, upload.eventId)
         assertEquals(1L, upload.sequence)
         assertNull(upload.signatureDer)

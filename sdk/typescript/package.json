@@ -12,6 +12,7 @@
     "@hpke/core": "1.7.5"
   },
   "devDependencies": {
+    "fake-indexeddb": "6.2.5",
     "typescript": "5.9.3"
   }
 }

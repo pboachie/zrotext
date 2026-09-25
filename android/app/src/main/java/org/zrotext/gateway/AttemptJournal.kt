@@ -4,6 +4,7 @@ package org.zrotext.gateway
 import android.app.Activity
 import android.app.Application
 import android.content.Context
+import android.os.Build
 import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Database
@@ -147,6 +148,46 @@ data class LocalRecipientSuppression(
     val observedAtMs: Long
 )
 
+/** Installed only after an authenticated line activation; a subscription index is not a line ID. */
+@Entity(tableName = "local_line_binding")
+data class LocalLineBinding(
+    @PrimaryKey val slot: Int = 1,
+    val accountId: String,
+    val deviceId: String,
+    val lineId: String,
+    val generation: Long,
+    val subscriptionId: Int,
+    val installedAtMs: Long,
+    /** Null for pre-v11 bindings: those remain local-only until renewed owner approval. */
+    @ColumnInfo(defaultValue = "NULL") val cardId: Int? = null
+)
+
+/** A tombstone reserves an independent, never-reused sequence for later authenticated upload. */
+@Entity(tableName = "local_withdrawal_sequences", indices = [Index(value = ["eventId"], unique = true)])
+data class LocalWithdrawalSequence(
+    @PrimaryKey(autoGenerate = true) val sequence: Long = 0,
+    val eventId: String
+)
+
+/** Local SMS withdrawal; the optional E.164 sender is AES-GCM ciphertext, never plaintext. */
+@Entity(tableName = "local_inbound_withdrawals", indices = [Index("senderToken"),
+    Index(value = ["eventId"], unique = true), Index(value = ["acknowledgedAtMs", "deviceSequence"])])
+data class LocalInboundWithdrawal(
+    @PrimaryKey val dedupeToken: String,
+    val senderToken: String,
+    val classification: String,
+    val observedSubscriptionId: Int?,
+    val lineId: String?,
+    val bindingGeneration: Long?,
+    val receivedAtMs: Long,
+    @ColumnInfo(defaultValue = "NULL") val eventId: String? = null,
+    @ColumnInfo(defaultValue = "NULL") val deviceSequence: Long? = null,
+    @ColumnInfo(defaultValue = "NULL") val encryptedSender: ByteArray? = null,
+    @ColumnInfo(defaultValue = "NULL") val senderNonce: ByteArray? = null,
+    @ColumnInfo(defaultValue = "NULL") val signatureDer: ByteArray? = null,
+    @ColumnInfo(defaultValue = "NULL") val acknowledgedAtMs: Long? = null
+)
+
 @Entity(
     tableName = "sms_segments",
     primaryKeys = ["attemptId", "segmentIndex"],
@@ -222,6 +263,94 @@ internal object CallbackEvidence {
 
 @Dao
 abstract class SmsAttemptDao {
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    protected abstract fun insertLocalWithdrawal(entry: LocalInboundWithdrawal)
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    protected abstract fun reserveLocalWithdrawalSequence(entry: LocalWithdrawalSequence): Long
+
+    @Query("SELECT * FROM local_inbound_withdrawals WHERE dedupeToken = :dedupeToken LIMIT 1")
+    abstract fun localWithdrawal(dedupeToken: String): LocalInboundWithdrawal?
+
+    /** Local-only and stale-generation STOPs remain blocks, never queue head blockers. */
+    @Query("SELECT w.* FROM local_inbound_withdrawals AS w INNER JOIN local_line_binding AS b ON b.slot = 1 AND b.cardId >= 0 AND b.lineId = w.lineId AND b.generation = w.bindingGeneration AND b.subscriptionId = w.observedSubscriptionId AND b.installedAtMs <= w.receivedAtMs WHERE w.eventId IS NOT NULL AND w.deviceSequence IS NOT NULL AND w.encryptedSender IS NOT NULL AND w.senderNonce IS NOT NULL AND w.classification IN ('opt_out','opt_out_review') AND w.acknowledgedAtMs IS NULL AND w.receivedAtMs >= :minimumObservedAtMs ORDER BY w.deviceSequence LIMIT 1")
+    abstract fun nextLineOptOut(minimumObservedAtMs: Long): LocalInboundWithdrawal?
+
+    @Query("SELECT * FROM local_inbound_withdrawals WHERE eventId = :eventId LIMIT 1")
+    abstract fun lineOptOutByEventId(eventId: String): LocalInboundWithdrawal?
+
+    @Query("UPDATE local_inbound_withdrawals SET signatureDer = :signature WHERE eventId = :eventId AND lineId = :lineId AND bindingGeneration = :bindingGeneration AND signatureDer IS NULL AND acknowledgedAtMs IS NULL")
+    abstract fun signLineOptOut(eventId: String, lineId: String,
+                                bindingGeneration: Long, signature: ByteArray): Int
+
+    @Query("UPDATE local_inbound_withdrawals SET acknowledgedAtMs = :now WHERE eventId = :eventId AND signatureDer IS NOT NULL AND acknowledgedAtMs IS NULL")
+    abstract fun acknowledgeLineOptOut(eventId: String, now: Long): Int
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    protected abstract fun putLineBinding(binding: LocalLineBinding)
+
+    @Query("SELECT * FROM local_line_binding WHERE slot = 1 LIMIT 1")
+    abstract fun currentLineBinding(): LocalLineBinding?
+
+    /** Called only with the result of an authenticated activation, never a UI-selected SIM alone. */
+    @Transaction
+    open fun installVerifiedLineBinding(binding: LocalLineBinding,
+                                        activeSimCards: List<ActiveSimCard>?): Boolean {
+        if (binding.slot != 1 || binding.generation <= 0 || binding.subscriptionId < 0 ||
+            binding.installedAtMs <= 0 ||
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ||
+            !SimCardContinuity.matches(binding.cardId?.let {
+                ActivatedSimCard(binding.subscriptionId, it)
+            }, activeSimCards) ||
+            listOf(binding.accountId, binding.deviceId, binding.lineId).any {
+                runCatching { UUID.fromString(it).toString() != it }.getOrDefault(true)
+            }) return false
+        val prior = currentLineBinding()
+        if (prior != null && (prior.accountId != binding.accountId ||
+            prior.deviceId != binding.deviceId || prior.lineId != binding.lineId ||
+            binding.generation <= prior.generation)) return false
+        putLineBinding(binding)
+        return true
+    }
+
+    /** An absent or ambiguous SIM is kept as an unattributed withdrawal. */
+    @Transaction
+    open fun recordLocalWithdrawal(dedupeToken: String, senderToken: String,
+                                   classification: String, observedSubscriptionId: Int?,
+                                   activeSimCards: List<ActiveSimCard>?, now: Long,
+                                   encryptedSender: ByteArray? = null,
+                                   senderNonce: ByteArray? = null): Boolean {
+        require(dedupeToken.matches(Regex("[0-9a-f]{64}")) &&
+            senderToken.matches(Regex("[0-9a-f]{64}")) && now > 0 &&
+            classification in setOf(InboundClassification.OPT_OUT,
+                InboundClassification.OPT_OUT_REVIEW))
+        require((encryptedSender == null && senderNonce == null) ||
+            (encryptedSender != null && encryptedSender.size in 17..128 &&
+                senderNonce?.size == 12))
+        if (localWithdrawal(dedupeToken) != null) {
+            // A replay still reasserts the local block; it cannot mutate the first observation.
+            suppressRecipient(LocalRecipientSuppression(senderToken, now))
+            return false
+        }
+        val binding = currentLineBinding()?.takeIf {
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                now >= it.installedAtMs && observedSubscriptionId != null &&
+                it.subscriptionId == observedSubscriptionId &&
+                SimCardContinuity.matches(it.cardId?.let { id ->
+                    ActivatedSimCard(it.subscriptionId, id)
+                }, activeSimCards)
+        }
+        val eventId = UUID.randomUUID().toString()
+        val sequence = reserveLocalWithdrawalSequence(LocalWithdrawalSequence(eventId = eventId))
+        check(sequence > 0)
+        insertLocalWithdrawal(LocalInboundWithdrawal(dedupeToken, senderToken,
+            classification, observedSubscriptionId, binding?.lineId, binding?.generation, now,
+            eventId, sequence, encryptedSender.takeIf { binding != null },
+            senderNonce.takeIf { binding != null }))
+        suppressRecipient(LocalRecipientSuppression(senderToken, now))
+        return true
+    }
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     protected abstract fun putRecipientSuppression(entry: LocalRecipientSuppression)
 
@@ -575,7 +704,8 @@ private const val INBOUND_PILOT_WINDOW_MS = 24L * 60 * 60 * 1000
 
 @Database(entities = [SmsAttempt::class, SmsSegment::class, AlphaRadioEvent::class,
     InboundWindow::class, InboundEvent::class, InboundUpload::class,
-    LocalRecipientSuppression::class], version = 7, exportSchema = false)
+    LocalRecipientSuppression::class, LocalLineBinding::class,
+    LocalInboundWithdrawal::class, LocalWithdrawalSequence::class], version = 11, exportSchema = false)
 abstract class SmsJournalDatabase : RoomDatabase() {
     abstract fun attempts(): SmsAttemptDao
 
@@ -586,7 +716,8 @@ abstract class SmsJournalDatabase : RoomDatabase() {
             instance ?: Room.databaseBuilder(
                 context.applicationContext, SmsJournalDatabase::class.java, "sms_attempts.db"
             ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
-                MIGRATION_5_6, MIGRATION_6_7)
+                MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10,
+                MIGRATION_10_11)
                 .build().also { instance = it }
         }
 
@@ -643,6 +774,43 @@ abstract class SmsJournalDatabase : RoomDatabase() {
         internal val MIGRATION_6_7 = object : Migration(6, 7) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("CREATE TABLE IF NOT EXISTS local_recipient_suppressions (senderToken TEXT NOT NULL PRIMARY KEY, observedAtMs INTEGER NOT NULL)")
+            }
+        }
+
+        /** Existing STOP blocks survive; no old subscription index is promoted to a line. */
+        internal val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS local_line_binding (slot INTEGER NOT NULL PRIMARY KEY, accountId TEXT NOT NULL, deviceId TEXT NOT NULL, lineId TEXT NOT NULL, generation INTEGER NOT NULL, subscriptionId INTEGER NOT NULL, installedAtMs INTEGER NOT NULL)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS local_inbound_withdrawals (dedupeToken TEXT NOT NULL PRIMARY KEY, senderToken TEXT NOT NULL, classification TEXT NOT NULL, observedSubscriptionId INTEGER, lineId TEXT, bindingGeneration INTEGER, receivedAtMs INTEGER NOT NULL)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_local_inbound_withdrawals_senderToken ON local_inbound_withdrawals(senderToken)")
+            }
+        }
+
+        /** Pre-v9 actions remain blocked locally; they lack recoverable sender/sequence data. */
+        internal val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE local_inbound_withdrawals ADD COLUMN eventId TEXT DEFAULT NULL")
+                db.execSQL("ALTER TABLE local_inbound_withdrawals ADD COLUMN deviceSequence INTEGER DEFAULT NULL")
+                db.execSQL("ALTER TABLE local_inbound_withdrawals ADD COLUMN encryptedSender BLOB DEFAULT NULL")
+                db.execSQL("ALTER TABLE local_inbound_withdrawals ADD COLUMN senderNonce BLOB DEFAULT NULL")
+                db.execSQL("CREATE TABLE IF NOT EXISTS local_withdrawal_sequences (sequence INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, eventId TEXT NOT NULL)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_local_withdrawal_sequences_eventId ON local_withdrawal_sequences(eventId)")
+            }
+        }
+
+        internal val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE local_inbound_withdrawals ADD COLUMN signatureDer BLOB DEFAULT NULL")
+                db.execSQL("ALTER TABLE local_inbound_withdrawals ADD COLUMN acknowledgedAtMs INTEGER DEFAULT NULL")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_local_inbound_withdrawals_eventId ON local_inbound_withdrawals(eventId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_local_inbound_withdrawals_acknowledgedAtMs_deviceSequence ON local_inbound_withdrawals(acknowledgedAtMs, deviceSequence)")
+            }
+        }
+
+        /** An old subscription-only binding must never gain a card identity by migration. */
+        internal val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE local_line_binding ADD COLUMN cardId INTEGER DEFAULT NULL")
             }
         }
     }

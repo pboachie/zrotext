@@ -462,6 +462,53 @@ pub async fn confirm_password_reset(
         tx.rollback().await?;
         return Ok(false);
     }
+    replace_password_and_revoke(&tx, account_id, user_id, &new_hash).await?;
+    tx.commit().await?;
+    Ok(true)
+}
+
+/// Operator recovery for instances without SMTP. Only the local
+/// `zrotext-admin reset-password` command calls this; no HTTP route reaches
+/// it. It applies the same revocations as an emailed reset and preserves MFA
+/// enrollment. Returns `false` when no verified owner of a live account has
+/// that address.
+pub async fn operator_reset_password(
+    client: &mut Client,
+    email: &str,
+    new_password: &str,
+) -> Result<bool, AuthError> {
+    if !(12..=1024).contains(&new_password.len()) {
+        return Err(AuthError::InvalidInput);
+    }
+    let email = normalize_email(email)?;
+    let new_hash = password_work::hash(new_password).await?;
+    let tx = client.transaction().await?;
+    let Some(row) = tx
+        .query_opt(
+            "SELECT u.id,m.account_id FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE u.email=$1 AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL FOR UPDATE OF u",
+            &[&email],
+        )
+        .await?
+    else {
+        tx.rollback().await?;
+        return Ok(false);
+    };
+    let user_id: Uuid = row.get(0);
+    let account_id: Uuid = row.get(1);
+    replace_password_and_revoke(&tx, account_id, user_id, &new_hash).await?;
+    tx.commit().await?;
+    Ok(true)
+}
+
+/// Caller holds the user-row lock. Revokes every session, owner API key,
+/// pending MFA login challenge and outstanding reset code, then queues the
+/// reset notification mail.
+async fn replace_password_and_revoke(
+    tx: &tokio_postgres::Transaction<'_>,
+    account_id: Uuid,
+    user_id: Uuid,
+    new_hash: &str,
+) -> Result<(), AuthError> {
     tx.execute(
         "UPDATE users SET password_hash=$2 WHERE id=$1",
         &[&user_id, &new_hash],
@@ -487,14 +534,13 @@ pub async fn confirm_password_reset(
         &[&account_id, &user_id],
     )
     .await?;
-    cancel_reset_mail(&tx, account_id, user_id).await?;
+    cancel_reset_mail(tx, account_id, user_id).await?;
     tx.execute(
         "INSERT INTO password_reset_notice_outbox(id,account_id,user_id) VALUES($1,$2,$3)",
         &[&Uuid::new_v4(), &account_id, &user_id],
     )
     .await?;
-    tx.commit().await?;
-    Ok(true)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -991,6 +1037,132 @@ mod tests {
             .await
             .is_ok()
         );
+        setup
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+    async fn postgres_operator_reset_revokes_all_owner_credentials() {
+        let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
+        let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let schema = format!("operator_reset_{}", Uuid::new_v4().simple());
+        setup
+            .batch_execute(&format!("CREATE SCHEMA {schema}"))
+            .await
+            .unwrap();
+        let separator = if base_url.contains('?') { '&' } else { '?' };
+        let url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
+        let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        for migration in [
+            include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+            include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+            include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
+            include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
+            include_str!("../../../../deploy/compose/migrations/025_account_recovery.sql"),
+        ] {
+            db.batch_execute(migration).await.unwrap();
+        }
+        let hasher = TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap();
+        let old_password = Uuid::new_v4().to_string();
+        let new_password = Uuid::new_v4().to_string();
+        assert!(matches!(
+            operator_reset_password(&mut db, "owner@example.test", "short").await,
+            Err(AuthError::InvalidInput)
+        ));
+        let pending = auth::register(&mut db, &hasher, "owner@example.test", &old_password)
+            .await
+            .unwrap();
+        assert!(
+            !operator_reset_password(&mut db, "owner@example.test", &new_password)
+                .await
+                .unwrap(),
+            "an unverified registration must not be recoverable by the operator path"
+        );
+        assert!(
+            auth::verify_email(&mut db, &hasher, &pending.verification_token)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !operator_reset_password(&mut db, "unknown@example.test", &new_password)
+                .await
+                .unwrap()
+        );
+        let first = auth::login(&db, &hasher, "owner@example.test", &old_password)
+            .await
+            .unwrap();
+        let second = auth::login(&db, &hasher, "owner@example.test", &old_password)
+            .await
+            .unwrap();
+        let principal = auth::authenticate_session(&db, &hasher, &first.token)
+            .await
+            .unwrap();
+        let key = auth::create_api_key(
+            &mut db,
+            &hasher,
+            &principal,
+            &[Scope::MessagesRead],
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        request_password_reset(&mut db, &hasher, "owner@example.test")
+            .await
+            .unwrap();
+        let emailed = claim_reset_mail(&mut db, &hasher).await.unwrap().unwrap();
+        assert!(ack_reset_mail(&db, &emailed, false).await.unwrap());
+
+        assert!(
+            operator_reset_password(&mut db, " Owner@Example.test ", &new_password)
+                .await
+                .unwrap()
+        );
+        for token in [&first.token, &second.token] {
+            assert!(
+                auth::authenticate_session(&db, &hasher, token)
+                    .await
+                    .is_err()
+            );
+        }
+        assert!(
+            auth::authenticate_api_key(&db, &hasher, &key.token)
+                .await
+                .is_err()
+        );
+        assert!(
+            auth::login(&db, &hasher, "owner@example.test", &old_password)
+                .await
+                .is_err()
+        );
+        assert!(
+            auth::login(&db, &hasher, "owner@example.test", &new_password)
+                .await
+                .is_ok()
+        );
+        assert!(
+            !confirm_password_reset(&mut db, &hasher, &emailed.token, &old_password)
+                .await
+                .unwrap(),
+            "an outstanding emailed code must not survive an operator reset"
+        );
+        let canceled: i64 = db
+            .query_one(
+                "SELECT count(*) FROM password_reset_mail_outbox WHERE canceled_at IS NOT NULL",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(canceled, 1);
+        let notice = claim_reset_notice(&mut db).await.unwrap().unwrap();
+        assert_eq!(notice.email, "owner@example.test");
         setup
             .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
             .await

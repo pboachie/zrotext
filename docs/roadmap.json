@@ -1,0 +1,371 @@
+{
+  "snapshot": "2026-09-24",
+  "tracks": [
+    {
+      "id": "gateway",
+      "title": "Gateway messaging",
+      "intro": "Connect a dedicated Android phone and SIM, send and receive SMS through the server, and report outcomes honestly.",
+      "capabilities": [
+        {
+          "id": "enrollment",
+          "name": "Phone + SIM enrollment and device stream",
+          "short": "Enrollment and device stream",
+          "stage": "pilot",
+          "evidence": [
+            ["#9", "https://github.com/pboachie/zrotext/pull/9"],
+            ["#24", "https://github.com/pboachie/zrotext/pull/24"],
+            ["#160", "https://github.com/pboachie/zrotext/pull/160"],
+            ["device compatibility", "DEVICE-COMPATIBILITY.md"]
+          ],
+          "done": [
+            "One-use pairing with code and key-fingerprint comparison",
+            "P-256 device keys in Android Keystore with challenge-response sign-in",
+            "Authenticated WebSocket stream with heartbeats, fenced session epochs and bounded reconnects",
+            "Opt-in heartbeat resumes after a phone reboot",
+            "Controlled test on one Samsung device and SIM ([compatibility notes](DEVICE-COMPATIBILITY.md))"
+          ],
+          "todo": [
+            "Longer liveness runs across networks, carriers and device models",
+            "Supported-device guidance"
+          ]
+        },
+        {
+          "id": "outbound",
+          "name": "Outbound send with honest delivery states",
+          "short": "Outbound send",
+          "stage": "pilot",
+          "evidence": [
+            ["#17", "https://github.com/pboachie/zrotext/pull/17"],
+            ["#19", "https://github.com/pboachie/zrotext/pull/19"],
+            ["#21", "https://github.com/pboachie/zrotext/pull/21"]
+          ],
+          "done": [
+            "Durable idempotency keys and per-account admission budgets",
+            "One radio operation at a time, with an execution grant bound to device, attempt and recipient",
+            "Ambiguous submissions become `unknown` and are never retried automatically ([state model](ARCHITECTURE.md#message-semantics-and-the-duplicate-send-problem))",
+            "Allowlisted synthetic send route (`/v1/alpha/messages`)"
+          ],
+          "todo": [
+            "Planned public `/v1/messages` route that accepts sealed content",
+            "Open to any account, after the [path to general sending](#path-to-general-sending) is complete"
+          ]
+        },
+        {
+          "id": "optout",
+          "name": "Opt-out handling and recipient suppression",
+          "short": "Opt-out and suppression",
+          "stage": "pilot",
+          "evidence": [
+            ["#207", "https://github.com/pboachie/zrotext/pull/207"],
+            ["#210", "https://github.com/pboachie/zrotext/pull/210"]
+          ],
+          "done": [
+            "STOP, STOPALL, UNSUBSCRIBE and similar keywords recognized in the outbound reply window",
+            "Likely free-text withdrawals create a conservative block marked for review",
+            "Account-scoped suppression checked when a message is accepted",
+            "Local block on the phone applies immediately, even while offline",
+            "Local line binding and unsolicited opt-outs journaled on the phone ([#210](https://github.com/pboachie/zrotext/pull/210))"
+          ],
+          "todo": [
+            "Authenticated capture beyond the outbound reply window",
+            "Durable line ID bound to server-side inbound actions",
+            "Owner workflow for off-channel and ambiguous requests"
+          ]
+        },
+        {
+          "id": "inbound",
+          "name": "Inbound capture and signed webhooks",
+          "short": "Inbound and webhooks",
+          "stage": "pilot",
+          "evidence": [
+            ["#25", "https://github.com/pboachie/zrotext/pull/25"],
+            ["#29", "https://github.com/pboachie/zrotext/pull/29"],
+            ["#39", "https://github.com/pboachie/zrotext/pull/39"],
+            ["#80", "https://github.com/pboachie/zrotext/pull/80"]
+          ],
+          "done": [
+            "Bounded inbound SMS pilot on Android with signed metadata upload",
+            "Durable webhook outbox with HMAC signatures, retries and bounded manual replay",
+            "Webhook signing secrets encrypted at rest, with key rotation ([runbook](WEBHOOK-KEK-ROTATION.md))",
+            "Retention limits for inbound content and delivery history"
+          ],
+          "todo": [
+            "Reliable inbound when senders use RCS ([details](ANDROID-TESTING.md))",
+            "Sealed inbound content delivered to customer decryptors"
+          ]
+        },
+        {
+          "id": "dashboard",
+          "name": "Owner dashboard: device health and history",
+          "short": "Owner dashboard",
+          "stage": "build",
+          "evidence": [
+            ["#36", "https://github.com/pboachie/zrotext/pull/36"],
+            ["#74", "https://github.com/pboachie/zrotext/pull/74"],
+            ["#76", "https://github.com/pboachie/zrotext/pull/76"]
+          ],
+          "done": [
+            "Device pairing and management page",
+            "Authenticated connection lease shown per device",
+            "Message state timeline, inbound activity and webhook history views"
+          ],
+          "todo": [
+            "SIM, queue depth and radio readiness per device",
+            "Live updates instead of snapshots"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "selfhost",
+      "title": "Self-hosting and integrations",
+      "intro": "Make ZROtext practical to run, upgrade and build against.",
+      "capabilities": [
+        {
+          "id": "compose",
+          "name": "Compose deployment and upgrade guides",
+          "short": "Compose deployment",
+          "stage": "build",
+          "evidence": [
+            ["#35", "https://github.com/pboachie/zrotext/pull/35"],
+            ["#105", "https://github.com/pboachie/zrotext/pull/105"],
+            ["#173", "https://github.com/pboachie/zrotext/pull/173"],
+            ["#183", "https://github.com/pboachie/zrotext/pull/183"]
+          ],
+          "done": [
+            "Complete Compose stack with migrations before API start ([guide](../deploy/compose/README.md))",
+            "Separate migration and restricted runtime database roles",
+            "Verified PostgreSQL TLS and an optional HTTPS edge",
+            "Scripted fresh-install and database restore rehearsals"
+          ],
+          "todo": [
+            "Upgrade guide covering every release",
+            "Production hardening checklist"
+          ]
+        },
+        {
+          "id": "releases",
+          "name": "Signed release artifacts and SBOMs",
+          "short": "Signed releases and SBOMs",
+          "stage": "build",
+          "evidence": [
+            ["#86", "https://github.com/pboachie/zrotext/pull/86"],
+            ["#135", "https://github.com/pboachie/zrotext/pull/135"],
+            ["#169", "https://github.com/pboachie/zrotext/pull/169"],
+            ["#197", "https://github.com/pboachie/zrotext/pull/197"]
+          ],
+          "done": [
+            "Server image built from one source bundle, pinned and scanned",
+            "Release receipts gated on approved identity and SBOMs",
+            "Android release candidate with signing-key custody checks"
+          ],
+          "todo": [
+            "First tagged public release ([process](RELEASING.md))"
+          ]
+        },
+        {
+          "id": "api",
+          "name": "Stable public API v1 and client SDK",
+          "short": "Stable API v1 and SDK",
+          "stage": "design",
+          "evidence": [
+            ["API outline", "ARCHITECTURE.md#planned-api-v1-outline"],
+            ["test-only sealed reader", "../sdk/typescript/README.md"]
+          ],
+          "done": [
+            "Route outline and sealed send shape ([outline](ARCHITECTURE.md#planned-api-v1-outline))",
+            "Versioned device stream schema aligned with the wire format"
+          ],
+          "todo": [
+            "OpenAPI contract for `/v1/messages`, `/v1/devices`, `/v1/webhooks` and `/v1/usage`",
+            "TypeScript SDK with local encryption, after the sealed protocol is finalized"
+          ]
+        },
+        {
+          "id": "diagnostics",
+          "name": "Setup diagnostics and device guidance",
+          "short": "Setup diagnostics",
+          "stage": "build",
+          "evidence": [
+            ["#81", "https://github.com/pboachie/zrotext/pull/81"],
+            ["#189", "https://github.com/pboachie/zrotext/pull/189"]
+          ],
+          "done": [
+            "Owner enrollment, account setup and mail diagnostics",
+            "SMS and RCS readiness guidance for the gateway phone"
+          ],
+          "todo": [
+            "Accessibility review of owner pages and the Android app",
+            "Supported-device list backed by repeatable tests"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "privacy",
+      "title": "Privacy and account controls",
+      "intro": "Keep message content out of reach of the server, and give owners control of their account and data.",
+      "capabilities": [
+        {
+          "id": "accounts",
+          "name": "Owner accounts, MFA and scoped API keys",
+          "short": "Accounts, MFA, API keys",
+          "stage": "build",
+          "evidence": [
+            ["#43", "https://github.com/pboachie/zrotext/pull/43"],
+            ["#172", "https://github.com/pboachie/zrotext/pull/172"],
+            ["#175", "https://github.com/pboachie/zrotext/pull/175"],
+            ["MFA operations", "MFA-OPERATIONS.md"]
+          ],
+          "done": [
+            "Verified-email owner registration with closed-by-default policy",
+            "MFA, session revocation and CSRF protection",
+            "API keys with scopes, shown once at creation"
+          ],
+          "todo": [
+            "Team seats beyond one owner",
+            "Account recovery flows separate from content recovery"
+          ]
+        },
+        {
+          "id": "sealed",
+          "name": "Sealed-content protocol (client-side keys)",
+          "short": "Sealed-content protocol",
+          "stage": "design",
+          "evidence": [
+            ["Draft 01", "../protocol/drafts/zt-sealed-draft-01.md"],
+            ["draft 02 proposal", "../protocol/drafts/zt-sealed-draft-02-proposal.md"],
+            ["#159", "https://github.com/pboachie/zrotext/pull/159"],
+            ["#162", "https://github.com/pboachie/zrotext/pull/162"]
+          ],
+          "done": [
+            "Draft protocol and validation gates",
+            "TypeScript and Android test vectors, including signed manifests and root rotation",
+            "Test-only envelope parser and Android Keystore boundary"
+          ],
+          "todo": [
+            "Cross-client interoperability and adversarial security tests",
+            "Recovery and unlock flows",
+            "Enabled in the gateway for real messages"
+          ]
+        },
+        {
+          "id": "export",
+          "name": "Data export and account deletion",
+          "short": "Export and deletion",
+          "stage": "planned",
+          "evidence": [
+            ["Data retention", "SELF-HOSTING.md#data-retention"]
+          ],
+          "evidence_note": "covers history pruning only",
+          "done": [],
+          "todo": [
+            "Owner export of messages, events and settings",
+            "Account erasure that covers metering and billing records where allowed"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "managed",
+      "title": "Managed service and resilience",
+      "intro": "Offer an operated service built from the same public code, and keep it available across two locations.",
+      "capabilities": [
+        {
+          "id": "hosted",
+          "name": "Hosted accounts and subscriptions",
+          "short": "Hosted accounts and billing",
+          "stage": "build",
+          "qualifier": "Stripe test mode only",
+          "evidence": [
+            ["#34", "https://github.com/pboachie/zrotext/pull/34"],
+            ["#44", "https://github.com/pboachie/zrotext/pull/44"],
+            ["#70", "https://github.com/pboachie/zrotext/pull/70"],
+            ["#184", "https://github.com/pboachie/zrotext/pull/184"]
+          ],
+          "done": [
+            "Stripe Checkout and Customer Portal in test mode",
+            "Signed event inbox with risk holds for refunds and disputes",
+            "Metered admission for billed pilot tenants"
+          ],
+          "todo": [
+            "Live payments, usage limits and plans",
+            "Customer support and status communication"
+          ]
+        },
+        {
+          "id": "twosite",
+          "name": "Two-location routing with fenced devices",
+          "short": "Two-location routing",
+          "stage": "build",
+          "evidence": [
+            ["#73", "https://github.com/pboachie/zrotext/pull/73"],
+            ["design", "MULTI-LOCATION.md"]
+          ],
+          "done": [
+            "One authoritative database writer with site-aware device leases",
+            "Virtual two-hub fault matrix, including unknown attempts across a hub move",
+            "Local second API instance through the Compose `two-hub` profile"
+          ],
+          "todo": [
+            "Rehearsed manual writer promotion between real sites"
+          ]
+        },
+        {
+          "id": "failover",
+          "name": "Automatic failover with independent quorum",
+          "short": "Automatic failover",
+          "stage": "design",
+          "evidence": [
+            ["Failover design", "MULTI-LOCATION.md#automatic-failover-needs-an-independent-decision"]
+          ],
+          "done": [
+            "Design requiring an independent quorum member and fencing control"
+          ],
+          "todo": [
+            "Implementation and failure-scenario tests"
+          ]
+        }
+      ]
+    }
+  ],
+  "dependencies": [
+    ["enrollment", "outbound"],
+    ["enrollment", "inbound"],
+    ["outbound", "optout"],
+    ["inbound", "optout"],
+    ["outbound", "dashboard"],
+    ["inbound", "dashboard"],
+    ["accounts", "export"],
+    ["compose", "releases"],
+    ["twosite", "failover"],
+    ["optout", "api"],
+    ["sealed", "api"],
+    ["accounts", "api"],
+    ["api", "hosted"],
+    ["enrollment", "twosite"]
+  ],
+  "track_map_order": ["gateway", "privacy", "selfhost", "managed"],
+  "general_send_gate": [
+    [
+      {"text": "Device enrollment and authenticated stream", "done": true}
+    ],
+    [
+      {"text": "Idempotent send with honest delivery states", "done": true}
+    ],
+    [
+      {"text": "STOP / START in the outbound reply window", "done": true}
+    ],
+    [
+      {"text": "Account-scoped suppression checked at acceptance", "done": true}
+    ],
+    [
+      {"text": "Opt-out capture beyond the reply window", "done": false},
+      {"text": "Durable line ID bound to inbound actions", "done": false},
+      {"text": "Owner review for off-channel and ambiguous requests", "done": false}
+    ],
+    [
+      {"text": "End-to-end evidence on real devices", "done": false}
+    ]
+  ]
+}

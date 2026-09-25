@@ -122,7 +122,9 @@ function roleScope(role: number, scope: number, device: Uint8Array, line: Uint8A
   const valid = [0, 4, 12, 4, 2, 1, 0][role];
   if (role === 3 ? ![4, 8, 12].includes(scope) : scope !== valid) fail("role/scope");
   const deviceBound = role === 1 || role === 4;
-  if (deviceBound ? same(device, zero16) || same(line, zero16) : !same(device, zero16) || !same(line, zero16)) fail("role/subject");
+  const lineBound = deviceBound || role === 5;
+  if (deviceBound ? same(device, zero16) : !same(device, zero16)) fail("role/subject");
+  if (lineBound ? same(line, zero16) : !same(line, zero16)) fail("role/subject");
 }
 function timeWindow(issued: bigint, expires: bigint, now: bigint): void {
   if (issued <= 0n || expires <= issued || expires - issued > dayMs) fail("signed validity window");
@@ -254,7 +256,8 @@ export function authorizeOutbound02(manifest: Manifest02, claims: {
       claims.keysetVersion !== bound.version || nowMs >= bound.expiresMs) fail("envelope manifest binding");
   const active = (key: ManifestKey02): boolean => key.state === 1 && key.fromMs <= nowMs && nowMs < key.untilMs;
   const signer = bound.keys.find((key) => key.role === 5 && same(key.keyId, claims.signerKeyId));
-  if (!signer || !active(signer) || signer.scope !== 1) fail("outbound signer authority");
+  if (!signer || !active(signer) || signer.scope !== 1 ||
+      !same(signer.lineId, claims.lineId)) fail("outbound signer authority");
   let deviceCount = 0;
   let archiveCount = 0;
   let integrationCount = 0;

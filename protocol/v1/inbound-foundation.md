@@ -41,6 +41,49 @@ the authenticated source attempt. START and UNSTOP produce code 7 only when
 the phone recognizes the entire trimmed reply; an older action or a reply
 from a different outbound-attempt window cannot clear a later opt-out.
 
+The Android Room journal also records a metadata-only local withdrawal for a
+recognized STOP or likely opt-out even when no outbound reply window matches.
+It stores keyed sender and PDU dedupe tokens, a stable local event UUID and
+independent durable sequence, the action, time and any observed subscription
+index; it keeps the local recipient block across restarts. The normalized
+sender is stored as Keystore AES-GCM ciphertext with AAD bound to the dedupe
+token only when the current line can be attributed. If sealing or attribution
+fails, the block still persists and the action has no recoverable sender for
+later upload. Pre-migration actions likewise have no recoverable sender or sequence. A
+verified line ID and binding generation are attached only if a separately
+authenticated activation has been installed and the incoming subscription is
+the sole observed active subscription at capture time. On Android API 29+, the
+app also requires the public card ID to match the approved local binding.
+API 30+ queries the complete active subscription list, including hidden
+opportunistic subscriptions. API 28 and devices with an unknown card ID keep
+the STOP local. Embedded eSIM subscriptions also stay local because the public
+card ID identifies the eUICC and cannot distinguish profiles. Existing
+subscription-only bindings migrate with no card ID;
+they require renewed owner approval before any line-bound attribution or upload.
+An explicit foreground Android
+mode can prepare and retry a signed `line_opt_out` device-stream frame for a
+matching current line and SIM observation. It checks the SIM before decrypting
+the sender and again before send, persists the exact signature before sending,
+and acknowledges the local row only after writer confirmation.
+Unattributed, unsealed, or stale-binding local-only actions are skipped by the
+upload queue; their local recipient blocks remain active.
+The Android app still has no production activation route, and the writer's
+line opt-out transport gate defaults off, so ordinary deployments leave these
+rows local.
+The Android SMS-only proof helper can build the domain-bound device and owner
+statements and sign the device statement with the enrolled Keystore identity.
+It observes a single physical SIM before and after signing. A local binding
+installer also requires a matching authenticated server confirmation and a
+fresh third SIM observation. No runtime route constructs that confirmation, so
+the helper does not activate a line in ordinary deployments. API 28, eSIM,
+unknown-card, and ambiguous observations remain local-only.
+An unattributed STOP still blocks local sends. START never clears that block;
+the existing reply-window START acknowledgement does not prove the source
+line or binding generation. Android subscription indexes may be reused after
+a SIM swap. The public card ID is a local continuity signal, not carrier
+ownership proof; an eSIM profile change on the same card can keep that ID.
+API 29 may hide opportunistic subscriptions from the app's active list.
+
 Migration 007 follows metering migration 006 and adds `inbound_events`,
 `webhook_endpoints`, `webhook_deliveries`, and `webhook_attempts`. Endpoint rows
 default disabled. Only KEK-encrypted signing secrets belong in the endpoint

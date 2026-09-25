@@ -6,6 +6,8 @@ contract is implemented by migration 019 and
 key provisioning ceremony exists, and the Android app does not produce these
 proofs or enforce the selected subscription on a later SMS. M1 keeps its
 existing Android API range. A future sealed client must require API 31+.
+Migration 033 distinguishes this sealed scope from the separate internal
+[SMS-only line activation contract](sms-line-activation-contract.md).
 
 ## Trust and challenge
 

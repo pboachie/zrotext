@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
   <title>Devices · ZROtext</title>
   <link rel="stylesheet" href="/owner/devices.css">
   <script defer src="/owner/devices.js"></script>
@@ -145,6 +146,14 @@
         <p id="message-status" role="status" aria-live="polite"></p>
         <ul id="message-list"></ul>
         <button id="more-messages" type="button" class="quiet" hidden>Load more messages</button>
+      </section>
+
+      <section aria-labelledby="opt-out-review-title">
+        <div class="section-head"><h2 id="opt-out-review-title">Opt-out review</h2><button id="refresh-opt-out-review" type="button" class="quiet">Refresh holds</button></div>
+        <p>These recipients remain blocked after a possible SMS withdrawal. Review the request through your consent process; this page cannot clear a hold or establish consent. Only the recipient number and signed event times are shown, never SMS content.</p>
+        <p id="opt-out-review-status" role="status" aria-live="polite"></p>
+        <ul id="opt-out-review-list"></ul>
+        <button id="more-opt-out-review" type="button" class="quiet" hidden>Load more holds</button>
       </section>
 
       <section aria-labelledby="keys-title">

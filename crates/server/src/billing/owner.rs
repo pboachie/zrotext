@@ -13,7 +13,6 @@ use axum::{
 };
 use serde::Serialize;
 use std::sync::Arc;
-use tokio_postgres::Client;
 use uuid::Uuid;
 
 #[derive(Serialize)]
@@ -87,14 +86,10 @@ async fn no_store_response(request: Request, next: Next) -> Response {
     response
 }
 
-async fn connect(database_url: &str) -> Result<Client, AuthHttpError> {
-    let (db, connection) = crate::runtime_db::connect(database_url)
+async fn connect(database_url: &str) -> Result<crate::runtime_db::PooledClient, AuthHttpError> {
+    crate::runtime_db::connect(database_url)
         .await
-        .map_err(|_| AuthHttpError::Unavailable)?;
-    tokio::spawn(async move {
-        let _ = connection.await;
-    });
-    Ok(db)
+        .map_err(|_| AuthHttpError::Unavailable)
 }
 
 async fn owner_id(state: &AuthHttpState, headers: &HeaderMap) -> Result<Uuid, AuthHttpError> {
@@ -222,9 +217,10 @@ async fn dashboard(
     owner_id(&state, &headers).await?;
     Ok((
         [
-            (header::CONTENT_SECURITY_POLICY, "default-src 'none'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"),
+            (header::CONTENT_SECURITY_POLICY, "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"),
             (header::REFERRER_POLICY, "no-referrer"),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            (header::STRICT_TRANSPORT_SECURITY, "max-age=63072000; includeSubDomains"),
         ],
         Html(include_str!("../../static/billing-dashboard.html")),
     ).into_response())
@@ -236,6 +232,10 @@ async fn script() -> impl IntoResponse {
         [
             (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            (
+                header::STRICT_TRANSPORT_SECURITY,
+                "max-age=63072000; includeSubDomains",
+            ),
         ],
         include_str!("../../static/billing-dashboard.js"),
     )
@@ -481,6 +481,10 @@ mod tests {
                 .to_str()
                 .unwrap()
                 .contains("frame-ancestors 'none'")
+        );
+        assert_eq!(
+            page.headers()[header::STRICT_TRANSPORT_SECURITY],
+            "max-age=63072000; includeSubDomains"
         );
         let page = to_bytes(page.into_body(), 4096).await.unwrap();
         assert!(
