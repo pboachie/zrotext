@@ -169,7 +169,8 @@ class InboundUploadTest {
         val migrated = Room.databaseBuilder(context, SmsJournalDatabase::class.java, name)
             .allowMainThreadQueries().addMigrations(SmsJournalDatabase.MIGRATION_4_5,
                 SmsJournalDatabase.MIGRATION_5_6, SmsJournalDatabase.MIGRATION_6_7,
-                SmsJournalDatabase.MIGRATION_7_8).build()
+                SmsJournalDatabase.MIGRATION_7_8,
+                SmsJournalDatabase.MIGRATION_8_9).build()
         try {
             val legacyEvent = migrated.attempts().inboundByDedupe("e".repeat(64))!!
             val legacyUpload = migrated.attempts().inboundUpload(legacyEvent.eventId)!!
@@ -189,7 +190,7 @@ class InboundUploadTest {
                 migrated.attempts().getAlphaEvent(oldRadioId)?.quarantineReason)
             assertNull(migrated.attempts().inboundUpload(migrated.attempts()
                 .inboundByDedupe("f".repeat(64))!!.eventId))
-            assertEquals(8, migrated.openHelper.readableDatabase.version)
+            assertEquals(9, migrated.openHelper.readableDatabase.version)
         } finally {
             migrated.close()
             context.deleteDatabase(name)

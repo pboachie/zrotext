@@ -43,8 +43,13 @@ from a different outbound-attempt window cannot clear a later opt-out.
 
 The Android Room journal also records a metadata-only local withdrawal for a
 recognized STOP or likely opt-out even when no outbound reply window matches.
-It stores keyed sender and PDU dedupe tokens, the action, time and any observed
-subscription index; it keeps the local recipient block across restarts. A
+It stores keyed sender and PDU dedupe tokens, a stable local event UUID and
+independent durable sequence, the action, time and any observed subscription
+index; it keeps the local recipient block across restarts. The normalized
+sender is optionally stored as Keystore AES-GCM ciphertext with AAD bound to
+the dedupe token. If sealing fails, the block still persists and the action
+has no recoverable sender for later upload. Pre-migration actions likewise have
+no recoverable sender or sequence. A
 verified line ID and binding generation are attached only if a separately
 authenticated activation has been installed and the incoming subscription is
 the sole active subscription at capture time. The app currently has no

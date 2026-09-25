@@ -213,12 +213,13 @@ class AttemptJournalRoomTest {
                 SmsJournalDatabase.MIGRATION_1_2, SmsJournalDatabase.MIGRATION_2_3,
                 SmsJournalDatabase.MIGRATION_3_4, SmsJournalDatabase.MIGRATION_4_5,
                 SmsJournalDatabase.MIGRATION_5_6, SmsJournalDatabase.MIGRATION_6_7,
-                SmsJournalDatabase.MIGRATION_7_8).build()
+                SmsJournalDatabase.MIGRATION_7_8,
+                SmsJournalDatabase.MIGRATION_8_9).build()
         try {
             assertNotNull(migrated.attempts().getAttempt("legacy-attempt"))
             assertEquals(false, migrated.attempts().getAttempt("legacy-attempt")!!.evidenceConflict)
             assertEquals(null, migrated.attempts().getAttempt("legacy-attempt")!!.messageId)
-            assertEquals(8, migrated.openHelper.readableDatabase.version)
+            assertEquals(9, migrated.openHelper.readableDatabase.version)
             migrated.attempts().markInterrupted(20)
             assertEquals(AttemptState.UNKNOWN, migrated.attempts().getAttempt("legacy-attempt")?.state)
         } finally {

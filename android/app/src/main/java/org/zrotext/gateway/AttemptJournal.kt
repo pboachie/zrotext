@@ -159,7 +159,14 @@ data class LocalLineBinding(
     val installedAtMs: Long
 )
 
-/** Metadata-only record of an SMS withdrawal, including one outside any reply window. */
+/** A tombstone reserves an independent, never-reused sequence for later authenticated upload. */
+@Entity(tableName = "local_withdrawal_sequences", indices = [Index(value = ["eventId"], unique = true)])
+data class LocalWithdrawalSequence(
+    @PrimaryKey(autoGenerate = true) val sequence: Long = 0,
+    val eventId: String
+)
+
+/** Local SMS withdrawal; the optional E.164 sender is AES-GCM ciphertext, never plaintext. */
 @Entity(tableName = "local_inbound_withdrawals", indices = [Index("senderToken")])
 data class LocalInboundWithdrawal(
     @PrimaryKey val dedupeToken: String,
@@ -168,7 +175,11 @@ data class LocalInboundWithdrawal(
     val observedSubscriptionId: Int?,
     val lineId: String?,
     val bindingGeneration: Long?,
-    val receivedAtMs: Long
+    val receivedAtMs: Long,
+    @ColumnInfo(defaultValue = "NULL") val eventId: String? = null,
+    @ColumnInfo(defaultValue = "NULL") val deviceSequence: Long? = null,
+    @ColumnInfo(defaultValue = "NULL") val encryptedSender: ByteArray? = null,
+    @ColumnInfo(defaultValue = "NULL") val senderNonce: ByteArray? = null
 )
 
 @Entity(
@@ -246,8 +257,11 @@ internal object CallbackEvidence {
 
 @Dao
 abstract class SmsAttemptDao {
-    @Insert(onConflict = OnConflictStrategy.IGNORE)
-    protected abstract fun insertLocalWithdrawal(entry: LocalInboundWithdrawal): Long
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    protected abstract fun insertLocalWithdrawal(entry: LocalInboundWithdrawal)
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    protected abstract fun reserveLocalWithdrawalSequence(entry: LocalWithdrawalSequence): Long
 
     @Query("SELECT * FROM local_inbound_withdrawals WHERE dedupeToken = :dedupeToken LIMIT 1")
     abstract fun localWithdrawal(dedupeToken: String): LocalInboundWithdrawal?
@@ -281,20 +295,33 @@ abstract class SmsAttemptDao {
     @Transaction
     open fun recordLocalWithdrawal(dedupeToken: String, senderToken: String,
                                    classification: String, observedSubscriptionId: Int?,
-                                   activeSubscriptionIds: Collection<Int>, now: Long): Boolean {
+                                   activeSubscriptionIds: Collection<Int>, now: Long,
+                                   encryptedSender: ByteArray? = null,
+                                   senderNonce: ByteArray? = null): Boolean {
         require(dedupeToken.matches(Regex("[0-9a-f]{64}")) &&
             senderToken.matches(Regex("[0-9a-f]{64}")) && now > 0 &&
             classification in setOf(InboundClassification.OPT_OUT,
                 InboundClassification.OPT_OUT_REVIEW))
+        require((encryptedSender == null && senderNonce == null) ||
+            (encryptedSender != null && encryptedSender.size in 17..128 &&
+                senderNonce?.size == 12))
+        if (localWithdrawal(dedupeToken) != null) {
+            // A replay still reasserts the local block; it cannot mutate the first observation.
+            suppressRecipient(LocalRecipientSuppression(senderToken, now))
+            return false
+        }
         val binding = currentLineBinding()?.takeIf {
             observedSubscriptionId != null && it.subscriptionId == observedSubscriptionId &&
                 activeSubscriptionIds.size == 1 && activeSubscriptionIds.single() == it.subscriptionId
         }
-        val inserted = insertLocalWithdrawal(LocalInboundWithdrawal(dedupeToken, senderToken,
-            classification, observedSubscriptionId, binding?.lineId, binding?.generation, now))
-        // A replay still reasserts the local block; it cannot mutate the first observation.
+        val eventId = UUID.randomUUID().toString()
+        val sequence = reserveLocalWithdrawalSequence(LocalWithdrawalSequence(eventId = eventId))
+        check(sequence > 0)
+        insertLocalWithdrawal(LocalInboundWithdrawal(dedupeToken, senderToken,
+            classification, observedSubscriptionId, binding?.lineId, binding?.generation, now,
+            eventId, sequence, encryptedSender, senderNonce))
         suppressRecipient(LocalRecipientSuppression(senderToken, now))
-        return inserted != -1L
+        return true
     }
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -651,7 +678,7 @@ private const val INBOUND_PILOT_WINDOW_MS = 24L * 60 * 60 * 1000
 @Database(entities = [SmsAttempt::class, SmsSegment::class, AlphaRadioEvent::class,
     InboundWindow::class, InboundEvent::class, InboundUpload::class,
     LocalRecipientSuppression::class, LocalLineBinding::class,
-    LocalInboundWithdrawal::class], version = 8, exportSchema = false)
+    LocalInboundWithdrawal::class, LocalWithdrawalSequence::class], version = 9, exportSchema = false)
 abstract class SmsJournalDatabase : RoomDatabase() {
     abstract fun attempts(): SmsAttemptDao
 
@@ -662,7 +689,7 @@ abstract class SmsJournalDatabase : RoomDatabase() {
             instance ?: Room.databaseBuilder(
                 context.applicationContext, SmsJournalDatabase::class.java, "sms_attempts.db"
             ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
-                MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
+                MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
                 .build().also { instance = it }
         }
 
@@ -728,6 +755,18 @@ abstract class SmsJournalDatabase : RoomDatabase() {
                 db.execSQL("CREATE TABLE IF NOT EXISTS local_line_binding (slot INTEGER NOT NULL PRIMARY KEY, accountId TEXT NOT NULL, deviceId TEXT NOT NULL, lineId TEXT NOT NULL, generation INTEGER NOT NULL, subscriptionId INTEGER NOT NULL, installedAtMs INTEGER NOT NULL)")
                 db.execSQL("CREATE TABLE IF NOT EXISTS local_inbound_withdrawals (dedupeToken TEXT NOT NULL PRIMARY KEY, senderToken TEXT NOT NULL, classification TEXT NOT NULL, observedSubscriptionId INTEGER, lineId TEXT, bindingGeneration INTEGER, receivedAtMs INTEGER NOT NULL)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_local_inbound_withdrawals_senderToken ON local_inbound_withdrawals(senderToken)")
+            }
+        }
+
+        /** Pre-v9 actions remain blocked locally; they lack recoverable sender/sequence data. */
+        internal val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE local_inbound_withdrawals ADD COLUMN eventId TEXT DEFAULT NULL")
+                db.execSQL("ALTER TABLE local_inbound_withdrawals ADD COLUMN deviceSequence INTEGER DEFAULT NULL")
+                db.execSQL("ALTER TABLE local_inbound_withdrawals ADD COLUMN encryptedSender BLOB DEFAULT NULL")
+                db.execSQL("ALTER TABLE local_inbound_withdrawals ADD COLUMN senderNonce BLOB DEFAULT NULL")
+                db.execSQL("CREATE TABLE IF NOT EXISTS local_withdrawal_sequences (sequence INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, eventId TEXT NOT NULL)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_local_withdrawal_sequences_eventId ON local_withdrawal_sequences(eventId)")
             }
         }
     }
