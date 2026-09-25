@@ -79,6 +79,15 @@ class DeviceSigningKeyStore(
                                      event: InboundEvent): ByteArray =
         sign(InboundUploadFrame.signedBytes(accountId, deviceId, upload, event))
 
+    internal fun signLineOptOut(accountId: UUID, deviceId: UUID,
+                                entry: LocalInboundWithdrawal, recipientE164: String): ByteArray =
+        sign(LineOptOutUploadFrame.signedBytes(accountId, deviceId, entry, recipientE164))
+
+    internal fun signSmsLineActivation(challenge: SmsLineChallenge, apiLevel: Int,
+                                       selectedSubscriptionId: Int): ByteArray =
+        sign(SmsLineActivationTranscript.deviceStatement(challenge, apiLevel,
+            selectedSubscriptionId))
+
     private fun sign(payload: ByteArray): ByteArray = Signature.getInstance("SHA256withECDSA").run {
         initSign(privateKey())
         update(payload)
