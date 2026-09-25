@@ -9,7 +9,7 @@ import tempfile
 import unittest
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 COMPOSE = ROOT / "deploy" / "compose" / "compose.yaml"
 PASSTHROUGH = (
     "BIND_ADDR", "SOURCE_URL", "SYNTHETIC_ALPHA_ENABLED",

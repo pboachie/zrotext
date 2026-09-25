@@ -142,9 +142,9 @@ internal object Draft01KeystoreReceiver {
                                 info: ByteArray = wrapInfo(parsed), aad: ByteArray = wrapAad(parsed)): ByteArray {
         val dh = keyStore.agreeExisting(parsed.deviceWrap.enc, parsed.deviceWrap.keyId)
         try {
-            val shared = M2KeystoreHpkeProofTest.HpkeOneShot.kemSecret(
+            val shared = KeystoreHpkeProofDeviceTest.HpkeOneShot.kemSecret(
                 dh, parsed.deviceWrap.enc, keyStore.existingPublic().point)
-            return try { M2KeystoreHpkeProofTest.HpkeOneShot.open(shared, parsed.deviceWrap.ct, info, aad) }
+            return try { KeystoreHpkeProofDeviceTest.HpkeOneShot.open(shared, parsed.deviceWrap.ct, info, aad) }
             finally { shared.fill(0) }
         } finally { dh.fill(0) }
     }

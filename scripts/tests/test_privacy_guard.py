@@ -8,7 +8,7 @@ from pathlib import Path
 
 from privacy_guard import diagnostic_text, forbidden_path, scan_blob, scan_line
 
-SCRIPTS = Path(__file__).resolve().parent
+SCRIPTS = Path(__file__).resolve().parents[1]
 SCANNER = SCRIPTS / "privacy_guard.py"
 INSTALLER = SCRIPTS / "install_privacy_hooks.py"
 

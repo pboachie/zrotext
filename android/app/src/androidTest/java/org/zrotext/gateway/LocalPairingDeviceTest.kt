@@ -12,7 +12,7 @@ import java.io.File
 
 /** Opt-in owner-pairing probe against a private loopback HTTPS writer. */
 @RunWith(AndroidJUnit4::class)
-class M1LocalPairingDeviceTest {
+class LocalPairingDeviceTest {
     @Test fun claimAndProveWithOnDeviceKeystore() {
         val args = InstrumentationRegistry.getArguments()
         assumeTrue("requires a private local pairing fixture", args.getString("m1LocalPairing") == "true")

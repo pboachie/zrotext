@@ -15,7 +15,7 @@ import java.util.UUID
 
 /** Explicitly gated, heartbeat-only lifecycle fixture. The host terminates the service. */
 @RunWith(AndroidJUnit4::class)
-class M0ActiveWssLifecycleTest {
+class ActiveWssLifecycleDeviceTest {
     @Test fun startOneAuthenticatedHeartbeatAndLeaveRunning() {
         val args = InstrumentationRegistry.getArguments()
         assumeTrue(args.getString("m0ActiveWss") == "true")

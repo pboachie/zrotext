@@ -18,7 +18,7 @@ import java.util.UUID
 
 /** Opt-in hardware pilot. This test can cause exactly one externally authorized SMS. */
 @RunWith(AndroidJUnit4::class)
-class M1LocalAuthorizedOneSendTest {
+class LocalAuthorizedOneSendDeviceTest {
     @Test fun startOneConsentedSyntheticSendAndHoldForCallbacks() {
         val args = InstrumentationRegistry.getArguments()
         assumeTrue("requires explicit one-send authorization", args.getString("m1AuthorizedOneSend") == "true")
