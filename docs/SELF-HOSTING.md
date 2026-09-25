@@ -356,7 +356,9 @@ and leased webhook deliveries also remain until terminal. The M1 and sealed
 inbound event rows keep their IDs, device sequence fences, and digests after
 content redaction, so replay cannot recreate a purged body. Message IDs, state,
 attempts, digests, and usage records remain; this worker is not an account-erasure
-API. Backups, WAL, replicas, and PostgreSQL dead tuples need their own lifecycle
+API. Restricted-pilot `recipient_suppressions` rows keep their E.164 recipient,
+whether active or cleared by START, so an opt-out outlives message content
+redaction; the worker never prunes them. Backups, WAL, replicas, and PostgreSQL dead tuples need their own lifecycle
 policy. A database row update or deletion does not immediately erase old pages.
 
 Message events are deleted only after their parent message content has been
@@ -369,9 +371,13 @@ After content redaction, late radio receipts are rejected as stale even when
 their event ID used to exist in the audit timeline. Device clients must
 quarantine that terminal rejection rather than reconnecting with the same
 frame. The [stale-event protocol fix](https://github.com/pboachie/zrotext/issues/147)
-is a rollout dependency for this retention worker. Inbound source admission
-uses the attempt's durable `submitted` status after sent-callback audit events
-have been pruned; new inbound events still have a seven-day upload-age limit.
+is a rollout dependency for this retention worker. An M1 inbound event whose
+source message content has been redacted is rejected as an unknown source, so
+no reply content or suppression is recorded for it; an exact replay of an
+event stored before redaction is still acknowledged. New inbound events have a
+seven-day upload-age limit and the phone's reply window is 24 hours, so a
+content window of 8 days or less can reject a delayed STOP upload. The phone's
+local block still applies.
 
 When changing these settings across multiple hubs, deploy the same values to
 every hub. A shorter value can make data eligible immediately, while a longer
