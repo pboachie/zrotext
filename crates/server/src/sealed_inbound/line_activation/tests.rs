@@ -21,6 +21,8 @@ macro_rules! migration {
     };
 }
 
+// Keep this fixture at 033 to exercise activation's defense against legacy
+// cross-role alias rows. Migration 034 rejects those adversarial inserts.
 const TEST_MIGRATIONS: [&str; 33] = [
     migration!("001_foundation.sql"),
     migration!("002_auth.sql"),

@@ -1598,6 +1598,10 @@ mod tests {
             "034_delivery_sweep_index.sql",
             include_str!("../../../deploy/compose/migrations/034_delivery_sweep_index.sql"),
         ),
+        (
+            "034_sms_owner_key_ceremony.sql",
+            include_str!("../../../deploy/compose/migrations/034_sms_owner_key_ceremony.sql"),
+        ),
     ];
 
     async fn apply_test_migrations(client: &Client) {

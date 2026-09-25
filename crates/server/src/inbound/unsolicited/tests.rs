@@ -17,7 +17,7 @@ macro_rules! migration {
     };
 }
 
-const TEST_MIGRATIONS: [&str; 22] = [
+const TEST_MIGRATIONS: [&str; 23] = [
     migration!("001_foundation.sql"),
     migration!("002_auth.sql"),
     migration!("003_delivery.sql"),
@@ -40,6 +40,7 @@ const TEST_MIGRATIONS: [&str; 22] = [
     migration!("031_recipient_suppression.sql"),
     migration!("032_line_opt_out_events.sql"),
     migration!("033_sms_line_binding_scope.sql"),
+    migration!("034_sms_owner_key_ceremony.sql"),
 ];
 
 fn observed_now() -> i64 {
