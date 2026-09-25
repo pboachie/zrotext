@@ -17,6 +17,11 @@ DATA = ROOT / "docs" / "roadmap.json"
 SVG = ROOT / "docs" / "assets" / "roadmap-overview.svg"
 ROADMAP = ROOT / "docs" / "ROADMAP.md"
 README = ROOT / "README.md"
+USE_CASES = ROOT / "docs" / "USE-CASES.md"
+PRIORITY_NAME = {"first": "First", "next": "Next", "later": "Later"}
+AVAILABILITY_NAME = {
+    "planned": "Proposed; unavailable", "pilot": "Restricted pilot", "released": "General release",
+}
 
 # Stages in progress order. The index is the number of stage segments reached.
 STAGES = ("planned", "design", "build", "pilot", "released")
@@ -90,10 +95,69 @@ def validate(data: dict) -> None:
     for source, target in data["dependencies"]:
         if source not in seen or target not in seen or source == target:
             raise ValueError(f"dependency {source} -> {target} is invalid")
+    # Cycles would make prerequisite-based availability checks meaningless.
+    for cid in seen:
+        prerequisites(data, [cid])
     if sorted(data["track_map_order"]) != sorted(track_ids):
         raise ValueError("track_map_order must list every track once")
     if not data["general_send_gate"] or not all(data["general_send_gate"]):
         raise ValueError("general_send_gate needs non-empty groups")
+    for group in data["general_send_gate"]:
+        for step in group:
+            if not isinstance(step.get("done"), bool) or not step.get("text"):
+                raise ValueError("general sending gates need text and boolean done values")
+    caps = {cap["id"]: cap for cap in capabilities(data)}
+    use_case_ids = set()
+    if not data.get("use_cases"):
+        raise ValueError("use_cases must contain at least one customer outcome")
+    for case in data["use_cases"]:
+        cid = case["id"]
+        if not ID.fullmatch(cid) or cid in use_case_ids:
+            raise ValueError(f"use case id {cid!r} is invalid or duplicated")
+        use_case_ids.add(cid)
+        if case["priority"] not in PRIORITY_NAME or case["availability"] not in AVAILABILITY_NAME:
+            raise ValueError(f"{cid}: unknown priority or availability")
+        for field in ("title", "audience", "problem", "example"):
+            if not isinstance(case.get(field), str) or not case[field].strip():
+                raise ValueError(f"{cid}: {field} must be non-empty text")
+        for field in ("journey", "acceptance", "success_signals"):
+            values = case.get(field)
+            if not isinstance(values, list) or not values or not all(
+                isinstance(value, str) and value.strip() for value in values
+            ):
+                raise ValueError(f"{cid}: {field} needs non-empty text items")
+        required = case.get("requires", [])
+        if not required or len(required) != len(set(required)) or any(cid not in caps for cid in required):
+            raise ValueError(f"{cid}: requires must list unique, known capabilities")
+        if case["availability"] != "planned":
+            floor = STAGES.index(case["availability"])
+            if any(STAGES.index(caps[dep]["stage"]) < floor for dep in prerequisites(data, required)):
+                raise ValueError(f"{cid}: availability exceeds its prerequisites")
+            if not all(step["done"] for group in data["general_send_gate"] for step in group):
+                raise ValueError(f"{cid}: customer workflows require the general sending gates")
+
+
+def prerequisites(data: dict, required: list[str]) -> set[str]:
+    """Include direct requirements and their upstream capability dependencies."""
+    upstream: dict[str, list[str]] = {}
+    for source, target in data["dependencies"]:
+        upstream.setdefault(target, []).append(source)
+    result, visiting = set(), set()
+
+    def visit(cid: str) -> None:
+        if cid in visiting:
+            raise ValueError(f"cyclic capability dependency at {cid}")
+        if cid in result:
+            return
+        visiting.add(cid)
+        for parent in upstream.get(cid, []):
+            visit(parent)
+        visiting.remove(cid)
+        result.add(cid)
+
+    for cid in required:
+        visit(cid)
+    return result
 
 
 def counts(data: dict) -> dict[str, int]:
@@ -165,7 +229,7 @@ def render_svg(data: dict) -> str:
         body.append(f'<text x="{x + 38}" y="{y}" class="foot">{label}</text>')
         x += 180
     body.append(f'<text x="{width - pad}" y="{y}" text-anchor="end" class="foot">'
-                f'Snapshot of main, {data["snapshot"]} · direction, not release dates</text>')
+                f'Roadmap snapshot, {data["snapshot"]} · direction, not release dates</text>')
     y += 24
     body.append(f'<text x="{pad}" y="{y}" class="foot">Restricted pilot = allowlisted accounts and '
                 'recipients, synthetic or controlled tests. No general or hosted SMS service is available.</text>')
@@ -346,11 +410,49 @@ def tracks(data: dict) -> str:
             detail = STAGE_NAME[cap["stage"]].lower()
             if cap.get("qualifier"):
                 detail += f", {cap['qualifier']}"
-            out += ["", "<details>", f"<summary><b>{escape(cap['name'])}</b> · {detail}</summary>", ""]
+            out += ["", f'<a id="cap-{cap["id"]}"></a>', "<details>",
+                    f"<summary><b>{escape(cap['name'])}</b> · {detail}</summary>", ""]
             out += [f"- [x] {item}" for item in cap["done"]]
             out += [f"- [ ] {item}" for item in cap["todo"]]
             out += ["", "</details>"]
         out.append("")
+    return "\n".join(out).rstrip()
+
+
+def use_case_summary(data: dict, prefix: str = "", first_only: bool = False) -> str:
+    lines = ["| Priority | Experience | Example | Availability |", "|---|---|---|---|"]
+    for priority in PRIORITY_NAME:
+        for case in data["use_cases"]:
+            if case["priority"] != priority or (first_only and priority != "first"):
+                continue
+            title = link(case["title"], f'{prefix}USE-CASES.md#{case["id"]}')
+            lines.append(f"| {PRIORITY_NAME[priority]} | {title} | {case['example']} | "
+                         f"{AVAILABILITY_NAME[case['availability']]} |")
+    return "\n".join(lines)
+
+
+def use_case_details(data: dict) -> str:
+    caps = {cap["id"]: cap for cap in capabilities(data)}
+    out = []
+    for priority in PRIORITY_NAME:
+        for case in data["use_cases"]:
+            if case["priority"] != priority:
+                continue
+            out += [f'<a id="{case["id"]}"></a>', "", f'## {case["title"]}', "",
+                    f"**{PRIORITY_NAME[priority]} · {AVAILABILITY_NAME[case['availability']]}**", "",
+                    f"**For:** {case['audience']}", "", case["problem"], "",
+                    f"**Example:** {case['example']}", "", "### Intended journey", ""]
+            out += [f"{i}. {step}" for i, step in enumerate(case["journey"], 1)]
+            out += ["", "### Required capabilities", ""]
+            out += [f"- {link(caps[cid]['name'], 'ROADMAP.md#cap-' + cid)} "
+                    f"({STAGE_NAME[caps[cid]['stage']]})" for cid in case["requires"]]
+            out += ["", "These also inherit their upstream roadmap dependencies and the "
+                    "[general sending gates](ROADMAP.md#path-to-general-sending).", "",
+                    "### Acceptance criteria", ""]
+            out += [f"- {item}" for item in case["acceptance"]]
+            out += ["", "### Success signals to measure", ""]
+            out += [f"- {item}" for item in case["success_signals"]]
+            out.append("")
     return "\n".join(out).rstrip()
 
 
@@ -362,9 +464,15 @@ def blocks_for(path: Path, data: dict) -> dict[str, str]:
             "gate": gate(data),
             "map": track_map(data),
             "tracks": tracks(data),
+            "usecases": use_case_summary(data),
         }
     if path == README:
-        return {"overview": overview(data, "docs/assets/roadmap-overview.svg", 820, "docs/ROADMAP.md")}
+        return {
+            "overview": overview(data, "docs/assets/roadmap-overview.svg", 820, "docs/ROADMAP.md"),
+            "usecases": use_case_summary(data, "docs/", first_only=True),
+        }
+    if path == USE_CASES:
+        return {"usecases": use_case_summary(data), "cases": use_case_details(data)}
     raise ValueError(f"no generated blocks for {path}")
 
 
@@ -383,7 +491,7 @@ def replace_blocks(text: str, blocks: dict[str, str], name: str) -> str:
 def rendered(data: dict) -> dict[Path, str]:
     """Return the full expected contents of every generated file."""
     files = {SVG: render_svg(data)}
-    for path in (ROADMAP, README):
+    for path in (ROADMAP, README, USE_CASES):
         with open(path, encoding="utf-8") as handle:
             current = handle.read()
         files[path] = replace_blocks(current, blocks_for(path, data), path.name)
