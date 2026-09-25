@@ -13,6 +13,9 @@ const SCRIPT: &str = include_str!("../../../web/owner/devices.js");
 const STYLE: &str = include_str!("../../../web/owner/devices.css");
 const ACCOUNT_PAGE: &str = include_str!("../../../web/owner/account.html");
 const ACCOUNT_SCRIPT: &str = include_str!("../../../web/owner/account.js");
+const SMS_LINES_PAGE: &str = include_str!("../../../web/owner/sms-lines.html");
+const SMS_LINES_SCRIPT: &str = include_str!("../../../web/owner/sms-lines.js");
+const SMS_LINE_SIGNING_SCRIPT: &str = include_str!("../../../web/owner/sms-line-signing.js");
 const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
 
 pub fn router() -> Router {
@@ -22,6 +25,9 @@ pub fn router() -> Router {
         .route("/owner/devices.css", get(style))
         .route("/owner/account", get(account_page))
         .route("/owner/account.js", get(account_script))
+        .route("/owner/sms-lines", get(sms_lines_page))
+        .route("/owner/sms-lines.js", get(sms_lines_script))
+        .route("/owner/sms-line-signing.js", get(sms_line_signing_script))
 }
 
 pub fn source_router<S>(source_url: String) -> Router<S>
@@ -118,6 +124,27 @@ async fn account_script() -> Response {
     )
 }
 
+async fn sms_lines_page() -> Response {
+    secure_response(
+        Html(SMS_LINES_PAGE).into_response(),
+        "text/html; charset=utf-8",
+    )
+}
+
+async fn sms_lines_script() -> Response {
+    secure_response(
+        (StatusCode::OK, SMS_LINES_SCRIPT).into_response(),
+        "text/javascript; charset=utf-8",
+    )
+}
+
+async fn sms_line_signing_script() -> Response {
+    secure_response(
+        (StatusCode::OK, SMS_LINE_SIGNING_SCRIPT).into_response(),
+        "text/javascript; charset=utf-8",
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,15 +226,15 @@ mod tests {
                 "/v1/auth/mfa/disable",
                 "code=synthetic-code",
             ),
+            ("key-form", "/v1/auth/sms-line-owner-keys", "mfa=000000"),
         ] {
             // Without the submit listener, native HTML forms must not put
             // credentials in the URL. Their URL-encoded POST fails closed at
             // the JSON-only endpoint, before any database or password work.
-            let document = if PAGE.contains(&format!("<form id=\"{id}\"")) {
-                PAGE
-            } else {
-                ACCOUNT_PAGE
-            };
+            let document = [PAGE, ACCOUNT_PAGE, SMS_LINES_PAGE]
+                .into_iter()
+                .find(|page| page.contains(&format!("<form id=\"{id}\"")))
+                .unwrap();
             let start = document.find(&format!("<form id=\"{id}\"")).unwrap();
             let tag = document[start..].split('>').next().unwrap();
             assert!(tag.contains("method=\"post\""));
@@ -231,6 +258,13 @@ mod tests {
     #[tokio::test]
     async fn owner_assets_are_same_origin_and_never_cached() {
         assert!(PAGE.contains("href=\"/owner/account\""));
+        assert!(PAGE.contains("href=\"/owner/sms-lines\""));
+        // The activation form never submits natively to a URL with parameters.
+        assert!(
+            SMS_LINES_PAGE.contains(
+                "<form id=\"activation-form\" method=\"post\" action=\"/owner/sms-lines\">"
+            )
+        );
         assert!(ACCOUNT_PAGE.contains("id=\"verify\""));
         for (path, content_type) in [
             ("/owner/devices", "text/html; charset=utf-8"),
@@ -238,6 +272,12 @@ mod tests {
             ("/owner/devices.css", "text/css; charset=utf-8"),
             ("/owner/account", "text/html; charset=utf-8"),
             ("/owner/account.js", "text/javascript; charset=utf-8"),
+            ("/owner/sms-lines", "text/html; charset=utf-8"),
+            ("/owner/sms-lines.js", "text/javascript; charset=utf-8"),
+            (
+                "/owner/sms-line-signing.js",
+                "text/javascript; charset=utf-8",
+            ),
         ] {
             let response = router()
                 .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())

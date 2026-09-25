@@ -133,6 +133,10 @@ exactly one selected, active physical SIM, keeps the prepared proof in memory,
 and installs its local line binding only from an `sms_line_activated` frame
 whose digests match that proof and a fresh SIM observation, until 15 minutes
 after the challenge expiry to allow the hub's resends. A restarted app
-cannot install an earlier proof; the owner opens a new activation. An owner
-browser signing flow, physical SIM testing, and a real carrier receive test are
-still required.
+cannot install an earlier proof; the owner opens a new activation. The owner page at `/owner/sms-lines` creates the SMS approval key as a
+non-extractable WebCrypto P-256 key in the browser's IndexedDB, registers it
+with the MFA-bound ceremony, and approves an activation only after it parses
+the device statement, checks its account, line, device, generation and
+challenge against the activation it opened, and rebuilds `owner_statement`
+itself; it refuses when the server's copy differs. Physical SIM testing and a
+real carrier receive test are still required.
