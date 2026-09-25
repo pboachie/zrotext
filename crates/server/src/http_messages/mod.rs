@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 #[cfg(test)]
 use std::time::{SystemTime, UNIX_EPOCH};
+#[cfg(test)]
 use tokio_postgres::Client;
 use uuid::Uuid;
 use zrotext_delivery_store::{DeliveryStore, NewMessage, StoreError};
@@ -167,14 +168,10 @@ fn map_store(error: StoreError) -> MessageHttpError {
     }
 }
 
-async fn connect(database_url: &str) -> Result<Client, MessageHttpError> {
-    let (client, connection) = crate::runtime_db::connect(database_url)
+async fn connect(database_url: &str) -> Result<crate::runtime_db::PooledClient, MessageHttpError> {
+    crate::runtime_db::connect(database_url)
         .await
-        .map_err(|_| MessageHttpError::Unavailable)?;
-    tokio::spawn(async move {
-        let _ = connection.await;
-    });
-    Ok(client)
+        .map_err(|_| MessageHttpError::Unavailable)
 }
 
 fn bearer(headers: &HeaderMap) -> Result<&str, MessageHttpError> {

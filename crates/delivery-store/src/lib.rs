@@ -1459,7 +1459,7 @@ mod tests {
 
     // Keep the admission fixtures on the complete, reviewed schema. SQL is
     // embedded at build time so tests never execute files discovered at runtime.
-    const TEST_MIGRATIONS: [(&str, &str); 33] = [
+    const TEST_MIGRATIONS: [(&str, &str); 34] = [
         (
             "001_foundation.sql",
             include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
@@ -1593,6 +1593,10 @@ mod tests {
         (
             "033_sms_line_binding_scope.sql",
             include_str!("../../../deploy/compose/migrations/033_sms_line_binding_scope.sql"),
+        ),
+        (
+            "034_delivery_sweep_index.sql",
+            include_str!("../../../deploy/compose/migrations/034_delivery_sweep_index.sql"),
         ),
     ];
 
