@@ -7,6 +7,9 @@ let nextDeviceCursor = null;
 let shownDeviceCount = 0;
 let nextMessageCursor = null;
 let shownMessageCount = 0;
+let nextOptOutReviewCursor = null;
+let shownOptOutReviewCount = 0;
+let optOutReviewLoadGeneration = 0;
 let pendingMfaChallenge = null;
 let nextKeyCursor = null;
 let shownKeyCount = 0;
@@ -161,7 +164,7 @@ async function completeSignIn() {
 }
 
 function loadOwnerData() {
-  return Promise.all([loadDevices(), loadDeviceCapacity(), loadMessages(), loadKeys(), loadWebhookEndpoints(), loadSessions()]);
+  return Promise.all([loadDevices(), loadDeviceCapacity(), loadMessages(), loadOptOutReview(), loadKeys(), loadWebhookEndpoints(), loadSessions()]);
 }
 
 function clearPairing() {
@@ -226,6 +229,7 @@ function clearOwnerState() {
   sessionLoadGeneration += 1;
   deviceLoadGeneration += 1;
   messageLoadGeneration += 1;
+  optOutReviewLoadGeneration += 1;
   keyLoadGeneration += 1;
   clearMfaChallenge();
   clearPairing();
@@ -242,6 +246,11 @@ function clearOwnerState() {
   byId("more-messages").hidden = true;
   nextMessageCursor = null;
   shownMessageCount = 0;
+  byId("opt-out-review-list").replaceChildren();
+  byId("more-opt-out-review").hidden = true;
+  nextOptOutReviewCursor = null;
+  shownOptOutReviewCount = 0;
+  message("opt-out-review-status", "");
   byId("key-list").replaceChildren();
   byId("more-keys").hidden = true;
   nextKeyCursor = null;
@@ -737,6 +746,71 @@ async function loadMessages(reset = true) {
   }
 }
 
+async function loadOptOutReview(reset = true) {
+  if (!reset && !nextOptOutReviewCursor) return;
+  const requestEpoch = ownerEpoch;
+  const generation = ++optOutReviewLoadGeneration;
+  const stale = () => requestEpoch !== ownerEpoch || generation !== optOutReviewLoadGeneration;
+  const cursor = reset ? null : nextOptOutReviewCursor;
+  const moreButton = byId("more-opt-out-review");
+  moreButton.disabled = true;
+  message("opt-out-review-status", "Loading active review holds…");
+  if (reset) {
+    byId("opt-out-review-list").replaceChildren();
+    moreButton.hidden = true;
+    nextOptOutReviewCursor = null;
+    shownOptOutReviewCount = 0;
+  }
+  try {
+    const path = cursor
+      ? `/v1/owner/opt-out-review?before=${encodeURIComponent(cursor)}`
+      : "/v1/owner/opt-out-review";
+    const page = await api(path);
+    if (stale()) return;
+    if (!page || !Array.isArray(page.holds) || page.holds.length > 20 ||
+        !page.holds.every((hold) => hold && /^\+[1-9][0-9]{1,14}$/.test(hold.recipient_e164) &&
+          ["sms_review", "sms_unsolicited_review"].includes(hold.source) &&
+          Number.isSafeInteger(hold.observed_at_ms) && Number.isSafeInteger(hold.changed_at_ms)) ||
+        (page.next_cursor !== null && !uuidPattern.test(page.next_cursor))) {
+      throw new Error("The review response was invalid.");
+    }
+    nextOptOutReviewCursor = page.next_cursor;
+    shownOptOutReviewCount += page.holds.length;
+    moreButton.hidden = !nextOptOutReviewCursor;
+    moreButton.disabled = false;
+    if (reset && page.holds.length === 0) {
+      message("opt-out-review-status", "No active ambiguous SMS holds.");
+      return;
+    }
+    message("opt-out-review-status", `${shownOptOutReviewCount} hold${shownOptOutReviewCount === 1 ? "" : "s"} shown${nextOptOutReviewCursor ? "; more available" : ""}.`);
+    const rows = [];
+    for (const hold of page.holds) {
+      const row = document.createElement("li");
+      const recipient = document.createElement("strong");
+      const source = document.createElement("span");
+      const observed = document.createElement("time");
+      const changed = document.createElement("time");
+      recipient.textContent = hold.recipient_e164;
+      source.textContent = hold.source === "sms_unsolicited_review"
+        ? " · Possible withdrawal outside a pilot reply window"
+        : " · Possible withdrawal in a pilot reply window";
+      observed.textContent = ` · Observed ${localTime(hold.observed_at_ms)}`;
+      const date = new Date(hold.observed_at_ms);
+      if (!Number.isNaN(date.getTime())) observed.dateTime = date.toISOString();
+      changed.textContent = ` · Blocked ${localTime(hold.changed_at_ms)}`;
+      const changedDate = new Date(hold.changed_at_ms);
+      if (!Number.isNaN(changedDate.getTime())) changed.dateTime = changedDate.toISOString();
+      row.append(recipient, source, observed, changed);
+      rows.push(row);
+    }
+    byId("opt-out-review-list").append(...rows);
+  } catch (error) {
+    if (stale()) return;
+    moreButton.disabled = false;
+    message("opt-out-review-status", `Could not load review holds. ${error.message}`);
+  }
+}
+
 async function checkPairing() {
   if (!activePairingId) return;
   const pairingId = activePairingId;
@@ -992,6 +1066,8 @@ byId("refresh-devices").addEventListener("click", () => Promise.all([loadDevices
 byId("more-devices").addEventListener("click", () => loadDevices(false));
 byId("refresh-messages").addEventListener("click", () => loadMessages());
 byId("more-messages").addEventListener("click", () => loadMessages(false));
+byId("refresh-opt-out-review").addEventListener("click", () => loadOptOutReview());
+byId("more-opt-out-review").addEventListener("click", () => loadOptOutReview(false));
 byId("refresh-keys").addEventListener("click", () => loadKeys());
 byId("more-keys").addEventListener("click", () => loadKeys(false));
 byId("dismiss-key-secret").addEventListener("click", clearKeySecret);
