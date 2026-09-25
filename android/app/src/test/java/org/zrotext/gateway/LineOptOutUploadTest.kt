@@ -129,6 +129,41 @@ class LineOptOutUploadTest {
         }) { senderToken })
     }
 
+    @Test fun earlierLocalOnlyWithdrawalsDoNotStarveLaterBoundStop() {
+        val db = Room.inMemoryDatabaseBuilder(RuntimeEnvironment.getApplication(),
+            SmsJournalDatabase::class.java).allowMainThreadQueries().build()
+        try {
+            val dao = db.attempts()
+            val first = "c".repeat(64)
+            val unsealed = "d".repeat(64)
+            val bound = "e".repeat(64)
+            assertTrue(dao.recordLocalWithdrawal(first, senderToken,
+                InboundClassification.OPT_OUT, null, emptyList(), 1000))
+            assertTrue(dao.installVerifiedLineBinding(LocalLineBinding(accountId =
+                account.toString(), deviceId = device.toString(), lineId = line,
+                generation = 7, subscriptionId = 7, installedAtMs = 1500), listOf(7)))
+            assertTrue(dao.recordLocalWithdrawal(unsealed, senderToken,
+                InboundClassification.OPT_OUT_REVIEW, 7, listOf(7), 2000))
+            val key = SecretKeySpec(ByteArray(32) { (it + 1).toByte() }, "AES")
+            val sealed = InboundVault.sealSenderWithKey(key, recipient, bound)
+            assertTrue(dao.recordLocalWithdrawal(bound, senderToken,
+                InboundClassification.OPT_OUT, 7, listOf(7), 3000,
+                sealed.ciphertext, sealed.nonce))
+            assertNull(dao.localWithdrawal(first)?.lineId)
+            assertNull(dao.localWithdrawal(unsealed)?.encryptedSender)
+            assertEquals(3L, dao.nextLineOptOut(0)?.deviceSequence)
+            assertEquals(dao.localWithdrawal(bound)?.eventId, dao.nextLineOptOut(0)?.eventId)
+            assertTrue(dao.isRecipientSuppressed(senderToken))
+            val eventId = checkNotNull(dao.localWithdrawal(bound)?.eventId)
+            assertEquals(1, dao.signLineOptOut(eventId, line, 7, ByteArray(70)))
+            assertEquals(1, dao.acknowledgeLineOptOut(eventId, 4000))
+            assertNull(dao.nextLineOptOut(0))
+            assertNull(dao.localWithdrawal(first)?.acknowledgedAtMs)
+            assertNull(dao.localWithdrawal(unsealed)?.acknowledgedAtMs)
+            assertTrue(dao.isRecipientSuppressed(senderToken))
+        } finally { db.close() }
+    }
+
     @Test fun signatureAndIdentitySurviveRestartAndExactReplayAckKeepsStop() {
         val context: Context = RuntimeEnvironment.getApplication()
         val name = "line-opt-out-replay.db"

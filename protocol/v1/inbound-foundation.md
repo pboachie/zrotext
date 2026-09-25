@@ -56,9 +56,10 @@ the sole active subscription at capture time. An explicit foreground Android
 mode can prepare and retry a signed `line_opt_out` device-stream frame for a
 matching current line and single active SIM. It persists the exact signature
 before sending and acknowledges the local row only after writer confirmation.
-The Android app still has no production activation route, and the writer's
-line opt-out transport gate defaults off, so ordinary deployments leave these
-rows local.
+Unattributed or unsealed local-only actions are skipped by the upload queue;
+their local recipient blocks remain active. The Android app still has no
+production activation route, and the writer's line opt-out transport gate
+defaults off, so ordinary deployments leave these rows local.
 An unattributed STOP still blocks local sends. START never clears that block;
 the existing reply-window START acknowledgement does not prove the source
 line or binding generation. Android subscription indexes may be reused after

@@ -269,8 +269,8 @@ abstract class SmsAttemptDao {
     @Query("SELECT * FROM local_inbound_withdrawals WHERE dedupeToken = :dedupeToken LIMIT 1")
     abstract fun localWithdrawal(dedupeToken: String): LocalInboundWithdrawal?
 
-    /** Old v8 records lack an event/sequence and remain local blocks only. */
-    @Query("SELECT * FROM local_inbound_withdrawals WHERE eventId IS NOT NULL AND deviceSequence IS NOT NULL AND acknowledgedAtMs IS NULL AND receivedAtMs >= :minimumObservedAtMs ORDER BY deviceSequence LIMIT 1")
+    /** Unattributed or unsealed STOPs remain local blocks, never queue head blockers. */
+    @Query("SELECT * FROM local_inbound_withdrawals WHERE eventId IS NOT NULL AND deviceSequence IS NOT NULL AND lineId IS NOT NULL AND bindingGeneration IS NOT NULL AND observedSubscriptionId IS NOT NULL AND encryptedSender IS NOT NULL AND senderNonce IS NOT NULL AND classification IN ('opt_out','opt_out_review') AND acknowledgedAtMs IS NULL AND receivedAtMs >= :minimumObservedAtMs ORDER BY deviceSequence LIMIT 1")
     abstract fun nextLineOptOut(minimumObservedAtMs: Long): LocalInboundWithdrawal?
 
     @Query("SELECT * FROM local_inbound_withdrawals WHERE eventId = :eventId LIMIT 1")
