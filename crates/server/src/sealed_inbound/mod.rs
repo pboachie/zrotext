@@ -23,6 +23,28 @@ pub async fn line_binding_ready<C: GenericClient>(
     line_id: Uuid,
     binding_generation: i64,
 ) -> Result<bool, tokio_postgres::Error> {
+    binding_ready_for_purpose(client, session, line_id, binding_generation, "sealed").await
+}
+
+/// SMS binding preflight for a future M1 line-bound ingest route. A sealed
+/// binding also satisfies this weaker scope. This does not authorize any
+/// outbound SMS.
+pub async fn sms_line_binding_ready<C: GenericClient>(
+    client: &C,
+    session: InboundSession<'_>,
+    line_id: Uuid,
+    binding_generation: i64,
+) -> Result<bool, tokio_postgres::Error> {
+    binding_ready_for_purpose(client, session, line_id, binding_generation, "sms").await
+}
+
+async fn binding_ready_for_purpose<C: GenericClient>(
+    client: &C,
+    session: InboundSession<'_>,
+    line_id: Uuid,
+    binding_generation: i64,
+    purpose: &str,
+) -> Result<bool, tokio_postgres::Error> {
     if line_id.is_nil() || binding_generation <= 0 {
         return Ok(false);
     }
@@ -46,6 +68,7 @@ pub async fn line_binding_ready<C: GenericClient>(
                AND l.state='active' AND l.approved_at IS NOT NULL \
                AND l.current_binding_generation=$8 \
                AND b.generation=$8 AND b.state='active' \
+               AND (b.purpose=$9 OR ($9='sms' AND b.purpose='sealed')) \
                AND b.owner_approval_digest IS NOT NULL \
                AND b.device_confirmation_digest IS NOT NULL \
                AND b.activated_at IS NOT NULL \
@@ -59,6 +82,7 @@ pub async fn line_binding_ready<C: GenericClient>(
                 &session.deployment_epoch,
                 &line_id,
                 &binding_generation,
+                &purpose,
             ],
         )
         .await?

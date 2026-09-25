@@ -13,6 +13,37 @@ use uuid::Uuid;
 const CHALLENGE_LIFETIME_SECS: i32 = 300;
 const DEVICE_DOMAIN: &[u8] = b"ZTSE/line/device-confirm/v1\0";
 const OWNER_DOMAIN: &[u8] = b"ZTSE/line/owner-approve/v1\0";
+const SMS_DEVICE_DOMAIN: &[u8] = b"ZTSMS/line/device-confirm/v1\0";
+const SMS_OWNER_DOMAIN: &[u8] = b"ZTSMS/line/owner-approve/v1\0";
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LinePurpose {
+    Sealed,
+    Sms,
+}
+
+impl LinePurpose {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Sealed => "sealed",
+            Self::Sms => "sms",
+        }
+    }
+
+    fn device_domain(self) -> &'static [u8] {
+        match self {
+            Self::Sealed => DEVICE_DOMAIN,
+            Self::Sms => SMS_DEVICE_DOMAIN,
+        }
+    }
+
+    fn owner_domain(self) -> &'static [u8] {
+        match self {
+            Self::Sealed => OWNER_DOMAIN,
+            Self::Sms => SMS_OWNER_DOMAIN,
+        }
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum LineActivationError {
@@ -83,19 +114,41 @@ pub fn device_line_statement(
     challenge: &LineChallenge,
     observation: SimObservation,
 ) -> Result<Vec<u8>, LineActivationError> {
+    line_statement(challenge, observation, LinePurpose::Sealed)
+}
+
+/// SMS-only scope accepts the gateway's Android API 28 floor. It cannot be
+/// substituted for the sealed statement, which retains its API 31 floor.
+pub fn sms_device_line_statement(
+    challenge: &LineChallenge,
+    observation: SimObservation,
+) -> Result<Vec<u8>, LineActivationError> {
+    line_statement(challenge, observation, LinePurpose::Sms)
+}
+
+fn line_statement(
+    challenge: &LineChallenge,
+    observation: SimObservation,
+    purpose: LinePurpose,
+) -> Result<Vec<u8>, LineActivationError> {
     if challenge.account_id.is_nil()
         || challenge.line_id.is_nil()
         || challenge.device_id.is_nil()
         || challenge.id.is_nil()
         || challenge.generation <= 0
-        || observation.android_api_level < 31
+        || observation.android_api_level
+            < if purpose == LinePurpose::Sealed {
+                31
+            } else {
+                28
+            }
         || observation.active_subscription_count != 1
         || observation.selected_subscription_id < 0
     {
         return Err(LineActivationError::InvalidInput);
     }
-    let mut bytes = Vec::with_capacity(DEVICE_DOMAIN.len() + 16 * 4 + 8 + 32 + 2 + 1 + 4);
-    bytes.extend_from_slice(DEVICE_DOMAIN);
+    let mut bytes = Vec::with_capacity(purpose.device_domain().len() + 16 * 4 + 8 + 32 + 2 + 1 + 4);
+    bytes.extend_from_slice(purpose.device_domain());
     bytes.extend_from_slice(challenge.account_id.as_bytes());
     bytes.extend_from_slice(challenge.line_id.as_bytes());
     bytes.extend_from_slice(challenge.device_id.as_bytes());
@@ -111,8 +164,20 @@ pub fn device_line_statement(
 /// The owner signs the exact device statement and the digest of its DER
 /// signature. A different signature or SIM declaration needs a new approval.
 pub fn owner_line_statement(device_statement: &[u8], device_signature_der: &[u8]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(OWNER_DOMAIN.len() + device_statement.len() + 32);
-    bytes.extend_from_slice(OWNER_DOMAIN);
+    owner_statement(device_statement, device_signature_der, LinePurpose::Sealed)
+}
+
+pub fn sms_owner_line_statement(device_statement: &[u8], device_signature_der: &[u8]) -> Vec<u8> {
+    owner_statement(device_statement, device_signature_der, LinePurpose::Sms)
+}
+
+fn owner_statement(
+    device_statement: &[u8],
+    device_signature_der: &[u8],
+    purpose: LinePurpose,
+) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(purpose.owner_domain().len() + device_statement.len() + 32);
+    bytes.extend_from_slice(purpose.owner_domain());
     bytes.extend_from_slice(device_statement);
     bytes.extend_from_slice(&digest(device_signature_der));
     bytes
@@ -160,12 +225,50 @@ pub async fn issue_line_challenge(
     .await
 }
 
+/// Internal SMS-only challenge. No live route provisions its owner key or
+/// invokes this function yet.
+pub async fn issue_sms_line_challenge(
+    client: &mut Client,
+    principal: &SessionPrincipal,
+    line_id: Uuid,
+    device_id: Uuid,
+) -> Result<LineChallenge, LineActivationError> {
+    issue_challenge_for_purpose(
+        client,
+        principal,
+        line_id,
+        device_id,
+        CHALLENGE_LIFETIME_SECS,
+        LinePurpose::Sms,
+    )
+    .await
+}
+
 async fn issue_line_challenge_with_lifetime(
     client: &mut Client,
     principal: &SessionPrincipal,
     line_id: Uuid,
     device_id: Uuid,
     lifetime_secs: i32,
+) -> Result<LineChallenge, LineActivationError> {
+    issue_challenge_for_purpose(
+        client,
+        principal,
+        line_id,
+        device_id,
+        lifetime_secs,
+        LinePurpose::Sealed,
+    )
+    .await
+}
+
+async fn issue_challenge_for_purpose(
+    client: &mut Client,
+    principal: &SessionPrincipal,
+    line_id: Uuid,
+    device_id: Uuid,
+    lifetime_secs: i32,
+    purpose: LinePurpose,
 ) -> Result<LineChallenge, LineActivationError> {
     if line_id.is_nil() || device_id.is_nil() || lifetime_secs <= 0 {
         return Err(LineActivationError::InvalidInput);
@@ -183,12 +286,16 @@ async fn issue_line_challenge_with_lifetime(
     {
         return Err(LineActivationError::Unavailable);
     }
+    let owner_key_query = match purpose {
+        LinePurpose::Sealed => {
+            "SELECT 1 FROM line_owner_approval_keys WHERE account_id=$1 AND revoked_at IS NULL FOR SHARE"
+        }
+        LinePurpose::Sms => {
+            "SELECT 1 FROM sms_line_owner_approval_keys WHERE account_id=$1 AND revoked_at IS NULL FOR SHARE"
+        }
+    };
     if tx
-        .query_opt(
-            "SELECT 1 FROM line_owner_approval_keys \
-             WHERE account_id=$1 AND revoked_at IS NULL FOR SHARE",
-            &[&account_id],
-        )
+        .query_opt(owner_key_query, &[&account_id])
         .await?
         .is_none()
         || tx
@@ -225,6 +332,18 @@ async fn issue_line_challenge_with_lifetime(
     if state == "revoked" {
         return Err(LineActivationError::Unavailable);
     }
+    if purpose == LinePurpose::Sms
+        && tx
+            .query_opt(
+                "SELECT 1 FROM device_line_bindings WHERE account_id=$1 AND line_id=$2 \
+             AND purpose='sealed' AND activated_at IS NOT NULL LIMIT 1",
+                &[&account_id, &line_id],
+            )
+            .await?
+            .is_some()
+    {
+        return Err(LineActivationError::Unavailable);
+    }
     let generation = issued
         .checked_add(1)
         .ok_or(LineActivationError::Unavailable)?;
@@ -244,9 +363,15 @@ async fn issue_line_challenge_with_lifetime(
     .await?;
     let inserted = tx
         .execute(
-            "INSERT INTO device_line_bindings(account_id,line_id,device_id,generation) \
-         VALUES($1,$2,$3,$4)",
-            &[&account_id, &line_id, &device_id, &generation],
+            "INSERT INTO device_line_bindings(account_id,line_id,device_id,generation,purpose) \
+         VALUES($1,$2,$3,$4,$5)",
+            &[
+                &account_id,
+                &line_id,
+                &device_id,
+                &generation,
+                &purpose.label(),
+            ],
         )
         .await?;
     if inserted != 1 {
@@ -294,6 +419,47 @@ pub async fn activate_line_binding(
     generation: i64,
     proof: LineActivationProof<'_>,
 ) -> Result<(), LineActivationError> {
+    activate_for_purpose(
+        client,
+        principal,
+        session,
+        line_id,
+        generation,
+        proof,
+        LinePurpose::Sealed,
+    )
+    .await
+}
+
+pub async fn activate_sms_line_binding(
+    client: &mut Client,
+    principal: &SessionPrincipal,
+    session: InboundSession<'_>,
+    line_id: Uuid,
+    generation: i64,
+    proof: LineActivationProof<'_>,
+) -> Result<(), LineActivationError> {
+    activate_for_purpose(
+        client,
+        principal,
+        session,
+        line_id,
+        generation,
+        proof,
+        LinePurpose::Sms,
+    )
+    .await
+}
+
+async fn activate_for_purpose(
+    client: &mut Client,
+    principal: &SessionPrincipal,
+    session: InboundSession<'_>,
+    line_id: Uuid,
+    generation: i64,
+    proof: LineActivationProof<'_>,
+    purpose: LinePurpose,
+) -> Result<(), LineActivationError> {
     let account_id = principal.tenant.account_id();
     if account_id != session.account_id {
         return Err(LineActivationError::Unavailable);
@@ -306,8 +472,8 @@ pub async fn activate_line_binding(
         generation,
         nonce: proof.nonce,
     };
-    let device_statement = device_line_statement(&challenge, proof.observation)?;
-    let owner_statement = owner_line_statement(&device_statement, proof.device_signature_der);
+    let device_statement = line_statement(&challenge, proof.observation, purpose)?;
+    let owner_statement = owner_statement(&device_statement, proof.device_signature_der, purpose);
     let nonce_digest = digest(&proof.nonce);
     let tx = client.transaction().await?;
     if tx
@@ -337,11 +503,29 @@ pub async fn activate_line_binding(
     if line_state == "revoked" || current >= generation || issued != generation {
         return Err(LineActivationError::Unavailable);
     }
+    if purpose == LinePurpose::Sms
+        && tx
+            .query_opt(
+                "SELECT 1 FROM device_line_bindings WHERE account_id=$1 AND line_id=$2 \
+             AND purpose='sealed' AND activated_at IS NOT NULL LIMIT 1",
+                &[&account_id, &line_id],
+            )
+            .await?
+            .is_some()
+    {
+        return Err(LineActivationError::Unavailable);
+    }
     if tx
         .query_opt(
             "SELECT 1 FROM device_line_bindings WHERE account_id=$1 AND line_id=$2 \
-             AND device_id=$3 AND generation=$4 AND state='pending' FOR UPDATE",
-            &[&account_id, &line_id, &session.device_id, &generation],
+             AND device_id=$3 AND generation=$4 AND state='pending' AND purpose=$5 FOR UPDATE",
+            &[
+                &account_id,
+                &line_id,
+                &session.device_id,
+                &generation,
+                &purpose.label(),
+            ],
         )
         .await?
         .is_none()
@@ -365,19 +549,38 @@ pub async fn activate_line_binding(
     {
         return Err(LineActivationError::Unavailable);
     }
-    let Some(owner_key) = tx
-        .query_opt(
-            "SELECT signing_key_sec1,fingerprint FROM line_owner_approval_keys \
-             WHERE account_id=$1 AND revoked_at IS NULL FOR SHARE",
-            &[&account_id],
-        )
-        .await?
-    else {
+    let owner_key_query = match purpose {
+        LinePurpose::Sealed => {
+            "SELECT signing_key_sec1,fingerprint FROM line_owner_approval_keys WHERE account_id=$1 AND revoked_at IS NULL FOR SHARE"
+        }
+        LinePurpose::Sms => {
+            "SELECT signing_key_sec1,fingerprint FROM sms_line_owner_approval_keys WHERE account_id=$1 AND revoked_at IS NULL FOR SHARE"
+        }
+    };
+    let Some(owner_key) = tx.query_opt(owner_key_query, &[&account_id]).await? else {
         return Err(LineActivationError::Unavailable);
     };
     let owner_sec1: Vec<u8> = owner_key.get(0);
     let owner_fingerprint: Vec<u8> = owner_key.get(1);
     if digest(&owner_sec1).as_slice() != owner_fingerprint.as_slice() {
+        return Err(LineActivationError::Unavailable);
+    }
+    // The same physical key cannot claim both owner roles, even with distinct
+    // transcript domains. A future provisioning ceremony must enforce this at
+    // registration too; this transaction is the last activation boundary.
+    let cross_role_query = match purpose {
+        LinePurpose::Sealed => {
+            "SELECT 1 FROM sms_line_owner_approval_keys WHERE account_id=$1 AND signing_key_sec1=$2 LIMIT 1"
+        }
+        LinePurpose::Sms => {
+            "SELECT 1 FROM line_owner_approval_keys WHERE account_id=$1 AND signing_key_sec1=$2 LIMIT 1"
+        }
+    };
+    if tx
+        .query_opt(cross_role_query, &[&account_id, &owner_sec1])
+        .await?
+        .is_some()
+    {
         return Err(LineActivationError::Unavailable);
     }
     let Some(device_key) = tx
@@ -436,7 +639,7 @@ pub async fn activate_line_binding(
         "UPDATE device_line_bindings SET state='active',activated_at=clock_timestamp(), \
          owner_approval_digest=$5,device_confirmation_digest=$6 \
          WHERE account_id=$1 AND line_id=$2 AND device_id=$3 \
-           AND generation=$4 AND state='pending'",
+           AND generation=$4 AND state='pending' AND purpose=$7",
         &[
             &account_id,
             &line_id,
@@ -444,6 +647,7 @@ pub async fn activate_line_binding(
             &generation,
             &&owner_digest[..],
             &&device_digest[..],
+            &purpose.label(),
         ],
     )
     .await?;
