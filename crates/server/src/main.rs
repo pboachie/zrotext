@@ -472,6 +472,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let result = async {
                             let mut client =
                                 zrotext_server::runtime_db::connect_worker(&recovery_database).await?;
+                            let index_ready: bool = client
+                                .query_one("SELECT public.messages_in_flight_index_ready('public')", &[])
+                                .await?
+                                .get(0);
+                            if !index_ready {
+                                return Err(std::io::Error::other(
+                                    "delivery recovery index is unavailable",
+                                )
+                                .into());
+                            }
                             let mut store = DeliveryStore::new(&mut client);
                             store.expire_due(100).await?;
                             store.reconcile_silent_attempts(100).await?;
@@ -970,6 +980,19 @@ async fn ready(
                 .unwrap_or(false);
             if !authority_ready {
                 false
+            } else if config.dispatch_runtime_enabled
+                && !client
+                    .query_one(
+                        "SELECT public.messages_in_flight_index_ready('public')",
+                        &[],
+                    )
+                    .await
+                    .map(|row| row.get::<_, bool>(0))
+                    .unwrap_or(false)
+            {
+                // Recovery sweeps must not run against an absent, invalid, or
+                // substituted index on a populated message history.
+                false
             } else if config.billing_provider_authorized.is_some() {
                 client.query_one(
                     "SELECT NOT EXISTS(SELECT 1 FROM billing_reconciliations WHERE dirty_generation>processed_generation AND last_failure_class='authorization') AND NOT EXISTS(SELECT 1 FROM billing_risk_events WHERE state IN ('queued','needs_review') AND last_failure_class='authorization')",
@@ -1217,6 +1240,12 @@ mod tests {
         assert_eq!(
             ready(State(Arc::new(config.clone()))).await.0,
             StatusCode::OK
+        );
+        let mut dispatch_config = config.clone();
+        dispatch_config.dispatch_runtime_enabled = true;
+        assert_eq!(
+            ready(State(Arc::new(dispatch_config))).await.0,
+            StatusCode::SERVICE_UNAVAILABLE
         );
         client.batch_execute("CREATE TABLE billing_reconciliations(dirty_generation bigint,processed_generation bigint,last_failure_class text); CREATE TABLE billing_risk_events(state text,last_failure_class text)").await.unwrap();
         let provider_authorized = Arc::new(AtomicBool::new(false));
