@@ -227,7 +227,7 @@ Connect a dedicated Android phone and SIM, send and receive SMS through the serv
 - [x] Default-off signed line-bound STOP/review stream and durable Android replay identity; production activation remains open
 - [x] Owner-only read-only queue for ambiguous SMS holds; it cannot clear holds or record off-channel requests ([#237](https://github.com/pboachie/zrotext/pull/237))
 - [ ] Production SMS line activation and verified selected-SIM binding before enabling unsolicited opt-outs
-- [ ] Off-channel withdrawal intake and durable owner review decisions
+- [ ] Review off-channel holds and decisions ([#242](https://github.com/pboachie/zrotext/pull/242)), then dashboard controls and queued cancellation ([#245](https://github.com/pboachie/zrotext/pull/245))
 - [ ] End-to-end opt-out, offline replay and SIM-change evidence on real devices
 
 </details>
@@ -433,7 +433,7 @@ Build useful conversations for local service operators and individuals through t
 |---|---|---|
 | Contacts, consent and conversations | Planned | [product proposal](PRODUCT-PLAN.md#business-inbox) proposal only; no runtime implementation |
 | Templates and scheduled follow-ups | Planned | [product proposal](PRODUCT-PLAN.md#business-inbox) proposal only; no runtime implementation |
-| Approvals and reply tracking | Planned | [product proposal](PRODUCT-PLAN.md#business-inbox) proposal only; no runtime implementation |
+| Approvals and reply tracking | Planned | [product proposal](PRODUCT-PLAN.md#business-inbox), [synthetic demo PR #244](https://github.com/pboachie/zrotext/pull/244) proposal only; scripted approval and handoff simulation under review in #244; no runtime implementation |
 | Workflow connector and integrations | Planned | [product proposal](PRODUCT-PLAN.md#customer-controlled-assistant) proposal only; no runtime implementation |
 | Customer-controlled AI assistant | Planned | [product proposal](PRODUCT-PLAN.md#customer-controlled-assistant) proposal only; no runtime implementation |
 

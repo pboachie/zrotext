@@ -14,6 +14,18 @@ The gateway has restricted send/inbound pilots, signed webhook delivery, account
 
 Production line activation, off-channel holds and review decisions, general inbound content, sealed messaging and the stable public API remain open. The [device compatibility record](DEVICE-COMPATIBILITY.md) describes limited controlled evidence, not a supported-device or capacity guarantee. The [sealed decision log](../protocol/drafts/zt-009-decision-log.md) remains authoritative for Q1-Q11; external paid review is not a prerequisite replacing those technical gates.
 
+## Implementation under review
+
+The following slices have reviewable implementations. They are pull requests, not merged capability or release evidence; the roadmap's release stages and general-send gates stay unchanged until review and the required runtime verification are complete.
+
+| Slice | Review | Scope and remaining boundary |
+|---|---|---|
+| Off-channel holds and review decisions | [#242](https://github.com/pboachie/zrotext/pull/242) | Durable owner API and audit records; neither decision manually lifts suppression. |
+| Owner controls and queued-message cancellation | [#245](https://github.com/pboachie/zrotext/pull/245), stacked on #242 | Dashboard forms, cancellation before a radio grant, usage refunds, and suppression recheck at grant time. Already granted work may finish. |
+| Synthetic workflow demo | [#244](https://github.com/pboachie/zrotext/pull/244) | Service inquiry, wedding RSVP, and personal reminder simulations with draft approval, handoff, opt-out, and honest delivery states. Scripted drafts only; no SMS or AI provider connected. |
+
+Review #242 before its #245 follow-up. The demo can be reviewed independently. Production line activation, general inbound content, sealed messaging, durable workflow services, and real-device evidence remain the next runtime gates.
+
 ## Delivery sequence
 
 Each slice should have its own focused implementation and verification changes. Synthetic prototypes can be developed before the foundation is complete, but customer sending depends on the [general sending gates](ROADMAP.md#path-to-general-sending).
