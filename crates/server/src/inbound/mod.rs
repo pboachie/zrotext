@@ -417,12 +417,39 @@ pub async fn ingest(
             ).await?;
             false
         }
-        Classification::OptIn => tx.execute(
-            "UPDATE recipient_suppressions SET active=FALSE,source_event_id=$3,source_observed_at=to_timestamp($4),source='sms_resume',changed_at=clock_timestamp() \
-             WHERE account_id=$1 AND recipient_e164=$2 AND active=TRUE AND source_attempt_id=$5 \
-             AND source_observed_at<to_timestamp($4)",
-            &[&session.account_id, &recipient_e164, &event.event_id, &observed_seconds, &event.attempt_id],
-        ).await? == 1,
+        Classification::OptIn => {
+            let cleared = tx.execute(
+                "UPDATE recipient_suppressions SET active=FALSE,source_event_id=$3,source_observed_at=to_timestamp($4),source='sms_resume',changed_at=clock_timestamp() \
+                 WHERE account_id=$1 AND recipient_e164=$2 AND active=TRUE AND source_attempt_id=$5 \
+                 AND source_observed_at<to_timestamp($4)",
+                &[&session.account_id, &recipient_e164, &event.event_id, &observed_seconds, &event.attempt_id],
+            ).await? == 1;
+            // A signed START observed after an owner recorded an off-channel
+            // hold is verified new consent from that recipient. The database
+            // guard rejects any other release.
+            let released = tx
+                .query(
+                    "UPDATE owner_recipient_holds SET released_at=clock_timestamp(),release_event_id=$3 \
+                     WHERE account_id=$1 AND recipient_e164=$2 AND released_at IS NULL \
+                     AND created_at<to_timestamp($4) RETURNING id",
+                    &[&session.account_id, &recipient_e164, &event.event_id, &observed_seconds],
+                )
+                .await?;
+            for hold in released {
+                tx.execute(
+                    "INSERT INTO owner_opt_out_audit(id,account_id,event,hold_id,release_event_id) \
+                     VALUES($1,$2,'hold_released',$3,$4)",
+                    &[
+                        &Uuid::new_v4(),
+                        &session.account_id,
+                        &hold.get::<_, Uuid>(0),
+                        &event.event_id,
+                    ],
+                )
+                .await?;
+            }
+            cleared
+        }
         _ => false,
     };
     let queued = tx
