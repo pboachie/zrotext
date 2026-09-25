@@ -205,9 +205,9 @@ fn plausible_device_clock(device_sent_at_ms: Option<i64>) -> Option<f64> {
         .map(|sent| sent as f64 / 1000.0)
 }
 
-/// Like [`ingest`], with the phone's unsigned clock reading at upload. The hub
-/// uses it to place a START on its own clock before releasing an owner hold
-/// (migration 039). It never affects the signature, digest or replay identity.
+/// Like [`ingest`], with the phone's unsigned clock reading at upload. It adds
+/// a check before an owner hold is released (migration 039) and never loosens
+/// one. It never affects the signature, digest or replay identity.
 pub async fn ingest_with_clock(
     client: &mut Client,
     session: InboundSession<'_>,
@@ -459,11 +459,11 @@ pub async fn ingest_with_clock(
                 &[&session.account_id, &recipient_e164, &event.event_id, &observed_seconds, &event.attempt_id],
             ).await? == 1;
             // A signed START observed after an owner recorded an off-channel
-            // hold is verified new consent from that recipient when it was
-            // observed after the hold on the hub's clock. The stored event
-            // (the first upload, on a replay) supplies the phone's clock
-            // offset. Without one, observed_at may run MAX_FUTURE_MS ahead of
-            // the hub and the rule keeps a five-minute margin.
+            // hold is verified new consent from that recipient. observed_at
+            // may run MAX_FUTURE_MS ahead of the hub, so the rule keeps a
+            // five-minute margin; the stored event's phone clock reading (the
+            // first upload, on a replay) can only tighten it by also placing
+            // the START after the hold on the hub clock.
             // owner_hold_release_allowed (migration 039) is shared with the
             // database guard.
             let released = tx

@@ -1,33 +1,35 @@
 -- SPDX-License-Identifier: AGPL-3.0-only
--- Measure the phone's clock when it uploads an inbound event, and use it to
--- order a signed START against an owner opt-out hold on the hub's clock.
+-- Use the phone's clock at upload to catch a START a fast phone uploads late.
 --
--- Migration 038 releases a hold only for a START observed more than five
--- minutes after the hold, because observed_at is the phone's own clock and
--- inbound accepts it up to five minutes ahead of upload. That margin does not
--- cover a phone whose clock runs further ahead and that uploads late. The
--- phone now also reports its clock at upload (device_sent_at). Against the
--- hub's received_at this gives the phone's offset at upload, and the START's
--- observation time on the hub clock is observed_at minus that offset.
--- Network delay makes the phone look further ahead than it is, which moves
--- the corrected time earlier: the safe direction for a consent hold.
+-- Migration 038 releases an owner opt-out hold only for a START observed more
+-- than five minutes after it, because observed_at is the phone's own clock and
+-- inbound accepts it up to five minutes ahead of upload. A phone whose clock
+-- runs further ahead and that uploads late can still pass that margin. The
+-- phone now also reports its clock when it sends the event (device_sent_at).
+-- Against the hub's received_at this estimates the phone's offset at upload.
 --
--- device_sent_at is unsigned metadata stored only when within a day of the
--- hub clock. Events without it keep the five-minute rule.
+-- The reading can only tighten the rule. The five-minute margin on the raw
+-- observation always applies; with a reading, the observation corrected by
+-- that offset must also be more than one minute after the hold. The offset is
+-- measured at upload, not at observation, so it does not see a clock step in
+-- between, and network or queue delay makes the corrected time later than the
+-- true one. Neither can loosen the five-minute floor.
+--
+-- device_sent_at is unsigned metadata, stored only when within a day of the
+-- hub clock. The arithmetic uses epoch seconds so the result does not depend
+-- on the session time zone.
 ALTER TABLE inbound_events ADD COLUMN device_sent_at timestamptz;
 
 CREATE FUNCTION owner_hold_release_allowed(
     observed_at timestamptz, device_sent_at timestamptz,
     received_at timestamptz, hold_created_at timestamptz
 ) RETURNS boolean
-LANGUAGE sql IMMUTABLE AS $$
-    SELECT CASE
-        WHEN device_sent_at IS NULL THEN
-            observed_at > hold_created_at + interval '5 minutes'
-        ELSE
-            observed_at - (device_sent_at - received_at) > hold_created_at + interval '1 minute'
-            AND observed_at - (device_sent_at - received_at) <= received_at + interval '1 minute'
-    END
+LANGUAGE sql STABLE AS $$
+    SELECT extract(epoch FROM observed_at) > extract(epoch FROM hold_created_at) + 300
+       AND (device_sent_at IS NULL
+            OR extract(epoch FROM observed_at)
+               - (extract(epoch FROM device_sent_at) - extract(epoch FROM received_at))
+               > extract(epoch FROM hold_created_at) + 60)
 $$;
 
 CREATE OR REPLACE FUNCTION owner_recipient_hold_guard() RETURNS trigger
@@ -52,7 +54,7 @@ BEGIN
           AND m.recipient_e164 = NEW.recipient_e164
           AND owner_hold_release_allowed(e.observed_at, e.device_sent_at, e.received_at, OLD.created_at)
     ) THEN
-        RAISE EXCEPTION 'an owner opt-out hold needs a signed START observed after it on the hub clock'
+        RAISE EXCEPTION 'an owner opt-out hold needs a signed START observed more than five minutes after it'
             USING ERRCODE = '23514';
     END IF;
     RETURN NEW;

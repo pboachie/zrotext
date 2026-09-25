@@ -1343,9 +1343,10 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
         release_audits, 1,
         "the replayed START wrote no second release"
     );
-    // Migration 039: with the phone's clock at upload, a START is placed on the
-    // hub clock. Rows: observed, device_sent, received, hold_created (seconds
-    // from a fixed hub time) and the expected release.
+    // Migration 039: a phone clock reading can only tighten the five-minute
+    // rule. Rows: observed, device_sent, received, hold_created (seconds from
+    // a fixed hub time; observed and device_sent on the phone clock) and the
+    // expected release.
     for (observed, sent, received, created, expected, case) in [
         (
             400,
@@ -1353,7 +1354,7 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
             100,
             0,
             true,
-            "no clock reading: more than five minutes later",
+            "no reading: more than five minutes later",
         ),
         (
             290,
@@ -1361,39 +1362,48 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
             100,
             0,
             false,
-            "no clock reading: inside the five-minute margin",
+            "no reading: inside the five-minute margin",
         ),
         (
-            1500,
+            600,
             Some(1300),
             100,
             0,
             false,
-            "phone 20 min fast, late upload: START predates the hold",
+            "phone 20 min fast, late upload: START was before the hold",
+        ),
+        (
+            400,
+            Some(500),
+            500,
+            0,
+            true,
+            "accurate phone: more than five minutes later",
         ),
         (
             90,
             Some(100),
             100,
             0,
-            true,
-            "accurate phone: 90 s after the hold",
+            false,
+            "accurate phone: the floor still needs five minutes",
         ),
         (
-            50,
-            Some(100),
+            120,
+            Some(700),
+            700,
+            0,
+            false,
+            "clock stepped back before upload: floor holds",
+        ),
+        (0, Some(40), 120, 10, false, "network delay: floor holds"),
+        (
+            400,
+            Some(450),
             100,
             0,
             false,
-            "accurate phone: inside the one-minute margin",
-        ),
-        (
-            500,
-            Some(100),
-            100,
-            0,
-            false,
-            "corrected time past receipt plus a minute",
+            "reading shows the phone fast: corrected time too early",
         ),
     ] {
         let allowed: bool = db
@@ -2179,12 +2189,14 @@ async fn fresh_signed_events_share_a_durable_budget_and_replays_are_free() {
 
 #[test]
 fn hold_release_skew_matches_the_database_guard() {
-    // Without a device clock reading, migration 039's shared release rule
-    // keeps the same bound as MAX_FUTURE_MS; change both together.
+    // Migration 039's shared release rule always keeps the same five-minute
+    // floor as MAX_FUTURE_MS; change both together.
     assert_eq!(MAX_FUTURE_MS, 5 * 60 * 1000);
     assert!(
         include_str!("../../../../deploy/compose/migrations/039_inbound_device_clock_offset.sql")
-            .contains("observed_at > hold_created_at + interval '5 minutes'")
+            .contains(
+                "extract(epoch FROM observed_at) > extract(epoch FROM hold_created_at) + 300"
+            )
     );
 }
 
