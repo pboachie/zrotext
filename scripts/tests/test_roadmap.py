@@ -6,7 +6,7 @@ import sys
 import unittest
 import xml.etree.ElementTree as ET
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import roadmap  # noqa: E402
 
 

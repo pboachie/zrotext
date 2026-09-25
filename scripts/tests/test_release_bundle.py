@@ -13,7 +13,7 @@ from release_bundle import (WEB_FILES, file_set_digest, migrations, read_json,
                             release_bundle, verify_tag)
 
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 TAG = "v0.1.6-rc.1"
 COMMIT = "a" * 40
 HEX = "b" * 64

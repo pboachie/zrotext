@@ -19,7 +19,7 @@ import java.security.KeyStore
 
 /** Browser-sent complete profile-02 envelope; all authority inputs here are public test fixtures. */
 @RunWith(AndroidJUnit4::class)
-class M2Draft02EnvelopeTest {
+class Draft02EnvelopeDeviceTest {
     private val alias = "zrotext.m2.draft02.envelope-test"
 
     @Test fun prepareRecipient() {

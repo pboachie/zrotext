@@ -20,7 +20,7 @@ import java.util.concurrent.TimeUnit
 
 /** Run only with an isolated emulator and one injected synthetic SMS. Never invokes SmsManager. */
 @RunWith(AndroidJUnit4::class)
-class M1VirtualInboundSmsDeviceTest {
+class VirtualInboundSmsDeviceTest {
     @Test fun emulatorSmsBroadcastCreatesOneEncryptedUpload() {
         val args = InstrumentationRegistry.getArguments()
         assumeTrue(args.getString("m1VirtualInbound") == "true")
@@ -55,7 +55,7 @@ class M1VirtualInboundSmsDeviceTest {
         assertEquals(1, dao.consumeRadioStart(attempt, message, subId, 1, now + 2))
         dao.recordCallback(attempt, 0, false, Activity.RESULT_OK, null, now + 3)
         assertTrue(dao.activeInboundWindows(senderToken, System.currentTimeMillis()).isNotEmpty())
-        Log.i("M1VirtualInbound", "READY $runId")
+        Log.i("VirtualInboundSms", "READY $runId")
 
         val deadline = System.currentTimeMillis() + 90_000L
         var captured: InboundEvent? = null
@@ -79,6 +79,6 @@ class M1VirtualInboundSmsDeviceTest {
         assertEquals(event.eventId, upload.eventId)
         assertEquals(1L, upload.sequence)
         assertNull(upload.signatureDer)
-        Log.i("M1VirtualInbound", "PASS $runId")
+        Log.i("VirtualInboundSms", "PASS $runId")
     }
 }

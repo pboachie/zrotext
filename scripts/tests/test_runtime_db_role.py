@@ -10,7 +10,7 @@ import sys
 import time
 import unittest
 
-COMPOSE = Path(__file__).resolve().parent.parent / "deploy" / "compose"
+COMPOSE = Path(__file__).resolve().parents[2] / "deploy" / "compose"
 sys.path.insert(0, str(COMPOSE))
 from fresh_install_smoke import ensure_local_docker  # noqa: E402
 

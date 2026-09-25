@@ -13,7 +13,7 @@ import org.junit.runner.RunWith
 
 /** Opt-in hardware probe. Pass m0TestToken only while a private loopback writer is running. */
 @RunWith(AndroidJUnit4::class)
-class M0LocalWssDeviceTest {
+class LocalWssDeviceTest {
     @Test fun heartbeatProbeOverPrivateLoopbackTls() {
         val args = InstrumentationRegistry.getArguments()
         val token = args.getString("m0TestToken")

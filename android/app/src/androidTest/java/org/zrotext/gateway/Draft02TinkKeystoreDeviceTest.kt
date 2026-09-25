@@ -26,7 +26,7 @@ import java.security.KeyStore
  * info and empty HPKE AAD. It does not parse a production envelope or enable sealed-mode routes.
  */
 @RunWith(AndroidJUnit4::class)
-class M2Draft02TinkKeystoreTest {
+class Draft02TinkKeystoreDeviceTest {
     private val alias = "zrotext.m2.draft02.tink-interop-test"
 
     @Test fun prepareRecipient() {

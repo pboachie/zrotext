@@ -8,7 +8,7 @@ import tempfile
 import unittest
 
 
-CHECK = Path(__file__).with_name("check_release_tag.py")
+CHECK = Path(__file__).resolve().parents[1] / "check_release_tag.py"
 TAG = "v0.1.0-rc.1"
 
 
