@@ -132,10 +132,10 @@ const TEST_MIGRATIONS: [(&str, &str); 33] = [
     (
         "032_line_opt_out_events.sql",
         include_str!("../../../deploy/compose/migrations/032_line_opt_out_events.sql"),
-        (
-            "033_sms_line_binding_scope.sql",
-            include_str!("../../../deploy/compose/migrations/033_sms_line_binding_scope.sql"),
-        ),
+    ),
+    (
+        "033_sms_line_binding_scope.sql",
+        include_str!("../../../deploy/compose/migrations/033_sms_line_binding_scope.sql"),
     ),
 ];
 
