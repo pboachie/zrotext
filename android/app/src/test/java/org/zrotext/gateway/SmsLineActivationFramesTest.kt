@@ -150,6 +150,31 @@ class SmsLineActivationFramesTest {
         } finally { db.close() }
     }
 
+    @Test fun resentAcknowledgementInstallsAfterExpiryOnlyWithinTheHubResendWindow() {
+        var now = 1_000L
+        val producer = SmsLineActivationDevice({ 30 }, { 7 },
+            { listOf(ActiveSimCard(7, 42)) }, ::signer, { now })
+        val proof = producer.prepare(SmsLineActivationFrames.challenge(challengeFrame()),
+            account, device)!!
+        val ack = SmsLineActivationFrames.activated(JSONObject().put("v", 1)
+            .put("type", "sms_line_activated").put("challenge_id", challengeId.toString())
+            .put("account_id", account.toString()).put("line_id", line.toString())
+            .put("device_id", device.toString()).put("generation", 1)
+            .put("device_statement_sha256", b64.encodeToString(sha256(proof.deviceStatement())))
+            .put("device_signature_sha256", b64.encodeToString(sha256(proof.deviceSignatureDer()))))
+        val expiry = proof.challenge.expiresAtMs
+        for ((at, installs) in listOf(expiry + SmsLineActivationDevice.ACK_GRACE_MS to false,
+                                      expiry + 60_000L to true)) {
+            val db = Room.inMemoryDatabaseBuilder(RuntimeEnvironment.getApplication(),
+                SmsJournalDatabase::class.java).allowMainThreadQueries().build()
+            try {
+                now = at
+                assertEquals(installs, producer.installAfterAuthenticatedAck(db.attempts(), proof,
+                    ack, account, device))
+            } finally { db.close() }
+        }
+    }
+
     private fun sha256(bytes: ByteArray): ByteArray =
         MessageDigest.getInstance("SHA-256").digest(bytes)
 }

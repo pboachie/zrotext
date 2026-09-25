@@ -126,7 +126,8 @@ The current PostgreSQL tests use synthetic keys and declared subscription
 values. The Android gateway answers a pushed challenge only for API 29+ with
 exactly one selected, active physical SIM, keeps the prepared proof in memory,
 and installs its local line binding only from an `sms_line_activated` frame
-whose digests match that proof and a fresh SIM observation. A restarted app
+whose digests match that proof and a fresh SIM observation, until 15 minutes
+after the challenge expiry to allow the hub's resends. A restarted app
 cannot install an earlier proof; the owner opens a new activation. An owner
 browser signing flow, physical SIM testing, and a real carrier receive test are
 still required.

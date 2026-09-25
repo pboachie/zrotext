@@ -441,8 +441,10 @@ class AuthenticatedGatewayService : Service() {
                         }
                         "sms_line_activated" -> {
                             check(machine.phase == DeviceStreamMachine.Phase.ACTIVE)
-                            handleSmsLineActivated(machine, keys, currentGeneration,
-                                SmsLineActivationFrames.activated(frame))
+                            // Capture the authenticated identity now: a reconnect before the
+                            // io thread runs must not discard an approved activation.
+                            handleSmsLineActivated(keys, machine.activeAccountId(),
+                                machine.activeDeviceId(), SmsLineActivationFrames.activated(frame))
                         }
                         "line_opt_out_ack" -> {
                             check(lineOptOutUploadRequested &&
@@ -718,11 +720,9 @@ class AuthenticatedGatewayService : Service() {
             a.expiresAtMs == b.expiresAtMs && a.nonce.contentEquals(b.nonce)
 
     /** Installs the local line binding only for the exact proof this process sent. */
-    private fun handleSmsLineActivated(machine: DeviceStreamMachine, keys: DeviceSigningKeyStore,
-                                       currentGeneration: Int,
-                                       ack: AuthenticatedSmsLineActivationAck) {
+    private fun handleSmsLineActivated(keys: DeviceSigningKeyStore, accountId: UUID,
+                                       deviceId: UUID, ack: AuthenticatedSmsLineActivationAck) {
         JournalRuntime.io.execute {
-            if (generation != currentGeneration) return@execute
             val proof = smsLineActivation
             if (proof == null || !ack.matches(proof)) {
                 AuthenticatedGatewayStatus.value =
@@ -733,10 +733,11 @@ class AuthenticatedGatewayService : Service() {
             val installed = try {
                 SmsLineActivationDevice.forGateway(applicationContext, keys).installAfterAuthenticatedAck(
                     SmsJournalDatabase.get(applicationContext).attempts(), proof, ack,
-                    machine.activeAccountId(), machine.activeDeviceId())
+                    accountId, deviceId)
             } catch (_: Exception) { false }
             AuthenticatedGatewayStatus.value = if (installed) "SMS line activated on this phone"
-                else "SMS line approved, but the SIM changed; start a new activation"
+                else "SMS line approved, but this phone's SIM, selection or clock no longer " +
+                    "matches the proof; start a new activation"
         }
     }
 

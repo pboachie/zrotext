@@ -150,7 +150,9 @@ internal class SmsLineActivationDevice(
         val challenge = proof.challenge
         val now = nowMs()
         val active = observe()
-        if (!ack.matches(proof) || now <= 0 || now >= challenge.expiresAtMs ||
+        // The hub activates only before expiry, then repeats the acknowledgement on
+        // each connection for ACK_GRACE_MS so a dropped stream cannot strand it.
+        if (!ack.matches(proof) || now <= 0 || now >= challenge.expiresAtMs + ACK_GRACE_MS ||
             challenge.expiresAtMs - now > CHALLENGE_LIFETIME_MS ||
             apiLevel() != proof.apiLevel || proof.apiLevel < 29 ||
             selectedSubscriptionId() != proof.selectedSubscriptionId ||
@@ -167,6 +169,8 @@ internal class SmsLineActivationDevice(
 
     companion object {
         private val CHALLENGE_LIFETIME_MS = TimeUnit.MINUTES.toMillis(5)
+        /** Matches the hub's acknowledgement resend window. */
+        internal val ACK_GRACE_MS = TimeUnit.MINUTES.toMillis(15)
 
         fun forGateway(context: Context, keys: DeviceSigningKeyStore): SmsLineActivationDevice =
             SmsLineActivationDevice(
