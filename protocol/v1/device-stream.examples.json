@@ -6,11 +6,15 @@
   {"type":"radio_event","v":1,"connection_epoch":7,"event_id":"00000000-0000-4000-8000-000000000001","message_id":"00000000-0000-4000-8000-000000000001","attempt_id":"00000000-0000-4000-8000-000000000001","evidence":"durable_submit_intent","observed_at_ms":1700000000000},
   {"type":"inbound_event","v":1,"connection_epoch":7,"event_id":"00000000-0000-4000-8000-000000000001","sequence":1,"message_id":"00000000-0000-4000-8000-000000000001","attempt_id":"00000000-0000-4000-8000-000000000001","classification":"captured_local","observed_at_ms":1700000000000,"part_count":1,"signature_der":"Ag"},
   {"type":"line_opt_out","v":1,"connection_epoch":7,"event_id":"00000000-0000-4000-8000-000000000001","sequence":1,"line_id":"00000000-0000-4000-8000-000000000002","binding_generation":1,"action":"opt_out","recipient_e164":"+15551234567","observed_at_ms":1700000000000,"signature_der":"Ag"},
+  {"type":"sms_line_proof","v":1,"connection_epoch":7,"challenge_id":"00000000-0000-4000-8000-000000000001","android_api_level":29,"active_subscription_count":1,"selected_subscription_id":3,"signature_der":"Ag"},
   {"type":"challenge","v":1,"challenge_id":"00000000-0000-4000-8000-000000000001","account_id":"00000000-0000-4000-8000-000000000001","device_id":"00000000-0000-4000-8000-000000000001","nonce":"AQ"},
   {"type":"session","v":1,"connection_epoch":7,"heartbeat_seconds":30},
   {"type":"heartbeat_ack","v":1,"connection_epoch":7},
   {"type":"synthetic_grant","v":1,"message_id":"00000000-0000-4000-8000-000000000001","attempt_id":"00000000-0000-4000-8000-000000000001","device_id":"00000000-0000-4000-8000-000000000001","generation":1,"connection_epoch":7,"deployment_epoch":1,"recipient_digest":"AQ","expires_at_ms":1700000000000,"recipient_e164":"+15555550101","body":"ZROtext synthetic test: case_1"},
   {"type":"radio_event_ack","v":1,"event_id":"00000000-0000-4000-8000-000000000001","state":"submitting","submit_permitted":true},
   {"type":"inbound_event_ack","v":1,"event_id":"00000000-0000-4000-8000-000000000001","created":true,"queued_deliveries":0},
-  {"type":"line_opt_out_ack","v":1,"event_id":"00000000-0000-4000-8000-000000000001","created":true}
+  {"type":"line_opt_out_ack","v":1,"event_id":"00000000-0000-4000-8000-000000000001","created":true},
+  {"type":"sms_line_challenge","v":1,"challenge_id":"00000000-0000-4000-8000-000000000001","account_id":"00000000-0000-4000-8000-000000000001","line_id":"00000000-0000-4000-8000-000000000001","device_id":"00000000-0000-4000-8000-000000000001","generation":1,"nonce":"AQ","expires_at_ms":1700000000000},
+  {"type":"sms_line_proof_ack","v":1,"challenge_id":"00000000-0000-4000-8000-000000000001","accepted":true},
+  {"type":"sms_line_activated","v":1,"challenge_id":"00000000-0000-4000-8000-000000000001","account_id":"00000000-0000-4000-8000-000000000001","line_id":"00000000-0000-4000-8000-000000000001","device_id":"00000000-0000-4000-8000-000000000001","generation":1,"device_statement_sha256":"AQ","device_signature_sha256":"Ag"}
 ]

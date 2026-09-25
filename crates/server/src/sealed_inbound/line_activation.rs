@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Internal signed line-binding transaction. No HTTP/WSS route calls this.
+//! Signed line-binding transaction. Only the dormant SMS exchange in
+//! [`exchange`] calls the SMS functions; no route calls the sealed ones.
 //! A signed device declaration is not independent evidence of physical SIM
 //! identity. The owner-key bootstrap and Android observation remain open gates.
 
@@ -65,7 +66,7 @@ pub struct LineChallenge {
     pub nonce: [u8; 32],
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SimObservation {
     pub android_api_level: u16,
     pub active_subscription_count: u8,
@@ -225,8 +226,7 @@ pub async fn issue_line_challenge(
     .await
 }
 
-/// Internal SMS-only challenge. No live route provisions its owner key or
-/// invokes this function yet.
+/// SMS-only challenge. Called only by the dormant [`exchange`] owner route.
 pub async fn issue_sms_line_challenge(
     client: &mut Client,
     principal: &SessionPrincipal,
@@ -410,7 +410,7 @@ async fn issue_challenge_for_purpose(
 }
 
 /// Atomically activates a pending binding after checking both signatures and
-/// current owner/device sessions. No transport currently invokes this method.
+/// current owner/device sessions. No transport invokes the sealed variant.
 pub async fn activate_line_binding(
     client: &mut Client,
     principal: &SessionPrincipal,
@@ -688,6 +688,8 @@ async fn activate_for_purpose(
     tx.commit().await?;
     Ok(())
 }
+
+pub mod exchange;
 
 #[cfg(test)]
 mod tests;

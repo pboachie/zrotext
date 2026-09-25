@@ -11,13 +11,17 @@
     {"$ref": "#/$defs/radio_event"},
     {"$ref": "#/$defs/inbound_event"},
     {"$ref": "#/$defs/line_opt_out"},
+    {"$ref": "#/$defs/sms_line_proof"},
     {"$ref": "#/$defs/challenge"},
     {"$ref": "#/$defs/session"},
     {"$ref": "#/$defs/heartbeat_ack"},
     {"$ref": "#/$defs/synthetic_grant"},
     {"$ref": "#/$defs/radio_event_ack"},
     {"$ref": "#/$defs/inbound_event_ack"},
-    {"$ref": "#/$defs/line_opt_out_ack"}
+    {"$ref": "#/$defs/line_opt_out_ack"},
+    {"$ref": "#/$defs/sms_line_challenge"},
+    {"$ref": "#/$defs/sms_line_proof_ack"},
+    {"$ref": "#/$defs/sms_line_activated"}
   ],
   "$defs": {
     "uuid": {"type": "string", "format": "uuid"},
@@ -37,6 +41,10 @@
     "synthetic_grant": {"type": "object", "additionalProperties": false, "required": ["type", "v", "message_id", "attempt_id", "device_id", "generation", "connection_epoch", "deployment_epoch", "recipient_digest", "expires_at_ms", "recipient_e164", "body"], "properties": {"type": {"const": "synthetic_grant"}, "v": {"const": 1}, "message_id": {"$ref": "#/$defs/uuid"}, "attempt_id": {"$ref": "#/$defs/uuid"}, "device_id": {"$ref": "#/$defs/uuid"}, "generation": {"type": "integer", "minimum": 1}, "connection_epoch": {"$ref": "#/$defs/epoch"}, "deployment_epoch": {"$ref": "#/$defs/epoch"}, "recipient_digest": {"$ref": "#/$defs/digest"}, "expires_at_ms": {"$ref": "#/$defs/ms"}, "recipient_e164": {"type": "string", "description": "Plaintext E.164 recipient number; this grant discloses it to the device."}, "body": {"type": "string", "description": "Plaintext fixed synthetic test message."}}},
     "radio_event_ack": {"type": "object", "additionalProperties": false, "required": ["type", "v", "event_id", "state", "submit_permitted"], "properties": {"type": {"const": "radio_event_ack"}, "v": {"const": 1}, "event_id": {"$ref": "#/$defs/uuid"}, "state": {"enum": ["accepted", "queued", "claimed", "submitting", "submitted", "delivered", "delivery_unknown", "unknown", "failed", "cancelled", "expired"]}, "submit_permitted": {"type": "boolean"}}},
     "inbound_event_ack": {"type": "object", "additionalProperties": false, "required": ["type", "v", "event_id", "created", "queued_deliveries"], "properties": {"type": {"const": "inbound_event_ack"}, "v": {"const": 1}, "event_id": {"$ref": "#/$defs/uuid"}, "created": {"type": "boolean"}, "queued_deliveries": {"type": "integer", "minimum": 0}, "suppression_cleared": {"type": "boolean"}}},
-    "line_opt_out_ack": {"type": "object", "additionalProperties": false, "required": ["type", "v", "event_id", "created"], "properties": {"type": {"const": "line_opt_out_ack"}, "v": {"const": 1}, "event_id": {"$ref": "#/$defs/uuid"}, "created": {"type": "boolean"}}}
+    "line_opt_out_ack": {"type": "object", "additionalProperties": false, "required": ["type", "v", "event_id", "created"], "properties": {"type": {"const": "line_opt_out_ack"}, "v": {"const": 1}, "event_id": {"$ref": "#/$defs/uuid"}, "created": {"type": "boolean"}}},
+    "sms_line_proof": {"type": "object", "description": "Signed device declaration for a pushed SMS line challenge. It is not independent evidence of physical SIM identity.", "additionalProperties": false, "required": ["type", "v", "connection_epoch", "challenge_id", "android_api_level", "active_subscription_count", "selected_subscription_id", "signature_der"], "properties": {"type": {"const": "sms_line_proof"}, "v": {"const": 1}, "connection_epoch": {"$ref": "#/$defs/epoch"}, "challenge_id": {"$ref": "#/$defs/uuid"}, "android_api_level": {"type": "integer", "minimum": 28, "maximum": 65535}, "active_subscription_count": {"const": 1}, "selected_subscription_id": {"type": "integer", "minimum": 0}, "signature_der": {"type": "string", "pattern": "^[A-Za-z0-9_-]+$", "description": "Base64url without padding of the canonical DER P-256 device signature over sms_device_statement."}}},
+    "sms_line_challenge": {"type": "object", "description": "Owner-opened SMS line activation challenge for this device.", "additionalProperties": false, "required": ["type", "v", "challenge_id", "account_id", "line_id", "device_id", "generation", "nonce", "expires_at_ms"], "properties": {"type": {"const": "sms_line_challenge"}, "v": {"const": 1}, "challenge_id": {"$ref": "#/$defs/uuid"}, "account_id": {"$ref": "#/$defs/uuid"}, "line_id": {"$ref": "#/$defs/uuid"}, "device_id": {"$ref": "#/$defs/uuid"}, "generation": {"type": "integer", "minimum": 1}, "nonce": {"type": "string", "pattern": "^[A-Za-z0-9_-]+$", "description": "Base64url without padding of the 32-byte challenge nonce."}, "expires_at_ms": {"$ref": "#/$defs/ms"}}},
+    "sms_line_proof_ack": {"type": "object", "additionalProperties": false, "required": ["type", "v", "challenge_id", "accepted"], "properties": {"type": {"const": "sms_line_proof_ack"}, "v": {"const": 1}, "challenge_id": {"$ref": "#/$defs/uuid"}, "accepted": {"type": "boolean"}}},
+    "sms_line_activated": {"type": "object", "description": "Sent after the owner approved this exact device proof and the SMS line binding is active.", "additionalProperties": false, "required": ["type", "v", "challenge_id", "account_id", "line_id", "device_id", "generation", "device_statement_sha256", "device_signature_sha256"], "properties": {"type": {"const": "sms_line_activated"}, "v": {"const": 1}, "challenge_id": {"$ref": "#/$defs/uuid"}, "account_id": {"$ref": "#/$defs/uuid"}, "line_id": {"$ref": "#/$defs/uuid"}, "device_id": {"$ref": "#/$defs/uuid"}, "generation": {"type": "integer", "minimum": 1}, "device_statement_sha256": {"type": "string", "pattern": "^[A-Za-z0-9_-]+$", "description": "Base64url without padding of SHA-256 of the exact device statement bytes."}, "device_signature_sha256": {"type": "string", "pattern": "^[A-Za-z0-9_-]+$", "description": "Base64url without padding of SHA-256 of the exact device DER signature."}}}
   }
 }

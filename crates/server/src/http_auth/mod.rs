@@ -37,6 +37,7 @@ use tokio_postgres::Client;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
+mod sms_lines;
 mod sms_owner_keys;
 
 const SESSION_COOKIE: &str = "__Host-zrotext_session";
@@ -488,6 +489,8 @@ pub struct AuthHttpState {
     pub hash_limit: Arc<Semaphore>,
     pub mfa_cipher: Option<Arc<MfaCipher>>,
     pub mfa_enrollment_enabled: bool,
+    /// Dormant owner routes for SMS line activation; off by default.
+    pub sms_line_activation_enabled: bool,
 }
 
 impl AuthHttpState {
@@ -514,6 +517,7 @@ impl AuthHttpState {
             hash_limit: Arc::new(Semaphore::new(2)),
             mfa_cipher: None,
             mfa_enrollment_enabled: false,
+            sms_line_activation_enabled: false,
         })
     }
 
@@ -524,6 +528,11 @@ impl AuthHttpState {
 
     pub fn with_mfa_cipher(mut self, cipher: Arc<MfaCipher>) -> Self {
         self.mfa_cipher = Some(cipher);
+        self
+    }
+
+    pub fn with_sms_line_activation_enabled(mut self) -> Self {
+        self.sms_line_activation_enabled = true;
         self
     }
 
@@ -564,6 +573,15 @@ pub fn router(state: AuthHttpState) -> Router {
         .route(
             "/sms-line-owner-keys/{fingerprint}",
             delete(sms_owner_keys::revoke),
+        )
+        .route("/sms-lines/{line_id}/activations", post(sms_lines::open))
+        .route(
+            "/sms-lines/{line_id}/activations/{challenge_id}",
+            get(sms_lines::view),
+        )
+        .route(
+            "/sms-lines/{line_id}/activations/{challenge_id}/approve",
+            post(sms_lines::approve),
         )
         .layer(DefaultBodyLimit::max(16 * 1024))
         .layer(middleware::from_fn(no_store_response))

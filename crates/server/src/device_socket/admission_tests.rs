@@ -35,6 +35,7 @@ fn socket_state(database_url: String, site_id: &str) -> DeviceSocketState {
         dispatch_runtime_enabled: false,
         inbound_pilot_enabled: false,
         line_opt_out_enabled: false,
+        sms_line_activation_enabled: false,
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),
     }

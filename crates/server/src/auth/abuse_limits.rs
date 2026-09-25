@@ -39,6 +39,7 @@ pub enum Limit {
     MfaManage,
     BillingSession,
     ApiKeyCreate,
+    SmsLineActivation,
 }
 
 impl Limit {
@@ -62,6 +63,7 @@ impl Limit {
             Self::MfaChallenge => ("mfa_challenge", 300, 60, Some((5, 300))),
             Self::MfaManage => ("mfa_manage", 120, 60, Some((8, 900))),
             Self::BillingSession => ("billing_session", 120, 60, Some((8, 60))),
+            Self::SmsLineActivation => ("sms_line_activation", 120, 60, Some((30, 900))),
         }
     }
 }
