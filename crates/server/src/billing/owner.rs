@@ -173,6 +173,7 @@ async fn dashboard(
             (header::CONTENT_SECURITY_POLICY, "default-src 'none'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'"),
             (header::REFERRER_POLICY, "no-referrer"),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            (header::STRICT_TRANSPORT_SECURITY, "max-age=63072000; includeSubDomains"),
         ],
         Html(include_str!("../../static/billing-dashboard.html")),
     ).into_response())
@@ -184,6 +185,7 @@ async fn script() -> impl IntoResponse {
         [
             (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            (header::STRICT_TRANSPORT_SECURITY, "max-age=63072000; includeSubDomains"),
         ],
         include_str!("../../static/billing-dashboard.js"),
     )
