@@ -237,6 +237,10 @@ async fn script() -> impl IntoResponse {
         [
             (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            (
+                header::STRICT_TRANSPORT_SECURITY,
+                "max-age=63072000; includeSubDomains",
+            ),
         ],
         include_str!("../../static/billing-dashboard.js"),
     )
