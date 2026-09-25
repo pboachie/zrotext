@@ -223,6 +223,7 @@ class LocalLineBindingTest {
                 installedAtMs = 3000), listOf(ActiveSimCard(7, 42))))
             val oldStop = dao.localWithdrawal(firstPdu)!!
             assertEquals(line, oldStop.lineId)
+            assertNull(dao.nextLineOptOut(0))
             assertFalse(LineOptOutUploadGate.allows(oldStop, legacy,
                 UUID.fromString(account), UUID.fromString(device), 7,
                 listOf(ActiveSimCard(7, 42)), 2500))
@@ -238,6 +239,7 @@ class LocalLineBindingTest {
             assertFalse(LineOptOutUploadGate.allows(oldStop, dao.currentLineBinding(),
                 UUID.fromString(account), UUID.fromString(device), 7,
                 listOf(ActiveSimCard(7, 42)), 3500))
+            assertNull(dao.nextLineOptOut(0))
             val next = "d".repeat(64)
             val nextSealed = InboundVault.sealSenderWithKey(testKey, testSender, next)
             assertTrue(dao.recordLocalWithdrawal(next, sender,
@@ -246,6 +248,7 @@ class LocalLineBindingTest {
             assertEquals(line, dao.localWithdrawal(next)?.lineId)
             assertEquals(4L, dao.localWithdrawal(next)?.bindingGeneration)
             assertArrayEquals(nextSealed.ciphertext, dao.localWithdrawal(next)?.encryptedSender)
+            assertEquals(next, dao.nextLineOptOut(0)?.dedupeToken)
             assertTrue(dao.isRecipientSuppressed(sender))
         } finally {
             upgraded.close()

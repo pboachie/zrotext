@@ -152,13 +152,15 @@ class LineOptOutUploadTest {
                 InboundClassification.OPT_OUT, null, emptyList(), 1000))
             assertTrue(dao.installVerifiedLineBinding(LocalLineBinding(accountId =
                 account.toString(), deviceId = device.toString(), lineId = line,
-                generation = 7, subscriptionId = 7, installedAtMs = 1500), listOf(7)))
+                generation = 7, subscriptionId = 7, installedAtMs = 1500, cardId = 42),
+                listOf(ActiveSimCard(7, 42))))
             assertTrue(dao.recordLocalWithdrawal(unsealed, senderToken,
-                InboundClassification.OPT_OUT_REVIEW, 7, listOf(7), 2000))
+                InboundClassification.OPT_OUT_REVIEW, 7,
+                listOf(ActiveSimCard(7, 42)), 2000))
             val key = SecretKeySpec(ByteArray(32) { (it + 1).toByte() }, "AES")
             val sealed = InboundVault.sealSenderWithKey(key, recipient, bound)
             assertTrue(dao.recordLocalWithdrawal(bound, senderToken,
-                InboundClassification.OPT_OUT, 7, listOf(7), 3000,
+                InboundClassification.OPT_OUT, 7, listOf(ActiveSimCard(7, 42)), 3000,
                 sealed.ciphertext, sealed.nonce))
             assertNull(dao.localWithdrawal(first)?.lineId)
             assertNull(dao.localWithdrawal(unsealed)?.encryptedSender)
