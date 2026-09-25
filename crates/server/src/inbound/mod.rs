@@ -254,7 +254,9 @@ pub async fn ingest(
         .await?;
     let source = source.ok_or(InboundError::UnknownSource)?;
     source_readiness(Some(source.get::<_, String>(0).as_str()), source.get(1))?;
-    let recipient_e164: String = source.get(2);
+    // Data retention nulls the recipient of a terminal message. Stored events
+    // remain exact-replayable below; a new event for that source is refused.
+    let recipient_e164: Option<String> = source.get(2);
 
     let digest = Sha256::digest(&signed).to_vec();
     // Serialize this event ID across connections before the replay lookup.
@@ -287,8 +289,13 @@ pub async fn ingest(
         ).await?.is_none() {
             return Err(InboundError::Unauthorized);
         }
-        let cleared =
-            suppression_cleared(&tx, session.account_id, &recipient_e164, event.event_id).await?;
+        let cleared = suppression_cleared(
+            &tx,
+            session.account_id,
+            recipient_e164.as_deref(),
+            event.event_id,
+        )
+        .await?;
         tx.commit().await?;
         return Ok(IngestOutcome {
             created: false,
@@ -308,6 +315,11 @@ pub async fn ingest(
     {
         return Err(InboundError::SequenceConflict);
     }
+    // Content retention has retired this source. Without the recipient, no
+    // suppression can be recorded; reject permanently before any budget charge.
+    let Some(recipient_e164) = recipient_e164 else {
+        return Err(InboundError::UnknownSource);
+    };
     // Charge before attempting the event INSERT. At a saturated budget,
     // fresh signed IDs cannot create rolled-back inbound rows and indexes.
     // The charge and INSERT still commit or roll back as one transaction.
@@ -374,8 +386,13 @@ pub async fn ingest(
         // A writer from the prior version may have raced without the event
         // advisory lock. Roll back this transaction's budget charge; the
         // committed row already makes this an exact replay.
-        let cleared =
-            suppression_cleared(&tx, session.account_id, &recipient_e164, event.event_id).await?;
+        let cleared = suppression_cleared(
+            &tx,
+            session.account_id,
+            Some(recipient_e164.as_str()),
+            event.event_id,
+        )
+        .await?;
         tx.rollback().await?;
         return Ok(IngestOutcome {
             created: false,
@@ -444,12 +461,15 @@ fn source_readiness(
 async fn suppression_cleared<C: tokio_postgres::GenericClient>(
     client: &C,
     account_id: Uuid,
-    recipient_e164: &str,
+    recipient_e164: Option<&str>,
     event_id: Uuid,
 ) -> Result<bool, tokio_postgres::Error> {
+    // A redacted source has no recipient. The source event ID still names the
+    // one suppression row that this event's START transition cleared.
     Ok(client
         .query_opt(
-            "SELECT 1 FROM recipient_suppressions WHERE account_id=$1 AND recipient_e164=$2 \
+            "SELECT 1 FROM recipient_suppressions WHERE account_id=$1 \
+         AND ($2::text IS NULL OR recipient_e164=$2) \
          AND active=FALSE AND source_event_id=$3",
             &[&account_id, &recipient_e164, &event_id],
         )

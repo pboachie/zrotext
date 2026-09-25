@@ -1319,6 +1319,55 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
         .unwrap()
         .is_none()
     );
+    // Data retention nulls a terminal source's recipient and payload. A stored
+    // event stays exact-replayable; a new event for that attempt is refused
+    // permanently instead of reading the NULL recipient.
+    db.execute(
+        "UPDATE recipient_suppressions SET active=FALSE,source_event_id=$2,source='sms_resume' WHERE account_id=$1",
+        &[&account, &resume.event_id],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "UPDATE messages SET state='delivered',recipient_e164=NULL,transport_payload=NULL WHERE id=$1",
+        &[&message],
+    )
+    .await
+    .unwrap();
+    let redacted_replay = ingest(&mut db, session, &resume).await.unwrap();
+    assert!(!redacted_replay.created);
+    assert!(redacted_replay.suppression_cleared);
+    assert!(!ingest(&mut db, session, &stop).await.unwrap().created);
+    let late_stop = InboundEvent {
+        event_id: Uuid::new_v4(),
+        sequence: 2005,
+        classification: Classification::OptOut,
+        signature_der: &[],
+        ..unsigned
+    };
+    let late_signature: Signature = signing.sign(&signed_event_bytes(session, &late_stop));
+    let late_der = late_signature.to_der();
+    let late_stop = InboundEvent {
+        signature_der: late_der.as_bytes(),
+        ..late_stop
+    };
+    assert!(matches!(
+        ingest(&mut db, session, &late_stop).await,
+        Err(InboundError::UnknownSource)
+    ));
+    assert!(
+        db.query_opt(
+            "SELECT 1 FROM inbound_events WHERE id=$1",
+            &[&late_stop.event_id]
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+    assert!(db.query_one(
+        "SELECT NOT active FROM recipient_suppressions WHERE account_id=$1 AND recipient_e164='+15551234567'",
+        &[&account],
+    ).await.unwrap().get::<_, bool>(0));
     db.execute(
         "UPDATE device_keys SET revoked_at=now() WHERE device_id=$1",
         &[&device],
