@@ -5,15 +5,36 @@ ZROtext is an open-source Android SMS gateway in active development. This page s
 <!-- Generated regions come from docs/roadmap.json. Edit that file, then run `python3 scripts/roadmap.py`. -->
 
 <!-- roadmap:overview -->
-<p align="center"><img src="assets/roadmap-overview.svg" alt="Roadmap at a glance: 15 capabilities in four tracks. Four are in a restricted pilot, seven are being built, three are in design and one is planned. None has reached general release." width="900"></p>
+<p align="center"><img src="assets/roadmap-overview.svg" alt="Roadmap at a glance: 22 capabilities in five tracks. Four are in a restricted pilot, seven are being built, three are in design and eight are planned. None has reached general release." width="900"></p>
 <!-- /roadmap:overview -->
 
 > [!NOTE]
 > **How to read the stages**
+> - **Planned:** a proposed capability and intended outcomes are recorded; implementation has not started.
 > - **Design:** a written design, protocol draft or test vectors exist. Nothing runs in the gateway yet.
 > - **Build:** code is merged and tested in CI or local rehearsals. It is not ready for real traffic.
 > - **Restricted pilot:** runs end to end only for allowlisted accounts and recipients, using synthetic or controlled tests.
-> - **General release:** documented, supported and open to any self-hosted operator. No capability has reached this stage.
+> - **General release:** documented, supported and available for the stated deployment mode. No capability has reached this stage.
+
+## Customer outcomes
+
+The first experiences focus on local service operators and a personal assistant that works in both directions. A dashboard and integrations share one messaging foundation. The [use-case catalog](USE-CASES.md) describes each journey, dependencies and acceptance criteria; the [product implementation plan](PRODUCT-PLAN.md) orders the work.
+
+Priority is delivery order, not availability or a release date. These outcomes are separate from the capability counts below.
+
+<!-- roadmap:usecases -->
+| Priority | Experience | Example | Availability |
+|---|---|---|---|
+| First | [Text receptionist](USE-CASES.md#receptionist) | Gather job details by text, draft a reply, and ask the owner to approve a quote. | Proposed; unavailable |
+| First | [Personal AI by SMS](USE-CASES.md#personalai) | Text your assistant a note or reminder; let approved routines communicate with selected contacts. | Proposed; unavailable |
+| Next | [Repair and project updates](USE-CASES.md#repairs) | Send a repair update and request approval before extra work. | Proposed; unavailable |
+| Next | [Cancellation-slot recovery](USE-CASES.md#waitlist) | Offer an open slot in sequence and stop when one booking is confirmed. | Proposed; unavailable |
+| Next | [Wedding and event concierge](USE-CASES.md#events) | Send personalized invitations, collect RSVPs, and remind only unanswered guests. | Proposed; unavailable |
+| Next | [Volunteer and shift coordination](USE-CASES.md#volunteers) | Fill an open shift by text and stop requests once it is covered. | Proposed; unavailable |
+| Later | [Household coordinator](USE-CASES.md#household) | Coordinate pickups, errands and recurring responsibilities through opt-in reminders and replies. | Proposed; unavailable |
+| Later | [Community lending desk](USE-CASES.md#lending) | Request equipment by text, confirm availability, and receive return reminders. | Proposed; unavailable |
+| Later | [Operational acknowledgment](USE-CASES.md#acknowledgment) | Notify a small team about a maintenance issue and record who will handle it. | Proposed; unavailable |
+<!-- /roadmap:usecases -->
 
 ## At a glance
 
@@ -21,11 +42,11 @@ ZROtext is an open-source Android SMS gateway in active development. This page s
 ```mermaid
 %%{init: {"themeVariables": {"pie1": "#b6f36a", "pie2": "#6f9b4b", "pie3": "#edbe70", "pie4": "#99a696", "pieSectionTextColor": "#0b0f0c", "pieStrokeColor": "#29332a", "pieOuterStrokeColor": "#29332a"}}}%%
 pie showData
-    title Capabilities by stage (15 tracked)
+    title Capabilities by stage (22 tracked)
     "Restricted pilot" : 4
     "Build" : 7
     "Design" : 3
-    "Planned" : 1
+    "Planned" : 8
 ```
 
 | Track | General release | Restricted pilot | Build | Design | Planned |
@@ -33,12 +54,13 @@ pie showData
 | [Gateway messaging](#gateway-messaging) |  | 4 | 1 |  |  |
 | [Self-hosting and integrations](#self-hosting-and-integrations) |  |  | 3 | 1 |  |
 | [Privacy and account controls](#privacy-and-account-controls) |  |  | 1 | 1 | 1 |
-| [Managed service and resilience](#managed-service-and-resilience) |  |  | 2 | 1 |  |
+| [Managed service and resilience](#managed-service-and-resilience) |  |  | 2 | 1 | 2 |
+| [Workflows and AI](#workflows-and-ai) |  |  |  |  | 5 |
 <!-- /roadmap:summary -->
 
 ## Path to general sending
 
-General, non-allowlisted sending is the most important gate on this roadmap. It stays closed until every item on the left is done. The [SMS compliance guide](SMS-COMPLIANCE.md#gate-for-general-sending) has the full reasoning.
+General, non-allowlisted sending is the most important gate on this roadmap. It stays closed until every item on the left is done. The [SMS compliance guide](SMS-COMPLIANCE.md#gate-for-general-sending) explains the opt-out requirements; the [product plan](PRODUCT-PLAN.md#messaging-readiness) also requires the sealed messaging runtime and stable API. Internal line-bound opt-out code and the read-only review queue are groundwork, not completion of the remaining gates.
 
 <!-- roadmap:gate -->
 ```mermaid
@@ -51,10 +73,11 @@ flowchart LR
     g1_0["✓ Idempotent send with<br/>honest delivery states"]:::done
     g2_0["✓ STOP / START in the<br/>outbound reply window"]:::done
     g3_0["✓ Account-scoped suppression<br/>checked at acceptance"]:::done
-    g4_0["○ Opt-out capture beyond<br/>the reply window"]:::open
-    g4_1["○ Durable line ID bound<br/>to inbound actions"]:::open
-    g4_2["○ Owner review for off-channel<br/>and ambiguous requests"]:::open
-    g5_0["○ End-to-end evidence<br/>on real devices"]:::open
+    g4_0["○ Production SMS line<br/>activation and SIM binding"]:::open
+    g4_1["○ Enable and validate<br/>unsolicited opt-out capture"]:::open
+    g4_2["○ Off-channel holds and<br/>durable review decisions"]:::open
+    g5_0["○ Sealed send and inbound<br/>runtime with stable API"]:::open
+    g6_0["○ End-to-end evidence<br/>on real devices"]:::open
     G{{"General send route"}}:::gate
 
     g0_0 --> g1_0
@@ -62,7 +85,8 @@ flowchart LR
     g2_0 --> g3_0
     g3_0 --> g4_0 & g4_1 & g4_2
     g4_0 & g4_1 & g4_2 --> g5_0
-    g5_0 --> G
+    g5_0 --> g6_0
+    g6_0 --> G
 ```
 
 ✓ marks work done in the restricted pilot; ○ marks work still open.
@@ -113,12 +137,28 @@ flowchart LR
         c_compose --> c_releases
     end
 
+    subgraph t_workflows["Workflows and AI"]
+        direction TB
+        c_contacts["Contacts and conversations<br/>· planned"]:::planned
+        c_scheduling["Templates and scheduling<br/>· planned"]:::planned
+        c_approvals["Approvals and reply tracking<br/>· planned"]:::planned
+        c_integrations["Workflow integrations<br/>· planned"]:::planned
+        c_assistant["Customer-controlled assistant<br/>· planned"]:::planned
+        c_contacts --> c_scheduling
+        c_scheduling --> c_approvals
+        c_approvals --> c_integrations
+        c_integrations --> c_assistant
+    end
+
     subgraph t_managed["Managed service and resilience"]
         direction TB
         c_hosted["Hosted accounts and billing<br/>· build"]:::build
         c_twosite["Two-location routing<br/>· build"]:::build
         c_failover["Automatic failover<br/>· design"]:::design
+        c_managedai["Optional managed AI<br/>· planned"]:::planned
+        c_providers["Provider-based sending<br/>· planned"]:::planned
         c_twosite --> c_failover
+        c_hosted --> c_managedai
     end
 
     c_optout --> c_api
@@ -126,6 +166,12 @@ flowchart LR
     c_accounts --> c_api
     c_api --> c_hosted
     c_enrollment --> c_twosite
+    c_api --> c_contacts
+    c_dashboard --> c_contacts
+    c_assistant --> c_managedai
+    c_export --> c_managedai
+    c_api --> c_providers
+    c_approvals --> c_providers
 ```
 <!-- /roadmap:map -->
 
@@ -138,10 +184,11 @@ Connect a dedicated Android phone and SIM, send and receive SMS through the serv
 |---|---|---|
 | Phone + SIM enrollment and device stream | Restricted pilot | [#9](https://github.com/pboachie/zrotext/pull/9), [#24](https://github.com/pboachie/zrotext/pull/24), [#160](https://github.com/pboachie/zrotext/pull/160), [device compatibility](DEVICE-COMPATIBILITY.md) |
 | Outbound send with honest delivery states | Restricted pilot | [#17](https://github.com/pboachie/zrotext/pull/17), [#19](https://github.com/pboachie/zrotext/pull/19), [#21](https://github.com/pboachie/zrotext/pull/21) |
-| Opt-out handling and recipient suppression | Restricted pilot | [#207](https://github.com/pboachie/zrotext/pull/207), [#210](https://github.com/pboachie/zrotext/pull/210) |
+| Opt-out handling and recipient suppression | Restricted pilot | [#207](https://github.com/pboachie/zrotext/pull/207), [#210](https://github.com/pboachie/zrotext/pull/210), [line-bound stream](../protocol/v1/line-opt-out-contract.md), [#237](https://github.com/pboachie/zrotext/pull/237) |
 | Inbound capture and signed webhooks | Restricted pilot | [#25](https://github.com/pboachie/zrotext/pull/25), [#29](https://github.com/pboachie/zrotext/pull/29), [#39](https://github.com/pboachie/zrotext/pull/39), [#80](https://github.com/pboachie/zrotext/pull/80) |
-| Owner dashboard: device health and history | Build | [#36](https://github.com/pboachie/zrotext/pull/36), [#74](https://github.com/pboachie/zrotext/pull/74), [#76](https://github.com/pboachie/zrotext/pull/76) |
+| Owner dashboard: device health and history | Build | [#36](https://github.com/pboachie/zrotext/pull/36), [#74](https://github.com/pboachie/zrotext/pull/74), [#76](https://github.com/pboachie/zrotext/pull/76), [#237](https://github.com/pboachie/zrotext/pull/237) |
 
+<a id="cap-enrollment"></a>
 <details>
 <summary><b>Phone + SIM enrollment and device stream</b> · restricted pilot</summary>
 
@@ -155,6 +202,7 @@ Connect a dedicated Android phone and SIM, send and receive SMS through the serv
 
 </details>
 
+<a id="cap-outbound"></a>
 <details>
 <summary><b>Outbound send with honest delivery states</b> · restricted pilot</summary>
 
@@ -167,6 +215,7 @@ Connect a dedicated Android phone and SIM, send and receive SMS through the serv
 
 </details>
 
+<a id="cap-optout"></a>
 <details>
 <summary><b>Opt-out handling and recipient suppression</b> · restricted pilot</summary>
 
@@ -175,12 +224,15 @@ Connect a dedicated Android phone and SIM, send and receive SMS through the serv
 - [x] Account-scoped suppression checked when a message is accepted
 - [x] Local block on the phone applies immediately, even while offline
 - [x] Local line binding and unsolicited opt-outs journaled on the phone ([#210](https://github.com/pboachie/zrotext/pull/210))
-- [ ] Authenticated capture beyond the outbound reply window
-- [ ] Durable line ID bound to server-side inbound actions
-- [ ] Owner workflow for off-channel and ambiguous requests
+- [x] Default-off signed line-bound STOP/review stream and durable Android replay identity; production activation remains open
+- [x] Owner-only read-only queue for ambiguous SMS holds; it cannot clear holds or record off-channel requests ([#237](https://github.com/pboachie/zrotext/pull/237))
+- [ ] Production SMS line activation and verified selected-SIM binding before enabling unsolicited opt-outs
+- [ ] Off-channel withdrawal intake and durable owner review decisions
+- [ ] End-to-end opt-out, offline replay and SIM-change evidence on real devices
 
 </details>
 
+<a id="cap-inbound"></a>
 <details>
 <summary><b>Inbound capture and signed webhooks</b> · restricted pilot</summary>
 
@@ -188,17 +240,20 @@ Connect a dedicated Android phone and SIM, send and receive SMS through the serv
 - [x] Durable webhook outbox with HMAC signatures, retries and bounded manual replay
 - [x] Webhook signing secrets encrypted at rest, with key rotation ([runbook](WEBHOOK-KEK-ROTATION.md))
 - [x] Retention limits for inbound content and delivery history
+- [ ] General unsolicited message-content capture and conversation routing beyond the pilot reply window; the line-bound STOP path carries metadata only
 - [ ] Reliable inbound when senders use RCS ([details](ANDROID-TESTING.md))
 - [ ] Sealed inbound content delivered to customer decryptors
 
 </details>
 
+<a id="cap-dashboard"></a>
 <details>
 <summary><b>Owner dashboard: device health and history</b> · build</summary>
 
 - [x] Device pairing and management page
 - [x] Authenticated connection lease shown per device
 - [x] Message state timeline, inbound activity and webhook history views
+- [x] Read-only ambiguous opt-out review queue with recipient metadata and event times
 - [ ] SIM, queue depth and radio readiness per device
 - [ ] Live updates instead of snapshots
 
@@ -215,6 +270,7 @@ Make ZROtext practical to run, upgrade and build against.
 | Stable public API v1 and client SDK | Design | [API outline](ARCHITECTURE.md#planned-api-v1-outline), [test-only sealed reader](../sdk/typescript/README.md) |
 | Setup diagnostics and device guidance | Build | [#81](https://github.com/pboachie/zrotext/pull/81), [#189](https://github.com/pboachie/zrotext/pull/189) |
 
+<a id="cap-compose"></a>
 <details>
 <summary><b>Compose deployment and upgrade guides</b> · build</summary>
 
@@ -227,6 +283,7 @@ Make ZROtext practical to run, upgrade and build against.
 
 </details>
 
+<a id="cap-releases"></a>
 <details>
 <summary><b>Signed release artifacts and SBOMs</b> · build</summary>
 
@@ -237,6 +294,7 @@ Make ZROtext practical to run, upgrade and build against.
 
 </details>
 
+<a id="cap-api"></a>
 <details>
 <summary><b>Stable public API v1 and client SDK</b> · design</summary>
 
@@ -247,6 +305,7 @@ Make ZROtext practical to run, upgrade and build against.
 
 </details>
 
+<a id="cap-diagnostics"></a>
 <details>
 <summary><b>Setup diagnostics and device guidance</b> · build</summary>
 
@@ -263,38 +322,44 @@ Keep message content out of reach of the server, and give owners control of thei
 
 | Capability | Stage | Evidence |
 |---|---|---|
-| Owner accounts, MFA and scoped API keys | Build | [#43](https://github.com/pboachie/zrotext/pull/43), [#172](https://github.com/pboachie/zrotext/pull/172), [#175](https://github.com/pboachie/zrotext/pull/175), [MFA operations](MFA-OPERATIONS.md) |
+| Owner accounts, MFA and scoped API keys | Build | [#43](https://github.com/pboachie/zrotext/pull/43), [#172](https://github.com/pboachie/zrotext/pull/172), [#175](https://github.com/pboachie/zrotext/pull/175), [MFA operations](MFA-OPERATIONS.md), [#240](https://github.com/pboachie/zrotext/pull/240) |
 | Sealed-content protocol (client-side keys) | Design | [Draft 01](../protocol/drafts/zt-sealed-draft-01.md), [draft 02 proposal](../protocol/drafts/zt-sealed-draft-02-proposal.md), [#159](https://github.com/pboachie/zrotext/pull/159), [#162](https://github.com/pboachie/zrotext/pull/162) |
 | Data export and account deletion | Planned | [Data retention](SELF-HOSTING.md#data-retention) covers history pruning only |
 
+<a id="cap-accounts"></a>
 <details>
 <summary><b>Owner accounts, MFA and scoped API keys</b> · build</summary>
 
 - [x] Verified-email owner registration with closed-by-default policy
 - [x] MFA, session revocation and CSRF protection
 - [x] API keys with scopes, shown once at creation
+- [x] MFA-bound SMS approval public-key registration and revocation; line activation remains an internal prerequisite ([contract](../protocol/v1/sms-line-activation-contract.md))
 - [ ] Team seats beyond one owner
 - [ ] Account recovery flows separate from content recovery
 
 </details>
 
+<a id="cap-sealed"></a>
 <details>
 <summary><b>Sealed-content protocol (client-side keys)</b> · design</summary>
 
 - [x] Draft protocol and validation gates
 - [x] TypeScript and Android test vectors, including signed manifests and root rotation
 - [x] Test-only envelope parser and Android Keystore boundary
+- [ ] Resolve and verify remaining Q1-Q11 decisions in the [protocol decision log](../protocol/drafts/zt-009-decision-log.md)
 - [ ] Cross-client interoperability and adversarial security tests
 - [ ] Recovery and unlock flows
 - [ ] Enabled in the gateway for real messages
 
 </details>
 
+<a id="cap-export"></a>
 <details>
 <summary><b>Data export and account deletion</b> · planned</summary>
 
 - [ ] Owner export of messages, events and settings
 - [ ] Account erasure that covers metering and billing records where allowed
+- [ ] Extend export and erasure to future contacts, templates, workflow state and assistant access records
 
 </details>
 
@@ -307,7 +372,10 @@ Offer an operated service built from the same public code, and keep it available
 | Hosted accounts and subscriptions | Build (Stripe test mode only) | [#34](https://github.com/pboachie/zrotext/pull/34), [#44](https://github.com/pboachie/zrotext/pull/44), [#70](https://github.com/pboachie/zrotext/pull/70), [#184](https://github.com/pboachie/zrotext/pull/184) |
 | Two-location routing with fenced devices | Build | [#73](https://github.com/pboachie/zrotext/pull/73), [design](MULTI-LOCATION.md) |
 | Automatic failover with independent quorum | Design | [Failover design](MULTI-LOCATION.md#automatic-failover-needs-an-independent-decision) |
+| Optional managed AI service | Planned | [product proposal](PRODUCT-PLAN.md#managed-ai-and-larger-campaigns) proposal only; no runtime implementation |
+| Provider-based high-volume sending | Planned | [product proposal](PRODUCT-PLAN.md#managed-ai-and-larger-campaigns) proposal only; no runtime implementation |
 
+<a id="cap-hosted"></a>
 <details>
 <summary><b>Hosted accounts and subscriptions</b> · build, Stripe test mode only</summary>
 
@@ -319,6 +387,7 @@ Offer an operated service built from the same public code, and keep it available
 
 </details>
 
+<a id="cap-twosite"></a>
 <details>
 <summary><b>Two-location routing with fenced devices</b> · build</summary>
 
@@ -329,11 +398,89 @@ Offer an operated service built from the same public code, and keep it available
 
 </details>
 
+<a id="cap-failover"></a>
 <details>
 <summary><b>Automatic failover with independent quorum</b> · design</summary>
 
 - [x] Design requiring an independent quorum member and fencing control
 - [ ] Implementation and failure-scenario tests
+
+</details>
+
+<a id="cap-managedai"></a>
+<details>
+<summary><b>Optional managed AI service</b> · planned</summary>
+
+- [ ] Explicit opt-in to a separate managed AI service that can read selected content
+- [ ] Document provider access, retention, export, deletion, revocation and per-account budgets
+
+</details>
+
+<a id="cap-providers"></a>
+<details>
+<summary><b>Provider-based high-volume sending</b> · planned</summary>
+
+- [ ] Evaluate provider routes, supported regions and sender-number requirements before promising capacity
+- [ ] Explicit route selection with shared suppression, idempotency and delivery semantics; no automatic resend of unknown phone attempts
+
+</details>
+
+## Workflows and AI
+
+Build useful conversations for local service operators and individuals through the dashboard and integrations. These capabilities are proposed and unavailable; they depend on the general messaging foundation.
+
+| Capability | Stage | Evidence |
+|---|---|---|
+| Contacts, consent and conversations | Planned | [product proposal](PRODUCT-PLAN.md#business-inbox) proposal only; no runtime implementation |
+| Templates and scheduled follow-ups | Planned | [product proposal](PRODUCT-PLAN.md#business-inbox) proposal only; no runtime implementation |
+| Approvals and reply tracking | Planned | [product proposal](PRODUCT-PLAN.md#business-inbox) proposal only; no runtime implementation |
+| Workflow connector and integrations | Planned | [product proposal](PRODUCT-PLAN.md#customer-controlled-assistant) proposal only; no runtime implementation |
+| Customer-controlled AI assistant | Planned | [product proposal](PRODUCT-PLAN.md#customer-controlled-assistant) proposal only; no runtime implementation |
+
+<a id="cap-contacts"></a>
+<details>
+<summary><b>Contacts, consent and conversations</b> · planned</summary>
+
+- [ ] Contacts with purpose-specific consent records, duplicate handling and conversation history
+- [ ] Owner-entered job or appointment details and an exceptions inbox, with locally decrypted content
+
+</details>
+
+<a id="cap-scheduling"></a>
+<details>
+<summary><b>Templates and scheduled follow-ups</b> · planned</summary>
+
+- [ ] Personalized templates, segment preview, recipient-local timing and explicit expiry
+- [ ] Paced scheduling with suppression rechecks, cancellation and honest unknown outcomes
+
+</details>
+
+<a id="cap-approvals"></a>
+<details>
+<summary><b>Approvals and reply tracking</b> · planned</summary>
+
+- [ ] Durable owner decisions tied to the exact recipient and proposed action
+- [ ] Reply correlation, human takeover and follow-up cancellation after a response
+
+</details>
+
+<a id="cap-integrations"></a>
+<details>
+<summary><b>Workflow connector and integrations</b> · planned</summary>
+
+- [ ] Shared services for dashboard actions, SDK tools and signed workflow events
+- [ ] Authorized encryption/decryption connector with signature verification and event deduplication
+- [ ] An n8n recipe for connecting the shared messaging services; application templates have separate use-case acceptance criteria
+
+</details>
+
+<a id="cap-assistant"></a>
+<details>
+<summary><b>Customer-controlled AI assistant</b> · planned</summary>
+
+- [ ] Selected conversations decrypted only by an authorized customer-controlled connector
+- [ ] Two-way owner conversations and automatic replies within approved routines
+- [ ] Escalate commitments and unusual requests; enforce budgets, scope, revocation and human takeover
 
 </details>
 <!-- /roadmap:tracks -->
@@ -346,15 +493,16 @@ timeline
     Foundations : Delivery state model and safety contracts : Durable delivery store and locked migrations : Account and device enrollment
     Device link : Authenticated heartbeat and stream : Fenced synthetic send on Android : Samsung hardware test record
     Inbound and webhooks : Signed inbound pilot : Webhook outbox, history and replay : Secret rotation
-    Accounts and billing : Owner MFA and API keys : Stripe test-mode billing : Metered pilot admission
+    Accounts and billing : Owner MFA and API keys : SMS approval-key registration : Stripe test-mode billing : Metered pilot admission
     Releases : Attested server image : Android release candidate : Source bundles and SBOMs
-    Privacy : Sealed drafts and test vectors : Suppression in the pilot : Local line binding
+    Privacy : Sealed drafts and test vectors : Suppression in the pilot : Default-off line-bound opt-out stream : Read-only owner review queue
 ```
 
 ## Where to help
 
 > [!TIP]
 > Useful contributions right now:
+> - Synthetic walkthroughs of the [first customer journeys](USE-CASES.md), especially intake, approval and follow-up. Keep customer data out of public reports.
 > - Device test reports from other Android models and carriers. Follow [Android testing](ANDROID-TESTING.md) and keep personal numbers out of reports.
 > - Review of the [sealed-content drafts](../protocol/drafts/zt-sealed-draft-02-proposal.md).
 > - Accessibility feedback on the owner pages in `web/owner`.
@@ -364,4 +512,4 @@ timeline
 
 See the [architecture](ARCHITECTURE.md), [two-location design](MULTI-LOCATION.md) and [security design](SECURITY-DESIGN.md) for technical details. These documents describe a mix of implemented and proposed behavior; inspect the code and release notes for availability.
 
-Stages, checklists and dependencies live in [roadmap.json](roadmap.json). To change them, edit that file and run `python3 scripts/roadmap.py`; it regenerates the graphic, charts and tables on this page and in the README. CI fails if they are out of date.
+Stages, checklists, dependencies and use cases live in [roadmap.json](roadmap.json). To change them, edit that file and run `python3 scripts/roadmap.py`; it regenerates the graphic, charts, tables and use-case details on this page, in the catalog and in the README. CI fails if they are out of date or a use case claims availability before its prerequisites.
