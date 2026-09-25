@@ -171,20 +171,16 @@ class Draft02EnvelopeDeviceTest {
 
             val parsed = Draft02TinkEnvelopeReceiver.parseOutbound(envelope)
             assertThrows(GeneralSecurityException::class.java) {
-                Draft02TinkEnvelopeReceiver.openDeviceWrap(parsed, keyStore,
-                    Draft02TinkEnvelopeReceiver.wrapInfo(parsed).copyOf().also {
-                        it[23] = (it[23].toInt() xor 1).toByte()
-                    })
+                Draft02TinkEnvelopeReceiver.openDeviceWrap(parsed.copy(protected =
+                    parsed.protected.copyOf().also { it[0] = (it[0].toInt() xor 1).toByte() }), keyStore)
             }
             assertThrows(IllegalArgumentException::class.java) {
-                Draft02TinkEnvelopeReceiver.openDeviceWrap(parsed, keyStore,
-                    Draft02TinkEnvelopeReceiver.wrapInfo(parsed).copyOf().also { it[180] = 2 })
+                Draft02TinkEnvelopeReceiver.openDeviceWrap(parsed.copy(deviceWrap =
+                    parsed.deviceWrap.copy(role = 2)), keyStore)
             }
             assertThrows(IllegalArgumentException::class.java) {
-                Draft02TinkEnvelopeReceiver.openDeviceWrap(parsed, keyStore,
-                    Draft02TinkEnvelopeReceiver.wrapInfo(parsed).copyOf().also {
-                        it[it.lastIndex] = (it.last().toInt() xor 1).toByte()
-                    })
+                Draft02TinkEnvelopeReceiver.openDeviceWrap(parsed.copy(header =
+                    parsed.header.copyOf().also { it[4] = 1 }), keyStore)
             }
             assertThrows(IllegalArgumentException::class.java) {
                 Draft02TinkEnvelopeReceiver.openDeviceWrap(parsed.copy(deviceWrap =
