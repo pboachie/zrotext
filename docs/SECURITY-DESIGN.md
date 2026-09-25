@@ -100,7 +100,14 @@ or database connection setup. A 30-second handler deadline bounds slow request
 bodies; timed-out requests return 408. This is per-process admission, not a
 fleet-wide database connection pool. A canceled handler can leave a PostgreSQL
 query running until its connection driver receives the result, so this is not a
-hard bound on outstanding database queries or connections. Deployments must still bound incoming
+hard bound on outstanding database queries or connections. Each process reuses
+PostgreSQL sockets within fixed per-class budgets (16 request, 16 device,
+4 worker); idle sockets count against those budgets. A released socket is reset
+with `DISCARD ALL` before reuse and is closed instead when the reset does not
+finish within two seconds (for example a canceled query still running or an
+open transaction), after 60 idle seconds, or at 30 minutes old. A five-second
+timer closes expired idle sockets on quiet hubs and returns their connection
+permits after the PostgreSQL driver exits. Deployments must still bound incoming
 sockets/headers at the edge and size PostgreSQL for HTTP, upgraded WebSockets,
 and background workers across all API instances. A timed-out mutation may have
 committed; callers must reconcile state before retrying non-idempotent actions.

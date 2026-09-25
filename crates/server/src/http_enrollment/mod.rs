@@ -80,14 +80,10 @@ async fn no_store(request: axum::extract::Request, next: Next) -> Response {
     response
 }
 
-async fn connect(state: &EnrollmentHttpState) -> Result<Client, Response> {
-    let (client, connection) = crate::runtime_db::connect(&state.database_url)
+async fn connect(state: &EnrollmentHttpState) -> Result<crate::runtime_db::PooledClient, Response> {
+    crate::runtime_db::connect(&state.database_url)
         .await
-        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE.into_response())?;
-    tokio::spawn(async move {
-        let _ = connection.await;
-    });
-    Ok(client)
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE.into_response())
 }
 
 /// `live` runs only after anonymous callers exhaust the route budget, so junk

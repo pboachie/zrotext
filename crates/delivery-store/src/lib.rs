@@ -1459,7 +1459,7 @@ mod tests {
 
     // Keep the admission fixtures on the complete, reviewed schema. SQL is
     // embedded at build time so tests never execute files discovered at runtime.
-    const TEST_MIGRATIONS: [(&str, &str); 33] = [
+    const TEST_MIGRATIONS: [(&str, &str); 34] = [
         (
             "001_foundation.sql",
             include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
@@ -1594,7 +1594,29 @@ mod tests {
             "033_sms_line_binding_scope.sql",
             include_str!("../../../deploy/compose/migrations/033_sms_line_binding_scope.sql"),
         ),
+        (
+            "034_delivery_sweep_index.sql",
+            include_str!("../../../deploy/compose/migrations/034_delivery_sweep_index.sql"),
+        ),
     ];
+
+    async fn apply_test_migrations(client: &Client) {
+        for (name, migration) in TEST_MIGRATIONS {
+            if name == "034_delivery_sweep_index.sql" {
+                // Mirror the migrator's autocommit preparation before the
+                // numbered, checksummed validation file.
+                client
+                    .batch_execute(
+                        "CREATE INDEX CONCURRENTLY messages_in_flight_updated \
+                         ON messages(updated_at,id) \
+                         WHERE state IN ('claimed','submitting','submitted')",
+                    )
+                    .await
+                    .unwrap();
+            }
+            client.batch_execute(migration).await.unwrap();
+        }
+    }
 
     #[test]
     fn admission_fixture_tracks_numbered_migrations() {
@@ -1629,9 +1651,7 @@ mod tests {
             ))
             .await
             .unwrap();
-        for (_, migration) in TEST_MIGRATIONS {
-            client.batch_execute(migration).await.unwrap();
-        }
+        apply_test_migrations(&client).await;
         let account_id = Uuid::new_v4();
         let device_id = Uuid::new_v4();
         let message_id = Uuid::new_v4();
@@ -1802,9 +1822,7 @@ mod tests {
             ))
             .await
             .unwrap();
-        for (_, migration) in TEST_MIGRATIONS {
-            client.batch_execute(migration).await.unwrap();
-        }
+        apply_test_migrations(&client).await;
         let account = Uuid::new_v4();
         let device = Uuid::new_v4();
         let message = Uuid::new_v4();
@@ -1932,9 +1950,7 @@ mod tests {
             ))
             .await
             .unwrap();
-        for (_, migration) in TEST_MIGRATIONS {
-            client.batch_execute(migration).await.unwrap();
-        }
+        apply_test_migrations(&client).await;
         let account = Uuid::new_v4();
         let device = Uuid::new_v4();
         let message = Uuid::new_v4();
@@ -2064,9 +2080,7 @@ mod tests {
             .await
             .unwrap();
         // Apply the complete numbered schema, including accept-time metering.
-        for (_, migration) in TEST_MIGRATIONS {
-            client.batch_execute(migration).await.unwrap();
-        }
+        apply_test_migrations(&client).await;
         let account = Uuid::new_v4();
         let device = Uuid::new_v4();
         client
@@ -2258,9 +2272,7 @@ mod tests {
             ))
             .await
             .unwrap();
-        for (_, migration) in TEST_MIGRATIONS {
-            client.batch_execute(migration).await.unwrap();
-        }
+        apply_test_migrations(&client).await;
 
         let account = Uuid::new_v4();
         let other_account = Uuid::new_v4();

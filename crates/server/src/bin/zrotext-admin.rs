@@ -90,14 +90,10 @@ fn read_password_from_stdin() -> Result<Zeroizing<String>, Box<dyn Error>> {
     Ok(password)
 }
 
-async fn connect_database() -> Result<tokio_postgres::Client, Box<dyn Error>> {
+async fn connect_database() -> Result<runtime_db::PooledClient, Box<dyn Error>> {
     let database_url = env::var("DATABASE_URL")
         .map_err(|_| "DATABASE_URL must be set in the operator environment")?;
-    let (database, connection) = runtime_db::connect(&database_url).await?;
-    tokio::spawn(async move {
-        let _ = connection.await;
-    });
-    Ok(database)
+    Ok(runtime_db::connect(&database_url).await?)
 }
 
 fn optional_env(name: &'static str) -> Result<Option<String>, Box<dyn Error>> {

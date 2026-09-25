@@ -31,6 +31,7 @@ aes-gcm = "0.11.1"
 zeroize = "1.9.0"
 
 [dev-dependencies]
+tokio = { version = "1.47.1", features = ["test-util"] }
 tower = { version = "0.5", features = ["util"] }
 futures-util = { version = "0.3.31", default-features = false, features = ["std", "sink"] }
 tokio-tungstenite = "0.30.0"

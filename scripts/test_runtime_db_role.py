@@ -40,8 +40,12 @@ class RuntimeRoleTest(unittest.TestCase):
             raise RuntimeError("disposable database startup timed out")
         cls.sql("CREATE TABLE schema_migrations(version integer);")
         for migration in sorted((COMPOSE / "migrations").glob("*.sql")):
-            # The migrator applies each file in one transaction. Keep this
-            # provisioning fixture equivalent, including migration locks.
+            if migration.name == "034_delivery_sweep_index.sql":
+                # The migrator prepares this index in autocommit mode before
+                # applying the numbered validation file in a transaction.
+                cls.sql("CREATE INDEX CONCURRENTLY messages_in_flight_updated "
+                        "ON public.messages(updated_at,id) "
+                        "WHERE state IN ('claimed','submitting','submitted');")
             cls.sql("BEGIN;\n" + migration.read_text(encoding="utf-8") + "\nCOMMIT;")
 
     @classmethod

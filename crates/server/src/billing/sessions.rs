@@ -339,14 +339,10 @@ fn checkout_retry_key(
     Ok(format!("zt-checkout-v2-{account_id}-{profile}-{uuid}"))
 }
 
-async fn connect(database_url: &str) -> Result<Client, AuthHttpError> {
-    let (db, connection) = crate::runtime_db::connect(database_url)
+async fn connect(database_url: &str) -> Result<crate::runtime_db::PooledClient, AuthHttpError> {
+    crate::runtime_db::connect(database_url)
         .await
-        .map_err(|_| AuthHttpError::Unavailable)?;
-    tokio::spawn(async move {
-        let _ = connection.await;
-    });
-    Ok(db)
+        .map_err(|_| AuthHttpError::Unavailable)
 }
 
 async fn bound_customer(db: &Client, account_id: Uuid) -> Result<Option<String>, AuthHttpError> {

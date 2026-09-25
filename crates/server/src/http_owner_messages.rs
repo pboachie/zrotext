@@ -80,12 +80,9 @@ async fn list_messages(
     Query(query): Query<ListQuery>,
     headers: HeaderMap,
 ) -> Response {
-    let Ok((client, connection)) = crate::runtime_db::connect(&state.database_url).await else {
+    let Ok(client) = crate::runtime_db::connect(&state.database_url).await else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
-    tokio::spawn(async move {
-        let _ = connection.await;
-    });
     let principal = match require_owner(
         &client,
         &state.auth_hasher,
