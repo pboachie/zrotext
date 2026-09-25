@@ -34,6 +34,7 @@ fn socket_state(database_url: String, site_id: &str) -> DeviceSocketState {
         alpha_policy: Arc::new(AlphaPolicy::parse(None, None, None).unwrap()),
         dispatch_runtime_enabled: false,
         inbound_pilot_enabled: false,
+        line_opt_out_enabled: false,
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),
     }

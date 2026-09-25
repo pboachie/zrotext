@@ -45,6 +45,17 @@ class DeviceStreamSchemaTest(unittest.TestCase):
             self.assertTrue(self.validator.is_valid({**radio, "evidence": evidence}))
         self.assertFalse(self.validator.is_valid({**radio, "evidence": "grant_timeout"}))
 
+    def test_line_opt_out_has_only_stop_actions_and_no_body_or_clear_ack(self):
+        frame = next(frame for frame in self.frames if frame["type"] == "line_opt_out")
+        ack = next(frame for frame in self.frames if frame["type"] == "line_opt_out_ack")
+        for action in ("opt_out", "opt_out_review"):
+            self.assertTrue(self.validator.is_valid({**frame, "action": action}))
+        for action in ("opt_in", "start", "captured_local"):
+            self.assertFalse(self.validator.is_valid({**frame, "action": action}))
+        self.assertFalse(self.validator.is_valid({**frame, "body": "synthetic"}))
+        self.assertFalse(self.validator.is_valid({**frame, "attempt_id": frame["event_id"]}))
+        self.assertFalse(self.validator.is_valid({**ack, "suppression_cleared": True}))
+
 
 if __name__ == "__main__":
     unittest.main()
