@@ -79,6 +79,10 @@ fn secure_response(mut response: Response, content_type: &'static str) -> Respon
         HeaderValue::from_static("max-age=63072000; includeSubDomains"),
     );
     headers.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
+    headers.insert(
+        header::STRICT_TRANSPORT_SECURITY,
+        HeaderValue::from_static("max-age=63072000; includeSubDomains"),
+    );
     response
 }
 
