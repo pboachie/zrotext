@@ -163,10 +163,11 @@ class LocalLineBindingTest {
         old.version = 8
         old.close()
         val upgraded = Room.databaseBuilder(context, SmsJournalDatabase::class.java, name)
-            .allowMainThreadQueries().addMigrations(SmsJournalDatabase.MIGRATION_8_9).build()
+            .allowMainThreadQueries().addMigrations(SmsJournalDatabase.MIGRATION_8_9,
+                SmsJournalDatabase.MIGRATION_9_10).build()
         try {
             val dao = upgraded.attempts()
-            assertEquals(9, upgraded.openHelper.readableDatabase.version)
+            assertEquals(10, upgraded.openHelper.readableDatabase.version)
             assertTrue(dao.isRecipientSuppressed(sender))
             val oldWithdrawal = dao.localWithdrawal(firstPdu)!!
             assertNull(oldWithdrawal.eventId)

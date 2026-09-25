@@ -167,7 +167,8 @@ data class LocalWithdrawalSequence(
 )
 
 /** Local SMS withdrawal; the optional E.164 sender is AES-GCM ciphertext, never plaintext. */
-@Entity(tableName = "local_inbound_withdrawals", indices = [Index("senderToken")])
+@Entity(tableName = "local_inbound_withdrawals", indices = [Index("senderToken"),
+    Index(value = ["eventId"], unique = true), Index(value = ["acknowledgedAtMs", "deviceSequence"])])
 data class LocalInboundWithdrawal(
     @PrimaryKey val dedupeToken: String,
     val senderToken: String,
@@ -179,7 +180,9 @@ data class LocalInboundWithdrawal(
     @ColumnInfo(defaultValue = "NULL") val eventId: String? = null,
     @ColumnInfo(defaultValue = "NULL") val deviceSequence: Long? = null,
     @ColumnInfo(defaultValue = "NULL") val encryptedSender: ByteArray? = null,
-    @ColumnInfo(defaultValue = "NULL") val senderNonce: ByteArray? = null
+    @ColumnInfo(defaultValue = "NULL") val senderNonce: ByteArray? = null,
+    @ColumnInfo(defaultValue = "NULL") val signatureDer: ByteArray? = null,
+    @ColumnInfo(defaultValue = "NULL") val acknowledgedAtMs: Long? = null
 )
 
 @Entity(
@@ -265,6 +268,20 @@ abstract class SmsAttemptDao {
 
     @Query("SELECT * FROM local_inbound_withdrawals WHERE dedupeToken = :dedupeToken LIMIT 1")
     abstract fun localWithdrawal(dedupeToken: String): LocalInboundWithdrawal?
+
+    /** Old v8 records lack an event/sequence and remain local blocks only. */
+    @Query("SELECT * FROM local_inbound_withdrawals WHERE eventId IS NOT NULL AND deviceSequence IS NOT NULL AND acknowledgedAtMs IS NULL AND receivedAtMs >= :minimumObservedAtMs ORDER BY deviceSequence LIMIT 1")
+    abstract fun nextLineOptOut(minimumObservedAtMs: Long): LocalInboundWithdrawal?
+
+    @Query("SELECT * FROM local_inbound_withdrawals WHERE eventId = :eventId LIMIT 1")
+    abstract fun lineOptOutByEventId(eventId: String): LocalInboundWithdrawal?
+
+    @Query("UPDATE local_inbound_withdrawals SET signatureDer = :signature WHERE eventId = :eventId AND lineId = :lineId AND bindingGeneration = :bindingGeneration AND signatureDer IS NULL AND acknowledgedAtMs IS NULL")
+    abstract fun signLineOptOut(eventId: String, lineId: String,
+                                bindingGeneration: Long, signature: ByteArray): Int
+
+    @Query("UPDATE local_inbound_withdrawals SET acknowledgedAtMs = :now WHERE eventId = :eventId AND signatureDer IS NOT NULL AND acknowledgedAtMs IS NULL")
+    abstract fun acknowledgeLineOptOut(eventId: String, now: Long): Int
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     protected abstract fun putLineBinding(binding: LocalLineBinding)
@@ -678,7 +695,7 @@ private const val INBOUND_PILOT_WINDOW_MS = 24L * 60 * 60 * 1000
 @Database(entities = [SmsAttempt::class, SmsSegment::class, AlphaRadioEvent::class,
     InboundWindow::class, InboundEvent::class, InboundUpload::class,
     LocalRecipientSuppression::class, LocalLineBinding::class,
-    LocalInboundWithdrawal::class, LocalWithdrawalSequence::class], version = 9, exportSchema = false)
+    LocalInboundWithdrawal::class, LocalWithdrawalSequence::class], version = 10, exportSchema = false)
 abstract class SmsJournalDatabase : RoomDatabase() {
     abstract fun attempts(): SmsAttemptDao
 
@@ -689,7 +706,7 @@ abstract class SmsJournalDatabase : RoomDatabase() {
             instance ?: Room.databaseBuilder(
                 context.applicationContext, SmsJournalDatabase::class.java, "sms_attempts.db"
             ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
-                MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
+                MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
                 .build().also { instance = it }
         }
 
@@ -767,6 +784,15 @@ abstract class SmsJournalDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE local_inbound_withdrawals ADD COLUMN senderNonce BLOB DEFAULT NULL")
                 db.execSQL("CREATE TABLE IF NOT EXISTS local_withdrawal_sequences (sequence INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, eventId TEXT NOT NULL)")
                 db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_local_withdrawal_sequences_eventId ON local_withdrawal_sequences(eventId)")
+            }
+        }
+
+        internal val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE local_inbound_withdrawals ADD COLUMN signatureDer BLOB DEFAULT NULL")
+                db.execSQL("ALTER TABLE local_inbound_withdrawals ADD COLUMN acknowledgedAtMs INTEGER DEFAULT NULL")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_local_inbound_withdrawals_eventId ON local_inbound_withdrawals(eventId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_local_inbound_withdrawals_acknowledgedAtMs_deviceSequence ON local_inbound_withdrawals(acknowledgedAtMs, deviceSequence)")
             }
         }
     }
