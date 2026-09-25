@@ -1,13 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 package org.zrotext.gateway
 
-import android.Manifest
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.provider.Telephony
-import android.telephony.SubscriptionManager
 import android.telephony.SmsMessage
 import java.io.ByteArrayOutputStream
 import java.security.KeyStore
@@ -206,7 +203,7 @@ class InboundSmsReceiver : BroadcastReceiver() {
             // changed line still blocks the recipient globally on this phone.
             synchronized(LocalSuppressionGate.lock) {
                 dao.recordLocalWithdrawal(dedupeToken, senderToken, optAction, observedSub,
-                    activeSubscriptionIds(context), now,
+                    SimCardContinuity.observe(context), now,
                     sealedSender?.ciphertext, sealedSender?.nonce)
             }
         }
@@ -220,14 +217,5 @@ class InboundSmsReceiver : BroadcastReceiver() {
 
     companion object {
         private val io = Executors.newSingleThreadExecutor()
-
-        private fun activeSubscriptionIds(context: Context): List<Int> {
-            if (context.checkSelfPermission(Manifest.permission.READ_PHONE_STATE) !=
-                PackageManager.PERMISSION_GRANTED) return emptyList()
-            return try {
-                context.getSystemService(SubscriptionManager::class.java)
-                    .activeSubscriptionInfoList.orEmpty().map { it.subscriptionId }
-            } catch (_: RuntimeException) { emptyList() }
-        }
     }
 }
