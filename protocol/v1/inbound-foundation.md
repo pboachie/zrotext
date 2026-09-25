@@ -70,6 +70,13 @@ upload queue; their local recipient blocks remain active.
 The Android app still has no production activation route, and the writer's
 line opt-out transport gate defaults off, so ordinary deployments leave these
 rows local.
+The Android SMS-only proof helper can build the domain-bound device and owner
+statements and sign the device statement with the enrolled Keystore identity.
+It observes a single physical SIM before and after signing. A local binding
+installer also requires a matching authenticated server confirmation and a
+fresh third SIM observation. No runtime route constructs that confirmation, so
+the helper does not activate a line in ordinary deployments. API 28, eSIM,
+unknown-card, and ambiguous observations remain local-only.
 An unattributed STOP still blocks local sends. START never clears that block;
 the existing reply-window START acknowledgement does not prove the source
 line or binding generation. Android subscription indexes may be reused after
