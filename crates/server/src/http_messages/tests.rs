@@ -173,6 +173,7 @@ async fn postgres_alpha_http_accept_status_cancel_are_tenant_and_device_scoped()
         include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
         include_str!("../../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
         include_str!("../../../../deploy/compose/migrations/038_owner_opt_out_hold_guards.sql"),
+        include_str!("../../../../deploy/compose/migrations/039_inbound_device_clock_offset.sql"),
     ] {
         client.batch_execute(sql).await.unwrap();
     }

@@ -110,6 +110,11 @@ to customers and has not passed a live WSS interoperability test.
 
 The client frame is
 `{"v":1,"type":"inbound_event","connection_epoch":1,"event_id":"UUID","sequence":1,"message_id":"UUID","attempt_id":"UUID","classification":"captured_local","observed_at_ms":1700000000000,"part_count":1,"signature_der":"BASE64URL_NO_PAD"}`.
+An optional, unsigned `"device_sent_at_ms"` carries the phone clock when the
+frame is sent. The hub stores it only within a day of its own clock and uses it
+to place a START on the hub clock before releasing an owner opt-out hold. It is
+outside the signature, the event digest and replay identity. Send it only to a
+hub that accepts it, because older hubs reject unknown fields.
 The enrolled P-256 key signs the `zrotext-inbound-v1` domain-separated bytes
 described by the server inbound foundation, with content kind 0 and SHA-256 of
 empty bytes. Room reserves a positive auto-incremented sequence for each
