@@ -19,7 +19,6 @@ import javax.crypto.spec.SecretKeySpec
 internal object Draft02TinkEnvelopeReceiver {
     private const val WRAP_SIZE = 146
     private val bodyLabel = "ZTSE/body/v2\u0000".toByteArray(Charsets.US_ASCII)
-    private val infoLabel = "ZTSE/wrap/v2\u0000".toByteArray(Charsets.US_ASCII)
     private val signLabel = "ZTSE/sign/v2\u0000".toByteArray(Charsets.US_ASCII)
     private val keyLabel = "ZTSE/key/v1\u0000".toByteArray(Charsets.US_ASCII)
     private val order = BigInteger("FFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551", 16)
@@ -160,13 +159,13 @@ internal object Draft02TinkEnvelopeReceiver {
             String(peerBytes, Charsets.US_ASCII))
     }
 
-    internal fun wrapInfo(parsed: Parsed): ByteArray = infoLabel + parsed.header + parsed.protected +
-        byteArrayOf(parsed.deviceWrap.role.toByte()) + parsed.deviceWrap.keyId
+    internal fun wrapInfo(parsed: Parsed): ByteArray = Draft02PublicJcaKeystoreHpke.buildDeviceInfo(
+        parsed.header, parsed.protected, parsed.deviceWrap.role, parsed.deviceWrap.keyId)
 
-    internal fun openDeviceWrap(parsed: Parsed, keyStore: DevicePayloadKeyStore,
-                                info: ByteArray = wrapInfo(parsed)): ByteArray {
-        return Draft02PublicJcaKeystoreHpke.openCek(
-            keyStore, parsed.deviceWrap.keyId, parsed.deviceWrap.enc, parsed.deviceWrap.ct, info)
+    internal fun openDeviceWrap(parsed: Parsed, keyStore: DevicePayloadKeyStore): ByteArray {
+        return Draft02PublicJcaKeystoreHpke.openDeviceCek(
+            keyStore, parsed.header, parsed.protected, parsed.deviceWrap.role,
+            parsed.deviceWrap.keyId, parsed.deviceWrap.enc, parsed.deviceWrap.ct)
     }
 
     /** Test-only differential oracle; Tink is not on the release runtime classpath. */
