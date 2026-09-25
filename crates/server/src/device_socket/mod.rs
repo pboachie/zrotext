@@ -10,6 +10,7 @@ use crate::{
     },
     enrollment::{self, AuthenticatedDevice, EnrollmentError, EnrollmentHasher},
     inbound::{self, Content, InboundError, InboundEvent, InboundSession},
+    runtime_db::{self, PooledClient},
 };
 use axum::{
     Router,
@@ -321,16 +322,6 @@ async fn upgrade(
         .into_response()
 }
 
-async fn connect(database_url: &str) -> Result<Client, crate::runtime_db::ConnectError> {
-    let (client, connection) = crate::runtime_db::connect_device(database_url).await?;
-    tokio::spawn(async move {
-        if connection.await.is_err() {
-            eprintln!("device socket database connection closed");
-        }
-    });
-    Ok(client)
-}
-
 // A burst accommodates queued device evidence; the sustained bound includes
 // control frames and exact replays, neither of which consumes a daily event cap.
 struct FrameBudget {
@@ -448,7 +439,7 @@ async fn authenticate(
     state: &DeviceSocketState,
     frame_budget: &mut FrameBudget,
     step_timeout: Duration,
-) -> Result<(Client, AuthenticatedDevice), HandshakeRefusal> {
+) -> Result<(PooledClient, AuthenticatedDevice), HandshakeRefusal> {
     let Some(ClientFrame::Hello { v: 1, device_id }) =
         timeout(step_timeout, receive_frame(socket, frame_budget))
             .await
@@ -457,7 +448,7 @@ async fn authenticate(
     else {
         return Err(Some(close_code::POLICY));
     };
-    let Ok(mut client) = connect(&state.database_url).await else {
+    let Ok(mut client) = runtime_db::connect_device(&state.database_url).await else {
         return Err(Some(RETRY_LATER));
     };
     // Share the HTTP enrollment budgets across transports and server instances.
