@@ -8,6 +8,58 @@ use tokio_postgres::Client;
 
 // Fixed, project-specific advisory lock. Held on one connection for the full run.
 const MIGRATION_LOCK: i64 = 0x5a_52_4f_54_45_58_54;
+const IN_FLIGHT_INDEX_MIGRATION: i64 = 34;
+const IN_FLIGHT_INDEX_FILE: &str = "034_delivery_sweep_index.sql";
+const CREATE_IN_FLIGHT_INDEX: &str = "CREATE INDEX CONCURRENTLY messages_in_flight_updated ON public.messages (updated_at, id) \
+     WHERE state IN ('claimed', 'submitting', 'submitted')";
+const DROP_IN_FLIGHT_INDEX: &str = "DROP INDEX CONCURRENTLY public.messages_in_flight_updated";
+
+// Check the complete index shape before deciding whether an interrupted build
+// is ours to remove. A relation with the expected name but a different shape
+// belongs to an operator and must never be dropped automatically.
+const IN_FLIGHT_INDEX_STATUS: &str = r#"
+SELECT COALESCE(
+    idx.relkind = 'i' AND idx.relpersistence = 'p'
+    AND tbl_ns.nspname = 'public' AND tbl.relname = 'messages'
+    AND am.amname = 'btree'
+    AND NOT ix.indisunique AND NOT ix.indisprimary AND NOT ix.indisexclusion
+    AND ix.indnkeyatts = 2 AND ix.indnatts = 2
+    AND ix.indexprs IS NULL
+    AND ix.indkey[0] = (
+        SELECT attnum FROM pg_catalog.pg_attribute
+        WHERE attrelid = tbl.oid AND attname = 'updated_at' AND NOT attisdropped
+    )
+    AND ix.indkey[1] = (
+        SELECT attnum FROM pg_catalog.pg_attribute
+        WHERE attrelid = tbl.oid AND attname = 'id' AND NOT attisdropped
+    )
+    AND ix.indoption[0] = 0 AND ix.indoption[1] = 0
+    AND ix.indcollation[0] = 0 AND ix.indcollation[1] = 0
+    AND ix.indclass[0] = (
+        SELECT opc.oid FROM pg_catalog.pg_opclass opc
+        WHERE opc.opcmethod = am.oid
+          AND opc.opcintype = 'timestamp with time zone'::pg_catalog.regtype
+          AND opc.opcdefault
+    )
+    AND ix.indclass[1] = (
+        SELECT opc.oid FROM pg_catalog.pg_opclass opc
+        WHERE opc.opcmethod = am.oid
+          AND opc.opcintype = 'uuid'::pg_catalog.regtype
+          AND opc.opcdefault
+    )
+    AND pg_catalog.pg_get_expr(ix.indpred, ix.indrelid) =
+        '(state = ANY (ARRAY[''claimed''::text, ''submitting''::text, ''submitted''::text]))',
+    FALSE
+) AS expected_shape,
+COALESCE(ix.indisvalid AND ix.indisready AND ix.indislive, FALSE) AS ready
+FROM pg_catalog.pg_class idx
+JOIN pg_catalog.pg_namespace ns ON ns.oid = idx.relnamespace
+LEFT JOIN pg_catalog.pg_index ix ON ix.indexrelid = idx.oid
+LEFT JOIN pg_catalog.pg_class tbl ON tbl.oid = ix.indrelid
+LEFT JOIN pg_catalog.pg_namespace tbl_ns ON tbl_ns.oid = tbl.relnamespace
+LEFT JOIN pg_catalog.pg_am am ON am.oid = idx.relam
+WHERE ns.nspname = 'public' AND idx.relname = 'messages_in_flight_updated'
+"#;
 
 #[derive(Debug, Error)]
 pub enum MigrationError {
@@ -31,6 +83,12 @@ pub enum MigrationError {
     UnsafeBaseline(String),
     #[error("schema_migrations contains an unknown or out-of-order version: {0:03}")]
     LedgerOrder(i64),
+    #[error("messages_in_flight_updated is absent, invalid, or has the wrong definition")]
+    InFlightIndexUnavailable,
+    #[error("messages_in_flight_updated has an unexpected definition; refusing to replace it")]
+    InFlightIndexConflict,
+    #[error("messages_in_flight_updated is still being built; refusing to interrupt it")]
+    InFlightIndexBuildInProgress,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -181,9 +239,23 @@ async fn apply_locked(
         }
     }
 
+    if ledger.contains_key(&IN_FLIGHT_INDEX_MIGRATION) {
+        verify_in_flight_index(client).await?;
+    }
+
     for migration in migrations {
         if ledger.contains_key(&migration.version) {
             continue;
+        }
+        if migration.version == IN_FLIGHT_INDEX_MIGRATION {
+            if migration.filename != IN_FLIGHT_INDEX_FILE {
+                return Err(MigrationError::InvalidDirectory(format!(
+                    "migration 034 must be {IN_FLIGHT_INDEX_FILE}"
+                )));
+            }
+            // CREATE INDEX CONCURRENTLY cannot run in the numbered migration's
+            // transaction. The advisory lock still serializes migrator jobs.
+            prepare_in_flight_index(client).await?;
         }
         let tx = client.transaction().await?;
         if let Err(error) = tx.batch_execute(&migration.sql).await {
@@ -203,7 +275,63 @@ async fn apply_locked(
             kind: "applied",
         });
     }
+    if migrations
+        .iter()
+        .any(|migration| migration.version == IN_FLIGHT_INDEX_MIGRATION)
+    {
+        verify_in_flight_index(client).await?;
+    }
     Ok(applied)
+}
+
+async fn in_flight_index_status(client: &Client) -> Result<Option<(bool, bool)>, MigrationError> {
+    Ok(client
+        .query_opt(IN_FLIGHT_INDEX_STATUS, &[])
+        .await?
+        .map(|row| (row.get(0), row.get(1))))
+}
+
+async fn prepare_in_flight_index(client: &Client) -> Result<(), MigrationError> {
+    match in_flight_index_status(client).await? {
+        None => {}
+        Some((false, _)) => return Err(MigrationError::InFlightIndexConflict),
+        Some((true, true)) => return Ok(()),
+        Some((true, false)) => {
+            // A canceled concurrent build leaves an invalid catalog entry.
+            // This is safe to retry only after its exact shape is established.
+            let building: bool = client
+                .query_one(
+                    "SELECT EXISTS(SELECT 1 FROM pg_catalog.pg_stat_progress_create_index \
+                     WHERE index_relid=to_regclass('public.messages_in_flight_updated'))",
+                    &[],
+                )
+                .await?
+                .get(0);
+            if building {
+                return Err(MigrationError::InFlightIndexBuildInProgress);
+            }
+            client.batch_execute(DROP_IN_FLIGHT_INDEX).await?;
+        }
+    }
+    client.batch_execute(CREATE_IN_FLIGHT_INDEX).await?;
+    if in_flight_index_status(client).await? != Some((true, true)) {
+        return Err(MigrationError::InFlightIndexUnavailable);
+    }
+    Ok(())
+}
+
+async fn verify_in_flight_index(client: &Client) -> Result<(), MigrationError> {
+    let ready: bool = client
+        .query_one(
+            "SELECT public.messages_in_flight_index_ready('public')",
+            &[],
+        )
+        .await?
+        .get(0);
+    if !ready {
+        return Err(MigrationError::InFlightIndexUnavailable);
+    }
+    Ok(())
 }
 
 fn read_migrations(directory: &Path) -> Result<Vec<Migration>, MigrationError> {
@@ -514,6 +642,9 @@ async fn verify_m0_shape(tx: &tokio_postgres::Transaction<'_>) -> Result<(), Mig
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod online_index_tests;
 
 #[cfg(test)]
 mod tests {

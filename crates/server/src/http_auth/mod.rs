@@ -37,6 +37,8 @@ use tokio_postgres::Client;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
+mod sms_owner_keys;
+
 const SESSION_COOKIE: &str = "__Host-zrotext_session";
 const CSRF_COOKIE: &str = "__Host-zrotext_csrf";
 const CSRF_HEADER: &str = "x-zrotext-csrf";
@@ -551,6 +553,18 @@ pub fn router(state: AuthHttpState) -> Router {
         .route("/mfa/disable", post(disable_mfa))
         .route("/api-keys", get(list_api_keys).post(create_api_key))
         .route("/api-keys/{key_id}", delete(revoke_api_key))
+        .route(
+            "/sms-line-owner-keys/challenge",
+            post(sms_owner_keys::challenge),
+        )
+        .route(
+            "/sms-line-owner-keys",
+            get(sms_owner_keys::list).post(sms_owner_keys::register),
+        )
+        .route(
+            "/sms-line-owner-keys/{fingerprint}",
+            delete(sms_owner_keys::revoke),
+        )
         .layer(DefaultBodyLimit::max(16 * 1024))
         .layer(middleware::from_fn(no_store_response))
         .with_state(Arc::new(state))
@@ -567,6 +581,7 @@ pub enum AuthHttpError {
     BadRequest,
     Unauthorized,
     Forbidden,
+    SmsOwnerKeyActive,
     NotFound,
     TooManyRequests,
     Unavailable,
@@ -579,6 +594,7 @@ impl IntoResponse for AuthHttpError {
             Self::BadRequest => (StatusCode::BAD_REQUEST, "invalid_request"),
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized"),
             Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden"),
+            Self::SmsOwnerKeyActive => (StatusCode::CONFLICT, "revoke_sms_owner_key_first"),
             Self::NotFound => (StatusCode::NOT_FOUND, "not_found"),
             Self::TooManyRequests => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
             Self::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
@@ -605,6 +621,7 @@ fn map_auth(error: AuthError) -> AuthHttpError {
             AuthHttpError::Unauthorized
         }
         AuthError::EmailNotVerified | AuthError::Forbidden => AuthHttpError::Forbidden,
+        AuthError::SmsOwnerKeyActive => AuthHttpError::SmsOwnerKeyActive,
         AuthError::Database(_) => AuthHttpError::Unavailable,
         AuthError::Password => AuthHttpError::Internal,
         AuthError::Crypto => AuthHttpError::Unavailable,
@@ -612,15 +629,10 @@ fn map_auth(error: AuthError) -> AuthHttpError {
     }
 }
 
-async fn connect(database_url: &str) -> Result<Client, AuthHttpError> {
-    let (client, connection) = crate::runtime_db::connect(database_url)
+async fn connect(database_url: &str) -> Result<crate::runtime_db::PooledClient, AuthHttpError> {
+    crate::runtime_db::connect(database_url)
         .await
-        .map_err(|_| AuthHttpError::Unavailable)?;
-    tokio::spawn(async move {
-        // Connection errors contain deployment details; do not log them here.
-        let _ = connection.await;
-    });
-    Ok(client)
+        .map_err(|_| AuthHttpError::Unavailable)
 }
 
 fn canonical_origin_serialization(origin: &str) -> Option<String> {
@@ -806,12 +818,9 @@ pub async fn dispatch_one_verification_report(
     if !state.dispatcher.ready() {
         return Ok(VerificationDispatchOutcome::Idle);
     }
-    let (mut client, connection) = crate::runtime_db::connect_worker(&state.database_url)
+    let mut client = crate::runtime_db::connect_worker(&state.database_url)
         .await
         .map_err(|_| AuthHttpError::Unavailable)?;
-    tokio::spawn(async move {
-        let _ = connection.await;
-    });
     let Some(mail) = auth::claim_verification_mail(&mut client, &state.hasher)
         .await
         .map_err(map_auth)?
@@ -842,16 +851,14 @@ pub async fn dispatch_one_verification_report(
 
 /// At-least-once delivery of a one-use reset code. Concurrent hubs use the
 /// same leased PostgreSQL claim and cannot generate different codes for it.
+/// Returns whether a claimed code was delivered; `false` when idle or failed.
 pub async fn dispatch_one_password_reset(state: &AuthHttpState) -> Result<bool, AuthHttpError> {
     if !state.dispatcher.password_reset_ready() {
         return Ok(false);
     }
-    let (mut client, connection) = crate::runtime_db::connect_worker(&state.database_url)
+    let mut client = crate::runtime_db::connect_worker(&state.database_url)
         .await
         .map_err(|_| AuthHttpError::Unavailable)?;
-    tokio::spawn(async move {
-        let _ = connection.await;
-    });
     let Some(mail) = account::claim_reset_mail(&mut client, &state.hasher)
         .await
         .map_err(map_auth)?
@@ -869,21 +876,19 @@ pub async fn dispatch_one_password_reset(state: &AuthHttpState) -> Result<bool, 
     let _ = account::ack_reset_mail(&client, &mail, delivered)
         .await
         .map_err(map_auth)?;
-    Ok(true)
+    Ok(delivered)
 }
 
+/// Returns whether a claimed notice was delivered; `false` when idle or failed.
 pub async fn dispatch_one_password_reset_notice(
     state: &AuthHttpState,
 ) -> Result<bool, AuthHttpError> {
     if !state.dispatcher.password_reset_ready() {
         return Ok(false);
     }
-    let (mut client, connection) = crate::runtime_db::connect_worker(&state.database_url)
+    let mut client = crate::runtime_db::connect_worker(&state.database_url)
         .await
         .map_err(|_| AuthHttpError::Unavailable)?;
-    tokio::spawn(async move {
-        let _ = connection.await;
-    });
     let Some(notice) = account::claim_reset_notice(&mut client)
         .await
         .map_err(map_auth)?
@@ -901,7 +906,7 @@ pub async fn dispatch_one_password_reset_notice(
     let _ = account::ack_reset_notice(&client, &notice, delivered)
         .await
         .map_err(map_auth)?;
-    Ok(true)
+    Ok(delivered)
 }
 
 #[derive(Deserialize)]

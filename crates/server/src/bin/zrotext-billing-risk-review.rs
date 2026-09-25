@@ -12,10 +12,7 @@ use zrotext_server::billing::review::{
 async fn main() -> Result<(), Box<dyn Error>> {
     let arguments = env::args().skip(1).collect::<Vec<_>>();
     let database_url = env::var("DATABASE_URL")?;
-    let (mut db, connection) = zrotext_server::runtime_db::connect(&database_url).await?;
-    tokio::spawn(async move {
-        let _ = connection.await;
-    });
+    let mut db = zrotext_server::runtime_db::connect(&database_url).await?;
     match arguments.as_slice() {
         [mode] if mode == "list" => {
             print_page(list_review_required(&db, None).await?);

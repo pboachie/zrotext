@@ -178,7 +178,7 @@
           ],
           "todo": [
             "OpenAPI contract for `/v1/messages`, `/v1/devices`, `/v1/webhooks` and `/v1/usage`",
-            "TypeScript SDK with local encryption, after the sealed protocol is reviewed"
+            "TypeScript SDK with local encryption, after the sealed protocol is finalized"
           ]
         },
         {
@@ -244,7 +244,7 @@
             "Test-only envelope parser and Android Keystore boundary"
           ],
           "todo": [
-            "External review of the chosen suite",
+            "Cross-client interoperability and adversarial security tests",
             "Recovery and unlock flows",
             "Enabled in the gateway for real messages"
           ]

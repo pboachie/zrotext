@@ -38,9 +38,9 @@ Enrollment maintenance runs every 60 seconds and deletes at most 500 rows per ta
 | API bearer token | Customer runtime; server verifier | Transport authorization, scopes, quotas; not decryption |
 | Webhook signing secret | Server and customer receiver | Authenticates ciphertext events; encrypted at rest on server |
 
-Use maintained crypto libraries, not home-written primitives. Candidate portable envelope suite: HPKE DHKEM(P-256, HKDF-SHA256) / HKDF-SHA256 / AES-128-GCM for wrapping a random 256-bit content-encryption key; AES-256-GCM for one message body. This is a **candidate pending library/API interoperability review**, not an instruction to compose an ad hoc ECDH scheme. Record exact standardized suite IDs, encoding, nonce generation, test vectors, and library versions in a reviewed protocol revision. [HPKE](https://www.rfc-editor.org/rfc/rfc9180.html)
+Use maintained crypto libraries, not home-written primitives. Candidate portable envelope suite: HPKE DHKEM(P-256, HKDF-SHA256) / HKDF-SHA256 / AES-128-GCM for wrapping a random 256-bit content-encryption key; AES-256-GCM for one message body. This remains a **candidate until library/API interoperability tests pass**, not an instruction to compose an ad hoc ECDH scheme. Record exact standardized suite IDs, encoding, nonce generation, test vectors, and library versions in a versioned protocol revision. [HPKE](https://www.rfc-editor.org/rfc/rfc9180.html)
 
-Browser support for a primitive is not support for HPKE/OPAQUE as a complete protocol. A small reviewed JS/WASM crypto module and its dependencies are expected. Do not advertise “zero JS supply chain” while using HTMX and cryptography. Vendored assets, CSP, no third-party dashboard scripts, a reproducible bundle and pinned native/SDK clients reduce exposure but do not eliminate the active served-code attack.
+Browser support for a primitive is not support for HPKE/OPAQUE as a complete protocol. A small maintained JS/WASM crypto module with pinned dependencies and cross-client tests is expected. Do not advertise “zero JS supply chain” while using HTMX and cryptography. Vendored assets, CSP, no third-party dashboard scripts, a reproducible bundle and pinned native/SDK clients reduce exposure but do not eliminate the active served-code attack.
 
 ## Proposed outbound flow
 
@@ -59,7 +59,7 @@ Phone receives plaintext SMS, normalizes multipart events, and encrypts once to 
 
 Customer automation must decrypt in the customer's runtime using the SDK. Provide a local connector recipe; a plain Zapier webhook does not magically decrypt HPKE. Webhook HMAC proves relay authenticity, while the device event signature preserves source authentication for reviewers able to verify it.
 
-The restricted M1 pilot classifies STOP-family keywords and likely free-text withdrawal requests on the phone. It stores a local recipient block immediately, even if an upload window is unavailable, and uploads only a signed metadata action when the reply matches a positively sent attempt and the selected SIM. The writer persists an account-scoped E.164 suppression and rejects both new acceptance and exact acceptance retries under the same account lock. An exact START or UNSTOP clears an existing server suppression only after authenticated, deduplicated inbound processing in the same outbound-attempt reply window. The phone retains its local STOP block after an affirmative writer acknowledgement because the current local record has no verified line and enrollment generation to compare with START. Neither action uploads SMS plaintext or sends an automatic confirmation. General unsolicited-reply capture, durable line identity in the signed event, and an owner review path for off-channel and ambiguous requests remain open before a general send route; see [SMS compliance and current limits](SMS-COMPLIANCE.md).
+The restricted M1 pilot classifies STOP-family keywords and likely free-text withdrawal requests on the phone. It stores a local recipient block immediately, even if an upload window is unavailable, and uploads only a signed metadata action when the reply matches a positively sent attempt and the selected SIM. The writer persists an account-scoped E.164 suppression and rejects both new acceptance and exact acceptance retries under the same account lock. An exact START or UNSTOP clears an existing server suppression only after authenticated, deduplicated inbound processing in the same outbound-attempt reply window. The phone retains its local STOP block after an affirmative writer acknowledgement because the current local record has no verified line and enrollment generation to compare with START. Neither action uploads SMS plaintext or sends an automatic confirmation. Authenticated owners can view active ambiguous SMS holds in a read-only, no-store review queue showing recipient metadata and event times. Off-channel withdrawal intake and durable review decisions remain open before a general send route; see [SMS compliance and current limits](SMS-COMPLIANCE.md).
 
 ## Recovery, rotation and revocation
 
@@ -100,7 +100,14 @@ or database connection setup. A 30-second handler deadline bounds slow request
 bodies; timed-out requests return 408. This is per-process admission, not a
 fleet-wide database connection pool. A canceled handler can leave a PostgreSQL
 query running until its connection driver receives the result, so this is not a
-hard bound on outstanding database queries or connections. Deployments must still bound incoming
+hard bound on outstanding database queries or connections. Each process reuses
+PostgreSQL sockets within fixed per-class budgets (16 request, 16 device,
+4 worker); idle sockets count against those budgets. A released socket is reset
+with `DISCARD ALL` before reuse and is closed instead when the reset does not
+finish within two seconds (for example a canceled query still running or an
+open transaction), after 60 idle seconds, or at 30 minutes old. A five-second
+timer closes expired idle sockets on quiet hubs and returns their connection
+permits after the PostgreSQL driver exits. Deployments must still bound incoming
 sockets/headers at the edge and size PostgreSQL for HTTP, upgraded WebSockets,
 and background workers across all API instances. A timed-out mutation may have
 committed; callers must reconcile state before retrying non-idempotent actions.

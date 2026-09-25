@@ -51,11 +51,19 @@ use zrotext_server::{
     http_enrollment::{self, EnrollmentHttpState},
     http_messages::{self, MessagesHttpState},
     http_owner_messages::{self, OwnerMessagesState},
+    http_owner_review::{self, OwnerReviewState},
     http_webhooks::{self, WebhookHttpState},
     owner_ui,
     retention::{self, RetentionPolicy},
     webhook_worker::{self, WebhookSecretVault},
 };
+
+/// Upper bound on deliveries one webhook lane makes per two-second tick.
+const WEBHOOK_DELIVERIES_PER_TICK: usize = 16;
+/// Upper bound on retention batches per table per fifteen-second tick.
+const RETENTION_BATCHES_PER_TICK: usize = 10;
+/// Upper bound on each kind of account mail sent per five-second tick.
+const MAIL_DELIVERIES_PER_TICK: usize = 16;
 
 #[derive(Clone)]
 struct Config {
@@ -256,10 +264,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 _ = checks.tick() => {
                     if retention_draining.load(Ordering::Acquire) { break; }
                     let result = async {
-                        let (mut client, connection) =
+                        let mut client =
                             zrotext_server::runtime_db::connect_worker(&retention_database).await?;
-                        tokio::spawn(async move { let _ = connection.await; });
-                        retention::prune(&mut client, retention_policy, retention::BATCH_SIZE).await?;
+                        // Keep pruning while any table returns a full batch so a
+                        // busy hub cannot fall permanently behind its policy.
+                        for _ in 0..RETENTION_BATCHES_PER_TICK {
+                            if retention_draining.load(Ordering::Acquire) { break; }
+                            let counts = retention::prune(&mut client, retention_policy, retention::BATCH_SIZE).await?;
+                            if !counts.any_full(retention::BATCH_SIZE) { break; }
+                        }
                         Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
                     }.await;
                     match result {
@@ -286,11 +299,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await?;
         if let Some(vault) = webhook_vault.as_ref() {
-            let (mut key_db, key_connection) =
-                zrotext_server::runtime_db::connect(&config.database_url).await?;
-            tokio::spawn(async move {
-                let _ = key_connection.await;
-            });
+            let mut key_db = zrotext_server::runtime_db::connect(&config.database_url).await?;
             webhook_worker::validate_runtime_keys(&mut key_db, vault).await?;
         }
         ensure_local_site(&config).await?;
@@ -334,12 +343,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     if worker_draining.load(Ordering::Acquire) { break; }
                                     ticks = ticks.wrapping_add(1);
                                     let result = async {
-                                        let (mut client, connection) =
+                                        let mut client =
                                             zrotext_server::runtime_db::connect_worker(&worker_database).await
                                                 .map_err(|_| "webhook database unavailable")?;
-                                        tokio::spawn(async move { let _ = connection.await; });
-                                        let sent = webhook_worker::dispatch_one(&mut client, &worker_vault, &worker_id).await
-                                            .map_err(|_| "webhook dispatch failed")?;
+                                        // Drain a bounded backlog on one socket rather than
+                                        // one delivery per lane per tick.
+                                        let mut sent = 0;
+                                        while sent < WEBHOOK_DELIVERIES_PER_TICK
+                                            && !worker_draining.load(Ordering::Acquire)
+                                            && webhook_worker::dispatch_one(&mut client, &worker_vault, &worker_id).await
+                                                .map_err(|_| "webhook dispatch failed")?
+                                        {
+                                            sent += 1;
+                                        }
                                         if lane == 0 && ticks % 30 == 1 {
                                             let (pending, oldest_age_seconds, in_flight) =
                                                 webhook_worker::queue_signal(&client).await
@@ -347,7 +363,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             eprintln!("webhook_queue pending={pending} oldest_pending_age_seconds={} in_flight={in_flight}",
                                                 oldest_age_seconds.unwrap_or(0));
                                         }
-                                        Ok::<bool, &str>(sent)
+                                        Ok::<usize, &str>(sent)
                                     }.await;
                                     match result {
                                         Ok(_) => unavailable_logged = false,
@@ -375,8 +391,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 tokio::select! {
                     _ = checks.tick() => {
                         if abuse_draining.load(Ordering::Acquire) { break; }
-                        if let Ok((mut client, connection)) = zrotext_server::runtime_db::connect_worker(&abuse_database).await {
-                            tokio::spawn(async move { let _ = connection.await; });
+                        if let Ok(mut client) = zrotext_server::runtime_db::connect_worker(&abuse_database).await {
                             let _ = abuse_limits::prune(&client).await;
                             let _ = mfa::prune_expired_challenges(&client).await;
                             let _ = enrollment::prune_expired(&client).await;
@@ -401,21 +416,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 tokio::select! {
                     _ = checks.tick() => {
                         if mail_draining.load(Ordering::Acquire) { break; }
-                        let verification = http_auth::dispatch_one_verification_report(&mail_state).await;
-                        match verification.as_ref() {
-                            Ok(VerificationDispatchOutcome::Idle) | Err(_) => {}
-                            Ok(VerificationDispatchOutcome::Delivered) => failure_gate.on_success(),
-                            Ok(VerificationDispatchOutcome::Failed { category, dead_lettered }) => {
-                                if let Some(warning) = failure_gate.on_failure(*category, std::time::Instant::now()) {
-                                    eprintln!("{warning}");
-                                }
-                                if *dead_lettered {
-                                    eprintln!("verification mail dead-lettered after six failed attempts");
+                        // Drain bounded backlogs; a failed send ends that kind's
+                        // batch so an unreachable mail server is not hammered.
+                        let mut verification = Ok(VerificationDispatchOutcome::Idle);
+                        for _ in 0..MAIL_DELIVERIES_PER_TICK {
+                            if mail_draining.load(Ordering::Acquire) { break; }
+                            verification = http_auth::dispatch_one_verification_report(&mail_state).await;
+                            match verification.as_ref() {
+                                Ok(VerificationDispatchOutcome::Idle) | Err(_) => {}
+                                Ok(VerificationDispatchOutcome::Delivered) => failure_gate.on_success(),
+                                Ok(VerificationDispatchOutcome::Failed { category, dead_lettered }) => {
+                                    if let Some(warning) = failure_gate.on_failure(*category, std::time::Instant::now()) {
+                                        eprintln!("{warning}");
+                                    }
+                                    if *dead_lettered {
+                                        eprintln!("verification mail dead-lettered after six failed attempts");
+                                    }
                                 }
                             }
+                            if !matches!(verification, Ok(VerificationDispatchOutcome::Delivered)) { break; }
                         }
-                        let reset = http_auth::dispatch_one_password_reset(&mail_state).await;
-                        let notice = http_auth::dispatch_one_password_reset_notice(&mail_state).await;
+                        let mut reset = Ok(false);
+                        for _ in 0..MAIL_DELIVERIES_PER_TICK {
+                            if mail_draining.load(Ordering::Acquire) { break; }
+                            reset = http_auth::dispatch_one_password_reset(&mail_state).await;
+                            if !matches!(reset, Ok(true)) { break; }
+                        }
+                        let mut notice = Ok(false);
+                        for _ in 0..MAIL_DELIVERIES_PER_TICK {
+                            if mail_draining.load(Ordering::Acquire) { break; }
+                            notice = http_auth::dispatch_one_password_reset_notice(&mail_state).await;
+                            if !matches!(notice, Ok(true)) { break; }
+                        }
                         let unavailable = verification.is_err() || reset.is_err() || notice.is_err();
                         if unavailable && !unavailable_logged {
                             eprintln!("account mail delivery worker unavailable");
@@ -438,9 +470,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     _ = checks.tick() => {
                         if recovery_draining.load(Ordering::Acquire) { break; }
                         let result = async {
-                            let (mut client, connection) =
+                            let mut client =
                                 zrotext_server::runtime_db::connect_worker(&recovery_database).await?;
-                            tokio::spawn(async move { let _ = connection.await; });
+                            let index_ready: bool = client
+                                .query_one("SELECT public.messages_in_flight_index_ready('public')", &[])
+                                .await?
+                                .get(0);
+                            if !index_ready {
+                                return Err(std::io::Error::other(
+                                    "delivery recovery index is unavailable",
+                                )
+                                .into());
+                            }
                             let mut store = DeliveryStore::new(&mut client);
                             store.expire_due(100).await?;
                             store.reconcile_silent_attempts(100).await?;
@@ -479,10 +520,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             auth_hasher: auth_state.hasher.clone(),
             canonical_origin: auth_state.canonical_origin.clone(),
         };
+        let owner_review_state = OwnerReviewState {
+            database_url: config.database_url.clone(),
+            auth_hasher: auth_state.hasher.clone(),
+            canonical_origin: auth_state.canonical_origin.clone(),
+        };
         app = app
             .nest("/v1/auth", http_auth::router(auth_state))
             .nest("/v1/enrollment", http_enrollment::router(enrollment_state))
             .merge(http_owner_messages::router(owner_messages_state))
+            .merge(http_owner_review::router(owner_review_state))
             .merge(owner_ui::router())
             .merge(device_socket::router(socket_state));
         if config.alpha_policy.enabled() {
@@ -738,12 +785,9 @@ async fn ensure_mfa_startup(
     cipher: Option<&MfaCipher>,
     recovery_only: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (client, connection) = zrotext_server::runtime_db::connect(database_url)
+    let client = zrotext_server::runtime_db::connect(database_url)
         .await
         .map_err(|_| "MFA startup key check could not reach database")?;
-    tokio::spawn(async move {
-        let _ = connection.await;
-    });
     mfa::validate_runtime_key(&client, cipher, recovery_only)
         .await
         .map_err(
@@ -755,12 +799,9 @@ async fn ensure_mfa_startup(
 /// A configured M1 site registers once on a fresh writer. An operator-disabled
 /// or draining existing site is never re-enabled by application startup.
 async fn ensure_local_site(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
-    let (client, connection) = zrotext_server::runtime_db::connect(&config.database_url)
+    let client = zrotext_server::runtime_db::connect(&config.database_url)
         .await
         .map_err(|_| "site registration unavailable")?;
-    tokio::spawn(async move {
-        let _ = connection.await;
-    });
     client
         .execute(
             "INSERT INTO sites(site_id) VALUES($1) ON CONFLICT(site_id) DO NOTHING",
@@ -922,12 +963,7 @@ async fn ready(
     // writer, observe the expected deployment epoch, and, when billing is
     // enabled, has no unresolved provider authorization failure.
     let status = match zrotext_server::runtime_db::connect(&config.database_url).await {
-        Ok((client, connection)) => {
-            tokio::spawn(async move {
-                if connection.await.is_err() {
-                    eprintln!("database connection closed");
-                }
-            });
+        Ok(client) => {
             let authority_ready = client
                 .query_one(
                     "SELECT NOT pg_is_in_recovery(), epoch, \
@@ -943,6 +979,19 @@ async fn ready(
                 })
                 .unwrap_or(false);
             if !authority_ready {
+                false
+            } else if config.dispatch_runtime_enabled
+                && !client
+                    .query_one(
+                        "SELECT public.messages_in_flight_index_ready('public')",
+                        &[],
+                    )
+                    .await
+                    .map(|row| row.get::<_, bool>(0))
+                    .unwrap_or(false)
+            {
+                // Recovery sweeps must not run against an absent, invalid, or
+                // substituted index on a populated message history.
                 false
             } else if config.billing_provider_authorized.is_some() {
                 client.query_one(
@@ -1191,6 +1240,12 @@ mod tests {
         assert_eq!(
             ready(State(Arc::new(config.clone()))).await.0,
             StatusCode::OK
+        );
+        let mut dispatch_config = config.clone();
+        dispatch_config.dispatch_runtime_enabled = true;
+        assert_eq!(
+            ready(State(Arc::new(dispatch_config))).await.0,
+            StatusCode::SERVICE_UNAVAILABLE
         );
         client.batch_execute("CREATE TABLE billing_reconciliations(dirty_generation bigint,processed_generation bigint,last_failure_class text); CREATE TABLE billing_risk_events(state text,last_failure_class text)").await.unwrap();
         let provider_authorized = Arc::new(AtomicBool::new(false));

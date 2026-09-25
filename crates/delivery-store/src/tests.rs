@@ -2,7 +2,7 @@ use super::*;
 
 // Keep the admission fixtures on the complete, reviewed schema. SQL is
 // embedded at build time so tests never execute files discovered at runtime.
-const TEST_MIGRATIONS: [(&str, &str); 33] = [
+const TEST_MIGRATIONS: [(&str, &str); 35] = [
     (
         "001_foundation.sql",
         include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
@@ -137,7 +137,33 @@ const TEST_MIGRATIONS: [(&str, &str); 33] = [
         "033_sms_line_binding_scope.sql",
         include_str!("../../../deploy/compose/migrations/033_sms_line_binding_scope.sql"),
     ),
+    (
+        "034_delivery_sweep_index.sql",
+        include_str!("../../../deploy/compose/migrations/034_delivery_sweep_index.sql"),
+    ),
+    (
+        "035_sms_owner_key_ceremony.sql",
+        include_str!("../../../deploy/compose/migrations/035_sms_owner_key_ceremony.sql"),
+    ),
 ];
+
+async fn apply_test_migrations(client: &Client) {
+    for (name, migration) in TEST_MIGRATIONS {
+        if name == "034_delivery_sweep_index.sql" {
+            // Mirror the migrator's autocommit preparation before the
+            // numbered, checksummed validation file.
+            client
+                .batch_execute(
+                    "CREATE INDEX CONCURRENTLY messages_in_flight_updated \
+                     ON messages(updated_at,id) \
+                     WHERE state IN ('claimed','submitting','submitted')",
+                )
+                .await
+                .unwrap();
+        }
+        client.batch_execute(migration).await.unwrap();
+    }
+}
 
 #[test]
 fn admission_fixture_tracks_numbered_migrations() {
@@ -172,9 +198,7 @@ async fn released_attempt_cannot_change_a_new_grant() {
         ))
         .await
         .unwrap();
-    for (_, migration) in TEST_MIGRATIONS {
-        client.batch_execute(migration).await.unwrap();
-    }
+    apply_test_migrations(&client).await;
     let account_id = Uuid::new_v4();
     let device_id = Uuid::new_v4();
     let message_id = Uuid::new_v4();
@@ -345,9 +369,7 @@ async fn expired_message_replay_keeps_identity_without_new_dispatch() {
         ))
         .await
         .unwrap();
-    for (_, migration) in TEST_MIGRATIONS {
-        client.batch_execute(migration).await.unwrap();
-    }
+    apply_test_migrations(&client).await;
     let account = Uuid::new_v4();
     let device = Uuid::new_v4();
     let message = Uuid::new_v4();
@@ -475,9 +497,7 @@ async fn exact_alpha_replay_survives_customer_binding_without_new_work() {
         ))
         .await
         .unwrap();
-    for (_, migration) in TEST_MIGRATIONS {
-        client.batch_execute(migration).await.unwrap();
-    }
+    apply_test_migrations(&client).await;
     let account = Uuid::new_v4();
     let device = Uuid::new_v4();
     let message = Uuid::new_v4();
@@ -607,9 +627,7 @@ async fn parallel_acceptance_respects_pending_queue_capacity() {
         .await
         .unwrap();
     // Apply the complete numbered schema, including accept-time metering.
-    for (_, migration) in TEST_MIGRATIONS {
-        client.batch_execute(migration).await.unwrap();
-    }
+    apply_test_migrations(&client).await;
     let account = Uuid::new_v4();
     let device = Uuid::new_v4();
     client
@@ -801,9 +819,7 @@ async fn postgres_fences_unknown_and_tenant_idempotency() {
         ))
         .await
         .unwrap();
-    for (_, migration) in TEST_MIGRATIONS {
-        client.batch_execute(migration).await.unwrap();
-    }
+    apply_test_migrations(&client).await;
 
     let account = Uuid::new_v4();
     let other_account = Uuid::new_v4();

@@ -72,7 +72,24 @@ pub struct RetentionCounts {
     pub sealed_inbound_events: u64,
 }
 
-/// Each table handles at most one batch per tick. Concurrent hubs skip locked
+impl RetentionCounts {
+    /// Whether any table may still have due rows beyond this batch.
+    pub fn any_full(&self, limit: i64) -> bool {
+        let limit = limit as u64;
+        [
+            self.idempotency_keys,
+            self.messages,
+            self.message_events,
+            self.webhook_deliveries,
+            self.inbound_events,
+            self.sealed_inbound_events,
+        ]
+        .into_iter()
+        .any(|count| count >= limit)
+    }
+}
+
+/// Each table handles at most one batch per call. Concurrent hubs skip locked
 /// rows; no table-wide lock, cascade, or unbounded delete is used.
 pub async fn prune(
     client: &mut Client,
