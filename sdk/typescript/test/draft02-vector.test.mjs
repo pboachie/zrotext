@@ -21,6 +21,8 @@ test("synthetic public genesis vector verifies exact profile-02 manifest and aut
   const device = manifest.keys.find((key) => key.role === 1);
   const archive = manifest.keys.find((key) => key.role === 2);
   assert.ok(signer && device && archive);
+  assert.deepEqual(signer.deviceId, new Uint8Array(16));
+  assert.deepEqual(signer.lineId, bytes("line_id_b64"));
   assert.doesNotThrow(() => authorizeOutbound02(manifest, {
     accountId: pin.accountId,
     deviceId: bytes("device_id_b64"),
@@ -30,6 +32,11 @@ test("synthetic public genesis vector verifies exact profile-02 manifest and aut
     signerKeyId: signer.keyId,
     wraps: [{ role: 1, keyId: device.keyId }, { role: 2, keyId: archive.keyId }],
   }, now));
+  assert.throws(() => authorizeOutbound02(manifest, {
+    accountId: pin.accountId, deviceId: bytes("device_id_b64"), lineId: bytes("device_id_b64"),
+    manifestDigest: manifest.digest, keysetVersion: manifest.version, signerKeyId: signer.keyId,
+    wraps: [{ role: 1, keyId: device.keyId }, { role: 2, keyId: archive.keyId }],
+  }, now), /outbound signer authority/);
 });
 
 test("synthetic public vector rejects wrong pin and high-s signature alias", async () => {
@@ -66,6 +73,7 @@ test("synthetic public rotation vector verifies both roots and linked new-genera
   const device = newManifest.keys.find((key) => key.role === 1);
   const archive = newManifest.keys.find((key) => key.role === 2);
   assert.ok(signer && device && archive);
+  assert.deepEqual(signer.lineId, rotatedBytes("line_id_b64"));
   assert.doesNotThrow(() => authorizeOutbound02(newManifest, {
     accountId: next.accountId,
     deviceId: rotatedBytes("device_id_b64"),

@@ -113,13 +113,14 @@ try {
   }
 
   async function buildManifest({ issued = now - 1_000n, expires = now + 3_600_000n,
-                                 signerState = 1, signerScope = 1, signingKey = root.privateKey,
+                                 signerState = 1, signerScope = 1, signerLine = lineId,
+                                 signingKey = root.privateKey,
                                  manifestRootPoint = rootPoint, generation = 1n,
                                  previousDigest = new Uint8Array(32) } = {}) {
     const records = [
       { role: 1, id: deviceKeyId, point: devicePoint, device: deviceId, line: lineId, scope: 4, state: 1 },
       { role: 2, id: archiveKeyId, point: archivePoint, device: new Uint8Array(16), line: new Uint8Array(16), scope: 12, state: 1 },
-      { role: 5, id: signerKeyId, point: signerPoint, device: new Uint8Array(16), line: new Uint8Array(16), scope: signerScope, state: signerState },
+      { role: 5, id: signerKeyId, point: signerPoint, device: new Uint8Array(16), line: signerLine, scope: signerScope, state: signerState },
       { role: 6, id: sha256(concat(ascii("ZTSE/key/v1\0"), Uint8Array.of(1, 1), manifestRootPoint)),
         point: manifestRootPoint, device: new Uint8Array(16), line: new Uint8Array(16), scope: 0, state: 1 },
     ];
@@ -136,6 +137,8 @@ try {
   const forkManifest = await buildManifest({ issued: now - 2_000n });
   const revokedManifest = await buildManifest({ signerState: 2 });
   const wrongScopeManifest = await buildManifest({ signerScope: 2 });
+  const wrongLineManifest = await buildManifest({ signerLine: Uint8Array.from(deviceId) });
+  const zeroLineManifest = await buildManifest({ signerLine: new Uint8Array(16) });
   const rotatedRoot = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
   const rotatedRootPoint = new Uint8Array(await crypto.subtle.exportKey("raw", rotatedRoot.publicKey));
   const transitionUnsigned = concat(ascii("ZTRT"), Uint8Array.of(2), accountId,
@@ -154,6 +157,8 @@ try {
   protectedBytes.set(manifest.digest, 72);
   const revokedProtected = Uint8Array.from(protectedBytes);
   revokedProtected.set(revokedManifest.digest, 72);
+  const wrongLineProtected = Uint8Array.from(protectedBytes);
+  wrongLineProtected.set(wrongLineManifest.digest, 72);
   const cek = new Uint8Array(32).fill(0xc2);
   const bodyKey = await crypto.subtle.importKey("raw", arrayBuffer(cek), "AES-GCM", false, ["encrypt"]);
 
@@ -180,6 +185,7 @@ try {
   }
   const normal = await buildEnvelope(protectedBytes, 0xa8);
   const revoked = await buildEnvelope(revokedProtected, 0xa9);
+  const wrongLine = await buildEnvelope(wrongLineProtected, 0xaa);
   const { nonce, body, unsigned, envelope } = normal;
   const nonceMutantUnsigned = Uint8Array.from(unsigned);
   nonceMutantUnsigned[header.length + protectedBytes.length] ^= 1;
@@ -208,12 +214,15 @@ try {
     m2_draft02_fork_manifest_hex: hex(forkManifest.bytes),
     m2_draft02_revoked_manifest_hex: hex(revokedManifest.bytes),
     m2_draft02_wrong_scope_manifest_hex: hex(wrongScopeManifest.bytes),
+    m2_draft02_wrong_line_manifest_hex: hex(wrongLineManifest.bytes),
+    m2_draft02_zero_line_manifest_hex: hex(zeroLineManifest.bytes),
     m2_draft02_transition_hex: hex(transition),
     m2_draft02_forged_transition_hex: hex(forgedTransition),
     m2_draft02_rotated_root_hex: hex(rotatedRootPoint),
     m2_draft02_rotated_manifest_hex: hex(rotatedManifest.bytes),
     m2_draft02_envelope_hex: hex(envelope),
     m2_draft02_revoked_envelope_hex: hex(revoked.envelope),
+    m2_draft02_wrong_line_envelope_hex: hex(wrongLine.envelope),
     m2_draft02_high_s_envelope_hex: hex(highSEnvelope),
     m2_draft02_nonce_mutant_hex: hex(nonceMutant),
     m2_draft02_manifest_mutant_hex: hex(manifestMutant),
