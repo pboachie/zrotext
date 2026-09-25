@@ -1,5 +1,5 @@
 {
-  "snapshot": "2026-09-24",
+  "snapshot": "2026-09-25",
   "tracks": [
     {
       "id": "gateway",
@@ -57,19 +57,23 @@
           "stage": "pilot",
           "evidence": [
             ["#207", "https://github.com/pboachie/zrotext/pull/207"],
-            ["#210", "https://github.com/pboachie/zrotext/pull/210"]
+            ["#210", "https://github.com/pboachie/zrotext/pull/210"],
+            ["line-bound stream", "../protocol/v1/line-opt-out-contract.md"],
+            ["#237", "https://github.com/pboachie/zrotext/pull/237"]
           ],
           "done": [
             "STOP, STOPALL, UNSUBSCRIBE and similar keywords recognized in the outbound reply window",
             "Likely free-text withdrawals create a conservative block marked for review",
             "Account-scoped suppression checked when a message is accepted",
             "Local block on the phone applies immediately, even while offline",
-            "Local line binding and unsolicited opt-outs journaled on the phone ([#210](https://github.com/pboachie/zrotext/pull/210))"
+            "Local line binding and unsolicited opt-outs journaled on the phone ([#210](https://github.com/pboachie/zrotext/pull/210))",
+            "Default-off signed line-bound STOP/review stream and durable Android replay identity; production activation remains open",
+            "Owner-only read-only queue for ambiguous SMS holds; it cannot clear holds or record off-channel requests ([#237](https://github.com/pboachie/zrotext/pull/237))"
           ],
           "todo": [
-            "Authenticated capture beyond the outbound reply window",
-            "Durable line ID bound to server-side inbound actions",
-            "Owner workflow for off-channel and ambiguous requests"
+            "Production SMS line activation and verified selected-SIM binding before enabling unsolicited opt-outs",
+            "Off-channel withdrawal intake and durable owner review decisions",
+            "End-to-end opt-out, offline replay and SIM-change evidence on real devices"
           ]
         },
         {
@@ -90,6 +94,7 @@
             "Retention limits for inbound content and delivery history"
           ],
           "todo": [
+            "General unsolicited message-content capture and conversation routing beyond the pilot reply window; the line-bound STOP path carries metadata only",
             "Reliable inbound when senders use RCS ([details](ANDROID-TESTING.md))",
             "Sealed inbound content delivered to customer decryptors"
           ]
@@ -102,12 +107,14 @@
           "evidence": [
             ["#36", "https://github.com/pboachie/zrotext/pull/36"],
             ["#74", "https://github.com/pboachie/zrotext/pull/74"],
-            ["#76", "https://github.com/pboachie/zrotext/pull/76"]
+            ["#76", "https://github.com/pboachie/zrotext/pull/76"],
+            ["#237", "https://github.com/pboachie/zrotext/pull/237"]
           ],
           "done": [
             "Device pairing and management page",
             "Authenticated connection lease shown per device",
-            "Message state timeline, inbound activity and webhook history views"
+            "Message state timeline, inbound activity and webhook history views",
+            "Read-only ambiguous opt-out review queue with recipient metadata and event times"
           ],
           "todo": [
             "SIM, queue depth and radio readiness per device",
@@ -215,12 +222,14 @@
             ["#43", "https://github.com/pboachie/zrotext/pull/43"],
             ["#172", "https://github.com/pboachie/zrotext/pull/172"],
             ["#175", "https://github.com/pboachie/zrotext/pull/175"],
-            ["MFA operations", "MFA-OPERATIONS.md"]
+            ["MFA operations", "MFA-OPERATIONS.md"],
+            ["#240", "https://github.com/pboachie/zrotext/pull/240"]
           ],
           "done": [
             "Verified-email owner registration with closed-by-default policy",
             "MFA, session revocation and CSRF protection",
-            "API keys with scopes, shown once at creation"
+            "API keys with scopes, shown once at creation",
+            "MFA-bound SMS approval public-key registration and revocation; line activation remains an internal prerequisite ([contract](../protocol/v1/sms-line-activation-contract.md))"
           ],
           "todo": [
             "Team seats beyond one owner",
@@ -244,6 +253,7 @@
             "Test-only envelope parser and Android Keystore boundary"
           ],
           "todo": [
+            "Resolve and verify remaining Q1-Q11 decisions in the [protocol decision log](../protocol/drafts/zt-009-decision-log.md)",
             "Cross-client interoperability and adversarial security tests",
             "Recovery and unlock flows",
             "Enabled in the gateway for real messages"
@@ -261,7 +271,8 @@
           "done": [],
           "todo": [
             "Owner export of messages, events and settings",
-            "Account erasure that covers metering and billing records where allowed"
+            "Account erasure that covers metering and billing records where allowed",
+            "Extend export and erasure to future contacts, templates, workflow state and assistant access records"
           ]
         }
       ]
@@ -325,6 +336,120 @@
           "todo": [
             "Implementation and failure-scenario tests"
           ]
+        },
+        {
+          "id": "managedai",
+          "name": "Optional managed AI service",
+          "short": "Optional managed AI",
+          "stage": "planned",
+          "evidence": [
+            ["product proposal", "PRODUCT-PLAN.md#managed-ai-and-larger-campaigns"]
+          ],
+          "evidence_note": "proposal only; no runtime implementation",
+          "done": [],
+          "todo": [
+            "Explicit opt-in to a separate managed AI service that can read selected content",
+            "Document provider access, retention, export, deletion, revocation and per-account budgets"
+          ]
+        },
+        {
+          "id": "providers",
+          "name": "Provider-based high-volume sending",
+          "short": "Provider-based sending",
+          "stage": "planned",
+          "evidence": [
+            ["product proposal", "PRODUCT-PLAN.md#managed-ai-and-larger-campaigns"]
+          ],
+          "evidence_note": "proposal only; no runtime implementation",
+          "done": [],
+          "todo": [
+            "Evaluate provider routes, supported regions and sender-number requirements before promising capacity",
+            "Explicit route selection with shared suppression, idempotency and delivery semantics; no automatic resend of unknown phone attempts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "workflows",
+      "title": "Workflows and AI",
+      "intro": "Build useful conversations for local service operators and individuals through the dashboard and integrations. These capabilities are proposed and unavailable; they depend on the general messaging foundation.",
+      "capabilities": [
+        {
+          "id": "contacts",
+          "name": "Contacts, consent and conversations",
+          "short": "Contacts and conversations",
+          "stage": "planned",
+          "evidence": [
+            ["product proposal", "PRODUCT-PLAN.md#business-inbox"]
+          ],
+          "evidence_note": "proposal only; no runtime implementation",
+          "done": [],
+          "todo": [
+            "Contacts with purpose-specific consent records, duplicate handling and conversation history",
+            "Owner-entered job or appointment details and an exceptions inbox, with locally decrypted content"
+          ]
+        },
+        {
+          "id": "scheduling",
+          "name": "Templates and scheduled follow-ups",
+          "short": "Templates and scheduling",
+          "stage": "planned",
+          "evidence": [
+            ["product proposal", "PRODUCT-PLAN.md#business-inbox"]
+          ],
+          "evidence_note": "proposal only; no runtime implementation",
+          "done": [],
+          "todo": [
+            "Personalized templates, segment preview, recipient-local timing and explicit expiry",
+            "Paced scheduling with suppression rechecks, cancellation and honest unknown outcomes"
+          ]
+        },
+        {
+          "id": "approvals",
+          "name": "Approvals and reply tracking",
+          "short": "Approvals and reply tracking",
+          "stage": "planned",
+          "evidence": [
+            ["product proposal", "PRODUCT-PLAN.md#business-inbox"]
+          ],
+          "evidence_note": "proposal only; no runtime implementation",
+          "done": [],
+          "todo": [
+            "Durable owner decisions tied to the exact recipient and proposed action",
+            "Reply correlation, human takeover and follow-up cancellation after a response"
+          ]
+        },
+        {
+          "id": "integrations",
+          "name": "Workflow connector and integrations",
+          "short": "Workflow integrations",
+          "stage": "planned",
+          "evidence": [
+            ["product proposal", "PRODUCT-PLAN.md#customer-controlled-assistant"]
+          ],
+          "evidence_note": "proposal only; no runtime implementation",
+          "done": [],
+          "todo": [
+            "Shared services for dashboard actions, SDK tools and signed workflow events",
+            "Authorized encryption/decryption connector with signature verification and event deduplication",
+            "An n8n recipe for connecting the shared messaging services; application templates have separate use-case acceptance criteria"
+          ]
+        },
+        {
+          "id": "assistant",
+          "name": "Customer-controlled AI assistant",
+          "short": "Customer-controlled assistant",
+          "stage": "planned",
+          "evidence": [
+            ["product proposal", "PRODUCT-PLAN.md#customer-controlled-assistant"]
+          ],
+          "evidence_note": "proposal only; no runtime implementation",
+          "done": [],
+          "todo": [
+            "Selected conversations decrypted only by an authorized customer-controlled connector",
+            "Two-way owner conversations and automatic replies within approved routines",
+            "Escalate commitments and unusual requests; enforce budgets, scope, revocation and human takeover"
+          ]
         }
       ]
     }
@@ -343,29 +468,349 @@
     ["sealed", "api"],
     ["accounts", "api"],
     ["api", "hosted"],
-    ["enrollment", "twosite"]
+    ["enrollment", "twosite"],
+    ["api", "contacts"],
+    ["dashboard", "contacts"],
+    ["contacts", "scheduling"],
+    ["scheduling", "approvals"],
+    ["approvals", "integrations"],
+    ["integrations", "assistant"],
+    ["assistant", "managedai"],
+    ["hosted", "managedai"],
+    ["export", "managedai"],
+    ["api", "providers"],
+    ["approvals", "providers"]
   ],
-  "track_map_order": ["gateway", "privacy", "selfhost", "managed"],
+  "track_map_order": [
+    "gateway",
+    "privacy",
+    "selfhost",
+    "workflows",
+    "managed"
+  ],
   "general_send_gate": [
     [
-      {"text": "Device enrollment and authenticated stream", "done": true}
+      {
+        "text": "Device enrollment and authenticated stream",
+        "done": true
+      }
     ],
     [
-      {"text": "Idempotent send with honest delivery states", "done": true}
+      {
+        "text": "Idempotent send with honest delivery states",
+        "done": true
+      }
     ],
     [
-      {"text": "STOP / START in the outbound reply window", "done": true}
+      {
+        "text": "STOP / START in the outbound reply window",
+        "done": true
+      }
     ],
     [
-      {"text": "Account-scoped suppression checked at acceptance", "done": true}
+      {
+        "text": "Account-scoped suppression checked at acceptance",
+        "done": true
+      }
     ],
     [
-      {"text": "Opt-out capture beyond the reply window", "done": false},
-      {"text": "Durable line ID bound to inbound actions", "done": false},
-      {"text": "Owner review for off-channel and ambiguous requests", "done": false}
+      {
+        "text": "Production SMS line activation and SIM binding",
+        "done": false
+      },
+      {
+        "text": "Enable and validate unsolicited opt-out capture",
+        "done": false
+      },
+      {
+        "text": "Off-channel holds and durable review decisions",
+        "done": false
+      }
     ],
     [
-      {"text": "End-to-end evidence on real devices", "done": false}
+      {
+        "text": "Sealed send and inbound runtime with stable API",
+        "done": false
+      }
+    ],
+    [
+      {
+        "text": "End-to-end evidence on real devices",
+        "done": false
+      }
     ]
+  ],
+  "use_cases": [
+    {
+      "id": "receptionist",
+      "title": "Text receptionist",
+      "audience": "Cleaners, tutors, repair shops and other local service operators.",
+      "problem": "Owners lose time collecting the same details and tracking unanswered inquiries while doing their main work.",
+      "example": "Gather job details by text, draft a reply, and ask the owner to approve a quote.",
+      "priority": "first",
+      "availability": "planned",
+      "requires": [
+        "contacts",
+        "scheduling",
+        "approvals",
+        "assistant"
+      ],
+      "journey": [
+        "The owner connects a dedicated line and configures service facts, intake questions, hours and escalation rules.",
+        "A customer texts an inquiry; approved intake questions collect the minimum details needed for a job summary.",
+        "The assistant answers approved FAQs and drafts a response; prices, bookings and commitments go to the owner.",
+        "The owner approves or edits the exact action, takes over the conversation, or schedules an allowed follow-up."
+      ],
+      "acceptance": [
+        "A nontechnical owner completes inquiry, intake, approved response and follow-up from the dashboard.",
+        "No unapproved quote or booking is sent; edits invalidate approval of the previous action.",
+        "An opt-out or human takeover stops pending automation, and duplicate inbound events do not duplicate replies."
+      ],
+      "success_signals": [
+        "Setup completion and time to first completed inquiry.",
+        "Owner interventions and time spent per resolved inquiry."
+      ]
+    },
+    {
+      "id": "personalai",
+      "title": "Personal AI by SMS",
+      "audience": "Individuals who want to reach their chosen assistant through ordinary SMS.",
+      "problem": "Capturing a thought or delegating a small task should not require opening another app.",
+      "example": "Text your assistant a note or reminder; let approved routines communicate with selected contacts.",
+      "priority": "first",
+      "availability": "planned",
+      "requires": [
+        "contacts",
+        "scheduling",
+        "approvals",
+        "assistant"
+      ],
+      "journey": [
+        "The owner connects an assistant, pairs an owner channel, and chooses allowed contacts and routines in the authenticated dashboard.",
+        "The owner texts a note, question or reminder; the connector decrypts the selected conversation and uses the chosen AI.",
+        "The assistant answers the owner or proposes an action for another person; automatic sending stays within configured routines.",
+        "The owner reviews exceptions and can pause or revoke the connector."
+      ],
+      "acceptance": [
+        "Notes, owner replies and reminders work without exposing bodies to relay logs or storage.",
+        "An incoming phone number alone cannot change permissions, disclose other conversations or approve sensitive actions.",
+        "Messages outside approved routines wait for authenticated approval; reminders expire instead of arriving after their useful time."
+      ],
+      "success_signals": [
+        "Tasks completed by SMS without opening the dashboard.",
+        "Corrections, unexpected messages and repeat use by the owner."
+      ]
+    },
+    {
+      "id": "repairs",
+      "title": "Repair and project updates",
+      "audience": "Repair shops, makers and small project-based businesses.",
+      "problem": "Customers need progress updates, and owners need a clear record of approval before additional work.",
+      "example": "Send a repair update and request approval before extra work.",
+      "priority": "next",
+      "availability": "planned",
+      "requires": [
+        "contacts",
+        "scheduling",
+        "approvals",
+        "integrations"
+      ],
+      "journey": [
+        "The owner records a job and selects update templates.",
+        "A job milestone triggers an approved status update to the customer.",
+        "Additional work creates an owner-approved request for the exact scope and amount.",
+        "A matching customer response is recorded; ambiguous replies or conflicting changes return to the owner."
+      ],
+      "acceptance": [
+        "Approval is tied to the correct job and request version; a generic reply cannot approve unrelated work.",
+        "Replayed status events send no duplicate update, and changed work invalidates an earlier pending request.",
+        "Unanswered requests appear in the exceptions inbox; silence never counts as approval."
+      ],
+      "success_signals": [
+        "Status inquiries avoided and time to customer response.",
+        "Additional-work requests resolved without manual follow-up."
+      ]
+    },
+    {
+      "id": "waitlist",
+      "title": "Cancellation-slot recovery",
+      "audience": "Appointment-based local businesses with a small opt-in waiting list.",
+      "problem": "A cancelled appointment leaves unused time while several customers may want the same slot.",
+      "example": "Offer an open slot in sequence and stop when one booking is confirmed.",
+      "priority": "next",
+      "availability": "planned",
+      "requires": [
+        "contacts",
+        "scheduling",
+        "approvals",
+        "integrations"
+      ],
+      "journey": [
+        "The owner enters an available slot and eligible waiting contacts.",
+        "The workflow offers it to one contact with an expiry before moving to the next.",
+        "An acceptance reserves the slot for owner confirmation; later responses cannot allocate it again.",
+        "Confirmation closes outstanding offers and cancels remaining reminders."
+      ],
+      "acceptance": [
+        "Concurrent acceptances cannot allocate the same slot twice; expired offers cannot claim it.",
+        "No external calendar booking is implied: the first version uses owner-entered availability and owner confirmation.",
+        "The owner can cancel the offer, and an offline phone does not send expired invitations."
+      ],
+      "success_signals": [
+        "Cancelled slots filled and time to confirmation.",
+        "Expired offers, conflicting replies and owner corrections."
+      ]
+    },
+    {
+      "id": "events",
+      "title": "Wedding and event concierge",
+      "audience": "Couples, community organizers and hosts of small events.",
+      "problem": "Hosts need to reach guests personally and follow up without repeatedly messaging people who already answered.",
+      "example": "Send personalized invitations, collect RSVPs, and remind only unanswered guests.",
+      "priority": "next",
+      "availability": "planned",
+      "requires": [
+        "contacts",
+        "scheduling",
+        "approvals",
+        "integrations",
+        "export"
+      ],
+      "journey": [
+        "The host imports or enters a guest list with permission records, reviews duplicate contacts and previews invitations.",
+        "The host approves a paced batch with event details, recipient timing and expiry.",
+        "Replies update the correct guest record; ambiguous answers go to the host.",
+        "Reminders target unanswered guests only, and the host exports the final RSVP list."
+      ],
+      "acceptance": [
+        "Each recipient receives an individual message without disclosure of other guest numbers.",
+        "Duplicate contacts, household replies and ambiguous names are reviewed before changing guest counts.",
+        "RSVPs and opt-outs cancel relevant unsent reminders; batch progress separates queued, submitted, delivered and unknown."
+      ],
+      "success_signals": [
+        "RSVP completion and host follow-up effort.",
+        "Duplicate contacts resolved and unnecessary reminders prevented."
+      ]
+    },
+    {
+      "id": "volunteers",
+      "title": "Volunteer and shift coordination",
+      "audience": "Clubs, volunteer organizers and small teams.",
+      "problem": "Coordinators need to fill an opening without continuing to contact people after enough volunteers accept.",
+      "example": "Fill an open shift by text and stop requests once it is covered.",
+      "priority": "next",
+      "availability": "planned",
+      "requires": [
+        "contacts",
+        "scheduling",
+        "approvals",
+        "integrations"
+      ],
+      "journey": [
+        "The coordinator defines an opening, capacity, expiry and opt-in contact group.",
+        "An approved workflow sends paced requests and records replies.",
+        "The coordinator confirms volunteers within capacity; excess acceptances receive a reviewed response.",
+        "The workflow closes the opening and cancels remaining requests."
+      ],
+      "acceptance": [
+        "Concurrent replies cannot exceed the opening capacity or assign one response to two shifts.",
+        "Expired or cancelled openings cannot be filled by late replies.",
+        "Participants can withdraw; reminders honor suppression and the latest assignment."
+      ],
+      "success_signals": [
+        "Openings filled and coordinator messages per assignment.",
+        "Overbooking prevented and withdrawals handled."
+      ]
+    },
+    {
+      "id": "household",
+      "title": "Household coordinator",
+      "audience": "Households coordinating routine errands and responsibilities.",
+      "problem": "Small recurring responsibilities are easy to forget or duplicate when coordination is scattered.",
+      "example": "Coordinate pickups, errands and recurring responsibilities through opt-in reminders and replies.",
+      "priority": "later",
+      "availability": "planned",
+      "requires": [
+        "contacts",
+        "scheduling",
+        "approvals",
+        "integrations"
+      ],
+      "journey": [
+        "An owner creates an opt-in household contact group and recurring reminders.",
+        "A member receives a task and replies to accept, decline or report completion.",
+        "The owner sees unanswered tasks and decides whether to reassign them.",
+        "Members can pause their reminders; completing a task cancels its pending follow-ups."
+      ],
+      "acceptance": [
+        "One member cannot read another private conversation or change the owner settings by SMS.",
+        "Recurring reminders respect timezone changes, expiry, completion and withdrawal.",
+        "The workflow records acknowledgments without treating delivery receipts as task completion."
+      ],
+      "success_signals": [
+        "Tasks acknowledged and completed.",
+        "Unwanted reminders and manual coordination effort."
+      ]
+    },
+    {
+      "id": "lending",
+      "title": "Community lending desk",
+      "audience": "Community groups sharing equipment or other reusable items.",
+      "problem": "Small lending programs need a simple way to accept requests and track availability and returns.",
+      "example": "Request equipment by text, confirm availability, and receive return reminders.",
+      "priority": "later",
+      "availability": "planned",
+      "requires": [
+        "contacts",
+        "scheduling",
+        "approvals",
+        "integrations"
+      ],
+      "journey": [
+        "The owner records items, availability and borrowing rules.",
+        "A member requests an item by text; the request enters the owner queue.",
+        "The owner approves a reservation and pickup details within available capacity.",
+        "Return reminders stop when the owner records the return."
+      ],
+      "acceptance": [
+        "Concurrent requests cannot reserve the same item for overlapping periods.",
+        "Availability questions do not themselves create reservations.",
+        "Cancellation, opt-out and confirmed return remove the relevant scheduled messages."
+      ],
+      "success_signals": [
+        "Completed loans and response time to requests.",
+        "Reservation conflicts and overdue follow-up effort."
+      ]
+    },
+    {
+      "id": "acknowledgment",
+      "title": "Operational acknowledgment",
+      "audience": "Small teams coordinating routine maintenance and service issues.",
+      "problem": "An alert is useful only when someone accepts responsibility and others can see that response.",
+      "example": "Notify a small team about a maintenance issue and record who will handle it.",
+      "priority": "later",
+      "availability": "planned",
+      "requires": [
+        "contacts",
+        "scheduling",
+        "approvals",
+        "integrations"
+      ],
+      "journey": [
+        "A configured integration creates a routine issue with an expiry and eligible contacts.",
+        "An approved workflow notifies the group and collects acknowledgments.",
+        "The owner confirms responsibility, or a configured single-assignee rule records the first valid acceptance.",
+        "Closing the issue cancels remaining reminders and records the outcome."
+      ],
+      "acceptance": [
+        "Duplicate issue events do not create duplicate requests or assignments.",
+        "Delivery or silence is never recorded as acknowledgment; stale replies cannot reopen closed issues.",
+        "The workflow is described as routine coordination, with no emergency-delivery guarantee."
+      ],
+      "success_signals": [
+        "Issues acknowledged and time to accepted responsibility.",
+        "Unanswered issues, duplicate alerts and assignment corrections."
+      ]
+    }
   ]
 }
