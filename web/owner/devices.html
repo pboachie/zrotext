@@ -148,6 +148,14 @@
         <button id="more-messages" type="button" class="quiet" hidden>Load more messages</button>
       </section>
 
+      <section aria-labelledby="opt-out-review-title">
+        <div class="section-head"><h2 id="opt-out-review-title">Opt-out review</h2><button id="refresh-opt-out-review" type="button" class="quiet">Refresh holds</button></div>
+        <p>These recipients remain blocked after a possible SMS withdrawal. Review the request through your consent process; this page cannot clear a hold or establish consent. Only the recipient number and signed event times are shown, never SMS content.</p>
+        <p id="opt-out-review-status" role="status" aria-live="polite"></p>
+        <ul id="opt-out-review-list"></ul>
+        <button id="more-opt-out-review" type="button" class="quiet" hidden>Load more holds</button>
+      </section>
+
       <section aria-labelledby="keys-title">
         <div class="section-head"><h2 id="keys-title">API keys</h2><button id="refresh-keys" type="button" class="quiet">Refresh</button></div>
         <p>Create a key for the current pilot API. <code>messages:read</code> reads message status; <code>messages:send</code> is limited to the private synthetic alpha route and its account and recipient allowlists. Other product APIs do not accept these keys yet.</p>
