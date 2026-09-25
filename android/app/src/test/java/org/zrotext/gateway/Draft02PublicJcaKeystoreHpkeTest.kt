@@ -20,6 +20,34 @@ import javax.crypto.spec.SecretKeySpec
 
 /** Independent RFC 9180 Appendix A.3.1 P-256 base-mode known-answer values. */
 class Draft02PublicJcaKeystoreHpkeTest {
+    @Test fun deviceInfoBindsExactReceivedP2RoleAndKeyId() {
+        val protected = ByteArray(157) { it.toByte() }
+        val header = byteArrayOf(0x5a, 0x54, 0x53, 0x45, 2, 1, 0, 0, 0, 157.toByte())
+        val keyId = ByteArray(32) { (it + 1).toByte() }
+        val info = Draft02PublicJcaKeystoreHpke.buildDeviceInfo(header, protected, 1, keyId)
+        assertArrayEquals("ZTSE/wrap/v2\u0000".toByteArray(Charsets.US_ASCII) +
+            header + protected + byteArrayOf(1) + keyId, info)
+        org.junit.Assert.assertEquals(213, info.size)
+        val changedProtected = protected.copyOf().also { it[64] = (it[64].toInt() xor 1).toByte() }
+        org.junit.Assert.assertFalse(info.contentEquals(
+            Draft02PublicJcaKeystoreHpke.buildDeviceInfo(header, changedProtected, 1, keyId)))
+        val changedKey = keyId.copyOf().also { it[0] = 0 }
+        org.junit.Assert.assertFalse(info.contentEquals(
+            Draft02PublicJcaKeystoreHpke.buildDeviceInfo(header, protected, 1, changedKey)))
+        assertThrows(IllegalArgumentException::class.java) {
+            Draft02PublicJcaKeystoreHpke.buildDeviceInfo(header, protected, 2, keyId)
+        }
+        for (offset in listOf(4, 5, 6, 9)) {
+            val changedHeader = header.copyOf().also { it[offset] = (it[offset].toInt() xor 1).toByte() }
+            assertThrows(IllegalArgumentException::class.java) {
+                Draft02PublicJcaKeystoreHpke.buildDeviceInfo(changedHeader, protected, 1, keyId)
+            }
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            Draft02PublicJcaKeystoreHpke.buildDeviceInfo(header, protected.copyOf(156), 1, keyId)
+        }
+    }
+
     @Test fun rfc9180P256BaseModeKeyScheduleAndAead() {
         val params = AlgorithmParameters.getInstance("EC").run {
             init(ECGenParameterSpec("secp256r1"))
