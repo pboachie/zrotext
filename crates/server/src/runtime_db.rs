@@ -9,12 +9,15 @@
 //! closed socket) is closed instead of pooled.
 use std::{
     ops::{Deref, DerefMut},
-    sync::{Arc, LazyLock, Mutex},
+    sync::{
+        Arc, LazyLock, Mutex, Weak,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 use tokio::{
     sync::{Notify, OwnedSemaphorePermit, Semaphore},
-    time::{Instant, timeout, timeout_at},
+    time::{Instant, MissedTickBehavior, interval_at, timeout, timeout_at},
 };
 use tokio_postgres::Client;
 
@@ -27,6 +30,8 @@ const WORKER_SLOTS: usize = 4;
 /// Idle sockets are closed after this long so a quiet hub returns its
 /// connections to PostgreSQL.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+/// A quiet pool must inspect its sockets without waiting for another request.
+const IDLE_SWEEP_INTERVAL: Duration = Duration::from_secs(5);
 /// Recycle sockets periodically to bound server-side memory growth and to
 /// follow DNS or failover changes.
 const MAX_LIFETIME: Duration = Duration::from_secs(30 * 60);
@@ -51,6 +56,7 @@ struct ClassPool {
     wait: bool,
     idle: Mutex<Vec<Idle>>,
     returned: Notify,
+    sweep_started: AtomicBool,
 }
 
 impl ClassPool {
@@ -60,6 +66,7 @@ impl ClassPool {
             wait,
             idle: Mutex::new(Vec::new()),
             returned: Notify::new(),
+            sweep_started: AtomicBool::new(false),
         })
     }
 
@@ -87,7 +94,7 @@ impl ClassPool {
         found.map(|entry| (entry.client, entry.created))
     }
 
-    fn put(&self, url: Arc<str>, client: Client, created: Instant) {
+    fn put(self: &Arc<Self>, url: Arc<str>, client: Client, created: Instant) {
         let now = Instant::now();
         let expired = {
             let mut idle = self.idle();
@@ -102,6 +109,45 @@ impl ClassPool {
         };
         drop(expired);
         self.returned.notify_waiters();
+        self.ensure_sweeper();
+    }
+
+    fn sweep_idle(&self) {
+        let expired = {
+            let mut idle = self.idle();
+            drain_expired(&mut idle, Instant::now())
+        };
+        // The connection driver releases its socket permit only after the
+        // client is dropped. Never drop it while holding the pool mutex.
+        drop(expired);
+    }
+
+    fn ensure_sweeper(self: &Arc<Self>) {
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        if self
+            .sweep_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+        let weak = Arc::downgrade(self);
+        let registration = SweeperRegistration(weak.clone());
+        let first_tick = Instant::now() + IDLE_SWEEP_INTERVAL;
+        runtime.spawn(async move {
+            let _registration = registration;
+            let mut ticks = interval_at(first_tick, IDLE_SWEEP_INTERVAL);
+            ticks.set_missed_tick_behavior(MissedTickBehavior::Delay);
+            loop {
+                ticks.tick().await;
+                let Some(pool) = weak.upgrade() else {
+                    break;
+                };
+                pool.sweep_idle();
+            }
+        });
     }
 
     /// Close one idle socket that belongs to a different database URL. Only
@@ -114,6 +160,17 @@ impl ClassPool {
                 .map(|index| idle.remove(index))
         };
         evicted.is_some()
+    }
+}
+
+/// Allows a pool to start a new sweeper if its Tokio runtime was shut down.
+struct SweeperRegistration(Weak<ClassPool>);
+
+impl Drop for SweeperRegistration {
+    fn drop(&mut self) {
+        if let Some(pool) = self.0.upgrade() {
+            pool.sweep_started.store(false, Ordering::Release);
+        }
     }
 }
 
@@ -359,6 +416,39 @@ mod tests {
         assert_eq!(row.get::<_, String>(1), "10s");
         assert_eq!(row.get::<_, String>(2), "3s");
         assert_eq!(row.get::<_, String>(3), "15s");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+    async fn quiet_pool_sweep_closes_expired_socket_and_returns_permit() {
+        let url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
+        let pool = ClassPool::new(1, false);
+        let client = acquire(&pool, &url).await.unwrap();
+        client.query_one("SELECT 1", &[]).await.unwrap();
+        let returned = pool.returned.notified();
+        tokio::pin!(returned);
+        returned.as_mut().enable();
+        drop(client);
+        timeout(Duration::from_secs(3), returned).await.unwrap();
+        assert_eq!(pool.idle().len(), 1);
+        assert_eq!(pool.slots.available_permits(), 0);
+
+        // No subsequent acquire or put can perform opportunistic eviction.
+        // Advance Tokio's clock while the hub is otherwise quiet.
+        tokio::time::pause();
+        tokio::time::advance(IDLE_TIMEOUT + IDLE_SWEEP_INTERVAL + Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+        assert!(pool.idle().is_empty(), "quiet pool kept an expired socket");
+        tokio::time::resume();
+
+        timeout(Duration::from_secs(3), async {
+            while pool.slots.available_permits() != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("socket driver did not return its permit after the sweep");
     }
 
     #[tokio::test]
