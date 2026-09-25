@@ -230,6 +230,31 @@ SMTP worker rather than repeating registrations blindly. After verification,
 remove the allowlists and enrollment key, set `REGISTRATION_MODE=closed`, and
 restart every API instance. Closing registration does not revoke owner sessions.
 
+### Owner password recovery
+
+With SMTP configured, a signed-out owner can request a one-hour, one-use reset
+code from `/owner/devices` and paste it into the reset form there. Without
+SMTP, an operator with private database access resets the password locally.
+The API services may keep running; the command takes the same owner-row lock
+as sign-in and email reset. Read the new password from a non-echoing prompt
+and pipe it on stdin (never in argv or a URL):
+
+```sh
+set +x
+read -rsp 'New owner passphrase> ' ZT_OWNER_PASSWORD; printf '
+'
+printf '%s' "$ZT_OWNER_PASSWORD" | docker compose --env-file .env   -f deploy/compose/compose.yaml run --rm --no-deps -T   --entrypoint /usr/local/bin/zrotext-admin app   reset-password --email owner@example.test
+unset ZT_OWNER_PASSWORD
+```
+
+It succeeds only for a verified owner of an active account. Like an emailed
+reset, it revokes every session, every API key issued by that owner, pending
+MFA sign-in challenges and outstanding reset codes, and leaves MFA enrollment
+unchanged; sign in with the new password and an authenticator or recovery code
+if MFA is enabled, then reissue integration keys. A reset notification is
+queued and is delivered if SMTP is configured later. Password recovery restores
+authentication only; it does not unlock sealed message history.
+
 ### Database privileges
 
 Use separate migration and runtime credentials before public deployment. The
