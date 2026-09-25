@@ -77,6 +77,27 @@ advisory lock, records a SHA-256 checksum for each version, and commits each
 file with its ledger row in one transaction. A failed migration stops Compose
 startup with a nonzero exit. Never edit an applied file; add the next number.
 
+Migration 034 is a narrow online-index exception. After the runner validates the
+existing ledger, it prepares `messages_in_flight_updated` with
+`CREATE INDEX CONCURRENTLY` in autocommit mode while holding the migration
+advisory lock. The numbered 034 SQL file then validates the exact index shape
+and readiness and records its checksum in the normal transaction. This also runs
+automatically on fresh databases. If an interrupted build leaves an invalid
+index with the expected shape, rerunning `migrate` drops that invalid index
+concurrently and retries. An index with the same name and a different definition
+stops migration without being replaced. Once 034 is recorded, later migrator
+runs and dispatch-enabled API readiness fail if the index becomes absent,
+invalid, or different.
+
+A concurrent build permits message writes but may wait for older transactions;
+monitor `pg_stat_progress_create_index` and allow migration to finish before
+starting API workers. If application rollback is needed, the valid index can
+remain; keep the migration package containing this 034 file so a rolled-back
+API does not rerun an older migrator with a mismatched checksum. Removing the
+index later requires a separately planned
+`DROP INDEX CONCURRENTLY` outside a transaction, after workers that depend on
+it are stopped. Do not repair the migration ledger by hand.
+
 For a **new database**, use the normal documented `docker compose up -d --build`
 command. The old `docker-entrypoint-initdb.d` mount is no longer used.
 
