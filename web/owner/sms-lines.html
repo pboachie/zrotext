@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>SMS lines · ZROtext</title>
+  <link rel="stylesheet" href="/owner/devices.css">
+  <script defer src="/owner/sms-line-signing.js"></script>
+  <script defer src="/owner/sms-lines.js"></script>
+</head>
+<body>
+  <main>
+    <header>
+      <div><p class="eyebrow">ZROtext owner account</p><h1>SMS lines</h1></div>
+      <a href="/owner/devices">Devices and sign in</a>
+    </header>
+    <p id="global-status" role="status" aria-live="polite"></p>
+
+    <section id="signed-out" hidden aria-labelledby="signed-out-title">
+      <h2 id="signed-out-title">Sign in first</h2>
+      <p><a href="/owner/devices">Sign in on the devices page</a>, then return here.</p>
+    </section>
+
+    <section id="approval-key" hidden aria-labelledby="approval-key-title">
+      <h2 id="approval-key-title">SMS approval key</h2>
+      <p>Line activations are approved with a signing key that stays in this browser. The server stores only its public key. Clearing this browser's site data removes the key; revoke it and create a new one if that happens.</p>
+      <p id="key-summary" role="status" aria-live="polite"></p>
+      <form id="key-form" method="post" action="/v1/auth/sms-line-owner-keys">
+        <label for="key-mfa">Authenticator or recovery code</label>
+        <input id="key-mfa" name="mfa" type="text" inputmode="numeric" autocomplete="one-time-code" spellcheck="false" maxlength="30" required>
+        <button id="key-create" type="submit">Create key in this browser</button>
+        <button id="key-revoke" type="button" hidden>Revoke active key</button>
+      </form>
+      <p id="key-status" role="status" aria-live="polite"></p>
+    </section>
+
+    <section id="activation" hidden aria-labelledby="activation-title">
+      <h2 id="activation-title">Activate a line on a phone</h2>
+      <p>The phone must be connected and have exactly one selected, active physical SIM. It signs a declaration of that SIM; you check it and approve with your key. Nothing here sends an SMS.</p>
+      <form id="activation-form" method="post" action="/owner/sms-lines">
+        <label for="activation-device">Phone</label>
+        <select id="activation-device" required></select>
+        <label for="activation-line">Line ID</label>
+        <input id="activation-line" type="text" spellcheck="false" autocomplete="off" required>
+        <button id="activation-new-line" type="button">New line ID</button>
+        <button id="activation-start" type="submit">Request phone declaration</button>
+      </form>
+      <div id="activation-review" hidden>
+        <h3>Check the phone's declaration</h3>
+        <dl>
+          <dt>Android API level</dt><dd id="review-api"></dd>
+          <dt>Selected subscription</dt><dd id="review-subscription"></dd>
+          <dt>Active subscriptions</dt><dd id="review-count"></dd>
+        </dl>
+        <button id="activation-approve" type="button">Approve and activate</button>
+      </div>
+      <p id="activation-status" role="status" aria-live="polite"></p>
+    </section>
+  </main>
+</body>
+</html>
