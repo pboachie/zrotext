@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 package org.zrotext.gateway
 
+import android.Manifest
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.provider.Telephony
+import android.telephony.SubscriptionManager
 import android.telephony.SmsMessage
 import java.io.ByteArrayOutputStream
 import java.security.KeyStore
@@ -121,6 +124,46 @@ internal object InboundVault {
         cipher.updateAAD(eventToken.toByteArray(Charsets.US_ASCII))
         return cipher.doFinal(sealed.ciphertext).toString(Charsets.UTF_8)
     }
+
+    /** Separate Keystore key and AAD domain from the inbound body vault. */
+    fun sealSender(senderE164: String, dedupeToken: String): Sealed =
+        sealSenderWithKey(key("zt_m1_withdrawal_sender_aes_v1", KeyProperties.KEY_ALGORITHM_AES),
+            senderE164, dedupeToken)
+
+    internal fun sealSenderOrNull(senderE164: String, dedupeToken: String,
+                                  sealer: (String, String) -> Sealed = ::sealSender): Sealed? =
+        try { sealer(senderE164, dedupeToken) } catch (_: Exception) { null }
+
+    fun openSender(sealed: Sealed, dedupeToken: String): String =
+        openSenderWithKey(key("zt_m1_withdrawal_sender_aes_v1", KeyProperties.KEY_ALGORITHM_AES),
+            sealed, dedupeToken)
+
+    internal fun sealSenderWithKey(secretKey: SecretKey, senderE164: String,
+                                   dedupeToken: String): Sealed {
+        require(InboundNormalizer.e164(senderE164) == senderE164)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, secretKey)
+        cipher.updateAAD(senderAad(dedupeToken))
+        return Sealed(cipher.doFinal(senderE164.toByteArray(Charsets.US_ASCII)), cipher.iv)
+    }
+
+    internal fun openSenderWithKey(secretKey: SecretKey, sealed: Sealed,
+                                   dedupeToken: String): String {
+        require(sealed.nonce.size == 12 && sealed.ciphertext.size in 17..128)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.DECRYPT_MODE, secretKey,
+            javax.crypto.spec.GCMParameterSpec(128, sealed.nonce))
+        cipher.updateAAD(senderAad(dedupeToken))
+        return cipher.doFinal(sealed.ciphertext).toString(Charsets.US_ASCII).also {
+            require(InboundNormalizer.e164(it) == it)
+        }
+    }
+
+    private fun senderAad(dedupeToken: String): ByteArray {
+        require(dedupeToken.matches(Regex("[0-9a-f]{64}")))
+        return ("zrotext-withdrawal-sender-v1\u0000" + dedupeToken)
+            .toByteArray(Charsets.US_ASCII)
+    }
 }
 
 /** Notification only; the default SMS app continues to own inbox writes and user notification. */
@@ -151,20 +194,23 @@ class InboundSmsReceiver : BroadcastReceiver() {
         val dedupeToken = InboundVault.token("pdu-v1", senderToken.toByteArray(Charsets.US_ASCII),
             pduFingerprint)
         val optAction = OptOutParser.classify(message.body)
-        if ((optAction == OptOutParser.OPT_OUT || optAction == OptOutParser.OPT_OUT_REVIEW) &&
-            dao.inboundByDedupe(dedupeToken) == null) {
-            // Persist the local radio block even when the reply cannot be
-            // associated with a trusted upload window or the server is offline.
-            synchronized(LocalSuppressionGate.lock) {
-                dao.suppressRecipient(LocalRecipientSuppression(senderToken, now))
-            }
-        }
-        val window = dao.activeInboundWindows(senderToken, now).singleOrNull() ?: return
-        // SMS_RECEIVED documents PDUs, not a mandatory subscription extra. Missing evidence
-        // is stored without a body; a slot/default-SIM guess cannot authorize capture.
+        // SMS_RECEIVED does not promise a subscription extra. Never infer one from the
+        // default SIM or the owner's saved selection.
         val rawSub = intent.extras?.get("subscription")
         val observedSub = (rawSub as? Number)?.toLong()
             ?.takeIf { it in 0..Int.MAX_VALUE.toLong() }?.toInt()
+        if (optAction == OptOutParser.OPT_OUT || optAction == OptOutParser.OPT_OUT_REVIEW) {
+            // A failed Keystore operation must not prevent the local radio block.
+            val sealedSender = InboundVault.sealSenderOrNull(message.senderE164, dedupeToken)
+            // The same lock fences a concurrent final radio preflight. An unknown or
+            // changed line still blocks the recipient globally on this phone.
+            synchronized(LocalSuppressionGate.lock) {
+                dao.recordLocalWithdrawal(dedupeToken, senderToken, optAction, observedSub,
+                    activeSubscriptionIds(context), now,
+                    sealedSender?.ciphertext, sealedSender?.nonce)
+            }
+        }
+        val window = dao.activeInboundWindows(senderToken, now).singleOrNull() ?: return
         if (observedSub != null && observedSub != window.subscriptionId) return
         val sealed = if (optAction == null) try { InboundVault.seal(message.body, dedupeToken) }
             catch (_: Exception) { null } else null
@@ -174,5 +220,14 @@ class InboundSmsReceiver : BroadcastReceiver() {
 
     companion object {
         private val io = Executors.newSingleThreadExecutor()
+
+        private fun activeSubscriptionIds(context: Context): List<Int> {
+            if (context.checkSelfPermission(Manifest.permission.READ_PHONE_STATE) !=
+                PackageManager.PERMISSION_GRANTED) return emptyList()
+            return try {
+                context.getSystemService(SubscriptionManager::class.java)
+                    .activeSubscriptionInfoList.orEmpty().map { it.subscriptionId }
+            } catch (_: RuntimeException) { emptyList() }
+        }
     }
 }
