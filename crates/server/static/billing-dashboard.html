@@ -3,6 +3,8 @@
 <html lang="en">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<link rel="stylesheet" href="/owner/devices.css">
 <title>Billing · ZROtext</title>
 <main>
   <h1>Billing test mode</h1>
@@ -13,9 +15,11 @@
   <p><a id="manage-devices" href="/owner/devices#approved-devices" hidden>Choose devices to revoke</a></p>
   <ul id="subscriptions"></ul>
   <p id="billing-error" role="alert"></p>
-  <button id="checkout" type="button">Open test Checkout</button>
-  <button id="portal" type="button" disabled>Open customer portal</button>
-  <button id="refresh" type="button">Refresh status</button>
+  <div class="actions">
+    <button id="checkout" type="button">Open test Checkout</button>
+    <button id="portal" type="button" disabled>Open customer portal</button>
+    <button id="refresh" type="button" class="quiet">Refresh status</button>
+  </div>
 </main>
 <footer><a href="/source">Source code for this server</a> · <a href="/about/version">Build version</a></footer>
 <script src="/billing/dashboard.js" defer></script>

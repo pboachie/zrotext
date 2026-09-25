@@ -3,9 +3,29 @@
 
 const byId = (id) => document.getElementById(id);
 let viewEpoch = 0;
+const requestTimeoutMs = 30_000;
 
 function status(id, value) {
   byId(id).textContent = value;
+}
+
+// Ignore repeat submits while the first request is still running, so a double
+// click cannot send a second registration, code, or MFA change.
+function exclusive(handler) {
+  let running = false;
+  return async (event) => {
+    if (event && typeof event.preventDefault === "function") event.preventDefault();
+    if (running) return;
+    running = true;
+    const submitter = event && event.submitter;
+    if (submitter) submitter.disabled = true;
+    try {
+      await handler(event);
+    } finally {
+      running = false;
+      if (submitter) submitter.disabled = false;
+    }
+  };
 }
 
 function csrfToken() {
@@ -42,10 +62,18 @@ async function request(path, method = "GET", body = undefined, invite = "") {
     if (!csrf) throw new Error("Sign in before managing MFA.");
     headers["x-zrotext-csrf"] = csrf;
   }
-  const response = await fetch(path, {
-    method, headers, credentials: "same-origin", cache: "no-store", redirect: "error",
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+  let response;
+  try {
+    response = await fetch(path, {
+      method, headers, credentials: "same-origin", cache: "no-store", redirect: "error",
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: typeof AbortSignal.timeout === "function" ? AbortSignal.timeout(requestTimeoutMs) : undefined,
+    });
+  } catch (error) {
+    throw new Error(error && error.name === "TimeoutError"
+      ? "The server did not respond in time. Try again."
+      : "Could not reach the server. Check your connection and try again.");
+  }
   if (!response.ok) {
     const error = new Error(errors[response.status] || `Request failed (${response.status}).`);
     error.status = response.status;
@@ -86,11 +114,12 @@ async function loadSession() {
   }
 }
 
-byId("register-form").addEventListener("submit", async (event) => {
+byId("register-form").addEventListener("submit", exclusive(async (event) => {
   event.preventDefault();
   const email = byId("register-email").value;
   const password = byId("register-password").value;
   const invite = byId("register-token").value.trim();
+  status("register-status", "Sending registration request…");
   try {
     await request("/v1/auth/register", "POST", { email, password }, invite);
     status("register-status", "Request received. If registration is open for this address, check your mailbox for a code.");
@@ -101,11 +130,12 @@ byId("register-form").addEventListener("submit", async (event) => {
     byId("register-password").value = "";
     byId("register-token").value = "";
   }
-});
+}));
 
-byId("verify-form").addEventListener("submit", async (event) => {
+byId("verify-form").addEventListener("submit", exclusive(async (event) => {
   event.preventDefault();
   const token = byId("verification-code").value.trim();
+  status("verify-status", "Verifying email…");
   try {
     await request("/v1/auth/verify-email", "POST", { token });
     status("verify-status", "Email verified. You can sign in on the Devices page.");
@@ -114,10 +144,11 @@ byId("verify-form").addEventListener("submit", async (event) => {
   } finally {
     byId("verification-code").value = "";
   }
-});
+}));
 
-byId("resend-form").addEventListener("submit", async (event) => {
+byId("resend-form").addEventListener("submit", exclusive(async (event) => {
   event.preventDefault();
+  status("resend-status", "Requesting a new code…");
   try {
     await request("/v1/auth/resend-verification", "POST", {
       email: byId("resend-email").value,
@@ -129,9 +160,9 @@ byId("resend-form").addEventListener("submit", async (event) => {
   } finally {
     byId("resend-password").value = "";
   }
-});
+}));
 
-byId("mfa-enroll-form").addEventListener("submit", async (event) => {
+byId("mfa-enroll-form").addEventListener("submit", exclusive(async (event) => {
   event.preventDefault();
   clearMfaSecrets();
   const epoch = viewEpoch;
@@ -158,9 +189,9 @@ byId("mfa-enroll-form").addEventListener("submit", async (event) => {
   } finally {
     byId("mfa-enroll-password").value = "";
   }
-});
+}));
 
-byId("mfa-confirm-form").addEventListener("submit", async (event) => {
+byId("mfa-confirm-form").addEventListener("submit", exclusive(async (event) => {
   event.preventDefault();
   const epoch = viewEpoch;
   try {
@@ -197,14 +228,14 @@ byId("mfa-confirm-form").addEventListener("submit", async (event) => {
     status("mfa-status", `Could not confirm authenticator. ${error.message}`);
     if (error.status === 401 || error.status === 403) await loadSession();
   }
-});
+}));
 
 byId("dismiss-recovery").addEventListener("click", () => {
   clearMfaSecrets();
   status("mfa-status", "Recovery codes cleared from this page.");
 });
 
-byId("mfa-disable-form").addEventListener("submit", async (event) => {
+byId("mfa-disable-form").addEventListener("submit", exclusive(async (event) => {
   event.preventDefault();
   const epoch = viewEpoch;
   try {
@@ -234,7 +265,7 @@ byId("mfa-disable-form").addEventListener("submit", async (event) => {
     byId("mfa-disable-password").value = "";
     byId("mfa-disable-code").value = "";
   }
-});
+}));
 
 window.addEventListener("pagehide", () => {
   viewEpoch += 1;

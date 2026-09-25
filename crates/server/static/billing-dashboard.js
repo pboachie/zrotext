@@ -40,11 +40,12 @@ async function loadStatus() {
   manageDevices.hidden = true;
   portal.disabled = true;
   try {
-    const response = await fetch("/v1/billing/status", { credentials: "same-origin", cache: "no-store" });
+    const response = await fetch("/v1/billing/status", { credentials: "same-origin", cache: "no-store", redirect: "error" });
     if (!response.ok) throw new Error("Could not load billing status. Sign in again if your session expired.");
     const result = await response.json();
     if (generation !== statusGeneration) return;
     if (result.mode !== "test") throw new Error("Unexpected billing mode.");
+    if (!Array.isArray(result.subscriptions)) throw new Error("The billing status response was invalid.");
     list.replaceChildren();
     for (const subscription of result.subscriptions) {
       const item = document.createElement("li");

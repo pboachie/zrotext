@@ -499,3 +499,43 @@ test("downgrade asks the owner to choose devices and never revokes one automatic
   assert.deepEqual(state.deletedDevices, ["bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"]);
   assert.equal(state.devices[0].revoked, false);
 });
+
+test("overlapping device refreshes render each device once", async () => {
+  const { element, state } = await ownerPage();
+  state.devices = [
+    { device_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", display_name: "Phone A", revoked: false },
+  ];
+  await Promise.all([element("refresh-devices").listeners.click(), element("refresh-devices").listeners.click()]);
+  assert.equal(element("device-list").children.length, 1);
+  assert.equal(element("more-devices").disabled, false);
+});
+
+test("a repeated key submit while the first is pending creates one key", async () => {
+  const { element, state } = await ownerPage();
+  let resolveCreate;
+  let creates = 0;
+  let repeatPrevented = false;
+  state.pendingCreate = new Promise((resolve) => { resolveCreate = resolve; });
+  const original = globalThis.fetch;
+  globalThis.fetch = (url, options) => {
+    if (url === "/v1/auth/api-keys" && options.method === "POST") creates += 1;
+    return original(url, options);
+  };
+  const first = element("key-create-form").listeners.submit({ preventDefault() {} });
+  await element("key-create-form").listeners.submit({ preventDefault() { repeatPrevented = true; } });
+  resolveCreate(response(201, { id: "test-id", token: "ztk_synthetic-only", public_prefix: "synthetic" }));
+  await first;
+  assert.equal(creates, 1);
+  assert.equal(repeatPrevented, true);
+  assert.equal(element("key-secret").textContent, "ztk_synthetic-only");
+});
+
+test("a network failure shows a connection message instead of a browser error", async () => {
+  const { element } = await ownerPage();
+  const original = globalThis.fetch;
+  globalThis.fetch = (url, options) => url === "/v1/owner/messages"
+    ? Promise.reject(new TypeError("Failed to fetch")) : original(url, options);
+  await element("refresh-messages").listeners.click();
+  assert.match(element("message-status").textContent, /Could not reach the server/);
+  assert.equal(element("owner-content").hidden, false);
+});

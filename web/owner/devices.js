@@ -22,6 +22,26 @@ let webhookLoadGeneration = 0;
 let endpointLoadGeneration = 0;
 let availableWebhookEndpointIds = new Set();
 let sessionLoadGeneration = 0;
+let deviceLoadGeneration = 0;
+let messageLoadGeneration = 0;
+let keyLoadGeneration = 0;
+const requestTimeoutMs = 30_000;
+const passwordResetPaths = new Set(["/v1/auth/password/reset/request", "/v1/auth/password/reset/confirm"]);
+const unauthenticatedPaths = new Set(["/v1/auth/login", "/v1/auth/login/mfa", ...passwordResetPaths]);
+const statusDescriptions = Object.freeze({
+  400: "Check the entered values and try again.",
+  403: "This action was refused. Refresh the page and sign in again.",
+  404: "The requested item was not found, expired, or is no longer available.",
+  409: "This action conflicts with the current device state.",
+  413: "The request is too large.",
+  429: "Too many requests. Wait before trying again.",
+  503: "The service is unavailable. Try again later.",
+});
+// One shared formatter: Date#toLocaleString builds a new Intl formatter on
+// every call, which dominates rendering of long message and webhook lists.
+const timeFormat = new Intl.DateTimeFormat(undefined, {
+  year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", second: "numeric",
+});
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const webhookStatusLabels = Object.freeze({ pending: "Pending", leased: "In progress", succeeded: "Succeeded", dead: "Stopped" });
 const webhookReasonLabels = Object.freeze({ failed: "Attempts exhausted", policy_rejected: "Policy rejected", retired: "Retired", legacy: "Legacy failure" });
@@ -41,50 +61,70 @@ function message(id, value) {
   byId(id).textContent = value;
 }
 
+// Ignore repeat submits and clicks while the first request is still running,
+// so a double click cannot create a second pairing or one-time API key.
+function exclusive(handler) {
+  let running = false;
+  return async (event) => {
+    if (event && typeof event.preventDefault === "function") event.preventDefault();
+    if (running) return;
+    running = true;
+    const submitter = event && event.submitter;
+    if (submitter) submitter.disabled = true;
+    try {
+      await handler(event);
+    } finally {
+      running = false;
+      if (submitter) submitter.disabled = false;
+    }
+  };
+}
+
 function csrfToken() {
   const part = document.cookie.split(";").map((piece) => piece.trim())
     .find((piece) => piece.startsWith("__Host-zrotext_csrf="));
   return part ? part.slice("__Host-zrotext_csrf=".length) : null;
 }
 
+function unauthorizedDescription(path) {
+  if (passwordResetPaths.has(path)) return "The reset token was not accepted. Request a new one and try again.";
+  if (path === "/v1/auth/login") return "Email or password was not accepted.";
+  if (path === "/v1/auth/login/mfa") return "Code was not accepted. Try again.";
+  return "Your sign-in expired. Sign in again.";
+}
+
 async function api(path, method = "GET", body = undefined) {
   const requestEpoch = ownerEpoch;
   const headers = {};
-  const isPasswordReset = path === "/v1/auth/password/reset/request" ||
-    path === "/v1/auth/password/reset/confirm";
+  const unauthenticated = unauthenticatedPaths.has(path);
   if (body !== undefined) headers["content-type"] = "application/json";
-  if ((method !== "GET" && path !== "/v1/auth/login" && path !== "/v1/auth/login/mfa" && !isPasswordReset)
-      || path.startsWith("/v1/auth/api-keys")) {
+  if ((method !== "GET" && !unauthenticated) || path.startsWith("/v1/auth/api-keys")) {
     const csrf = csrfToken();
     if (!csrf) throw new Error("Your sign-in expired. Sign in again.");
     headers["x-zrotext-csrf"] = csrf;
   }
-  const response = await fetch(path, {
-    method, headers, credentials: "same-origin", cache: "no-store", redirect: "error",
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+  let response;
+  try {
+    response = await fetch(path, {
+      method, headers, credentials: "same-origin", cache: "no-store", redirect: "error",
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: typeof AbortSignal.timeout === "function" ? AbortSignal.timeout(requestTimeoutMs) : undefined,
+    });
+  } catch (error) {
+    throw new Error(error && error.name === "TimeoutError"
+      ? "The server did not respond in time. Try again."
+      : "Could not reach the server. Check your connection and try again.");
+  }
   if (requestEpoch !== ownerEpoch) {
     throw new Error("Your sign-in expired. Sign in again.");
   }
-  if (response.status === 401 && path !== "/v1/auth/login" && path !== "/v1/auth/login/mfa" && !isPasswordReset) {
+  if (response.status === 401 && !unauthenticated) {
     clearOwnerState();
     message("global-status", "Your sign-in expired. Sign in again.");
   }
   if (!response.ok) {
-    const descriptions = {
-      400: "Check the entered values and try again.",
-      401: isPasswordReset ? "The reset token was not accepted. Request a new one and try again."
-        : path === "/v1/auth/login" ? "Email or password was not accepted."
-        : path === "/v1/auth/login/mfa" ? "Code was not accepted. Try again."
-          : "Your sign-in expired. Sign in again.",
-      403: "This action was refused. Refresh the page and sign in again.",
-      404: "The requested item was not found, expired, or is no longer available.",
-      409: "This action conflicts with the current device state.",
-      413: "The request is too large.",
-      429: "Too many requests. Wait before trying again.",
-      503: "The service is unavailable. Try again later.",
-    };
-    const error = new Error(descriptions[response.status] || `Request failed (${response.status}).`);
+    const description = response.status === 401 ? unauthorizedDescription(path) : statusDescriptions[response.status];
+    const error = new Error(description || `Request failed (${response.status}).`);
     error.status = response.status;
     throw error;
   }
@@ -117,7 +157,11 @@ async function completeSignIn() {
   showSignedIn(true);
   message("login-status", "");
   message("global-status", "Signed in.");
-  await Promise.all([loadDevices(), loadDeviceCapacity(), loadMessages(), loadKeys(), loadWebhookEndpoints(), loadSessions()]);
+  await loadOwnerData();
+}
+
+function loadOwnerData() {
+  return Promise.all([loadDevices(), loadDeviceCapacity(), loadMessages(), loadKeys(), loadWebhookEndpoints(), loadSessions()]);
 }
 
 function clearPairing() {
@@ -126,8 +170,9 @@ function clearPairing() {
   byId("pair-ticket").hidden = true;
   byId("approve-form").hidden = true;
   for (const id of ["pair-id", "pair-token", "browser-code", "browser-fingerprint", "phone-code", "phone-fingerprint"]) {
-    byId(id).textContent = "";
-    if ("value" in byId(id)) byId(id).value = "";
+    const element = byId(id);
+    element.textContent = "";
+    if ("value" in element) element.value = "";
   }
   byId("compared").checked = false;
 }
@@ -179,6 +224,9 @@ function clearWebhookEndpoints() {
 function clearOwnerState() {
   ownerEpoch += 1;
   sessionLoadGeneration += 1;
+  deviceLoadGeneration += 1;
+  messageLoadGeneration += 1;
+  keyLoadGeneration += 1;
   clearMfaChallenge();
   clearPairing();
   clearKeySecret();
@@ -222,8 +270,13 @@ function clearResetFields() {
   }
 }
 
+function formatTime(milliseconds, fallback) {
+  const date = new Date(milliseconds);
+  return Number.isFinite(milliseconds) && Number.isFinite(date.getTime()) ? timeFormat.format(date) : fallback;
+}
+
 function dateText(milliseconds) {
-  return milliseconds === null ? "Never" : new Date(milliseconds).toLocaleString();
+  return milliseconds === null ? "Never" : formatTime(milliseconds, "Time unavailable");
 }
 
 function validSession(session) {
@@ -244,16 +297,15 @@ async function loadSessions() {
         result.sessions.filter((session) => session.current).length !== 1) {
       throw new Error("The session response was invalid.");
     }
-    byId("session-list").replaceChildren();
-    for (const session of result.sessions) {
+    byId("session-list").replaceChildren(...result.sessions.map((session) => {
       const item = document.createElement("li");
       const heading = document.createElement("strong");
       const detail = document.createElement("span");
       heading.textContent = session.current ? "This session" : "Other session";
       detail.textContent = `Created ${dateText(session.created_at_ms)} · Last used ${dateText(session.last_used_at_ms)} · Expires ${dateText(session.expires_at_ms)}`;
       item.append(heading, detail);
-      byId("session-list").append(item);
-    }
+      return item;
+    }));
     const otherCount = result.sessions.filter((session) => !session.current).length;
     byId("revoke-other-sessions-form").hidden = otherCount === 0;
     message("session-status", otherCount === 0 ? "Only this session is active." :
@@ -267,9 +319,7 @@ async function loadSessions() {
 }
 
 function inboundDateText(milliseconds) {
-  const date = new Date(milliseconds);
-  return Number.isSafeInteger(milliseconds) && Number.isFinite(date.getTime())
-    ? date.toLocaleString() : "Unknown time";
+  return Number.isSafeInteger(milliseconds) ? formatTime(milliseconds, "Unknown time") : "Unknown time";
 }
 
 function validWebhookPage(page, cursor) {
@@ -294,7 +344,7 @@ function validWebhookPage(page, cursor) {
         (attempt.http_status === null || (Number.isInteger(attempt.http_status) && attempt.http_status >= 100 && attempt.http_status <= 599))));
 }
 
-function showWebhookDelivery(delivery) {
+function webhookDeliveryRow(delivery) {
   const row = document.createElement("li");
   const heading = document.createElement("strong");
   const detail = document.createElement("span");
@@ -307,7 +357,7 @@ function showWebhookDelivery(delivery) {
     attempts.append(item);
   }
   row.append(heading, detail, attempts);
-  byId("webhook-delivery-list").append(row);
+  return row;
 }
 
 async function loadWebhookEndpoints() {
@@ -322,13 +372,13 @@ async function loadWebhookEndpoints() {
         !page.endpoints.every((endpoint) => uuidPattern.test(endpoint.endpoint_id))) {
       throw new Error("The endpoint response was invalid.");
     }
-    for (const endpoint of page.endpoints) {
+    byId("webhook-endpoint").append(...page.endpoints.map((endpoint) => {
       availableWebhookEndpointIds.add(endpoint.endpoint_id);
       const option = document.createElement("option");
       option.value = endpoint.endpoint_id;
       option.textContent = `Endpoint ${endpoint.endpoint_id}`;
-      byId("webhook-endpoint").append(option);
-    }
+      return option;
+    }));
     byId("webhook-endpoint").disabled = page.endpoints.length === 0;
     message("webhook-endpoint-status", page.endpoints.length === 0 ? "No webhook endpoints yet." : `${page.endpoints.length} endpoint${page.endpoints.length === 1 ? "" : "s"} available.`);
   } catch (error) {
@@ -357,7 +407,7 @@ async function loadWebhookDeliveries(reset = true) {
     const page = await api(path);
     if (requestEpoch !== ownerEpoch || generation !== webhookLoadGeneration || endpointId !== selectedWebhookEndpointId) return;
     if (!validWebhookPage(page, cursor)) throw new Error("The delivery response was invalid.");
-    for (const delivery of page.deliveries) showWebhookDelivery(delivery);
+    byId("webhook-delivery-list").append(...page.deliveries.map(webhookDeliveryRow));
     shownWebhookCount += page.deliveries.length;
     nextWebhookCursor = page.next_before;
     moreButton.hidden = !nextWebhookCursor;
@@ -371,7 +421,7 @@ async function loadWebhookDeliveries(reset = true) {
   }
 }
 
-function showInboundEvent(event) {
+function inboundEventRow(event) {
   const row = document.createElement("li");
   const classification = document.createElement("strong");
   const detail = document.createElement("span");
@@ -380,7 +430,7 @@ function showInboundEvent(event) {
     ? `${event.part_count} part${event.part_count === 1 ? "" : "s"}` : "Unknown part count";
   detail.textContent = `Observed ${inboundDateText(event.observed_at_ms)} · received ${inboundDateText(event.received_at_ms)} · ${parts} · ${inboundContentLabels[event.content_kind] || "Unrecognized content kind"}`;
   row.append(classification, detail);
-  byId("inbound-event-list").append(row);
+  return row;
 }
 
 async function loadInboundEvents(reset = true) {
@@ -402,12 +452,12 @@ async function loadInboundEvents(reset = true) {
     const path = `/v1/inbound/messages/${encodeURIComponent(messageId)}/events?limit=20${cursor ? `&before=${encodeURIComponent(cursor)}` : ""}`;
     const page = await api(path);
     if (requestEpoch !== ownerEpoch || generation !== inboundLoadGeneration || messageId !== selectedInboundMessageId) return;
-    if (!Array.isArray(page.events) || page.events.length > 20 ||
+    if (!page || !Array.isArray(page.events) || page.events.length > 20 ||
         (page.next_before !== null && !uuidPattern.test(page.next_before)) ||
         (page.events.length === 0 && page.next_before !== null)) {
       throw new Error("The event response was invalid.");
     }
-    for (const event of page.events) showInboundEvent(event);
+    byId("inbound-event-list").append(...page.events.map(inboundEventRow));
     shownInboundCount += page.events.length;
     nextInboundCursor = page.next_before;
     moreButton.hidden = !nextInboundCursor;
@@ -423,26 +473,37 @@ async function loadInboundEvents(reset = true) {
 }
 
 async function loadKeys(reset = true) {
+  if (!reset && !nextKeyCursor) return;
+  const requestEpoch = ownerEpoch;
+  const generation = ++keyLoadGeneration;
+  const stale = () => requestEpoch !== ownerEpoch || generation !== keyLoadGeneration;
+  const cursor = reset ? null : nextKeyCursor;
+  const moreButton = byId("more-keys");
+  moreButton.disabled = true;
   message("key-list-status", "Loading keys…");
   if (reset) {
     byId("key-list").replaceChildren();
-    byId("more-keys").hidden = true;
+    moreButton.hidden = true;
     nextKeyCursor = null;
     shownKeyCount = 0;
   }
   try {
-    const path = nextKeyCursor
-      ? `/v1/auth/api-keys?before=${encodeURIComponent(nextKeyCursor)}`
+    const path = cursor
+      ? `/v1/auth/api-keys?before=${encodeURIComponent(cursor)}`
       : "/v1/auth/api-keys";
     const page = await api(path);
+    if (stale()) return;
+    if (!page || !Array.isArray(page.keys)) throw new Error("The key response was invalid.");
+    moreButton.disabled = false;
     if (reset && page.keys.length === 0) {
       message("key-list-status", "No API keys yet.");
       return;
     }
-    nextKeyCursor = page.next_cursor;
+    nextKeyCursor = page.next_cursor || null;
     shownKeyCount += page.keys.length;
-    byId("more-keys").hidden = !nextKeyCursor;
+    moreButton.hidden = !nextKeyCursor;
     message("key-list-status", `${shownKeyCount} key${shownKeyCount === 1 ? "" : "s"} shown${nextKeyCursor ? "; more available" : ""}. Revoked and expired keys stay visible.`);
+    const rows = [];
     for (const key of page.keys) {
       const row = document.createElement("li");
       const detail = document.createElement("div");
@@ -475,9 +536,12 @@ async function loadKeys(reset = true) {
         });
         row.append(revoke);
       }
-      byId("key-list").append(row);
+      rows.push(row);
     }
+    byId("key-list").append(...rows);
   } catch (error) {
+    if (stale()) return;
+    moreButton.disabled = false;
     message("key-list-status", `Could not load keys. ${error.message}`);
   }
 }
@@ -508,27 +572,38 @@ async function loadDeviceCapacity() {
 }
 
 async function loadDevices(reset = true) {
+  if (!reset && !nextDeviceCursor) return;
+  const requestEpoch = ownerEpoch;
+  const generation = ++deviceLoadGeneration;
+  const stale = () => requestEpoch !== ownerEpoch || generation !== deviceLoadGeneration;
+  const cursor = reset ? null : nextDeviceCursor;
+  const moreButton = byId("more-devices");
+  moreButton.disabled = true;
   message("device-status", "Loading devices…");
   if (reset) {
     byId("device-list").replaceChildren();
-    byId("more-devices").hidden = true;
+    moreButton.hidden = true;
     nextDeviceCursor = null;
     shownDeviceCount = 0;
   }
   try {
-    const path = nextDeviceCursor
-      ? `/v1/enrollment/devices?before=${encodeURIComponent(nextDeviceCursor)}`
+    const path = cursor
+      ? `/v1/enrollment/devices?before=${encodeURIComponent(cursor)}`
       : "/v1/enrollment/devices";
     const page = await api(path);
+    if (stale()) return;
+    if (!page || !Array.isArray(page.devices)) throw new Error("The device response was invalid.");
     const devices = page.devices;
+    moreButton.disabled = false;
     if (reset && devices.length === 0) {
       message("device-status", "No approved devices yet.");
       return;
     }
-    nextDeviceCursor = page.next_cursor;
+    nextDeviceCursor = page.next_cursor || null;
     shownDeviceCount += devices.length;
-    byId("more-devices").hidden = !nextDeviceCursor;
+    moreButton.hidden = !nextDeviceCursor;
     message("device-status", `${shownDeviceCount} device${shownDeviceCount === 1 ? "" : "s"} shown${nextDeviceCursor ? "; more available" : ""}. Revoked devices stay visible.`);
+    const rows = [];
     for (const device of devices) {
       const row = document.createElement("li");
       const detail = document.createElement("div");
@@ -564,40 +639,55 @@ async function loadDevices(reset = true) {
         });
         row.append(revoke);
       }
-      byId("device-list").append(row);
+      rows.push(row);
     }
+    byId("device-list").append(...rows);
   } catch (error) {
+    if (stale()) return;
+    moreButton.disabled = false;
     message("device-status", `Could not load devices. ${error.message}`);
   }
 }
 
 function localTime(milliseconds) {
-  const date = new Date(milliseconds);
-  return Number.isFinite(milliseconds) && !Number.isNaN(date.getTime())
-    ? date.toLocaleString() : "Time unavailable";
+  return formatTime(milliseconds, "Time unavailable");
 }
 
 async function loadMessages(reset = true) {
+  if (!reset && !nextMessageCursor) return;
+  const requestEpoch = ownerEpoch;
+  const generation = ++messageLoadGeneration;
+  const stale = () => requestEpoch !== ownerEpoch || generation !== messageLoadGeneration;
+  const cursor = reset ? null : nextMessageCursor;
+  const moreButton = byId("more-messages");
+  moreButton.disabled = true;
   message("message-status", "Loading message states…");
   if (reset) {
     byId("message-list").replaceChildren();
-    byId("more-messages").hidden = true;
+    moreButton.hidden = true;
     nextMessageCursor = null;
     shownMessageCount = 0;
   }
   try {
-    const path = nextMessageCursor
-      ? `/v1/owner/messages?before=${encodeURIComponent(nextMessageCursor)}`
+    const path = cursor
+      ? `/v1/owner/messages?before=${encodeURIComponent(cursor)}`
       : "/v1/owner/messages";
     const page = await api(path);
+    if (stale()) return;
+    if (!page || !Array.isArray(page.messages) ||
+        !page.messages.every((item) => item && typeof item.state === "string" && Array.isArray(item.events))) {
+      throw new Error("The message response was invalid.");
+    }
+    moreButton.disabled = false;
     if (reset && page.messages.length === 0) {
       message("message-status", "No messages yet.");
       return;
     }
-    nextMessageCursor = page.next_cursor;
+    nextMessageCursor = page.next_cursor || null;
     shownMessageCount += page.messages.length;
-    byId("more-messages").hidden = !nextMessageCursor;
+    moreButton.hidden = !nextMessageCursor;
     message("message-status", `${shownMessageCount} message${shownMessageCount === 1 ? "" : "s"} shown${nextMessageCursor ? "; more available" : ""}.`);
+    const rows = [];
     for (const item of page.messages) {
       const row = document.createElement("li");
       const state = document.createElement("strong");
@@ -637,9 +727,12 @@ async function loadMessages(reset = true) {
         details.append(list);
       }
       row.append(details);
-      byId("message-list").append(row);
+      rows.push(row);
     }
+    byId("message-list").append(...rows);
   } catch (error) {
+    if (stale()) return;
+    moreButton.disabled = false;
     message("message-status", `Could not load messages. ${error.message}`);
   }
 }
@@ -675,11 +768,11 @@ async function checkPairing() {
     byId("approve-form").hidden = true;
     // A 404 includes expiry, cancellation and exhaustion. Retire the
     // one-time token locally rather than presenting it as still usable.
-    if (error.message.startsWith("The requested item")) clearPairing();
+    if (error.status === 404) clearPairing();
   }
 }
 
-byId("login-form").addEventListener("submit", async (event) => {
+byId("login-form").addEventListener("submit", exclusive(async (event) => {
   event.preventDefault();
   clearMfaChallenge();
   showSignedIn(false);
@@ -702,9 +795,9 @@ byId("login-form").addEventListener("submit", async (event) => {
   } catch (error) {
     message("login-status", `Sign-in failed. ${error.message}`);
   }
-});
+}));
 
-byId("mfa-form").addEventListener("submit", async (event) => {
+byId("mfa-form").addEventListener("submit", exclusive(async (event) => {
   event.preventDefault();
   if (!pendingMfaChallenge) return;
   const code = byId("mfa-code").value.trim();
@@ -726,14 +819,14 @@ byId("mfa-form").addEventListener("submit", async (event) => {
       message("mfa-status", `Code verification failed. ${error.message}`);
     }
   }
-});
+}));
 
 byId("cancel-mfa").addEventListener("click", () => {
   clearMfaChallenge();
   message("login-status", "Enter your password to start again.");
 });
 
-byId("logout").addEventListener("click", async () => {
+byId("logout").addEventListener("click", exclusive(async () => {
   try {
     await api("/v1/auth/logout", "POST");
     clearOwnerState();
@@ -741,7 +834,7 @@ byId("logout").addEventListener("click", async () => {
   } catch (error) {
     message("global-status", `Could not sign out. ${error.message}`);
   }
-});
+}));
 
 byId("reset-request-form").addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -836,7 +929,7 @@ byId("revoke-other-sessions-form").addEventListener("submit", async (event) => {
   }
 });
 
-byId("create-form").addEventListener("submit", async (event) => {
+byId("create-form").addEventListener("submit", exclusive(async (event) => {
   event.preventDefault();
   if (activePairingId) {
     message("pair-status", "Finish or cancel the current pairing before creating another.");
@@ -856,10 +949,10 @@ byId("create-form").addEventListener("submit", async (event) => {
   } catch (error) {
     message("pair-status", `Could not create pairing. ${error.message}`);
   }
-});
+}));
 
 byId("check-proof").addEventListener("click", checkPairing);
-byId("cancel-pairing").addEventListener("click", async () => {
+byId("cancel-pairing").addEventListener("click", exclusive(async () => {
   if (!activePairingId) return;
   try {
     await api(`/v1/enrollment/pairings/${encodeURIComponent(activePairingId)}/cancel`, "POST");
@@ -868,9 +961,9 @@ byId("cancel-pairing").addEventListener("click", async () => {
   } catch (error) {
     message("pair-status", `Could not cancel pairing. ${error.message}`);
   }
-});
+}));
 
-byId("approve-form").addEventListener("submit", async (event) => {
+byId("approve-form").addEventListener("submit", exclusive(async (event) => {
   event.preventDefault();
   if (!activePairingId || !byId("compared").checked) return;
   message("pair-status", "Approving device…");
@@ -893,17 +986,16 @@ byId("approve-form").addEventListener("submit", async (event) => {
       message("pair-status", `Approval failed. ${error.message} Check the phone values. Repeated mismatches lock this pairing.`);
     }
   }
-});
+}));
 
 byId("refresh-devices").addEventListener("click", () => Promise.all([loadDevices(), loadDeviceCapacity()]));
 byId("more-devices").addEventListener("click", () => loadDevices(false));
-byId("refresh-messages").addEventListener("click", loadMessages);
+byId("refresh-messages").addEventListener("click", () => loadMessages());
 byId("more-messages").addEventListener("click", () => loadMessages(false));
-byId("refresh-keys").addEventListener("click", loadKeys);
+byId("refresh-keys").addEventListener("click", () => loadKeys());
 byId("more-keys").addEventListener("click", () => loadKeys(false));
 byId("dismiss-key-secret").addEventListener("click", clearKeySecret);
-window.addEventListener("pagehide", clearKeySecret);
-window.addEventListener("pagehide", () => { clearPasswordFields(); clearResetFields(); });
+window.addEventListener("pagehide", () => { clearKeySecret(); clearPasswordFields(); clearResetFields(); });
 byId("inbound-history-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const messageId = byId("inbound-message-id").value.trim();
@@ -931,7 +1023,7 @@ byId("webhook-endpoint").addEventListener("change", async () => {
   await loadWebhookDeliveries();
 });
 byId("more-webhook-deliveries").addEventListener("click", () => loadWebhookDeliveries(false));
-byId("key-create-form").addEventListener("submit", async (event) => {
+byId("key-create-form").addEventListener("submit", exclusive(async (event) => {
   event.preventDefault();
   const createEpoch = ownerEpoch;
   clearKeySecret();
@@ -954,14 +1046,16 @@ byId("key-create-form").addEventListener("submit", async (event) => {
   } catch (error) {
     message("key-create-status", `Could not create key. ${error.message}`);
   }
-});
+}));
 
 (async () => {
+  message("global-status", "Checking your sign-in…");
   try {
     await api("/v1/auth/session");
+    message("global-status", "");
     clearResetFields();
     showSignedIn(true);
-    await Promise.all([loadDevices(), loadDeviceCapacity(), loadMessages(), loadKeys(), loadWebhookEndpoints(), loadSessions()]);
+    await loadOwnerData();
   } catch (error) {
     showSignedIn(false);
     message("global-status", error.message.startsWith("Your sign-in") ? "Sign in to manage devices." : `Could not verify session. ${error.message}`);
