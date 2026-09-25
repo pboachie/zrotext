@@ -158,9 +158,10 @@ pub fn signature_header(
     let digest = mac.finalize().into_bytes();
     let mut signature = String::with_capacity(3 + 64);
     signature.push_str("v1=");
+    const HEX: &[u8; 16] = b"0123456789abcdef";
     for byte in digest {
-        use std::fmt::Write as _;
-        write!(&mut signature, "{byte:02x}").expect("writing to String cannot fail");
+        signature.push(HEX[(byte >> 4) as usize] as char);
+        signature.push(HEX[(byte & 0x0f) as usize] as char);
     }
     Ok(signature)
 }
