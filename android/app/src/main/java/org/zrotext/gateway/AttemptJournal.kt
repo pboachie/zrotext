@@ -32,7 +32,10 @@ data class SmsAttempt(
     val createdAtMs: Long,
     val updatedAtMs: Long,
     @ColumnInfo(defaultValue = "0") val evidenceConflict: Boolean = false,
-    @ColumnInfo(defaultValue = "NULL") val messageId: String? = null
+    @ColumnInfo(defaultValue = "NULL") val messageId: String? = null,
+    @ColumnInfo(defaultValue = "NULL") val accountId: String? = null,
+    @ColumnInfo(defaultValue = "NULL") val deviceId: String? = null,
+    @ColumnInfo(defaultValue = "NULL") val originHash: String? = null
 )
 
 /** One event ID and its exact payload stay in Room until the writer acknowledges them. */
@@ -54,7 +57,12 @@ data class AlphaRadioEvent(
     val observedAtMs: Long,
     val segmentIndex: Int? = null,
     val segmentCount: Int? = null,
-    val acknowledgedAtMs: Long? = null
+    val acknowledgedAtMs: Long? = null,
+    @ColumnInfo(defaultValue = "NULL") val accountId: String? = null,
+    @ColumnInfo(defaultValue = "NULL") val deviceId: String? = null,
+    @ColumnInfo(defaultValue = "NULL") val originHash: String? = null,
+    @ColumnInfo(defaultValue = "NULL") val quarantinedAtMs: Long? = null,
+    @ColumnInfo(defaultValue = "NULL") val quarantineReason: String? = null
 )
 
 /** The one locally approved sender/SIM window is bound to the durable alpha attempt. */
@@ -116,7 +124,10 @@ data class InboundUpload(
     val accountId: String? = null,
     val deviceId: String? = null,
     val signatureDer: ByteArray? = null,
-    val acknowledgedAtMs: Long? = null
+    val acknowledgedAtMs: Long? = null,
+    @ColumnInfo(defaultValue = "NULL") val originHash: String? = null,
+    @ColumnInfo(defaultValue = "NULL") val quarantinedAtMs: Long? = null,
+    @ColumnInfo(defaultValue = "NULL") val quarantineReason: String? = null
 )
 
 internal object InboundClassification {
@@ -124,7 +135,52 @@ internal object InboundClassification {
     const val SIM_UNVERIFIED = "sim_unverified"
     const val SEND_UNVERIFIED = "send_unverified"
     const val ENCRYPTION_UNVERIFIED = "encryption_unverified"
+    const val OPT_OUT = OptOutParser.OPT_OUT
+    const val OPT_OUT_REVIEW = OptOutParser.OPT_OUT_REVIEW
+    const val OPT_IN = OptOutParser.OPT_IN
 }
+
+/** Kept even without an active reply window, so the phone refuses later radio work. */
+@Entity(tableName = "local_recipient_suppressions")
+data class LocalRecipientSuppression(
+    @PrimaryKey val senderToken: String,
+    val observedAtMs: Long
+)
+
+/** Installed only after an authenticated line activation; a subscription index is not a line ID. */
+@Entity(tableName = "local_line_binding")
+data class LocalLineBinding(
+    @PrimaryKey val slot: Int = 1,
+    val accountId: String,
+    val deviceId: String,
+    val lineId: String,
+    val generation: Long,
+    val subscriptionId: Int,
+    val installedAtMs: Long
+)
+
+/** A tombstone reserves an independent, never-reused sequence for later authenticated upload. */
+@Entity(tableName = "local_withdrawal_sequences", indices = [Index(value = ["eventId"], unique = true)])
+data class LocalWithdrawalSequence(
+    @PrimaryKey(autoGenerate = true) val sequence: Long = 0,
+    val eventId: String
+)
+
+/** Local SMS withdrawal; the optional E.164 sender is AES-GCM ciphertext, never plaintext. */
+@Entity(tableName = "local_inbound_withdrawals", indices = [Index("senderToken")])
+data class LocalInboundWithdrawal(
+    @PrimaryKey val dedupeToken: String,
+    val senderToken: String,
+    val classification: String,
+    val observedSubscriptionId: Int?,
+    val lineId: String?,
+    val bindingGeneration: Long?,
+    val receivedAtMs: Long,
+    @ColumnInfo(defaultValue = "NULL") val eventId: String? = null,
+    @ColumnInfo(defaultValue = "NULL") val deviceSequence: Long? = null,
+    @ColumnInfo(defaultValue = "NULL") val encryptedSender: ByteArray? = null,
+    @ColumnInfo(defaultValue = "NULL") val senderNonce: ByteArray? = null
+)
 
 @Entity(
     tableName = "sms_segments",
@@ -201,11 +257,103 @@ internal object CallbackEvidence {
 
 @Dao
 abstract class SmsAttemptDao {
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    protected abstract fun insertLocalWithdrawal(entry: LocalInboundWithdrawal)
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    protected abstract fun reserveLocalWithdrawalSequence(entry: LocalWithdrawalSequence): Long
+
+    @Query("SELECT * FROM local_inbound_withdrawals WHERE dedupeToken = :dedupeToken LIMIT 1")
+    abstract fun localWithdrawal(dedupeToken: String): LocalInboundWithdrawal?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    protected abstract fun putLineBinding(binding: LocalLineBinding)
+
+    @Query("SELECT * FROM local_line_binding WHERE slot = 1 LIMIT 1")
+    abstract fun currentLineBinding(): LocalLineBinding?
+
+    /** Called only with the result of an authenticated activation, never a UI-selected SIM alone. */
+    @Transaction
+    open fun installVerifiedLineBinding(binding: LocalLineBinding,
+                                        activeSubscriptionIds: Collection<Int>): Boolean {
+        if (binding.slot != 1 || binding.generation <= 0 || binding.subscriptionId < 0 ||
+            binding.installedAtMs <= 0 ||
+            activeSubscriptionIds.size != 1 ||
+            activeSubscriptionIds.single() != binding.subscriptionId ||
+            listOf(binding.accountId, binding.deviceId, binding.lineId).any {
+                runCatching { UUID.fromString(it).toString() != it }.getOrDefault(true)
+            }) return false
+        val prior = currentLineBinding()
+        if (prior != null && (prior.accountId != binding.accountId ||
+            prior.deviceId != binding.deviceId || prior.lineId != binding.lineId ||
+            binding.generation <= prior.generation)) return false
+        putLineBinding(binding)
+        return true
+    }
+
+    /** An absent or ambiguous SIM is kept as an unattributed withdrawal. */
+    @Transaction
+    open fun recordLocalWithdrawal(dedupeToken: String, senderToken: String,
+                                   classification: String, observedSubscriptionId: Int?,
+                                   activeSubscriptionIds: Collection<Int>, now: Long,
+                                   encryptedSender: ByteArray? = null,
+                                   senderNonce: ByteArray? = null): Boolean {
+        require(dedupeToken.matches(Regex("[0-9a-f]{64}")) &&
+            senderToken.matches(Regex("[0-9a-f]{64}")) && now > 0 &&
+            classification in setOf(InboundClassification.OPT_OUT,
+                InboundClassification.OPT_OUT_REVIEW))
+        require((encryptedSender == null && senderNonce == null) ||
+            (encryptedSender != null && encryptedSender.size in 17..128 &&
+                senderNonce?.size == 12))
+        if (localWithdrawal(dedupeToken) != null) {
+            // A replay still reasserts the local block; it cannot mutate the first observation.
+            suppressRecipient(LocalRecipientSuppression(senderToken, now))
+            return false
+        }
+        val binding = currentLineBinding()?.takeIf {
+            observedSubscriptionId != null && it.subscriptionId == observedSubscriptionId &&
+                activeSubscriptionIds.size == 1 && activeSubscriptionIds.single() == it.subscriptionId
+        }
+        val eventId = UUID.randomUUID().toString()
+        val sequence = reserveLocalWithdrawalSequence(LocalWithdrawalSequence(eventId = eventId))
+        check(sequence > 0)
+        insertLocalWithdrawal(LocalInboundWithdrawal(dedupeToken, senderToken,
+            classification, observedSubscriptionId, binding?.lineId, binding?.generation, now,
+            eventId, sequence, encryptedSender, senderNonce))
+        suppressRecipient(LocalRecipientSuppression(senderToken, now))
+        return true
+    }
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    protected abstract fun putRecipientSuppression(entry: LocalRecipientSuppression)
+
+    @Query("SELECT observedAtMs FROM local_recipient_suppressions WHERE senderToken=:senderToken")
+    protected abstract fun suppressionObservedAt(senderToken: String): Long?
+
+    @Transaction
+    open fun suppressRecipient(entry: LocalRecipientSuppression) {
+        val prior = suppressionObservedAt(entry.senderToken)
+        val monotonicAt = if (prior == null) entry.observedAtMs else
+            maxOf(entry.observedAtMs, if (prior == Long.MAX_VALUE) prior else prior + 1)
+        putRecipientSuppression(entry.copy(observedAtMs = monotonicAt))
+    }
+
+    @Query("SELECT EXISTS(SELECT 1 FROM local_recipient_suppressions WHERE senderToken=:senderToken)")
+    abstract fun isRecipientSuppressed(senderToken: String): Boolean
+
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     abstract fun insertInboundUpload(upload: InboundUpload): Long
 
-    @Query("SELECT u.* FROM inbound_uploads u JOIN inbound_events i ON i.eventId = u.eventId WHERE u.acknowledgedAtMs IS NULL AND i.receivedAtMs >= :minimumObservedAtMs ORDER BY u.sequence LIMIT 1")
-    abstract fun nextInboundUpload(minimumObservedAtMs: Long): InboundUpload?
+    @Query("SELECT u.* FROM inbound_uploads u JOIN inbound_events i ON i.eventId = u.eventId WHERE u.acknowledgedAtMs IS NULL AND u.quarantinedAtMs IS NULL AND u.accountId = :accountId AND u.deviceId = :deviceId AND u.originHash = :originHash AND i.receivedAtMs >= :minimumObservedAtMs ORDER BY u.sequence LIMIT 1")
+    abstract fun nextInboundUpload(minimumObservedAtMs: Long, accountId: String,
+                                   deviceId: String, originHash: String): InboundUpload?
+
+    @Query("UPDATE inbound_uploads SET quarantinedAtMs = :now, quarantineReason = 'identity_changed' WHERE acknowledgedAtMs IS NULL AND quarantinedAtMs IS NULL AND (accountId IS NULL OR deviceId IS NULL OR originHash IS NULL OR accountId != :accountId OR deviceId != :deviceId OR originHash != :originHash)")
+    abstract fun quarantineForeignInbound(accountId: String, deviceId: String,
+                                          originHash: String, now: Long): Int
+
+    @Query("UPDATE inbound_uploads SET quarantinedAtMs = :now, quarantineReason = :reason WHERE eventId = :eventId AND acknowledgedAtMs IS NULL AND quarantinedAtMs IS NULL")
+    abstract fun quarantineInboundUpload(eventId: String, reason: String, now: Long): Int
 
     @Query("SELECT * FROM inbound_uploads WHERE eventId = :eventId LIMIT 1")
     abstract fun inboundUpload(eventId: String): InboundUpload?
@@ -213,12 +361,23 @@ abstract class SmsAttemptDao {
     @Query("SELECT * FROM inbound_events WHERE eventId = :eventId LIMIT 1")
     abstract fun inboundByEventId(eventId: String): InboundEvent?
 
-    @Query("UPDATE inbound_uploads SET accountId = :accountId, deviceId = :deviceId, signatureDer = :signature WHERE eventId = :eventId AND accountId IS NULL AND deviceId IS NULL AND signatureDer IS NULL AND acknowledgedAtMs IS NULL")
+    @Query("UPDATE inbound_uploads SET signatureDer = :signature WHERE eventId = :eventId AND accountId = :accountId AND deviceId = :deviceId AND originHash = :originHash AND signatureDer IS NULL AND acknowledgedAtMs IS NULL AND quarantinedAtMs IS NULL")
     abstract fun signInboundUpload(eventId: String, accountId: String, deviceId: String,
-                                   signature: ByteArray): Int
+                                   originHash: String, signature: ByteArray): Int
 
     @Query("UPDATE inbound_uploads SET acknowledgedAtMs = :now WHERE eventId = :eventId AND acknowledgedAtMs IS NULL AND signatureDer IS NOT NULL")
     abstract fun acknowledgeInboundUpload(eventId: String, now: Long): Int
+
+    /** A server START transition does not prove the line/generation of a local STOP. */
+    @Transaction
+    open fun acknowledgeInboundAck(eventId: String, now: Long,
+                                   suppressionCleared: Boolean): Int {
+        if (suppressionCleared) {
+            val event = inboundByEventId(eventId) ?: return 0
+            if (event.classification != InboundClassification.OPT_IN) return 0
+        }
+        return acknowledgeInboundUpload(eventId, now)
+    }
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     abstract fun insertInboundWindow(window: InboundWindow)
@@ -239,7 +398,8 @@ abstract class SmsAttemptDao {
     @Transaction
     open fun recordInbound(
         window: InboundWindow, dedupeToken: String, observedSubscriptionId: Int?,
-        partCount: Int, receivedAtMs: Long, encryptedBody: ByteArray?, nonce: ByteArray?
+        partCount: Int, receivedAtMs: Long, encryptedBody: ByteArray?, nonce: ByteArray?,
+        optAction: String? = null
     ): InboundEvent? {
         if (partCount !in 1..6 || receivedAtMs < window.opensAtMs ||
             receivedAtMs >= window.closesAtMs ||
@@ -257,6 +417,8 @@ abstract class SmsAttemptDao {
         val classification = when {
             observedSubscriptionId == null -> InboundClassification.SIM_UNVERIFIED
             !sent -> InboundClassification.SEND_UNVERIFIED
+            optAction in setOf(OptOutParser.OPT_OUT, OptOutParser.OPT_OUT_REVIEW,
+                OptOutParser.OPT_IN) -> optAction!!
             encryptedBody == null || nonce?.size != 12 || encryptedBody.size < 16 ->
                 InboundClassification.ENCRYPTION_UNVERIFIED
             else -> InboundClassification.CAPTURED_LOCAL
@@ -267,8 +429,12 @@ abstract class SmsAttemptDao {
             if (classification == InboundClassification.CAPTURED_LOCAL) encryptedBody else null,
             if (classification == InboundClassification.CAPTURED_LOCAL) nonce else null)
         return if (insertInboundEvent(event) != -1L) {
-            if (classification == InboundClassification.CAPTURED_LOCAL) {
-                check(insertInboundUpload(InboundUpload(eventId = event.eventId)) > 0)
+            if (classification in setOf(InboundClassification.CAPTURED_LOCAL,
+                    InboundClassification.OPT_OUT, InboundClassification.OPT_OUT_REVIEW,
+                    InboundClassification.OPT_IN)) {
+                check(insertInboundUpload(InboundUpload(eventId = event.eventId,
+                    accountId = attempt.accountId, deviceId = attempt.deviceId,
+                    originHash = attempt.originHash)) > 0)
             }
             event
         } else inboundByDedupe(dedupeToken)
@@ -286,13 +452,21 @@ abstract class SmsAttemptDao {
     @Query("SELECT * FROM alpha_radio_events WHERE eventId = :eventId")
     abstract fun getAlphaEvent(eventId: String): AlphaRadioEvent?
 
-    @Query("SELECT * FROM alpha_radio_events WHERE acknowledgedAtMs IS NULL ORDER BY rowid LIMIT 1")
-    abstract fun nextAlphaEvent(): AlphaRadioEvent?
+    @Query("SELECT * FROM alpha_radio_events WHERE acknowledgedAtMs IS NULL AND quarantinedAtMs IS NULL AND accountId = :accountId AND deviceId = :deviceId AND originHash = :originHash ORDER BY rowid LIMIT 1")
+    abstract fun nextAlphaEvent(accountId: String, deviceId: String,
+                                originHash: String): AlphaRadioEvent?
 
-    @Query("SELECT e.* FROM alpha_radio_events e JOIN sms_attempts a ON a.attemptId = e.attemptId WHERE e.evidence = 'durable_submit_intent' AND e.acknowledgedAtMs IS NULL AND a.state IN ('reserved','not_submitted') ORDER BY e.rowid")
+    @Query("UPDATE alpha_radio_events SET quarantinedAtMs = :now, quarantineReason = 'identity_changed' WHERE acknowledgedAtMs IS NULL AND quarantinedAtMs IS NULL AND (accountId IS NULL OR deviceId IS NULL OR originHash IS NULL OR accountId != :accountId OR deviceId != :deviceId OR originHash != :originHash)")
+    abstract fun quarantineForeignAlpha(accountId: String, deviceId: String,
+                                        originHash: String, now: Long): Int
+
+    @Query("UPDATE alpha_radio_events SET quarantinedAtMs = :now, quarantineReason = :reason WHERE eventId = :eventId AND acknowledgedAtMs IS NULL AND quarantinedAtMs IS NULL")
+    abstract fun quarantineAlphaEvent(eventId: String, reason: String, now: Long): Int
+
+    @Query("SELECT e.* FROM alpha_radio_events e JOIN sms_attempts a ON a.attemptId = e.attemptId WHERE e.evidence = 'durable_submit_intent' AND e.acknowledgedAtMs IS NULL AND e.quarantinedAtMs IS NULL AND a.state IN ('reserved','not_submitted') ORDER BY e.rowid")
     protected abstract fun orphanedAlphaIntents(): List<AlphaRadioEvent>
 
-    @Query("UPDATE alpha_radio_events SET acknowledgedAtMs = :now WHERE eventId = :eventId AND acknowledgedAtMs IS NULL")
+    @Query("UPDATE alpha_radio_events SET acknowledgedAtMs = :now WHERE eventId = :eventId AND acknowledgedAtMs IS NULL AND quarantinedAtMs IS NULL")
     abstract fun acknowledgeAlphaEvent(eventId: String, now: Long): Int
 
     @Query("SELECT * FROM sms_attempts WHERE attemptId = :attemptId")
@@ -331,7 +505,9 @@ abstract class SmsAttemptDao {
                 it.sentResultCode != null || it.deliveryResultCode != null || it.deliveryStatus != null
             }) return
         insertAlphaEvent(AlphaRadioEvent(UUID.randomUUID().toString(), messageId,
-            attemptId, "proven_no_submit", now))
+            attemptId, "proven_no_submit", now,
+            accountId = attempt.accountId, deviceId = attempt.deviceId,
+            originHash = attempt.originHash))
     }
 
     /** The state and proof are committed together, before a later grant can be issued. */
@@ -372,7 +548,9 @@ abstract class SmsAttemptDao {
         val messageId = attempt.messageId ?: return
         removePendingNoRadioProof(attempt.attemptId)
         insertAlphaEvent(AlphaRadioEvent(UUID.randomUUID().toString(), messageId,
-            attempt.attemptId, "callback_conflict", now))
+            attempt.attemptId, "callback_conflict", now,
+            accountId = attempt.accountId, deviceId = attempt.deviceId,
+            originHash = attempt.originHash))
     }
 
     @Query("UPDATE sms_segments SET sentResultCode = :result WHERE attemptId = :attemptId AND segmentIndex = :index AND sentResultCode IS NULL")
@@ -405,17 +583,20 @@ abstract class SmsAttemptDao {
     open fun reserveAlpha(
         attemptId: String, messageId: String, subscriptionId: Int,
         segmentCount: Int, intentEventId: String, now: Long,
-        approvedSenderToken: String? = null
+        approvedSenderToken: String? = null, identity: EvidenceIdentity
     ) {
         require(segmentCount in 1..6)
         require(listOf(attemptId, messageId, intentEventId).all {
             runCatching { UUID.fromString(it).toString() == it }.getOrDefault(false)
         })
         insertAttempt(SmsAttempt(attemptId, subscriptionId, segmentCount,
-            AttemptState.RESERVED, now, now, messageId = messageId))
+            AttemptState.RESERVED, now, now, messageId = messageId,
+            accountId = identity.accountId, deviceId = identity.deviceId,
+            originHash = identity.originHash))
         insertSegments((0 until segmentCount).map { SmsSegment(attemptId, it) })
         insertAlphaEvent(AlphaRadioEvent(intentEventId, messageId, attemptId,
-            "durable_submit_intent", now))
+            "durable_submit_intent", now, accountId = identity.accountId,
+            deviceId = identity.deviceId, originHash = identity.originHash))
         if (approvedSenderToken != null) {
             require(approvedSenderToken.matches(Regex("[0-9a-f]{64}")))
             insertInboundWindow(InboundWindow(attemptId, messageId, approvedSenderToken,
@@ -427,7 +608,8 @@ abstract class SmsAttemptDao {
     @Transaction
     open fun acknowledgeAlphaIntent(eventId: String, permitted: Boolean, now: Long): Boolean {
         val event = getAlphaEvent(eventId) ?: return false
-        if (event.evidence != "durable_submit_intent" || event.acknowledgedAtMs != null) return false
+        if (event.evidence != "durable_submit_intent" || event.acknowledgedAtMs != null ||
+            event.quarantinedAtMs != null) return false
         val attempt = getAttempt(event.attemptId) ?: return false
         if (attempt.state != AttemptState.RESERVED || attempt.messageId != event.messageId) {
             acknowledgeAlphaEvent(eventId, now)
@@ -477,12 +659,15 @@ abstract class SmsAttemptDao {
         if (!delivery && attempt.messageId != null && !attempt.evidenceConflict) {
             insertAlphaEvent(AlphaRadioEvent(UUID.randomUUID().toString(), attempt.messageId,
                 attemptId, if (result == Activity.RESULT_OK) "sent_callback_ok" else "sent_callback_failed",
-                now, index, attempt.segmentCount))
+                now, index, attempt.segmentCount, accountId = attempt.accountId,
+                deviceId = attempt.deviceId, originHash = attempt.originHash))
         }
         if (attempt.messageId != null && nextState == AttemptState.DELIVERED &&
             attempt.state != AttemptState.DELIVERED) {
             insertAlphaEvent(AlphaRadioEvent(UUID.randomUUID().toString(), attempt.messageId,
-                attemptId, "delivery_callback_ok", now))
+                attemptId, "delivery_callback_ok", now,
+                accountId = attempt.accountId, deviceId = attempt.deviceId,
+                originHash = attempt.originHash))
         }
         setState(attemptId, nextState, now)
     }
@@ -491,7 +676,9 @@ abstract class SmsAttemptDao {
 private const val INBOUND_PILOT_WINDOW_MS = 24L * 60 * 60 * 1000
 
 @Database(entities = [SmsAttempt::class, SmsSegment::class, AlphaRadioEvent::class,
-    InboundWindow::class, InboundEvent::class, InboundUpload::class], version = 5, exportSchema = false)
+    InboundWindow::class, InboundEvent::class, InboundUpload::class,
+    LocalRecipientSuppression::class, LocalLineBinding::class,
+    LocalInboundWithdrawal::class, LocalWithdrawalSequence::class], version = 9, exportSchema = false)
 abstract class SmsJournalDatabase : RoomDatabase() {
     abstract fun attempts(): SmsAttemptDao
 
@@ -501,7 +688,8 @@ abstract class SmsJournalDatabase : RoomDatabase() {
         fun get(context: Context): SmsJournalDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(
                 context.applicationContext, SmsJournalDatabase::class.java, "sms_attempts.db"
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
+                MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
                 .build().also { instance = it }
         }
 
@@ -536,6 +724,49 @@ abstract class SmsJournalDatabase : RoomDatabase() {
                 db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_inbound_uploads_eventId ON inbound_uploads(eventId)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_inbound_uploads_acknowledgedAtMs_sequence ON inbound_uploads(acknowledgedAtMs, sequence)")
                 db.execSQL("INSERT INTO inbound_uploads(eventId) SELECT eventId FROM inbound_events WHERE classification = 'captured_local' ORDER BY rowid")
+            }
+        }
+
+        /** Existing unbound evidence remains local but cannot enter a new device session. */
+        internal val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                for (table in listOf("sms_attempts", "alpha_radio_events")) {
+                    db.execSQL("ALTER TABLE $table ADD COLUMN accountId TEXT DEFAULT NULL")
+                    db.execSQL("ALTER TABLE $table ADD COLUMN deviceId TEXT DEFAULT NULL")
+                    db.execSQL("ALTER TABLE $table ADD COLUMN originHash TEXT DEFAULT NULL")
+                }
+                db.execSQL("ALTER TABLE alpha_radio_events ADD COLUMN quarantinedAtMs INTEGER DEFAULT NULL")
+                db.execSQL("ALTER TABLE alpha_radio_events ADD COLUMN quarantineReason TEXT DEFAULT NULL")
+                db.execSQL("ALTER TABLE inbound_uploads ADD COLUMN originHash TEXT DEFAULT NULL")
+                db.execSQL("ALTER TABLE inbound_uploads ADD COLUMN quarantinedAtMs INTEGER DEFAULT NULL")
+                db.execSQL("ALTER TABLE inbound_uploads ADD COLUMN quarantineReason TEXT DEFAULT NULL")
+            }
+        }
+
+        internal val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS local_recipient_suppressions (senderToken TEXT NOT NULL PRIMARY KEY, observedAtMs INTEGER NOT NULL)")
+            }
+        }
+
+        /** Existing STOP blocks survive; no old subscription index is promoted to a line. */
+        internal val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS local_line_binding (slot INTEGER NOT NULL PRIMARY KEY, accountId TEXT NOT NULL, deviceId TEXT NOT NULL, lineId TEXT NOT NULL, generation INTEGER NOT NULL, subscriptionId INTEGER NOT NULL, installedAtMs INTEGER NOT NULL)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS local_inbound_withdrawals (dedupeToken TEXT NOT NULL PRIMARY KEY, senderToken TEXT NOT NULL, classification TEXT NOT NULL, observedSubscriptionId INTEGER, lineId TEXT, bindingGeneration INTEGER, receivedAtMs INTEGER NOT NULL)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_local_inbound_withdrawals_senderToken ON local_inbound_withdrawals(senderToken)")
+            }
+        }
+
+        /** Pre-v9 actions remain blocked locally; they lack recoverable sender/sequence data. */
+        internal val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE local_inbound_withdrawals ADD COLUMN eventId TEXT DEFAULT NULL")
+                db.execSQL("ALTER TABLE local_inbound_withdrawals ADD COLUMN deviceSequence INTEGER DEFAULT NULL")
+                db.execSQL("ALTER TABLE local_inbound_withdrawals ADD COLUMN encryptedSender BLOB DEFAULT NULL")
+                db.execSQL("ALTER TABLE local_inbound_withdrawals ADD COLUMN senderNonce BLOB DEFAULT NULL")
+                db.execSQL("CREATE TABLE IF NOT EXISTS local_withdrawal_sequences (sequence INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, eventId TEXT NOT NULL)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_local_withdrawal_sequences_eventId ON local_withdrawal_sequences(eventId)")
             }
         }
     }

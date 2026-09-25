@@ -17,6 +17,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Validate Gradle wrapper JAR
+        uses: gradle/actions/wrapper-validation@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
       - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
           distribution: temurin
@@ -30,11 +32,14 @@ jobs:
         run: python3 -m unittest discover -s android/tools -p 'test_*.py'
       - name: Build unsigned candidate without signing secrets
         run: python3 android/tools/release_candidate.py build
+      - name: Locate private unsigned artifacts
+        id: release_paths
+        run: echo "unsigned=$HOME/.local/state/zrotext/android-release/unsigned" >> "$GITHUB_OUTPUT"
       - name: Attest release runtime SBOM for the exact unsigned APK
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
-          subject-path: /tmp/zrotext-android-release/unsigned/unsigned.apk
-          sbom-path: /tmp/zrotext-android-release/unsigned/release-runtime.cdx.json
+          subject-path: ${{ steps.release_paths.outputs.unsigned }}/unsigned.apk
+          sbom-path: ${{ steps.release_paths.outputs.unsigned }}/release-runtime.cdx.json
       - name: Verify unsigned APK, receipt and SBOM attestation before upload
         env:
           GH_TOKEN: ${{ github.token }}
@@ -45,6 +50,6 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: android-unsigned-candidate-${{ github.sha }}
-          path: /tmp/zrotext-android-release/unsigned/
+          path: ${{ steps.release_paths.outputs.unsigned }}/
           if-no-files-found: error
           retention-days: 7

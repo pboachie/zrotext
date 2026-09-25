@@ -23,7 +23,8 @@ sequence (signed 64-bit big-endian)
 outbound message UUID (16 raw bytes)
 outbound attempt UUID (16 raw bytes)
 classification (1 captured_local, 2 sim_unverified,
-                3 send_unverified, 4 encryption_unverified)
+                3 send_unverified, 4 encryption_unverified,
+                5 opt_out, 6 opt_out_review, 7 opt_in)
 observed_at_ms (signed 64-bit big-endian)
 part_count (signed 16-bit big-endian)
 content kind (0 metadata_only, 1 opaque_pilot)
@@ -34,6 +35,29 @@ SHA-256(content ciphertext, or empty bytes for metadata_only)
 follow a reviewed sealed-content envelope; it must not be exposed as a public
 customer content API. No sender phone number or SMS body is a separate database
 column. The Android local AES-GCM vault format is not a server upload format.
+Migration 029 adds account-scoped recipient suppression. The three opt action
+codes carry no plaintext. Their sender is the writer's E.164 recipient from
+the authenticated source attempt. START and UNSTOP produce code 7 only when
+the phone recognizes the entire trimmed reply; an older action or a reply
+from a different outbound-attempt window cannot clear a later opt-out.
+
+The Android Room journal also records a metadata-only local withdrawal for a
+recognized STOP or likely opt-out even when no outbound reply window matches.
+It stores keyed sender and PDU dedupe tokens, a stable local event UUID and
+independent durable sequence, the action, time and any observed subscription
+index; it keeps the local recipient block across restarts. The normalized
+sender is optionally stored as Keystore AES-GCM ciphertext with AAD bound to
+the dedupe token. If sealing fails, the block still persists and the action
+has no recoverable sender for later upload. Pre-migration actions likewise have
+no recoverable sender or sequence. A
+verified line ID and binding generation are attached only if a separately
+authenticated activation has been installed and the incoming subscription is
+the sole active subscription at capture time. The app currently has no
+activation route or unsolicited-action upload frame, so these rows stay local.
+An unattributed STOP still blocks local sends. START never clears that block;
+the existing reply-window START acknowledgement does not prove the source
+line or binding generation. Android subscription indexes may be reused after
+a SIM swap, so a matching index alone is not proof of the physical line.
 
 Migration 007 follows metering migration 006 and adds `inbound_events`,
 `webhook_endpoints`, `webhook_deliveries`, and `webhook_attempts`. Endpoint rows
@@ -58,9 +82,11 @@ context. It rejects cross-tenant moves, version mismatch and tampering.
 source. The same key pair can mount owner endpoint management while delivery
 remains off. A missing or malformed key fails startup if delivery is enabled;
 an incomplete key pair always fails startup. Do not put the KEK or
-endpoint signing secrets in source, images or SQL. This worker accepts one
-key version at a time; pause delivery and reseal existing endpoint secrets
-before a version change. Automated rotation is not implemented.
+endpoint signing secrets in source, images or SQL. The worker can read an
+active and a secondary KEK version during an online, two-site rewrap. Follow
+the [coordinated rotation procedure](../../docs/WEBHOOK-KEK-ROTATION.md)
+before changing either site's active key; do not remove the old secondary key
+until both sites and in-flight deliveries have drained.
 
 The JSON body has a stable `event_id`, delivery/account/device/message/attempt
 IDs, classification, timestamp, part count, content kind, base64 opaque

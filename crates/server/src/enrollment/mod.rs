@@ -142,7 +142,7 @@ fn parse_public_key(spki_der: &[u8]) -> Result<(VerifyingKey, Vec<u8>, [u8; 32])
     // Android's PublicKey.getEncoded() is X.509 SubjectPublicKeyInfo DER.
     let key =
         VerifyingKey::from_public_key_der(spki_der).map_err(|_| EnrollmentError::InvalidInput)?;
-    let sec1 = key.to_encoded_point(false).as_bytes().to_vec();
+    let sec1 = key.to_sec1_point(false).as_bytes().to_vec();
     if sec1.len() != 65 {
         return Err(EnrollmentError::InvalidInput);
     }
@@ -725,12 +725,13 @@ mod tests {
     use crate::auth::{TokenHasher, authenticate_session, login, register, verify_email};
     use crate::billing::{self, SubscriptionSnapshot};
     use p256::ecdsa::{SigningKey, signature::Signer};
-    use p256::elliptic_curve::rand_core::OsRng;
+    use p256::elliptic_curve::Generate;
     use p256::pkcs8::EncodePublicKey;
+    use rand::rng;
 
     #[test]
     fn p256_android_spki_and_der_signature_round_trip() {
-        let signing_key = SigningKey::random(&mut OsRng);
+        let signing_key = SigningKey::generate_from_rng(&mut rng());
         let spki = signing_key.verifying_key().to_public_key_der().unwrap();
         let (_, sec1, fingerprint) = parse_public_key(spki.as_bytes()).unwrap();
         let bytes = enrollment_challenge_bytes(
@@ -755,10 +756,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn postgres_one_use_tenant_replay_expiry_and_revocation() {
-        let Ok(url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
-            return;
-        };
+        let url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
         let (mut client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
             .await
             .unwrap();
@@ -791,6 +792,8 @@ mod tests {
                 "../../../../deploy/compose/migrations/020_enrollment_retention_indexes.sql"
             ),
             include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+            include_str!("../../../../deploy/compose/migrations/027_billing_test_config.sql"),
+            include_str!("../../../../deploy/compose/migrations/028_billing_provider_failures.sql"),
         ] {
             client.batch_execute(sql).await.unwrap();
         }
@@ -840,7 +843,7 @@ mod tests {
         let pb = authenticate_session(&client, &auth_hasher, &sb.token)
             .await
             .unwrap();
-        let signing = SigningKey::random(&mut OsRng);
+        let signing = SigningKey::generate_from_rng(&mut rng());
         let spki = signing.verifying_key().to_public_key_der().unwrap();
 
         let expired = create_pairing(&client, &hasher, &pa, "Expired")
@@ -872,7 +875,7 @@ mod tests {
             claim_pairing(&mut client, &hasher, bad.id, &bad.token, spki.as_bytes()).await,
             Err(EnrollmentError::Unavailable)
         ));
-        let other_signing = SigningKey::random(&mut OsRng);
+        let other_signing = SigningKey::generate_from_rng(&mut rng());
         let (_, _, bad_fingerprint) = parse_public_key(spki.as_bytes()).unwrap();
         let bad_payload = enrollment_challenge_bytes(
             a.account_id,
@@ -1168,7 +1171,7 @@ mod tests {
         hasher: &EnrollmentHasher,
         principal: &SessionPrincipal,
     ) -> (Uuid, String, String, SigningKey) {
-        let signing = SigningKey::random(&mut OsRng);
+        let signing = SigningKey::generate_from_rng(&mut rng());
         let spki = signing.verifying_key().to_public_key_der().unwrap();
         let ticket = create_pairing(db, hasher, principal, "Virtual phone")
             .await
@@ -1203,10 +1206,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn postgres_device_cap_downgrade_grandfathers_and_serializes_approval() {
-        let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
-            return;
-        };
+        let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
         let (setup, connection) = tokio_postgres::connect(&base_url, tokio_postgres::NoTls)
             .await
             .unwrap();
@@ -1243,6 +1246,8 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
             include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
             include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+            include_str!("../../../../deploy/compose/migrations/027_billing_test_config.sql"),
+            include_str!("../../../../deploy/compose/migrations/028_billing_provider_failures.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }
@@ -1261,7 +1266,7 @@ mod tests {
         let principal = authenticate_session(&db, &auth_hasher, &session.token)
             .await
             .unwrap();
-        billing::reset_test_quotas_on_start(&scoped_url, true, true)
+        billing::reset_test_quotas_on_start(&scoped_url, true, true, Some(&[1; 32]))
             .await
             .unwrap();
         let initial = proven_pairing(&mut db, &enrollment_hasher, &principal).await;
@@ -1558,7 +1563,7 @@ mod tests {
         .await
         .unwrap();
         assert!(
-            billing::reset_test_quotas_on_start(&scoped_url, true, false)
+            billing::reset_test_quotas_on_start(&scoped_url, true, false, Some(&[1; 32]))
                 .await
                 .is_err()
         );

@@ -23,12 +23,22 @@ code { font-size: .9rem; }
 .check { display: flex; align-items: flex-start; gap: .5rem; }
 .check input { width: auto; margin-top: .35rem; }
 #device-list, #key-list, #message-list, #inbound-event-list, #webhook-delivery-list { padding: 0; list-style: none; }
+#session-list { padding: 0; list-style: none; }
+#session-list li { border-top: 1px solid #d7e0e3; padding: .8rem 0; display: flex; flex-direction: column; gap: .15rem; }
+#session-list span { color: #465c66; }
+.account-recovery { border-top: 1px solid #d7e0e3; padding-top: 1.2rem; margin-top: 1.2rem; }
+.account-recovery details { margin-top: 1rem; }
+.account-recovery summary { cursor: pointer; font-weight: 600; }
+.account-recovery details form { margin-top: 1rem; }
 #device-list li, #key-list li, #message-list > li, #inbound-event-list li, #webhook-delivery-list > li { border-top: 1px solid #d7e0e3; padding: .8rem 0; display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
 #inbound-event-list li, #webhook-delivery-list > li { align-items: flex-start; flex-direction: column; gap: .15rem; }
 #webhook-delivery-list ol { padding-left: 1.5rem; margin: .4rem 0 0; }
 #webhook-delivery-list ol li { margin: .25rem 0; }
 #webhook-delivery-list strong, #webhook-delivery-list span { overflow-wrap: anywhere; }
 #device-list code, #key-list code, #message-list code, #key-secret { display: block; overflow-wrap: anywhere; }
+#mfa-secret, #mfa-provisioning-uri, #recovery-codes code { display: block; overflow-wrap: anywhere; }
+#recovery-codes { padding-left: 1.5rem; }
+#recovery-codes li { overflow-wrap: anywhere; }
 #message-list details { margin-top: .4rem; }
 #message-list ol { padding-left: 1.5rem; }
 #message-list ol li { padding: .25rem 0; }
@@ -37,5 +47,5 @@ code { font-size: .9rem; }
 #key-secret-panel { border: 1px solid #8198a2; border-radius: .3rem; padding: .8rem; margin-bottom: 1rem; }
 #key-secret-panel button { margin-top: .8rem; }
 [hidden] { display: none !important; }
-@media (prefers-color-scheme: dark) { body { background: #0d171c; color: #e7f0f2; } section { background: #192a31; border-color: #425861; } .eyebrow, #message-list time { color: #adcad4; } input, select { background: #14232c; color: #e7f0f2; border-color: #879ea7; } button { background: #bde4ee; color: #102029; border-color: #bde4ee; } button.quiet { color: #bde4ee; } #device-list li, #key-list li, #message-list > li, #inbound-event-list li, #webhook-delivery-list > li { border-color: #425861; } }
+@media (prefers-color-scheme: dark) { body { background: #0d171c; color: #e7f0f2; } section { background: #192a31; border-color: #425861; } .eyebrow, #message-list time, #session-list span { color: #adcad4; } input, select { background: #14232c; color: #e7f0f2; border-color: #879ea7; } button { background: #bde4ee; color: #102029; border-color: #bde4ee; } button.quiet { color: #bde4ee; } #device-list li, #key-list li, #message-list > li, #inbound-event-list li, #webhook-delivery-list > li, #session-list li, .account-recovery { border-color: #425861; } }
 @media (max-width: 35rem) { dl { grid-template-columns: 1fr; } .section-head, #device-list li, #key-list li { align-items: flex-start; } }

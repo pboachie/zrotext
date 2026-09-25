@@ -54,7 +54,7 @@ async function fixture() {
   const records = [
     { role: 1, key: payload, device, line, scope: 4, state: 1 },
     { role: 2, key: archive, device: zero16, line: zero16, scope: 12, state: 1 },
-    { role: 5, key: signer, device: zero16, line: zero16, scope: 1, state: 1 },
+    { role: 5, key: signer, device: zero16, line, scope: 1, state: 1 },
     { role: 6, key: root, device: zero16, line: zero16, scope: 0, state: 1 },
   ];
   for (const record of records) record.keyId = await id(record.role, record.key.point);
@@ -109,7 +109,14 @@ test("pinned genesis, exact signed bytes, monotonic chain and authorized reader 
     wraps: [{ role: 1, keyId: f.records[0].keyId }, { role: 2, keyId: f.records[1].keyId }],
   };
   assert.doesNotThrow(() => authorizeOutbound02(second, claims, now));
-  assert.throws(() => authorizeOutbound02(second, { ...claims, lineId: device }, now), /selected device\/line/);
+  assert.throws(() => authorizeOutbound02(second, { ...claims, lineId: device }, now), /signer authority/);
+  const otherLine = Uint8Array.from(device);
+  const otherLineRecords = f.records.map((r) => r.role === 1 ? { ...r, line: otherLine } : r);
+  const otherLineManifest = await verifyManifest02(
+    await manifest(f, { records: otherLineRecords }), pin(f.root), now);
+  assert.throws(() => authorizeOutbound02(otherLineManifest, {
+    ...claims, lineId: otherLine, manifestDigest: otherLineManifest.digest, keysetVersion: 1n,
+  }, now), /signer authority/);
   assert.throws(() => authorizeOutbound02(second, { ...claims, signerKeyId: f.records[3].keyId }, now), /signer authority/);
   assert.throws(() => authorizeOutbound02(second, { ...claims, wraps: [...claims.wraps, claims.wraps[0]] }, now), /reader set/);
   assert.throws(() => authorizeOutbound02(second, { ...claims, wraps: claims.wraps.slice(0, 1) }, now), /reader set/);
@@ -184,9 +191,12 @@ test("rollback, same-version fork, chain gap and forged prior digest fail", asyn
 test("role, scope, subject, key-ID and point aliases are rejected even if owner signs", async () => {
   const f = await fixture();
   const checks = [
-    [{ ...f.records[2], role: 6, scope: 0, keyId: await id(6, f.signer.point) }, /owner root record/],
+    [{ ...f.records[2], role: 6, scope: 0, line: zero16,
+      keyId: await id(6, f.signer.point) }, /owner root record/],
     [{ ...f.records[0], scope: 1 }, /role\/scope/],
     [{ ...f.records[0], device: zero16 }, /role\/subject/],
+    [{ ...f.records[2], line: zero16 }, /role\/subject/],
+    [{ ...f.records[2], device }, /role\/subject/],
     [{ ...f.records[0], keyId: zero32 }, /key id/],
     [{ ...f.records[2], key: f.root, keyId: await id(5, f.root.point) }, /point reused/],
   ];

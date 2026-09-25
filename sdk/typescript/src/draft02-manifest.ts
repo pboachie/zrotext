@@ -122,7 +122,9 @@ function roleScope(role: number, scope: number, device: Uint8Array, line: Uint8A
   const valid = [0, 4, 12, 4, 2, 1, 0][role];
   if (role === 3 ? ![4, 8, 12].includes(scope) : scope !== valid) fail("role/scope");
   const deviceBound = role === 1 || role === 4;
-  if (deviceBound ? same(device, zero16) || same(line, zero16) : !same(device, zero16) || !same(line, zero16)) fail("role/subject");
+  const lineBound = deviceBound || role === 5;
+  if (deviceBound ? same(device, zero16) : !same(device, zero16)) fail("role/subject");
+  if (lineBound ? same(line, zero16) : !same(line, zero16)) fail("role/subject");
 }
 function timeWindow(issued: bigint, expires: bigint, now: bigint): void {
   if (issued <= 0n || expires <= issued || expires - issued > dayMs) fail("signed validity window");
@@ -254,7 +256,8 @@ export function authorizeOutbound02(manifest: Manifest02, claims: {
       claims.keysetVersion !== bound.version || nowMs >= bound.expiresMs) fail("envelope manifest binding");
   const active = (key: ManifestKey02): boolean => key.state === 1 && key.fromMs <= nowMs && nowMs < key.untilMs;
   const signer = bound.keys.find((key) => key.role === 5 && same(key.keyId, claims.signerKeyId));
-  if (!signer || !active(signer) || signer.scope !== 1) fail("outbound signer authority");
+  if (!signer || !active(signer) || signer.scope !== 1 ||
+      !same(signer.lineId, claims.lineId)) fail("outbound signer authority");
   let deviceCount = 0;
   let archiveCount = 0;
   let integrationCount = 0;
@@ -270,4 +273,44 @@ export function authorizeOutbound02(manifest: Manifest02, claims: {
   }
   if (deviceCount !== 1 || archiveCount !== 1 || integrationCount > 6 ||
       new Set(claims.wraps.map((w) => `${w.role}:${Array.from(w.keyId).join(",")}`)).size !== claims.wraps.length) fail("reader set");
+}
+
+/**
+ * Test-only inbound role check after exact profile-02 envelope signature verification.
+ * This does not verify a phone's SMS observation, durable sequence/replay state,
+ * live line binding, or the accepted inbound age window.
+ */
+export function authorizeInbound02(manifest: Manifest02, claims: {
+  kind: 2; accountId: Uint8Array; deviceId: Uint8Array; lineId: Uint8Array;
+  messageId: Uint8Array; eventId: Uint8Array; localSequence: bigint;
+  manifestDigest: Uint8Array; keysetVersion: bigint; signerKeyId: Uint8Array;
+  wraps: readonly { role: number; keyId: Uint8Array }[];
+}, nowMs: bigint): void {
+  const bound = verifiedSnapshots.get(manifest)?.authority;
+  if (!bound) fail("authorization requires a just-verified manifest");
+  timeWindow(bound.issuedMs, bound.expiresMs, nowMs);
+  if (!same(claims.accountId, bound.accountId) || !same(claims.manifestDigest, bound.digest) ||
+      claims.keysetVersion !== bound.version) fail("envelope manifest binding");
+  if (claims.kind !== 2 || claims.messageId.length !== 16 || claims.eventId.length !== 16 ||
+      !same(claims.messageId, claims.eventId) ||
+      claims.localSequence < 1n || claims.localSequence > maxSigned) fail("inbound identity/sequence");
+  const active = (key: ManifestKey02): boolean => key.state === 1 && key.fromMs <= nowMs && nowMs < key.untilMs;
+  const signer = bound.keys.find((key) => key.role === 4 && same(key.keyId, claims.signerKeyId));
+  if (!signer || !active(signer) || signer.scope !== 2 ||
+      !same(signer.deviceId, claims.deviceId) || !same(signer.lineId, claims.lineId)) {
+    fail("inbound signer authority");
+  }
+  let archiveCount = 0;
+  let integrationCount = 0;
+  for (const wrap of claims.wraps) {
+    const key = bound.keys.find((candidate) => candidate.role === wrap.role && same(candidate.keyId, wrap.keyId));
+    if (!key || !active(key) || !(key.scope & 8)) fail("inbound reader authority");
+    if (wrap.role === 2) archiveCount++;
+    else if (wrap.role === 3) integrationCount++;
+    else fail("inbound reader role");
+  }
+  if (archiveCount !== 1 || integrationCount > 6 ||
+      new Set(claims.wraps.map((w) => `${w.role}:${Array.from(w.keyId).join(",")}`)).size !== claims.wraps.length) {
+    fail("inbound reader set");
+  }
 }

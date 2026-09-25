@@ -24,6 +24,7 @@
         <button type="submit">Sign in</button>
       </form>
       <p id="login-status" role="status" aria-live="polite"></p>
+      <p>Need to register or verify your email? <a href="/owner/account">Open account setup</a>.</p>
       <form id="mfa-form" method="post" action="/v1/auth/login/mfa" hidden>
         <p>Enter a code from your authenticator, or one unused recovery code.</p>
         <label for="mfa-code">Authenticator or recovery code</label>
@@ -34,9 +35,62 @@
         </div>
       </form>
       <p id="mfa-status" role="status" aria-live="polite"></p>
+      <div class="account-recovery">
+        <h3>Forgot your password?</h3>
+        <p>Request a one-hour reset code for your owner account. We will send instructions if that address is registered.</p>
+        <form id="reset-request-form" method="post" action="/v1/auth/password/reset/request">
+          <label for="reset-email">Account email</label>
+          <input id="reset-email" name="email" type="email" autocomplete="username" required>
+          <button id="reset-request-submit" type="submit">Send reset instructions</button>
+        </form>
+        <p id="reset-request-status" role="status" aria-live="polite"></p>
+        <details>
+          <summary>Enter a reset token</summary>
+          <form id="reset-confirm-form" method="post" action="/v1/auth/password/reset/confirm">
+            <label for="reset-token">Reset token</label>
+            <input id="reset-token" name="token" autocomplete="off" spellcheck="false" required>
+            <label for="reset-new-password">New password</label>
+            <input id="reset-new-password" name="new_password" type="password" autocomplete="new-password" minlength="12" required>
+            <label for="reset-confirm-password">Confirm new password</label>
+            <input id="reset-confirm-password" type="password" autocomplete="new-password" minlength="12" required>
+            <button id="reset-confirm-submit" type="submit">Reset password</button>
+          </form>
+          <p id="reset-confirm-status" role="status" aria-live="polite"></p>
+        </details>
+        <noscript><p>JavaScript is required to submit password reset requests securely.</p></noscript>
+      </div>
     </section>
 
     <div id="owner-content" hidden>
+      <section aria-labelledby="account-security-title">
+        <h2 id="account-security-title">Account security</h2>
+        <p>Manage your authenticator and recovery codes on the <a href="/owner/account">account setup page</a>.</p>
+        <h3>Change password</h3>
+        <p>Changing or resetting your password signs out every session and revokes your API keys. Sign in again and reissue keys used by integrations.</p>
+        <form id="change-password-form" method="post" action="/v1/auth/password">
+          <label for="current-password">Current password</label>
+          <input id="current-password" name="current_password" type="password" autocomplete="current-password" required>
+          <label for="new-password">New password</label>
+          <input id="new-password" name="new_password" type="password" autocomplete="new-password" minlength="12" required>
+          <label for="confirm-new-password">Confirm new password</label>
+          <input id="confirm-new-password" type="password" autocomplete="new-password" minlength="12" required>
+          <label for="password-mfa-code">Authenticator or recovery code, if enabled</label>
+          <input id="password-mfa-code" name="code" autocomplete="one-time-code" maxlength="64" spellcheck="false">
+          <button id="change-password-submit" type="submit">Change password</button>
+        </form>
+        <p id="change-password-status" role="status" aria-live="polite"></p>
+        <div class="section-head"><h3>Active sessions</h3><button id="refresh-sessions" type="button" class="quiet">Refresh</button></div>
+        <p>Review up to 50 active sessions. Revoking other sessions keeps this one active.</p>
+        <p id="session-status" role="status" aria-live="polite"></p>
+        <ul id="session-list"></ul>
+        <form id="revoke-other-sessions-form" hidden>
+          <label for="revoke-sessions-password">Confirm your password to sign out other sessions</label>
+          <input id="revoke-sessions-password" type="password" autocomplete="current-password" required>
+          <label for="revoke-sessions-mfa-code">Authenticator or recovery code, if enabled</label>
+          <input id="revoke-sessions-mfa-code" autocomplete="one-time-code" maxlength="64" spellcheck="false">
+          <button id="revoke-other-sessions" type="submit" class="quiet">Sign out other sessions</button>
+        </form>
+      </section>
       <section aria-labelledby="pair-title">
         <h2 id="pair-title">Pair a phone</h2>
         <p>Create a five-minute, one-use ticket. Enter the server origin, ID and token in the gateway app. The token is shown only now and stays on this page until you finish or leave.</p>

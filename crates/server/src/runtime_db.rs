@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 use tokio::{sync::Semaphore, time::timeout};
-use tokio_postgres::{Client, NoTls};
+use tokio_postgres::Client;
 
 // Two default hubs use at most 72 connections, leaving room on a default
 // 100-connection PostgreSQL server for migrations, inspection and recovery.
@@ -47,6 +47,8 @@ pub enum ConnectError {
     Timeout,
     #[error("database connection unavailable")]
     Database(#[from] tokio_postgres::Error),
+    #[error("database transport unavailable: {0}")]
+    Transport(#[from] zrotext_postgres_connection::ConnectError),
 }
 
 pub async fn connect(
@@ -123,9 +125,12 @@ async fn connect_with_wait(
     // Preserve operator search_path options, but enforce deadlines last. These
     // start with the session and also apply after an HTTP future is cancelled.
     config.options(format!("{} -c statement_timeout=10000 -c lock_timeout=3000 -c idle_in_transaction_session_timeout=15000", config.get_options().unwrap_or_default()));
-    let (client, connection) = timeout(Duration::from_secs(3), config.connect(NoTls))
-        .await
-        .map_err(|_| ConnectError::Timeout)??;
+    let (client, connection) = timeout(
+        Duration::from_secs(3),
+        zrotext_postgres_connection::connect_config(config),
+    )
+    .await
+    .map_err(|_| ConnectError::Timeout)??;
     Ok((client, async move {
         // A dropped request/client need not mean its query has stopped. Keep
         // the permit until the PostgreSQL driver actually releases the socket.
@@ -146,10 +151,10 @@ mod tests {
         ));
     }
     #[tokio::test]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn cancelled_query_retains_capacity_until_driver_stops() {
-        let Ok(url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
-            return;
-        };
+        let url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
         let slots = Arc::new(Semaphore::new(1));
         let (client, connection) = connect_with(&url, slots.clone()).await.unwrap();
         let driver = tokio::spawn(connection);
@@ -214,5 +219,25 @@ mod tests {
             Err(ConnectError::Database(_))
         ));
         drop(devices);
+    }
+
+    #[tokio::test]
+    async fn tls_runtime_connection_is_encrypted() {
+        let Ok(url) = std::env::var("ZT_POSTGRES_TLS_TEST_DATABASE_URL") else {
+            return;
+        };
+        let (client, connection) = connect(&url).await.unwrap();
+        let driver = tokio::spawn(connection);
+        let encrypted: bool = client
+            .query_one(
+                "SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert!(encrypted);
+        drop(client);
+        driver.await.unwrap().unwrap();
     }
 }

@@ -12,8 +12,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build server image for vulnerability scan
         run: docker build -f deploy/compose/Dockerfile -t zrotext-ci-scan:local .
+      - name: Assert billing operator command is bundled
+        run: docker run --rm --entrypoint /bin/sh zrotext-ci-scan:local -c 'test -x /usr/local/bin/zrotext-billing-risk-review'
       - name: Scan server image for critical fixable vulnerabilities
-        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: zrotext-ci-scan:local
           format: json
@@ -61,6 +63,8 @@ jobs:
           /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_device_stream_schema.py'
       - name: Shared draft vector shape tests
         run: python3 -m unittest discover -s protocol/v1/tests -p 'test_ztse_draft_vectors.py'
+      - name: Sealed draft field-layout tests
+        run: python3 -m unittest discover -s protocol/v1/tests -p 'test_zt_sealed_draft_shape.py'
       - name: JavaScript syntax
         run: node --check web/owner/devices.js
       - name: Commit sign-off
@@ -69,9 +73,13 @@ jobs:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_CREATED_AT: ${{ github.event.pull_request.created_at }}
+          PR_AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_BASE_REPO: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: python3 scripts/check_dco.py
       - name: Spelling
-        uses: crate-ci/typos@5e183518f8764162ed2841339af896246fccbcfd # v1.49.0
+        uses: crate-ci/typos@8a48f81b6c64dcfea44b3633223084c4be58ac5f # v1.49.0
   rust:
     runs-on: ubuntu-24.04
     services:
@@ -100,8 +108,10 @@ jobs:
         run: cargo fmt --all --check
       - name: Lint
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
-      - name: Test
+      - name: Test without PostgreSQL-backed and live Stripe tests
         run: cargo test --locked --workspace
+      - name: Test against PostgreSQL
+        run: cargo test --locked --workspace -- --ignored --skip real_stripe_ --test-threads=4
       - name: Owner UI checks
         run: |
           node --check web/owner/devices.js
@@ -112,12 +122,19 @@ jobs:
         run: |
           cargo run --locked -p zrotext-migrator
           cargo run --locked -p zrotext-migrator
+      - name: Verify PostgreSQL TLS and certificate failures
+        run: |
+          python3 -m venv /tmp/zrotext-postgres-tls-venv
+          /tmp/zrotext-postgres-tls-venv/bin/pip install --disable-pip-version-check cryptography==46.0.4
+          /tmp/zrotext-postgres-tls-venv/bin/python scripts/test_postgres_tls.py
       - name: Simulator timeline
         run: cargo run --locked -p zrotext-device-sim
   android:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate Gradle wrapper JAR
+        uses: gradle/actions/wrapper-validation@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
       - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
           distribution: temurin

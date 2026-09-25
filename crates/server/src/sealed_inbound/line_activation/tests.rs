@@ -5,8 +5,9 @@ use crate::{
 };
 use p256::{
     ecdsa::{Signature, SigningKey, signature::Signer},
-    elliptic_curve::rand_core::OsRng,
+    elliptic_curve::Generate,
 };
+use rand::rng;
 use tokio::time::{Duration, sleep};
 use tokio_postgres::NoTls;
 
@@ -134,9 +135,9 @@ fn transcript_is_role_separated_and_rejects_ambiguous_or_old_android() {
         ),
         Err(LineActivationError::InvalidInput)
     ));
-    let key = SigningKey::random(&mut OsRng);
+    let key = SigningKey::generate_from_rng(&mut rng());
     let signed: Signature = key.sign(&good);
-    let sec1 = key.verifying_key().to_encoded_point(false);
+    let sec1 = key.verifying_key().to_sec1_point(false);
     assert!(verify_der(
         sec1.as_bytes(),
         &good,
@@ -157,11 +158,10 @@ fn transcript_is_role_separated_and_rejects_ambiguous_or_old_android() {
 }
 
 #[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn migration_preserves_pending_generation_high_water_mark() {
-    let Ok(url) = std::env::var("ZT_INBOUND_TEST_DATABASE_URL") else {
-        eprintln!("set ZT_INBOUND_TEST_DATABASE_URL for line activation database test");
-        return;
-    };
+    let url = std::env::var("ZT_INBOUND_TEST_DATABASE_URL")
+        .expect("set ZT_INBOUND_TEST_DATABASE_URL for PostgreSQL-backed tests");
     let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
     let schema = format!("line_upgrade_{}", Uuid::new_v4().simple());
@@ -242,8 +242,8 @@ async fn migration_preserves_pending_generation_high_water_mark() {
     )
     .await
     .unwrap();
-    let owner_key = SigningKey::random(&mut OsRng);
-    let owner_sec1 = owner_key.verifying_key().to_encoded_point(false);
+    let owner_key = SigningKey::generate_from_rng(&mut rng());
+    let owner_sec1 = owner_key.verifying_key().to_sec1_point(false);
     db.execute(
         "INSERT INTO line_owner_approval_keys(account_id,fingerprint,signing_key_sec1)
          VALUES($1,$2,$3)",
@@ -255,8 +255,8 @@ async fn migration_preserves_pending_generation_high_water_mark() {
     )
     .await
     .unwrap();
-    let replacement_key = SigningKey::random(&mut OsRng);
-    let replacement_sec1 = replacement_key.verifying_key().to_encoded_point(false);
+    let replacement_key = SigningKey::generate_from_rng(&mut rng());
+    let replacement_sec1 = replacement_key.verifying_key().to_sec1_point(false);
     db.execute(
         "INSERT INTO device_keys(device_id,account_id,signing_key_sec1,fingerprint)
          VALUES($1,$2,$3,$4)",
@@ -291,11 +291,10 @@ async fn migration_preserves_pending_generation_high_water_mark() {
 }
 
 #[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn signed_activation_fences_owner_device_generation_and_replay() {
-    let Ok(url) = std::env::var("ZT_INBOUND_TEST_DATABASE_URL") else {
-        eprintln!("set ZT_INBOUND_TEST_DATABASE_URL for line activation database test");
-        return;
-    };
+    let url = std::env::var("ZT_INBOUND_TEST_DATABASE_URL")
+        .expect("set ZT_INBOUND_TEST_DATABASE_URL for PostgreSQL-backed tests");
     let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
     let schema = format!("line_activation_{}", Uuid::new_v4().simple());
@@ -349,11 +348,11 @@ async fn signed_activation_fences_owner_device_generation_and_replay() {
         .unwrap();
     let device = Uuid::new_v4();
     let line = Uuid::new_v4();
-    let device_key = SigningKey::random(&mut OsRng);
-    let owner_key = SigningKey::random(&mut OsRng);
-    let other_key = SigningKey::random(&mut OsRng);
-    let device_sec1 = device_key.verifying_key().to_encoded_point(false);
-    let owner_sec1 = owner_key.verifying_key().to_encoded_point(false);
+    let device_key = SigningKey::generate_from_rng(&mut rng());
+    let owner_key = SigningKey::generate_from_rng(&mut rng());
+    let other_key = SigningKey::generate_from_rng(&mut rng());
+    let device_sec1 = device_key.verifying_key().to_sec1_point(false);
+    let owner_sec1 = owner_key.verifying_key().to_sec1_point(false);
     db.execute(
         "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'virtual line device')",
         &[&device, &owner.account_id],
@@ -700,8 +699,8 @@ async fn signed_activation_fences_owner_device_generation_and_replay() {
     assert_eq!(line_row.get::<_, i64>(1), 3);
 
     let replacement = Uuid::new_v4();
-    let replacement_key = SigningKey::random(&mut OsRng);
-    let replacement_sec1 = replacement_key.verifying_key().to_encoded_point(false);
+    let replacement_key = SigningKey::generate_from_rng(&mut rng());
+    let replacement_sec1 = replacement_key.verifying_key().to_sec1_point(false);
     db.execute(
         "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'replacement line device')",
         &[&replacement, &owner.account_id],

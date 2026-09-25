@@ -28,7 +28,7 @@ The architecture describes intended behavior. Check the current code and release
 
 ## Sending responsibly
 
-Only send messages to recipients for whom you have an appropriate basis to send that type of SMS. Keep consent records, honor withdrawal and opt-out requests, and check the rules for your recipients' locations and your carrier or mobile plan. The current send path is a restricted synthetic pilot; ZROtext does not yet provide automatic STOP/START handling or a suppression list. Do not use it for general or bulk sending. See [SMS compliance and current limits](docs/SMS-COMPLIANCE.md).
+Only send messages to recipients for whom you have an appropriate basis to send that type of SMS. Keep consent records, honor withdrawal and opt-out requests, and check the rules for your recipients' locations and your carrier or mobile plan. The restricted synthetic pilot now suppresses recognized opt-out replies within its authenticated inbound window and blocks suppressed recipients at acceptance. It still lacks general unsolicited-reply capture and an owner review workflow, so do not use it for general or bulk sending. See [SMS compliance and current limits](docs/SMS-COMPLIANCE.md).
 
 ## Roadmap
 
@@ -54,6 +54,8 @@ curl http://127.0.0.1:8080/readyz
 ```
 
 The stack runs database migrations before the API starts. Dispatch is disabled by default. To run a second local API instance against the same PostgreSQL writer, add `--profile two-hub` before `up`; it listens on `127.0.0.1:8081`. See the [Compose guide](deploy/compose/README.md) for migration and volume details.
+
+To create the first owner, follow the [local bootstrap steps](docs/SELF-HOSTING.md#owner-registration). Later invited owners can register and verify their email at `/owner/account` on the configured HTTPS origin; MFA management is on the same page after sign-in.
 
 ## Documentation
 

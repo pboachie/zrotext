@@ -11,7 +11,7 @@ and the session's double-submit CSRF cookie/header. Responses use
 | Route | Result |
 | --- | --- |
 | `POST /v1/webhooks` with `{"callback_url":"https://..."}` | Creates a disabled endpoint. Returns its ID, URL, `enabled:false`, and `signing_secret_b64url` once. |
-| `GET /v1/webhooks` | Lists this account's IDs, URLs, enabled states, and creation times. Never includes signing secrets or encrypted secret bytes. |
+| `GET /v1/webhooks` | Lists this account's IDs, URLs, enabled states, nullable `paused_at_ms` and `failure_started_at_ms`, and creation times. Never includes signing secrets or encrypted secret bytes. |
 | `GET /v1/webhooks/{id}/deliveries` | Pages recent delivery and attempt metadata for this account's endpoint. No payload, callback URL, signing secret, response body, recipient, or inbound content is returned. |
 | `POST /v1/webhooks/{id}/deliveries/{delivery_id}/replay` | With a caller-generated UUIDv4 `Idempotency-Key`, queues one new bounded generation of an exhausted failed delivery. Returns HTTP 202 with `delivery_id`, `generation`, and `created`. |
 | `POST /v1/webhooks/{id}/enable` | Revalidates the HTTPS URL and decryptability of its secret, then enables future inbound fan-out. |
@@ -24,6 +24,13 @@ verification. Only an AES-256-GCM ciphertext, bound to account/endpoint/key
 version by authenticated context, is stored. There is no secret retrieval
 route. Losing the response requires rotation. The limit is eight endpoints per
 account, including disabled endpoints.
+
+An endpoint with transport failures spanning 72 hours is paused automatically.
+Pending deliveries remain queued, and the sender skips the endpoint while
+`paused_at_ms` is non-null. The owner list exposes the pause and the start of
+the failure streak. `POST /enable` clears both fields and resumes due delivery;
+a successful acknowledgment also clears a failure streak. Disabling and
+rotating retain their permanent retirement behavior.
 
 History accepts optional `limit` (1–20; default 20) and `before` (the
 `delivery_id` returned on the preceding page). The response has `deliveries`

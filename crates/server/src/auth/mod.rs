@@ -22,8 +22,11 @@ const VERIFICATION_HOURS: i32 = 24;
 /// Bounded batch for the periodic removal of expired unverified owners.
 const PENDING_PRUNE_BATCH: i64 = 100;
 const MAX_EMAIL_BYTES: usize = 254;
+/// Serialize operator bootstrap and HTTP registration across API processes.
+const REGISTRATION_ADVISORY_LOCK: i64 = 0x5a54524547495354;
 
 pub mod abuse_limits;
+pub mod account;
 pub mod mfa;
 mod password_work;
 mod verification_outbox;
@@ -308,6 +311,12 @@ pub async fn register(
     let verification_token = verification_token_for_id(hasher, verification_id);
     let token_hash = hasher.digest(b"email-verification-v1", &verification_token);
     let mut transaction = client.transaction().await?;
+    transaction
+        .query_one(
+            "SELECT pg_advisory_xact_lock($1::bigint)",
+            &[&REGISTRATION_ADVISORY_LOCK],
+        )
+        .await?;
     // An unverified owner whose pending window has elapsed no longer holds the
     // address. Its row lock serializes concurrent sign-ups: a waiter re-reads
     // the deleted row, skips it, and then meets the unique email constraint.
@@ -353,6 +362,55 @@ pub async fn register(
         user_id,
         verification_token,
     })
+}
+
+/// Local operator-only bootstrap. A verified owner is created exactly once on
+/// an empty database, without an HTTP registration request or verification
+/// email. Hold the same cross-process lock as HTTP registration while checking
+/// emptiness and inserting all three rows.
+pub async fn bootstrap_owner(
+    client: &mut Client,
+    email: &str,
+    password: &str,
+) -> Result<bool, AuthError> {
+    if !(12..=1024).contains(&password.len()) {
+        return Err(AuthError::InvalidInput);
+    }
+    let email = normalize_email(email)?;
+    let password_hash = password_work::hash(password).await?;
+    let account_id = Uuid::new_v4();
+    let user_id = Uuid::new_v4();
+    let transaction = client.transaction().await?;
+    transaction
+        .query_one(
+            "SELECT pg_advisory_xact_lock($1::bigint)",
+            &[&REGISTRATION_ADVISORY_LOCK],
+        )
+        .await?;
+    let occupied: bool = transaction
+        .query_one("SELECT EXISTS(SELECT 1 FROM accounts)", &[])
+        .await?
+        .get(0);
+    if occupied {
+        return Ok(false);
+    }
+    transaction
+        .execute("INSERT INTO accounts(id) VALUES($1)", &[&account_id])
+        .await?;
+    transaction
+        .execute(
+            "INSERT INTO users(id,email,password_hash,email_verified_at) VALUES($1,$2,$3,now())",
+            &[&user_id, &email, &password_hash],
+        )
+        .await?;
+    transaction
+        .execute(
+            "INSERT INTO memberships(account_id,user_id,role) VALUES($1,$2,'owner')",
+            &[&account_id, &user_id],
+        )
+        .await?;
+    transaction.commit().await?;
+    Ok(true)
 }
 
 /// Removes one locked, expired, unverified owner together with its membership,
@@ -506,7 +564,7 @@ pub async fn login(
         )
         .await?;
     let stored = row.as_ref().map(|row| row.get::<_, String>(2));
-    password_work::verify(password, stored).await?;
+    password_work::verify(password, stored.clone()).await?;
     // Even a password matching the dummy verifier cannot authenticate.
     let row = row.ok_or(AuthError::InvalidCredentials)?;
     let user_id: Uuid = row.get(0);
@@ -527,15 +585,29 @@ pub async fn login(
     let id = Uuid::new_v4();
     let inserted = client
         .execute(
-            "INSERT INTO sessions(id,account_id,user_id,token_hash,csrf_hash,expires_at) SELECT $1,$2,$3,$4,$5,now()+($6::integer * interval '1 day') FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE u.id=$3 AND m.account_id=$2 AND NOT u.mfa_enabled AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL FOR UPDATE OF u",
-            &[&id, &account_id, &user_id, &&token_hash[..], &&csrf_hash[..], &SESSION_DAYS],
+            "INSERT INTO sessions(id,account_id,user_id,token_hash,csrf_hash,expires_at) SELECT $1,$2,$3,$4,$5,now()+($6::integer * interval '1 day') FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE u.id=$3 AND m.account_id=$2 AND u.password_hash=$7 AND NOT u.mfa_enabled AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL FOR UPDATE OF u",
+            &[&id, &account_id, &user_id, &&token_hash[..], &&csrf_hash[..], &SESSION_DAYS, &stored],
         )
         .await?;
     if inserted != 1 {
-        return Err(AuthError::MfaRequired {
-            account_id,
-            user_id,
-        });
+        let current = client
+            .query_opt(
+                "SELECT u.password_hash,u.mfa_enabled FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE u.id=$1 AND m.account_id=$2 AND a.disabled_at IS NULL",
+                &[&user_id, &account_id],
+            )
+            .await?
+            .ok_or(AuthError::InvalidCredentials)?;
+        if Some(current.get::<_, String>(0)) != stored {
+            return Err(AuthError::InvalidCredentials);
+        }
+        return if current.get::<_, bool>(1) {
+            Err(AuthError::MfaRequired {
+                account_id,
+                user_id,
+            })
+        } else {
+            Err(AuthError::InvalidCredentials)
+        };
     }
     Ok(SessionCredentials {
         id,
@@ -562,8 +634,15 @@ pub async fn authenticate_session(
         .ok_or(AuthError::Unauthorized)?;
     let csrf: Vec<u8> = row.get(3);
     let csrf_hash: [u8; 32] = csrf.try_into().map_err(|_| AuthError::Unauthorized)?;
+    // Coarse activity metadata for the owner's session inventory. The guard
+    // avoids a row rewrite on every authenticated request.
+    let session_id: Uuid = row.get(0);
+    client.execute(
+        "UPDATE sessions SET last_used_at=now() WHERE id=$1 AND revoked_at IS NULL AND (last_used_at IS NULL OR last_used_at<now()-interval '15 minutes')",
+        &[&session_id],
+    ).await?;
     Ok(SessionPrincipal {
-        session_id: row.get(0),
+        session_id,
         tenant: Tenant {
             account_id: row.get(1),
         },
@@ -587,7 +666,7 @@ pub async fn revoke_session(
 }
 
 pub async fn create_api_key(
-    client: &Client,
+    client: &mut Client,
     hasher: &TokenHasher,
     principal: &SessionPrincipal,
     scopes: &[Scope],
@@ -611,7 +690,17 @@ pub async fn create_api_key(
     let public_prefix = token.chars().skip(4).take(12).collect::<String>();
     let hash = hasher.digest(b"api-key-v1", &token);
     let id = Uuid::new_v4();
-    let inserted = client
+    // Recovery locks this same user row before revoking keys and sessions.
+    // The lock closes the race where a pre-reset session mints a key after
+    // recovery has already revoked the keys it could see.
+    let tx = client.transaction().await?;
+    tx.query_opt(
+        "SELECT u.id FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE u.id=$1 AND m.account_id=$2 AND a.disabled_at IS NULL FOR UPDATE OF u",
+        &[&principal.user_id, &principal.tenant.account_id()],
+    )
+    .await?
+    .ok_or(AuthError::Unauthorized)?;
+    let inserted = tx
         .execute(
             "INSERT INTO api_keys(id,account_id,created_by_user_id,public_prefix,token_hash,scopes,bound_device_id,expires_at) SELECT $1,$2,$3,$4,$5,$6,$7,CASE WHEN $8::integer IS NULL THEN NULL ELSE now()+($8::integer * interval '1 day') END FROM sessions s WHERE s.id=$9 AND s.account_id=$2 AND s.user_id=$3 AND s.revoked_at IS NULL AND s.expires_at>now()",
             &[&id, &principal.tenant.account_id, &principal.user_id, &public_prefix, &&hash[..], &scope_names, &bound_device_id, &lifetime_days, &principal.session_id],
@@ -620,6 +709,7 @@ pub async fn create_api_key(
     if inserted != 1 {
         return Err(AuthError::Unauthorized);
     }
+    tx.commit().await?;
     Ok(ApiKeyCredentials {
         id,
         token,
@@ -797,6 +887,87 @@ pub fn session_cookies(credentials: &SessionCredentials) -> [String; 2] {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn postgres_operator_bootstrap_creates_one_verified_owner_under_concurrency() {
+        let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
+            return;
+        };
+        let (setup, connection) = tokio_postgres::connect(&base_url, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let schema = format!("bootstrap_test_{}", Uuid::new_v4().simple());
+        setup
+            .batch_execute(&format!("CREATE SCHEMA {schema}"))
+            .await
+            .unwrap();
+        let separator = if base_url.contains('?') { '&' } else { '?' };
+        let url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
+        let (mut first, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let (mut second, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        for sql in [
+            include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+            include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+            include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
+        ] {
+            first.batch_execute(sql).await.unwrap();
+        }
+        let first_password = Uuid::new_v4().to_string();
+        let second_password = Uuid::new_v4().to_string();
+        let third_password = Uuid::new_v4().to_string();
+        let (a, b) = tokio::join!(
+            bootstrap_owner(&mut first, "first@example.test", &first_password),
+            bootstrap_owner(&mut second, "second@example.test", &second_password),
+        );
+        let (a, b) = (a.unwrap(), b.unwrap());
+        assert_ne!(a, b);
+        assert!(
+            !bootstrap_owner(&mut first, "third@example.test", &third_password)
+                .await
+                .unwrap()
+        );
+        for table in ["accounts", "users", "memberships"] {
+            let count: i64 = first
+                .query_one(&format!("SELECT count(*) FROM {table}"), &[])
+                .await
+                .unwrap()
+                .get(0);
+            assert_eq!(count, 1, "{table}");
+        }
+        assert_eq!(
+            first
+                .query_one("SELECT count(*) FROM verification_mail_outbox", &[])
+                .await
+                .unwrap()
+                .get::<_, i64>(0),
+            0,
+        );
+        assert!(
+            first
+                .query_one("SELECT email_verified_at IS NOT NULL FROM users", &[])
+                .await
+                .unwrap()
+                .get::<_, bool>(0)
+        );
+        let (email, password) = if a {
+            ("first@example.test", first_password.as_str())
+        } else {
+            ("second@example.test", second_password.as_str())
+        };
+        let hasher = TokenHasher::new(crate::test_keys::key(37)).unwrap();
+        assert!(login(&first, &hasher, email, password).await.is_ok());
+        setup
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .unwrap();
+    }
+
     // Tokio's default test runtime stays on one thread; separate tests cannot
     // satisfy this counter through concurrent password checks. Capture its Arc
     // before offloading so the blocking worker increments the originating test.
@@ -887,10 +1058,10 @@ mod tests {
         );
     }
     #[tokio::test]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn postgres_tenant_revocation_and_scope_contract() {
-        let Ok(url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
-            return;
-        };
+        let url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
         let (mut client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
             .await
             .unwrap();
@@ -992,7 +1163,7 @@ mod tests {
         assert!(!revoke_session(&client, &pb, sa.id).await.unwrap());
         let bound_device = Uuid::new_v4();
         let key = create_api_key(
-            &client,
+            &mut client,
             &hasher,
             &pa,
             &[Scope::MessagesSend],
@@ -1018,7 +1189,7 @@ mod tests {
             Err(AuthError::Unauthorized)
         ));
         assert!(matches!(
-            create_api_key(&client, &hasher, &pa, &[Scope::BillingRead], None, None).await,
+            create_api_key(&mut client, &hasher, &pa, &[Scope::BillingRead], None, None).await,
             Err(AuthError::Unauthorized)
         ));
         assert!(revoke_api_key(&client, &pa, key.id).await.unwrap());
@@ -1082,10 +1253,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn postgres_expired_unverified_signup_releases_its_email() {
-        let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
-            return;
-        };
+        let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
         let schema = format!("pending_signup_test_{}", Uuid::new_v4().simple());
         let (setup, mut client, _) = pending_signup_schema(&base_url, &schema).await;
         let hasher = TokenHasher::new(crate::test_keys::key(13)).unwrap();
@@ -1259,10 +1430,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn postgres_concurrent_signups_replace_a_stale_record_once() {
-        let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
-            return;
-        };
+        let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
         let schema = format!("pending_race_test_{}", Uuid::new_v4().simple());
         let (setup, mut client, url) = pending_signup_schema(&base_url, &schema).await;
         let hasher = TokenHasher::new(crate::test_keys::key(17)).unwrap();
@@ -1314,10 +1485,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn postgres_prune_removes_only_expired_unverified_owners() {
-        let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
-            return;
-        };
+        let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
         let schema = format!("pending_prune_test_{}", Uuid::new_v4().simple());
         let (setup, mut client, _) = pending_signup_schema(&base_url, &schema).await;
         let hasher = TokenHasher::new(crate::test_keys::key(19)).unwrap();

@@ -4,7 +4,7 @@ ZROtext is designed for traffic routing across two independent locations. Single
 
 ## Decision
 
-Use **active API/device-hub instances in both locations, one PostgreSQL writer, one standby, and one execution owner per device**. Distinguish routing capacity from database authority. Either site can accept an API request while it can reach the authoritative writer; an isolated site must fail closed for writes and new send grants. The load balancer does not decide who is database primary.
+Use **active API/device-hub instances in both locations, one PostgreSQL writer, one standby, and one execution owner per device**. Distinguish routing capacity from database authority. Either site can accept an API request while it can reach the authoritative writer; an isolated site must fail closed for writes and new send grants. The load balancer does not decide who is database primary. Each site must connect to the writer with `sslmode=require` and a certificate matching the writer DNS name; set `DATABASE_TLS_CA_PEM_B64` on both sites if the writer uses a private CA. Replication transport is configured separately from application connections.
 
 ```mermaid
 flowchart TB

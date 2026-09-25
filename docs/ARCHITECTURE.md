@@ -56,28 +56,38 @@ Every tenant-owned table includes `account_id`. Use composite foreign keys and r
 | pairing_requests | One-use hashed secret, 5-minute expiry, short human comparison code, approved key fingerprint |
 | messages | UUID, account/device, direction, recipient metadata, envelope bytes/version, expiry, state_version, timestamps |
 | message_attempts | Unique attempt ID, claim generation, lease, submitted evidence, per-segment results |
-| message_events | Append-only event ID, sequence, observed_at and received_at, bounded evidence |
+| message_events | Event ID, sequence, observed_at and received_at; eligible terminal history pruned after 90 days by default |
 | dispatch_jobs | Message/attempt ID, next_attempt_at, lease_owner, lease_until, fencing generation |
-| idempotency_keys | Unique account/key, canonical request digest, message ID, retained 7 days |
+| idempotency_keys | Unique account/key, canonical request digest, message ID; expiry enforced on replay and pruned in batches (7 days by default) |
 | usage_periods, usage_ledger | Unique period/metric; transactional reservation/refund references; immutable adjustments |
-| webhook_endpoints, webhook_deliveries | Encrypted signing secret, stable event ID, attempts, next_attempt_at |
+| webhook_endpoints, webhook_deliveries | Encrypted signing secret, stable event ID, attempts, next_attempt_at; terminal delivery history pruned after 30 days by default |
+| inbound_events, sealed_inbound_events | Ciphertext or envelope has a 30-day default window; ID, device sequence and digest remain as replay tombstones |
 | subscriptions, billing_events | Provider identifiers, current entitlement period, unique Stripe event ID |
-| suppression_entries (proposed, not implemented) | Account/normalized-recipient, source, timestamp; created from device opt-out signal/user action |
+| recipient_suppressions (restricted M1 pilot) | Account/E.164 recipient, active state, signed inbound source event and transition timestamp; admission and inbound transitions serialize on the account row |
 | security_audit_events | Key/device/permission changes, redacted subjects, no content |
 
 The durable outbound metering core uses an operator or billing-provisioned
 `usage_quota_policies` row per account. `accept_metered` reserves one unit in
 the same transaction as idempotency, message and job insertion. The period is
 the UTC calendar month at PostgreSQL transaction start; its limit is copied
-from policy when that month's row is first created. Replays of the same request
+from policy when that month's row is first created. Stripe TEST reconciliation
+may later rewrite the current period's limit and records the change in
+`billing_quota_audit`. Replays of the same request
 reuse the original reservation even across a month boundary. Pre-grant cancel
 or expiry writes one refund entry against the original period in the same
 transaction. An issued grant or ambiguous radio state does not refund. Policy
-changes during a period need an explicit, audited adjustment path before
-billing uses them. The private synthetic-alpha HTTP route still uses unmetered
-acceptance and is not a customer billing path.
+changes outside that reconciliation path need an explicit, audited adjustment.
+The allowlisted synthetic `POST /v1/alpha/messages` route uses metered
+acceptance when Stripe TEST billing is enabled and unmetered acceptance
+otherwise; it is not a general customer send route. For a bound billing
+account, pending reconciliation or a missing test quota returns 503
+`billing_pending` with `Retry-After: 10`; queued or held payment risk returns
+402 `payment_hold`; an exhausted quota or expired payment grace returns 429
+`quota_exceeded` with `Retry-After: 60`. Storage or dispatch failures retain
+503 `unavailable`. An identical idempotent replay reuses the original result
+without reserving another unit.
 
-Index queue due times and `(account_id, created_at DESC, id)`. Cursor pagination only. Body history and recipient metadata expire together by plan; retain content-free usage totals as needed and document financial-record obligations separately. Default API body limit 32 KiB; one-recipient SMS; payload cannot exceed six radio segments after decryption. Keep ingress limits before expensive crypto/parsing.
+Index queue due times and `(account_id, created_at DESC, id)`. Cursor pagination only. The retention worker redacts terminal message recipients and synthetic payloads after 30 days by default, counted from the last state update. It preserves recipient and request digests, message identity, state and attempts. It removes eligible message events after 90 days and only after their parent content is redacted, terminal webhook delivery/attempt/replay history after 30 days, and inbound ciphertext after 30 days once related webhook history is gone. M1 inbound event IDs, device sequences, digests and signatures remain as replay tombstones. Sealed inbound envelopes are redacted after 30 days while ID, device sequence and unsigned digest remain. Unknown messages and unresolved grant/submission fences defer related content and history; completed submitted/failed fence records do not. Late radio receipts for redacted messages are stale and must be quarantined by the device protocol. See [self-hosting retention settings](SELF-HOSTING.md#data-retention). Default API body limit 32 KiB; one-recipient SMS; payload cannot exceed six radio segments after decryption. Keep ingress limits before expensive crypto/parsing.
 
 ## Message semantics and the duplicate-send problem
 
@@ -122,13 +132,17 @@ Dispatch must pace each device, allow one radio operation at a time, and bound e
 ## Account and device routes
 
 The server mounts these routes only when `AUTH_ORIGIN`, `AUTH_TOKEN_PEPPER_B64`, and
-`ENROLLMENT_TOKEN_PEPPER_B64` are configured. Registration is closed unless a
-verification mail transport is configured. Device proof establishes an enrolled
+`ENROLLMENT_TOKEN_PEPPER_B64` are configured. New account registration also
+requires a verification mail transport and explicit allowlist or open
+registration mode; it is closed by default. The first verified owner is
+created by a local operator CLI on an empty database. Allowlist mode also
+requires an address-bound token derived from a private operator key. Closing
+registration does not disable existing owner login. Device proof establishes an enrolled
 identity for the authenticated device stream.
 
 | Method/path | Current contract |
 |---|---|
-| POST /v1/auth/register; POST /v1/auth/verify-email; POST /v1/auth/resend-verification | Exact HTTPS Origin; verification code is queued in a durable outbox, never returned by HTTP; resend requires the password and uses a generic response; an unverified sign-up expires 24 hours after registration and a later registration replaces it |
+| POST /v1/auth/register; POST /v1/auth/verify-email; POST /v1/auth/resend-verification | Exact HTTPS Origin; registration policy admits new accounts and otherwise returns a generic acceptance without mail; verification code is queued in a durable outbox, never returned by HTTP; resend requires the password and uses a generic response; an unverified sign-up expires 24 hours after registration and a later registration replaces it |
 | POST /v1/auth/login; POST /v1/auth/logout; GET /v1/auth/session | Owner session with secure host-only cookie; logout requires Origin and CSRF proof |
 | POST /v1/auth/api-keys; DELETE /v1/auth/api-keys/{key_id} | Owner session, Origin and CSRF proof; token shown only at creation |
 | POST /v1/enrollment/pairings; GET /v1/enrollment/pairings/{pairing_id} | Owner creates or views a five-minute, one-use pairing |
@@ -202,8 +216,10 @@ Android background execution depends on platform and device policy. `dataSync` i
 
 ## Webhooks, billing, operations
 
-Webhook stable event ID, creation timestamp, delivery timestamp, attempt ID, ciphertext envelope; HMAC-SHA256 signature over `timestamp + '.' + raw_body`, strict replay tolerance, receiver dedupe. Retry schedule proposal: 1m, 5m, 15m, 1h, 6h, 24h (six retries after initial); endpoint paused after 72 hours of sustained failure, UI/email notice, manual replay within retention. HTTP 2xx is acknowledgment; reject redirects. Bound connect/read timeouts and response bytes. Resolve DNS at connect, validate all chosen IPv4/IPv6 addresses, pin the validated address for the request with correct TLS hostname, block loopback/private/link-local/metadata and rebinding; isolate the worker at network level.
+Webhook stable event ID, creation timestamp, delivery timestamp, attempt ID, ciphertext envelope; HMAC-SHA256 signature over `timestamp + '.' + raw_body`, strict replay tolerance, receiver dedupe. Retry schedule: 1m, 5m, 15m, 1h, 6h, 24h (six retries after initial). The sender pauses an endpoint after 72 hours of sustained transport failure; owner API state shows the pause, and re-enabling resumes pending deliveries. Manual replay is bounded by the endpoint contract. HTTP 2xx is acknowledgment; reject redirects. Bound connect/read timeouts and response bytes. Resolve DNS at connect, validate all chosen IPv4/IPv6 addresses, pin the validated address for the request with correct TLS hostname, block loopback/private/link-local/metadata and rebinding; isolate the worker at network level.
 
 Stripe Checkout and hosted Customer Portal; signed raw-body events, unique event records, reconciliation jobs, and test-mode lifecycle tests. Server-side price allowlist; no client-controlled entitlement flags. [Stripe webhooks](https://docs.stripe.com/webhooks)
+
+The event inbox acts on `checkout.session.completed` (subscription mode), `customer.subscription.*`, `invoice.paid`, `invoice.payment_failed`, and the refund/dispute types `charge.refunded`, `refund.created` and `charge.dispute.created`. Risk holds cover both card charges (`ch_`) and PaymentIntent-scoped non-card charges (`py_`, used by SEPA Direct Debit, ACH and Bacs). A `refund.created` event with a null Charge pointer can instead queue its PaymentIntent pointer for a bounded Charges Read before attribution. A signed test-mode event with an unexpected recognized shape is stored as `unsupported`; a risk type also creates a `needs_review` risk row before 2xx acknowledgment, blocking metered admission when its customer is bound. Invalid signatures, invalid envelopes, live-mode events, and reused event IDs with different bytes can receive 4xx responses. No raw webhook payload is written to logs or the event table.
 
 Performance measurements should distinguish synthetic sockets, actual connected phones, and end-recipient delivery. API acknowledgment and online dispatch exclude radio and carrier latency.

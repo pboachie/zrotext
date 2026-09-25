@@ -8,7 +8,7 @@ use aes_gcm::{
     aead::{Aead, KeyInit, Payload},
 };
 use base64::Engine;
-use p256::elliptic_curve::rand_core::{OsRng, RngCore};
+use rand::{Rng, rng};
 use std::time::{SystemTime, UNIX_EPOCH};
 use subtle::ConstantTimeEq;
 use tokio_postgres::{Client, Transaction};
@@ -48,7 +48,7 @@ impl MfaCipher {
     ) -> Result<(Vec<u8>, Vec<u8>), AuthError> {
         let cipher = Aes256Gcm::new_from_slice(&self.0[..]).map_err(|_| AuthError::Crypto)?;
         let mut nonce = [0u8; 12];
-        OsRng.fill_bytes(&mut nonce);
+        rng().fill_bytes(&mut nonce);
         let nonce_array = Nonce::try_from(nonce.as_slice()).map_err(|_| AuthError::Crypto)?;
         let ciphertext = cipher
             .encrypt(
@@ -203,7 +203,7 @@ fn valid_recovery_code(code: &str) -> bool {
 
 fn new_recovery_code() -> String {
     let mut bytes = [0u8; 16];
-    OsRng.fill_bytes(&mut bytes);
+    rng().fill_bytes(&mut bytes);
     format!(
         "zrc_{}",
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
@@ -212,7 +212,7 @@ fn new_recovery_code() -> String {
 
 /// The owner row is locked before checking or spending this budget. It is
 /// shared by every challenge and management flow on every API site.
-async fn ensure_factor_budget(
+pub(super) async fn ensure_factor_budget(
     tx: &Transaction<'_>,
     account_id: Uuid,
     user_id: Uuid,
@@ -230,7 +230,7 @@ async fn ensure_factor_budget(
     Ok(())
 }
 
-async fn record_failed_factor(
+pub(super) async fn record_failed_factor(
     tx: &Transaction<'_>,
     account_id: Uuid,
     user_id: Uuid,
@@ -398,15 +398,25 @@ pub async fn begin_login_challenge(
     hasher: &TokenHasher,
     account_id: Uuid,
     user_id: Uuid,
+    password: &str,
 ) -> Result<String, AuthError> {
+    let row = client
+        .query_opt(
+            "SELECT u.password_hash FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE u.id=$1 AND m.account_id=$2 AND u.mfa_enabled AND a.disabled_at IS NULL",
+            &[&user_id, &account_id],
+        )
+        .await?
+        .ok_or(AuthError::InvalidCredentials)?;
+    let stored: String = row.get(0);
+    super::password_work::verify(password, Some(stored.clone())).await?;
     let token = super::random_token("ztm_");
     let hash = hasher.digest(b"mfa-login-challenge-v1", &token);
     let inserted = client.execute(
-        "INSERT INTO owner_mfa_login_challenges(id,account_id,user_id,token_hash,expires_at) SELECT $1,$2,$3,$4,now()+($5::integer * interval '1 minute') FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE u.id=$3 AND m.account_id=$2 AND u.mfa_enabled AND a.disabled_at IS NULL",
-        &[&Uuid::new_v4(), &account_id, &user_id, &&hash[..], &CHALLENGE_MINUTES],
+        "INSERT INTO owner_mfa_login_challenges(id,account_id,user_id,token_hash,expires_at) SELECT $1,$2,$3,$4,now()+($5::integer * interval '1 minute') FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE u.id=$3 AND m.account_id=$2 AND u.password_hash=$6 AND u.mfa_enabled AND a.disabled_at IS NULL FOR UPDATE OF u",
+        &[&Uuid::new_v4(), &account_id, &user_id, &&hash[..], &CHALLENGE_MINUTES, &stored],
     ).await?;
     if inserted != 1 {
-        return Err(AuthError::Unauthorized);
+        return Err(AuthError::InvalidCredentials);
     }
     Ok(token)
 }
@@ -439,7 +449,7 @@ pub async fn prune_expired_challenges(client: &Client) -> Result<u64, AuthError>
     ).await?)
 }
 
-async fn use_factor(
+pub(super) async fn use_factor(
     tx: &Transaction<'_>,
     cipher: Option<&MfaCipher>,
     hasher: &TokenHasher,
@@ -600,12 +610,12 @@ mod tests {
     #[test]
     fn encrypted_secret_is_bound_to_owner_identity() {
         let mut key = vec![0u8; 32];
-        OsRng.fill_bytes(&mut key);
+        rng().fill_bytes(&mut key);
         let cipher = MfaCipher::new(key).unwrap();
         let account = Uuid::new_v4();
         let user = Uuid::new_v4();
         let mut secret = [0u8; 20];
-        OsRng.fill_bytes(&mut secret);
+        rng().fill_bytes(&mut secret);
         let (nonce, ciphertext) = cipher.seal(account, user, &secret).unwrap();
         assert!(cipher.open(account, user, &nonce, &ciphertext).is_ok());
         assert!(
@@ -621,10 +631,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn postgres_enrollment_challenge_replay_recovery_and_disable() {
-        let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
-            return;
-        };
+        let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
         let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
         tokio::spawn(async move { connection.await.unwrap() });
         let schema = format!("mfa_test_{}", Uuid::new_v4().simple());
@@ -783,9 +793,10 @@ mod tests {
             .unwrap()
             .get(0);
         assert_eq!(count, 2);
-        let challenge = begin_login_challenge(&client, &hasher, a.account_id, a.user_id)
-            .await
-            .unwrap();
+        let challenge =
+            begin_login_challenge(&client, &hasher, a.account_id, a.user_id, &password_a)
+                .await
+                .unwrap();
         assert!(matches!(
             complete_login(
                 &mut client,
@@ -846,16 +857,17 @@ mod tests {
             Err(AuthError::Crypto)
         ));
         let mut wrong_key = vec![0u8; 32];
-        OsRng.fill_bytes(&mut wrong_key);
+        rng().fill_bytes(&mut wrong_key);
         let wrong_cipher = MfaCipher::new(wrong_key).unwrap();
         assert!(matches!(
             validate_runtime_key(&client, Some(&wrong_cipher), false).await,
             Err(AuthError::Crypto)
         ));
         assert!(validate_runtime_key(&client, None, true).await.is_ok());
-        let b_challenge = begin_login_challenge(&client, &hasher, b.account_id, b.user_id)
-            .await
-            .unwrap();
+        let b_challenge =
+            begin_login_challenge(&client, &hasher, b.account_id, b.user_id, &password_b)
+                .await
+                .unwrap();
         assert!(matches!(
             complete_login(
                 &mut client,
@@ -876,9 +888,10 @@ mod tests {
             .unwrap()
             .get(0);
         assert_eq!(b_sessions, 1);
-        let recovery_challenge = begin_login_challenge(&client, &hasher, a.account_id, a.user_id)
-            .await
-            .unwrap();
+        let recovery_challenge =
+            begin_login_challenge(&client, &hasher, a.account_id, a.user_id, &password_a)
+                .await
+                .unwrap();
         let recovered = complete_login(
             &mut client,
             None,
@@ -893,9 +906,10 @@ mod tests {
                 .await
                 .is_ok()
         );
-        let replay_challenge = begin_login_challenge(&client, &hasher, a.account_id, a.user_id)
-            .await
-            .unwrap();
+        let replay_challenge =
+            begin_login_challenge(&client, &hasher, a.account_id, a.user_id, &password_a)
+                .await
+                .unwrap();
         assert!(matches!(
             complete_login(
                 &mut client,
@@ -917,9 +931,10 @@ mod tests {
             )
             .await;
         }
-        let fresh_challenge = begin_login_challenge(&client, &hasher, a.account_id, a.user_id)
-            .await
-            .unwrap();
+        let fresh_challenge =
+            begin_login_challenge(&client, &hasher, a.account_id, a.user_id, &password_a)
+                .await
+                .unwrap();
         assert!(matches!(
             complete_login(
                 &mut client,

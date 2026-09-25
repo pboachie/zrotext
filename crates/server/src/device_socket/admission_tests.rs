@@ -10,7 +10,8 @@ use super::*;
 use crate::enrollment::{DeviceChallenge, device_challenge_bytes};
 use futures_util::{SinkExt, StreamExt};
 use p256::ecdsa::{Signature, SigningKey, signature::Signer};
-use p256::elliptic_curve::rand_core::OsRng;
+use p256::elliptic_curve::Generate;
+use rand::rng;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::net::SocketAddr;
@@ -165,11 +166,10 @@ async fn silent_socket_is_closed_by_hello_step_timeout() {
 }
 
 #[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn saturated_handshake_budget_does_not_lock_out_enrolled_device() {
-    let Ok(url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
-        eprintln!("set ZT_AUTH_TEST_DATABASE_URL to run device socket admission test");
-        return;
-    };
+    let url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+        .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
     let (admin, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
     let schema = format!("socket_admission_{}", Uuid::new_v4().simple());
@@ -193,8 +193,8 @@ async fn saturated_handshake_budget_does_not_lock_out_enrolled_device() {
     }
     let account_id = Uuid::new_v4();
     let device_id = Uuid::new_v4();
-    let signing = SigningKey::random(&mut OsRng);
-    let public_key = signing.verifying_key().to_encoded_point(false);
+    let signing = SigningKey::generate_from_rng(&mut rng());
+    let public_key = signing.verifying_key().to_sec1_point(false);
     let fingerprint: [u8; 32] = Sha256::digest(public_key.as_bytes()).into();
     db.execute("INSERT INTO sites(site_id) VALUES('admission-test')", &[])
         .await

@@ -16,13 +16,19 @@ internal object InboundUploadFrame {
     fun signedBytes(accountId: UUID, deviceId: UUID, upload: InboundUpload,
                     event: InboundEvent): ByteArray {
         require(upload.sequence > 0 && upload.eventId == event.eventId)
-        require(event.classification == InboundClassification.CAPTURED_LOCAL)
+        val classificationCode: Byte = when (event.classification) {
+            InboundClassification.CAPTURED_LOCAL -> 1
+            InboundClassification.OPT_OUT -> 5
+            InboundClassification.OPT_OUT_REVIEW -> 6
+            InboundClassification.OPT_IN -> 7
+            else -> error("Untrusted inbound classification")
+        }
         require(event.partCount in 1..6 && event.receivedAtMs > 0)
         val bytes = ByteBuffer.allocate(prefix.size + 16 * 5 + 8 + 1 + 8 + 2 + 1 + 32)
         bytes.put(prefix).putUuid(accountId).putUuid(deviceId)
             .putUuid(strictUuid(event.eventId)).putLong(upload.sequence)
             .putUuid(strictUuid(event.messageId)).putUuid(strictUuid(event.attemptId))
-            .put(1.toByte()).putLong(event.receivedAtMs).putShort(event.partCount.toShort())
+            .put(classificationCode).putLong(event.receivedAtMs).putShort(event.partCount.toShort())
             .put(0.toByte()).put(emptyDigest)
         return bytes.array()
     }

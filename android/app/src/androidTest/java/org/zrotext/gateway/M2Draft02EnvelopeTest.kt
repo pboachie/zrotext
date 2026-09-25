@@ -10,6 +10,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -53,11 +54,14 @@ class M2Draft02EnvelopeTest {
             val forkManifest = decodeHex(requireNotNull(args.getString("m2_draft02_fork_manifest_hex")))
             val revokedManifest = decodeHex(requireNotNull(args.getString("m2_draft02_revoked_manifest_hex")))
             val wrongScopeManifest = decodeHex(requireNotNull(args.getString("m2_draft02_wrong_scope_manifest_hex")))
+            val wrongLineManifest = decodeHex(requireNotNull(args.getString("m2_draft02_wrong_line_manifest_hex")))
+            val zeroLineManifest = decodeHex(requireNotNull(args.getString("m2_draft02_zero_line_manifest_hex")))
             val transition = decodeHex(requireNotNull(args.getString("m2_draft02_transition_hex")))
             val forgedTransition = decodeHex(requireNotNull(args.getString("m2_draft02_forged_transition_hex")))
             val rotatedRoot = decodeHex(requireNotNull(args.getString("m2_draft02_rotated_root_hex")))
             val rotatedManifest = decodeHex(requireNotNull(args.getString("m2_draft02_rotated_manifest_hex")))
             val revokedEnvelope = decodeHex(requireNotNull(args.getString("m2_draft02_revoked_envelope_hex")))
+            val wrongLineEnvelope = decodeHex(requireNotNull(args.getString("m2_draft02_wrong_line_envelope_hex")))
             val highSEnvelope = decodeHex(requireNotNull(args.getString("m2_draft02_high_s_envelope_hex")))
             val now = System.currentTimeMillis()
             val trusted = Draft02TinkEnvelopeReceiver.TrustedView(
@@ -115,6 +119,15 @@ class M2Draft02EnvelopeTest {
             }
             assertThrows(IllegalArgumentException::class.java) {
                 Draft02TinkEnvelopeReceiver.openOutbound(envelope, trusted.copy(manifest = wrongScopeManifest), keyStore, fresh())
+            }
+            assertEquals(1L, Draft02ManifestVerifier.verify(wrongLineManifest, pin, now).version)
+            val wrongLineDenial = assertThrows(IllegalArgumentException::class.java) {
+                Draft02TinkEnvelopeReceiver.openOutbound(wrongLineEnvelope,
+                    trusted.copy(manifest = wrongLineManifest), keyStore, fresh())
+            }
+            assertTrue(wrongLineDenial.message.orEmpty().contains("Manifest signer authority"))
+            assertThrows(IllegalArgumentException::class.java) {
+                Draft02ManifestVerifier.verify(zeroLineManifest, pin, now)
             }
             assertThrows(IllegalArgumentException::class.java) {
                 Draft02TinkEnvelopeReceiver.openOutbound(revokedEnvelope,

@@ -23,7 +23,6 @@ ACTIONS_BOT_ID = 41898282
 FEEDBACK_ENTRY_LIMIT = 1800
 JULES_REVIEW_LIMIT = 7500
 FEEDBACK_LIMIT = 16000
-SOURCE = "sources/github/pboachie/zrotext"
 GITHUB = f"https://api.github.com/repos/{REPO}"
 JULES = "https://jules.googleapis.com/v1alpha"
 START = re.compile(
@@ -32,6 +31,46 @@ START = re.compile(
     r"mode=(review|address) trigger=([A-Za-z0-9_-]+) -->"
 )
 RESULT = re.compile(r"<!-- zrotext-jules-result:v1 session=(sessions/[A-Za-z0-9_-]+) -->")
+JULES_ERROR_STATUSES = {
+    "INVALID_ARGUMENT", "FAILED_PRECONDITION", "RESOURCE_EXHAUSTED",
+    "PERMISSION_DENIED", "UNAUTHENTICATED", "NOT_FOUND", "UNAVAILABLE",
+    "INTERNAL", "UNKNOWN",
+}
+
+
+# The base Jules plan allows three concurrent and fifteen daily tasks. At that
+# limit, session creation returns HTTP 400 FAILED_PRECONDITION (or
+# RESOURCE_EXHAUSTED). Such a start is deferred, not a failed check.
+CAPACITY_STATUSES = {"FAILED_PRECONDITION", "RESOURCE_EXHAUSTED"}
+
+
+class JulesCapacity(RuntimeError):
+    """Jules refused a new session because the account is at a task limit."""
+
+
+def jules_error_category(error: HTTPError) -> str:
+    """Classify a bounded API error without exposing its untrusted message."""
+    try:
+        body = json.loads(error.read(4096))
+        detail = body.get("error", {})
+        status = detail.get("status", "")
+        message = detail.get("message", "")
+    except (ValueError, AttributeError, TypeError, OSError):
+        status, message = "", ""
+    if not isinstance(status, str) or status not in JULES_ERROR_STATUSES:
+        status = "UNSPECIFIED"
+    if not isinstance(message, str):
+        message = ""
+    lowered = message.lower()
+    if any(term in lowered for term in ("quota", "rate limit", "daily limit", "task limit", "too many", "concurrent")):
+        category = "capacity"
+    elif "branch" in lowered:
+        category = "branch"
+    elif any(term in lowered for term in ("source", "repository")):
+        category = "source"
+    else:
+        category = "unspecified"
+    return f"{status}; {category}"
 
 
 def from_actions(item: dict) -> bool:
@@ -56,7 +95,7 @@ def jules_review(item: dict) -> bool:
 
 
 def request_json(url: str, *, token: str, service: str, method: str = "GET",
-                 payload: dict | None = None) -> dict | list:
+                 payload: dict | None = None, phase: str = "") -> dict | list:
     headers = {"Accept": "application/json", "User-Agent": "zrotext-jules-review"}
     if service == "github":
         headers["Authorization"] = f"Bearer {token}"
@@ -71,8 +110,19 @@ def request_json(url: str, *, token: str, service: str, method: str = "GET",
         with urlopen(Request(url, data=data, headers=headers, method=method), timeout=25) as response:
             body = response.read()
     except HTTPError as error:
-        # API error bodies and request headers may contain sensitive values.
-        raise RuntimeError(f"{service} request failed with HTTP {error.code}") from None
+        # Never log API error bodies, request URLs or headers: they can contain
+        # credentials, private repository names, or untrusted text.
+        category = jules_error_category(error) if service == "jules" else ""
+        detail = f" ({category})" if category else ""
+        # Only fixed internal labels can identify a failing step. Never echo a
+        # provider URL, response body, or caller-supplied string into Actions.
+        if service == "jules" and phase in {"sources-list", "source-get", "session-create"}:
+            detail += f" at {phase}"
+        message = f"{service} request failed with HTTP {error.code}{detail}"
+        if (phase == "session-create" and error.code in {400, 429}
+                and category.split(";")[0] in CAPACITY_STATUSES):
+            raise JulesCapacity(message) from None
+        raise RuntimeError(message) from None
     except URLError:
         raise RuntimeError(f"{service} request could not connect") from None
     return json.loads(body) if body else {}
@@ -234,12 +284,60 @@ def prompt_for(pr: dict, mode: str, feedback: str = "") -> str:
             "BEGIN FEEDBACK JSON\n" + feedback + "\nEND FEEDBACK JSON")
 
 
+def source_branches(jules_key: str) -> tuple[str, set[str]]:
+    """Resolve the connected repository by identity, not an assumed source ID."""
+    matches: set[str] = set()
+    token = ""
+    seen_tokens: set[str] = set()
+    for _ in range(20):
+        query = {"pageSize": 100}
+        if token:
+            query["pageToken"] = token
+        listing = request_json(f"{JULES}/sources?{urlencode(query)}",
+                               token=jules_key, service="jules", phase="sources-list")
+        if not isinstance(listing, dict) or not isinstance(listing.get("sources", []), list):
+            raise RuntimeError("Jules source listing is invalid")
+        for item in listing.get("sources", []):
+            if not isinstance(item, dict):
+                raise RuntimeError("Jules source listing is invalid")
+            repo = item.get("githubRepo")
+            if isinstance(repo, dict) and (repo.get("owner"), repo.get("repo")) == tuple(REPO.split("/")):
+                name = item.get("name")
+                if not isinstance(name, str) or not re.fullmatch(r"sources/[A-Za-z0-9][A-Za-z0-9._/-]{0,255}", name):
+                    raise RuntimeError("Jules repository source name is invalid")
+                matches.add(name)
+        token = listing.get("nextPageToken", "")
+        if not isinstance(token, str) or len(token) > 2048 or token in seen_tokens:
+            raise RuntimeError("Jules source pagination is invalid")
+        if not token:
+            break
+        seen_tokens.add(token)
+    else:
+        raise RuntimeError("Jules source listing exceeded the page limit")
+    if len(matches) != 1:
+        raise RuntimeError("Jules repository source is missing or ambiguous")
+    name = matches.pop()
+    source = request_json(f"{JULES}/{name}", token=jules_key, service="jules",
+                          phase="source-get")
+    if not isinstance(source, dict) or source.get("name") != name:
+        raise RuntimeError("Jules source preflight returned a different source")
+    github_repo = source.get("githubRepo")
+    if not isinstance(github_repo, dict) or (github_repo.get("owner"), github_repo.get("repo")) != tuple(REPO.split("/")):
+        raise RuntimeError("Jules source preflight returned a different repository")
+    branches = github_repo.get("branches")
+    if not isinstance(branches, list) or any(not isinstance(item, dict) or
+                                             not isinstance(item.get("displayName"), str)
+                                             for item in branches):
+        raise RuntimeError("Jules source preflight returned invalid branch data")
+    return name, {item["displayName"] for item in branches}
+
+
 def start_review(number: int, mode: str, trigger: str, github_token: str,
-                 jules_key: str) -> None:
+                 jules_key: str, *, available_source: tuple[str, set[str]] | None = None) -> bool:
     pr = request_json(f"{GITHUB}/pulls/{number}", token=github_token, service="github")
     if not isinstance(pr, dict) or not eligible_pr(pr):
         print(f"PR #{number} is not an eligible open same-repository owner or Dependabot branch; skipped.")
-        return
+        return False
     sha = pr["head"]["sha"]
     base_sha = pr["base"]["sha"]
     existing = pages(f"/issues/{number}/comments", github_token)
@@ -248,13 +346,17 @@ def start_review(number: int, mode: str, trigger: str, github_token: str,
            match.group(4) == mode and match.group(5) == trigger
            for item in existing):
         print(f"PR #{number} already has this Jules request.")
-        return
+        return False
+    source_name, branches = available_source if available_source is not None else source_branches(jules_key)
+    if pr["head"]["ref"] not in branches:
+        print(f"PR #{number} deferred: its head branch is not yet available in the Jules source.")
+        return False
     feedback = recent_feedback(number, github_token) if mode == "address" else ""
     created = request_json(f"{JULES}/sessions", token=jules_key, service="jules",
-                           method="POST", payload={
+                           method="POST", phase="session-create", payload={
                                "title": f"ZROtext PR #{number} {mode}",
                                "prompt": prompt_for(pr, mode, feedback),
-                               "sourceContext": {"source": SOURCE,
+                               "sourceContext": {"source": source_name,
                                                  "githubRepoContext": {"startingBranch": pr["head"]["ref"]}},
                            })
     session = created.get("name", "") if isinstance(created, dict) else ""
@@ -270,11 +372,28 @@ def start_review(number: int, mode: str, trigger: str, github_token: str,
     request_json(f"{GITHUB}/issues/{number}/comments", token=github_token,
                  service="github", method="POST", payload={"body": body})
     print(f"Started Jules {mode} for PR #{number} at {sha[:12]}.")
+    return True
+
+
+def defer_request(number: int, mode: str, trigger: str, github_token: str, reason: str) -> None:
+    """Record a start that Jules refused at its task limit without failing the check."""
+    print(f"::notice::Jules is at its task limit; PR #{number} {mode} deferred ({reason}).")
+    if mode == "review":
+        # The trusted schedule starts a review for any open PR head without one.
+        print("A scheduled run will start this review when Jules has capacity.")
+        return
+    # Address requests come only from the owner and are not retried by the
+    # schedule, so say so on the PR. This comment carries no control marker.
+    request_json(f"{GITHUB}/issues/{number}/comments", token=github_token,
+                 service="github", method="POST", payload={
+                     "body": ("Jules is at its task limit, so `/jules address` was not started. "
+                              "Comment `/jules address` again after running Jules sessions finish.")})
 
 
 def start_missing_reviews(github_token: str, jules_key: str, *, maximum: int = 2) -> None:
     """Gradually cover ready same-repository PRs from the trusted schedule."""
     started = 0
+    source: tuple[str, set[str]] | None = None
     for pr in reversed(pages("/pulls?state=open", github_token)):
         if started >= maximum:
             break
@@ -289,8 +408,16 @@ def start_missing_reviews(github_token: str, jules_key: str, *, maximum: int = 2
                match.group(2) == sha and match.group(4) == "review"
                for item in comments):
             continue
-        start_review(number, "review", f"scheduled-{sha[:12]}", github_token, jules_key)
-        started += 1
+        if source is None:
+            source = source_branches(jules_key)
+        try:
+            if start_review(number, "review", f"scheduled-{sha[:12]}",
+                            github_token, jules_key, available_source=source):
+                started += 1
+        except JulesCapacity as error:
+            # Later scheduled runs retry once running sessions finish.
+            print(f"::notice::Jules is at its task limit; PR #{number} review deferred ({error}).")
+            break
 
 
 def final_message(session: str, jules_key: str) -> str:
@@ -375,7 +502,10 @@ def main() -> int:
         event = json.load(sys.stdin)
         requested = event_request(event_name, event)
         if requested:
-            start_review(*requested, github_token, jules_key)
+            try:
+                start_review(*requested, github_token, jules_key)
+            except JulesCapacity as error:
+                defer_request(*requested, github_token, str(error))
         else:
             print("No owner PR review command in this event.")
     return 0

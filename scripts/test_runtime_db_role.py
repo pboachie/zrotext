@@ -40,7 +40,9 @@ class RuntimeRoleTest(unittest.TestCase):
             raise RuntimeError("disposable database startup timed out")
         cls.sql("CREATE TABLE schema_migrations(version integer);")
         for migration in sorted((COMPOSE / "migrations").glob("*.sql")):
-            cls.sql(migration.read_text(encoding="utf-8"))
+            # The migrator applies each file in one transaction. Keep this
+            # provisioning fixture equivalent, including migration locks.
+            cls.sql("BEGIN;\n" + migration.read_text(encoding="utf-8") + "\nCOMMIT;")
 
     @classmethod
     def sql(cls, sql, *, runtime=False, password=None, success=True):

@@ -1,6 +1,337 @@
 use super::*;
 use p256::ecdsa::{SigningKey, signature::Signer};
-use p256::elliptic_curve::rand_core::OsRng;
+use p256::elliptic_curve::Generate;
+use rand::rng;
+
+async fn seed_dispatch_account(
+    db: &Client,
+    account: Uuid,
+    endpoint_count: usize,
+    event_count: usize,
+) -> Vec<Uuid> {
+    let device = Uuid::new_v4();
+    let message = Uuid::new_v4();
+    let attempt = Uuid::new_v4();
+    db.execute("INSERT INTO accounts(id) VALUES($1)", &[&account])
+        .await
+        .unwrap();
+    db.execute(
+        "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'dispatch fixture')",
+        &[&device, &account],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO messages(id,account_id,device_id,recipient_e164,recipient_digest, \
+         transport_mode,transport_payload,request_digest,state,expires_at) \
+         VALUES($1,$2,$3,'+15551234567',$4,'synthetic_alpha',$5,$6,'submitted',now()+interval '1 hour')",
+        &[&message,&account,&device,&vec![2_u8;32],&b"fixture".as_slice(),&vec![3_u8;32]],
+    ).await.unwrap();
+    db.execute(
+        "INSERT INTO message_attempts(id,account_id,message_id,device_id,generation, \
+         session_epoch,deployment_epoch,status) VALUES($1,$2,$3,$4,1,2,1,'submitted')",
+        &[&attempt, &account, &message, &device],
+    )
+    .await
+    .unwrap();
+    let mut events = Vec::new();
+    for sequence in 1..=event_count {
+        let event = Uuid::new_v4();
+        db.execute(
+            "INSERT INTO inbound_events(id,account_id,device_id,message_id,attempt_id, \
+             device_sequence,classification,observed_at,part_count,content_kind,event_digest,signature_der) \
+             VALUES($1,$2,$3,$4,$5,$6,'captured_local',now(),1,'metadata_only',$7,$8)",
+            &[&event,&account,&device,&message,&attempt,&(sequence as i64),&vec![4_u8;32],&vec![5_u8;8]],
+        ).await.unwrap();
+        events.push(event);
+    }
+    let mut endpoints = Vec::new();
+    for _ in 0..endpoint_count {
+        let endpoint = Uuid::new_v4();
+        db.execute(
+            "INSERT INTO webhook_endpoints(id,account_id,callback_url,signing_secret_ciphertext, \
+             signing_secret_key_version,enabled) VALUES($1,$2,'https://hooks.example.org/receive',$3,1,true)",
+            &[&endpoint,&account,&vec![6_u8;32]],
+        ).await.unwrap();
+        for event in &events {
+            db.execute(
+                "INSERT INTO webhook_deliveries(id,account_id,endpoint_id,event_id,next_attempt_at,created_at) \
+                 VALUES($1,$2,$3,$4,now()-interval '1 hour',now()-interval '2 hours')",
+                &[&Uuid::new_v4(),&account,&endpoint,event],
+            ).await.unwrap();
+        }
+        endpoints.push(endpoint);
+    }
+    endpoints
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn postgres_webhook_claims_rotate_accounts_and_serialize_each_endpoint() {
+    let url = std::env::var("ZT_INBOUND_TEST_DATABASE_URL")
+        .expect("set ZT_INBOUND_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let (mut db, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let schema = format!("webhook_fairness_test_{}", Uuid::new_v4().simple());
+    db.batch_execute(&format!(
+        "CREATE SCHEMA {schema}; SET search_path TO {schema}"
+    ))
+    .await
+    .unwrap();
+    for migration in [
+        include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
+        include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+        include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
+        include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
+        include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+        include_str!("../../../../deploy/compose/migrations/006_usage_metering.sql"),
+        include_str!("../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"),
+        include_str!("../../../../deploy/compose/migrations/009_webhook_manual_replay.sql"),
+        include_str!("../../../../deploy/compose/migrations/015_webhook_kek_commitments.sql"),
+    ] {
+        db.batch_execute(migration).await.unwrap();
+    }
+    // Old workers could leave concurrent leases for one endpoint. Migration
+    // must fail safely until every in-flight attempt is closed.
+    let gate_account = Uuid::from_u128(9);
+    let gate_endpoint = seed_dispatch_account(&db, gate_account, 1, 2).await[0];
+    let gate_rows = db
+        .query(
+            "SELECT id FROM webhook_deliveries WHERE endpoint_id=$1",
+            &[&gate_endpoint],
+        )
+        .await
+        .unwrap();
+    let gate_ids: Vec<Uuid> = gate_rows.iter().map(|row| row.get(0)).collect();
+    for (index, delivery) in gate_ids.iter().enumerate() {
+        let attempt_number = if index == 0 { 7_i16 } else { 1_i16 };
+        let generation = if index == 0 { 2_i16 } else { 1_i16 };
+        db.execute(
+            "UPDATE webhook_deliveries SET status='leased',attempt_count=$2,generation=$3,lease_owner='old-worker',lease_until=now()+interval '5 minutes' WHERE id=$1",
+            &[delivery, &attempt_number, &generation],
+        ).await.unwrap();
+        db.execute(
+            "INSERT INTO webhook_attempts(id,delivery_id,generation,attempt_number) VALUES($1,$2,$3,$4)",
+            &[&Uuid::new_v4(), delivery, &generation, &attempt_number],
+        )
+        .await
+        .unwrap();
+    }
+    let tx = db.transaction().await.unwrap();
+    let preflight = tx
+        .batch_execute(include_str!(
+            "../../../../deploy/compose/migrations/029_webhook_dispatch_fairness.sql"
+        ))
+        .await
+        .unwrap_err();
+    assert!(
+        preflight
+            .as_db_error()
+            .is_some_and(|error| error.message().contains("zero active leases")),
+        "{preflight:?}"
+    );
+    tx.rollback().await.unwrap();
+    for delivery in &gate_ids {
+        db.execute(
+            "UPDATE webhook_deliveries SET lease_until=now()-interval '1 second' WHERE id=$1",
+            &[delivery],
+        )
+        .await
+        .unwrap();
+    }
+    let tx = db.transaction().await.unwrap();
+    tx.batch_execute(include_str!(
+        "../../../../deploy/compose/migrations/029_webhook_dispatch_fairness.sql"
+    ))
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    for (index, delivery) in gate_ids.iter().enumerate() {
+        let row = db.query_one(
+            "SELECT d.status,d.terminal_reason,d.next_attempt_at>now(),a.outcome,a.completed_at IS NOT NULL,d.generation,a.generation \
+             FROM webhook_deliveries d JOIN webhook_attempts a ON a.delivery_id=d.id WHERE d.id=$1",
+            &[delivery],
+        ).await.unwrap();
+        if index == 0 {
+            assert_eq!(row.get::<_, String>(0), "dead");
+            assert_eq!(row.get::<_, Option<String>>(1).as_deref(), Some("failed"));
+        } else {
+            assert_eq!(row.get::<_, String>(0), "pending");
+            assert!(row.get::<_, bool>(2));
+        }
+        assert_eq!(row.get::<_, String>(3), "timeout");
+        assert!(row.get::<_, bool>(4));
+        assert_eq!(row.get::<_, i16>(5), if index == 0 { 2 } else { 1 });
+        assert_eq!(row.get::<_, i16>(6), if index == 0 { 2 } else { 1 });
+    }
+    let account_a = Uuid::from_u128(1);
+    let account_b = Uuid::from_u128(2);
+    let a = seed_dispatch_account(&db, account_a, 8, 4).await;
+    let b = seed_dispatch_account(&db, account_b, 1, 1).await;
+    let (mut peer1, connection1) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move { connection1.await.unwrap() });
+    peer1
+        .batch_execute(&format!("SET search_path TO {schema}"))
+        .await
+        .unwrap();
+    let first = claim_webhook(&mut db, "fair-1").await.unwrap().unwrap();
+    assert_eq!(first.account_id, account_a);
+    // A remains leased and has 31 other due deliveries. B must not wait for
+    // A's receiver or backlog to drain.
+    let second = claim_webhook(&mut peer1, "fair-2").await.unwrap().unwrap();
+    assert_eq!(second.account_id, account_b);
+    assert_eq!(second.endpoint_id, b[0]);
+    let third = claim_webhook(&mut db, "fair-3").await.unwrap().unwrap();
+    assert_eq!(third.account_id, account_a);
+    assert_ne!(third.endpoint_id, first.endpoint_id);
+    assert!(a.contains(&third.endpoint_id));
+    let (pending, age_seconds, in_flight) = crate::webhook_worker::queue_signal(&db).await.unwrap();
+    assert_eq!((pending, in_flight), (31, 3));
+    assert!(age_seconds.unwrap() >= 3600);
+
+    db.execute(
+        "UPDATE webhook_endpoints SET enabled=false WHERE account_id IN ($1,$2)",
+        &[&account_a, &account_b],
+    )
+    .await
+    .unwrap();
+    let account_c = Uuid::from_u128(3);
+    let c = seed_dispatch_account(&db, account_c, 1, 2).await;
+    let (mut peer2, connection2) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move { connection2.await.unwrap() });
+    peer2
+        .batch_execute(&format!("SET search_path TO {schema}"))
+        .await
+        .unwrap();
+    let (left, right) = tokio::join!(
+        claim_webhook(&mut peer1, "parallel-1"),
+        claim_webhook(&mut peer2, "parallel-2"),
+    );
+    let leases: Vec<_> = [left.unwrap(), right.unwrap()]
+        .into_iter()
+        .flatten()
+        .collect();
+    assert_eq!(leases.len(), 1);
+    assert_eq!(leases[0].endpoint_id, c[0]);
+    let leased: i64 = db
+        .query_one(
+            "SELECT count(*) FROM webhook_deliveries WHERE endpoint_id=$1 AND status='leased'",
+            &[&c[0]],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(leased, 1);
+
+    db.execute(
+        "UPDATE webhook_endpoints SET failure_started_at=now()-interval '73 hours' WHERE id=$1",
+        &[&c[0]],
+    )
+    .await
+    .unwrap();
+    finish_webhook(&mut db, &leases[0], WebhookOutcome::Timeout, None)
+        .await
+        .unwrap();
+    let paused: bool = db
+        .query_one(
+            "SELECT paused_at IS NOT NULL FROM webhook_endpoints WHERE id=$1",
+            &[&c[0]],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert!(paused);
+    assert!(claim_webhook(&mut db, "paused").await.unwrap().is_none());
+    db.execute(
+        "UPDATE webhook_endpoints SET paused_at=NULL,failure_started_at=NULL WHERE id=$1",
+        &[&c[0]],
+    )
+    .await
+    .unwrap();
+    let resumed = claim_webhook(&mut db, "resumed").await.unwrap().unwrap();
+    assert_eq!(resumed.endpoint_id, c[0]);
+
+    // A concurrent owner retirement locks the endpoint before deliveries.
+    // The expiry sweep must skip that endpoint without taking its delivery
+    // lock, then recover the lease after retirement releases its lock.
+    db.execute(
+        "UPDATE webhook_deliveries SET lease_until=now()-interval '1 second' WHERE id=$1",
+        &[&resumed.delivery_id],
+    )
+    .await
+    .unwrap();
+    let retirement = peer1.transaction().await.unwrap();
+    retirement
+        .query_one(
+            "SELECT id FROM webhook_endpoints WHERE id=$1 FOR UPDATE",
+            &[&c[0]],
+        )
+        .await
+        .unwrap();
+    let skipped = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        claim_webhook(&mut peer2, "sweep-during-retire"),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(skipped.is_none());
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        retirement.query_one(
+            "SELECT id FROM webhook_deliveries WHERE id=$1 FOR UPDATE",
+            &[&resumed.delivery_id],
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    retirement.rollback().await.unwrap();
+    assert!(
+        claim_webhook(&mut peer2, "sweep-after-retire")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let recovered = db.query_one(
+        "SELECT d.status,a.outcome FROM webhook_deliveries d JOIN webhook_attempts a ON a.delivery_id=d.id WHERE d.id=$1 AND a.generation=d.generation AND a.attempt_number=d.attempt_count",
+        &[&resumed.delivery_id],
+    ).await.unwrap();
+    assert_eq!(recovered.get::<_, String>(0), "pending");
+    assert_eq!(recovered.get::<_, String>(1), "timeout");
+    db.batch_execute(&format!(
+        "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
+    ))
+    .await
+    .unwrap();
+}
+
+#[test]
+fn early_reply_waits_for_sent_evidence_but_missing_source_is_permanent() {
+    assert!(matches!(
+        source_readiness(Some("submitting"), false),
+        Err(InboundError::SourcePending)
+    ));
+    assert!(matches!(
+        source_readiness(Some("unknown"), false),
+        Err(InboundError::SourcePending)
+    ));
+    assert!(source_readiness(Some("submitted"), true).is_ok());
+    assert!(matches!(
+        source_readiness(Some("submitted"), false),
+        Err(InboundError::UnknownSource)
+    ));
+    assert!(matches!(
+        source_readiness(None, false),
+        Err(InboundError::UnknownSource)
+    ));
+}
 
 #[test]
 fn metadata_signature_bytes_match_android_pilot_vector() {
@@ -35,11 +366,10 @@ fn metadata_signature_bytes_match_android_pilot_vector() {
 }
 
 #[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
-    let Ok(url) = std::env::var("ZT_INBOUND_TEST_DATABASE_URL") else {
-        eprintln!("set ZT_INBOUND_TEST_DATABASE_URL to run inbound database test");
-        return;
-    };
+    let url = std::env::var("ZT_INBOUND_TEST_DATABASE_URL")
+        .expect("set ZT_INBOUND_TEST_DATABASE_URL for PostgreSQL-backed tests");
     let (mut db, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
         .await
         .unwrap();
@@ -67,6 +397,8 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
         include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
         include_str!("../../../../deploy/compose/migrations/015_webhook_kek_commitments.sql"),
         include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+        include_str!("../../../../deploy/compose/migrations/029_webhook_dispatch_fairness.sql"),
+        include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }
@@ -84,10 +416,10 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
     let endpoint_secret = vault
         .seal(account, endpoint, &crate::test_keys::key(8))
         .unwrap();
-    let signing = SigningKey::random(&mut OsRng);
+    let signing = SigningKey::generate_from_rng(&mut rng());
     let public = signing
         .verifying_key()
-        .to_encoded_point(false)
+        .to_sec1_point(false)
         .as_bytes()
         .to_vec();
     db.execute(
@@ -180,18 +512,56 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
         signature_der: &sig_bytes,
         ..unsigned
     };
+    db.execute(
+        "DELETE FROM message_events WHERE attempt_id=$1",
+        &[&attempt],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "UPDATE message_attempts SET status='submitting' WHERE id=$1",
+        &[&attempt],
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        ingest(&mut db, session, &signed).await,
+        Err(InboundError::SourcePending)
+    ));
+    db.execute(
+        "INSERT INTO message_events(id,account_id,message_id,attempt_id,evidence_code, \
+         event_digest,observed_at,resulting_state,segment_index,segment_count) \
+         VALUES($1,$2,$3,$4,'sent_callback_ok',$5,now(),'submitted',0,1)",
+        &[
+            &Uuid::new_v4(),
+            &account,
+            &message,
+            &attempt,
+            &vec![4u8; 32],
+        ],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "UPDATE message_attempts SET status='submitted' WHERE id=$1",
+        &[&attempt],
+    )
+    .await
+    .unwrap();
     assert_eq!(
         ingest(&mut db, session, &signed).await.unwrap(),
         IngestOutcome {
             created: true,
-            queued_deliveries: 1
+            queued_deliveries: 1,
+            suppression_cleared: false,
         }
     );
     assert_eq!(
         ingest(&mut db, session, &signed).await.unwrap(),
         IngestOutcome {
             created: false,
-            queued_deliveries: 0
+            queued_deliveries: 0,
+            suppression_cleared: false,
         }
     );
     let counts = db.query_one(
@@ -214,6 +584,15 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
     finish_webhook(&mut db, &first_lease, WebhookOutcome::HttpError, Some(500))
         .await
         .unwrap();
+    let streak_started: bool = db
+        .query_one(
+            "SELECT failure_started_at IS NOT NULL FROM webhook_endpoints WHERE id=$1",
+            &[&endpoint],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert!(streak_started);
     assert!(matches!(
         finish_webhook(&mut db, &first_lease, WebhookOutcome::HttpError, Some(500)).await,
         Err(InboundError::StaleLease)
@@ -235,6 +614,15 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
     finish_webhook(&mut db, &second_lease, WebhookOutcome::Ack, Some(204))
         .await
         .unwrap();
+    let streak_cleared: bool = db
+        .query_one(
+            "SELECT failure_started_at IS NULL FROM webhook_endpoints WHERE id=$1",
+            &[&endpoint],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert!(streak_cleared);
     let status: String = db
         .query_one(
             "SELECT status FROM webhook_deliveries WHERE id=$1",
@@ -489,7 +877,8 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
         .unwrap(),
         IngestOutcome {
             created: true,
-            queued_deliveries: 1
+            queued_deliveries: 1,
+            suppression_cleared: false,
         }
     );
     // Make the due condition explicit instead of relying on nearly coincident
@@ -681,6 +1070,255 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
     )
     .await
     .unwrap();
+    // STOP and START carry no body or sender field. The signed attempt binds
+    // them to the writer's exact account-scoped recipient. Replays are inert.
+    let stop = InboundEvent {
+        event_id: Uuid::new_v4(),
+        sequence: 2001,
+        classification: Classification::OptOut,
+        signature_der: &[],
+        ..unsigned
+    };
+    let stop_signature: Signature = signing.sign(&signed_event_bytes(session, &stop));
+    let stop_der = stop_signature.to_der();
+    let stop = InboundEvent {
+        signature_der: stop_der.as_bytes(),
+        ..stop
+    };
+    assert!(ingest(&mut db, session, &stop).await.unwrap().created);
+    assert!(!ingest(&mut db, session, &stop).await.unwrap().created);
+    let active: bool = db.query_one(
+        "SELECT active FROM recipient_suppressions WHERE account_id=$1 AND recipient_e164='+15551234567'",
+        &[&account],
+    ).await.unwrap().get(0);
+    assert!(active);
+    assert!(db.query_opt(
+        "SELECT 1 FROM recipient_suppressions WHERE account_id=$1 AND recipient_e164='+15551234567'",
+        &[&other_account],
+    ).await.unwrap().is_none());
+    let other_attempt = Uuid::new_v4();
+    db.execute(
+        "INSERT INTO message_attempts(id,account_id,message_id,device_id,generation,session_epoch,deployment_epoch,status) \
+         VALUES($1,$2,$3,$4,2,2,1,'submitted')",
+        &[&other_attempt, &account, &message, &device],
+    ).await.unwrap();
+    db.execute(
+        "INSERT INTO message_events(id,account_id,message_id,attempt_id,evidence_code,event_digest,observed_at,resulting_state,segment_index,segment_count) \
+         VALUES($1,$2,$3,$4,'sent_callback_ok',$5,now(),'submitted',0,1)",
+        &[&Uuid::new_v4(), &account, &message, &other_attempt, &vec![5u8; 32]],
+    ).await.unwrap();
+    let wrong_window = InboundEvent {
+        event_id: Uuid::new_v4(),
+        sequence: 2002,
+        attempt_id: other_attempt,
+        observed_at_ms: stop.observed_at_ms + 1,
+        classification: Classification::OptIn,
+        signature_der: &[],
+        ..unsigned
+    };
+    let wrong_signature: Signature = signing.sign(&signed_event_bytes(session, &wrong_window));
+    let wrong_der = wrong_signature.to_der();
+    assert!(
+        !ingest(
+            &mut db,
+            session,
+            &InboundEvent {
+                signature_der: wrong_der.as_bytes(),
+                ..wrong_window
+            }
+        )
+        .await
+        .unwrap()
+        .suppression_cleared
+    );
+    assert!(db.query_one(
+        "SELECT active FROM recipient_suppressions WHERE account_id=$1 AND recipient_e164='+15551234567'",
+        &[&account],
+    ).await.unwrap().get::<_, bool>(0));
+    let resume = InboundEvent {
+        event_id: Uuid::new_v4(),
+        sequence: 2003,
+        observed_at_ms: stop.observed_at_ms + 1,
+        classification: Classification::OptIn,
+        signature_der: &[],
+        ..unsigned
+    };
+    let resume_signature: Signature = signing.sign(&signed_event_bytes(session, &resume));
+    let resume_der = resume_signature.to_der();
+    let resume = InboundEvent {
+        signature_der: resume_der.as_bytes(),
+        ..resume
+    };
+    assert!(
+        ingest(&mut db, session, &resume)
+            .await
+            .unwrap()
+            .suppression_cleared
+    );
+    assert!(
+        ingest(&mut db, session, &resume)
+            .await
+            .unwrap()
+            .suppression_cleared
+    );
+    let inactive: bool = db.query_one(
+        "SELECT NOT active FROM recipient_suppressions WHERE account_id=$1 AND recipient_e164='+15551234567'",
+        &[&account],
+    ).await.unwrap().get(0);
+    assert!(inactive);
+    let forged = InboundEvent {
+        classification: Classification::OptOut,
+        ..resume
+    };
+    assert!(matches!(
+        ingest(&mut db, session, &forged).await,
+        Err(InboundError::InvalidSignature)
+    ));
+    let (mut suppression_db, suppression_connection) =
+        tokio_postgres::connect(&url, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+    tokio::spawn(async move { suppression_connection.await.unwrap() });
+    suppression_db
+        .batch_execute(&format!("SET search_path TO {schema}"))
+        .await
+        .unwrap();
+    let disabled_event = InboundEvent {
+        event_id: Uuid::new_v4(),
+        sequence: 2004,
+        signature_der: &[],
+        ..unsigned
+    };
+    let disabled_signature: Signature = signing.sign(&signed_event_bytes(session, &disabled_event));
+    let disabled_der = disabled_signature.to_der();
+    let disabled_event = InboundEvent {
+        signature_der: disabled_der.as_bytes(),
+        ..disabled_event
+    };
+    let ingest_pid: i32 = db
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await
+        .unwrap()
+        .get(0);
+    let disable_tx = suppression_db.transaction().await.unwrap();
+    disable_tx
+        .query_one(
+            "SELECT id FROM accounts WHERE id=$1 FOR UPDATE",
+            &[&account],
+        )
+        .await
+        .unwrap();
+    let disabled_result = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        tokio::join!(ingest(&mut db, session, &disabled_event), async {
+            loop {
+                let waiting: bool = disable_tx
+                    .query_one("SELECT cardinality(pg_blocking_pids($1))>0", &[&ingest_pid])
+                    .await
+                    .unwrap()
+                    .get(0);
+                if waiting {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+            disable_tx
+                .execute(
+                    "UPDATE accounts SET disabled_at=clock_timestamp() WHERE id=$1",
+                    &[&account],
+                )
+                .await
+                .unwrap();
+            disable_tx.commit().await.unwrap();
+        })
+    })
+    .await
+    .unwrap()
+    .0;
+    assert!(matches!(disabled_result, Err(InboundError::Unauthorized)));
+    assert!(
+        db.query_opt(
+            "SELECT 1 FROM inbound_events WHERE id=$1",
+            &[&disabled_event.event_id]
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+    suppression_db
+        .execute(
+            "UPDATE accounts SET disabled_at=NULL WHERE id=$1",
+            &[&account],
+        )
+        .await
+        .unwrap();
+    let (mut accept_db, accept_connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move { accept_connection.await.unwrap() });
+    accept_db
+        .batch_execute(&format!("SET search_path TO {schema}"))
+        .await
+        .unwrap();
+    let accept_pid: i32 = accept_db
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await
+        .unwrap()
+        .get(0);
+    let blocker = suppression_db.transaction().await.unwrap();
+    blocker
+        .query_one(
+            "SELECT id FROM accounts WHERE id=$1 FOR NO KEY UPDATE",
+            &[&account],
+        )
+        .await
+        .unwrap();
+    let race_id = Uuid::new_v4();
+    let mut race_store = zrotext_delivery_store::DeliveryStore::new(&mut accept_db);
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        tokio::join!(
+            race_store.accept(
+                zrotext_delivery_store::NewMessage {
+                    account_id: account, client_message_id: race_id, device_id: device,
+                    idempotency_key: "suppression-race", recipient_e164: "+15551234567",
+                    synthetic_payload: b"synthetic", expires_at_ms: SystemTime::now()
+                        .duration_since(UNIX_EPOCH).unwrap().as_millis() as i64 + 60_000,
+                }
+            ),
+            async {
+                loop {
+                    let waiting: bool = blocker.query_one(
+                        "SELECT cardinality(pg_blocking_pids($1))>0", &[&accept_pid]
+                    ).await.unwrap().get(0);
+                    if waiting { break; }
+                    tokio::task::yield_now().await;
+                }
+                blocker.execute(
+                    "UPDATE recipient_suppressions SET active=TRUE,source_event_id=$3,source='sms_keyword' WHERE account_id=$1 AND recipient_e164=$2",
+                    &[&account, &"+15551234567", &stop.event_id],
+                ).await.unwrap();
+                blocker.commit().await.unwrap();
+            }
+        )
+    }).await.unwrap().0;
+    assert!(matches!(
+        result,
+        Err(zrotext_delivery_store::StoreError::RecipientSuppressed)
+    ));
+    assert!(
+        db.query_opt("SELECT 1 FROM messages WHERE id=$1", &[&race_id])
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        db.query_opt(
+            "SELECT 1 FROM idempotency_keys WHERE account_id=$1 AND key='suppression-race'",
+            &[&account]
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
     db.execute(
         "UPDATE device_keys SET revoked_at=now() WHERE device_id=$1",
         &[&device],
@@ -699,11 +1337,10 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
 }
 
 #[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn fresh_signed_events_share_a_durable_budget_and_replays_are_free() {
-    let Ok(url) = std::env::var("ZT_INBOUND_TEST_DATABASE_URL") else {
-        eprintln!("set ZT_INBOUND_TEST_DATABASE_URL to run inbound database test");
-        return;
-    };
+    let url = std::env::var("ZT_INBOUND_TEST_DATABASE_URL")
+        .expect("set ZT_INBOUND_TEST_DATABASE_URL for PostgreSQL-backed tests");
     let (mut db, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
         .await
         .unwrap();
@@ -731,6 +1368,8 @@ async fn fresh_signed_events_share_a_durable_budget_and_replays_are_free() {
         include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
         include_str!("../../../../deploy/compose/migrations/015_webhook_kek_commitments.sql"),
         include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+        include_str!("../../../../deploy/compose/migrations/029_webhook_dispatch_fairness.sql"),
+        include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }
@@ -744,10 +1383,10 @@ async fn fresh_signed_events_share_a_durable_budget_and_replays_are_free() {
         crate::webhook_worker::WebhookSecretVault::new(1, zeroize::Zeroizing::new(vec![7_u8; 32]))
             .unwrap();
     let endpoint_secret = vault.seal(account, endpoint, &[8_u8; 32]).unwrap();
-    let signing = SigningKey::random(&mut OsRng);
+    let signing = SigningKey::generate_from_rng(&mut rng());
     let public = signing
         .verifying_key()
-        .to_encoded_point(false)
+        .to_sec1_point(false)
         .as_bytes()
         .to_vec();
     db.execute(
@@ -919,7 +1558,8 @@ async fn fresh_signed_events_share_a_durable_budget_and_replays_are_free() {
         ingest(&mut db, session, &replay).await.unwrap(),
         IngestOutcome {
             created: false,
-            queued_deliveries: 0
+            queued_deliveries: 0,
+            suppression_cleared: false,
         }
     );
     // A bad signature cannot burn another charge, nor can an exact replay.
@@ -1068,7 +1708,8 @@ async fn fresh_signed_events_share_a_durable_budget_and_replays_are_free() {
         ingest(&mut db, session, &replay).await.unwrap(),
         IngestOutcome {
             created: false,
-            queued_deliveries: 0
+            queued_deliveries: 0,
+            suppression_cleared: false,
         }
     );
     // Rotating device identities cannot bypass a saturated account or grow counters.

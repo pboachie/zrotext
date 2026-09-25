@@ -11,6 +11,8 @@ use axum::{
 const PAGE: &str = include_str!("../../../web/owner/devices.html");
 const SCRIPT: &str = include_str!("../../../web/owner/devices.js");
 const STYLE: &str = include_str!("../../../web/owner/devices.css");
+const ACCOUNT_PAGE: &str = include_str!("../../../web/owner/account.html");
+const ACCOUNT_SCRIPT: &str = include_str!("../../../web/owner/account.js");
 const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
 
 pub fn router() -> Router {
@@ -18,6 +20,8 @@ pub fn router() -> Router {
         .route("/owner/devices", get(page))
         .route("/owner/devices.js", get(script))
         .route("/owner/devices.css", get(style))
+        .route("/owner/account", get(account_page))
+        .route("/owner/account.js", get(account_script))
 }
 
 pub fn source_router<S>(source_url: String) -> Router<S>
@@ -70,6 +74,10 @@ fn secure_response(mut response: Response, content_type: &'static str) -> Respon
         "x-content-type-options",
         HeaderValue::from_static("nosniff"),
     );
+    headers.insert(
+        header::STRICT_TRANSPORT_SECURITY,
+        HeaderValue::from_static("max-age=63072000; includeSubDomains"),
+    );
     headers.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
     response
 }
@@ -89,6 +97,20 @@ async fn style() -> Response {
     secure_response(
         (StatusCode::OK, STYLE).into_response(),
         "text/css; charset=utf-8",
+    )
+}
+
+async fn account_page() -> Response {
+    secure_response(
+        Html(ACCOUNT_PAGE).into_response(),
+        "text/html; charset=utf-8",
+    )
+}
+
+async fn account_script() -> Response {
+    secure_response(
+        (StatusCode::OK, ACCOUNT_SCRIPT).into_response(),
+        "text/javascript; charset=utf-8",
     )
 }
 
@@ -147,12 +169,43 @@ mod tests {
                 "/v1/auth/login/mfa",
                 "code=synthetic-recovery-code",
             ),
+            (
+                "register-form",
+                "/v1/auth/register",
+                "email=owner%40example.test",
+            ),
+            (
+                "verify-form",
+                "/v1/auth/verify-email",
+                "token=synthetic-code",
+            ),
+            (
+                "resend-form",
+                "/v1/auth/resend-verification",
+                "email=owner%40example.test",
+            ),
+            (
+                "mfa-enroll-form",
+                "/v1/auth/mfa/enroll",
+                "password=synthetic-password",
+            ),
+            ("mfa-confirm-form", "/v1/auth/mfa/confirm", "code=000000"),
+            (
+                "mfa-disable-form",
+                "/v1/auth/mfa/disable",
+                "code=synthetic-code",
+            ),
         ] {
             // Without the submit listener, native HTML forms must not put
             // credentials in the URL. Their URL-encoded POST fails closed at
             // the JSON-only endpoint, before any database or password work.
-            let start = PAGE.find(&format!("<form id=\"{id}\"")).unwrap();
-            let tag = PAGE[start..].split('>').next().unwrap();
+            let document = if PAGE.contains(&format!("<form id=\"{id}\"")) {
+                PAGE
+            } else {
+                ACCOUNT_PAGE
+            };
+            let start = document.find(&format!("<form id=\"{id}\"")).unwrap();
+            let tag = document[start..].split('>').next().unwrap();
             assert!(tag.contains("method=\"post\""));
             assert!(tag.contains(&format!("action=\"{endpoint}\"")));
             let request = Request::builder()
@@ -173,10 +226,14 @@ mod tests {
 
     #[tokio::test]
     async fn owner_assets_are_same_origin_and_never_cached() {
+        assert!(PAGE.contains("href=\"/owner/account\""));
+        assert!(ACCOUNT_PAGE.contains("id=\"verify\""));
         for (path, content_type) in [
             ("/owner/devices", "text/html; charset=utf-8"),
             ("/owner/devices.js", "text/javascript; charset=utf-8"),
             ("/owner/devices.css", "text/css; charset=utf-8"),
+            ("/owner/account", "text/html; charset=utf-8"),
+            ("/owner/account.js", "text/javascript; charset=utf-8"),
         ] {
             let response = router()
                 .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
@@ -186,6 +243,10 @@ mod tests {
             assert_eq!(response.headers()[header::CONTENT_TYPE], content_type);
             assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
             assert_eq!(response.headers()["x-content-type-options"], "nosniff");
+            assert_eq!(
+                response.headers()[header::STRICT_TRANSPORT_SECURITY],
+                "max-age=63072000; includeSubDomains"
+            );
             assert!(
                 response.headers()[header::CONTENT_SECURITY_POLICY]
                     .to_str()

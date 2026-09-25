@@ -40,6 +40,33 @@ production promotion; follow the release verification steps in
 Set `APP_PORT` in `.env` if port 8080 is occupied for the normal local setup;
 the documented health endpoints then use that port.
 
+The `app` and `app_b` services forward the documented server settings in
+`.env.example`, including synthetic-alpha, inbound-pilot, webhook, and Stripe
+TEST settings. Uncomment an optional setting in `.env` only when configuring
+that feature; unset keys are omitted from the container. Compose uses
+`POSTGRES_PASSWORD` for `db`, `RUNTIME_DATABASE_PASSWORD` to build the API
+database URL, and `APP_PORT` for the host-side port. `DATABASE_URL` goes to the
+migrator; `MIGRATIONS_DIR` in `.env.example` is for a local binary. Compose
+always sets `DISPATCH_ENABLED=false` for both API services, regardless of the
+value in `.env`.
+
+## Owner registration
+
+Compose passes `REGISTRATION_MODE`, allowlists, and the optional enrollment
+key to both API services. The default is `closed` even if SMTP is configured.
+For the first owner, leave it closed, apply migrations and runtime-role
+provisioning, stop every API instance, then use the packaged `zrotext-admin`
+binary through the private `app` service. It reads a password only from a
+non-echoing stdin pipe, creates one verified owner when `accounts` is empty,
+and sends no mail. The executable command and later invited-owner HTTPS
+registration/verification procedure are in
+[Self-hosting](../../docs/SELF-HOSTING.md#owner-registration). Allowlist mode
+requires an independent private master key. `zrotext-admin issue-invite`
+derives an address-bound token from it; `open` is intentionally public.
+Instances without SMTP recover a forgotten owner password with
+`zrotext-admin reset-password`; see
+[Self-hosting](../../docs/SELF-HOSTING.md#owner-password-recovery).
+
 The `migrate` service applies `migrations/001_*.sql`, `002_*.sql`, and later
 consecutive numbered SQL files before the API starts. Migration files are trusted
 operator source code, not sandboxed input. The runner rejects explicit transaction
@@ -72,16 +99,31 @@ It refuses missing or extra M0 columns and missing primary keys or required
 indexes. Investigate any failure before retrying; do not modify
 `schema_migrations` by hand.
 
-The Compose connection is private-network PostgreSQL without transport TLS.
-This is a self-host example, not a production migration procedure. The
-deployment plan must add a protected TLS connection and backup/restore proof
-before an internet-facing launch.
+The local Compose database is named `db` and stays on its private Docker network;
+this example does not enable PostgreSQL transport TLS. Remote database URLs for
+the API, migrator, and key rewrap tool must use `sslmode=require`. The application
+verifies the server certificate and URL hostname using system trust roots, or a
+private CA PEM bundle supplied as `DATABASE_TLS_CA_PEM_B64`. Provide that variable
+to each relevant container when using a private CA. A URL with `sslmode=prefer` or `disable` for
+any host other than loopback, a Unix socket, or Compose `db` fails unless
+`DATABASE_ALLOW_PLAINTEXT=true` is explicitly set; that override logs a warning
+and permits unencrypted database traffic. See the
+[self-hosting guide](../../docs/SELF-HOSTING.md#postgresql-transport-tls).
 
 The application image also includes `zrotext-webhook-kek-rewrap` for a staged
 operational webhook encryption-key change. Follow the
 [KEK rotation procedure](../../docs/WEBHOOK-KEK-ROTATION.md); the local self-host
 example does not configure webhook delivery or supply the required private
 keys.
+
+The image also contains the local TEST billing review command
+`/usr/local/bin/zrotext-billing-risk-review`. After migration 024, run it as a
+one-off process on the private Compose network with the runtime database URL;
+`list [--after evt_ID]` needs no provider key. For `resolve`, supply a TEST-only
+`STRIPE_BILLING_RECONCILIATION_KEY` through a temporary protected environment,
+not a Compose file, command argument or image layer. See the
+[billing review procedure](../../docs/protocol/stripe-test-billing-foundation.md)
+for the decision and audit rules. The Compose example does not enable billing.
 
 ## Database role separation
 

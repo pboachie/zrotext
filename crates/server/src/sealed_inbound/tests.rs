@@ -35,11 +35,10 @@ async fn insert_event(
 }
 
 #[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn sealed_identity_requires_live_writer_and_active_same_tenant_line() {
-    let Ok(url) = std::env::var("ZT_INBOUND_TEST_DATABASE_URL") else {
-        eprintln!("set ZT_INBOUND_TEST_DATABASE_URL for sealed identity database test");
-        return;
-    };
+    let url = std::env::var("ZT_INBOUND_TEST_DATABASE_URL")
+        .expect("set ZT_INBOUND_TEST_DATABASE_URL for PostgreSQL-backed tests");
     let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
     let schema = format!("sealed_identity_{}", Uuid::new_v4().simple());
@@ -68,6 +67,7 @@ async fn sealed_identity_requires_live_writer_and_active_same_tenant_line() {
         include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
         include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
         include_str!("../../../../deploy/compose/migrations/018_sealed_inbound_identity.sql"),
+        include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }

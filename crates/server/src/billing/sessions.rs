@@ -9,7 +9,7 @@ use axum::{
     Json, Router,
     body::Bytes,
     extract::{DefaultBodyLimit, Request, State},
-    http::{HeaderMap, header},
+    http::{HeaderMap, StatusCode, header},
     middleware::{self, Next},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
@@ -128,8 +128,9 @@ fn return_page(title: &'static str, message: &'static str) -> Response {
         [
             ("cache-control", "no-store"),
             ("referrer-policy", "no-referrer"),
-            ("content-security-policy", "default-src 'none'; base-uri 'none'; form-action 'none'"),
+            ("content-security-policy", "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"),
             ("x-content-type-options", "nosniff"),
+            ("strict-transport-security", "max-age=63072000; includeSubDomains"),
         ],
         Html(format!("<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><title>{title}</title><main><h1>{title}</h1><p>{message}</p><p><a href=\"/billing\">Billing status</a></p></main><footer><a href=\"/source\">Source code for this server</a></footer></html>")),
     ).into_response()
@@ -162,15 +163,20 @@ struct SessionUrl {
     url: String,
 }
 
+#[derive(Serialize)]
+struct SessionRefusal {
+    code: &'static str,
+}
+
 async fn checkout(
     State(state): State<Arc<SessionState>>,
     headers: HeaderMap,
     body: Bytes,
-) -> Result<Json<SessionUrl>, AuthHttpError> {
+) -> Result<Response, AuthHttpError> {
     if !body.is_empty() {
         return Err(AuthHttpError::BadRequest);
     }
-    let db = connect(&state.auth.database_url).await?;
+    let mut db = connect(&state.auth.database_url).await?;
     let owner = http_auth::require_owner(
         &db,
         &state.auth.hasher,
@@ -187,13 +193,25 @@ async fn checkout(
         &state.success_url,
         &state.cancel_url,
     )?;
+    // One nonterminal subscription per account: a second live subscription
+    // projects an ambiguous entitlement of zero outbound quota and a zero
+    // device cap. Refuse before any Stripe work and before spending the
+    // shared session budget.
+    if subscription_exists(&mut db, account_id).await? {
+        return Ok((
+            StatusCode::CONFLICT,
+            Json(SessionRefusal {
+                code: "subscription_exists",
+            }),
+        )
+            .into_response());
+    }
     consume_session_budget(&db, &state, account_id).await?;
     let customer_id = match bound_customer(&db, account_id).await? {
         Some(id) => id,
         None => {
             let id = state.stripe.create_customer(account_id).await?;
             // The webhook foundation serializes this binding with event ingress.
-            let mut db = db;
             bind_customer(&mut db, account_id, &id)
                 .await
                 .map_err(|_| AuthHttpError::Unavailable)?;
@@ -213,7 +231,34 @@ async fn checkout(
             &retry_key,
         )
         .await?;
-    Ok(Json(SessionUrl { url }))
+    Ok(Json(SessionUrl { url }).into_response())
+}
+
+/// Whether the account already holds a nonterminal subscription or a
+/// subscription whose reconciled state is not yet known. The check runs under
+/// reconciliation's per-account advisory lock, so it can never interleave
+/// with an in-flight projection and observe half-committed billing state.
+async fn subscription_exists(db: &mut Client, account_id: Uuid) -> Result<bool, AuthHttpError> {
+    let tx = db
+        .transaction()
+        .await
+        .map_err(|_| AuthHttpError::Unavailable)?;
+    tx.query_one(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1, 2))",
+        &[&account_id.to_string()],
+    )
+    .await
+    .map_err(|_| AuthHttpError::Unavailable)?;
+    let blocked: bool = tx
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM billing_subscriptions WHERE account_id=$1 AND stripe_status NOT IN ('canceled','incomplete_expired','provider_deleted')) OR EXISTS(SELECT 1 FROM billing_reconciliations WHERE account_id=$1 AND dirty_generation>processed_generation)",
+            &[&account_id],
+        )
+        .await
+        .map_err(|_| AuthHttpError::Unavailable)?
+        .get(0);
+    tx.commit().await.map_err(|_| AuthHttpError::Unavailable)?;
+    Ok(blocked)
 }
 
 async fn portal(
@@ -626,10 +671,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn owner_checkout_portal_bind_customer_and_reject_cross_tenant() {
-        let Ok(base_url) = std::env::var("ZT_AUTH_TEST_DATABASE_URL") else {
-            return;
-        };
+        let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
         let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
         tokio::spawn(async move {
             let _ = connection.await;
@@ -895,6 +940,218 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+    async fn owner_checkout_refused_while_subscription_live_or_pending() {
+        let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
+        let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        let schema = format!("hosted_billing_guard_{}", Uuid::new_v4().simple());
+        setup
+            .batch_execute(&format!("CREATE SCHEMA {schema}"))
+            .await
+            .unwrap();
+        let db_url = format!("{base_url}?options=-csearch_path%3D{schema}");
+        let (mut db, connection) = tokio_postgres::connect(&db_url, NoTls).await.unwrap();
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        for sql in [
+            include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
+            include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+            include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
+            include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
+            include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+            include_str!("../../../../deploy/compose/migrations/006_usage_metering.sql"),
+            include_str!(
+                "../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"
+            ),
+            include_str!("../../../../deploy/compose/migrations/008_stripe_billing_foundation.sql"),
+            include_str!("../../../../deploy/compose/migrations/009_webhook_manual_replay.sql"),
+            include_str!("../../../../deploy/compose/migrations/010_billing_test_entitlement.sql"),
+            include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
+            include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
+            include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
+            include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
+            include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+        ] {
+            db.batch_execute(sql).await.unwrap();
+        }
+        let hasher = Arc::new(auth::TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
+        let password = Uuid::new_v4().to_string();
+        let signup = auth::register(&mut db, &hasher, "billing-guard@example.test", &password)
+            .await
+            .unwrap();
+        auth::verify_email(&mut db, &hasher, &signup.verification_token)
+            .await
+            .unwrap();
+        let owner = auth::login(&db, &hasher, "billing-guard@example.test", &password)
+            .await
+            .unwrap();
+        let account_id = signup.account_id;
+        let mock = Arc::new(MockStripe {
+            account_id,
+            calls: Mutex::new(Vec::new()),
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let mock_router = Router::new()
+            .route("/v1/customers", post(mock_customer))
+            .route("/v1/checkout/sessions", post(mock_checkout))
+            .route("/v1/billing_portal/sessions", post(mock_portal))
+            .with_state(mock.clone());
+        let server = tokio::spawn(async move {
+            axum::serve(listener, mock_router).await.unwrap();
+        });
+        let auth_state = AuthHttpState::new(
+            db_url.clone(),
+            hasher,
+            "https://zrotext.example".into(),
+            Arc::new(DisabledVerificationDispatcher),
+        )
+        .unwrap();
+        let mut state = SessionState::new(
+            auth_state,
+            "rk_test_fixture123456".into(),
+            "price_fixture1".into(),
+        )
+        .unwrap();
+        state.stripe = Arc::new(StripeClient {
+            http: HttpClient::builder()
+                .no_proxy()
+                .redirect(redirect::Policy::none())
+                .retry(retry::never())
+                .timeout(Duration::from_secs(3))
+                .build()
+                .unwrap(),
+            secret_key: "rk_test_fixture123456".into(),
+            api_base: format!("http://{address}"),
+        });
+        let app = router(state);
+        let request = || owner_request("/checkout", &owner.token, &owner.csrf_token, true);
+
+        // Baseline: an account without any subscription row may subscribe.
+        let response = app.clone().oneshot(request()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(mock.calls.lock().unwrap().len(), 2);
+        let customer: String = db
+            .query_one(
+                "SELECT stripe_customer_id FROM billing_customers WHERE account_id=$1",
+                &[&account_id],
+            )
+            .await
+            .unwrap()
+            .get(0);
+
+        // A nonterminal subscription refuses Checkout before any Stripe call.
+        db.execute(
+            "INSERT INTO billing_reconciliations(stripe_subscription_id,account_id,stripe_customer_id,dirty_generation,processed_generation) VALUES('sub_Guard1',$1,$2,1,1)",
+            &[&account_id, &customer],
+        )
+        .await
+        .unwrap();
+        db.execute(
+            "INSERT INTO billing_subscriptions(stripe_subscription_id,account_id,stripe_customer_id,stripe_status,stripe_price_id,recognized_price) VALUES('sub_Guard1',$1,$2,'past_due','price_fixture1',true)",
+            &[&account_id, &customer],
+        )
+        .await
+        .unwrap();
+        let response = app.clone().oneshot(request()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        let body: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 1024).await.unwrap()).unwrap();
+        assert_eq!(body["code"], "subscription_exists");
+        assert_eq!(mock.calls.lock().unwrap().len(), 2);
+
+        // A fully reconciled terminal subscription no longer blocks Checkout.
+        db.execute(
+            "UPDATE billing_subscriptions SET stripe_status='canceled' WHERE stripe_subscription_id='sub_Guard1'",
+            &[],
+        )
+        .await
+        .unwrap();
+        let response = app.clone().oneshot(request()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(mock.calls.lock().unwrap().len(), 3);
+
+        // A pending reconciliation blocks even a terminal subscription: the
+        // next provider read is unknown and the guard must fail closed.
+        db.execute(
+            "UPDATE billing_reconciliations SET dirty_generation=2 WHERE stripe_subscription_id='sub_Guard1'",
+            &[],
+        )
+        .await
+        .unwrap();
+        let response = app.clone().oneshot(request()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(mock.calls.lock().unwrap().len(), 3);
+        // A queued subscription that has never been reconciled also blocks.
+        db.execute(
+            "DELETE FROM billing_subscriptions WHERE stripe_subscription_id='sub_Guard1'",
+            &[],
+        )
+        .await
+        .unwrap();
+        let response = app.clone().oneshot(request()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(mock.calls.lock().unwrap().len(), 3);
+
+        // Concurrent attempts serialize with an in-flight projection on the
+        // reconciliation lock and must all observe the committed subscription.
+        let (mut holder, connection) = tokio_postgres::connect(&db_url, NoTls).await.unwrap();
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        let lock = holder.transaction().await.unwrap();
+        lock.query_one(
+            "SELECT pg_advisory_xact_lock(hashtextextended($1, 2))",
+            &[&account_id.to_string()],
+        )
+        .await
+        .unwrap();
+        lock.execute(
+            "INSERT INTO billing_reconciliations(stripe_subscription_id,account_id,stripe_customer_id,dirty_generation,processed_generation) VALUES('sub_Guard2',$1,$2,1,1)",
+            &[&account_id, &customer],
+        )
+        .await
+        .unwrap();
+        lock.execute(
+            "INSERT INTO billing_subscriptions(stripe_subscription_id,account_id,stripe_customer_id,stripe_status,stripe_price_id,recognized_price) VALUES('sub_Guard2',$1,$2,'active','price_fixture1',true)",
+            &[&account_id, &customer],
+        )
+        .await
+        .unwrap();
+        let mut attempts = tokio::task::JoinSet::new();
+        for _ in 0..4 {
+            let app = app.clone();
+            let request = request();
+            attempts.spawn(async move { app.oneshot(request).await.unwrap().status() });
+        }
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        lock.commit().await.unwrap();
+        let mut refused = 0;
+        while let Some(result) = attempts.join_next().await {
+            assert_eq!(result.unwrap(), StatusCode::CONFLICT);
+            refused += 1;
+        }
+        assert_eq!(refused, 4);
+        assert_eq!(
+            mock.calls.lock().unwrap().len(),
+            3,
+            "refused checkout must never reach the provider"
+        );
+        server.abort();
+        drop(db);
+        setup
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
     #[ignore = "creates test-mode Stripe Customer, Checkout, and Portal sessions; run explicitly"]
     async fn real_stripe_sandbox_hosted_sessions_smoke() {
         let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
@@ -943,6 +1200,7 @@ mod tests {
             include_str!("../../../../deploy/compose/migrations/018_sealed_inbound_identity.sql"),
             include_str!("../../../../deploy/compose/migrations/019_line_activation_contract.sql"),
             include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+            include_str!("../../../../deploy/compose/migrations/028_billing_provider_failures.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }

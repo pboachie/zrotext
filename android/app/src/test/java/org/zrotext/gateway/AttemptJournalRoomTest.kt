@@ -7,6 +7,7 @@ import androidx.room.Room
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -210,17 +211,46 @@ class AttemptJournalRoomTest {
         val migrated = Room.databaseBuilder(context, SmsJournalDatabase::class.java, name)
             .allowMainThreadQueries().addMigrations(
                 SmsJournalDatabase.MIGRATION_1_2, SmsJournalDatabase.MIGRATION_2_3,
-                SmsJournalDatabase.MIGRATION_3_4, SmsJournalDatabase.MIGRATION_4_5).build()
+                SmsJournalDatabase.MIGRATION_3_4, SmsJournalDatabase.MIGRATION_4_5,
+                SmsJournalDatabase.MIGRATION_5_6, SmsJournalDatabase.MIGRATION_6_7,
+                SmsJournalDatabase.MIGRATION_7_8,
+                SmsJournalDatabase.MIGRATION_8_9).build()
         try {
             assertNotNull(migrated.attempts().getAttempt("legacy-attempt"))
             assertEquals(false, migrated.attempts().getAttempt("legacy-attempt")!!.evidenceConflict)
             assertEquals(null, migrated.attempts().getAttempt("legacy-attempt")!!.messageId)
-            assertEquals(5, migrated.openHelper.readableDatabase.version)
+            assertEquals(9, migrated.openHelper.readableDatabase.version)
             migrated.attempts().markInterrupted(20)
             assertEquals(AttemptState.UNKNOWN, migrated.attempts().getAttempt("legacy-attempt")?.state)
         } finally {
             migrated.close()
             context.deleteDatabase(name)
         }
+    }
+
+    @Test fun oldDeviceRadioEventsAreQuarantinedBeforeNewDevicePump() {
+        val oldAttempt = "d32c1f4a-0b8f-4b69-b2b7-38be13a8f07a"
+        val oldEvent = "a54fcf46-aeb8-4bc5-a6fd-3d784516b880"
+        val message = "9f0a74d0-a394-4d6f-93da-72a209c5228c"
+        val next = EvidenceIdentity("33333333-3333-4333-8333-333333333333",
+            "44444444-4444-4444-8444-444444444444", "b".repeat(64))
+        dao.reserveAlpha(oldAttempt, message, 3, 1, oldEvent, 10, null,
+            testEvidenceIdentity)
+        assertNull(dao.nextAlphaEvent(next.accountId, next.deviceId, next.originHash))
+        assertEquals(1, dao.quarantineForeignAlpha(next.accountId, next.deviceId,
+            next.originHash, 20))
+        assertEquals("identity_changed", dao.getAlphaEvent(oldEvent)?.quarantineReason)
+        assertEquals(0, dao.consumeRadioStart(oldAttempt, message, 3, 1, 21))
+
+        val newEvent = "cc2e4c99-709e-42fb-b292-aa6f83f6e6d4"
+        dao.reserveAlpha("10056bb8-87df-4144-a4e2-98353f3bf85e", message,
+            3, 1, newEvent, 30, null, next)
+        assertEquals(newEvent, dao.nextAlphaEvent(next.accountId, next.deviceId,
+            next.originHash)?.eventId)
+        dao.recordCallback(oldAttempt, 0, false, Activity.RESULT_OK, null, 40)
+        assertEquals(1, dao.quarantineForeignAlpha(next.accountId, next.deviceId,
+            next.originHash, 41))
+        assertEquals(newEvent, dao.nextAlphaEvent(next.accountId, next.deviceId,
+            next.originHash)?.eventId)
     }
 }

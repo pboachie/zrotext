@@ -13,7 +13,11 @@ challenge UUID and an operational pepper; plaintext code is not stored in
 PostgreSQL. A worker claims one item under a lease, sends with bounded TLS
 SMTP, and acknowledges by lease ID. Retry after ambiguous SMTP acceptance
 may send the same code twice. Six failed attempts dead-letter the item;
-password-authenticated resend can revive it within its validity window.
+password-authenticated resend can revive it within its validity window. The
+worker emits a rate-limited, content-free failure category and a final
+dead-letter warning. Startup checks the configured SMTP connection with NOOP
+and warns on failure without sending a message. Operators should check these
+warnings when verification mail does not arrive.
 The account remains pending after delivery failure. A pending sign-up lasts
 24 hours from registration; resends do not extend it. After that window its
 codes stop verifying, and a new registration for the same address replaces
