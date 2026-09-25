@@ -87,9 +87,11 @@ def main():
             "-c ssl_cert_file=/tmp/zrotext-server.pem "
             "-c ssl_key_file=/tmp/zrotext-server.key",
         ], stdout=subprocess.DEVNULL)
+        # The image's first-start init server listens only on the Unix socket,
+        # then restarts. Probe TCP so readiness means the final server is up.
         for _ in range(60):
             ready = subprocess.run(
-                ["docker", "exec", container, "pg_isready", "-U", "postgres"],
+                ["docker", "exec", container, "pg_isready", "-h", "127.0.0.1", "-U", "postgres"],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
             if ready.returncode == 0:
