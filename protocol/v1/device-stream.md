@@ -89,6 +89,11 @@ session nor a heartbeat authorizes SMS.
 
 ## Opt-in inbound metadata pilot (Android client)
 
+A distinct, default-off `line_opt_out` frame accepts signed STOP/review
+metadata without an outbound attempt when `LINE_OPT_OUT_ENABLED=true`. It
+requires a current active line binding and never clears suppression or sends
+an SMS. See [the line-bound opt-out contract](line-opt-out-contract.md).
+
 The Android app exposes a separate **Start inbound metadata pilot** action. It
 is off by default. The hub must separately enable `INBOUND_PILOT_ENABLED=true`.
 After authenticated session setup, the phone sends previously captured

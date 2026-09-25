@@ -1,7 +1,8 @@
-# Internal line-bound unsolicited opt-out contract
+# Line-bound unsolicited opt-out contract
 
-This is a server prerequisite, not a device-stream frame or a general send
-route. `inbound::unsolicited::ingest_line_opt_out` has no transport caller.
+This is a restricted device-stream receive path, not a general send route.
+The device-stream frame calls `inbound::unsolicited::ingest_line_opt_out` only
+when `LINE_OPT_OUT_ENABLED=true`; the default is false.
 It accepts a signed, metadata-only STOP or ambiguous opt-out review action
 without requiring an outbound message or attempt. It never accepts START or
 clears an existing suppression. No SMS body is uploaded or stored.
@@ -33,6 +34,16 @@ observed_at_ms:i64 || action:u8 || recipient_len:u8 || recipient_e164[recipient_
 action = 01 STOP keyword, 02 conservative review block
 ```
 
+Cross-client transcript vector: account
+`11111111-1111-4111-8111-111111111111`, device
+`22222222-2222-4222-8222-222222222222`, line
+`33333333-3333-4333-8333-333333333333`, event
+`44444444-4444-4444-8444-444444444444`, generation 7, sequence 42,
+`observed_at_ms=1700000000000`, action 01 and recipient `+15551234567`
+produce SHA-256 digest
+`bd2e9c463936887cfa804c2a35ecf2be37004b9c6f2104f1f3e758a38fd5459a`
+over the exact statement. Android and Rust independently assert this value.
+
 The sequence space is independent of the attempt-bound inbound pilot's
 sequence. A source event must be at most seven days old and at most five
 minutes ahead of server time, and its timestamp must be after activation of
@@ -47,4 +58,36 @@ Migration 032 prevents a later attempt-bound STOP from replacing an active
 unsolicited source with an attempt-bound source; an old-window START therefore
 cannot clear this block. A future signed line-bound START/consent workflow
 must be designed separately, including how to handle out-of-order actions.
-No webhooks are queued for this internal event.
+No webhooks are queued for this event.
+
+## Device-stream frame
+
+After the enrolled device authenticates on `/v1/device-stream`, it may send
+one UTF-8 JSON text frame of at most 4096 bytes per opt-out action:
+
+```json
+{"v":1,"type":"line_opt_out","connection_epoch":1,"event_id":"00000000-0000-4000-8000-000000000001","sequence":1,"line_id":"00000000-0000-4000-8000-000000000002","binding_generation":1,"action":"opt_out","recipient_e164":"+15551234567","observed_at_ms":1700000000000,"signature_der":"BASE64URL_NO_PAD"}
+```
+
+`action` is exactly `opt_out` (signed byte 01) or `opt_out_review`
+(signed byte 02). `signature_der` is canonical unpadded base64url of the
+device's DER signature over the bytes above. The account and device IDs come
+from the authenticated session, not the JSON frame. Unknown fields, `opt_in`,
+body fields, malformed signatures, noncanonical base64, stale connection
+epochs, wrong line/generation, and disabled runtime yield no acknowledgement.
+The server checks the writer session and line again inside the database
+transaction. A disabled runtime or stale epoch closes with WebSocket code
+1008; invalid signed evidence closes with 4409; transient storage/budget
+failure closes with 1013. The phone retains its local STOP and signed upload
+row whenever no matching acknowledgement is received.
+
+After commit the server replies:
+
+```json
+{"v":1,"type":"line_opt_out_ack","event_id":"00000000-0000-4000-8000-000000000001","created":true}
+```
+
+`created=false` means an exact replay already committed. The client must
+match `event_id` before retiring its upload row. There is no
+`suppression_cleared`, webhook count, START, outbound attempt, or SMS body in
+this contract. A new socket session may retry the exact same signed event.
