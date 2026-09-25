@@ -8,7 +8,8 @@ import android.os.Build
 import android.telephony.SubscriptionManager
 
 /** Public, device-local identifiers only. A subscription ID alone cannot establish continuity. */
-data class ActiveSimCard(val subscriptionId: Int, val cardId: Int?)
+data class ActiveSimCard(val subscriptionId: Int, val cardId: Int?,
+                         val isEmbedded: Boolean = false)
 
 /** Snapshot taken at an owner-approved activation, never inferred from the saved SIM selection. */
 internal data class ActivatedSimCard(val subscriptionId: Int, val cardId: Int)
@@ -32,7 +33,7 @@ internal object SimCardContinuity {
                 manager.activeSubscriptionInfoList
             }
             subscriptions?.map { info ->
-                ActiveSimCard(info.subscriptionId, info.cardId)
+                ActiveSimCard(info.subscriptionId, info.cardId, info.isEmbedded)
             }
         } catch (_: RuntimeException) {
             null
@@ -47,7 +48,9 @@ internal object SimCardContinuity {
         if (active?.size != 1) return null
         val only = active.single()
         val card = only.cardId ?: return null
-        return if (only.subscriptionId >= 0 && card >= 0) {
+        // An eSIM card ID identifies the eUICC, not an individual profile. A profile swap may
+        // preserve the card ID and cannot pass until a separate profile identity is verified.
+        return if (only.subscriptionId >= 0 && card >= 0 && !only.isEmbedded) {
             ActivatedSimCard(only.subscriptionId, card)
         } else null
     }

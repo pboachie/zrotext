@@ -56,7 +56,9 @@ the sole observed active subscription at capture time. On Android API 29+, the
 app also requires the public card ID to match the approved local binding.
 API 30+ queries the complete active subscription list, including hidden
 opportunistic subscriptions. API 28 and devices with an unknown card ID keep
-the STOP local. Existing subscription-only bindings migrate with no card ID;
+the STOP local. Embedded eSIM subscriptions also stay local because the public
+card ID identifies the eUICC and cannot distinguish profiles. Existing
+subscription-only bindings migrate with no card ID;
 they require renewed owner approval before any line-bound attribution or upload.
 An explicit foreground Android
 mode can prepare and retry a signed `line_opt_out` device-stream frame for a

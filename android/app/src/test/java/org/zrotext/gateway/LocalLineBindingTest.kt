@@ -73,6 +73,8 @@ class LocalLineBindingTest {
                 listOf(ActiveSimCard(7, 42), ActiveSimCard(8, 43))))
             assertFalse(dao.installVerifiedLineBinding(first, listOf(ActiveSimCard(8, 43))))
             assertFalse(dao.installVerifiedLineBinding(first, listOf(ActiveSimCard(7, 43))))
+            assertFalse(dao.installVerifiedLineBinding(first,
+                listOf(ActiveSimCard(7, 42, isEmbedded = true))))
             assertNull(dao.currentLineBinding())
             assertTrue(dao.installVerifiedLineBinding(first, listOf(ActiveSimCard(7, 42))))
             assertFalse(dao.installVerifiedLineBinding(first.copy(generation = 1),
@@ -163,7 +165,8 @@ class LocalLineBindingTest {
             val sealed = InboundVault.sealSenderWithKey(testKey, testSender, firstPdu)
             val observations = listOf<List<ActiveSimCard>?>(
                 listOf(ActiveSimCard(7, 43)), null, listOf(ActiveSimCard(7, -2)),
-                listOf(ActiveSimCard(7, 42), ActiveSimCard(8, 43)))
+                listOf(ActiveSimCard(7, 42), ActiveSimCard(8, 43)),
+                listOf(ActiveSimCard(7, 42, isEmbedded = true)))
             observations.forEachIndexed { index, observation ->
                 val token = ('b' + index).toString().repeat(64)
                 assertTrue(dao.recordLocalWithdrawal(token, sender,
@@ -175,10 +178,10 @@ class LocalLineBindingTest {
                 assertNull(row.encryptedSender)
                 assertNull(row.senderNonce)
             }
-            assertTrue(dao.recordLocalWithdrawal("f".repeat(64), sender,
+            assertTrue(dao.recordLocalWithdrawal("1".repeat(64), sender,
                 InboundClassification.OPT_OUT, 7, listOf(ActiveSimCard(7, 42)), 999,
                 sealed.ciphertext, sealed.nonce))
-            assertNull(dao.localWithdrawal("f".repeat(64))?.lineId)
+            assertNull(dao.localWithdrawal("1".repeat(64))?.lineId)
             assertTrue(dao.isRecipientSuppressed(sender))
         } finally { db.close() }
     }

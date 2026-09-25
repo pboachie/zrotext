@@ -108,6 +108,8 @@ class LineOptOutUploadTest {
             listOf(ActiveSimCard(7, 42)), now + 7L * 24 * 60 * 60 * 1000))
         assertFalse(LineOptOutUploadGate.allows(row(), binding, account, device, 7,
             listOf(ActiveSimCard(7, 43)), now))
+        assertFalse(LineOptOutUploadGate.allows(row(), binding, account, device, 7,
+            listOf(ActiveSimCard(7, 42, isEmbedded = true)), now))
         assertFalse(LineOptOutUploadGate.allows(row(), binding.copy(cardId = null),
             account, device, 7, listOf(ActiveSimCard(7, 42)), now))
         assertFalse(LineOptOutUploadGate.allows(row(), binding, account, device, 7,

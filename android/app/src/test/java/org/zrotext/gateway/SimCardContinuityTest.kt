@@ -13,6 +13,12 @@ class SimCardContinuityTest {
         assertFalse(SimCardContinuity.matches(approved, listOf(ActiveSimCard(7, 43))))
     }
 
+    @Test fun embeddedProfileCannotUseSharedEuiccCardIdAsLineProof() {
+        val embedded = listOf(ActiveSimCard(7, 42, isEmbedded = true))
+        assertNull(SimCardContinuity.activationCandidate(embedded))
+        assertFalse(SimCardContinuity.matches(approved, embedded))
+    }
+
     @Test fun unchangedPublicCardObservationAcrossSyntheticRebootStillMatches() {
         val beforeReboot = listOf(ActiveSimCard(7, 42))
         val afterReboot = listOf(ActiveSimCard(7, 42))
