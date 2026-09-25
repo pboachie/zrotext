@@ -431,14 +431,23 @@ pub async fn ingest(
                 &[&session.account_id, &recipient_e164, &event.event_id, &observed_seconds, &event.attempt_id],
             ).await? == 1;
             // A signed START observed after an owner recorded an off-channel
-            // hold is verified new consent from that recipient. The database
-            // guard rejects any other release.
+            // hold is verified new consent from that recipient. observed_at
+            // may run MAX_FUTURE_MS ahead of the hub, so a START inside that
+            // window may predate the withdrawal and leaves the hold in place.
+            // The database guard (migration 038) enforces the same bound.
             let released = tx
                 .query(
                     "UPDATE owner_recipient_holds SET released_at=clock_timestamp(),release_event_id=$3 \
                      WHERE account_id=$1 AND recipient_e164=$2 AND released_at IS NULL \
-                     AND created_at<to_timestamp($4) RETURNING id",
-                    &[&session.account_id, &recipient_e164, &event.event_id, &observed_seconds],
+                     AND created_at+($5::double precision*interval '1 second')<to_timestamp($4) \
+                     RETURNING id",
+                    &[
+                        &session.account_id,
+                        &recipient_e164,
+                        &event.event_id,
+                        &observed_seconds,
+                        &(MAX_FUTURE_MS as f64 / 1000.0),
+                    ],
                 )
                 .await?;
             for hold in released {
