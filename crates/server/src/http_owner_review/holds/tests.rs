@@ -397,6 +397,19 @@ async fn owner_holds_and_review_decisions_are_owner_bound_tenant_scoped_and_audi
         .get(0);
     assert_eq!(holds, 0, "rejected requests must not write a hold");
 
+    let queued = Uuid::new_v4();
+    zrotext_delivery_store::DeliveryStore::new(&mut db)
+        .accept(zrotext_delivery_store::NewMessage {
+            account_id: *account_a,
+            device_id: *device_a,
+            client_message_id: queued,
+            idempotency_key: "owner-hold-cancellation",
+            recipient_e164: "+15550202000",
+            synthetic_payload: b"synthetic queued message",
+            expires_at_ms: now_ms().unwrap() + 60_000,
+        })
+        .await
+        .unwrap();
     let created = send(post(
         "/v1/owner/opt-out-holds",
         owner_a,
@@ -407,7 +420,15 @@ async fn owner_holds_and_review_decisions_are_owner_bound_tenant_scoped_and_audi
     .await;
     assert_eq!(created.status(), StatusCode::CREATED);
     assert_eq!(created.headers()[header::CACHE_CONTROL], "no-store");
-    let first_hold = body(created).await["hold_id"].as_str().unwrap().to_owned();
+    let created = body(created).await;
+    assert_eq!(created["cancelled_messages"], 1);
+    let cancelled: String = db
+        .query_one("SELECT state FROM messages WHERE id=$1", &[&queued])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(cancelled, "cancelled");
+    let first_hold = created["hold_id"].as_str().unwrap().to_owned();
     let duplicate = send(post(
         "/v1/owner/opt-out-holds",
         owner_a,

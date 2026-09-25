@@ -29,6 +29,7 @@ async function ownerPage() {
     historyPages: [], historyRequests: [], webhookPages: [], webhookRequests: [], pendingWebhook: null,
     endpoints: [], pendingEndpoints: null, pendingDevices: null, messages: [],
     reviewPages: [], reviewRequests: [], pendingReview: null,
+    holdPages: [], holdRequests: [], pendingHold: null, decisionRequests: [], pendingDecision: null,
     devices: [], deletedDevices: [], billingCapacity: null, approveResponse: response(409),
     authRequests: [], sessions: [{ id: "11111111-1111-4111-8111-111111111111", current: true,
       created_at_ms: 1000, expires_at_ms: 100000, last_used_at_ms: 2000 }],
@@ -66,6 +67,16 @@ async function ownerPage() {
       return response(204);
     }
     if (url === "/v1/owner/messages") return response(200, { messages: state.messages, next_cursor: null });
+    if (url === "/v1/owner/opt-out-review/decisions") {
+      state.decisionRequests.push({ url, options });
+      return state.pendingDecision || { status: 201, ok: true, json: async () => { throw new Error("Empty body"); } };
+    }
+    if (url.startsWith("/v1/owner/opt-out-holds")) {
+      state.holdRequests.push({ url, options });
+      if (state.pendingHold) return state.pendingHold;
+      if (options.method === "POST") return response(201, { hold_id: eventId, cancelled_messages: 1 });
+      return response(200, state.holdPages.shift() || { holds: [], next_cursor: null });
+    }
     if (url.startsWith("/v1/owner/opt-out-review")) {
       state.reviewRequests.push({ url, options });
       if (state.pendingReview) return state.pendingReview;
@@ -135,11 +146,11 @@ test("opt-out review pages active holds without showing SMS content and clears o
   const { element, state } = await ownerPage();
   const cursor = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
   state.reviewPages.push({ holds: [{
-    recipient_e164: "+15551234567", source: "sms_review", observed_at_ms: 1000,
+    review_event_id: eventId, decision: null, recipient_e164: "+15551234567", source: "sms_review", observed_at_ms: 1000,
     changed_at_ms: 2000, body: "PRIVATE_BODY", signature_der: "PRIVATE_SIGNATURE",
   }], next_cursor: cursor });
   state.reviewPages.push({ holds: [{
-    recipient_e164: "+15557654321", source: "sms_unsolicited_review",
+    review_event_id: deliveryId, decision: null, recipient_e164: "+15557654321", source: "sms_unsolicited_review",
     observed_at_ms: 3000, changed_at_ms: 4000,
   }], next_cursor: null });
   await element("refresh-opt-out-review").listeners.click();
@@ -589,4 +600,80 @@ test("a network failure shows a connection message instead of a browser error", 
   await element("refresh-messages").listeners.click();
   assert.match(element("message-status").textContent, /Could not reach the server/);
   assert.equal(element("owner-content").hidden, false);
+});
+
+function fillHold(element) {
+  element("hold-recipient").value = "+15550104400";
+  element("hold-channel").value = "email";
+  element("hold-reason").value = "consent_withdrawn";
+  element("hold-reported-at").value = "2026-09-25T10:30";
+}
+
+test("owner hold sends bounded fields with CSRF once and discards late success after logout", async () => {
+  const { element, state } = await ownerPage();
+  fillHold(element);
+  let finish;
+  state.pendingHold = new Promise((resolve) => { finish = resolve; });
+  const submit = element("owner-hold-form").listeners.submit;
+  const pending = submit({ preventDefault() {} });
+  await submit({ preventDefault() {} });
+  const posts = state.holdRequests.filter((r) => r.options.method === "POST");
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].url, "/v1/owner/opt-out-holds");
+  assert.equal(posts[0].options.headers["x-zrotext-csrf"], "ztc_synthetic");
+  assert.deepEqual(JSON.parse(posts[0].options.body), {
+    recipient_e164: "+15550104400", channel: "email", reason: "consent_withdrawn",
+    reported_at_ms: new Date("2026-09-25T10:30").getTime(),
+  });
+  await element("logout").listeners.click();
+  finish(response(201, { hold_id: eventId }));
+  await pending;
+  assert.equal(element("hold-recipient").value, "");
+  assert.equal(element("owner-hold-create-status").textContent, "");
+  assert.equal(element("owner-holds-list").children.length, 0);
+});
+
+test("owner hold validates input, clears saved fields and paginates without free text", async () => {
+  const { element, state } = await ownerPage();
+  const submit = element("owner-hold-form").listeners.submit;
+  await submit();
+  assert.equal(state.holdRequests.some((r) => r.options.method === "POST"), false);
+  fillHold(element);
+  const hold = { hold_id: eventId, recipient_e164: "+15550104400", channel: "email",
+    reason: "consent_withdrawn", reported_at_ms: 1000, created_at_ms: 2000, notes: "PRIVATE_NOTE" };
+  state.holdPages.push({ holds: [hold], next_cursor: eventId });
+  await submit();
+  assert.equal(element("hold-recipient").value, "");
+  assert.match(element("owner-hold-create-status").textContent, /already in progress/);
+  assert.equal(visibleText(element("owner-holds-list")).includes("PRIVATE_NOTE"), false);
+  state.holdPages.push({ holds: [{ ...hold, hold_id: deliveryId }], next_cursor: null });
+  await element("more-owner-holds").listeners.click();
+  assert.equal(state.holdRequests.at(-1).url, `/v1/owner/opt-out-holds?before=${eventId}`);
+  assert.equal(element("owner-holds-list").children.length, 2);
+  assert.equal(element("more-owner-holds").hidden, true);
+});
+
+test("review decisions accept empty 201, suppress duplicate submits and never imply unblock", async () => {
+  const { element, state } = await ownerPage();
+  const hold = { review_event_id: eventId, decision: null, recipient_e164: "+15550104400",
+    source: "sms_review", observed_at_ms: 1000, changed_at_ms: 2000 };
+  state.reviewPages.push({ holds: [hold], next_cursor: null });
+  await element("refresh-opt-out-review").listeners.click();
+  const form = element("opt-out-review-list").children[0].children.at(-1);
+  form.children[1].value = "not_opt_out";
+  let finish;
+  state.pendingDecision = new Promise((resolve) => { finish = resolve; });
+  const pending = form.listeners.submit();
+  await form.listeners.submit();
+  assert.equal(state.decisionRequests.length, 1);
+  assert.deepEqual(JSON.parse(state.decisionRequests[0].options.body), {
+    review_event_id: eventId, decision: "not_opt_out",
+  });
+  assert.equal(state.decisionRequests[0].options.headers["x-zrotext-csrf"], "ztc_synthetic");
+  state.reviewPages.push({ holds: [{ ...hold, decision: "not_opt_out" }], next_cursor: null });
+  finish({ status: 201, ok: true, json: async () => { throw new Error("Empty body"); } });
+  await pending;
+  assert.match(element("opt-out-review-status").textContent, /Decision recorded.*remains blocked/);
+  assert.match(visibleText(element("opt-out-review-list")), /remains blocked/);
+  assert.equal(element("opt-out-review-list").children[0].children.at(-1).listeners.submit, undefined);
 });

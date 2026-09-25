@@ -17,7 +17,7 @@ macro_rules! migration {
     };
 }
 
-const TEST_MIGRATIONS: [&str; 24] = [
+const TEST_MIGRATIONS: [&str; 25] = [
     migration!("001_foundation.sql"),
     migration!("002_auth.sql"),
     migration!("003_delivery.sql"),
@@ -37,6 +37,7 @@ const TEST_MIGRATIONS: [&str; 24] = [
     migration!("017_billing_device_caps.sql"),
     migration!("018_sealed_inbound_identity.sql"),
     migration!("019_line_activation_contract.sql"),
+    migration!("030_terminal_dispatch_jobs.sql"),
     migration!("031_recipient_suppression.sql"),
     migration!("032_line_opt_out_events.sql"),
     migration!("033_sms_line_binding_scope.sql"),
@@ -179,6 +180,26 @@ async fn signed_unsolicited_stop_is_attempt_free_line_bound_and_serialized() {
         connection_epoch: 2,
         deployment_epoch: 1,
     };
+    let pending_sms = Uuid::new_v4();
+    zrotext_delivery_store::DeliveryStore::new(&mut db)
+        .accept(zrotext_delivery_store::NewMessage {
+            account_id: account,
+            device_id: device,
+            client_message_id: pending_sms,
+            idempotency_key: "signed-opt-out-cancellation",
+            recipient_e164: "+15551234567",
+            synthetic_payload: b"synthetic pending message",
+            expires_at_ms: i64::try_from(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis(),
+            )
+            .unwrap()
+                + 60_000,
+        })
+        .await
+        .unwrap();
     let (base, der) = signed(session, &key, line, 1, "+15551234567");
     let event = LineOptOut {
         signature_der: &der,
@@ -192,6 +213,12 @@ async fn signed_unsolicited_stop_is_attempt_free_line_bound_and_serialized() {
         0
     );
     assert!(ingest_line_opt_out(&mut db, session, &event).await.unwrap());
+    let pending_state: String = db
+        .query_one("SELECT state FROM messages WHERE id=$1", &[&pending_sms])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(pending_state, "cancelled");
     assert!(!ingest_line_opt_out(&mut db, session, &event).await.unwrap());
     let row = db
         .query_one(

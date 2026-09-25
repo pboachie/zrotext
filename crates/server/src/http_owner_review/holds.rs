@@ -121,6 +121,7 @@ pub(super) struct HoldListQuery {
 #[derive(Serialize)]
 struct CreatedHold {
     hold_id: Uuid,
+    cancelled_messages: u64,
 }
 
 #[derive(Serialize)]
@@ -241,6 +242,16 @@ pub(super) async fn create_hold(
         Ok(None) => return error(StatusCode::CONFLICT, "hold_active"),
         Err(_) => return unavailable(),
     }
+    let cancelled_messages = match zrotext_delivery_store::cancel_pending_recipient(
+        &tx,
+        account_id,
+        &body.recipient_e164,
+    )
+    .await
+    {
+        Ok(count) => count,
+        Err(_) => return unavailable(),
+    };
     if tx
         .execute(
             "INSERT INTO owner_opt_out_audit(id,account_id,event,actor_user_id,actor_session_id,hold_id) \
@@ -253,7 +264,14 @@ pub(super) async fn create_hold(
     {
         return unavailable();
     }
-    (StatusCode::CREATED, Json(CreatedHold { hold_id })).into_response()
+    (
+        StatusCode::CREATED,
+        Json(CreatedHold {
+            hold_id,
+            cancelled_messages,
+        }),
+    )
+        .into_response()
 }
 
 pub(super) async fn list_holds(

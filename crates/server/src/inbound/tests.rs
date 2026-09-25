@@ -1088,6 +1088,26 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
     .unwrap();
     // STOP and START carry no body or sender field. The signed attempt binds
     // them to the writer's exact account-scoped recipient. Replays are inert.
+    let pending_sms = Uuid::new_v4();
+    zrotext_delivery_store::DeliveryStore::new(&mut db)
+        .accept(zrotext_delivery_store::NewMessage {
+            account_id: account,
+            device_id: device,
+            client_message_id: pending_sms,
+            idempotency_key: "signed-opt-out-cancellation",
+            recipient_e164: "+15551234567",
+            synthetic_payload: b"synthetic pending message",
+            expires_at_ms: i64::try_from(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis(),
+            )
+            .unwrap()
+                + 60_000,
+        })
+        .await
+        .unwrap();
     let stop = InboundEvent {
         event_id: Uuid::new_v4(),
         sequence: 2001,
@@ -1102,6 +1122,12 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
         ..stop
     };
     assert!(ingest(&mut db, session, &stop).await.unwrap().created);
+    let pending_state: String = db
+        .query_one("SELECT state FROM messages WHERE id=$1", &[&pending_sms])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(pending_state, "cancelled");
     assert!(!ingest(&mut db, session, &stop).await.unwrap().created);
     let active: bool = db.query_one(
         "SELECT active FROM recipient_suppressions WHERE account_id=$1 AND recipient_e164='+15551234567'",
@@ -1529,6 +1555,7 @@ async fn fresh_signed_events_share_a_durable_budget_and_replays_are_free() {
         include_str!("../../../../deploy/compose/migrations/015_webhook_kek_commitments.sql"),
         include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
         include_str!("../../../../deploy/compose/migrations/029_webhook_dispatch_fairness.sql"),
+        include_str!("../../../../deploy/compose/migrations/030_terminal_dispatch_jobs.sql"),
         include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
         include_str!("../../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
     ] {
