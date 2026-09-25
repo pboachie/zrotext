@@ -72,7 +72,7 @@
           ],
           "todo": [
             "Production SMS line activation and verified selected-SIM binding before enabling unsolicited opt-outs",
-            "Off-channel withdrawal intake and durable owner review decisions",
+            "Review off-channel holds and decisions ([#242](https://github.com/pboachie/zrotext/pull/242)), then dashboard controls and queued cancellation ([#245](https://github.com/pboachie/zrotext/pull/245))",
             "End-to-end opt-out, offline replay and SIM-change evidence on real devices"
           ]
         },
@@ -410,9 +410,10 @@
           "short": "Approvals and reply tracking",
           "stage": "planned",
           "evidence": [
-            ["product proposal", "PRODUCT-PLAN.md#business-inbox"]
+            ["product proposal", "PRODUCT-PLAN.md#business-inbox"],
+            ["synthetic demo PR #244", "https://github.com/pboachie/zrotext/pull/244"]
           ],
-          "evidence_note": "proposal only; no runtime implementation",
+          "evidence_note": "proposal only; scripted approval and handoff simulation under review in #244; no runtime implementation",
           "done": [],
           "todo": [
             "Durable owner decisions tied to the exact recipient and proposed action",
