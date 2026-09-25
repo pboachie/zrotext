@@ -415,6 +415,12 @@ pub async fn ingest(
                  SET active=TRUE,source_event_id=EXCLUDED.source_event_id,source_attempt_id=EXCLUDED.source_attempt_id,source_observed_at=EXCLUDED.source_observed_at,source=EXCLUDED.source,changed_at=clock_timestamp()",
                 &[&session.account_id, &recipient_e164, &event.event_id, &event.attempt_id, &observed_seconds, &source],
             ).await?;
+            zrotext_delivery_store::cancel_pending_recipient(
+                &tx,
+                session.account_id,
+                &recipient_e164,
+            )
+            .await?;
             false
         }
         Classification::OptIn => {

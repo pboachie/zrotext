@@ -62,7 +62,7 @@ The architecture describes intended behavior. Check the current code and release
 
 ## Sending responsibly
 
-Only send messages to recipients for whom you have an appropriate basis to send that type of SMS. Keep consent records, honor withdrawal and opt-out requests, and check the rules for your recipients' locations and your carrier or mobile plan. The restricted synthetic pilot now suppresses recognized opt-out replies within its authenticated inbound window and blocks suppressed recipients at acceptance. It still lacks general unsolicited-reply capture and an owner review workflow, so do not use it for general or bulk sending. See [SMS compliance and current limits](docs/SMS-COMPLIANCE.md).
+Only send messages to recipients for whom you have an appropriate basis to send that type of SMS. Keep consent records, honor withdrawal and opt-out requests, and check the rules for your recipients' locations and your carrier or mobile plan. The restricted synthetic pilot suppresses recognized opt-out replies and lets owners record withdrawals received through other channels. Holds block admission and new send grants, and cancel queued work before a grant. Owner review decisions do not lift blocks. Production line activation, general inbound content and end-to-end device evidence remain incomplete, so do not use it for general or bulk sending. See [SMS compliance and current limits](docs/SMS-COMPLIANCE.md).
 
 ## Roadmap
 
@@ -84,6 +84,8 @@ Explore [all proposed use cases](docs/USE-CASES.md), including event invitations
 <!-- /roadmap:overview -->
 
 ## Design preview
+
+Try the [interactive text receptionist simulation](docs/RECEPTIONIST-DEMO.md): review a service inquiry, wedding RSVP, or personal assistant request, then approve a scripted reply. It uses synthetic data and sends no SMS.
 
 These interface studies use synthetic devices, messages and traffic. Click an image to inspect it at full size.
 

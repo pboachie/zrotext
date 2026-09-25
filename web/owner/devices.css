@@ -51,6 +51,9 @@ summary { cursor: pointer; }
 #key-secret-panel { border: 1px solid #8198a2; border-radius: .3rem; padding: .8rem; margin-bottom: 1rem; }
 #key-secret-panel button { margin-top: .8rem; }
 [hidden] { display: none !important; }
+#owner-holds-list, #opt-out-review-list { list-style: none; padding: 0; }
+#owner-holds-list li, #opt-out-review-list li { border-top: 1px solid currentColor; padding: 1rem 0; overflow-wrap: anywhere; }
+#opt-out-review-list form { margin: 1rem 0 0; }
 @media (prefers-color-scheme: dark) {
   body { background: #0d171c; color: #e7f0f2; }
   a { color: #9fd9ea; }

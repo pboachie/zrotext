@@ -291,6 +291,8 @@ pub async fn ingest_line_opt_out(
         ],
     )
     .await?;
+    zrotext_delivery_store::cancel_pending_recipient(&tx, session.account_id, event.recipient_e164)
+        .await?;
     if !sms_line_binding_ready(&tx, session, event.line_id, event.binding_generation).await? {
         return Err(LineOptOutError::Unauthorized);
     }

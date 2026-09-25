@@ -10,6 +10,9 @@ let shownMessageCount = 0;
 let nextOptOutReviewCursor = null;
 let shownOptOutReviewCount = 0;
 let optOutReviewLoadGeneration = 0;
+let ownerHoldsLoadGeneration = 0;
+let nextOwnerHoldsCursor = null;
+let shownOwnerHoldsCount = 0;
 let pendingMfaChallenge = null;
 let nextKeyCursor = null;
 let shownKeyCount = 0;
@@ -46,6 +49,9 @@ const timeFormat = new Intl.DateTimeFormat(undefined, {
   year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", second: "numeric",
 });
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const holdChannels = Object.freeze({ email: "Email", phone_call: "Phone call", web_form: "Web form", postal_mail: "Postal mail", in_person: "In person", other: "Other" });
+const holdReasons = Object.freeze({ opt_out: "Opt-out", consent_withdrawn: "Consent withdrawn", complaint: "Complaint", wrong_number: "Wrong number" });
+const reviewDecisions = Object.freeze({ confirmed_opt_out: "Confirmed opt-out", not_opt_out: "Not an opt-out" });
 const webhookStatusLabels = Object.freeze({ pending: "Pending", leased: "In progress", succeeded: "Succeeded", dead: "Stopped" });
 const webhookReasonLabels = Object.freeze({ failed: "Attempts exhausted", policy_rejected: "Policy rejected", retired: "Retired", legacy: "Legacy failure" });
 const webhookOutcomeLabels = Object.freeze({ ack: "Acknowledged", timeout: "Timed out", http_error: "HTTP error", network_error: "Network error", policy_rejected: "Policy rejected" });
@@ -131,7 +137,8 @@ async function api(path, method = "GET", body = undefined) {
     error.status = response.status;
     throw error;
   }
-  if (response.status === 204) return null;
+  // Review decisions return 201 with an intentionally empty body.
+  if (response.status === 204 || (response.status === 201 && path === "/v1/owner/opt-out-review/decisions")) return null;
   const result = await response.json();
   if (requestEpoch !== ownerEpoch) {
     throw new Error("Your sign-in expired. Sign in again.");
@@ -164,7 +171,7 @@ async function completeSignIn() {
 }
 
 function loadOwnerData() {
-  return Promise.all([loadDevices(), loadDeviceCapacity(), loadMessages(), loadOptOutReview(), loadKeys(), loadWebhookEndpoints(), loadSessions()]);
+  return Promise.all([loadDevices(), loadDeviceCapacity(), loadMessages(), loadOptOutReview(), loadOwnerHolds(), loadKeys(), loadWebhookEndpoints(), loadSessions()]);
 }
 
 function clearPairing() {
@@ -251,6 +258,14 @@ function clearOwnerState() {
   nextOptOutReviewCursor = null;
   shownOptOutReviewCount = 0;
   message("opt-out-review-status", "");
+  ownerHoldsLoadGeneration += 1;
+  nextOwnerHoldsCursor = null;
+  shownOwnerHoldsCount = 0;
+  byId("owner-holds-list").replaceChildren();
+  byId("more-owner-holds").hidden = true;
+  for (const id of ["hold-recipient", "hold-channel", "hold-reason", "hold-reported-at"]) byId(id).value = "";
+  message("owner-holds-status", "");
+  message("owner-hold-create-status", "");
   byId("key-list").replaceChildren();
   byId("more-keys").hidden = true;
   nextKeyCursor = null;
@@ -770,6 +785,8 @@ async function loadOptOutReview(reset = true) {
     if (!page || !Array.isArray(page.holds) || page.holds.length > 20 ||
         !page.holds.every((hold) => hold && /^\+[1-9][0-9]{1,14}$/.test(hold.recipient_e164) &&
           ["sms_review", "sms_unsolicited_review"].includes(hold.source) &&
+          uuidPattern.test(hold.review_event_id) &&
+          (hold.decision === null || Object.hasOwn(reviewDecisions, hold.decision)) &&
           Number.isSafeInteger(hold.observed_at_ms) && Number.isSafeInteger(hold.changed_at_ms)) ||
         (page.next_cursor !== null && !uuidPattern.test(page.next_cursor))) {
       throw new Error("The review response was invalid.");
@@ -801,6 +818,13 @@ async function loadOptOutReview(reset = true) {
       const changedDate = new Date(hold.changed_at_ms);
       if (!Number.isNaN(changedDate.getTime())) changed.dateTime = changedDate.toISOString();
       row.append(recipient, source, observed, changed);
+      if (hold.decision !== null) {
+        const decision = document.createElement("p");
+        decision.textContent = `${reviewDecisions[hold.decision]} recorded · Recipient remains blocked.`;
+        row.append(decision);
+      } else {
+        appendReviewDecision(row, hold);
+      }
       rows.push(row);
     }
     byId("opt-out-review-list").append(...rows);
@@ -808,6 +832,120 @@ async function loadOptOutReview(reset = true) {
     if (stale()) return;
     moreButton.disabled = false;
     message("opt-out-review-status", `Could not load review holds. ${error.message}`);
+  }
+}
+
+function appendReviewDecision(row, hold) {
+  const form = document.createElement("form");
+  form.method = "post";
+  form.action = "/v1/owner/opt-out-review/decisions";
+  const label = document.createElement("label");
+  const select = document.createElement("select");
+  select.id = `decision-${hold.review_event_id}`;
+  select.required = true;
+  label.htmlFor = select.id;
+  label.textContent = `Review result for ${hold.recipient_e164}`;
+  for (const [value, text] of [["", "Choose a decision"], ...Object.entries(reviewDecisions)]) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = text;
+    select.append(option);
+  }
+  const button = document.createElement("button");
+  button.type = "submit";
+  button.textContent = "Record permanent decision";
+  form.append(label, select, button);
+  const rowEpoch = ownerEpoch;
+  form.addEventListener("submit", exclusive(async () => {
+    if (rowEpoch !== ownerEpoch || !Object.hasOwn(reviewDecisions, select.value)) return;
+    button.disabled = true;
+    select.disabled = true;
+    message("opt-out-review-status", "Recording decision…");
+    try {
+      await api("/v1/owner/opt-out-review/decisions", "POST", {
+        review_event_id: hold.review_event_id, decision: select.value,
+      });
+      if (rowEpoch !== ownerEpoch) return;
+      await loadOptOutReview();
+      if (rowEpoch === ownerEpoch) message("opt-out-review-status", "Decision recorded. The recipient remains blocked.");
+    } catch (error) {
+      if (rowEpoch !== ownerEpoch) return;
+      message("opt-out-review-status", error.status === 409
+        ? "A decision is already recorded. Refresh the review queue. The recipient remains blocked."
+        : `Could not confirm the decision. Refresh before retrying. ${error.message}`);
+    } finally {
+      button.disabled = false;
+      select.disabled = false;
+    }
+  }));
+  row.append(form);
+}
+
+async function loadOwnerHolds(reset = true) {
+  if (!reset && !nextOwnerHoldsCursor) return;
+  const epoch = ownerEpoch;
+  const generation = ++ownerHoldsLoadGeneration;
+  const stale = () => epoch !== ownerEpoch || generation !== ownerHoldsLoadGeneration;
+  const cursor = reset ? null : nextOwnerHoldsCursor;
+  const more = byId("more-owner-holds");
+  more.disabled = true;
+  if (reset) {
+    byId("owner-holds-list").replaceChildren();
+    nextOwnerHoldsCursor = null;
+    shownOwnerHoldsCount = 0;
+    more.hidden = true;
+  }
+  message("owner-holds-status", "Loading active requests…");
+  try {
+    const page = await api(cursor ? `/v1/owner/opt-out-holds?before=${encodeURIComponent(cursor)}` : "/v1/owner/opt-out-holds");
+    if (stale()) return;
+    if (!page || !Array.isArray(page.holds) || page.holds.length > 20 ||
+        !page.holds.every((hold) => hold && uuidPattern.test(hold.hold_id) &&
+          /^\+[1-9][0-9]{1,14}$/.test(hold.recipient_e164) &&
+          Object.hasOwn(holdChannels, hold.channel) && Object.hasOwn(holdReasons, hold.reason) &&
+          Number.isSafeInteger(hold.reported_at_ms) && Number.isSafeInteger(hold.created_at_ms)) ||
+        (page.next_cursor !== null && !uuidPattern.test(page.next_cursor))) throw new Error("The request list was invalid.");
+    nextOwnerHoldsCursor = page.next_cursor;
+    shownOwnerHoldsCount += page.holds.length;
+    for (const hold of page.holds) {
+      const row = document.createElement("li");
+      row.textContent = `${hold.recipient_e164} · ${holdChannels[hold.channel]} · ${holdReasons[hold.reason]} · Received ${localTime(hold.reported_at_ms)} · Blocked ${localTime(hold.created_at_ms)}`;
+      byId("owner-holds-list").append(row);
+    }
+    more.hidden = !nextOwnerHoldsCursor;
+    message("owner-holds-status", shownOwnerHoldsCount ? `${shownOwnerHoldsCount} active request(s) shown.` : "No active requests received elsewhere.");
+  } catch (error) {
+    if (!stale()) message("owner-holds-status", `Could not load requests. ${error.message}`);
+  } finally {
+    if (!stale()) more.disabled = false;
+  }
+}
+
+async function createOwnerHold() {
+  const epoch = ownerEpoch;
+  const body = {
+    recipient_e164: byId("hold-recipient").value.trim(),
+    channel: byId("hold-channel").value,
+    reason: byId("hold-reason").value,
+    reported_at_ms: new Date(byId("hold-reported-at").value).getTime(),
+  };
+  if (!/^\+[1-9][0-9]{1,14}$/.test(body.recipient_e164) || !Object.hasOwn(holdChannels, body.channel) ||
+      !Object.hasOwn(holdReasons, body.reason) || !Number.isSafeInteger(body.reported_at_ms)) {
+    message("owner-hold-create-status", "Enter a valid international number, channel, reason and local receipt time.");
+    return;
+  }
+  message("owner-hold-create-status", "Recording request…");
+  try {
+    await api("/v1/owner/opt-out-holds", "POST", body);
+    if (epoch !== ownerEpoch) return;
+    for (const id of ["hold-recipient", "hold-channel", "hold-reason", "hold-reported-at"]) byId(id).value = "";
+    message("owner-hold-create-status", "Request recorded. The recipient is blocked; queued messages not yet authorized for sending were cancelled. Sending already in progress may still finish.");
+    await Promise.all([loadOwnerHolds(), loadMessages()]);
+  } catch (error) {
+    if (epoch !== ownerEpoch) return;
+    message("owner-hold-create-status", error.status === 409
+      ? "An active request already blocks this recipient. Refresh the requests below."
+      : `Could not confirm the request. Refresh before retrying. ${error.message}`);
   }
 }
 
@@ -1068,6 +1206,9 @@ byId("refresh-messages").addEventListener("click", () => loadMessages());
 byId("more-messages").addEventListener("click", () => loadMessages(false));
 byId("refresh-opt-out-review").addEventListener("click", () => loadOptOutReview());
 byId("more-opt-out-review").addEventListener("click", () => loadOptOutReview(false));
+byId("refresh-owner-holds").addEventListener("click", () => loadOwnerHolds());
+byId("more-owner-holds").addEventListener("click", () => loadOwnerHolds(false));
+byId("owner-hold-form").addEventListener("submit", exclusive(createOwnerHold));
 byId("refresh-keys").addEventListener("click", () => loadKeys());
 byId("more-keys").addEventListener("click", () => loadKeys(false));
 byId("dismiss-key-secret").addEventListener("click", clearKeySecret);
