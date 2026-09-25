@@ -358,7 +358,9 @@ content redaction, so replay cannot recreate a purged body. Message IDs, state,
 attempts, digests, and usage records remain; this worker is not an account-erasure
 API. Restricted-pilot `recipient_suppressions` rows keep their E.164 recipient,
 whether active or cleared by START, so an opt-out outlives message content
-redaction; the worker never prunes them. Backups, WAL, replicas, and PostgreSQL dead tuples need their own lifecycle
+redaction; the worker never prunes them. Owner off-channel holds, review decisions
+and their append-only audit (`owner_recipient_holds`, `owner_opt_out_review_decisions`,
+`owner_opt_out_audit`) are kept the same way; they hold codes and IDs, never notes or SMS content. Backups, WAL, replicas, and PostgreSQL dead tuples need their own lifecycle
 policy. A database row update or deletion does not immediately erase old pages.
 
 Message events are deleted only after their parent message content has been
