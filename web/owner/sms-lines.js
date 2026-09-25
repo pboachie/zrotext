@@ -7,12 +7,14 @@
 
 const signing = globalThis.ZtSmsLineSigning;
 const pollIntervalMs = 2000;
+const maxPollMs = 10 * 60 * 1000;
 const requestTimeoutMs = 15000;
 let session = null;
 let serverKeys = [];
 let localKey = null;
 let activation = null;
 let pollTimer = null;
+let pollRound = 0;
 
 const byId = (id) => document.getElementById(id);
 // Tests replace the poll scheduler; the page uses the browser timer.
@@ -31,11 +33,19 @@ function csrfToken() {
 const failures = {
   400: "The request was not accepted. Check the values and try again.",
   401: "Your sign-in expired or the code was not accepted.",
-  403: "The server refused this action. The phone may have disconnected or the request expired.",
-  404: "Not found. SMS line activation may be disabled on this server.",
+  403: "The server refused this action. An approval key may already be active, or the phone disconnected or the request expired.",
+  404: "Not found. The key or activation no longer exists, or SMS line activation is disabled on this server.",
   409: "Revoke the active SMS approval key first.",
   429: "Too many attempts. Wait a few minutes and try again.",
 };
+
+/** A definite HTTP answer from the server, as opposed to a lost request. */
+class ApiRejection extends Error {
+  constructor(status) {
+    super(failures[status] || "The server could not complete this request.");
+    this.status = status;
+  }
+}
 
 async function api(path, method = "GET", body = undefined) {
   const csrf = csrfToken();
@@ -52,7 +62,7 @@ async function api(path, method = "GET", body = undefined) {
   } catch {
     throw new Error("Could not reach the server. Check your connection and try again.");
   }
-  if (!response.ok) throw new Error(failures[response.status] || "The server could not complete this request.");
+  if (!response.ok) throw new ApiRejection(response.status);
   return response.status === 204 ? null : response.json();
 }
 
@@ -99,7 +109,7 @@ function renderKeys() {
       : `Active key ${active.fingerprint.slice(0, 12)}… is held by another browser. Approve from there, or revoke it here.`);
   byId("key-create").hidden = Boolean(active);
   byId("key-revoke").hidden = !active;
-  byId("activation-approve").disabled = !held;
+  byId("activation-approve").disabled = !held || !activation || !activation.ownerStatement;
 }
 
 async function loadKeys() {
@@ -129,7 +139,10 @@ async function createKey(mfaCode) {
       signature_der_b64: signing.base64(signature), mfa_code: mfaCode,
     });
   } catch (error) {
-    await keyStore().remove();
+    // Only a definite refusal proves the key was not registered. After a lost
+    // response the server may have committed it, so keep the key and let the
+    // key list show whether it is active.
+    if (error instanceof ApiRejection && error.status >= 400 && error.status < 500) await keyStore().remove();
     throw error;
   }
 }
@@ -155,6 +168,12 @@ async function loadDevices() {
 function stopPolling() {
   if (pollTimer !== null && !globalThis.ZtSmsLinesSchedule) clearTimeout(pollTimer);
   pollTimer = null;
+  pollRound += 1;
+}
+
+function schedulePoll() {
+  const round = pollRound;
+  pollTimer = schedule(() => (round === pollRound ? poll() : undefined), pollIntervalMs);
 }
 
 /** Checks the server's statements against what this page opened and rebuilds the bytes to sign. */
@@ -174,22 +193,28 @@ async function verifiedOwnerStatement(view) {
 
 async function poll() {
   pollTimer = null;
-  if (!activation) return;
+  const current = activation;
+  if (!current) return;
   let view;
   try {
-    view = await api(`/v1/auth/sms-lines/${activation.lineId}/activations/${activation.challengeId}`);
+    view = await api(`/v1/auth/sms-lines/${current.lineId}/activations/${current.challengeId}`);
   } catch (error) {
-    say("activation-status", error.message);
+    if (activation !== current) return;
+    say("activation-status", `${error.message} Retrying…`);
+    if (Date.now() - current.startedAt < maxPollMs) schedulePoll();
     return;
   }
-  if (view.status === "awaiting_owner" && !activation.ownerStatement) {
+  // A newer activation replaced this one while the request was in flight.
+  if (activation !== current) return;
+  if (view.status === "awaiting_owner" && !current.ownerStatement) {
     try {
       const { owner, parsed } = await verifiedOwnerStatement(view);
-      activation.ownerStatement = owner;
+      current.ownerStatement = owner;
       say("review-api", String(parsed.androidApiLevel));
       say("review-subscription", String(parsed.selectedSubscriptionId));
       say("review-count", String(parsed.activeSubscriptionCount));
       byId("activation-review").hidden = false;
+      renderKeys();
       say("activation-status", "The phone signed its declaration. Check it, then approve.");
     } catch (error) {
       activation = null;
@@ -204,17 +229,18 @@ async function poll() {
   } else if (view.status === "closed") {
     byId("activation-review").hidden = true;
     activation = null;
-    say("activation-status", "This activation can no longer complete. The phone may have disconnected; start again.");
+    say("activation-status", "This activation can no longer complete. The phone may have disconnected or the request expired; start again.");
     return;
   } else if (view.status === "awaiting_device") {
     say("activation-status", "Waiting for the phone to sign its declaration…");
   }
-  if (Date.now() > view.expires_at_ms) {
+  // The server reports expiry as "closed"; this only bounds a stuck page.
+  if (Date.now() - current.startedAt > maxPollMs) {
     activation = null;
-    say("activation-status", "The request expired. Start again.");
+    say("activation-status", "No answer from the server. Start again.");
     return;
   }
-  pollTimer = schedule(poll, pollIntervalMs);
+  schedulePoll();
 }
 
 async function startActivation(deviceId, lineId) {
@@ -223,7 +249,8 @@ async function startActivation(deviceId, lineId) {
   signing.uuidBytes(lineId);
   const opened = await api(`/v1/auth/sms-lines/${lineId}/activations`, "POST", { device_id: deviceId });
   activation = { deviceId, lineId, challengeId: opened.challenge_id, generation: opened.generation,
-    ownerStatement: null };
+    ownerStatement: null, startedAt: Date.now() };
+  renderKeys();
   say("activation-status", "Waiting for the phone to sign its declaration…");
   await poll();
 }
@@ -263,10 +290,13 @@ async function init() {
   byId("approval-key").hidden = false;
   byId("activation").hidden = false;
   byId("key-form").addEventListener("submit", guard("key-status", async () => {
-    await createKey(byId("key-mfa").value.trim());
-    byId("key-mfa").value = "";
+    try {
+      await createKey(byId("key-mfa").value.trim());
+    } finally {
+      byId("key-mfa").value = "";
+      await loadKeys().catch(() => {});
+    }
     say("key-status", "Key created and registered.");
-    await loadKeys();
   }));
   byId("key-revoke").addEventListener("click", guard("key-status", async () => {
     await revokeKey(byId("key-mfa").value.trim());

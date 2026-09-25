@@ -21,7 +21,7 @@ function concat(...parts) {
   return Uint8Array.from(parts.flatMap((part) => Array.from(part)));
 }
 
-async function deviceStatement({ line, device = DEVICE, challenge = CHALLENGE, generation = 3n }) {
+async function deviceStatement({ line, account = ACCOUNT, device = DEVICE, challenge = CHALLENGE, generation = 3n }) {
   const generationBytes = new Uint8Array(8);
   new DataView(generationBytes.buffer).setBigInt64(0, generation);
   const tail = new Uint8Array(7);
@@ -29,7 +29,7 @@ async function deviceStatement({ line, device = DEVICE, challenge = CHALLENGE, g
   view.setUint16(0, 29);
   view.setUint8(2, 1);
   view.setInt32(3, 4);
-  return concat(Buffer.from("ZTSMS/line/device-confirm/v1\0", "latin1"), signing.uuidBytes(ACCOUNT),
+  return concat(Buffer.from("ZTSMS/line/device-confirm/v1\0", "latin1"), signing.uuidBytes(account),
     signing.uuidBytes(line), signing.uuidBytes(device), generationBytes, signing.uuidBytes(challenge),
     new Uint8Array(32).fill(9), tail);
 }
@@ -41,7 +41,7 @@ function verifies(sec1, message, der) {
   return verify("sha256", message, { key, dsaEncoding: "der" }, der);
 }
 
-async function smsLinesPage({ signedIn = true, tamper = null } = {}) {
+async function smsLinesPage({ signedIn = true, tamper = null, register = "ok" } = {}) {
   const elements = new Map();
   const makeElement = () => ({
     textContent: "", hidden: false, disabled: false, value: "", children: [], listeners: {},
@@ -79,8 +79,16 @@ async function smsLinesPage({ signedIn = true, tamper = null } = {}) {
         challengeId: body.challenge_id, nonce: signing.fromBase64(body.nonce_b64), publicKeySec1: server.sec1 });
       server.registerSignatureValid = verifies(server.sec1, statement, signing.fromBase64(body.signature_der_b64));
       assert.equal(body.mfa_code, "123456");
+      if (register === "reject") return response(401);
       server.keys = [{ fingerprint: signing.base64url(await signing.sha256(server.sec1)), active: true }];
+      // The server committed, but the response never reached the browser.
+      if (register === "lost") throw new TypeError("network reset");
       return response(201);
+    }
+    if (path.startsWith("/v1/auth/sms-line-owner-keys/") && method === "DELETE") {
+      server.revoked = { path, body };
+      server.keys = server.keys.map((key) => ({ ...key, active: false }));
+      return response(204);
     }
     if (path === "/v1/enrollment/devices")
       return response(200, { devices: [{ id: DEVICE, display_name: "Pixel", revoked: false, active_socket_lease: true }] });
@@ -93,7 +101,13 @@ async function smsLinesPage({ signedIn = true, tamper = null } = {}) {
       server.ownerSignatureValid = verifies(server.sec1, server.expectedOwner, signing.fromBase64(body.owner_signature_der_b64));
       return response(server.ownerSignatureValid ? 204 : 403);
     }
-    if (path.includes("/activations/")) return response(200, server.views.shift());
+    if (path.includes("/activations/")) {
+      if (server.failNextView) {
+        server.failNextView = false;
+        return response(503);
+      }
+      return response(200, server.views.shift());
+    }
     throw new Error(`unexpected ${method} ${path}`);
   };
   delete require.cache[require.resolve("./sms-lines.js")];
@@ -178,6 +192,89 @@ for (const [name, tamper, overrides] of [
     await page.submit("activation-form");
     assert.match(page.element("activation-status").textContent, /Do not approve it/);
     assert.equal(page.element("activation-review").hidden, true);
+    await page.click("activation-approve");
+    assert.equal(page.server.approvals.length, 0);
+  });
+}
+
+test("a refused registration discards the key; a lost response keeps it for the key list", async () => {
+  const refused = await smsLinesPage({ register: "reject" });
+  refused.element("key-mfa").value = "123456";
+  await refused.submit("key-form");
+  assert.equal(refused.stored(), null);
+  assert.match(refused.element("key-status").textContent, /code was not accepted/);
+
+  const lost = await smsLinesPage({ register: "lost" });
+  lost.element("key-mfa").value = "123456";
+  await lost.submit("key-form");
+  assert.notEqual(lost.stored(), null);
+  assert.equal(lost.stored().fingerprint, lost.server.keys[0].fingerprint);
+  assert.match(lost.element("key-summary").textContent, /held by this browser/);
+});
+
+test("revoking removes the local key and uses a fresh MFA code", async () => {
+  const page = await smsLinesPage();
+  page.element("key-mfa").value = "123456";
+  await page.submit("key-form");
+  const fingerprint = page.server.keys[0].fingerprint;
+  page.element("key-mfa").value = "654321";
+  await page.click("key-revoke");
+  assert.equal(page.server.revoked.path, `/v1/auth/sms-line-owner-keys/${encodeURIComponent(fingerprint)}`);
+  assert.deepEqual(page.server.revoked.body, { mfa_code: "654321" });
+  assert.equal(page.stored(), null);
+  assert.match(page.element("key-summary").textContent, /No active SMS approval key/);
+});
+
+test("a second activation can be approved without reloading the page", async () => {
+  const page = await smsLinesPage();
+  page.element("key-mfa").value = "123456";
+  await page.submit("key-form");
+  for (let round = 0; round < 2; round += 1) {
+    await page.click("activation-new-line");
+    const line = page.element("activation-line").value;
+    page.element("activation-device").value = DEVICE;
+    page.server.views.push(await page.prepareDeclaration(line));
+    await page.submit("activation-form");
+    assert.equal(page.element("activation-approve").disabled, false, `round ${round}`);
+    page.server.views.push({ status: "activated", device_id: DEVICE, generation: 3, expires_at_ms: 0 });
+    await page.click("activation-approve");
+    assert.equal(page.element("activation-status").textContent, "The line is active on this phone.");
+  }
+  assert.equal(page.server.approvals.length, 2);
+});
+
+test("a transient status error keeps polling", async () => {
+  const page = await smsLinesPage();
+  page.element("key-mfa").value = "123456";
+  await page.submit("key-form");
+  await page.click("activation-new-line");
+  const line = page.element("activation-line").value;
+  page.element("activation-device").value = DEVICE;
+  page.server.views.push({ status: "awaiting_device", device_id: DEVICE, generation: 3, expires_at_ms: 0 });
+  await page.submit("activation-form");
+  page.server.failNextView = true;
+  await page.runTimers();
+  assert.match(page.element("activation-status").textContent, /Retrying/);
+  page.server.views.push(await page.prepareDeclaration(line));
+  await page.runTimers();
+  assert.equal(page.element("activation-review").hidden, false);
+});
+
+for (const [name, overrides] of [
+  ["another account", { account: "00000000-0000-4000-8000-000000000077" }],
+  ["another phone", { device: "00000000-0000-4000-8000-000000000078" }],
+  ["another generation", { generation: 4n }],
+]) {
+  test(`the page refuses a declaration from ${name}`, async () => {
+    const page = await smsLinesPage();
+    page.element("key-mfa").value = "123456";
+    await page.submit("key-form");
+    await page.click("activation-new-line");
+    const line = page.element("activation-line").value;
+    page.element("activation-device").value = DEVICE;
+    page.server.views.push(await page.prepareDeclaration(line, overrides));
+    await page.submit("activation-form");
+    assert.match(page.element("activation-status").textContent, /Do not approve it/);
     await page.click("activation-approve");
     assert.equal(page.server.approvals.length, 0);
   });

@@ -53,7 +53,6 @@ test("WebCrypto P-256 signatures become canonical DER that verifies", async () =
   const sec1 = new Uint8Array(await webcrypto.subtle.exportKey("raw", keys.publicKey));
   const publicKey = createPublicKey({ key: await webcrypto.subtle.exportKey("jwk", keys.publicKey), format: "jwk" });
   let paddedSeen = false;
-  let shortSeen = false;
   for (let round = 0; round < 64; round += 1) {
     const message = Uint8Array.of(round, 7, 9);
     const raw = new Uint8Array(await webcrypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, keys.privateKey, message));
@@ -65,7 +64,6 @@ test("WebCrypto P-256 signatures become canonical DER that verifies", async () =
     const r = der.slice(4, 4 + rLength);
     assert.ok(r[0] !== 0 || (r[1] & 0x80) !== 0);
     paddedSeen ||= r[0] === 0;
-    shortSeen ||= rLength < 32;
   }
   assert.ok(paddedSeen, "exercised a high-bit scalar");
   assert.throws(() => signing.p1363ToDer(new Uint8Array(63)));
@@ -75,7 +73,6 @@ test("WebCrypto P-256 signatures become canonical DER that verifies", async () =
   scalar[63] = 1;
   assert.deepEqual(signing.p1363ToDer(scalar),
     Uint8Array.of(0x30, 0x25, 0x02, 0x20, 0x00, 0x80, ...new Uint8Array(30), 0x02, 0x01, 0x01));
-  void shortSeen;
 });
 
 test("base64 decoding is canonical", () => {
