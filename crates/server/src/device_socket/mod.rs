@@ -12,6 +12,7 @@ use crate::{
     inbound::unsolicited::{self, LineOptOut, LineOptOutError},
     inbound::{self, Content, InboundError, InboundEvent, InboundSession},
     runtime_db::{self, PooledClient},
+    sealed_inbound::line_activation::{SimObservation, exchange},
 };
 use axum::{
     Router,
@@ -56,6 +57,7 @@ const MAX_HANDSHAKING_DEVICE_SOCKETS: usize = 32;
 const DISPATCH_POLL_SECONDS: u64 = 5;
 const MIN_SECONDS_BETWEEN_GRANTS: u64 = 60;
 const ALPHA_READY_SECONDS: u64 = 300;
+const SMS_LINE_POLL_SECONDS: u64 = 3;
 static DEVICE_SOCKET_ADMISSION: LazyLock<SocketAdmission> = LazyLock::new(|| {
     SocketAdmission::new(
         MAX_HANDSHAKING_DEVICE_SOCKETS,
@@ -112,6 +114,8 @@ pub struct DeviceSocketState {
     pub dispatch_runtime_enabled: bool,
     pub inbound_pilot_enabled: bool,
     pub line_opt_out_enabled: bool,
+    /// Dormant SMS line activation frames; off unless explicitly configured.
+    pub sms_line_activation_enabled: bool,
     pub draining: Arc<AtomicBool>,
     pub drain_notify: Arc<Notify>,
 }
@@ -183,6 +187,16 @@ enum ClientFrame {
         action: LineOptOutAction,
         recipient_e164: String,
         observed_at_ms: i64,
+        signature_der: String,
+    },
+    #[serde(rename = "sms_line_proof")]
+    SmsLineProof {
+        v: u8,
+        connection_epoch: i64,
+        challenge_id: Uuid,
+        android_api_level: u16,
+        active_subscription_count: u8,
+        selected_subscription_id: i32,
         signature_der: String,
     },
 }
@@ -311,6 +325,34 @@ enum ServerFrame {
         v: u8,
         event_id: Uuid,
         created: bool,
+    },
+    #[serde(rename = "sms_line_challenge")]
+    SmsLineChallenge {
+        v: u8,
+        challenge_id: Uuid,
+        account_id: Uuid,
+        line_id: Uuid,
+        device_id: Uuid,
+        generation: i64,
+        nonce: String,
+        expires_at_ms: i64,
+    },
+    #[serde(rename = "sms_line_proof_ack")]
+    SmsLineProofAck {
+        v: u8,
+        challenge_id: Uuid,
+        accepted: bool,
+    },
+    #[serde(rename = "sms_line_activated")]
+    SmsLineActivated {
+        v: u8,
+        challenge_id: Uuid,
+        account_id: Uuid,
+        line_id: Uuid,
+        device_id: Uuid,
+        generation: i64,
+        device_statement_sha256: String,
+        device_signature_sha256: String,
     },
 }
 
@@ -661,6 +703,8 @@ async fn run_socket(
     let mut dispatch_checks = interval(Duration::from_secs(DISPATCH_POLL_SECONDS));
     dispatch_checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     dispatch_checks.tick().await;
+    let mut sms_line_checks = interval(Duration::from_secs(SMS_LINE_POLL_SECONDS));
+    sms_line_checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut last_grant_at: Option<Instant> = None;
     let mut alpha_ready: Option<([u8; 32], Instant)> = None;
     let mut alpha_ready_used = false;
@@ -840,6 +884,52 @@ async fn run_socket(
                             v: 1, event_id, created,
                         }).await { break; }
                     }
+                    Some(ClientFrame::SmsLineProof {
+                        v: 1, connection_epoch, challenge_id, android_api_level,
+                        active_subscription_count, selected_subscription_id, signature_der,
+                    }) => {
+                        if !state.sms_line_activation_enabled || connection_epoch != session.connection_epoch {
+                            close_with_code = Some(close_code::POLICY);
+                            break;
+                        }
+                        let Ok(signature) = URL_SAFE_NO_PAD.decode(signature_der.as_bytes()) else {
+                            close_with_code = Some(EVIDENCE_REJECTED);
+                            break;
+                        };
+                        if URL_SAFE_NO_PAD.encode(&signature) != signature_der {
+                            close_with_code = Some(EVIDENCE_REJECTED);
+                            break;
+                        }
+                        let inbound_session = InboundSession {
+                            account_id: session.account_id,
+                            device_id: session.device_id,
+                            site_id: &state.site_id,
+                            instance_id: &state.instance_id,
+                            connection_epoch: session.connection_epoch,
+                            deployment_epoch: state.deployment_epoch,
+                        };
+                        let proof = exchange::DeviceProof {
+                            challenge_id,
+                            observation: SimObservation {
+                                android_api_level,
+                                active_subscription_count,
+                                selected_subscription_id,
+                            },
+                            signature_der: &signature,
+                        };
+                        let accepted = match exchange::record_device_proof(
+                            &mut client, inbound_session, proof,
+                        ).await {
+                            Ok(accepted) => accepted,
+                            Err(_) => {
+                                close_with_code = Some(RETRY_LATER);
+                                break;
+                            }
+                        };
+                        if !send_frame(&mut socket, ServerFrame::SmsLineProofAck {
+                            v: 1, challenge_id, accepted,
+                        }).await { break; }
+                    }
                     _ => break,
                 }
             }
@@ -875,6 +965,20 @@ async fn run_socket(
                     Err(_) => break,
                 }
             }
+            _ = sms_line_checks.tick(), if state.sms_line_activation_enabled => {
+                let inbound_session = InboundSession {
+                    account_id: session.account_id,
+                    device_id: session.device_id,
+                    site_id: &state.site_id,
+                    instance_id: &state.instance_id,
+                    connection_epoch: session.connection_epoch,
+                    deployment_epoch: state.deployment_epoch,
+                };
+                if !push_sms_line_frames(&mut socket, &client, inbound_session).await {
+                    close_reason = "sms_line_push_failed";
+                    break;
+                }
+            }
             _ = state.drain_notify.notified() => {
                 close_reason = "site_drain";
                 break;
@@ -895,6 +999,60 @@ async fn run_socket(
             reason: "".into(),
         })))
         .await;
+}
+
+/// Pushes at most one pending SMS line challenge and one activation
+/// acknowledgement. Each is marked only after its frame was written.
+async fn push_sms_line_frames(
+    socket: &mut WebSocket,
+    client: &Client,
+    session: InboundSession<'_>,
+) -> bool {
+    let Ok(challenge) = exchange::next_challenge(client, session).await else {
+        return false;
+    };
+    if let Some(challenge) = challenge {
+        let frame = ServerFrame::SmsLineChallenge {
+            v: 1,
+            challenge_id: challenge.challenge_id,
+            account_id: challenge.account_id,
+            line_id: challenge.line_id,
+            device_id: challenge.device_id,
+            generation: challenge.generation,
+            nonce: URL_SAFE_NO_PAD.encode(challenge.nonce),
+            expires_at_ms: challenge.expires_at_ms,
+        };
+        if !send_frame(socket, frame).await
+            || exchange::mark_challenge_pushed(client, session, challenge.challenge_id)
+                .await
+                .is_err()
+        {
+            return false;
+        }
+    }
+    let Ok(ack) = exchange::next_ack(client, session).await else {
+        return false;
+    };
+    if let Some(ack) = ack {
+        let frame = ServerFrame::SmsLineActivated {
+            v: 1,
+            challenge_id: ack.challenge_id,
+            account_id: ack.account_id,
+            line_id: ack.line_id,
+            device_id: ack.device_id,
+            generation: ack.generation,
+            device_statement_sha256: URL_SAFE_NO_PAD.encode(ack.device_statement_sha256),
+            device_signature_sha256: URL_SAFE_NO_PAD.encode(ack.device_signature_sha256),
+        };
+        if !send_frame(socket, frame).await
+            || exchange::mark_ack_sent(client, session, ack.challenge_id)
+                .await
+                .is_err()
+        {
+            return false;
+        }
+    }
+    true
 }
 
 fn synthetic_body_is_fixed(body: &str) -> bool {

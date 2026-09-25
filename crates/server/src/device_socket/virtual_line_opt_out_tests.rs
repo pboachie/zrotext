@@ -250,6 +250,7 @@ async fn authenticated_line_opt_out_replays_and_rejects_wrong_line_epoch_and_seq
         dispatch_runtime_enabled: false,
         inbound_pilot_enabled: false,
         line_opt_out_enabled: true,
+        sms_line_activation_enabled: false,
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),
     };
@@ -257,6 +258,7 @@ async fn authenticated_line_opt_out_replays_and_rejects_wrong_line_epoch_and_seq
     let address = listener.local_addr().unwrap();
     let disabled_state = DeviceSocketState {
         line_opt_out_enabled: false,
+        sms_line_activation_enabled: false,
         ..state.clone()
     };
     let enabled_server = tokio::spawn(async move {

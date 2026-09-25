@@ -94,6 +94,7 @@ async fn handshake_closes_with_retry_code_when_database_is_down() {
         dispatch_runtime_enabled: false,
         inbound_pilot_enabled: false,
         line_opt_out_enabled: false,
+        sms_line_activation_enabled: false,
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),
     };
@@ -152,8 +153,8 @@ fn stream_schema_examples_match_serde_frames() {
         "../../../../protocol/v1/device-stream.examples.json"
     ))
     .unwrap();
-    assert_eq!(examples.len(), 14);
-    for frame in &examples[..7] {
+    assert_eq!(examples.len(), 18);
+    for frame in &examples[..8] {
         let parsed: ClientFrame = serde_json::from_value(frame.clone()).unwrap();
         assert_eq!(frame["v"], 1);
         let variant = match parsed {
@@ -164,6 +165,7 @@ fn stream_schema_examples_match_serde_frames() {
             ClientFrame::RadioEvent { .. } => "radio_event",
             ClientFrame::InboundEvent { .. } => "inbound_event",
             ClientFrame::LineOptOut { .. } => "line_opt_out",
+            ClientFrame::SmsLineProof { .. } => "sms_line_proof",
         };
         assert_eq!(frame["type"], variant);
     }
@@ -216,8 +218,34 @@ fn stream_schema_examples_match_serde_frames() {
             event_id: id,
             created: true,
         },
+        ServerFrame::SmsLineChallenge {
+            v: 1,
+            challenge_id: id,
+            account_id: id,
+            line_id: id,
+            device_id: id,
+            generation: 1,
+            nonce: "AQ".into(),
+            expires_at_ms: 1_700_000_000_000,
+        },
+        ServerFrame::SmsLineProofAck {
+            v: 1,
+            challenge_id: id,
+            accepted: true,
+        },
+        ServerFrame::SmsLineActivated {
+            v: 1,
+            challenge_id: id,
+            account_id: id,
+            line_id: id,
+            device_id: id,
+            generation: 1,
+            device_statement_sha256: "AQ".into(),
+            device_signature_sha256: "Ag".into(),
+        },
     ];
-    for (actual, documented) in server_frames.into_iter().zip(&examples[7..]) {
+    assert_eq!(server_frames.len(), examples.len() - 8);
+    for (actual, documented) in server_frames.into_iter().zip(&examples[8..]) {
         let variant = match &actual {
             ServerFrame::Challenge { .. } => "challenge",
             ServerFrame::Session { .. } => "session",
@@ -226,6 +254,9 @@ fn stream_schema_examples_match_serde_frames() {
             ServerFrame::RadioEventAck { .. } => "radio_event_ack",
             ServerFrame::InboundEventAck { .. } => "inbound_event_ack",
             ServerFrame::LineOptOutAck { .. } => "line_opt_out_ack",
+            ServerFrame::SmsLineChallenge { .. } => "sms_line_challenge",
+            ServerFrame::SmsLineProofAck { .. } => "sms_line_proof_ack",
+            ServerFrame::SmsLineActivated { .. } => "sms_line_activated",
         };
         assert_eq!(documented["type"], variant);
         assert_eq!(serde_json::to_value(actual).unwrap(), *documented);
@@ -438,6 +469,7 @@ async fn lost_intent_ack_across_hubs_needs_no_radio_proof_before_regrant() {
         dispatch_runtime_enabled: true,
         inbound_pilot_enabled: false,
         line_opt_out_enabled: false,
+        sms_line_activation_enabled: false,
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),
     };
@@ -675,6 +707,7 @@ async fn writer_claim_replay_epoch_and_revocation() {
         dispatch_runtime_enabled: false,
         inbound_pilot_enabled: false,
         line_opt_out_enabled: false,
+        sms_line_activation_enabled: false,
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),
     };

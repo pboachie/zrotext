@@ -76,6 +76,7 @@ struct Config {
     dispatch_runtime_enabled: bool,
     mfa_recovery_only: bool,
     mfa_enrollment_enabled: bool,
+    sms_line_activation_enabled: bool,
     retention: RetentionPolicy,
     draining: Arc<AtomicBool>,
     drain_notify: Arc<Notify>,
@@ -208,6 +209,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let line_opt_out_enabled = optional_bool("LINE_OPT_OUT_ENABLED")?;
     let mfa_recovery_only = optional_bool("MFA_RECOVERY_ONLY")?;
     let mfa_enrollment_enabled = optional_bool("MFA_ENROLLMENT_ENABLED")?;
+    let sms_line_activation_enabled = optional_bool("SMS_LINE_ACTIVATION_ENABLED")?;
     if mfa_recovery_only && mfa_enrollment_enabled {
         return Err("MFA enrollment cannot be enabled in recovery-only mode".into());
     }
@@ -226,6 +228,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         dispatch_runtime_enabled,
         mfa_recovery_only,
         mfa_enrollment_enabled,
+        sms_line_activation_enabled,
         retention: RetentionPolicy::from_env()?,
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),
@@ -512,6 +515,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             dispatch_runtime_enabled: config.dispatch_runtime_enabled,
             inbound_pilot_enabled,
             line_opt_out_enabled,
+            sms_line_activation_enabled: config.sms_line_activation_enabled,
             draining: config.draining.clone(),
             drain_notify: config.drain_notify.clone(),
         };
@@ -545,6 +549,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else if config.alpha_policy.enabled()
         || inbound_pilot_enabled
         || line_opt_out_enabled
+        || config.sms_line_activation_enabled
         || webhook_delivery_enabled
         || webhook_management_configured
     {
@@ -755,6 +760,9 @@ async fn account_routes(
             return Err("MFA enrollment requires MFA_ENCRYPTION_KEY_B64".into());
         }
         auth_state = auth_state.with_mfa_enrollment_enabled();
+    }
+    if config.sms_line_activation_enabled {
+        auth_state = auth_state.with_sms_line_activation_enabled();
     }
     let enrollment_state = EnrollmentHttpState::new(
         config.database_url.clone(),
@@ -1230,6 +1238,7 @@ mod tests {
             dispatch_runtime_enabled: false,
             mfa_recovery_only: false,
             mfa_enrollment_enabled: false,
+            sms_line_activation_enabled: false,
             retention: RetentionPolicy::default(),
             draining: Arc::new(AtomicBool::new(false)),
             drain_notify: Arc::new(Notify::new()),
