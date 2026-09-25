@@ -327,6 +327,7 @@ async fn failed_payment_and_late_paid_event_follow_current_test_subscription() {
         include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
         include_str!("../../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
         include_str!("../../../../deploy/compose/migrations/038_owner_opt_out_hold_guards.sql"),
+        include_str!("../../../../deploy/compose/migrations/039_inbound_device_clock_offset.sql"),
     ] {
         db.batch_execute(sql).await.unwrap();
     }
@@ -747,6 +748,7 @@ async fn delayed_failure_keeps_last_active_boundary_and_recovery_excludes_old_cy
         include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
         include_str!("../../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
         include_str!("../../../../deploy/compose/migrations/038_owner_opt_out_hold_guards.sql"),
+        include_str!("../../../../deploy/compose/migrations/039_inbound_device_clock_offset.sql"),
     ] {
         db.batch_execute(sql).await.unwrap();
     }
@@ -1057,6 +1059,7 @@ async fn reconciliation_locks_customer_before_queue_row_without_blocking_account
         include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
         include_str!("../../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
         include_str!("../../../../deploy/compose/migrations/038_owner_opt_out_hold_guards.sql"),
+        include_str!("../../../../deploy/compose/migrations/039_inbound_device_clock_offset.sql"),
     ] {
         probe.batch_execute(sql).await.unwrap();
     }
@@ -1218,6 +1221,7 @@ async fn verified_refund_and_dispute_hold_active_metered_accounts() {
         include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
         include_str!("../../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
         include_str!("../../../../deploy/compose/migrations/038_owner_opt_out_hold_guards.sql"),
+        include_str!("../../../../deploy/compose/migrations/039_inbound_device_clock_offset.sql"),
     ] {
         db.batch_execute(sql).await.unwrap();
     }
@@ -1514,6 +1518,7 @@ async fn noncard_py_refunds_and_disputes_hold_metered_accounts() {
         include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
         include_str!("../../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
         include_str!("../../../../deploy/compose/migrations/038_owner_opt_out_hold_guards.sql"),
+        include_str!("../../../../deploy/compose/migrations/039_inbound_device_clock_offset.sql"),
     ] {
         db.batch_execute(sql).await.unwrap();
     }
@@ -1821,6 +1826,7 @@ async fn reconciled_test_subscription_controls_metered_reservations() {
         include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
         include_str!("../../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
         include_str!("../../../../deploy/compose/migrations/038_owner_opt_out_hold_guards.sql"),
+        include_str!("../../../../deploy/compose/migrations/039_inbound_device_clock_offset.sql"),
     ] {
         db.batch_execute(sql).await.unwrap();
     }
@@ -2228,6 +2234,7 @@ async fn dedupe_tenant_binding_and_stale_reconciliation() {
         include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
         include_str!("../../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
         include_str!("../../../../deploy/compose/migrations/038_owner_opt_out_hold_guards.sql"),
+        include_str!("../../../../deploy/compose/migrations/039_inbound_device_clock_offset.sql"),
     ] {
         db.batch_execute(sql).await.unwrap();
     }
@@ -2410,6 +2417,7 @@ async fn real_stripe_test_events_reconcile_current_state() {
         include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
         include_str!("../../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
         include_str!("../../../../deploy/compose/migrations/038_owner_opt_out_hold_guards.sql"),
+        include_str!("../../../../deploy/compose/migrations/039_inbound_device_clock_offset.sql"),
     ] {
         db.batch_execute(sql).await.unwrap();
     }

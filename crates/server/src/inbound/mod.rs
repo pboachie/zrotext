@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 const MAX_AGE_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 const MAX_FUTURE_MS: i64 = 5 * 60 * 1000;
+const MAX_DEVICE_CLOCK_OFFSET_MS: i64 = 24 * 60 * 60 * 1000;
 
 pub mod unsolicited;
 
@@ -189,7 +190,32 @@ pub async fn ingest(
     session: InboundSession<'_>,
     event: &InboundEvent<'_>,
 ) -> Result<IngestOutcome, InboundError> {
+    ingest_with_clock(client, session, event, None).await
+}
+
+/// The phone's clock at upload, kept only when it is within a day of the hub
+/// clock; otherwise the event keeps the conservative release rule.
+fn plausible_device_clock(device_sent_at_ms: Option<i64>) -> Option<f64> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_millis() as i64;
+    device_sent_at_ms
+        .filter(|sent| (sent - now).abs() <= MAX_DEVICE_CLOCK_OFFSET_MS)
+        .map(|sent| sent as f64 / 1000.0)
+}
+
+/// Like [`ingest`], with the phone's unsigned clock reading at upload. It adds
+/// a check before an owner hold is released (migration 039) and never loosens
+/// one. It never affects the signature, digest or replay identity.
+pub async fn ingest_with_clock(
+    client: &mut Client,
+    session: InboundSession<'_>,
+    event: &InboundEvent<'_>,
+    device_sent_at_ms: Option<i64>,
+) -> Result<IngestOutcome, InboundError> {
     validate(event)?;
+    let device_sent_seconds = plausible_device_clock(device_sent_at_ms);
     let tx = client.transaction().await?;
     let key = tx
         .query_opt(
@@ -337,8 +363,9 @@ pub async fn ingest(
         .query_opt(
             "INSERT INTO inbound_events \
          (id,account_id,device_id,message_id,attempt_id,device_sequence,classification, \
-          observed_at,part_count,content_kind,content_ciphertext,event_digest,signature_der) \
-         VALUES($1,$2,$3,$4,$5,$6,$7,to_timestamp($8),$9,$10,$11,$12,$13) \
+          observed_at,part_count,content_kind,content_ciphertext,event_digest,signature_der, \
+          device_sent_at) \
+         VALUES($1,$2,$3,$4,$5,$6,$7,to_timestamp($8),$9,$10,$11,$12,$13,to_timestamp($14)) \
          ON CONFLICT(id) DO NOTHING RETURNING id",
             &[
                 &event.event_id,
@@ -354,6 +381,7 @@ pub async fn ingest(
                 &ciphertext,
                 &digest,
                 &event.signature_der,
+                &device_sent_seconds,
             ],
         )
         .await;
@@ -432,22 +460,21 @@ pub async fn ingest(
             ).await? == 1;
             // A signed START observed after an owner recorded an off-channel
             // hold is verified new consent from that recipient. observed_at
-            // may run MAX_FUTURE_MS ahead of the hub, so a START inside that
-            // window may predate the withdrawal and leaves the hold in place.
-            // The database guard (migration 038) enforces the same bound.
+            // may run MAX_FUTURE_MS ahead of the hub, so the rule keeps a
+            // five-minute margin; the stored event's phone clock reading (the
+            // first upload, on a replay) can only tighten it by also placing
+            // the START after the hold on the hub clock.
+            // owner_hold_release_allowed (migration 039) is shared with the
+            // database guard.
             let released = tx
                 .query(
-                    "UPDATE owner_recipient_holds SET released_at=clock_timestamp(),release_event_id=$3 \
-                     WHERE account_id=$1 AND recipient_e164=$2 AND released_at IS NULL \
-                     AND created_at+($5::double precision*interval '1 second')<to_timestamp($4) \
-                     RETURNING id",
-                    &[
-                        &session.account_id,
-                        &recipient_e164,
-                        &event.event_id,
-                        &observed_seconds,
-                        &(MAX_FUTURE_MS as f64 / 1000.0),
-                    ],
+                    "UPDATE owner_recipient_holds h SET released_at=clock_timestamp(),release_event_id=$3 \
+                     FROM inbound_events e \
+                     WHERE e.account_id=$1 AND e.id=$3 AND h.account_id=$1 AND h.recipient_e164=$2 \
+                     AND h.released_at IS NULL \
+                     AND owner_hold_release_allowed(e.observed_at,e.device_sent_at,e.received_at,h.created_at) \
+                     RETURNING h.id",
+                    &[&session.account_id, &recipient_e164, &event.event_id],
                 )
                 .await?;
             for hold in released {

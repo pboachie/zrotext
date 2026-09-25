@@ -372,6 +372,15 @@ fn wire_v1_uses_only_documented_fields() {
             ..
         })
     ));
+    let mut clocked = inbound.clone();
+    clocked["device_sent_at_ms"] = serde_json::json!(1_700_000_000_000_i64);
+    assert!(matches!(
+        serde_json::from_value::<ClientFrame>(clocked),
+        Ok(ClientFrame::InboundEvent {
+            device_sent_at_ms: Some(1_700_000_000_000),
+            ..
+        })
+    ));
     let mut extra_inbound = inbound;
     extra_inbound["sender_e164"] = serde_json::json!("+15551234567");
     assert!(serde_json::from_value::<ClientFrame>(extra_inbound).is_err());
@@ -426,6 +435,7 @@ async fn lost_intent_ack_across_hubs_needs_no_radio_proof_before_regrant() {
         include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
         include_str!("../../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
         include_str!("../../../../deploy/compose/migrations/038_owner_opt_out_hold_guards.sql"),
+        include_str!("../../../../deploy/compose/migrations/039_inbound_device_clock_offset.sql"),
     ] {
         client.batch_execute(sql).await.unwrap();
     }
@@ -667,6 +677,7 @@ async fn writer_claim_replay_epoch_and_revocation() {
         include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
         include_str!("../../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
         include_str!("../../../../deploy/compose/migrations/038_owner_opt_out_hold_guards.sql"),
+        include_str!("../../../../deploy/compose/migrations/039_inbound_device_clock_offset.sql"),
     ] {
         client.batch_execute(sql).await.unwrap();
     }

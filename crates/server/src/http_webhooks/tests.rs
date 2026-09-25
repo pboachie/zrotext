@@ -151,6 +151,7 @@ async fn manual_replay_is_owner_scoped_csrf_protected_bounded_and_idempotent() {
         include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
         include_str!("../../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
         include_str!("../../../../deploy/compose/migrations/038_owner_opt_out_hold_guards.sql"),
+        include_str!("../../../../deploy/compose/migrations/039_inbound_device_clock_offset.sql"),
     ] {
         admin.batch_execute(migration).await.unwrap();
     }
@@ -634,6 +635,7 @@ async fn delivery_history_is_bounded_tenant_scoped_and_content_free() {
         include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
         include_str!("../../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
         include_str!("../../../../deploy/compose/migrations/038_owner_opt_out_hold_guards.sql"),
+        include_str!("../../../../deploy/compose/migrations/039_inbound_device_clock_offset.sql"),
     ] {
         admin.batch_execute(migration).await.unwrap();
     }
@@ -1020,6 +1022,7 @@ async fn endpoint_lifecycle_is_tenant_bound_and_retires_queued_deliveries() {
         include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
         include_str!("../../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
         include_str!("../../../../deploy/compose/migrations/038_owner_opt_out_hold_guards.sql"),
+        include_str!("../../../../deploy/compose/migrations/039_inbound_device_clock_offset.sql"),
     ] {
         admin.batch_execute(migration).await.unwrap();
     }

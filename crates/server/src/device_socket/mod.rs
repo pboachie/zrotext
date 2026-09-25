@@ -177,6 +177,9 @@ enum ClientFrame {
         observed_at_ms: i64,
         part_count: i16,
         signature_der: String,
+        /// Unsigned phone clock at upload; places a START on the hub clock.
+        #[serde(default)]
+        device_sent_at_ms: Option<i64>,
     },
     #[serde(rename = "line_opt_out")]
     LineOptOut {
@@ -808,6 +811,7 @@ async fn run_socket(
                     Some(ClientFrame::InboundEvent {
                         v: 1, connection_epoch, event_id, sequence, message_id,
                         attempt_id, classification, observed_at_ms, part_count, signature_der,
+                        device_sent_at_ms,
                     }) if state.inbound_pilot_enabled && connection_epoch == session.connection_epoch => {
                         let Ok(signature) = URL_SAFE_NO_PAD.decode(signature_der.as_bytes()) else {
                             close_with_code = Some(EVIDENCE_REJECTED);
@@ -831,7 +835,9 @@ async fn run_socket(
                             part_count, content: Content::MetadataOnly,
                             signature_der: &signature,
                         };
-                        let outcome = match inbound::ingest(&mut client, inbound_session, &event).await {
+                        let outcome = match inbound::ingest_with_clock(
+                            &mut client, inbound_session, &event, device_sent_at_ms,
+                        ).await {
                             Ok(outcome) => outcome,
                             Err(error) => {
                                 close_with_code = Some(inbound_evidence_close_code(&error));
