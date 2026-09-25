@@ -38,6 +38,16 @@ JULES_ERROR_STATUSES = {
 }
 
 
+# The base Jules plan allows three concurrent and fifteen daily tasks. At that
+# limit, session creation returns HTTP 400 FAILED_PRECONDITION (or
+# RESOURCE_EXHAUSTED). Such a start is deferred, not a failed check.
+CAPACITY_STATUSES = {"FAILED_PRECONDITION", "RESOURCE_EXHAUSTED"}
+
+
+class JulesCapacity(RuntimeError):
+    """Jules refused a new session because the account is at a task limit."""
+
+
 def jules_error_category(error: HTTPError) -> str:
     """Classify a bounded API error without exposing its untrusted message."""
     try:
@@ -52,7 +62,7 @@ def jules_error_category(error: HTTPError) -> str:
     if not isinstance(message, str):
         message = ""
     lowered = message.lower()
-    if any(term in lowered for term in ("quota", "rate limit", "daily limit", "concurrent")):
+    if any(term in lowered for term in ("quota", "rate limit", "daily limit", "task limit", "too many", "concurrent")):
         category = "capacity"
     elif "branch" in lowered:
         category = "branch"
@@ -102,12 +112,17 @@ def request_json(url: str, *, token: str, service: str, method: str = "GET",
     except HTTPError as error:
         # Never log API error bodies, request URLs or headers: they can contain
         # credentials, private repository names, or untrusted text.
-        detail = f" ({jules_error_category(error)})" if service == "jules" else ""
+        category = jules_error_category(error) if service == "jules" else ""
+        detail = f" ({category})" if category else ""
         # Only fixed internal labels can identify a failing step. Never echo a
         # provider URL, response body, or caller-supplied string into Actions.
         if service == "jules" and phase in {"sources-list", "source-get", "session-create"}:
             detail += f" at {phase}"
-        raise RuntimeError(f"{service} request failed with HTTP {error.code}{detail}") from None
+        message = f"{service} request failed with HTTP {error.code}{detail}"
+        if (phase == "session-create" and error.code in {400, 429}
+                and category.split(";")[0] in CAPACITY_STATUSES):
+            raise JulesCapacity(message) from None
+        raise RuntimeError(message) from None
     except URLError:
         raise RuntimeError(f"{service} request could not connect") from None
     return json.loads(body) if body else {}
@@ -360,6 +375,21 @@ def start_review(number: int, mode: str, trigger: str, github_token: str,
     return True
 
 
+def defer_request(number: int, mode: str, trigger: str, github_token: str, reason: str) -> None:
+    """Record a start that Jules refused at its task limit without failing the check."""
+    print(f"::notice::Jules is at its task limit; PR #{number} {mode} deferred ({reason}).")
+    if mode == "review":
+        # The trusted schedule starts a review for any open PR head without one.
+        print("A scheduled run will start this review when Jules has capacity.")
+        return
+    # Address requests come only from the owner and are not retried by the
+    # schedule, so say so on the PR. This comment carries no control marker.
+    request_json(f"{GITHUB}/issues/{number}/comments", token=github_token,
+                 service="github", method="POST", payload={
+                     "body": ("Jules is at its task limit, so `/jules address` was not started. "
+                              "Comment `/jules address` again after running Jules sessions finish.")})
+
+
 def start_missing_reviews(github_token: str, jules_key: str, *, maximum: int = 2) -> None:
     """Gradually cover ready same-repository PRs from the trusted schedule."""
     started = 0
@@ -380,9 +410,14 @@ def start_missing_reviews(github_token: str, jules_key: str, *, maximum: int = 2
             continue
         if source is None:
             source = source_branches(jules_key)
-        if start_review(number, "review", f"scheduled-{sha[:12]}",
-                        github_token, jules_key, available_source=source):
-            started += 1
+        try:
+            if start_review(number, "review", f"scheduled-{sha[:12]}",
+                            github_token, jules_key, available_source=source):
+                started += 1
+        except JulesCapacity as error:
+            # Later scheduled runs retry once running sessions finish.
+            print(f"::notice::Jules is at its task limit; PR #{number} review deferred ({error}).")
+            break
 
 
 def final_message(session: str, jules_key: str) -> str:
@@ -467,7 +502,10 @@ def main() -> int:
         event = json.load(sys.stdin)
         requested = event_request(event_name, event)
         if requested:
-            start_review(*requested, github_token, jules_key)
+            try:
+                start_review(*requested, github_token, jules_key)
+            except JulesCapacity as error:
+                defer_request(*requested, github_token, str(error))
         else:
             print("No owner PR review command in this event.")
     return 0
