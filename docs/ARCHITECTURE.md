@@ -64,6 +64,7 @@ Every tenant-owned table includes `account_id`. Use composite foreign keys and r
 | inbound_events, sealed_inbound_events | Ciphertext or envelope has a 30-day default window; ID, device sequence and digest remain as replay tombstones |
 | subscriptions, billing_events | Provider identifiers, current entitlement period, unique Stripe event ID |
 | recipient_suppressions (restricted M1 pilot) | Account/E.164 recipient, active state, signed inbound source event and transition timestamp; admission and inbound transitions serialize on the account row; not pruned by retention |
+| owner_recipient_holds, owner_opt_out_review_decisions, owner_opt_out_audit | Owner-recorded off-channel holds (E.164, channel and reason codes, report time, release by a later signed START), one immutable decision per review item, and an append-only audit; written under the admission account lock; no notes or content; not pruned by retention |
 | security_audit_events | Key/device/permission changes, redacted subjects, no content |
 
 The durable outbound metering core uses an operator or billing-provisioned

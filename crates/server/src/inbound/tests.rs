@@ -414,6 +414,7 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
         include_str!("../../../../deploy/compose/migrations/029_webhook_dispatch_fairness.sql"),
         include_str!("../../../../deploy/compose/migrations/030_terminal_dispatch_jobs.sql"),
         include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
+        include_str!("../../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }
@@ -1150,6 +1151,38 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
         "SELECT active FROM recipient_suppressions WHERE account_id=$1 AND recipient_e164='+15551234567'",
         &[&account],
     ).await.unwrap().get::<_, bool>(0));
+    // An owner-recorded off-channel hold predates this START. The signed START
+    // is verified new consent and releases it; nothing else can.
+    let hold_owner = Uuid::new_v4();
+    db.execute(
+        "INSERT INTO users(id,email,password_hash) VALUES($1,'inbound-hold@example.test','unused')",
+        &[&hold_owner],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO memberships(account_id,user_id,role) VALUES($1,$2,'owner')",
+        &[&account, &hold_owner],
+    )
+    .await
+    .unwrap();
+    let earlier_hold = Uuid::new_v4();
+    db.execute(
+        "INSERT INTO owner_recipient_holds(id,account_id,recipient_e164,channel,reason,reported_at,created_by,created_at) \
+         VALUES($1,$2,'+15551234567','phone_call','consent_withdrawn',to_timestamp($3::float8),$4,to_timestamp($3::float8))",
+        &[&earlier_hold, &account, &(stop.observed_at_ms as f64 / 1000.0), &hold_owner],
+    )
+    .await
+    .unwrap();
+    assert!(
+        db.execute(
+            "UPDATE owner_recipient_holds SET released_at=clock_timestamp(),release_event_id=$2 WHERE id=$1",
+            &[&earlier_hold, &stop.event_id],
+        )
+        .await
+        .is_err(),
+        "a STOP event cannot release an owner hold"
+    );
     let resume = InboundEvent {
         event_id: Uuid::new_v4(),
         sequence: 2003,
@@ -1181,6 +1214,69 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
         &[&account],
     ).await.unwrap().get(0);
     assert!(inactive);
+    let released: Option<Uuid> = db
+        .query_one(
+            "SELECT release_event_id FROM owner_recipient_holds WHERE id=$1",
+            &[&earlier_hold],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(released, Some(resume.event_id));
+    let release_audits: i64 = db
+        .query_one(
+            "SELECT count(*) FROM owner_opt_out_audit WHERE hold_id=$1 AND event='hold_released' \
+             AND actor_user_id IS NULL AND release_event_id=$2",
+            &[&earlier_hold, &resume.event_id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        release_audits, 1,
+        "the replayed START wrote no second release"
+    );
+    // A hold recorded after a START was observed is not released by it.
+    let later_hold = Uuid::new_v4();
+    db.execute(
+        "INSERT INTO owner_recipient_holds(id,account_id,recipient_e164,channel,reason,reported_at,created_by) \
+         VALUES($1,$2,'+15551234567','email','opt_out',clock_timestamp(),$3)",
+        &[&later_hold, &account, &hold_owner],
+    )
+    .await
+    .unwrap();
+    let stale_start = InboundEvent {
+        event_id: Uuid::new_v4(),
+        sequence: 2100,
+        observed_at_ms: stop.observed_at_ms + 1,
+        classification: Classification::OptIn,
+        signature_der: &[],
+        ..unsigned
+    };
+    let stale_signature: Signature = signing.sign(&signed_event_bytes(session, &stale_start));
+    let stale_der = stale_signature.to_der();
+    assert!(
+        ingest(
+            &mut db,
+            session,
+            &InboundEvent {
+                signature_der: stale_der.as_bytes(),
+                ..stale_start
+            }
+        )
+        .await
+        .unwrap()
+        .created
+    );
+    assert!(
+        db.query_one(
+            "SELECT released_at IS NULL FROM owner_recipient_holds WHERE id=$1",
+            &[&later_hold],
+        )
+        .await
+        .unwrap()
+        .get::<_, bool>(0)
+    );
     let forged = InboundEvent {
         classification: Classification::OptOut,
         ..resume
@@ -1434,6 +1530,7 @@ async fn fresh_signed_events_share_a_durable_budget_and_replays_are_free() {
         include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
         include_str!("../../../../deploy/compose/migrations/029_webhook_dispatch_fairness.sql"),
         include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
+        include_str!("../../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }

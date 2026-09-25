@@ -301,8 +301,12 @@ impl<'a> DeliveryStore<'a> {
             )
             .await?;
         }
+        // Owner-recorded off-channel holds use the same account lock and block
+        // exactly like signed suppressions, including an exact replay.
         if tx.query_opt(
-            "SELECT 1 FROM recipient_suppressions WHERE account_id=$1 AND recipient_e164=$2 AND active=TRUE",
+            "SELECT 1 FROM recipient_suppressions WHERE account_id=$1 AND recipient_e164=$2 AND active=TRUE \
+             UNION ALL SELECT 1 FROM owner_recipient_holds \
+             WHERE account_id=$1 AND recipient_e164=$2 AND released_at IS NULL LIMIT 1",
             &[&input.account_id, &input.recipient_e164],
         ).await?.is_some() {
             return Err(StoreError::RecipientSuppressed);
@@ -1458,3 +1462,6 @@ mod tests;
 
 #[cfg(test)]
 mod metering_tests;
+
+#[cfg(test)]
+mod hold_tests;

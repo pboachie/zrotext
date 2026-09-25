@@ -67,6 +67,7 @@ async fn authenticated_inbound_replay_retries_one_webhook_delivery() {
         include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
         include_str!("../../../../deploy/compose/migrations/029_webhook_dispatch_fairness.sql"),
         include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
+        include_str!("../../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }

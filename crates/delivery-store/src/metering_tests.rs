@@ -50,6 +50,7 @@ impl TestDb {
             include_str!("../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
             include_str!("../../../deploy/compose/migrations/030_terminal_dispatch_jobs.sql"),
             include_str!("../../../deploy/compose/migrations/031_recipient_suppression.sql"),
+            include_str!("../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
         ] {
             client.batch_execute(migration).await.unwrap();
         }

@@ -18,7 +18,7 @@ macro_rules! migration {
     };
 }
 
-const TEST_MIGRATIONS: [&str; 22] = [
+const TEST_MIGRATIONS: [&str; 23] = [
     migration!("001_foundation.sql"),
     migration!("002_auth.sql"),
     migration!("003_delivery.sql"),
@@ -41,6 +41,7 @@ const TEST_MIGRATIONS: [&str; 22] = [
     migration!("031_recipient_suppression.sql"),
     migration!("032_line_opt_out_events.sql"),
     migration!("033_sms_line_binding_scope.sql"),
+    migration!("036_owner_opt_out_holds.sql"),
 ];
 
 fn get(path: &str, token: Option<&str>) -> Request<Body> {
@@ -277,11 +278,9 @@ async fn review_queue_is_owner_only_tenant_bound_paginated_and_content_free() {
             .iter()
             .all(|number| holds.iter().any(|hold| hold["recipient_e164"] == *number))
     );
-    assert!(
-        holds
-            .iter()
-            .all(|hold| hold.as_object().unwrap().len() == 4)
-    );
+    assert!(holds.iter().all(|hold| hold.as_object().unwrap().len() == 6
+        && hold["decision"].is_null()
+        && Uuid::parse_str(hold["review_event_id"].as_str().unwrap()).is_ok()));
     let text = serde_json::to_string(&holds).unwrap();
     for forbidden in [
         "+15559990001",
