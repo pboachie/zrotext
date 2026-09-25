@@ -4,7 +4,7 @@
 
 The companion [draft 01 byte profile](zt-sealed-draft-01.md) is the exact candidate under discussion. [RFC 9180](https://www.rfc-editor.org/rfc/rfc9180.html#section-7) defines the HPKE P-256 suite identifiers and 65-byte `enc`; [RFC 9180 §7.1.4](https://www.rfc-editor.org/rfc/rfc9180.html#section-7.1.4) requires validation of P-256 public-key inputs. [Web Crypto ECDSA](https://www.w3.org/TR/webcrypto/#ecdsa) specifies fixed-width `r || s` output and hashes the supplied message. These sources specify primitives, not this application's authorization or recovery policy.
 
-A separate [profile-02 manifest and authorization candidate](zt-sealed-draft-02-manifest-candidate.md) specifies bounded bytes and local tests for Q1–Q4 and Q6–Q7. It proposes the unsigned semantic manifest digest and strict low-`s` signature rule identified in the [decision proposal](zt-009-decision-proposal-20260924.md). It is not an accepted decision or a production trust source; the acceptance cells below remain open.
+A separate [profile-02 manifest and authorization candidate](zt-sealed-draft-02-manifest-candidate.md) specifies bounded bytes and local tests for Q1–Q4 and Q6–Q7. It proposes the unsigned semantic manifest digest and strict low-`s` signature rule identified in the [decision proposal](zt-009-decision-proposal.md). It is not an accepted decision or a production trust source; the acceptance cells below remain open.
 
 ## Candidate wire clarifications made in this revision
 

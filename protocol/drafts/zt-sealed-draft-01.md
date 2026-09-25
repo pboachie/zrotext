@@ -4,7 +4,7 @@
 
 The founder selected Android API 31+ as the sealed-mode floor. The existing SMS gateway retains minSdk 28; API 28–30 devices are ineligible for sealed mode. A non-exportable device payload private key remains the draft engineering requirement. This product constraint does not approve an HPKE provider or prove hardware backing.
 
-This profile covers one outbound SMS text and one normalized inbound SMS text. It does not encrypt the carrier leg, phone endpoints, visible routing metadata, or served dashboard JavaScript. See [SECURITY-DESIGN.md](../SECURITY-DESIGN.md) for the product claims and [ZT-009 review package](zt-009-review.md) for the remaining decisions and release gate.
+This profile covers one outbound SMS text and one normalized inbound SMS text. It does not encrypt the carrier leg, phone endpoints, visible routing metadata, or served dashboard JavaScript. See [SECURITY-DESIGN.md](../../docs/SECURITY-DESIGN.md) for the product claims and [ZT-009 review package](zt-009-review.md) for the remaining decisions and release gate.
 
 ## Primitive and key candidates
 

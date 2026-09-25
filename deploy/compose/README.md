@@ -122,7 +122,7 @@ one-off process on the private Compose network with the runtime database URL;
 `list [--after evt_ID]` needs no provider key. For `resolve`, supply a TEST-only
 `STRIPE_BILLING_RECONCILIATION_KEY` through a temporary protected environment,
 not a Compose file, command argument or image layer. See the
-[billing review procedure](../../docs/protocol/stripe-test-billing-foundation.md)
+[billing review procedure](../../docs/STRIPE-TEST-BILLING.md)
 for the decision and audit rules. The Compose example does not enable billing.
 
 ## Database role separation
