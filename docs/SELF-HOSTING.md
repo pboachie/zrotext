@@ -268,7 +268,7 @@ attempt per endpoint can exist. Private process logs emit `webhook_queue` with
 pending count, oldest pending age in seconds, and in-flight count about once a
 minute. Monitor these alongside the owner-visible pause state.
 
-Migration 027 requires a webhook maintenance window. Stop webhook delivery on
+Migration 029 (`029_webhook_dispatch_fairness.sql`; its error text still says "027") requires a webhook maintenance window. Stop webhook delivery on
 **every** old dispatch node (`WEBHOOK_DELIVERY_ENABLED=false`) before migrating.
 The migration takes an exclusive delivery-table lock, records expired leases as
 timed-out attempts using the normal retry schedule, and fails with a clear error
