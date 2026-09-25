@@ -310,6 +310,83 @@ class ReviewRoutingTests(unittest.TestCase):
         self.assertIn("This result is stale", posted[0]["body"])
 
 
+def jules_http_error(status, message=""):
+    body = json.dumps({"error": {"status": status, "message": message}}).encode()
+    return HTTPError("https://jules.googleapis.com/", 400, "Bad Request", None, BytesIO(body))
+
+
+class JulesCapacityTests(unittest.TestCase):
+    def create(self, error, phase="session-create"):
+        with patch.object(review, "urlopen", side_effect=error):
+            review.request_json(f"{review.JULES}/sessions", token="jules-test", service="jules",
+                                method="POST", payload={"prompt": "test"}, phase=phase)
+
+    def test_task_limit_refusals_at_session_create_are_capacity(self):
+        for status in ("FAILED_PRECONDITION", "RESOURCE_EXHAUSTED"):
+            with self.assertRaisesRegex(review.JulesCapacity,
+                                        rf"HTTP 400 \({status}; .*\) at session-create"):
+                self.create(jules_http_error(status))
+        # Other statuses and other phases still fail the run.
+        with self.assertRaises(RuntimeError) as caught:
+            self.create(jules_http_error("INVALID_ARGUMENT"))
+        self.assertNotIsInstance(caught.exception, review.JulesCapacity)
+        with self.assertRaises(RuntimeError) as caught:
+            self.create(jules_http_error("FAILED_PRECONDITION"), phase="source-get")
+        self.assertNotIsInstance(caught.exception, review.JulesCapacity)
+        self.assertEqual(review.jules_error_category(
+            jules_http_error("FAILED_PRECONDITION", "Task limit reached")),
+            "FAILED_PRECONDITION; capacity")
+
+    def run_main(self, event_name, event, requests):
+        def fake_request(url, **kwargs):
+            requests.append((url, kwargs.get("method", "GET"), kwargs.get("payload")))
+            return {}
+
+        env = {"GITHUB_REPOSITORY": review.REPO, "GH_TOKEN": "github-test",
+               "JULES_API_KEY": "jules-test", "GITHUB_EVENT_NAME": event_name}
+        with patch.dict(review.os.environ, env), \
+             patch.object(review.sys, "stdin", BytesIO(json.dumps(event).encode())), \
+             patch.object(review, "start_review", side_effect=review.JulesCapacity("at limit")), \
+             patch.object(review, "request_json", side_effect=fake_request):
+            return review.main()
+
+    def test_event_review_at_task_limit_is_deferred_without_failing(self):
+        event = {"action": "ready_for_review", "pull_request": pull_request()}
+        requests = []
+        self.assertEqual(self.run_main("pull_request_target", event, requests), 0)
+        self.assertEqual(requests, [])
+
+    def test_owner_address_at_task_limit_is_reported_on_the_pr(self):
+        event = {"issue": {"number": 74, "pull_request": {"url": "https://example.test"}},
+                 "comment": {"id": 7, "user": {"login": "pboachie"}, "body": "/jules address"}}
+        requests = []
+        self.assertEqual(self.run_main("issue_comment", event, requests), 0)
+        self.assertEqual(len(requests), 1)
+        url, method, payload = requests[0]
+        self.assertEqual((url, method), (f"{review.GITHUB}/issues/74/comments", "POST"))
+        self.assertIn("task limit", payload["body"])
+        self.assertIsNone(review.START.search(payload["body"]))
+
+    def test_schedule_stops_starting_reviews_at_task_limit(self):
+        first, second = pull_request(), pull_request()
+        first["number"], second["number"] = 75, 76
+        attempted = []
+
+        def fake_pages(path, _token):
+            return {"/pulls?state=open": [first, second],
+                    "/issues/75/comments": [], "/issues/76/comments": []}[path]
+
+        def refuse(number, *args, **kwargs):
+            attempted.append(number)
+            raise review.JulesCapacity("at limit")
+
+        with patch.object(review, "pages", side_effect=fake_pages), \
+             patch.object(review, "source_branches", return_value=(SOURCE_NAME, {"codex/owner-ui"})), \
+             patch.object(review, "start_review", side_effect=refuse):
+            review.start_missing_reviews("github-test", "jules-test")
+        self.assertEqual(len(attempted), 1)
+
+
 ACTIONS_USER = {"login": "github-actions[bot]", "id": review.ACTIONS_BOT_ID, "type": "Bot"}
 JULES_RESULT = "<!-- zrotext-jules-result:v1 session=sessions/123 -->"
 
