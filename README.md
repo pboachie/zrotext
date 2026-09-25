@@ -104,6 +104,8 @@ To create the first owner, follow the [local bootstrap steps](docs/SELF-HOSTING.
 - [Roadmap](docs/ROADMAP.md)
 - [Self-hosting](docs/SELF-HOSTING.md)
 - [Android development and testing](docs/ANDROID-TESTING.md)
+- [Android device compatibility](docs/DEVICE-COMPATIBILITY.md)
+- [Protocol contracts](protocol/v1/README.md) and [sealed-content drafts](protocol/drafts/README.md)
 - [Release and version tags](docs/RELEASING.md)
 
 ## Contributing
