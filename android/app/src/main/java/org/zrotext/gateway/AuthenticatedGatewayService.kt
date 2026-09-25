@@ -81,6 +81,8 @@ class AuthenticatedGatewayService : Service() {
     @Volatile private var activeGrant: AlphaGrantValidator.Grant? = null
     /** In memory only: a restarted app cannot install an activation it did not just prove. */
     @Volatile private var smsLineActivation: PreparedSmsLineActivation? = null
+    /** The hub repeats sms_line_activated on later connections; this one is already installed. */
+    @Volatile private var installedSmsLineChallenge: UUID? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -723,21 +725,28 @@ class AuthenticatedGatewayService : Service() {
     private fun handleSmsLineActivated(keys: DeviceSigningKeyStore, accountId: UUID,
                                        deviceId: UUID, ack: AuthenticatedSmsLineActivationAck) {
         JournalRuntime.io.execute {
+            if (ack.challengeId == installedSmsLineChallenge) return@execute
             val proof = smsLineActivation
             if (proof == null || !ack.matches(proof)) {
                 AuthenticatedGatewayStatus.value =
                     "SMS line approved for a proof this app no longer holds; start a new activation"
                 return@execute
             }
-            smsLineActivation = null
             val installed = try {
                 SmsLineActivationDevice.forGateway(applicationContext, keys).installAfterAuthenticatedAck(
                     SmsJournalDatabase.get(applicationContext).attempts(), proof, ack,
                     accountId, deviceId)
             } catch (_: Exception) { false }
+            // Keep the proof after a failed install: the hub resends the ack on
+            // the next connection and installAfterAuthenticatedAck bounds retries
+            // to its grace window.
+            if (installed) {
+                smsLineActivation = null
+                installedSmsLineChallenge = ack.challengeId
+            }
             AuthenticatedGatewayStatus.value = if (installed) "SMS line activated on this phone"
-                else "SMS line approved, but this phone's SIM, selection or clock no longer " +
-                    "matches the proof; start a new activation"
+                else "SMS line approved, but this phone's SIM, selection or clock does not match " +
+                    "the proof yet; it retries when the hub resends, or start a new activation"
         }
     }
 
