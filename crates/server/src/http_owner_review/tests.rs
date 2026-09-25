@@ -18,7 +18,7 @@ macro_rules! migration {
     };
 }
 
-const TEST_MIGRATIONS: [&str; 23] = [
+const TEST_MIGRATIONS: [&str; 24] = [
     migration!("001_foundation.sql"),
     migration!("002_auth.sql"),
     migration!("003_delivery.sql"),
@@ -42,6 +42,7 @@ const TEST_MIGRATIONS: [&str; 23] = [
     migration!("032_line_opt_out_events.sql"),
     migration!("033_sms_line_binding_scope.sql"),
     migration!("036_owner_opt_out_holds.sql"),
+    migration!("038_owner_opt_out_hold_guards.sql"),
 ];
 
 fn get(path: &str, token: Option<&str>) -> Request<Body> {

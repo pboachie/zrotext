@@ -554,6 +554,7 @@ mod tests {
             include_str!("../../../deploy/compose/migrations/015_webhook_kek_commitments.sql"),
             include_str!("../../../deploy/compose/migrations/031_recipient_suppression.sql"),
             include_str!("../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
+            include_str!("../../../deploy/compose/migrations/038_owner_opt_out_hold_guards.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }

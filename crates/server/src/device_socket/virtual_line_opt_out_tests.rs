@@ -181,6 +181,7 @@ async fn authenticated_line_opt_out_replays_and_rejects_wrong_line_epoch_and_seq
         include_str!("../../../../deploy/compose/migrations/033_sms_line_binding_scope.sql"),
         include_str!("../../../../deploy/compose/migrations/035_sms_owner_key_ceremony.sql"),
         include_str!("../../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
+        include_str!("../../../../deploy/compose/migrations/038_owner_opt_out_hold_guards.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }

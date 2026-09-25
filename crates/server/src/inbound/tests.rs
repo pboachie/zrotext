@@ -415,6 +415,7 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
         include_str!("../../../../deploy/compose/migrations/030_terminal_dispatch_jobs.sql"),
         include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
         include_str!("../../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
+        include_str!("../../../../deploy/compose/migrations/038_owner_opt_out_hold_guards.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }
@@ -1192,11 +1193,44 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
     )
     .await
     .unwrap();
+    // Migration 038: a hold starts unreleased at the insert time. Both inserts
+    // pass migration 036's own constraints; only the 038 guard rejects them.
+    let rejected = Uuid::new_v4();
+    assert!(
+        db.execute(
+            "INSERT INTO owner_recipient_holds(id,account_id,recipient_e164,channel,reason,reported_at,created_by,created_at)              VALUES($1,$2,'+15551234567','phone_call','consent_withdrawn',clock_timestamp()-interval '1 hour',$3,clock_timestamp()-interval '1 hour')",
+            &[&rejected, &account, &hold_owner],
+        )
+        .await
+        .is_err(),
+        "a hold cannot be backdated"
+    );
+    assert!(
+        db.execute(
+            "INSERT INTO owner_recipient_holds(id,account_id,recipient_e164,channel,reason,reported_at,created_by,released_at,release_event_id)              VALUES($1,$2,'+15551234567','phone_call','consent_withdrawn',clock_timestamp(),$3,clock_timestamp(),$4)",
+            &[&rejected, &account, &hold_owner, &stop.event_id],
+        )
+        .await
+        .is_err(),
+        "a hold cannot start released"
+    );
+    // Test setup only: record a hold two minutes before the STOP. Production
+    // inserts always pass the guard above.
     let earlier_hold = Uuid::new_v4();
+    db.batch_execute(
+        "ALTER TABLE owner_recipient_holds DISABLE TRIGGER owner_recipient_holds_before_insert",
+    )
+    .await
+    .unwrap();
     db.execute(
         "INSERT INTO owner_recipient_holds(id,account_id,recipient_e164,channel,reason,reported_at,created_by,created_at) \
          VALUES($1,$2,'+15551234567','phone_call','consent_withdrawn',to_timestamp($3::float8),$4,to_timestamp($3::float8))",
-        &[&earlier_hold, &account, &(stop.observed_at_ms as f64 / 1000.0), &hold_owner],
+        &[&earlier_hold, &account, &((stop.observed_at_ms - 120_000) as f64 / 1000.0), &hold_owner],
+    )
+    .await
+    .unwrap();
+    db.batch_execute(
+        "ALTER TABLE owner_recipient_holds ENABLE TRIGGER owner_recipient_holds_before_insert",
     )
     .await
     .unwrap();
@@ -1240,20 +1274,66 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
         &[&account],
     ).await.unwrap().get(0);
     assert!(inactive);
-    let released: Option<Uuid> = db
-        .query_one(
-            "SELECT release_event_id FROM owner_recipient_holds WHERE id=$1",
-            &[&earlier_hold],
+    // Observed only two minutes after the hold, inside the five-minute future
+    // skew inbound accepts, this START may predate the withdrawal on a phone
+    // whose clock runs fast. It clears the SMS suppression but not the hold,
+    // in the ingest path and in the database guard.
+    assert_eq!(hold_release_event(&db, earlier_hold).await, None);
+    assert!(
+        db.execute(
+            "UPDATE owner_recipient_holds SET released_at=clock_timestamp(),release_event_id=$2 WHERE id=$1",
+            &[&earlier_hold, &resume.event_id],
         )
         .await
-        .unwrap()
-        .get(0);
-    assert_eq!(released, Some(resume.event_id));
+        .is_err(),
+        "the guard applies the same skew bound"
+    );
+    assert!(
+        db.execute(
+            "INSERT INTO owner_opt_out_audit(id,account_id,event,hold_id,release_event_id) \
+             VALUES($1,$2,'hold_released',$3,$4)",
+            &[&Uuid::new_v4(), &account, &earlier_hold, &resume.event_id],
+        )
+        .await
+        .is_err(),
+        "a release audit row must match a released hold"
+    );
+    // A START observed more than five minutes after the hold releases it.
+    let later_start = InboundEvent {
+        event_id: Uuid::new_v4(),
+        sequence: 2004,
+        observed_at_ms: stop.observed_at_ms + 181_000,
+        classification: Classification::OptIn,
+        signature_der: &[],
+        ..unsigned
+    };
+    let later_signature: Signature = signing.sign(&signed_event_bytes(session, &later_start));
+    let later_der = later_signature.to_der();
+    let later_start = InboundEvent {
+        signature_der: later_der.as_bytes(),
+        ..later_start
+    };
+    assert!(
+        ingest(&mut db, session, &later_start)
+            .await
+            .unwrap()
+            .created
+    );
+    assert!(
+        !ingest(&mut db, session, &later_start)
+            .await
+            .unwrap()
+            .created
+    );
+    assert_eq!(
+        hold_release_event(&db, earlier_hold).await,
+        Some(later_start.event_id)
+    );
     let release_audits: i64 = db
         .query_one(
             "SELECT count(*) FROM owner_opt_out_audit WHERE hold_id=$1 AND event='hold_released' \
              AND actor_user_id IS NULL AND release_event_id=$2",
-            &[&earlier_hold, &resume.event_id],
+            &[&earlier_hold, &later_start.event_id],
         )
         .await
         .unwrap()
@@ -1558,6 +1638,7 @@ async fn fresh_signed_events_share_a_durable_budget_and_replays_are_free() {
         include_str!("../../../../deploy/compose/migrations/030_terminal_dispatch_jobs.sql"),
         include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
         include_str!("../../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
+        include_str!("../../../../deploy/compose/migrations/038_owner_opt_out_hold_guards.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }
@@ -1928,4 +2009,24 @@ async fn fresh_signed_events_share_a_durable_budget_and_replays_are_free() {
     db.batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
         .await
         .unwrap();
+}
+
+#[test]
+fn hold_release_skew_matches_the_database_guard() {
+    // Migration 038 hardcodes the same bound; change both together.
+    assert_eq!(MAX_FUTURE_MS, 5 * 60 * 1000);
+    assert!(
+        include_str!("../../../../deploy/compose/migrations/038_owner_opt_out_hold_guards.sql")
+            .contains("e.observed_at > OLD.created_at + interval '5 minutes'")
+    );
+}
+
+async fn hold_release_event(db: &tokio_postgres::Client, hold: Uuid) -> Option<Uuid> {
+    db.query_one(
+        "SELECT release_event_id FROM owner_recipient_holds WHERE id=$1",
+        &[&hold],
+    )
+    .await
+    .unwrap()
+    .get(0)
 }
