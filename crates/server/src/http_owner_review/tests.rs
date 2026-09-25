@@ -121,32 +121,25 @@ async fn review_queue_is_owner_only_tenant_bound_paginated_and_content_free() {
         db.batch_execute(migration).await.unwrap();
     }
     let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(61)).unwrap());
-    let a = register(
-        &mut db,
-        &hasher,
-        "review-a@example.test",
-        "correct horse 123",
-    )
-    .await
-    .unwrap();
-    let b = register(
-        &mut db,
-        &hasher,
-        "review-b@example.test",
-        "correct horse 456",
-    )
-    .await
-    .unwrap();
+    // Per-run test passwords avoid publishing reusable credential literals.
+    let password_a = Uuid::new_v4().to_string();
+    let password_b = Uuid::new_v4().to_string();
+    let a = register(&mut db, &hasher, "review-a@example.test", &password_a)
+        .await
+        .unwrap();
+    let b = register(&mut db, &hasher, "review-b@example.test", &password_b)
+        .await
+        .unwrap();
     verify_email(&mut db, &hasher, &a.verification_token)
         .await
         .unwrap();
     verify_email(&mut db, &hasher, &b.verification_token)
         .await
         .unwrap();
-    let session_a = login(&db, &hasher, "review-a@example.test", "correct horse 123")
+    let session_a = login(&db, &hasher, "review-a@example.test", &password_a)
         .await
         .unwrap();
-    let session_b = login(&db, &hasher, "review-b@example.test", "correct horse 456")
+    let session_b = login(&db, &hasher, "review-b@example.test", &password_b)
         .await
         .unwrap();
     let device_a = Uuid::new_v4();
