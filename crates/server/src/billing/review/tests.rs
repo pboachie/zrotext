@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::billing::{HmacSha256, IngestResult, bind_customer, ingest, verify_event};
 use hmac::Mac;

@@ -1,4 +1,3 @@
-
 use super::*;
 
 // Keep the admission fixtures on the complete, reviewed schema. SQL is

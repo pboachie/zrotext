@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::auth::{self, Scope, TokenHasher};
 use std::sync::Arc;
@@ -521,7 +520,7 @@ async fn postgres_operator_reset_revokes_all_owner_credentials() {
     let old_password = Uuid::new_v4().to_string();
     let new_password = Uuid::new_v4().to_string();
     assert!(matches!(
-        operator_reset_password(&mut db, "owner@example.test", "short").await,
+        operator_reset_password(&mut db, "owner@example.test", &old_password[..5]).await,
         Err(AuthError::InvalidInput)
     ));
     let pending = auth::register(&mut db, &hasher, "owner@example.test", &old_password)

@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::auth::{login, register, verify_email};
 use axum::{

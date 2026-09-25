@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::auth::{self, TokenHasher};
 use tokio_postgres::NoTls;

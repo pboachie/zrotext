@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::auth::normalize_email;
 use std::sync::Arc;

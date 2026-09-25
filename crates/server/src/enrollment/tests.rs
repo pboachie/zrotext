@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::auth::{TokenHasher, authenticate_session, login, register, verify_email};
 use crate::billing::{self, SubscriptionSnapshot};
@@ -73,11 +72,13 @@ async fn postgres_one_use_tenant_replay_expiry_and_revocation() {
     }
     let auth_hasher = TokenHasher::new(crate::test_keys::key(17)).unwrap();
     let hasher = EnrollmentHasher::new(crate::test_keys::key(19)).unwrap();
+    let password_a = Uuid::new_v4().to_string();
+    let password_b = Uuid::new_v4().to_string();
     let a = register(
         &mut client,
         &auth_hasher,
         "enroll-a@example.test",
-        "correct horse 123",
+        &password_a,
     )
     .await
     .unwrap();
@@ -85,7 +86,7 @@ async fn postgres_one_use_tenant_replay_expiry_and_revocation() {
         &mut client,
         &auth_hasher,
         "enroll-b@example.test",
-        "correct horse 456",
+        &password_b,
     )
     .await
     .unwrap();
@@ -95,22 +96,12 @@ async fn postgres_one_use_tenant_replay_expiry_and_revocation() {
     verify_email(&mut client, &auth_hasher, &b.verification_token)
         .await
         .unwrap();
-    let sa = login(
-        &client,
-        &auth_hasher,
-        "enroll-a@example.test",
-        "correct horse 123",
-    )
-    .await
-    .unwrap();
-    let sb = login(
-        &client,
-        &auth_hasher,
-        "enroll-b@example.test",
-        "correct horse 456",
-    )
-    .await
-    .unwrap();
+    let sa = login(&client, &auth_hasher, "enroll-a@example.test", &password_a)
+        .await
+        .unwrap();
+    let sb = login(&client, &auth_hasher, "enroll-b@example.test", &password_b)
+        .await
+        .unwrap();
     let pa = authenticate_session(&client, &auth_hasher, &sa.token)
         .await
         .unwrap();

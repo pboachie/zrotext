@@ -1,13 +1,39 @@
-
 use super::*;
 use std::env;
 use tokio_postgres::NoTls;
 use zrotext_delivery_store::{DeliveryStore, NewMessage, StoreError};
 
 const BODY: &[u8] = br#"{"id":"evt_fixture1","object":"event","livemode":false,"type":"customer.subscription.updated","data":{"object":{"id":"sub_fixture1","object":"subscription","customer":"cus_fixture1","status":"active"}}}"#;
-const HEADER: &str =
-    "t=1750000000,v0=0000,v1=17db9d23bf1f46a7db28382296af063cf65b36c77d80f154712e9f0803633536";
-const SECRET: &str = "whsec_testfixture1234567890";
+
+// Random per-process webhook secrets keep reusable signing keys out of source
+// while staying stable for every signature a test process derives.
+fn random_webhook_secret() -> String {
+    let hex = rand::random::<[u8; 16]>()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("whsec_{hex}")
+}
+
+fn secret() -> &'static str {
+    static SECRET: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SECRET.get_or_init(random_webhook_secret)
+}
+
+fn body_v1() -> String {
+    let mut mac = HmacSha256::new_from_slice(secret().as_bytes()).unwrap();
+    mac.update(b"1750000000.");
+    mac.update(BODY);
+    signed_header(1_750_000_000, mac)
+        .split_once(",v1=")
+        .unwrap()
+        .1
+        .to_owned()
+}
+
+fn header() -> String {
+    format!("t=1750000000,v0=0000,v1={}", body_v1())
+}
 
 #[test]
 fn api_key_gate_accepts_only_test_secret_or_restricted_keys() {
@@ -74,27 +100,35 @@ fn signed_header(timestamp: i64, mac: HmacSha256) -> String {
 
 #[test]
 fn stripe_signature_uses_exact_raw_body_and_recency() {
-    let event = verify_event(BODY, HEADER, SECRET, 1_750_000_000).unwrap();
+    let event = verify_event(BODY, &header(), secret(), 1_750_000_000).unwrap();
     assert_eq!(event.event_id, "evt_fixture1");
     assert_eq!(event.customer_id.as_deref(), Some("cus_fixture1"));
     assert_eq!(event.subscription_id.as_deref(), Some("sub_fixture1"));
-    assert!(verify_event(BODY, HEADER, SECRET, 1_750_000_300).is_ok());
-    assert!(verify_event(BODY, HEADER, SECRET, 1_750_000_301).is_err());
-    assert!(verify_event(BODY, HEADER, SECRET, 1_749_999_699).is_err());
+    assert!(verify_event(BODY, &header(), secret(), 1_750_000_300).is_ok());
+    assert!(verify_event(BODY, &header(), secret(), 1_750_000_301).is_err());
+    assert!(verify_event(BODY, &header(), secret(), 1_749_999_699).is_err());
     assert!(
         verify_event(
             BODY,
-            "t=1750000000,v0=17db9d23bf1f46a7db28382296af063cf65b36c77d80f154712e9f0803633536",
-            SECRET,
+            &format!("t=1750000000,v0={}", body_v1()),
+            secret(),
             1_750_000_000
         )
         .is_err()
     );
-    assert!(verify_event(BODY, "t=1750000000,t=1750000000,v1=17db9d23bf1f46a7db28382296af063cf65b36c77d80f154712e9f0803633536", SECRET, 1_750_000_000).is_err());
+    assert!(
+        verify_event(
+            BODY,
+            &format!("t=1750000000,t=1750000000,v1={}", body_v1()),
+            secret(),
+            1_750_000_000
+        )
+        .is_err()
+    );
     let mut edited = BODY.to_vec();
     edited.push(b' ');
-    assert!(verify_event(&edited, HEADER, SECRET, 1_750_000_000).is_err());
-    assert!(verify_event(BODY, HEADER, "whsec_wrongfixture123456", 1_750_000_000).is_err());
+    assert!(verify_event(&edited, &header(), secret(), 1_750_000_000).is_err());
+    assert!(verify_event(BODY, &header(), &random_webhook_secret(), 1_750_000_000).is_err());
 }
 
 #[test]
@@ -105,12 +139,12 @@ fn test_mode_rejects_live_event_even_with_valid_signature() {
         .position(|window| window == b"false")
         .unwrap();
     body.splice(at..at + 5, b"true".iter().copied());
-    let mut mac = HmacSha256::new_from_slice(SECRET.as_bytes()).unwrap();
+    let mut mac = HmacSha256::new_from_slice(secret().as_bytes()).unwrap();
     mac.update(b"1750000000.");
     mac.update(&body);
     let signed = signed_header(1_750_000_000, mac);
     assert!(matches!(
-        verify_event(&body, &signed, SECRET, 1_750_000_000),
+        verify_event(&body, &signed, secret(), 1_750_000_000),
         Err(BillingError::InvalidEvent)
     ));
 }
@@ -118,11 +152,11 @@ fn test_mode_rejects_live_event_even_with_valid_signature() {
 #[test]
 fn test_mode_checkout_completion_accepts_stripe_test_id_shape() {
     let body = br#"{"id":"evt_checkout1","object":"event","livemode":false,"type":"checkout.session.completed","data":{"object":{"id":"cs_test_fixture1","customer":"cus_fixture1","subscription":"sub_fixture1"}}}"#;
-    let mut mac = HmacSha256::new_from_slice(SECRET.as_bytes()).unwrap();
+    let mut mac = HmacSha256::new_from_slice(secret().as_bytes()).unwrap();
     mac.update(b"1750000000.");
     mac.update(body);
     let signature = signed_header(1_750_000_000, mac);
-    let event = verify_event(body, &signature, SECRET, 1_750_000_000).unwrap();
+    let event = verify_event(body, &signature, secret(), 1_750_000_000).unwrap();
     assert_eq!(event.object_id.as_deref(), Some("cs_test_fixture1"));
     assert_eq!(event.customer_id.as_deref(), Some("cus_fixture1"));
 }
@@ -169,11 +203,11 @@ fn test_quota_plan_config_is_explicit_and_bounded() {
 }
 
 fn signed_test_event(body: &[u8]) -> VerifiedEvent {
-    let mut mac = HmacSha256::new_from_slice(SECRET.as_bytes()).unwrap();
+    let mut mac = HmacSha256::new_from_slice(secret().as_bytes()).unwrap();
     mac.update(b"1750000000.");
     mac.update(body);
     let signature = signed_header(1_750_000_000, mac);
-    verify_event(body, &signature, SECRET, 1_750_000_000).unwrap()
+    verify_event(body, &signature, secret(), 1_750_000_000).unwrap()
 }
 
 #[test]
@@ -191,11 +225,11 @@ fn verified_test_payment_risk_shapes_are_strict() {
     );
     assert!(!payment_intent_only.unsupported);
     let zero = br#"{"id":"evt_riskzero1","object":"event","livemode":false,"type":"charge.refunded","data":{"object":{"id":"ch_risk1","object":"charge","customer":"cus_risk1","amount_refunded":0}}}"#;
-    let mut mac = HmacSha256::new_from_slice(SECRET.as_bytes()).unwrap();
+    let mut mac = HmacSha256::new_from_slice(secret().as_bytes()).unwrap();
     mac.update(b"1750000000.");
     mac.update(zero);
     let signature = signed_header(1_750_000_000, mac);
-    let zero_event = verify_event(zero, &signature, SECRET, 1_750_000_000).unwrap();
+    let zero_event = verify_event(zero, &signature, secret(), 1_750_000_000).unwrap();
     assert!(zero_event.unsupported);
     assert!(zero_event.risk_review_required);
     assert_eq!(zero_event.risk_charge_id.as_deref(), Some("ch_risk1"));
@@ -236,12 +270,12 @@ fn signed_but_unexpected_shapes_are_recorded_as_unsupported() {
     assert!(missing_failure_time.customer_id.is_none());
     // Envelope problems on a correctly signed body stay hard failures.
     let live = br#"{"id":"evt_unsupported2","object":"event","livemode":true,"type":"checkout.session.completed","data":{"object":{"id":"cs_test_unsupported2","customer":"cus_unsupported1","subscription":"sub_unsupported1"}}}"#;
-    let mut mac = HmacSha256::new_from_slice(SECRET.as_bytes()).unwrap();
+    let mut mac = HmacSha256::new_from_slice(secret().as_bytes()).unwrap();
     mac.update(b"1750000000.");
     mac.update(live);
     let signature = signed_header(1_750_000_000, mac);
     assert!(matches!(
-        verify_event(live, &signature, SECRET, 1_750_000_000),
+        verify_event(live, &signature, secret(), 1_750_000_000),
         Err(BillingError::InvalidEvent)
     ));
 }
@@ -1416,12 +1450,12 @@ async fn verified_refund_and_dispute_hold_active_metered_accounts() {
         Some("cus_late1")
     );
     let live = br#"{"id":"evt_live1","object":"event","livemode":true,"type":"charge.refunded","data":{"object":{"id":"ch_live1","object":"charge","customer":"cus_holda1","amount_refunded":50}}}"#;
-    let mut mac = HmacSha256::new_from_slice(SECRET.as_bytes()).unwrap();
+    let mut mac = HmacSha256::new_from_slice(secret().as_bytes()).unwrap();
     mac.update(b"1750000000.");
     mac.update(live);
     let signed = signed_header(1_750_000_000, mac);
     assert!(matches!(
-        verify_event(live, &signed, SECRET, 1_750_000_000),
+        verify_event(live, &signed, secret(), 1_750_000_000),
         Err(BillingError::InvalidEvent)
     ));
     setup
@@ -2194,7 +2228,7 @@ async fn dedupe_tenant_binding_and_stale_reconciliation() {
     )
     .await
     .unwrap();
-    let event = verify_event(BODY, HEADER, SECRET, 1_750_000_000).unwrap();
+    let event = verify_event(BODY, &header(), secret(), 1_750_000_000).unwrap();
     assert_eq!(
         ingest(&mut db, &event).await.unwrap(),
         IngestResult::Unbound
@@ -2369,7 +2403,7 @@ async fn real_stripe_test_events_reconcile_current_state() {
         .timeout(std::time::Duration::from_secs(10))
         .build()
         .unwrap();
-    let signing_secret = "whsec_local_test_event_fixture_20260923";
+    let signing_secret = &random_webhook_secret();
     for (event_id, customer_id, expected_type, _) in &cases {
         valid_id(event_id, "evt_").unwrap();
         valid_id(customer_id, "cus_").unwrap();

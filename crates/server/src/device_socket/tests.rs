@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::enrollment::{EnrollmentError, device_challenge_bytes};
 use futures_util::{SinkExt, StreamExt};
