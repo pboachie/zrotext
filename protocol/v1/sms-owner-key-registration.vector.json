@@ -1,0 +1,11 @@
+{
+  "account_id": "00112233-4455-6677-8899-aabbccddeeff",
+  "user_id": "11223344-5566-7788-99aa-bbccddeeff00",
+  "session_id": "22334455-6677-8899-aabb-ccddeeff0011",
+  "challenge_id": "33445566-7788-99aa-bbcc-ddeeff001122",
+  "signing_key_sec1_b64": "BOpo17b+3wtxh4k41R1x+HKeCsuMLG34s9eeikuQlJ7gKidEyXLJ/OeHAUqWSo6gyE1xT+qk3oI/6FoiSk3QSPo=",
+  "nonce_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+  "fingerprint_b64url": "dxDig5IlHAtw-Cmf1GXpwgDbbnxBXRi64AnhrHWxfck",
+  "statement_sha256_hex": "9515e638e6640f807f1d381be657a0a0471afdd135825de65a36d87616b36d07",
+  "statement_hex": "5a54534d532f6f776e65722d6b65792f72656769737465722f76310000112233445566778899aabbccddeeff112233445566778899aabbccddeeff002233445566778899aabbccddeeff001133445566778899aabbccddeeff001122000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f7710e28392251c0b70f8299fd465e9c200db6e7c415d18bae009e1ac75b17dc9"
+}

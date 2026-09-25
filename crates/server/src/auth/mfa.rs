@@ -486,6 +486,43 @@ pub(super) async fn use_factor(
     Ok(true)
 }
 
+/// Verify a fresh factor for a high-trust owner mutation inside the caller's
+/// transaction. A false result records the shared failure budget; the caller
+/// must commit that transaction before returning an authentication failure.
+pub(crate) async fn verify_owner_step_up(
+    tx: &Transaction<'_>,
+    cipher: &MfaCipher,
+    hasher: &TokenHasher,
+    principal: &SessionPrincipal,
+    code: &str,
+) -> Result<bool, AuthError> {
+    let account_id = principal.tenant.account_id();
+    let owner = tx.query_opt(
+        "SELECT u.mfa_enabled FROM users u JOIN memberships m ON m.user_id=u.id AND m.account_id=$1 \
+         JOIN accounts a ON a.id=m.account_id WHERE u.id=$2 AND m.role='owner' \
+         AND a.disabled_at IS NULL FOR SHARE OF u,m,a",
+        &[&account_id, &principal.user_id],
+    ).await?.ok_or(AuthError::Unauthorized)?;
+    if !owner.get::<_, bool>(0) {
+        return Err(AuthError::Forbidden);
+    }
+    require_live_session(tx, principal).await?;
+    ensure_factor_budget(tx, account_id, principal.user_id).await?;
+    let valid = use_factor(
+        tx,
+        Some(cipher),
+        hasher,
+        account_id,
+        principal.user_id,
+        code,
+    )
+    .await?;
+    if !valid {
+        record_failed_factor(tx, account_id, principal.user_id).await?;
+    }
+    Ok(valid)
+}
+
 pub async fn complete_login(
     client: &mut Client,
     cipher: Option<&MfaCipher>,
@@ -568,6 +605,34 @@ pub async fn disable(
     check_owner_password(client, principal, password).await?;
     let account_id = principal.tenant.account_id();
     let tx = client.transaction().await?;
+    // Use the same account lock as SMS key registration/revocation. Disabling
+    // MFA cannot strand an active approval key whose revocation needs MFA.
+    tx.query_opt(
+        "SELECT 1 FROM accounts WHERE id=$1 AND disabled_at IS NULL FOR UPDATE",
+        &[&account_id],
+    )
+    .await?
+    .ok_or(AuthError::Unauthorized)?;
+    // Older isolated auth fixtures predate migration 033; production applies
+    // all migrations before accepting requests.
+    let sms_key_table: bool = tx
+        .query_one(
+            "SELECT to_regclass('sms_line_owner_approval_keys') IS NOT NULL",
+            &[],
+        )
+        .await?
+        .get(0);
+    if sms_key_table
+        && tx
+            .query_opt(
+                "SELECT 1 FROM sms_line_owner_approval_keys WHERE account_id=$1 AND revoked_at IS NULL",
+                &[&account_id],
+            )
+            .await?
+            .is_some()
+    {
+        return Err(AuthError::SmsOwnerKeyActive);
+    }
     let user = tx
         .query_opt(
             "SELECT mfa_enabled FROM users WHERE id=$1 FOR UPDATE",

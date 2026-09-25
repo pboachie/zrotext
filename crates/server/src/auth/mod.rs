@@ -46,6 +46,8 @@ pub enum AuthError {
     Unauthorized,
     #[error("forbidden")]
     Forbidden,
+    #[error("revoke the active SMS owner approval key before disabling MFA")]
+    SmsOwnerKeyActive,
     #[error("authentication storage failed")]
     Database(#[from] tokio_postgres::Error),
     #[error("password hashing failed")]

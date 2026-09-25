@@ -37,6 +37,8 @@ use tokio_postgres::Client;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
+mod sms_owner_keys;
+
 const SESSION_COOKIE: &str = "__Host-zrotext_session";
 const CSRF_COOKIE: &str = "__Host-zrotext_csrf";
 const CSRF_HEADER: &str = "x-zrotext-csrf";
@@ -551,6 +553,18 @@ pub fn router(state: AuthHttpState) -> Router {
         .route("/mfa/disable", post(disable_mfa))
         .route("/api-keys", get(list_api_keys).post(create_api_key))
         .route("/api-keys/{key_id}", delete(revoke_api_key))
+        .route(
+            "/sms-line-owner-keys/challenge",
+            post(sms_owner_keys::challenge),
+        )
+        .route(
+            "/sms-line-owner-keys",
+            get(sms_owner_keys::list).post(sms_owner_keys::register),
+        )
+        .route(
+            "/sms-line-owner-keys/{fingerprint}",
+            delete(sms_owner_keys::revoke),
+        )
         .layer(DefaultBodyLimit::max(16 * 1024))
         .layer(middleware::from_fn(no_store_response))
         .with_state(Arc::new(state))
@@ -567,6 +581,7 @@ pub enum AuthHttpError {
     BadRequest,
     Unauthorized,
     Forbidden,
+    SmsOwnerKeyActive,
     NotFound,
     TooManyRequests,
     Unavailable,
@@ -579,6 +594,7 @@ impl IntoResponse for AuthHttpError {
             Self::BadRequest => (StatusCode::BAD_REQUEST, "invalid_request"),
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized"),
             Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden"),
+            Self::SmsOwnerKeyActive => (StatusCode::CONFLICT, "revoke_sms_owner_key_first"),
             Self::NotFound => (StatusCode::NOT_FOUND, "not_found"),
             Self::TooManyRequests => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
             Self::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
@@ -605,6 +621,7 @@ fn map_auth(error: AuthError) -> AuthHttpError {
             AuthHttpError::Unauthorized
         }
         AuthError::EmailNotVerified | AuthError::Forbidden => AuthHttpError::Forbidden,
+        AuthError::SmsOwnerKeyActive => AuthHttpError::SmsOwnerKeyActive,
         AuthError::Database(_) => AuthHttpError::Unavailable,
         AuthError::Password => AuthHttpError::Internal,
         AuthError::Crypto => AuthHttpError::Unavailable,

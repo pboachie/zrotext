@@ -140,7 +140,9 @@ struct ErrorBody {
 fn map_auth(error: AuthError) -> MessageHttpError {
     match error {
         AuthError::Unauthorized | AuthError::InvalidCredentials => MessageHttpError::Unauthorized,
-        AuthError::Forbidden | AuthError::EmailNotVerified => MessageHttpError::Forbidden,
+        AuthError::Forbidden | AuthError::EmailNotVerified | AuthError::SmsOwnerKeyActive => {
+            MessageHttpError::Forbidden
+        }
         AuthError::InvalidInput => MessageHttpError::BadRequest,
         AuthError::Database(_) | AuthError::Password | AuthError::Crypto => {
             MessageHttpError::Unavailable
