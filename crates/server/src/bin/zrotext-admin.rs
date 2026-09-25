@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Local operator bootstrap. No HTTP route or verification email is involved.
+//! Local operator bootstrap and password recovery. No HTTP route or
+//! verification email is involved.
 
 use std::{
     env,
@@ -19,7 +20,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         [command, flag, email] if command == "issue-invite" && flag == "--email" => {
             issue_invite(email)
         }
-        _ => Err("usage: zrotext-admin create-owner|issue-invite --email <address>".into()),
+        [command, flag, email] if command == "reset-password" && flag == "--email" => {
+            reset_password(email).await
+        }
+        _ => Err(
+            "usage: zrotext-admin create-owner|issue-invite|reset-password --email <address>"
+                .into(),
+        ),
     }
 }
 
@@ -33,6 +40,31 @@ async fn create_owner(email: &str) -> Result<(), Box<dyn Error>> {
         }
         _ => {}
     }
+    let password = read_password_from_stdin()?;
+    let mut database = connect_database().await?;
+    if !auth::bootstrap_owner(&mut database, email, &password).await? {
+        return Err("owner bootstrap unavailable: database already contains an account".into());
+    }
+    println!("verified first owner created; close any temporary registration access");
+    Ok(())
+}
+
+/// Recovery for instances without SMTP. Applies the same revocations as an
+/// emailed reset: every session, owner API key, pending MFA login challenge
+/// and outstanding reset code. MFA enrollment is preserved.
+async fn reset_password(email: &str) -> Result<(), Box<dyn Error>> {
+    let password = read_password_from_stdin()?;
+    let mut database = connect_database().await?;
+    if !auth::account::operator_reset_password(&mut database, email, &password).await? {
+        return Err("no verified owner of an active account has that address".into());
+    }
+    println!(
+        "password reset; all sessions and API keys issued by this owner were revoked; MFA enrollment is unchanged"
+    );
+    Ok(())
+}
+
+fn read_password_from_stdin() -> Result<Zeroizing<String>, Box<dyn Error>> {
     if std::io::stdin().is_terminal() {
         return Err(
             "pipe the password on stdin from a non-echoing prompt; never pass it as an argument"
@@ -55,17 +87,17 @@ async fn create_owner(email: &str) -> Result<(), Box<dyn Error>> {
     {
         return Err("password on stdin must be one line of 12 to 1024 bytes".into());
     }
+    Ok(password)
+}
+
+async fn connect_database() -> Result<tokio_postgres::Client, Box<dyn Error>> {
     let database_url = env::var("DATABASE_URL")
         .map_err(|_| "DATABASE_URL must be set in the operator environment")?;
-    let (mut database, connection) = runtime_db::connect(&database_url).await?;
+    let (database, connection) = runtime_db::connect(&database_url).await?;
     tokio::spawn(async move {
         let _ = connection.await;
     });
-    if !auth::bootstrap_owner(&mut database, email, &password).await? {
-        return Err("owner bootstrap unavailable: database already contains an account".into());
-    }
-    println!("verified first owner created; close any temporary registration access");
-    Ok(())
+    Ok(database)
 }
 
 fn optional_env(name: &'static str) -> Result<Option<String>, Box<dyn Error>> {
