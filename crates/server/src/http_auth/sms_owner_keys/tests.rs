@@ -135,6 +135,20 @@ async fn postgres_owner_key_ceremony_requires_possession_mfa_and_revokes_only_sm
         .collect::<Vec<_>>();
     files.sort();
     for path in files {
+        if path
+            .file_name()
+            .is_some_and(|name| name == "034_delivery_sweep_index.sql")
+        {
+            // Mirror the migrator's autocommit preparation before the
+            // numbered, checksummed validation file.
+            db.batch_execute(
+                "CREATE INDEX CONCURRENTLY messages_in_flight_updated \
+                 ON messages(updated_at,id) \
+                 WHERE state IN ('claimed','submitting','submitted')",
+            )
+            .await
+            .unwrap();
+        }
         db.batch_execute(&std::fs::read_to_string(&path).unwrap())
             .await
             .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
