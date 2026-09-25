@@ -63,6 +63,8 @@ jobs:
           /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_device_stream_schema.py'
       - name: Shared draft vector shape tests
         run: python3 -m unittest discover -s protocol/v1/tests -p 'test_ztse_draft_vectors.py'
+      - name: Sealed draft field-layout tests
+        run: python3 -m unittest discover -s protocol/v1/tests -p 'test_zt_sealed_draft_shape.py'
       - name: JavaScript syntax
         run: node --check web/owner/devices.js
       - name: Commit sign-off
