@@ -170,7 +170,7 @@ fn validate_chain(
                 2 => scope == 12 && device == [0; 16] && line == [0; 16],
                 3 => [4, 8, 12].contains(&scope) && device == [0; 16] && line == [0; 16],
                 4 => scope == 2 && device != [0; 16] && line != [0; 16],
-                5 => scope == 1 && device == [0; 16] && line == [0; 16],
+                5 => scope == 1 && device == [0; 16] && line != [0; 16],
                 6 => scope == 0 && device == [0; 16] && line == [0; 16],
                 _ => false,
             }
@@ -311,6 +311,13 @@ fn python_generated_manifest_is_independently_verified_in_rust() {
         .expect("device role");
     assert_eq!(selected.device.as_slice(), field(&vector, "device_id_b64"));
     assert_eq!(selected.line.as_slice(), field(&vector, "line_id_b64"));
+    let signer = verified
+        .roles
+        .iter()
+        .find(|record| record.role == 5)
+        .expect("integration signer role");
+    assert_eq!(signer.device, [0; 16]);
+    assert_eq!(signer.line.as_slice(), field(&vector, "line_id_b64"));
 }
 
 #[test]
@@ -336,6 +343,14 @@ fn rust_rejects_pin_mismatch_high_s_twin_and_changed_record() {
     manifest[151 + 130] ^= 1;
     assert_eq!(
         validate(&pin, &fingerprint, &manifest, now).unwrap_err(),
+        "role/scope/subject"
+    );
+    let mut zero_signer_line = field(&vector, "manifest_b64");
+    let role_05_at = 151 + 2 * 149;
+    assert_eq!(zero_signer_line[role_05_at], 5);
+    zero_signer_line[role_05_at + 114..role_05_at + 130].fill(0);
+    assert_eq!(
+        validate(&pin, &fingerprint, &zero_signer_line, now).unwrap_err(),
         "role/scope/subject"
     );
 }

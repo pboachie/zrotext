@@ -153,7 +153,8 @@ internal object Draft02ManifestVerifier {
             "Manifest envelope binding"
         }
         val signer = manifest.keys.singleOrNull { it.role == 5 && same(it.id, parsed.signerKeyId) }
-        require(signer != null && active(signer, nowMs) && signer.scope == 1) { "Manifest signer authority" }
+        require(signer != null && active(signer, nowMs) && signer.scope == 1 &&
+            same(signer.lineId, parsed.lineId)) { "Manifest signer authority" }
         var device = 0
         var archive = 0
         var integration = 0
@@ -185,9 +186,10 @@ internal object Draft02ManifestVerifier {
         require(if (role == 3) scope == 4 || scope == 8 || scope == 12 else scope == exact) {
             "Manifest role/scope"
         }
-        val bound = role == 1 || role == 4
-        require(if (bound) !same(device, zero16) && !same(line, zero16)
-                else same(device, zero16) && same(line, zero16)) { "Manifest role/subject" }
+        val deviceBound = role == 1 || role == 4
+        val lineBound = deviceBound || role == 5
+        require(if (deviceBound) !same(device, zero16) else same(device, zero16)) { "Manifest role/subject" }
+        require(if (lineBound) !same(line, zero16) else same(line, zero16)) { "Manifest role/subject" }
     }
 
     private fun currentWindow(issued: Long, expires: Long, now: Long) {

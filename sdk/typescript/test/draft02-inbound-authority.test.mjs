@@ -42,7 +42,7 @@ async function fixture(options = {}) {
     { role: 2, key: archive, device: zero16, line: zero16, scope: 12, state: options.archiveState ?? 1 },
     { role: 3, key: reader, device: zero16, line: zero16, scope: options.readerScope ?? 8, state: 1 },
     { role: 4, key: inboundSigner, device, line, scope: 2, state: options.signerState ?? 1 },
-    { role: 5, key: outboundSigner, device: zero16, line: zero16, scope: 1, state: 1 },
+    { role: 5, key: outboundSigner, device: zero16, line, scope: 1, state: 1 },
     { role: 6, key: root, device: zero16, line: zero16, scope: 0, state: 1 },
   ];
   for (const record of records) record.keyId = await keyId(record.role, record.key.point);
