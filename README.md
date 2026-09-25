@@ -24,6 +24,40 @@ ZROtext is in active development. The repository includes a Rust server, Postgre
 - **Managed option.** Hosted accounts, device monitoring, backups, upgrades, and billing are planned as an operated service built from the public application source.
 - **Two-location architecture.** The design supports routing API and device connections across sites while keeping one authoritative database writer and fenced device ownership.
 
+<details>
+<summary><b>Delivery state model</b></summary>
+
+Each state change needs evidence from the phone or a timeout. An ambiguous radio submission becomes `unknown` and is never retried automatically, because a retry could send a duplicate SMS. A conflicting callback in any active state also moves the message to `unknown`. See [message semantics](docs/ARCHITECTURE.md#message-semantics-and-the-duplicate-send-problem).
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> accepted
+    accepted --> queued: enqueue
+    queued --> claimed: device claims
+    claimed --> submitting: submit intent saved
+    submitting --> submitted: sent callback OK
+    submitting --> failed: sent callback failed
+    submitting --> unknown: crash, timeout or partial
+    claimed --> unknown: grant timeout
+    unknown --> submitted: late sent callback
+    unknown --> failed: late failure callback
+    claimed --> queued: proven no submit
+    submitting --> queued: proven no submit
+    unknown --> queued: proven no submit
+    submitted --> delivered: delivery callback
+    submitted --> delivery_unknown: no receipt in time
+    delivery_unknown --> delivered: late receipt
+    accepted --> cancelled
+    queued --> cancelled
+    claimed --> cancelled
+    accepted --> expired
+    queued --> expired
+    claimed --> expired
+```
+
+</details>
+
 The architecture describes intended behavior. Check the current code and release notes before relying on a capability.
 
 ## Sending responsibly
@@ -32,7 +66,11 @@ Only send messages to recipients for whom you have an appropriate basis to send 
 
 ## Roadmap
 
-The [roadmap](docs/ROADMAP.md) covers gateway messaging, self-hosting, account tools, and multi-location support. It has no promised release dates.
+The [roadmap](docs/ROADMAP.md) covers gateway messaging, self-hosting, account tools, and multi-location support. It shows each capability's stage, what blocks general sending, and where to help. It has no promised release dates.
+
+<!-- roadmap:overview -->
+<p align="center"><a href="docs/ROADMAP.md"><img src="docs/assets/roadmap-overview.svg" alt="Roadmap at a glance: 15 capabilities in four tracks. Four are in a restricted pilot, seven are being built, three are in design and one is planned. None has reached general release." width="820"></a></p>
+<!-- /roadmap:overview -->
 
 ## Design preview
 
