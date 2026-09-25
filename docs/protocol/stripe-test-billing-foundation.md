@@ -35,13 +35,13 @@ Checkout and Portal flows remain separate features. Consult the [server implemen
 
 ## Restart recovery
 
-Apply migration 025 after 023 and 024 before starting this server version. The
+Apply migration 027 (`027_billing_test_config.sql`) after 023 and 024 before starting this server version. The
 server stores a one-way hash of the test price allowlist, quota plan mapping,
 and reconciliation key in PostgreSQL; it never stores the key itself. An unchanged configuration keeps existing outbound quotas and device
 caps through restarts, including rolling restarts at multiple sites. The first
 start after migration, a changed mapping or reconciliation key, or re-enabling test billing resets
 test projections and queues provider reads for subscriptions whose last snapshot
-is not `canceled` or `incomplete_expired`. Terminal snapshots remain clean.
+is not `canceled`, `incomplete_expired`, or `provider_deleted`. Terminal snapshots remain clean.
 When cap configuration permits test billing to be disabled, that transition
 clears its old allowances.
 
@@ -82,7 +82,7 @@ in-flight projection and cannot both observe a pre-commit state.
 
 `GET /v1/billing/status` reports the projected entitlement that
 reconciliation currently applies: the audited `reason` (`active`, `grace`,
-`inactive`, `ambiguous`, `unmapped`, `startup_reset`, or null before the
+`inactive`, `ambiguous`, `unmapped`, `startup_reset`, `provider_deleted`, or null before the
 first projection), the `outboundLimit` from the current `stripe_test` quota
 policy, the effective `deviceCap`, whether a payment hold is active
 (`paymentHold`), and the count of nonterminal subscriptions. The owner
@@ -120,7 +120,7 @@ WHERE state='needs_review' AND dirty_generation>processed_generation;
 SELECT count(*) FROM billing_risk_events WHERE state='needs_review';
 ```
 
-Migration 026 must be applied before starting this worker. A new verified
+Migration 028 (`028_billing_provider_failures.sql`) must be applied before starting this worker. A new verified
 subscription event requeues its row. A changed billing configuration also
 requeues subscription and payment-risk review rows through the configuration reset transaction; an ordinary
 restart retains review state so a permanently failing read cannot loop forever.
