@@ -113,13 +113,18 @@ HTTPS Origin and share a per-owner rate limit.
 5. `POST .../{challenge_id}/approve` with `{"owner_signature_der_b64":"..."}`
    activates the binding (204). Activation runs under the stored device session,
    so the connection that delivered the proof must still hold a live lease; a
-   reconnect needs a new challenge. Any failed fence returns `forbidden`.
+   reconnect needs a new challenge, and the status then reads `closed`. Any
+   failed fence returns `forbidden`.
 6. The device stream then sends `sms_line_activated` with the SHA-256 digests of
-   the exact device statement and DER signature, once, only when the active
-   binding's confirmation digest matches that proof. The stored nonce is then
-   cleared.
+   the exact device statement and DER signature, only when the active binding's
+   confirmation digest matches that proof. Each device connection sends it once
+   during the 15 minutes after activation, so a dropped connection does not lose
+   it; the device ignores a digest that does not match the proof it holds.
 
-Stored proofs, acknowledgements and cleared nonces are write-once in the
+The hub keeps the challenge nonce only while an exchange can still activate or
+acknowledge. It clears the nonce once the resend window ends, or once the
+challenge is superseded, revoked or has been expired for 15 minutes. Stored
+proofs, recorded acknowledgements and cleared nonces are write-once in the
 database. The server never receives the owner's private key.
 
 The current PostgreSQL tests use synthetic keys and declared subscription
