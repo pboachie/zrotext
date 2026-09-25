@@ -74,6 +74,10 @@ fn secure_response(mut response: Response, content_type: &'static str) -> Respon
         "x-content-type-options",
         HeaderValue::from_static("nosniff"),
     );
+    headers.insert(
+        header::STRICT_TRANSPORT_SECURITY,
+        HeaderValue::from_static("max-age=63072000; includeSubDomains"),
+    );
     headers.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
     response
 }
@@ -239,6 +243,10 @@ mod tests {
             assert_eq!(response.headers()[header::CONTENT_TYPE], content_type);
             assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
             assert_eq!(response.headers()["x-content-type-options"], "nosniff");
+            assert_eq!(
+                response.headers()[header::STRICT_TRANSPORT_SECURITY],
+                "max-age=63072000; includeSubDomains"
+            );
             assert!(
                 response.headers()[header::CONTENT_SECURITY_POLICY]
                     .to_str()

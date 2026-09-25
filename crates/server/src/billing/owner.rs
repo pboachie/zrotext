@@ -225,6 +225,7 @@ async fn dashboard(
             (header::CONTENT_SECURITY_POLICY, "default-src 'none'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"),
             (header::REFERRER_POLICY, "no-referrer"),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            (header::STRICT_TRANSPORT_SECURITY, "max-age=63072000; includeSubDomains"),
         ],
         Html(include_str!("../../static/billing-dashboard.html")),
     ).into_response())
@@ -481,6 +482,10 @@ mod tests {
                 .to_str()
                 .unwrap()
                 .contains("frame-ancestors 'none'")
+        );
+        assert_eq!(
+            page.headers()[header::STRICT_TRANSPORT_SECURITY],
+            "max-age=63072000; includeSubDomains"
         );
         let page = to_bytes(page.into_body(), 4096).await.unwrap();
         assert!(
