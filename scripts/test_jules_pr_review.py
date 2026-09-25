@@ -342,8 +342,9 @@ class JulesCapacityTests(unittest.TestCase):
             requests.append((url, kwargs.get("method", "GET"), kwargs.get("payload")))
             return {}
 
-        env = {"GITHUB_REPOSITORY": review.REPO, "GH_TOKEN": "github-test",
-               "JULES_API_KEY": "jules-test", "GITHUB_EVENT_NAME": event_name}
+        github_token, jules_key = "github-test", "jules-test"
+        env = {"GITHUB_REPOSITORY": review.REPO, "GH_TOKEN": github_token,
+               "JULES_API_KEY": jules_key, "GITHUB_EVENT_NAME": event_name}
         with patch.dict(review.os.environ, env), \
              patch.object(review.sys, "stdin", BytesIO(json.dumps(event).encode())), \
              patch.object(review, "start_review", side_effect=review.JulesCapacity("at limit")), \
