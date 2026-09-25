@@ -1,6 +1,167 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use super::*;
-use p256::ecdsa::{SigningKey, signature::Signer};
+use p256::{
+    ecdsa::{SigningKey, signature::Signer},
+    elliptic_curve::Generate,
+};
+use rand::rng;
+
+macro_rules! migration {
+    ($name:literal) => {
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../deploy/compose/migrations/",
+            $name
+        ))
+    };
+}
+
+// The ceremony runs on the complete schema. SQL is embedded at build time so
+// the test never executes files discovered at runtime.
+const TEST_MIGRATIONS: [(&str, &str); 35] = [
+    ("001_foundation.sql", migration!("001_foundation.sql")),
+    ("002_auth.sql", migration!("002_auth.sql")),
+    ("003_delivery.sql", migration!("003_delivery.sql")),
+    ("004_enrollment.sql", migration!("004_enrollment.sql")),
+    (
+        "005_verification_outbox.sql",
+        migration!("005_verification_outbox.sql"),
+    ),
+    (
+        "006_usage_metering.sql",
+        migration!("006_usage_metering.sql"),
+    ),
+    (
+        "007_inbound_webhook_foundation.sql",
+        migration!("007_inbound_webhook_foundation.sql"),
+    ),
+    (
+        "008_stripe_billing_foundation.sql",
+        migration!("008_stripe_billing_foundation.sql"),
+    ),
+    (
+        "009_webhook_manual_replay.sql",
+        migration!("009_webhook_manual_replay.sql"),
+    ),
+    (
+        "010_billing_test_entitlement.sql",
+        migration!("010_billing_test_entitlement.sql"),
+    ),
+    (
+        "011_billing_payment_holds.sql",
+        migration!("011_billing_payment_holds.sql"),
+    ),
+    (
+        "012_auth_abuse_limits.sql",
+        migration!("012_auth_abuse_limits.sql"),
+    ),
+    ("013_owner_mfa.sql", migration!("013_owner_mfa.sql")),
+    (
+        "014_owner_mfa_failure_budget.sql",
+        migration!("014_owner_mfa_failure_budget.sql"),
+    ),
+    (
+        "015_webhook_kek_commitments.sql",
+        migration!("015_webhook_kek_commitments.sql"),
+    ),
+    (
+        "016_auth_abuse_atomic.sql",
+        migration!("016_auth_abuse_atomic.sql"),
+    ),
+    (
+        "017_billing_device_caps.sql",
+        migration!("017_billing_device_caps.sql"),
+    ),
+    (
+        "018_sealed_inbound_identity.sql",
+        migration!("018_sealed_inbound_identity.sql"),
+    ),
+    (
+        "019_line_activation_contract.sql",
+        migration!("019_line_activation_contract.sql"),
+    ),
+    (
+        "020_enrollment_retention_indexes.sql",
+        migration!("020_enrollment_retention_indexes.sql"),
+    ),
+    (
+        "021_billing_payment_grace.sql",
+        migration!("021_billing_payment_grace.sql"),
+    ),
+    (
+        "022_pending_owner_expiry.sql",
+        migration!("022_pending_owner_expiry.sql"),
+    ),
+    (
+        "023_billing_py_charge_and_unsupported.sql",
+        migration!("023_billing_py_charge_and_unsupported.sql"),
+    ),
+    (
+        "024_billing_risk_operator_review.sql",
+        migration!("024_billing_risk_operator_review.sql"),
+    ),
+    (
+        "025_account_recovery.sql",
+        migration!("025_account_recovery.sql"),
+    ),
+    (
+        "026_data_retention.sql",
+        migration!("026_data_retention.sql"),
+    ),
+    (
+        "027_billing_test_config.sql",
+        migration!("027_billing_test_config.sql"),
+    ),
+    (
+        "028_billing_provider_failures.sql",
+        migration!("028_billing_provider_failures.sql"),
+    ),
+    (
+        "029_webhook_dispatch_fairness.sql",
+        migration!("029_webhook_dispatch_fairness.sql"),
+    ),
+    (
+        "030_terminal_dispatch_jobs.sql",
+        migration!("030_terminal_dispatch_jobs.sql"),
+    ),
+    (
+        "031_recipient_suppression.sql",
+        migration!("031_recipient_suppression.sql"),
+    ),
+    (
+        "032_line_opt_out_events.sql",
+        migration!("032_line_opt_out_events.sql"),
+    ),
+    (
+        "033_sms_line_binding_scope.sql",
+        migration!("033_sms_line_binding_scope.sql"),
+    ),
+    (
+        "034_delivery_sweep_index.sql",
+        migration!("034_delivery_sweep_index.sql"),
+    ),
+    (
+        "035_sms_owner_key_ceremony.sql",
+        migration!("035_sms_owner_key_ceremony.sql"),
+    ),
+];
+
+#[test]
+fn ceremony_fixture_tracks_numbered_migrations() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/compose/migrations");
+    let mut discovered = std::fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .filter(|name| name.ends_with(".sql"))
+        .collect::<Vec<_>>();
+    discovered.sort();
+    let embedded = TEST_MIGRATIONS
+        .iter()
+        .map(|(name, _)| name.to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(discovered, embedded, "update the embedded migration list");
+}
 
 #[test]
 fn possession_statement_is_bound_to_account_session_nonce_and_key() {
@@ -8,8 +169,8 @@ fn possession_statement_is_bound_to_account_session_nonce_and_key() {
     let user = Uuid::new_v4();
     let session = Uuid::new_v4();
     let challenge = Uuid::new_v4();
-    let nonce = [7u8; 32];
-    let key = SigningKey::from_bytes((&[9u8; 32]).into()).unwrap();
+    let nonce: [u8; 32] = rand::random();
+    let key = SigningKey::generate_from_rng(&mut rng());
     let sec1 = key.verifying_key().to_sec1_point(false);
     let fingerprint = sha256(sec1.as_bytes());
     let statement = possession_statement(account, user, session, challenge, &nonce, &fingerprint);
@@ -34,8 +195,15 @@ fn possession_statement_is_bound_to_account_session_nonce_and_key() {
             &nonce,
             &fingerprint,
         ),
-        possession_statement(account, user, session, challenge, &[8u8; 32], &fingerprint),
-        possession_statement(account, user, session, challenge, &nonce, &[8u8; 32]),
+        possession_statement(
+            account,
+            user,
+            session,
+            challenge,
+            &rand::random(),
+            &fingerprint,
+        ),
+        possession_statement(account, user, session, challenge, &nonce, &rand::random()),
     ] {
         assert!(key.verifying_key().verify(&altered, &signature).is_err());
     }
@@ -43,7 +211,7 @@ fn possession_statement_is_bound_to_account_session_nonce_and_key() {
 
 #[test]
 fn key_encoding_requires_canonical_uncompressed_p256() {
-    let key = SigningKey::from_bytes((&[9u8; 32]).into()).unwrap();
+    let key = SigningKey::generate_from_rng(&mut rng());
     let point = key.verifying_key().to_sec1_point(false);
     let encoded = STANDARD.encode(point.as_bytes());
     assert!(key_bytes(&encoded).is_ok());
@@ -111,7 +279,7 @@ async fn postgres_owner_key_ceremony_requires_possession_mfa_and_revokes_only_sm
         body::{Body, to_bytes},
         http::{Request, header},
     };
-    use std::{path::PathBuf, sync::Arc};
+    use std::sync::Arc;
     use tokio_postgres::NoTls;
     use tower::ServiceExt;
 
@@ -127,18 +295,8 @@ async fn postgres_owner_key_ceremony_requires_possession_mfa_and_revokes_only_sm
     let url = format!("{base_url}{sep}options=-csearch_path%3D{schema}");
     let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
-    let migrations =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../deploy/compose/migrations");
-    let mut files = std::fs::read_dir(migrations)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .collect::<Vec<_>>();
-    files.sort();
-    for path in files {
-        if path
-            .file_name()
-            .is_some_and(|name| name == "034_delivery_sweep_index.sql")
-        {
+    for (name, migration) in TEST_MIGRATIONS {
+        if name == "034_delivery_sweep_index.sql" {
             // Mirror the migrator's autocommit preparation before the
             // numbered, checksummed validation file.
             db.batch_execute(
@@ -149,12 +307,12 @@ async fn postgres_owner_key_ceremony_requires_possession_mfa_and_revokes_only_sm
             .await
             .unwrap();
         }
-        db.batch_execute(&std::fs::read_to_string(&path).unwrap())
+        db.batch_execute(migration)
             .await
-            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            .unwrap_or_else(|error| panic!("{name}: {error}"));
     }
-    let hasher = Arc::new(TokenHasher::new(vec![29; 32]).unwrap());
-    let password = "synthetic-owner-password-long";
+    let hasher = Arc::new(TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
+    let password = &format!("owner-{}", Uuid::new_v4().simple());
     let signup = auth::register(&mut db, &hasher, "sms-owner@example.test", password)
         .await
         .unwrap();
@@ -167,7 +325,7 @@ async fn postgres_owner_key_ceremony_requires_possession_mfa_and_revokes_only_sm
     let principal = auth::authenticate_session(&db, &hasher, &credentials.token)
         .await
         .unwrap();
-    let cipher = Arc::new(MfaCipher::new(vec![18; 32]).unwrap());
+    let cipher = Arc::new(MfaCipher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
     let enrollment = auth::mfa::begin_enrollment(&mut db, &cipher, &principal, password)
         .await
         .unwrap();
@@ -207,8 +365,7 @@ async fn postgres_owner_key_ceremony_requires_possession_mfa_and_revokes_only_sm
             .body(Body::from(body.to_string()))
             .unwrap()
     };
-    let sealed_alias = SigningKey::from_bytes((&[12u8; 32]).into())
-        .unwrap()
+    let sealed_alias = SigningKey::generate_from_rng(&mut rng())
         .verifying_key()
         .to_sec1_point(false);
     db.execute(
@@ -234,8 +391,7 @@ async fn postgres_owner_key_ceremony_requires_possession_mfa_and_revokes_only_sm
     )
     .await
     .unwrap();
-    let device_alias = SigningKey::from_bytes((&[13u8; 32]).into())
-        .unwrap()
+    let device_alias = SigningKey::generate_from_rng(&mut rng())
         .verifying_key()
         .to_sec1_point(false);
     db.execute("INSERT INTO device_keys(device_id,account_id,signing_key_sec1,fingerprint) VALUES($1,$2,$3,$4)",
@@ -252,7 +408,7 @@ async fn postgres_owner_key_ceremony_requires_possession_mfa_and_revokes_only_sm
             .status(),
         StatusCode::FORBIDDEN
     );
-    let key = SigningKey::from_bytes((&[9u8; 32]).into()).unwrap();
+    let key = SigningKey::generate_from_rng(&mut rng());
     let sec1 = key.verifying_key().to_sec1_point(false);
     let key_b64 = STANDARD.encode(sec1.as_bytes());
     let no_cipher_app = http_auth::router(
@@ -347,9 +503,7 @@ async fn postgres_owner_key_ceremony_requires_possession_mfa_and_revokes_only_sm
         "mfa_code": recovery[0],
     });
     let mut forged = good_body.clone();
-    let forged_signature: Signature = SigningKey::from_bytes((&[10u8; 32]).into())
-        .unwrap()
-        .sign(&statement);
+    let forged_signature: Signature = SigningKey::generate_from_rng(&mut rng()).sign(&statement);
     forged["signature_der_b64"] =
         serde_json::json!(STANDARD.encode(forged_signature.to_der().as_bytes()));
     assert_eq!(
@@ -470,8 +624,7 @@ async fn postgres_owner_key_ceremony_requires_possession_mfa_and_revokes_only_sm
     )
     .await
     .unwrap();
-    let device_key = SigningKey::from_bytes((&[11u8; 32]).into())
-        .unwrap()
+    let device_key = SigningKey::generate_from_rng(&mut rng())
         .verifying_key()
         .to_sec1_point(false);
     db.execute("INSERT INTO device_keys(device_id,account_id,signing_key_sec1,fingerprint) VALUES($1,$2,$3,$4)", &[&device,&signup.account_id,&device_key.as_bytes(),&&sha256(device_key.as_bytes())[..]]).await.unwrap();
