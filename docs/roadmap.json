@@ -238,17 +238,20 @@
             ["#172", "https://github.com/pboachie/zrotext/pull/172"],
             ["#175", "https://github.com/pboachie/zrotext/pull/175"],
             ["MFA operations", "MFA-OPERATIONS.md"],
-            ["#240", "https://github.com/pboachie/zrotext/pull/240"]
+            ["#240", "https://github.com/pboachie/zrotext/pull/240"],
+            ["#207", "https://github.com/pboachie/zrotext/pull/207"],
+            ["#217", "https://github.com/pboachie/zrotext/pull/217"],
+            ["Recovery tests", "../crates/server/src/auth/account/tests.rs"]
           ],
           "done": [
             "Verified-email owner registration with closed-by-default policy",
             "MFA, session revocation and CSRF protection",
             "API keys with scopes, shown once at creation",
-            "MFA-bound SMS approval public-key registration and revocation; line activation remains an internal prerequisite ([contract](../protocol/v1/sms-line-activation-contract.md))"
+            "MFA-bound SMS approval public-key registration and revocation; line activation remains an internal prerequisite ([contract](../protocol/v1/sms-line-activation-contract.md))",
+            "Verified-email and private-operator password recovery revokes sessions, API keys and pending MFA challenges while preserving MFA; authentication only, with production vault/content recovery still pending"
           ],
           "todo": [
-            "Team seats beyond one owner",
-            "Account recovery flows separate from content recovery"
+            "Team seats beyond one owner"
           ]
         },
         {
