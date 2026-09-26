@@ -7,6 +7,7 @@ use crate::inbound::InboundSession;
 use tokio_postgres::GenericClient;
 use uuid::Uuid;
 
+pub mod ingest;
 pub mod line_activation;
 
 /// Checks the current writer session and a line binding marked active with

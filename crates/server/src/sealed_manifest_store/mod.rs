@@ -239,4 +239,4 @@ pub async fn admit<'tx, 'connection, 'session>(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
