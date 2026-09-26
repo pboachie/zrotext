@@ -154,6 +154,39 @@ async function revokeKey(mfaCode) {
   if (localKey && localKey.fingerprint === active.fingerprint) await keyStore().remove();
 }
 
+let lineCursor = null;
+
+function lineLabel(line) {
+  const phone = line.device_name ? ` on ${line.device_name}` : "";
+  const scope = line.purpose ? ` (${line.purpose})` : "";
+  return `${line.line_id.slice(0, 8)}… ${line.state}${phone}${scope}, generation ${line.generation}`;
+}
+
+async function loadLines(more = false) {
+  const query = more && lineCursor ? `?before=${encodeURIComponent(lineCursor)}` : "";
+  const page = await api(`/v1/auth/sms-lines${query}`);
+  const items = page.lines.map((line) => {
+    const item = document.createElement("li");
+    const label = document.createElement("span");
+    label.textContent = lineLabel(line);
+    const use = document.createElement("button");
+    use.type = "button";
+    use.textContent = "Use this line";
+    use.addEventListener("click", () => {
+      byId("activation-line").value = line.line_id;
+      say("activation-status", "Line selected. Choose the phone, then request its declaration.");
+    });
+    item.replaceChildren(label, use);
+    return item;
+  });
+  const list = byId("line-list");
+  if (more) list.append(...items);
+  else list.replaceChildren(...items);
+  lineCursor = page.next_cursor;
+  byId("line-more").hidden = !lineCursor;
+  say("lines-status", !more && items.length === 0 ? "No lines yet. Activate your first line below." : "");
+}
+
 async function loadDevices() {
   const page = await api("/v1/enrollment/devices");
   const select = byId("activation-device");
@@ -225,6 +258,7 @@ async function poll() {
     byId("activation-review").hidden = true;
     activation = null;
     say("activation-status", "The line is active on this phone.");
+    await loadLines().catch(() => {});
     return;
   } else if (view.status === "closed") {
     byId("activation-review").hidden = true;
@@ -289,6 +323,8 @@ async function init() {
   session = await response.json();
   byId("approval-key").hidden = false;
   byId("activation").hidden = false;
+  byId("lines").hidden = false;
+  byId("line-more").addEventListener("click", guard("lines-status", () => loadLines(true)));
   byId("key-form").addEventListener("submit", guard("key-status", async () => {
     try {
       await createKey(byId("key-mfa").value.trim());
@@ -313,6 +349,7 @@ async function init() {
   await Promise.all([
     loadKeys().catch((error) => say("key-status", error.message)),
     loadDevices().catch((error) => say("activation-status", error.message)),
+    loadLines().catch((error) => say("lines-status", error.message)),
   ]);
 }
 
