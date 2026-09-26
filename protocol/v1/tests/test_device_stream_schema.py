@@ -56,6 +56,22 @@ class DeviceStreamSchemaTest(unittest.TestCase):
         self.assertFalse(self.validator.is_valid({**frame, "attempt_id": frame["event_id"]}))
         self.assertFalse(self.validator.is_valid({**ack, "suppression_cleared": True}))
 
+    def test_device_status_accepts_only_fixed_preconditions_without_identity_or_clock(self):
+        frame = next(frame for frame in self.frames if frame["type"] == "device_status")
+        for key, valid in (("selected_sim", "unavailable"), ("sms_permission", "denied"), ("airplane_mode", "enabled")):
+            self.assertTrue(self.validator.is_valid({**frame, key: valid}))
+            for invalid in ("x" * 5000, "", None, True, 1, [valid]):
+                self.assertFalse(self.validator.is_valid({**frame, key: invalid}))
+        for key in ("account_id", "device_id", "subscription_id", "card_id", "phone_number", "observed_at_ms", "ready"):
+            self.assertFalse(self.validator.is_valid({**frame, key: 1}))
+
+    def test_radio_timestamp_requires_a_positive_observation(self):
+        frame = next(frame for frame in self.frames if frame["type"] == "radio_event")
+        for observed_at_ms in (-1, 0):
+            self.assertFalse(self.validator.is_valid({**frame, "observed_at_ms": observed_at_ms}))
+        # Dynamic attempt/database clock bounds are exercised by delivery-store.
+        self.assertTrue(self.validator.is_valid({**frame, "observed_at_ms": 1}))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -66,6 +66,7 @@
       <section aria-labelledby="account-security-title">
         <h2 id="account-security-title">Account security</h2>
         <p>Manage your authenticator and recovery codes on the <a href="/owner/account">account setup page</a>.</p>
+        <p>Create your SMS approval key and activate phone lines on the <a href="/owner/sms-lines">SMS lines page</a>.</p>
         <h3>Change password</h3>
         <p>Changing or resetting your password signs out every session and revokes your API keys. Sign in again and reissue keys used by integrations.</p>
         <form id="change-password-form" method="post" action="/v1/auth/password">
@@ -133,9 +134,13 @@
 
       <section id="approved-devices" aria-labelledby="devices-title">
         <div class="section-head"><h2 id="devices-title">Approved devices</h2><button id="refresh-devices" type="button" class="quiet">Refresh</button></div>
+        <label class="check"><input id="auto-refresh" type="checkbox" checked> Refresh devices and recent messages automatically</label>
+        <p>Updates run every 15 seconds while this tab is visible. A list pauses while you browse older entries, focus a row, or open message events. Use Refresh to return to its latest entries.</p>
         <p>Approval permits a phone to connect. A displayed authenticated socket lease is a server observation that can lag a dropped connection by up to 90 seconds. It does not prove SMS permission, SIM service, or dispatch readiness. Check the gateway app on the phone before a controlled test.</p>
+        <p>Pending counts accepted, queued and claimed messages; in flight counts submitting and submitted messages. These server states can include work awaiting expiry reconciliation. Counts stop at 1,000+ per category. Check the snapshot time and message timeline for unknown or final outcomes.</p>
         <p id="device-cap-prompt" role="status" aria-live="polite" hidden></p>
         <p id="device-status" role="status" aria-live="polite"></p>
+        <p>Android reports describe selected SIM availability, SMS permission and airplane mode at the shown receipt time. They do not prove carrier readiness or delivery. Check the message timeline for actual callback evidence.</p>
         <ul id="device-list"></ul>
         <button id="more-devices" type="button" class="quiet" hidden>Load more devices</button>
       </section>
@@ -150,10 +155,35 @@
 
       <section aria-labelledby="opt-out-review-title">
         <div class="section-head"><h2 id="opt-out-review-title">Opt-out review</h2><button id="refresh-opt-out-review" type="button" class="quiet">Refresh holds</button></div>
-        <p>These recipients remain blocked after a possible SMS withdrawal. Review the request through your consent process; this page cannot clear a hold or establish consent. Only the recipient number and signed event times are shown, never SMS content.</p>
+        <p>Record your decision after reviewing a possible SMS withdrawal through your consent process. Both decisions leave the recipient blocked; neither establishes consent or resumes sending. Decisions are permanent. Only recipient metadata is shown, never SMS content.</p>
         <p id="opt-out-review-status" role="status" aria-live="polite"></p>
         <ul id="opt-out-review-list"></ul>
         <button id="more-opt-out-review" type="button" class="quiet" hidden>Load more holds</button>
+      </section>
+
+      <section aria-labelledby="owner-holds-title">
+        <div class="section-head"><h2 id="owner-holds-title">Requests received elsewhere</h2><button id="refresh-owner-holds" type="button" class="quiet">Refresh requests</button></div>
+        <p>Record an opt-out received by phone, email or another channel. This blocks new messages and cancels queued messages before they are authorized for sending. Sending already in progress may still finish.</p>
+        <form id="owner-hold-form" method="post" action="/v1/owner/opt-out-holds">
+          <label for="hold-recipient">Recipient number, including country code</label>
+          <input id="hold-recipient" type="tel" autocomplete="off" maxlength="16" pattern="\+[1-9][0-9]{1,14}" required>
+          <label for="hold-channel">Where the request arrived</label>
+          <select id="hold-channel" required>
+            <option value="">Choose a channel</option><option value="email">Email</option><option value="phone_call">Phone call</option><option value="web_form">Web form</option><option value="postal_mail">Postal mail</option><option value="in_person">In person</option><option value="other">Other</option>
+          </select>
+          <label for="hold-reason">Reason</label>
+          <select id="hold-reason" required>
+            <option value="">Choose a reason</option><option value="opt_out">Opt-out</option><option value="consent_withdrawn">Consent withdrawn</option><option value="complaint">Complaint</option><option value="wrong_number">Wrong number</option>
+          </select>
+          <label for="hold-reported-at">When received (your local time)</label>
+          <input id="hold-reported-at" type="datetime-local" required>
+          <p>No message content or free-text notes are collected. There is no manual unblock button; recording this request does not establish new consent.</p>
+          <button id="create-owner-hold" type="submit">Record request and block recipient</button>
+        </form>
+        <p id="owner-hold-create-status" role="status" aria-live="polite"></p>
+        <p id="owner-holds-status" role="status" aria-live="polite"></p>
+        <ul id="owner-holds-list"></ul>
+        <button id="more-owner-holds" type="button" class="quiet" hidden>Load more requests</button>
       </section>
 
       <section aria-labelledby="keys-title">

@@ -128,6 +128,10 @@ async fn retention_respects_each_cutoff_and_replay_fences() {
         include_str!("../../../../deploy/compose/migrations/029_webhook_dispatch_fairness.sql"),
         include_str!("../../../../deploy/compose/migrations/030_terminal_dispatch_jobs.sql"),
         include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
+        include_str!("../../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
+        include_str!("../../../../deploy/compose/migrations/038_owner_opt_out_hold_guards.sql"),
+        include_str!("../../../../deploy/compose/migrations/039_inbound_device_clock_offset.sql"),
+        include_str!("../../../../deploy/compose/migrations/041_device_preconditions.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }
@@ -246,6 +250,7 @@ async fn retention_respects_each_cutoff_and_replay_fences() {
     .await
     .unwrap();
 
+    db.execute("INSERT INTO device_preconditions(device_id,account_id,connection_epoch,deployment_epoch,received_at,selected_sim,sms_permission,airplane_mode) VALUES($1,$2,1,1,now()-interval '25 hours','active','granted','disabled')", &[&device,&account]).await.unwrap();
     let counts = prune(&mut db, RetentionPolicy::default(), 1).await.unwrap();
     assert_eq!(
         counts,
@@ -255,10 +260,20 @@ async fn retention_respects_each_cutoff_and_replay_fences() {
             message_events: 1,
             webhook_deliveries: 1,
             inbound_events: 1,
-            sealed_inbound_events: 1
+            sealed_inbound_events: 1,
+            device_preconditions: 1
         }
     );
+    assert_eq!(
+        db.query_one("SELECT count(*) FROM device_preconditions", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        0
+    );
+    db.execute("INSERT INTO device_preconditions(device_id,account_id,connection_epoch,deployment_epoch,selected_sim,sms_permission,airplane_mode) VALUES($1,$2,1,1,'unavailable','denied','enabled')", &[&device,&account]).await.unwrap();
     let second = prune(&mut db, RetentionPolicy::default(), 1).await.unwrap();
+    assert_eq!(second.device_preconditions, 0);
     assert_eq!(second.inbound_events, 1);
     assert_eq!(
         second.idempotency_keys

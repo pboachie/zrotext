@@ -48,7 +48,7 @@ async function ownerPage(mfaEnabled) {
     }
     throw new Error(`Unexpected request: ${url}`);
   };
-  globalThis.document = { cookie: "__Host-zrotext_csrf=ztc_synthetic", getElementById: element };
+  globalThis.document = { addEventListener() {}, cookie: "__Host-zrotext_csrf=ztc_synthetic", getElementById: element };
   globalThis.window = { location: { origin: "https://example.test" }, addEventListener() {} };
   globalThis.fetch = fetch;
   delete require.cache[require.resolve("./devices.js")];

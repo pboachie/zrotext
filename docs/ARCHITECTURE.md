@@ -63,7 +63,8 @@ Every tenant-owned table includes `account_id`. Use composite foreign keys and r
 | webhook_endpoints, webhook_deliveries | Encrypted signing secret, stable event ID, attempts, next_attempt_at; terminal delivery history pruned after 30 days by default |
 | inbound_events, sealed_inbound_events | Ciphertext or envelope has a 30-day default window; ID, device sequence and digest remain as replay tombstones |
 | subscriptions, billing_events | Provider identifiers, current entitlement period, unique Stripe event ID |
-| recipient_suppressions (restricted M1 pilot) | Account/E.164 recipient, active state, signed inbound source event and transition timestamp; admission and inbound transitions serialize on the account row |
+| recipient_suppressions (restricted M1 pilot) | Account/E.164 recipient, active state, signed inbound source event and transition timestamp; admission and inbound transitions serialize on the account row; not pruned by retention |
+| owner_recipient_holds, owner_opt_out_review_decisions, owner_opt_out_audit | Owner-recorded off-channel holds (E.164, channel and reason codes, report time, release by a signed START observed more than five minutes later; migration 038 guards inserts and release audits), one immutable decision per review item, and an append-only audit; written under the admission account lock; no notes or content; not pruned by retention |
 | security_audit_events | Key/device/permission changes, redacted subjects, no content |
 
 The durable outbound metering core uses an operator or billing-provisioned
@@ -87,7 +88,7 @@ account, pending reconciliation or a missing test quota returns 503
 503 `unavailable`. An identical idempotent replay reuses the original result
 without reserving another unit.
 
-Index queue due times and `(account_id, created_at DESC, id)`. Cursor pagination only. The retention worker redacts terminal message recipients and synthetic payloads after 30 days by default, counted from the last state update. It preserves recipient and request digests, message identity, state and attempts. It removes eligible message events after 90 days and only after their parent content is redacted, terminal webhook delivery/attempt/replay history after 30 days, and inbound ciphertext after 30 days once related webhook history is gone. M1 inbound event IDs, device sequences, digests and signatures remain as replay tombstones. Sealed inbound envelopes are redacted after 30 days while ID, device sequence and unsigned digest remain. Unknown messages and unresolved grant/submission fences defer related content and history; completed submitted/failed fence records do not. Late radio receipts for redacted messages are stale and must be quarantined by the device protocol. See [self-hosting retention settings](SELF-HOSTING.md#data-retention). Default API body limit 32 KiB; one-recipient SMS; payload cannot exceed six radio segments after decryption. Keep ingress limits before expensive crypto/parsing.
+Index queue due times and `(account_id, created_at DESC, id)`. Cursor pagination only. The retention worker redacts terminal message recipients and synthetic payloads after 30 days by default, counted from the last state update. It preserves recipient and request digests, message identity, state and attempts. It removes eligible message events after 90 days and only after their parent content is redacted, terminal webhook delivery/attempt/replay history after 30 days, and inbound ciphertext after 30 days once related webhook history is gone. M1 inbound event IDs, device sequences, digests and signatures remain as replay tombstones. Sealed inbound envelopes are redacted after 30 days while ID, device sequence and unsigned digest remain. Unknown messages and unresolved grant/submission fences defer related content and history; completed submitted/failed fence records do not. Late radio receipts for redacted messages are stale and must be quarantined by the device protocol. New M1 inbound events for a redacted message are rejected as unknown sources; exact replays of stored events are still acknowledged. See [self-hosting retention settings](SELF-HOSTING.md#data-retention). Default API body limit 32 KiB; one-recipient SMS; payload cannot exceed six radio segments after decryption. Keep ingress limits before expensive crypto/parsing.
 
 ## Message semantics and the duplicate-send problem
 
@@ -160,11 +161,40 @@ authenticated device session. It is true only while the lease is unexpired,
 the session deployment epoch is current, the hosting site is enabled and not
 draining, and the device, key, and account remain active. Reconnection replaces
 the device's prior session with a higher connection epoch. A dropped socket can
-remain represented until its 90-second lease expires; the page is a snapshot,
-not a continuous connection monitor. Approval/revocation and this lease are
+remain represented until its 90-second lease expires. The owner dashboard polls
+device leases and recent message states every 15 seconds after the previous
+refresh finishes, only while signed in with a visible page. Owners can turn off
+automatic refresh; browsing older entries, focusing a list row, or opening
+message events pauses that list until the owner returns to the latest entries
+with Refresh or finishes the interaction. Hidden tabs and page navigation stop
+the timer; returning resumes it. A failed automatic refresh retains the previous
+rows with a visible error, and session expiry clears owner data and stops polling.
+These periodic observations are not a continuous connection monitor.
+Approval/revocation and this lease are
 separate fields. Neither field establishes Android SMS permission, SIM state,
 carrier service, or radio send readiness. The owner API returns 503 rather than
 rendering a standby's potentially stale lease state.
+
+Each owner device response also includes `pending_messages` (accepted, queued or
+claimed), `in_flight_messages` (submitting or submitted), and the database
+`status_observed_at_ms`. Each count is capped at 1,000 and rendered as `1,000+`
+at the cap. The query first materializes at most 51 tenant-owned devices for the
+50-device page and its next cursor, then runs capped probes ordered by state and creation time to match the existing
+`messages_device_state` index. It excludes terminal and uncertain states; these
+remain in the message timeline. Counts describe stored writer states, including
+work waiting for expiry reconciliation, rather than permission to dispatch.
+Offline and revoked devices can still have recorded work. The dashboard shows
+the snapshot time, keeps unavailable counts distinct from zero, and marks a
+retained snapshot stale when an automatic refresh fails. No SIM identifiers,
+phone numbers, message content, or new readiness claim are exposed.
+
+The optional [Android preconditions extension](../protocol/v1/device-preconditions.md)
+adds only selected-SIM availability, SMS permission and airplane-mode enums to
+the device list. Reports are authenticated-session scoped, timestamped by the
+writer and explicitly distinguished as fresh at snapshot time, stale,
+disconnected or unavailable. No report authorizes a send or establishes carrier
+readiness. Migration 041 stores one latest snapshot with deletion cascades;
+reports older than one day are eligible for bounded retention pruning.
 
 ## Planned API v1 outline
 

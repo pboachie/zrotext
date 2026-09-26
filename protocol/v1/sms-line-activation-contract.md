@@ -1,11 +1,11 @@
 # Internal SMS line activation contract
 
-**Prerequisite only.** Migrations 033–035 and the `issue_sms_line_challenge`,
+**Dormant.** Migrations 033–035 and 037 and the `issue_sms_line_challenge`,
 `activate_sms_line_binding`, and `sms_line_binding_ready` functions define a
-separate SMS-only line scope for Android API 28+. No HTTP or device-stream route
-calls these functions. The owner can provision an SMS approval public key through
-the account API, but Android does not yet generate these proofs or persist a
-verified mapping to the selected subscription. General sending stays closed.
+separate SMS-only line scope for Android API 28+. The owner can provision an SMS
+approval public key through the account API. The activation exchange below is
+off unless the hub sets `SMS_LINE_ACTIVATION_ENABLED=true`. General sending
+stays closed.
 
 An authenticated owner session issues a five-minute challenge for an enrolled
 device and a stable owner-assigned line UUID. A distinct SMS owner approval key
@@ -85,6 +85,63 @@ ciphertext webhooks, or RCS capture. The two scopes share a line's monotonic
 generation. Upgrading from SMS to sealed revokes the former active binding;
 after sealed activation, SMS-only activation is refused as a downgrade.
 
+## Activation exchange
+
+The owner signs over the device signature, so the device answers first and the
+server stores its proof until the owner approves. All owner routes are under
+`/v1/auth`, need the owner session and CSRF cookie/header, and return
+`not_found` while the exchange is disabled. Mutations also need the exact
+HTTPS Origin and share a per-owner rate limit.
+
+1. `POST /v1/auth/sms-lines/{line_id}/activations` with `{"device_id":"UUID"}`
+   issues a challenge and returns `challenge_id`, `generation`, and
+   `expires_at_ms` (201). A new challenge supersedes a pending one for the line.
+2. The device's own authenticated stream sends `sms_line_challenge` (line,
+   device, generation, Base64url nonce, expiry) within a few seconds, on
+   whichever hub holds the session, and again after a reconnect.
+3. The device answers with `sms_line_proof`: the declared API level,
+   subscription count and selected subscription ID, and its DER signature over
+   `sms_device_statement`. The hub verifies it with the enrolled device key and
+   stores it with the exact device session that delivered it, then replies
+   `sms_line_proof_ack` with `accepted`. An exact replay is accepted again; a
+   different proof cannot replace a stored one.
+4. `GET /v1/auth/sms-lines/{line_id}/activations/{challenge_id}` returns
+   `status` (`awaiting_device`, `awaiting_owner`, `activated`, `closed`). While
+   `awaiting_owner` it includes the declaration and standard Base64
+   `device_statement_b64`, `device_signature_der_b64`, and the exact
+   `owner_statement_b64` to sign.
+5. `POST .../{challenge_id}/approve` with `{"owner_signature_der_b64":"..."}`
+   activates the binding (204). Activation runs under the stored device session,
+   so the connection that delivered the proof must still hold a live lease; a
+   reconnect needs a new challenge, and the status then reads `closed`. Any
+   failed fence returns `forbidden`.
+6. The device stream then sends `sms_line_activated` with the SHA-256 digests of
+   the exact device statement and DER signature, only when the active binding's
+   confirmation digest matches that proof. Each device connection sends it once
+   during the 15 minutes after activation, so a dropped connection does not lose
+   it; the device ignores a digest that does not match the proof it holds.
+
+The hub keeps the challenge nonce only while an exchange can still activate or
+acknowledge. It clears the nonce once the resend window ends, or once the
+challenge is superseded, revoked or has been expired for 15 minutes. Stored
+proofs, recorded acknowledgements and cleared nonces are write-once in the
+database. The server never receives the owner's private key.
+
+`GET /v1/auth/sms-lines` lists the owner's lines, newest first and 50 per page
+(`?before=<line_id>` for the next page), with each line's state, current
+generation, and the phone and scope of its active binding. It needs the owner
+session and CSRF header and is disabled along with the exchange.
+
 The current PostgreSQL tests use synthetic keys and declared subscription
-values. Android implementation, route integration,
-physical SIM testing, and a real carrier receive test are still required.
+values. The Android gateway answers a pushed challenge only for API 29+ with
+exactly one selected, active physical SIM, keeps the prepared proof in memory,
+and installs its local line binding only from an `sms_line_activated` frame
+whose digests match that proof and a fresh SIM observation, until 15 minutes
+after the challenge expiry to allow the hub's resends. A restarted app
+cannot install an earlier proof; the owner opens a new activation. The owner page at `/owner/sms-lines` creates the SMS approval key as a
+non-extractable WebCrypto P-256 key in the browser's IndexedDB, registers it
+with the MFA-bound ceremony, and approves an activation only after it parses
+the device statement, checks its account, line, device, generation and
+challenge against the activation it opened, and rebuilds `owner_statement`
+itself; it refuses when the server's copy differs. Physical SIM testing and a
+real carrier receive test are still required.

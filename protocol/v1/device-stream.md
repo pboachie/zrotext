@@ -94,6 +94,12 @@ metadata without an outbound attempt when `LINE_OPT_OUT_ENABLED=true`. It
 requires a current active line binding and never clears suppression or sends
 an SMS. See [the line-bound opt-out contract](line-opt-out-contract.md).
 
+Default-off `sms_line_challenge`, `sms_line_proof`, `sms_line_proof_ack`, and
+`sms_line_activated` frames carry SMS line activation when
+`SMS_LINE_ACTIVATION_ENABLED=true`. They bind a line to this device only after
+the owner approves the device's signed declaration; none authorizes an SMS. See
+[the SMS line activation contract](sms-line-activation-contract.md).
+
 The Android app exposes a separate **Start inbound metadata pilot** action. It
 is off by default. The hub must separately enable `INBOUND_PILOT_ENABLED=true`.
 After authenticated session setup, the phone sends previously captured
@@ -104,6 +110,13 @@ to customers and has not passed a live WSS interoperability test.
 
 The client frame is
 `{"v":1,"type":"inbound_event","connection_epoch":1,"event_id":"UUID","sequence":1,"message_id":"UUID","attempt_id":"UUID","classification":"captured_local","observed_at_ms":1700000000000,"part_count":1,"signature_der":"BASE64URL_NO_PAD"}`.
+An optional, unsigned `"device_sent_at_ms"` carries the phone clock when the
+frame is sent. The hub stores it only within a day of its own clock. Before an
+owner opt-out hold is released, it also requires the START, corrected by the
+phone's measured offset, to be more than a minute after the hold; it never
+loosens the five-minute margin. It is outside the signature, the event digest
+and replay identity. Send it only to a
+hub that accepts it, because older hubs reject unknown fields.
 The enrolled P-256 key signs the `zrotext-inbound-v1` domain-separated bytes
 described by the server inbound foundation, with content kind 0 and SHA-256 of
 empty bytes. Room reserves a positive auto-incremented sequence for each
@@ -114,3 +127,9 @@ or immediately in a newly authenticated session. Only a matching
 marks the row acknowledged locally. Observations older than six days remain
 local because the hub rejects them after seven days. Android never interprets
 this acknowledgment as authorization to send an SMS.
+
+## Optional reported preconditions
+
+New peers may negotiate [privacy-minimal Android preconditions](device-preconditions.md)
+at WebSocket upgrade. The original handshake and heartbeat frames stay unchanged;
+no report proves radio readiness or authorizes a send.

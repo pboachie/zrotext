@@ -16,6 +16,8 @@ async function ownerPage() {
     replaceChildren(...children) { this.children = children; },
     append(...children) { this.children.push(...children); },
     setAttribute() {},
+    contains(node) { return this === node || this.children.some((child) => child.contains(node)); },
+    querySelector() { return this.openDetails || null; },
     addEventListener(name, listener) { this.listeners[name] = listener; },
     querySelectorAll() { return [{ value: "messages:read" }]; },
   });
@@ -24,16 +26,24 @@ async function ownerPage() {
     return elements.get(id);
   };
   element("key-lifetime").value = "30";
+  element("auto-refresh").checked = true;
+  const timers = new Map();
+  const documentListeners = {};
+  const windowListeners = {};
+  let nextTimer = 0;
   const state = {
+    requests: [], devicePages: [], messagePages: [],
     unauthorized: false, pendingCreate: null, nextCreateResponse: null, pendingHistory: null,
     historyPages: [], historyRequests: [], webhookPages: [], webhookRequests: [], pendingWebhook: null,
     endpoints: [], pendingEndpoints: null, pendingDevices: null, messages: [],
     reviewPages: [], reviewRequests: [], pendingReview: null,
+    holdPages: [], holdRequests: [], pendingHold: null, decisionRequests: [], pendingDecision: null,
     devices: [], deletedDevices: [], billingCapacity: null, approveResponse: response(409),
     authRequests: [], sessions: [{ id: "11111111-1111-4111-8111-111111111111", current: true,
       created_at_ms: 1000, expires_at_ms: 100000, last_used_at_ms: 2000 }],
   };
   const fetch = async (url, options) => {
+    state.requests.push(url);
     if (url === "/v1/auth/session") return response(200);
     if (url === "/v1/auth/login") return response(204);
     if (url === "/v1/auth/logout") return response(204);
@@ -48,9 +58,9 @@ async function ownerPage() {
       state.authRequests.push({ url, options });
       return response(204);
     }
-    if (url === "/v1/enrollment/devices") {
+    if (url.startsWith("/v1/enrollment/devices") && options.method === "GET") {
       if (state.pendingDevices) return state.pendingDevices;
-      return state.unauthorized ? response(401) : response(200, { devices: state.devices, next_cursor: null });
+      return state.unauthorized ? response(401) : response(200, state.devicePages.shift() || { devices: state.devices, next_cursor: null });
     }
     if (url === "/v1/billing/status") return state.billingCapacity
       ? response(200, { mode: "test", deviceCapacity: state.billingCapacity }) : response(404);
@@ -65,7 +75,17 @@ async function ownerPage() {
       if (state.billingCapacity) state.billingCapacity.active -= 1;
       return response(204);
     }
-    if (url === "/v1/owner/messages") return response(200, { messages: state.messages, next_cursor: null });
+    if (url.startsWith("/v1/owner/messages")) return response(200, state.messagePages.shift() || { messages: state.messages, next_cursor: null });
+    if (url === "/v1/owner/opt-out-review/decisions") {
+      state.decisionRequests.push({ url, options });
+      return state.pendingDecision || { status: 201, ok: true, json: async () => { throw new Error("Empty body"); } };
+    }
+    if (url.startsWith("/v1/owner/opt-out-holds")) {
+      state.holdRequests.push({ url, options });
+      if (state.pendingHold) return state.pendingHold;
+      if (options.method === "POST") return response(201, { hold_id: eventId, cancelled_messages: 1 });
+      return response(200, state.holdPages.shift() || { holds: [], next_cursor: null });
+    }
     if (url.startsWith("/v1/owner/opt-out-review")) {
       state.reviewRequests.push({ url, options });
       if (state.pendingReview) return state.pendingReview;
@@ -97,14 +117,27 @@ async function ownerPage() {
     }
     throw new Error(`Unexpected request: ${url}`);
   };
-  globalThis.document = { cookie: "__Host-zrotext_csrf=ztc_synthetic", getElementById: element, createElement: makeElement };
-  globalThis.window = { location: { origin: "https://example.test" }, addEventListener() {}, confirm: () => false };
+  globalThis.document = { hidden: false, activeElement: null, addEventListener(name, callback) { documentListeners[name] = callback; }, cookie: "__Host-zrotext_csrf=ztc_synthetic", getElementById: element, createElement: makeElement };
+  globalThis.window = {
+    location: { origin: "https://example.test" }, confirm: () => false,
+    addEventListener(name, callback) { windowListeners[name] = callback; },
+    setTimeout(callback, delay) { timers.set(++nextTimer, { callback, delay }); return nextTimer; },
+    clearTimeout(id) { timers.delete(id); },
+  };
   globalThis.fetch = fetch;
   delete require.cache[require.resolve("./devices.js")];
   require("./devices.js");
   await new Promise(setImmediate);
   await new Promise(setImmediate);
-  return { element, state };
+  return { element, state, timers, documentListeners, windowListeners,
+    tick() {
+      assert.equal(timers.size, 1);
+      const [id, timer] = [...timers][0];
+      assert.equal(timer.delay, 15_000);
+      timers.delete(id);
+      return timer.callback();
+    },
+  };
 }
 
 const endpointId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -135,11 +168,11 @@ test("opt-out review pages active holds without showing SMS content and clears o
   const { element, state } = await ownerPage();
   const cursor = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
   state.reviewPages.push({ holds: [{
-    recipient_e164: "+15551234567", source: "sms_review", observed_at_ms: 1000,
+    review_event_id: eventId, decision: null, recipient_e164: "+15551234567", source: "sms_review", observed_at_ms: 1000,
     changed_at_ms: 2000, body: "PRIVATE_BODY", signature_der: "PRIVATE_SIGNATURE",
   }], next_cursor: cursor });
   state.reviewPages.push({ holds: [{
-    recipient_e164: "+15557654321", source: "sms_unsolicited_review",
+    review_event_id: deliveryId, decision: null, recipient_e164: "+15557654321", source: "sms_unsolicited_review",
     observed_at_ms: 3000, changed_at_ms: 4000,
   }], next_cursor: null });
   await element("refresh-opt-out-review").listeners.click();
@@ -589,4 +622,319 @@ test("a network failure shows a connection message instead of a browser error", 
   await element("refresh-messages").listeners.click();
   assert.match(element("message-status").textContent, /Could not reach the server/);
   assert.equal(element("owner-content").hidden, false);
+});
+
+function fillHold(element) {
+  element("hold-recipient").value = "+15550104400";
+  element("hold-channel").value = "email";
+  element("hold-reason").value = "consent_withdrawn";
+  element("hold-reported-at").value = "2026-09-25T10:30";
+}
+
+test("owner hold sends bounded fields with CSRF once and discards late success after logout", async () => {
+  const { element, state } = await ownerPage();
+  fillHold(element);
+  let finish;
+  state.pendingHold = new Promise((resolve) => { finish = resolve; });
+  const submit = element("owner-hold-form").listeners.submit;
+  const pending = submit({ preventDefault() {} });
+  await submit({ preventDefault() {} });
+  const posts = state.holdRequests.filter((r) => r.options.method === "POST");
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].url, "/v1/owner/opt-out-holds");
+  assert.equal(posts[0].options.headers["x-zrotext-csrf"], "ztc_synthetic");
+  assert.deepEqual(JSON.parse(posts[0].options.body), {
+    recipient_e164: "+15550104400", channel: "email", reason: "consent_withdrawn",
+    reported_at_ms: new Date("2026-09-25T10:30").getTime(),
+  });
+  await element("logout").listeners.click();
+  finish(response(201, { hold_id: eventId }));
+  await pending;
+  assert.equal(element("hold-recipient").value, "");
+  assert.equal(element("owner-hold-create-status").textContent, "");
+  assert.equal(element("owner-holds-list").children.length, 0);
+});
+
+test("owner hold validates input, clears saved fields and paginates without free text", async () => {
+  const { element, state } = await ownerPage();
+  const submit = element("owner-hold-form").listeners.submit;
+  await submit();
+  assert.equal(state.holdRequests.some((r) => r.options.method === "POST"), false);
+  fillHold(element);
+  const hold = { hold_id: eventId, recipient_e164: "+15550104400", channel: "email",
+    reason: "consent_withdrawn", reported_at_ms: 1000, created_at_ms: 2000, notes: "PRIVATE_NOTE" };
+  state.holdPages.push({ holds: [hold], next_cursor: eventId });
+  await submit();
+  assert.equal(element("hold-recipient").value, "");
+  assert.match(element("owner-hold-create-status").textContent, /already in progress/);
+  assert.equal(visibleText(element("owner-holds-list")).includes("PRIVATE_NOTE"), false);
+  state.holdPages.push({ holds: [{ ...hold, hold_id: deliveryId }], next_cursor: null });
+  await element("more-owner-holds").listeners.click();
+  assert.equal(state.holdRequests.at(-1).url, `/v1/owner/opt-out-holds?before=${eventId}`);
+  assert.equal(element("owner-holds-list").children.length, 2);
+  assert.equal(element("more-owner-holds").hidden, true);
+});
+
+test("review decisions accept empty 201, suppress duplicate submits and never imply unblock", async () => {
+  const { element, state } = await ownerPage();
+  const hold = { review_event_id: eventId, decision: null, recipient_e164: "+15550104400",
+    source: "sms_review", observed_at_ms: 1000, changed_at_ms: 2000 };
+  state.reviewPages.push({ holds: [hold], next_cursor: null });
+  await element("refresh-opt-out-review").listeners.click();
+  const form = element("opt-out-review-list").children[0].children.at(-1);
+  form.children[1].value = "not_opt_out";
+  let finish;
+  state.pendingDecision = new Promise((resolve) => { finish = resolve; });
+  const pending = form.listeners.submit();
+  await form.listeners.submit();
+  assert.equal(state.decisionRequests.length, 1);
+  assert.deepEqual(JSON.parse(state.decisionRequests[0].options.body), {
+    review_event_id: eventId, decision: "not_opt_out",
+  });
+  assert.equal(state.decisionRequests[0].options.headers["x-zrotext-csrf"], "ztc_synthetic");
+  state.reviewPages.push({ holds: [{ ...hold, decision: "not_opt_out" }], next_cursor: null });
+  finish({ status: 201, ok: true, json: async () => { throw new Error("Empty body"); } });
+  await pending;
+  assert.match(element("opt-out-review-status").textContent, /Decision recorded.*remains blocked/);
+  assert.match(visibleText(element("opt-out-review-list")), /remains blocked/);
+  assert.equal(element("opt-out-review-list").children[0].children.at(-1).listeners.submit, undefined);
+});
+
+
+test("automatic refresh updates device leases and recent message states", async () => {
+  const { element, state, tick, timers } = await ownerPage();
+  state.devices = [{ device_id: endpointId, display_name: "Synthetic gateway", revoked: false, active_socket_lease: true }];
+  state.messages = [{ message_id: eventId, device_id: endpointId, state: "unknown", created_at_ms: 1000, events: [] }];
+  const before = state.requests.length;
+  await tick();
+  assert.deepEqual(state.requests.slice(before), ["/v1/enrollment/devices", "/v1/owner/messages"]);
+  assert.match(visibleText(element("device-list")), /authenticated socket lease observed/);
+  assert.match(visibleText(element("message-list")), /Outcome unknown/);
+  assert.equal(timers.size, 1);
+});
+
+test("automatic refresh pauses for hidden tabs, page navigation and owner preference", async () => {
+  const { element, timers, documentListeners, windowListeners } = await ownerPage();
+  document.hidden = true;
+  documentListeners.visibilitychange();
+  assert.equal(timers.size, 0);
+  document.hidden = false;
+  documentListeners.visibilitychange();
+  assert.equal(timers.size, 1);
+  documentListeners.visibilitychange();
+  assert.equal(timers.size, 1);
+  element("auto-refresh").checked = false;
+  element("auto-refresh").listeners.change();
+  assert.equal(timers.size, 0);
+  element("auto-refresh").checked = true;
+  element("auto-refresh").listeners.change();
+  assert.equal(timers.size, 1);
+  windowListeners.pagehide();
+  assert.equal(timers.size, 0);
+  windowListeners.pageshow();
+  assert.equal(timers.size, 1);
+});
+
+test("automatic batches do not overlap and keep previous rows until completion", async () => {
+  const { element, state, tick, timers, documentListeners } = await ownerPage();
+  state.devices = [{ device_id: endpointId, display_name: "Synthetic gateway", revoked: true }];
+  await element("refresh-devices").listeners.click();
+  let resolve;
+  state.pendingDevices = new Promise((done) => { resolve = done; });
+  const pending = tick();
+  assert.equal(timers.size, 0);
+  assert.equal(element("device-list").children.length, 1);
+  documentListeners.visibilitychange();
+  assert.equal(timers.size, 0);
+  resolve(response(200, { devices: [], next_cursor: null }));
+  await pending;
+  assert.equal(element("device-list").children.length, 0);
+  assert.equal(timers.size, 1);
+});
+
+test("automatic refresh stops on session expiry and discards a late device response", async () => {
+  const { element, state, tick, timers } = await ownerPage();
+  let resolve;
+  state.pendingDevices = new Promise((done) => { resolve = done; });
+  const original = globalThis.fetch;
+  globalThis.fetch = (url, options) => url === "/v1/owner/messages" ? Promise.resolve(response(401)) : original(url, options);
+  const pending = tick();
+  await new Promise(setImmediate);
+  resolve(response(200, { devices: [{ device_id: endpointId, display_name: "Stale gateway", revoked: true }], next_cursor: null }));
+  await pending;
+  assert.equal(element("owner-content").hidden, true);
+  assert.equal(element("device-list").children.length, 0);
+  assert.equal(timers.size, 0);
+});
+
+test("automatic refresh preserves paginated history until manual refresh", async () => {
+  const { element, state, tick } = await ownerPage();
+  state.devicePages.push({ devices: [{ device_id: endpointId, display_name: "Gateway", revoked: true }], next_cursor: endpointId });
+  state.messagePages.push({ messages: [{ message_id: eventId, state: "unknown", events: [] }], next_cursor: eventId });
+  await element("refresh-devices").listeners.click();
+  await element("refresh-messages").listeners.click();
+  await element("more-devices").listeners.click();
+  await element("more-messages").listeners.click();
+  const before = state.requests.length;
+  await tick();
+  assert.equal(state.requests.length, before);
+  assert.equal(element("device-list").children.length, 1);
+  assert.equal(element("message-list").children.length, 1);
+  await element("refresh-devices").listeners.click();
+  await element("refresh-messages").listeners.click();
+  const refreshed = state.requests.length;
+  await tick();
+  assert.equal(state.requests.length, refreshed + 2);
+});
+
+test("automatic refresh preserves focused rows and expanded message events", async () => {
+  const { element, state, tick } = await ownerPage();
+  document.activeElement = element("device-list");
+  element("message-list").openDetails = {};
+  const before = state.requests.length;
+  await tick();
+  assert.equal(state.requests.length, before);
+  document.activeElement = null;
+  element("message-list").openDetails = null;
+  await tick();
+  assert.equal(state.requests.length, before + 2);
+});
+
+test("an automatic network failure keeps prior rows and retries on the next interval", async () => {
+  const { element, state, tick, timers } = await ownerPage();
+  state.devices = [{ device_id: endpointId, display_name: "Synthetic gateway", revoked: true }];
+  await element("refresh-devices").listeners.click();
+  const original = globalThis.fetch;
+  globalThis.fetch = () => Promise.reject(new TypeError("offline"));
+  await tick();
+  assert.equal(element("device-list").children.length, 1);
+  assert.match(element("device-status").textContent, /Could not reach the server/);
+  assert.equal(timers.size, 1);
+  globalThis.fetch = original;
+  await tick();
+  assert.doesNotMatch(element("device-status").textContent, /Could not reach/);
+});
+
+test("automatic refresh skips a list while its manual request is pending", async () => {
+  const { element, state, tick } = await ownerPage();
+  let resolve;
+  state.pendingDevices = new Promise((done) => { resolve = done; });
+  const pending = element("refresh-devices").listeners.click();
+  const before = state.requests.filter((path) => path === "/v1/enrollment/devices").length;
+  await tick();
+  assert.equal(state.requests.filter((path) => path === "/v1/enrollment/devices").length, before);
+  resolve(response(200, { devices: [], next_cursor: null }));
+  await pending;
+});
+
+
+test("focusing a row while an automatic request is pending preserves the row", async () => {
+  const { element, state, tick } = await ownerPage();
+  state.devices = [{ device_id: endpointId, display_name: "Synthetic gateway", revoked: true }];
+  await element("refresh-devices").listeners.click();
+  let resolve;
+  state.pendingDevices = new Promise((done) => { resolve = done; });
+  const pending = tick();
+  document.activeElement = element("device-list").children[0];
+  resolve(response(200, { devices: [], next_cursor: null }));
+  await pending;
+  assert.equal(element("device-list").children.length, 1);
+  assert.equal(element("more-devices").disabled, false);
+});
+
+test("signing out stops automatic refresh until a new sign-in completes", async () => {
+  const { element, timers } = await ownerPage();
+  await element("logout").listeners.click();
+  assert.equal(timers.size, 0);
+  await element("login-form").listeners.submit({ preventDefault() {} });
+  assert.equal(timers.size, 1);
+});
+
+
+test("device queues distinguish zero, bounded counts and unavailable telemetry", async () => {
+  const { element, state } = await ownerPage();
+  state.devices = [
+    { device_id: endpointId, display_name: "Empty", revoked: false, pending_messages: 0, in_flight_messages: 0, status_observed_at_ms: 1000 },
+    { device_id: otherEndpointId, display_name: "Busy", revoked: true, pending_messages: 3, in_flight_messages: 1000, status_observed_at_ms: 2000 },
+    { device_id: deliveryId, display_name: "Unavailable", revoked: false },
+  ];
+  await element("refresh-devices").listeners.click();
+  const rows = element("device-list").children.map(visibleText);
+  assert.match(rows[0], /Pending: 0 · In flight: 0 · Snapshot/);
+  assert.match(rows[1], /Revoked/);
+  assert.match(rows[1], /Pending: 3 · In flight: 1,000\+ · Snapshot/);
+  assert.match(rows[2], /Queue status unavailable/);
+  assert.doesNotMatch(rows[2], /Pending: 0/);
+});
+
+test("invalid queue values fail closed instead of claiming fresh empty queues", async () => {
+  const { element, state } = await ownerPage();
+  for (const invalid of [
+    { pending_messages: -1 }, { pending_messages: 1001 }, { in_flight_messages: "0" },
+    { in_flight_messages: 1.5 }, { status_observed_at_ms: 0 }, { status_observed_at_ms: 9e15 },
+  ]) {
+    state.devices = [{ device_id: endpointId, display_name: "Gateway", pending_messages: 0, in_flight_messages: 0, status_observed_at_ms: 1000, ...invalid }];
+    await element("refresh-devices").listeners.click();
+    assert.match(visibleText(element("device-list")), /Queue status unavailable/);
+  }
+});
+
+test("failed automatic queue refresh labels the retained snapshot stale and clears it on sign-out", async () => {
+  const { element, state, tick } = await ownerPage();
+  state.devices = [{ device_id: endpointId, display_name: "Gateway", pending_messages: 2, in_flight_messages: 1, status_observed_at_ms: 1000 }];
+  await element("refresh-devices").listeners.click();
+  const original = globalThis.fetch;
+  globalThis.fetch = () => Promise.reject(new TypeError("offline"));
+  await tick();
+  assert.match(visibleText(element("device-list")), /Pending: 2 · In flight: 1 · Snapshot/);
+  assert.match(element("device-status").textContent, /previous snapshot; counts may be stale/);
+  globalThis.fetch = original;
+  await element("logout").listeners.click();
+  assert.equal(element("device-list").children.length, 0);
+});
+
+test("Android preconditions distinguish fresh, stale, disconnected and unavailable reports", async () => {
+  const { element, state } = await ownerPage();
+  const report = { selected_sim: "active", sms_permission: "granted", airplane_mode: "disabled", received_at_ms: 1000, fresh: true };
+  state.devices = [
+    { device_id: endpointId, active_socket_lease: true, reported_preconditions: report },
+    { device_id: otherEndpointId, active_socket_lease: true, reported_preconditions: { ...report, fresh: false } },
+    { device_id: deliveryId, active_socket_lease: false, reported_preconditions: report },
+    { device_id: endpointId, active_socket_lease: true, reported_preconditions: null },
+  ];
+  await element("refresh-devices").listeners.click();
+  const rows = element("device-list").children.map(visibleText);
+  assert.match(rows[0], /fresh at snapshot time.*selected SIM active.*SMS permission granted.*airplane mode disabled/);
+  assert.match(rows[1], /stale report/);
+  assert.match(rows[2], /disconnected; last report/);
+  assert.match(rows[3], /preconditions unavailable/);
+  for (const row of rows) assert.match(row, /carrier readiness unknown/i);
+});
+
+test("invalid Android report values fail closed and reports clear on sign-out", async () => {
+  const { element, state } = await ownerPage();
+  const report = { selected_sim: "unavailable", sms_permission: "denied", airplane_mode: "enabled", received_at_ms: 1000, fresh: true };
+  for (const invalid of [{ selected_sim: "ready" }, { sms_permission: "<script>" }, { airplane_mode: false }, { received_at_ms: 0 }, { fresh: "true" }]) {
+    state.devices = [{ device_id: endpointId, active_socket_lease: true, reported_preconditions: { ...report, ...invalid } }];
+    await element("refresh-devices").listeners.click();
+    assert.match(visibleText(element("device-list")), /preconditions unavailable/);
+  }
+  state.devices = [{ device_id: endpointId, active_socket_lease: true, reported_preconditions: report }];
+  await element("refresh-devices").listeners.click();
+  assert.match(visibleText(element("device-list")), /selected SIM unavailable.*permission denied.*mode enabled/);
+  await element("logout").listeners.click();
+  assert.equal(element("device-list").children.length, 0);
+});
+
+
+test("one device preserves queue counts alongside its reported Android preconditions", async () => {
+  const { element, state } = await ownerPage();
+  state.devices = [{ device_id: endpointId, active_socket_lease: true,
+    pending_messages: 7, in_flight_messages: 2, status_observed_at_ms: 2000,
+    reported_preconditions: { selected_sim: "active", sms_permission: "denied", airplane_mode: "disabled", received_at_ms: 1000, fresh: true } }];
+  await element("refresh-devices").listeners.click();
+  const text = visibleText(element("device-list"));
+  assert.match(text, /Pending: 7.*In flight: 2/);
+  assert.match(text, /fresh at snapshot time.*selected SIM active.*SMS permission denied/);
+  assert.match(text, /Carrier readiness unknown/);
 });

@@ -67,6 +67,9 @@ async fn authenticated_inbound_replay_retries_one_webhook_delivery() {
         include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
         include_str!("../../../../deploy/compose/migrations/029_webhook_dispatch_fairness.sql"),
         include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
+        include_str!("../../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
+        include_str!("../../../../deploy/compose/migrations/038_owner_opt_out_hold_guards.sql"),
+        include_str!("../../../../deploy/compose/migrations/039_inbound_device_clock_offset.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }
@@ -142,6 +145,7 @@ async fn authenticated_inbound_replay_retries_one_webhook_delivery() {
         dispatch_runtime_enabled: false,
         inbound_pilot_enabled: true,
         line_opt_out_enabled: false,
+        sms_line_activation_enabled: false,
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),
     };
@@ -432,6 +436,7 @@ async fn socket_handshakes_share_http_enrollment_budgets() {
         dispatch_runtime_enabled: false,
         inbound_pilot_enabled: false,
         line_opt_out_enabled: false,
+        sms_line_activation_enabled: false,
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),
     };
@@ -602,6 +607,7 @@ async fn enrolled_phone_reconnects_after_junk_spends_handshake_budgets() {
         dispatch_runtime_enabled: false,
         inbound_pilot_enabled: false,
         line_opt_out_enabled: false,
+        sms_line_activation_enabled: false,
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),
     };

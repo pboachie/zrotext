@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 const MAX_AGE_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 const MAX_FUTURE_MS: i64 = 5 * 60 * 1000;
+const MAX_DEVICE_CLOCK_OFFSET_MS: i64 = 24 * 60 * 60 * 1000;
 
 pub mod unsolicited;
 
@@ -189,7 +190,32 @@ pub async fn ingest(
     session: InboundSession<'_>,
     event: &InboundEvent<'_>,
 ) -> Result<IngestOutcome, InboundError> {
+    ingest_with_clock(client, session, event, None).await
+}
+
+/// The phone's clock at upload, kept only when it is within a day of the hub
+/// clock; otherwise the event keeps the conservative release rule.
+fn plausible_device_clock(device_sent_at_ms: Option<i64>) -> Option<f64> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_millis() as i64;
+    device_sent_at_ms
+        .filter(|sent| (sent - now).abs() <= MAX_DEVICE_CLOCK_OFFSET_MS)
+        .map(|sent| sent as f64 / 1000.0)
+}
+
+/// Like [`ingest`], with the phone's unsigned clock reading at upload. It adds
+/// a check before an owner hold is released (migration 039) and never loosens
+/// one. It never affects the signature, digest or replay identity.
+pub async fn ingest_with_clock(
+    client: &mut Client,
+    session: InboundSession<'_>,
+    event: &InboundEvent<'_>,
+    device_sent_at_ms: Option<i64>,
+) -> Result<IngestOutcome, InboundError> {
     validate(event)?;
+    let device_sent_seconds = plausible_device_clock(device_sent_at_ms);
     let tx = client.transaction().await?;
     let key = tx
         .query_opt(
@@ -256,7 +282,9 @@ pub async fn ingest(
         .await?;
     let source = source.ok_or(InboundError::UnknownSource)?;
     source_readiness(Some(source.get::<_, String>(0).as_str()), source.get(1))?;
-    let recipient_e164: String = source.get(2);
+    // Data retention nulls the recipient of a terminal message. Stored events
+    // remain exact-replayable below; a new event for that source is refused.
+    let recipient_e164: Option<String> = source.get(2);
 
     let digest = Sha256::digest(&signed).to_vec();
     // Serialize this event ID across connections before the replay lookup.
@@ -289,8 +317,13 @@ pub async fn ingest(
         ).await?.is_none() {
             return Err(InboundError::Unauthorized);
         }
-        let cleared =
-            suppression_cleared(&tx, session.account_id, &recipient_e164, event.event_id).await?;
+        let cleared = suppression_cleared(
+            &tx,
+            session.account_id,
+            recipient_e164.as_deref(),
+            event.event_id,
+        )
+        .await?;
         tx.commit().await?;
         return Ok(IngestOutcome {
             created: false,
@@ -310,6 +343,11 @@ pub async fn ingest(
     {
         return Err(InboundError::SequenceConflict);
     }
+    // Content retention has retired this source. Without the recipient, no
+    // suppression can be recorded; reject permanently before any budget charge.
+    let Some(recipient_e164) = recipient_e164 else {
+        return Err(InboundError::UnknownSource);
+    };
     // Charge before attempting the event INSERT. At a saturated budget,
     // fresh signed IDs cannot create rolled-back inbound rows and indexes.
     // The charge and INSERT still commit or roll back as one transaction.
@@ -325,8 +363,9 @@ pub async fn ingest(
         .query_opt(
             "INSERT INTO inbound_events \
          (id,account_id,device_id,message_id,attempt_id,device_sequence,classification, \
-          observed_at,part_count,content_kind,content_ciphertext,event_digest,signature_der) \
-         VALUES($1,$2,$3,$4,$5,$6,$7,to_timestamp($8),$9,$10,$11,$12,$13) \
+          observed_at,part_count,content_kind,content_ciphertext,event_digest,signature_der, \
+          device_sent_at) \
+         VALUES($1,$2,$3,$4,$5,$6,$7,to_timestamp($8),$9,$10,$11,$12,$13,to_timestamp($14)) \
          ON CONFLICT(id) DO NOTHING RETURNING id",
             &[
                 &event.event_id,
@@ -342,6 +381,7 @@ pub async fn ingest(
                 &ciphertext,
                 &digest,
                 &event.signature_der,
+                &device_sent_seconds,
             ],
         )
         .await;
@@ -376,8 +416,13 @@ pub async fn ingest(
         // A writer from the prior version may have raced without the event
         // advisory lock. Roll back this transaction's budget charge; the
         // committed row already makes this an exact replay.
-        let cleared =
-            suppression_cleared(&tx, session.account_id, &recipient_e164, event.event_id).await?;
+        let cleared = suppression_cleared(
+            &tx,
+            session.account_id,
+            Some(recipient_e164.as_str()),
+            event.event_id,
+        )
+        .await?;
         tx.rollback().await?;
         return Ok(IngestOutcome {
             created: false,
@@ -398,14 +443,55 @@ pub async fn ingest(
                  SET active=TRUE,source_event_id=EXCLUDED.source_event_id,source_attempt_id=EXCLUDED.source_attempt_id,source_observed_at=EXCLUDED.source_observed_at,source=EXCLUDED.source,changed_at=clock_timestamp()",
                 &[&session.account_id, &recipient_e164, &event.event_id, &event.attempt_id, &observed_seconds, &source],
             ).await?;
+            zrotext_delivery_store::cancel_pending_recipient(
+                &tx,
+                session.account_id,
+                &recipient_e164,
+            )
+            .await?;
             false
         }
-        Classification::OptIn => tx.execute(
-            "UPDATE recipient_suppressions SET active=FALSE,source_event_id=$3,source_observed_at=to_timestamp($4),source='sms_resume',changed_at=clock_timestamp() \
-             WHERE account_id=$1 AND recipient_e164=$2 AND active=TRUE AND source_attempt_id=$5 \
-             AND source_observed_at<to_timestamp($4)",
-            &[&session.account_id, &recipient_e164, &event.event_id, &observed_seconds, &event.attempt_id],
-        ).await? == 1,
+        Classification::OptIn => {
+            let cleared = tx.execute(
+                "UPDATE recipient_suppressions SET active=FALSE,source_event_id=$3,source_observed_at=to_timestamp($4),source='sms_resume',changed_at=clock_timestamp() \
+                 WHERE account_id=$1 AND recipient_e164=$2 AND active=TRUE AND source_attempt_id=$5 \
+                 AND source_observed_at<to_timestamp($4)",
+                &[&session.account_id, &recipient_e164, &event.event_id, &observed_seconds, &event.attempt_id],
+            ).await? == 1;
+            // A signed START observed after an owner recorded an off-channel
+            // hold is verified new consent from that recipient. observed_at
+            // may run MAX_FUTURE_MS ahead of the hub, so the rule keeps a
+            // five-minute margin; the stored event's phone clock reading (the
+            // first upload, on a replay) can only tighten it by also placing
+            // the START after the hold on the hub clock.
+            // owner_hold_release_allowed (migration 039) is shared with the
+            // database guard.
+            let released = tx
+                .query(
+                    "UPDATE owner_recipient_holds h SET released_at=clock_timestamp(),release_event_id=$3 \
+                     FROM inbound_events e \
+                     WHERE e.account_id=$1 AND e.id=$3 AND h.account_id=$1 AND h.recipient_e164=$2 \
+                     AND h.released_at IS NULL \
+                     AND owner_hold_release_allowed(e.observed_at,e.device_sent_at,e.received_at,h.created_at) \
+                     RETURNING h.id",
+                    &[&session.account_id, &recipient_e164, &event.event_id],
+                )
+                .await?;
+            for hold in released {
+                tx.execute(
+                    "INSERT INTO owner_opt_out_audit(id,account_id,event,hold_id,release_event_id) \
+                     VALUES($1,$2,'hold_released',$3,$4)",
+                    &[
+                        &Uuid::new_v4(),
+                        &session.account_id,
+                        &hold.get::<_, Uuid>(0),
+                        &event.event_id,
+                    ],
+                )
+                .await?;
+            }
+            cleared
+        }
         _ => false,
     };
     let queued = tx
@@ -446,12 +532,15 @@ fn source_readiness(
 async fn suppression_cleared<C: tokio_postgres::GenericClient>(
     client: &C,
     account_id: Uuid,
-    recipient_e164: &str,
+    recipient_e164: Option<&str>,
     event_id: Uuid,
 ) -> Result<bool, tokio_postgres::Error> {
+    // A redacted source has no recipient. The source event ID still names the
+    // one suppression row that this event's START transition cleared.
     Ok(client
         .query_opt(
-            "SELECT 1 FROM recipient_suppressions WHERE account_id=$1 AND recipient_e164=$2 \
+            "SELECT 1 FROM recipient_suppressions WHERE account_id=$1 \
+         AND ($2::text IS NULL OR recipient_e164=$2) \
          AND active=FALSE AND source_event_id=$3",
             &[&account_id, &recipient_e164, &event_id],
         )

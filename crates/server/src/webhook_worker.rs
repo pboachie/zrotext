@@ -553,6 +553,9 @@ mod tests {
             include_str!("../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"),
             include_str!("../../../deploy/compose/migrations/015_webhook_kek_commitments.sql"),
             include_str!("../../../deploy/compose/migrations/031_recipient_suppression.sql"),
+            include_str!("../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
+            include_str!("../../../deploy/compose/migrations/038_owner_opt_out_hold_guards.sql"),
+            include_str!("../../../deploy/compose/migrations/039_inbound_device_clock_offset.sql"),
         ] {
             db.batch_execute(sql).await.unwrap();
         }

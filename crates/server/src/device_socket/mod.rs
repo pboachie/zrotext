@@ -11,7 +11,8 @@ use crate::{
     enrollment::{self, AuthenticatedDevice, EnrollmentError, EnrollmentHasher},
     inbound::unsolicited::{self, LineOptOut, LineOptOutError},
     inbound::{self, Content, InboundError, InboundEvent, InboundSession},
-    runtime_db::{self, PooledClient},
+    runtime_db,
+    sealed_inbound::line_activation::{SimObservation, exchange},
 };
 use axum::{
     Router,
@@ -41,6 +42,8 @@ use uuid::Uuid;
 use zrotext_delivery_store::{DeliveryStore, GrantRecord, RadioEvent, SessionRecord, StoreError};
 use zrotext_domain::{Evidence, MessageState};
 
+mod preconditions;
+
 const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
 // Whole pre-session phase, from the upgrade request through proof verification,
 // including storage work. Each of hello and proof still has `AUTH_TIMEOUT`.
@@ -56,6 +59,9 @@ const MAX_HANDSHAKING_DEVICE_SOCKETS: usize = 32;
 const DISPATCH_POLL_SECONDS: u64 = 5;
 const MIN_SECONDS_BETWEEN_GRANTS: u64 = 60;
 const ALPHA_READY_SECONDS: u64 = 300;
+const SMS_LINE_POLL_SECONDS: u64 = 3;
+const SMS_LINE_RETIRE_EVERY_TICKS: u32 = 20;
+const MAX_SMS_LINE_ACKS_PER_CONNECTION: usize = 64;
 static DEVICE_SOCKET_ADMISSION: LazyLock<SocketAdmission> = LazyLock::new(|| {
     SocketAdmission::new(
         MAX_HANDSHAKING_DEVICE_SOCKETS,
@@ -112,6 +118,8 @@ pub struct DeviceSocketState {
     pub dispatch_runtime_enabled: bool,
     pub inbound_pilot_enabled: bool,
     pub line_opt_out_enabled: bool,
+    /// Dormant SMS line activation frames; off unless explicitly configured.
+    pub sms_line_activation_enabled: bool,
     pub draining: Arc<AtomicBool>,
     pub drain_notify: Arc<Notify>,
 }
@@ -139,6 +147,14 @@ enum ClientFrame {
     },
     #[serde(rename = "heartbeat")]
     Heartbeat { v: u8 },
+    #[serde(rename = "device_status")]
+    DeviceStatus {
+        v: u8,
+        connection_epoch: i64,
+        selected_sim: preconditions::SelectedSim,
+        sms_permission: preconditions::SmsPermission,
+        airplane_mode: preconditions::AirplaneMode,
+    },
     #[serde(rename = "alpha_ready")]
     AlphaReady {
         v: u8,
@@ -171,6 +187,9 @@ enum ClientFrame {
         observed_at_ms: i64,
         part_count: i16,
         signature_der: String,
+        /// Unsigned phone clock at upload; places a START on the hub clock.
+        #[serde(default)]
+        device_sent_at_ms: Option<i64>,
     },
     #[serde(rename = "line_opt_out")]
     LineOptOut {
@@ -183,6 +202,16 @@ enum ClientFrame {
         action: LineOptOutAction,
         recipient_e164: String,
         observed_at_ms: i64,
+        signature_der: String,
+    },
+    #[serde(rename = "sms_line_proof")]
+    SmsLineProof {
+        v: u8,
+        connection_epoch: i64,
+        challenge_id: Uuid,
+        android_api_level: u16,
+        active_subscription_count: u8,
+        selected_subscription_id: i32,
         signature_der: String,
     },
 }
@@ -312,6 +341,34 @@ enum ServerFrame {
         event_id: Uuid,
         created: bool,
     },
+    #[serde(rename = "sms_line_challenge")]
+    SmsLineChallenge {
+        v: u8,
+        challenge_id: Uuid,
+        account_id: Uuid,
+        line_id: Uuid,
+        device_id: Uuid,
+        generation: i64,
+        nonce: String,
+        expires_at_ms: i64,
+    },
+    #[serde(rename = "sms_line_proof_ack")]
+    SmsLineProofAck {
+        v: u8,
+        challenge_id: Uuid,
+        accepted: bool,
+    },
+    #[serde(rename = "sms_line_activated")]
+    SmsLineActivated {
+        v: u8,
+        challenge_id: Uuid,
+        account_id: Uuid,
+        line_id: Uuid,
+        device_id: Uuid,
+        generation: i64,
+        device_statement_sha256: String,
+        device_signature_sha256: String,
+    },
 }
 
 fn is_false(value: &bool) -> bool {
@@ -353,6 +410,7 @@ async fn upgrade(
     };
     let deadline = tokio::time::Instant::now() + admission.handshake_deadline;
     websocket
+        .protocols([preconditions::PROTOCOL])
         .max_message_size(MAX_FRAME_BYTES)
         .max_frame_size(MAX_FRAME_BYTES)
         .on_upgrade(move |socket| run_socket(socket, state, admission, handshake_slot, deadline))
@@ -481,13 +539,13 @@ async fn close_handshake(socket: &mut WebSocket, code: u16) {
 type HandshakeRefusal = Option<u16>;
 
 /// Hello, challenge and proof. Runs under the handshake deadline and returns the
-/// device-budget database client together with the verified identity.
+/// verified identity. Database checkouts never span a peer's proof wait.
 async fn authenticate(
     socket: &mut WebSocket,
     state: &DeviceSocketState,
     frame_budget: &mut FrameBudget,
     step_timeout: Duration,
-) -> Result<(PooledClient, AuthenticatedDevice), HandshakeRefusal> {
+) -> Result<AuthenticatedDevice, HandshakeRefusal> {
     let Some(ClientFrame::Hello { v: 1, device_id }) =
         timeout(step_timeout, receive_frame(socket, frame_budget))
             .await
@@ -496,7 +554,7 @@ async fn authenticate(
     else {
         return Err(Some(close_code::POLICY));
     };
-    let Ok(mut client) = runtime_db::connect_device(&state.database_url).await else {
+    let Ok(client) = runtime_db::connect_device(&state.database_url).await else {
         return Err(Some(RETRY_LATER));
     };
     // Share the HTTP enrollment budgets across transports and server instances.
@@ -519,6 +577,7 @@ async fn authenticate(
         enrollment::issue_device_challenge(&client, &state.enrollment_hasher, device_id)
             .await
             .map_err(|error| Some(enrollment_close_code(&error)))?;
+    drop(client);
     if !send_frame(
         socket,
         ServerFrame::Challenge {
@@ -561,6 +620,9 @@ async fn authenticate(
     {
         return Err(Some(close_code::POLICY));
     }
+    let Ok(mut client) = runtime_db::connect_device(&state.database_url).await else {
+        return Err(Some(RETRY_LATER));
+    };
     if !matches!(
         abuse_limits::consume_or_verify(
             &client,
@@ -582,7 +644,7 @@ async fn authenticate(
     )
     .await
     .map_err(|error| Some(enrollment_close_code(&error)))?;
-    Ok((client, identity))
+    Ok(identity)
 }
 
 async fn run_socket(
@@ -592,6 +654,10 @@ async fn run_socket(
     handshake_slot: OwnedSemaphorePermit,
     deadline: tokio::time::Instant,
 ) {
+    let status_negotiated = socket
+        .protocol()
+        .is_some_and(|value| value == preconditions::PROTOCOL);
+    let mut status_budget = preconditions::ReportBudget::default();
     let mut frame_budget = FrameBudget::new(Instant::now());
     let authenticated = timeout_at(
         deadline,
@@ -611,8 +677,8 @@ async fn run_socket(
     // The handshake budget is released on every path before any close write or
     // steady-state work; only a verified device continues with a session slot.
     drop(handshake_slot);
-    let (mut client, identity, _session_slot) = match (authenticated, session_slot) {
-        (Ok((client, identity)), Some(slot)) => (client, identity, slot),
+    let (identity, _session_slot) = match (authenticated, session_slot) {
+        (Ok(identity), Some(slot)) => (identity, slot),
         (Ok(_), None) => {
             close_handshake(&mut socket, RETRY_LATER).await;
             return;
@@ -627,6 +693,10 @@ async fn run_socket(
         close_handshake(&mut socket, RETRY_LATER).await;
         return;
     }
+    let Ok(mut client) = runtime_db::connect_device(&state.database_url).await else {
+        close_handshake(&mut socket, RETRY_LATER).await;
+        return;
+    };
     let session = match claim_session(&mut client, identity, &state).await {
         Ok(Some(session)) => session,
         Ok(None) => {
@@ -634,14 +704,17 @@ async fn run_socket(
                 Ok(false) => close_code::POLICY,
                 _ => RETRY_LATER,
             };
+            drop(client);
             close_handshake(&mut socket, code).await;
             return;
         }
         Err(_) => {
+            drop(client);
             close_handshake(&mut socket, RETRY_LATER).await;
             return;
         }
     };
+    drop(client);
     if !send_frame(
         &mut socket,
         ServerFrame::Session {
@@ -652,7 +725,7 @@ async fn run_socket(
     )
     .await
     {
-        let _ = release_session(&client, session).await;
+        release_socket_session(&state, session).await;
         return;
     }
     let mut last_heartbeat = Instant::now();
@@ -661,6 +734,10 @@ async fn run_socket(
     let mut dispatch_checks = interval(Duration::from_secs(DISPATCH_POLL_SECONDS));
     dispatch_checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     dispatch_checks.tick().await;
+    let mut sms_line_checks = interval(Duration::from_secs(SMS_LINE_POLL_SECONDS));
+    sms_line_checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut sms_line_acks_sent: Vec<Uuid> = Vec::new();
+    let mut sms_line_ticks: u32 = 0;
     let mut last_grant_at: Option<Instant> = None;
     let mut alpha_ready: Option<([u8; 32], Instant)> = None;
     let mut alpha_ready_used = false;
@@ -674,13 +751,37 @@ async fn run_socket(
         tokio::select! {
             message = receive_frame(&mut socket, &mut frame_budget) => {
                 match message {
+                    Some(ClientFrame::DeviceStatus { v: 1, connection_epoch, selected_sim, sms_permission, airplane_mode }) => {
+                        if !status_negotiated || connection_epoch != session.connection_epoch {
+                            close_with_code = Some(close_code::POLICY);
+                            break;
+                        }
+                        if !status_budget.admit(Instant::now()) { continue; }
+                        let Ok(mut client) = runtime_db::connect_device(&state.database_url).await else {
+                            close_with_code = Some(RETRY_LATER);
+                            break;
+                        };
+                        let report = preconditions::Report { selected_sim, sms_permission, airplane_mode };
+                        let accepted = preconditions::record(&mut client, session, &state, report).await;
+                        drop(client);
+                        match accepted {
+                            Ok(true) => {},
+                            Ok(false) => { close_with_code = Some(close_code::POLICY); break; },
+                            Err(_) => { close_with_code = Some(RETRY_LATER); break; },
+                        }
+                    }
                     Some(ClientFrame::Heartbeat { v: 1 }) => {
                         let received_at = Instant::now();
                         let since_prior_accepted_ms = received_at.duration_since(last_heartbeat).as_millis();
+                        let Ok(client) = runtime_db::connect_device(&state.database_url).await else {
+                            close_with_code = Some(RETRY_LATER);
+                            break;
+                        };
                         if !renew_session(&client, session, &state).await.unwrap_or(false) {
                             close_reason = "heartbeat_renew_failed_or_fenced";
                             break;
                         }
+                        drop(client);
                         last_heartbeat = Instant::now();
                         if !send_frame(&mut socket, ServerFrame::HeartbeatAck {
                             v: 1, connection_epoch: session.connection_epoch,
@@ -703,6 +804,10 @@ async fn run_socket(
                     {
                         let Ok(bytes) = URL_SAFE_NO_PAD.decode(recipient_digest.as_bytes()) else { break; };
                         let Ok(digest): Result<[u8; 32], _> = bytes.try_into() else { break; };
+                        let Ok(client) = runtime_db::connect_device(&state.database_url).await else {
+                            close_with_code = Some(RETRY_LATER);
+                            break;
+                        };
                         if URL_SAFE_NO_PAD.encode(digest) != recipient_digest
                             || !state.alpha_policy.allows_recipient_digest(session.account_id, &digest)
                             || !session_current(&client, session, &state).await.unwrap_or(false)
@@ -714,6 +819,10 @@ async fn run_socket(
                         v: 1, connection_epoch, event_id, message_id, attempt_id,
                         evidence, observed_at_ms, segment_index, segment_count,
                     }) if connection_epoch == session.connection_epoch => {
+                        let Ok(mut client) = runtime_db::connect_device(&state.database_url).await else {
+                            close_with_code = Some(RETRY_LATER);
+                            break;
+                        };
                         if !session_current(&client, session, &state).await.unwrap_or(false) {
                             break;
                         }
@@ -753,6 +862,7 @@ async fn run_socket(
                             && grant_still_current(&client, session, message_id, attempt_id, &state)
                                 .await
                                 .unwrap_or(false);
+                        drop(client);
                         if !send_frame(&mut socket, ServerFrame::RadioEventAck {
                             v: 1, event_id, state: next, submit_permitted,
                         }).await { break; }
@@ -760,6 +870,7 @@ async fn run_socket(
                     Some(ClientFrame::InboundEvent {
                         v: 1, connection_epoch, event_id, sequence, message_id,
                         attempt_id, classification, observed_at_ms, part_count, signature_der,
+                        device_sent_at_ms,
                     }) if state.inbound_pilot_enabled && connection_epoch == session.connection_epoch => {
                         let Ok(signature) = URL_SAFE_NO_PAD.decode(signature_der.as_bytes()) else {
                             close_with_code = Some(EVIDENCE_REJECTED);
@@ -783,13 +894,20 @@ async fn run_socket(
                             part_count, content: Content::MetadataOnly,
                             signature_der: &signature,
                         };
-                        let outcome = match inbound::ingest(&mut client, inbound_session, &event).await {
+                        let Ok(mut client) = runtime_db::connect_device(&state.database_url).await else {
+                            close_with_code = Some(RETRY_LATER);
+                            break;
+                        };
+                        let outcome = match inbound::ingest_with_clock(
+                            &mut client, inbound_session, &event, device_sent_at_ms,
+                        ).await {
                             Ok(outcome) => outcome,
                             Err(error) => {
                                 close_with_code = Some(inbound_evidence_close_code(&error));
                                 break;
                             }
                         };
+                        drop(client);
                         if !send_frame(&mut socket, ServerFrame::InboundEventAck {
                             v: 1, event_id,
                             created: outcome.created,
@@ -827,6 +945,10 @@ async fn run_socket(
                             recipient_e164: &recipient_e164, action: action.into(),
                             observed_at_ms, signature_der: &signature,
                         };
+                        let Ok(mut client) = runtime_db::connect_device(&state.database_url).await else {
+                            close_with_code = Some(RETRY_LATER);
+                            break;
+                        };
                         let created = match unsolicited::ingest_line_opt_out(
                             &mut client, inbound_session, &event,
                         ).await {
@@ -836,8 +958,60 @@ async fn run_socket(
                                 break;
                             }
                         };
+                        drop(client);
                         if !send_frame(&mut socket, ServerFrame::LineOptOutAck {
                             v: 1, event_id, created,
+                        }).await { break; }
+                    }
+                    Some(ClientFrame::SmsLineProof {
+                        v: 1, connection_epoch, challenge_id, android_api_level,
+                        active_subscription_count, selected_subscription_id, signature_der,
+                    }) => {
+                        if !state.sms_line_activation_enabled || connection_epoch != session.connection_epoch {
+                            close_with_code = Some(close_code::POLICY);
+                            break;
+                        }
+                        let Ok(signature) = URL_SAFE_NO_PAD.decode(signature_der.as_bytes()) else {
+                            close_with_code = Some(EVIDENCE_REJECTED);
+                            break;
+                        };
+                        if URL_SAFE_NO_PAD.encode(&signature) != signature_der {
+                            close_with_code = Some(EVIDENCE_REJECTED);
+                            break;
+                        }
+                        let inbound_session = InboundSession {
+                            account_id: session.account_id,
+                            device_id: session.device_id,
+                            site_id: &state.site_id,
+                            instance_id: &state.instance_id,
+                            connection_epoch: session.connection_epoch,
+                            deployment_epoch: state.deployment_epoch,
+                        };
+                        let proof = exchange::DeviceProof {
+                            challenge_id,
+                            observation: SimObservation {
+                                android_api_level,
+                                active_subscription_count,
+                                selected_subscription_id,
+                            },
+                            signature_der: &signature,
+                        };
+                        let Ok(mut client) = runtime_db::connect_device(&state.database_url).await else {
+                            close_with_code = Some(RETRY_LATER);
+                            break;
+                        };
+                        let accepted = match exchange::record_device_proof(
+                            &mut client, inbound_session, proof,
+                        ).await {
+                            Ok(accepted) => accepted,
+                            Err(_) => {
+                                close_with_code = Some(RETRY_LATER);
+                                break;
+                            }
+                        };
+                        drop(client);
+                        if !send_frame(&mut socket, ServerFrame::SmsLineProofAck {
+                            v: 1, challenge_id, accepted,
                         }).await { break; }
                     }
                     _ => break,
@@ -848,15 +1022,16 @@ async fn run_socket(
                     close_reason = "heartbeat_deadline";
                     break;
                 }
+                let Ok(client) = runtime_db::connect_device(&state.database_url).await else {
+                    close_with_code = Some(RETRY_LATER);
+                    break;
+                };
                 if !session_current(&client, session, &state).await.unwrap_or(false) {
                     close_reason = "session_check_failed_or_fenced";
                     break;
                 }
             }
             _ = dispatch_checks.tick(), if alpha_ready.is_some() => {
-                if !session_current(&client, session, &state).await.unwrap_or(false) {
-                    break;
-                }
                 let Some((recipient_digest, armed_at)) = alpha_ready else { continue; };
                 if armed_at.elapsed() > Duration::from_secs(ALPHA_READY_SECONDS) {
                     alpha_ready = None;
@@ -865,7 +1040,16 @@ async fn run_socket(
                 if last_grant_at.is_some_and(|at| at.elapsed() < Duration::from_secs(MIN_SECONDS_BETWEEN_GRANTS)) {
                     continue;
                 }
-                match poll_synthetic_grant(&mut client, session, &state, &recipient_digest).await {
+                let Ok(mut client) = runtime_db::connect_device(&state.database_url).await else {
+                    close_with_code = Some(RETRY_LATER);
+                    break;
+                };
+                if !session_current(&client, session, &state).await.unwrap_or(false) {
+                    break;
+                }
+                let grant = poll_synthetic_grant(&mut client, session, &state, &recipient_digest).await;
+                drop(client);
+                match grant {
                     Ok(Some(frame)) => {
                         alpha_ready = None;
                         if !send_frame(&mut socket, frame).await { break; }
@@ -873,6 +1057,25 @@ async fn run_socket(
                     }
                     Ok(None) => {}
                     Err(_) => break,
+                }
+            }
+            _ = sms_line_checks.tick(), if state.sms_line_activation_enabled => {
+                let inbound_session = InboundSession {
+                    account_id: session.account_id,
+                    device_id: session.device_id,
+                    site_id: &state.site_id,
+                    instance_id: &state.instance_id,
+                    connection_epoch: session.connection_epoch,
+                    deployment_epoch: state.deployment_epoch,
+                };
+                // Retire finished exchanges on the first poll and about once a minute.
+                let retire = sms_line_ticks.is_multiple_of(SMS_LINE_RETIRE_EVERY_TICKS);
+                sms_line_ticks = sms_line_ticks.wrapping_add(1);
+                if !push_sms_line_frames(&mut socket, &state.database_url, inbound_session,
+                    &mut sms_line_acks_sent, retire).await {
+                    close_reason = "sms_line_push_failed";
+                    close_with_code = Some(RETRY_LATER);
+                    break;
                 }
             }
             _ = state.drain_notify.notified() => {
@@ -888,13 +1091,97 @@ async fn run_socket(
             last_heartbeat.elapsed().as_millis()
         );
     }
-    let _ = release_session(&client, session).await;
+    release_socket_session(&state, session).await;
     let _ = socket
         .send(Message::Close(close_with_code.map(|code| CloseFrame {
             code,
             reason: "".into(),
         })))
         .await;
+}
+
+async fn release_socket_session(state: &DeviceSocketState, session: DeviceSession) {
+    // Best effort: if storage is unavailable the bounded session lease expires.
+    if let Ok(client) = runtime_db::connect_device(&state.database_url).await {
+        let _ = release_session(&client, session).await;
+    }
+}
+
+/// Pushes at most one pending SMS line challenge and one activation
+/// acknowledgement. A challenge is marked pushed only after its frame was
+/// written; an acknowledgement repeats on each new connection until retired.
+async fn push_sms_line_frames(
+    socket: &mut WebSocket,
+    database_url: &str,
+    session: InboundSession<'_>,
+    acks_sent: &mut Vec<Uuid>,
+    retire: bool,
+) -> bool {
+    let Ok(client) = runtime_db::connect_device(database_url).await else {
+        return false;
+    };
+    if retire
+        && exchange::retire(&client, session, exchange::ACK_RESEND_SECONDS)
+            .await
+            .is_err()
+    {
+        return false;
+    }
+    let Ok(challenge) = exchange::next_challenge(&client, session).await else {
+        return false;
+    };
+    drop(client);
+    if let Some(challenge) = challenge {
+        let frame = ServerFrame::SmsLineChallenge {
+            v: 1,
+            challenge_id: challenge.challenge_id,
+            account_id: challenge.account_id,
+            line_id: challenge.line_id,
+            device_id: challenge.device_id,
+            generation: challenge.generation,
+            nonce: URL_SAFE_NO_PAD.encode(challenge.nonce),
+            expires_at_ms: challenge.expires_at_ms,
+        };
+        if !send_frame(socket, frame).await {
+            return false;
+        }
+        let Ok(client) = runtime_db::connect_device(database_url).await else {
+            return false;
+        };
+        if exchange::mark_challenge_pushed(&client, session, challenge.challenge_id)
+            .await
+            .is_err()
+        {
+            return false;
+        }
+    }
+    if acks_sent.len() >= MAX_SMS_LINE_ACKS_PER_CONNECTION {
+        return true;
+    }
+    let Ok(client) = runtime_db::connect_device(database_url).await else {
+        return false;
+    };
+    let Ok(ack) = exchange::next_ack(&client, session, acks_sent).await else {
+        return false;
+    };
+    drop(client);
+    if let Some(ack) = ack {
+        let frame = ServerFrame::SmsLineActivated {
+            v: 1,
+            challenge_id: ack.challenge_id,
+            account_id: ack.account_id,
+            line_id: ack.line_id,
+            device_id: ack.device_id,
+            generation: ack.generation,
+            device_statement_sha256: URL_SAFE_NO_PAD.encode(ack.device_statement_sha256),
+            device_signature_sha256: URL_SAFE_NO_PAD.encode(ack.device_signature_sha256),
+        };
+        if !send_frame(socket, frame).await {
+            return false;
+        }
+        acks_sent.push(ack.challenge_id);
+    }
+    true
 }
 
 fn synthetic_body_is_fixed(body: &str) -> bool {
@@ -1055,7 +1342,9 @@ async fn poll_synthetic_grant(
     let record = store_session(session, state);
     let grant = match store.issue_grant(&claim, &record, Uuid::new_v4()).await {
         Ok(grant) => grant,
-        Err(StoreError::DeviceBusy | StoreError::DispatchDisabled) => return Ok(None),
+        Err(
+            StoreError::DeviceBusy | StoreError::DispatchDisabled | StoreError::RecipientSuppressed,
+        ) => return Ok(None),
         Err(error) => return Err(error),
     };
     let payload = store.synthetic_payload_for_grant(&grant, &record).await?;
@@ -1185,1192 +1474,7 @@ async fn release_session(
 #[cfg(test)]
 use tokio_postgres::NoTls;
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::enrollment::{EnrollmentError, device_challenge_bytes};
-    use futures_util::{SinkExt, StreamExt};
-    use p256::ecdsa::{Signature, SigningKey, signature::Signer};
-    use p256::elliptic_curve::Generate;
-    use rand::rng;
-    use sha2::{Digest, Sha256};
-    use zrotext_delivery_store::NewMessage;
-
-    #[test]
-    fn enrollment_rejections_and_storage_failures_have_distinct_close_codes() {
-        assert_eq!(
-            enrollment_close_code(&EnrollmentError::Unauthorized),
-            close_code::POLICY
-        );
-        assert_eq!(
-            enrollment_close_code(&EnrollmentError::AuthorityUnavailable),
-            RETRY_LATER
-        );
-        assert_eq!(
-            enrollment_close_code(&EnrollmentError::Unavailable),
-            RETRY_LATER
-        );
-    }
-
-    #[test]
-    fn stale_radio_replay_after_retention_has_permanent_close_only_for_current_session() {
-        // Retention may remove the old event ID, leaving a late retransmission
-        // with only the attempt fence. The current phone must retire that row.
-        assert_eq!(
-            radio_evidence_close_code(&StoreError::StaleFence, true),
-            EVIDENCE_REJECTED
-        );
-        // A replaced session should establish a fresh epoch, not quarantine
-        // evidence just because its former epoch has been fenced.
-        assert_eq!(
-            radio_evidence_close_code(&StoreError::StaleFence, false),
-            RETRY_LATER
-        );
-        assert_eq!(
-            radio_evidence_close_code(&StoreError::EventIdConflict, true),
-            EVIDENCE_REJECTED
-        );
-        assert_eq!(
-            radio_evidence_close_code(&StoreError::DeviceBusy, true),
-            RETRY_LATER
-        );
-        // A 90-day prune can also remove the former durable intent itself.
-        // This preflight runs before record_radio_event and still needs 4409.
-        assert_eq!(
-            durable_intent_preflight_close_code(Some(false), Some(false)),
-            Some(EVIDENCE_REJECTED)
-        );
-        assert_eq!(
-            durable_intent_preflight_close_code(Some(false), None),
-            Some(RETRY_LATER)
-        );
-    }
-
-    #[test]
-    fn inbound_invalid_content_is_permanent_but_storage_failure_is_retryable() {
-        assert_eq!(
-            inbound_evidence_close_code(&InboundError::InvalidSignature),
-            EVIDENCE_REJECTED
-        );
-        assert_eq!(
-            inbound_evidence_close_code(&InboundError::EventConflict),
-            EVIDENCE_REJECTED
-        );
-        assert_eq!(
-            inbound_evidence_close_code(&InboundError::UnknownSource),
-            EVIDENCE_REJECTED
-        );
-        assert_eq!(
-            inbound_evidence_close_code(&InboundError::SourcePending),
-            RETRY_LATER
-        );
-        assert_eq!(
-            inbound_evidence_close_code(&InboundError::Unauthorized),
-            close_code::POLICY
-        );
-    }
-
-    #[tokio::test]
-    async fn handshake_closes_with_retry_code_when_database_is_down() {
-        let state = DeviceSocketState {
-            database_url: "host=127.0.0.1 port=1 connect_timeout=1 user=invalid".into(),
-            site_id: "site-a".into(),
-            instance_id: "test-hub".into(),
-            deployment_epoch: 1,
-            enrollment_hasher: Arc::new(EnrollmentHasher::new(crate::test_keys::key(77)).unwrap()),
-            auth_hasher: Arc::new(TokenHasher::new(crate::test_keys::key(78)).unwrap()),
-            alpha_policy: Arc::new(AlphaPolicy::parse(None, None, None).unwrap()),
-            dispatch_runtime_enabled: false,
-            inbound_pilot_enabled: false,
-            line_opt_out_enabled: false,
-            draining: Arc::new(AtomicBool::new(false)),
-            drain_notify: Arc::new(Notify::new()),
-        };
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = tokio::spawn(async move {
-            axum::serve(listener, router(state)).await.unwrap();
-        });
-        let (mut socket, _) =
-            tokio_tungstenite::connect_async(format!("ws://{address}/v1/device-stream"))
-                .await
-                .unwrap();
-        socket
-            .send(tokio_tungstenite::tungstenite::Message::Text(
-                serde_json::json!({"v":1,"type":"hello","device_id":Uuid::new_v4()})
-                    .to_string()
-                    .into(),
-            ))
-            .await
-            .unwrap();
-        let close = timeout(Duration::from_secs(3), socket.next())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        let tokio_tungstenite::tungstenite::Message::Close(Some(frame)) = close else {
-            panic!("expected close frame");
-        };
-        assert_eq!(u16::from(frame.code), RETRY_LATER);
-
-        let (mut socket, _) =
-            tokio_tungstenite::connect_async(format!("ws://{address}/v1/device-stream"))
-                .await
-                .unwrap();
-        socket
-            .send(tokio_tungstenite::tungstenite::Message::Text(
-                serde_json::json!({"v":1,"type":"proof"}).to_string().into(),
-            ))
-            .await
-            .unwrap();
-        let close = timeout(Duration::from_secs(3), socket.next())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        let tokio_tungstenite::tungstenite::Message::Close(Some(frame)) = close else {
-            panic!("expected policy close frame");
-        };
-        assert_eq!(u16::from(frame.code), close_code::POLICY);
-        server.abort();
-    }
-
-    #[test]
-    fn stream_schema_examples_match_serde_frames() {
-        let examples: Vec<serde_json::Value> = serde_json::from_str(include_str!(
-            "../../../../protocol/v1/device-stream.examples.json"
-        ))
-        .unwrap();
-        assert_eq!(examples.len(), 14);
-        for frame in &examples[..7] {
-            let parsed: ClientFrame = serde_json::from_value(frame.clone()).unwrap();
-            assert_eq!(frame["v"], 1);
-            let variant = match parsed {
-                ClientFrame::Hello { .. } => "hello",
-                ClientFrame::Proof { .. } => "proof",
-                ClientFrame::Heartbeat { .. } => "heartbeat",
-                ClientFrame::AlphaReady { .. } => "alpha_ready",
-                ClientFrame::RadioEvent { .. } => "radio_event",
-                ClientFrame::InboundEvent { .. } => "inbound_event",
-                ClientFrame::LineOptOut { .. } => "line_opt_out",
-            };
-            assert_eq!(frame["type"], variant);
-        }
-        let id = Uuid::parse_str("00000000-0000-4000-8000-000000000001").unwrap();
-        let server_frames = [
-            ServerFrame::Challenge {
-                v: 1,
-                challenge_id: id,
-                account_id: id,
-                device_id: id,
-                nonce: "AQ".into(),
-            },
-            ServerFrame::Session {
-                v: 1,
-                connection_epoch: 7,
-                heartbeat_seconds: 30,
-            },
-            ServerFrame::HeartbeatAck {
-                v: 1,
-                connection_epoch: 7,
-            },
-            ServerFrame::SyntheticGrant {
-                v: 1,
-                message_id: id,
-                attempt_id: id,
-                device_id: id,
-                generation: 1,
-                connection_epoch: 7,
-                deployment_epoch: 1,
-                recipient_digest: "AQ".into(),
-                expires_at_ms: 1_700_000_000_000,
-                recipient_e164: "+15555550101".into(),
-                body: "ZROtext synthetic test: case_1".into(),
-            },
-            ServerFrame::RadioEventAck {
-                v: 1,
-                event_id: id,
-                state: MessageState::Submitting,
-                submit_permitted: true,
-            },
-            ServerFrame::InboundEventAck {
-                v: 1,
-                event_id: id,
-                created: true,
-                queued_deliveries: 0,
-                suppression_cleared: false,
-            },
-            ServerFrame::LineOptOutAck {
-                v: 1,
-                event_id: id,
-                created: true,
-            },
-        ];
-        for (actual, documented) in server_frames.into_iter().zip(&examples[7..]) {
-            let variant = match &actual {
-                ServerFrame::Challenge { .. } => "challenge",
-                ServerFrame::Session { .. } => "session",
-                ServerFrame::HeartbeatAck { .. } => "heartbeat_ack",
-                ServerFrame::SyntheticGrant { .. } => "synthetic_grant",
-                ServerFrame::RadioEventAck { .. } => "radio_event_ack",
-                ServerFrame::InboundEventAck { .. } => "inbound_event_ack",
-                ServerFrame::LineOptOutAck { .. } => "line_opt_out_ack",
-            };
-            assert_eq!(documented["type"], variant);
-            assert_eq!(serde_json::to_value(actual).unwrap(), *documented);
-        }
-    }
-
-    #[test]
-    fn wire_v1_uses_only_documented_fields() {
-        let account_id = Uuid::new_v4();
-        let device_id = Uuid::new_v4();
-        let challenge_id = Uuid::new_v4();
-        let nonce = URL_SAFE_NO_PAD.encode([9u8; 32]);
-        let frame = serde_json::to_value(ServerFrame::Challenge {
-            v: 1,
-            challenge_id,
-            account_id,
-            device_id,
-            nonce: nonce.clone(),
-        })
-        .unwrap();
-        assert_eq!(
-            frame,
-            serde_json::json!({
-                "type":"challenge", "v":1, "challenge_id":challenge_id,
-                "account_id":account_id, "device_id":device_id, "nonce":nonce
-            })
-        );
-        let session = serde_json::to_value(ServerFrame::Session {
-            v: 1,
-            connection_epoch: 7,
-            heartbeat_seconds: HEARTBEAT_SECONDS,
-        })
-        .unwrap();
-        assert_eq!(
-            session,
-            serde_json::json!({
-                "type":"session", "v":1, "connection_epoch":7, "heartbeat_seconds":30
-            })
-        );
-        let ack = serde_json::to_value(ServerFrame::HeartbeatAck {
-            v: 1,
-            connection_epoch: 7,
-        })
-        .unwrap();
-        assert_eq!(
-            ack,
-            serde_json::json!({
-                "type":"heartbeat_ack", "v":1, "connection_epoch":7
-            })
-        );
-        let ready = serde_json::json!({
-            "type":"alpha_ready", "v":1, "connection_epoch":7,
-            "recipient_digest":URL_SAFE_NO_PAD.encode([8u8; 32])
-        });
-        assert!(matches!(
-            serde_json::from_value::<ClientFrame>(ready.clone()),
-            Ok(ClientFrame::AlphaReady {
-                v: 1,
-                connection_epoch: 7,
-                ..
-            })
-        ));
-        let mut extra_ready = ready;
-        extra_ready["send_count"] = serde_json::json!(2);
-        assert!(serde_json::from_value::<ClientFrame>(extra_ready).is_err());
-        let event_id = Uuid::new_v4();
-        let message_id = Uuid::new_v4();
-        let attempt_id = Uuid::new_v4();
-        let event = serde_json::json!({
-            "type":"radio_event", "v":1, "connection_epoch":7,
-            "event_id":event_id, "message_id":message_id,
-            "attempt_id":attempt_id, "evidence":"durable_submit_intent",
-            "observed_at_ms":1
-        });
-        assert!(matches!(
-            serde_json::from_value::<ClientFrame>(event.clone()),
-            Ok(ClientFrame::RadioEvent {
-                v: 1,
-                connection_epoch: 7,
-                evidence: RadioEvidence::DurableSubmitIntent,
-                ..
-            })
-        ));
-        let mut extra = event;
-        extra["unreviewed_field"] = serde_json::json!(true);
-        assert!(serde_json::from_value::<ClientFrame>(extra).is_err());
-        assert_eq!(
-            serde_json::to_value(ServerFrame::RadioEventAck {
-                v: 1,
-                event_id,
-                state: MessageState::Submitting,
-                submit_permitted: true,
-            })
-            .unwrap(),
-            serde_json::json!({
-                "type":"radio_event_ack", "v":1, "event_id":event_id,
-                "state":"submitting", "submit_permitted":true
-            })
-        );
-        let inbound = serde_json::json!({
-            "type":"inbound_event", "v":1, "connection_epoch":7,
-            "event_id":event_id, "sequence":1, "message_id":message_id,
-            "attempt_id":attempt_id, "classification":"captured_local",
-            "observed_at_ms":1, "part_count":1,
-            "signature_der":URL_SAFE_NO_PAD.encode([5u8; 70])
-        });
-        assert!(matches!(
-            serde_json::from_value::<ClientFrame>(inbound.clone()),
-            Ok(ClientFrame::InboundEvent {
-                v: 1,
-                connection_epoch: 7,
-                classification: InboundClassification::CapturedLocal,
-                ..
-            })
-        ));
-        let mut extra_inbound = inbound;
-        extra_inbound["sender_e164"] = serde_json::json!("+15551234567");
-        assert!(serde_json::from_value::<ClientFrame>(extra_inbound).is_err());
-        assert_eq!(
-            serde_json::to_value(ServerFrame::InboundEventAck {
-                v: 1,
-                event_id,
-                created: true,
-                queued_deliveries: 0,
-                suppression_cleared: false,
-            })
-            .unwrap(),
-            serde_json::json!({
-                "type":"inbound_event_ack", "v":1, "event_id":event_id,
-                "created":true, "queued_deliveries":0
-            })
-        );
-        assert_eq!(
-            serde_json::to_value(ServerFrame::InboundEventAck {
-                v: 1,
-                event_id,
-                created: true,
-                queued_deliveries: 0,
-                suppression_cleared: true,
-            })
-            .unwrap()["suppression_cleared"],
-            true,
-        );
-    }
-
-    #[tokio::test]
-    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
-    async fn lost_intent_ack_across_hubs_needs_no_radio_proof_before_regrant() {
-        let url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
-            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
-        let (mut client, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
-        tokio::spawn(async move { connection.await.unwrap() });
-        let schema = format!("hub_recovery_test_{}", Uuid::new_v4().simple());
-        client
-            .batch_execute(&format!(
-                "CREATE SCHEMA {schema}; SET search_path TO {schema}"
-            ))
-            .await
-            .unwrap();
-        for sql in [
-            include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
-            include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
-            include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
-            include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
-            include_str!("../../../../deploy/compose/migrations/030_terminal_dispatch_jobs.sql"),
-            include_str!(
-                "../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"
-            ),
-            include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
-        ] {
-            client.batch_execute(sql).await.unwrap();
-        }
-        let account_id = Uuid::new_v4();
-        let device_id = Uuid::new_v4();
-        let message_id = Uuid::new_v4();
-        let recipient = "+15555550101";
-        let recipient_digest: [u8; 32] = Sha256::digest(recipient.as_bytes()).into();
-        let signing = SigningKey::generate_from_rng(&mut rng());
-        let sec1 = signing.verifying_key().to_sec1_point(false);
-        let fingerprint: [u8; 32] = Sha256::digest(sec1.as_bytes()).into();
-        client
-            .batch_execute("INSERT INTO sites(site_id) VALUES('site-a'),('site-b'); UPDATE deployment_authority SET dispatch_enabled=TRUE")
-            .await
-            .unwrap();
-        client
-            .execute("INSERT INTO accounts(id) VALUES($1)", &[&account_id])
-            .await
-            .unwrap();
-        client
-            .execute(
-                "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'Virtual phone')",
-                &[&device_id, &account_id],
-            )
-            .await
-            .unwrap();
-        client.execute(
-            "INSERT INTO device_keys(device_id,account_id,signing_key_sec1,fingerprint) VALUES($1,$2,$3,$4)",
-            &[&device_id, &account_id, &sec1.as_bytes(), &&fingerprint[..]],
-        ).await.unwrap();
-        let policy = Arc::new(
-            AlphaPolicy::parse(Some("true"), Some(&account_id.to_string()), Some(recipient))
-                .unwrap(),
-        );
-        let site_a = DeviceSocketState {
-            database_url: url,
-            site_id: "site-a".into(),
-            instance_id: "hub-a".into(),
-            deployment_epoch: 1,
-            enrollment_hasher: Arc::new(EnrollmentHasher::new(crate::test_keys::key(77)).unwrap()),
-            auth_hasher: Arc::new(TokenHasher::new(crate::test_keys::key(78)).unwrap()),
-            alpha_policy: policy,
-            dispatch_runtime_enabled: true,
-            inbound_pilot_enabled: false,
-            line_opt_out_enabled: false,
-            draining: Arc::new(AtomicBool::new(false)),
-            drain_notify: Arc::new(Notify::new()),
-        };
-        let site_b = DeviceSocketState {
-            site_id: "site-b".into(),
-            instance_id: "hub-b".into(),
-            ..site_a.clone()
-        };
-        let identity = AuthenticatedDevice {
-            account_id,
-            device_id,
-        };
-        let session_a = claim_session(&mut client, identity, &site_a)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(session_a.connection_epoch, 1);
-        let expiry = now_ms() + 600_000;
-        let input = || NewMessage {
-            account_id,
-            client_message_id: message_id,
-            device_id,
-            idempotency_key: "lost-intent-ack",
-            recipient_e164: recipient,
-            synthetic_payload: b"ZROtext synthetic test: lost_ack",
-            expires_at_ms: expiry,
-        };
-        DeliveryStore::new(&mut client)
-            .accept(input())
-            .await
-            .unwrap();
-        let first_grant = poll_synthetic_grant(&mut client, session_a, &site_a, &recipient_digest)
-            .await
-            .unwrap()
-            .unwrap();
-        let wire = serde_json::to_value(first_grant).unwrap();
-        let first_attempt = Uuid::parse_str(wire["attempt_id"].as_str().unwrap()).unwrap();
-        assert_eq!(wire["generation"], 1);
-
-        // The durable intent reached the writer, but its ACK did not reach the
-        // phone. A second hub takes the session; silence is still ambiguous.
-        let intent = RadioEvent {
-            event_id: Uuid::new_v4(),
-            account_id,
-            device_id,
-            message_id,
-            attempt_id: first_attempt,
-            evidence: Evidence::DurableSubmitIntent,
-            observed_at_ms: now_ms(),
-            segment_index: None,
-            segment_count: None,
-        };
-        assert_eq!(
-            DeliveryStore::new(&mut client)
-                .record_radio_event(intent)
-                .await
-                .unwrap(),
-            MessageState::Submitting
-        );
-        let session_b = claim_session(&mut client, identity, &site_b)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(session_b.connection_epoch, 2);
-        assert!(!session_current(&client, session_a, &site_a).await.unwrap());
-        assert!(session_current(&client, session_b, &site_b).await.unwrap());
-        assert!(
-            !grant_still_current(&client, session_b, message_id, first_attempt, &site_b)
-                .await
-                .unwrap()
-        );
-        client
-            .execute(
-                "UPDATE message_attempts SET updated_at=now()-interval '3 minutes' WHERE id=$1",
-                &[&first_attempt],
-            )
-            .await
-            .unwrap();
-        assert_eq!(
-            DeliveryStore::new(&mut client)
-                .reconcile_silent_attempts(10)
-                .await
-                .unwrap(),
-            1
-        );
-        assert_eq!(
-            DeliveryStore::new(&mut client)
-                .status(account_id, message_id)
-                .await
-                .unwrap()
-                .unwrap()
-                .state,
-            MessageState::Unknown
-        );
-        assert!(
-            poll_synthetic_grant(&mut client, session_b, &site_b, &recipient_digest)
-                .await
-                .unwrap()
-                .is_none()
-        );
-        assert!(
-            !DeliveryStore::new(&mut client)
-                .accept(input())
-                .await
-                .unwrap()
-                .created
-        );
-        let before: (i64, i64) = {
-            let row = client.query_one(
-                "SELECT (SELECT count(*) FROM message_attempts WHERE message_id=$1), (SELECT count(*) FROM dispatch_fences WHERE message_id=$1)",
-                &[&message_id],
-            ).await.unwrap();
-            (row.get(0), row.get(1))
-        };
-        assert_eq!(before, (1, 1));
-
-        // The phone can prove the radio never started after the lost ACK.
-        // Only that evidence releases the old fence and permits a new attempt.
-        let no_radio = RadioEvent {
-            event_id: Uuid::new_v4(),
-            evidence: Evidence::ProvenNoSubmit,
-            ..intent
-        };
-        assert_eq!(
-            DeliveryStore::new(&mut client)
-                .record_radio_event(no_radio)
-                .await
-                .unwrap(),
-            MessageState::Queued
-        );
-        assert_eq!(
-            DeliveryStore::new(&mut client)
-                .record_radio_event(no_radio)
-                .await
-                .unwrap(),
-            MessageState::Queued
-        );
-        client
-            .execute(
-                "UPDATE message_attempts SET created_at=now()-interval '61 seconds' WHERE id=$1",
-                &[&first_attempt],
-            )
-            .await
-            .unwrap();
-        let second_grant = poll_synthetic_grant(&mut client, session_b, &site_b, &recipient_digest)
-            .await
-            .unwrap()
-            .unwrap();
-        let second_wire = serde_json::to_value(second_grant).unwrap();
-        assert_ne!(second_wire["attempt_id"], wire["attempt_id"]);
-        assert_eq!(second_wire["generation"], 2);
-        assert_eq!(second_wire["connection_epoch"], 2);
-        let row = client.query_one(
-            "SELECT (SELECT count(*) FROM message_attempts WHERE message_id=$1), (SELECT count(*) FROM dispatch_fences WHERE message_id=$1), (SELECT count(*) FROM message_events WHERE message_id=$1 AND evidence_code='proved_no_submit')",
-            &[&message_id],
-        ).await.unwrap();
-        assert_eq!(
-            (
-                row.get::<_, i64>(0),
-                row.get::<_, i64>(1),
-                row.get::<_, i64>(2)
-            ),
-            (2, 1, 1)
-        );
-        client
-            .batch_execute(&format!(
-                "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
-            ))
-            .await
-            .unwrap();
-    }
-
-    #[tokio::test]
-    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
-    async fn writer_claim_replay_epoch_and_revocation() {
-        let url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
-            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
-        let (mut client, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
-        tokio::spawn(async move { connection.await.unwrap() });
-        let schema = format!("socket_test_{}", Uuid::new_v4().simple());
-        client
-            .batch_execute(&format!(
-                "CREATE SCHEMA {schema}; SET search_path TO {schema}"
-            ))
-            .await
-            .unwrap();
-        for sql in [
-            include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
-            include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
-            include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
-            include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
-            include_str!("../../../../deploy/compose/migrations/030_terminal_dispatch_jobs.sql"),
-            include_str!(
-                "../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"
-            ),
-            include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
-        ] {
-            client.batch_execute(sql).await.unwrap();
-        }
-        let account_id = Uuid::new_v4();
-        let device_id = Uuid::new_v4();
-        let signing = SigningKey::generate_from_rng(&mut rng());
-        let sec1 = signing.verifying_key().to_sec1_point(false);
-        let fingerprint: [u8; 32] = Sha256::digest(sec1.as_bytes()).into();
-        client
-            .execute("INSERT INTO sites(site_id) VALUES('test-site')", &[])
-            .await
-            .unwrap();
-        client
-            .execute("INSERT INTO accounts(id) VALUES($1)", &[&account_id])
-            .await
-            .unwrap();
-        client
-            .execute(
-                "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'Test phone')",
-                &[&device_id, &account_id],
-            )
-            .await
-            .unwrap();
-        client
-            .execute(
-                "INSERT INTO device_keys(device_id,account_id,signing_key_sec1,fingerprint) VALUES($1,$2,$3,$4)",
-                &[&device_id, &account_id, &sec1.as_bytes(), &&fingerprint[..]],
-            )
-            .await
-            .unwrap();
-        let hasher = Arc::new(EnrollmentHasher::new(crate::test_keys::key(77)).unwrap());
-        let state = DeviceSocketState {
-            database_url: url,
-            site_id: "test-site".into(),
-            instance_id: "test-hub".into(),
-            deployment_epoch: 1,
-            enrollment_hasher: hasher.clone(),
-            auth_hasher: Arc::new(TokenHasher::new(crate::test_keys::key(78)).unwrap()),
-            alpha_policy: Arc::new(AlphaPolicy::parse(None, None, None).unwrap()),
-            dispatch_runtime_enabled: false,
-            inbound_pilot_enabled: false,
-            line_opt_out_enabled: false,
-            draining: Arc::new(AtomicBool::new(false)),
-            drain_notify: Arc::new(Notify::new()),
-        };
-
-        let bad = enrollment::issue_device_challenge(&client, &hasher, device_id)
-            .await
-            .unwrap();
-        let wrong_signing = SigningKey::generate_from_rng(&mut rng());
-        let wrong_signature: Signature = wrong_signing.sign(&device_challenge_bytes(&bad));
-        assert!(matches!(
-            enrollment::authenticate_device_challenge(
-                &mut client,
-                &hasher,
-                &bad,
-                wrong_signature.to_der().as_bytes()
-            )
-            .await,
-            Err(EnrollmentError::Unauthorized)
-        ));
-        let good_signature: Signature = signing.sign(&device_challenge_bytes(&bad));
-        assert!(matches!(
-            enrollment::authenticate_device_challenge(
-                &mut client,
-                &hasher,
-                &bad,
-                good_signature.to_der().as_bytes()
-            )
-            .await,
-            Err(EnrollmentError::Unauthorized)
-        ));
-
-        let expired = enrollment::issue_device_challenge(&client, &hasher, device_id)
-            .await
-            .unwrap();
-        client
-            .execute(
-                "UPDATE device_auth_challenges SET created_at=now()-interval '2 minutes',expires_at=now()-interval '1 minute' WHERE id=$1",
-                &[&expired.id],
-            )
-            .await
-            .unwrap();
-        let expired_signature: Signature = signing.sign(&device_challenge_bytes(&expired));
-        assert!(matches!(
-            enrollment::authenticate_device_challenge(
-                &mut client,
-                &hasher,
-                &expired,
-                expired_signature.to_der().as_bytes()
-            )
-            .await,
-            Err(EnrollmentError::Unauthorized)
-        ));
-
-        let first = enrollment::issue_device_challenge(&client, &hasher, device_id)
-            .await
-            .unwrap();
-        let cross_tenant = crate::enrollment::DeviceChallenge {
-            id: first.id,
-            account_id: Uuid::new_v4(),
-            device_id: first.device_id,
-            nonce: first.nonce,
-        };
-        let cross_signature: Signature = signing.sign(&device_challenge_bytes(&cross_tenant));
-        assert!(matches!(
-            enrollment::authenticate_device_challenge(
-                &mut client,
-                &hasher,
-                &cross_tenant,
-                cross_signature.to_der().as_bytes()
-            )
-            .await,
-            Err(EnrollmentError::Unauthorized)
-        ));
-        let first_signature: Signature = signing.sign(&device_challenge_bytes(&first));
-        let first_identity = enrollment::authenticate_device_challenge(
-            &mut client,
-            &hasher,
-            &first,
-            first_signature.to_der().as_bytes(),
-        )
-        .await
-        .unwrap();
-        let first_session = claim_session(&mut client, first_identity, &state)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(first_session.connection_epoch, 1);
-        assert!(
-            session_current(&client, first_session, &state)
-                .await
-                .unwrap()
-        );
-        assert!(matches!(
-            enrollment::authenticate_device_challenge(
-                &mut client,
-                &hasher,
-                &first,
-                first_signature.to_der().as_bytes()
-            )
-            .await,
-            Err(EnrollmentError::Unauthorized)
-        ));
-
-        let second = enrollment::issue_device_challenge(&client, &hasher, device_id)
-            .await
-            .unwrap();
-        let second_signature: Signature = signing.sign(&device_challenge_bytes(&second));
-        let second_identity = enrollment::authenticate_device_challenge(
-            &mut client,
-            &hasher,
-            &second,
-            second_signature.to_der().as_bytes(),
-        )
-        .await
-        .unwrap();
-        let second_session = claim_session(&mut client, second_identity, &state)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(second_session.connection_epoch, 2);
-        assert!(
-            !session_current(&client, first_session, &state)
-                .await
-                .unwrap()
-        );
-        assert!(!renew_session(&client, first_session, &state).await.unwrap());
-        release_session(&client, first_session).await.unwrap();
-        assert!(
-            session_current(&client, second_session, &state)
-                .await
-                .unwrap()
-        );
-        assert!(
-            renew_session(&client, second_session, &state)
-                .await
-                .unwrap()
-        );
-
-        let message_id = Uuid::new_v4();
-        DeliveryStore::new(&mut client)
-            .accept(NewMessage {
-                account_id,
-                client_message_id: message_id,
-                device_id,
-                idempotency_key: "socket-synthetic-case",
-                recipient_e164: "+15555550101",
-                synthetic_payload: b"ZROtext synthetic test: socket_case",
-                expires_at_ms: now_ms() + 10 * 60 * 1000,
-            })
-            .await
-            .unwrap();
-        let approved_digest: [u8; 32] = Sha256::digest(b"+15555550101").into();
-        assert!(
-            poll_synthetic_grant(&mut client, second_session, &state, &approved_digest)
-                .await
-                .unwrap()
-                .is_none()
-        );
-        let alpha_state = DeviceSocketState {
-            alpha_policy: Arc::new(
-                AlphaPolicy::parse(
-                    Some("true"),
-                    Some(&account_id.to_string()),
-                    Some("+15555550101"),
-                )
-                .unwrap(),
-            ),
-            dispatch_runtime_enabled: true,
-            ..state.clone()
-        };
-        assert!(
-            poll_synthetic_grant(&mut client, second_session, &alpha_state, &approved_digest)
-                .await
-                .unwrap()
-                .is_none()
-        );
-        client
-            .execute("UPDATE deployment_authority SET dispatch_enabled=TRUE", &[])
-            .await
-            .unwrap();
-        let grant =
-            poll_synthetic_grant(&mut client, second_session, &alpha_state, &approved_digest)
-                .await
-                .unwrap()
-                .unwrap();
-        let wire = serde_json::to_value(grant).unwrap();
-        assert_eq!(wire["type"], "synthetic_grant");
-        assert_eq!(wire["message_id"], message_id.to_string());
-        assert_eq!(wire["recipient_e164"], "+15555550101");
-        assert_eq!(wire["body"], "ZROtext synthetic test: socket_case");
-        let attempt_id = Uuid::parse_str(wire["attempt_id"].as_str().unwrap()).unwrap();
-        assert!(
-            grant_still_current(
-                &client,
-                second_session,
-                message_id,
-                attempt_id,
-                &alpha_state
-            )
-            .await
-            .unwrap()
-        );
-        let event_id = Uuid::new_v4();
-        let intent = RadioEvent {
-            event_id,
-            account_id,
-            device_id,
-            message_id,
-            attempt_id,
-            evidence: Evidence::DurableSubmitIntent,
-            observed_at_ms: now_ms(),
-            segment_index: None,
-            segment_count: None,
-        };
-        assert_eq!(
-            DeliveryStore::new(&mut client)
-                .record_radio_event(intent)
-                .await
-                .unwrap(),
-            MessageState::Submitting
-        );
-        assert!(
-            grant_still_current(
-                &client,
-                second_session,
-                message_id,
-                attempt_id,
-                &alpha_state
-            )
-            .await
-            .unwrap()
-        );
-        client
-            .execute(
-                "UPDATE dispatch_fences SET grant_expires_at=now()-interval '1 second' WHERE attempt_id=$1",
-                &[&attempt_id],
-            )
-            .await
-            .unwrap();
-        assert!(
-            !grant_still_current(
-                &client,
-                second_session,
-                message_id,
-                attempt_id,
-                &alpha_state
-            )
-            .await
-            .unwrap()
-        );
-        assert!(
-            previous_submit_intent(&client, second_session, event_id, message_id, attempt_id)
-                .await
-                .unwrap()
-        );
-        assert!(
-            !previous_submit_intent(
-                &client,
-                second_session,
-                Uuid::new_v4(),
-                message_id,
-                attempt_id
-            )
-            .await
-            .unwrap()
-        );
-        assert_eq!(
-            DeliveryStore::new(&mut client)
-                .record_radio_event(RadioEvent {
-                    event_id: Uuid::new_v4(),
-                    account_id,
-                    device_id,
-                    message_id,
-                    attempt_id,
-                    evidence: Evidence::SentCallbackOk,
-                    observed_at_ms: now_ms(),
-                    segment_index: Some(0),
-                    segment_count: Some(1),
-                })
-                .await
-                .unwrap(),
-            MessageState::Submitted
-        );
-        let next_message = Uuid::new_v4();
-        DeliveryStore::new(&mut client)
-            .accept(NewMessage {
-                account_id,
-                client_message_id: next_message,
-                device_id,
-                idempotency_key: "socket-synthetic-next-case",
-                recipient_e164: "+15555550101",
-                synthetic_payload: b"ZROtext synthetic test: next_case",
-                expires_at_ms: now_ms() + 10 * 60 * 1000,
-            })
-            .await
-            .unwrap();
-        assert!(
-            poll_synthetic_grant(&mut client, second_session, &alpha_state, &approved_digest)
-                .await
-                .unwrap()
-                .is_none()
-        );
-        assert_eq!(
-            DeliveryStore::new(&mut client)
-                .status(account_id, next_message)
-                .await
-                .unwrap()
-                .unwrap()
-                .state,
-            MessageState::Queued
-        );
-
-        // A recipient outside the one-shot phone digest remains queued.
-        let other_device = Uuid::new_v4();
-        let other_message = Uuid::new_v4();
-        client
-            .execute(
-                "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'Other phone')",
-                &[&other_device, &account_id],
-            )
-            .await
-            .unwrap();
-        client
-            .execute(
-                "INSERT INTO device_keys(device_id,account_id,signing_key_sec1,fingerprint) VALUES($1,$2,$3,$4)",
-                &[&other_device, &account_id, &sec1.as_bytes(), &&fingerprint[..]],
-            )
-            .await
-            .unwrap();
-        let other_session = claim_session(
-            &mut client,
-            AuthenticatedDevice {
-                account_id,
-                device_id: other_device,
-            },
-            &alpha_state,
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        DeliveryStore::new(&mut client)
-            .accept(NewMessage {
-                account_id,
-                client_message_id: other_message,
-                device_id: other_device,
-                idempotency_key: "revoked-recipient-case",
-                recipient_e164: "+15555550102",
-                synthetic_payload: b"ZROtext synthetic test: stale_policy",
-                expires_at_ms: now_ms() + 10 * 60 * 1000,
-            })
-            .await
-            .unwrap();
-        assert!(
-            poll_synthetic_grant(&mut client, other_session, &alpha_state, &approved_digest)
-                .await
-                .unwrap()
-                .is_none()
-        );
-        assert_eq!(
-            DeliveryStore::new(&mut client)
-                .status(account_id, other_message)
-                .await
-                .unwrap()
-                .unwrap()
-                .state,
-            MessageState::Queued
-        );
-
-        // Two distinct, valid reconnection proofs may race on different hubs.
-        // The writer serializes them and leaves only the higher epoch current.
-        let mut identities = Vec::new();
-        for _ in 0..2 {
-            let challenge = enrollment::issue_device_challenge(&client, &hasher, device_id)
-                .await
-                .unwrap();
-            let signature: Signature = signing.sign(&device_challenge_bytes(&challenge));
-            identities.push(
-                enrollment::authenticate_device_challenge(
-                    &mut client,
-                    &hasher,
-                    &challenge,
-                    signature.to_der().as_bytes(),
-                )
-                .await
-                .unwrap(),
-            );
-        }
-        let (mut peer_a, connection_a) = tokio_postgres::connect(&state.database_url, NoTls)
-            .await
-            .unwrap();
-        tokio::spawn(async move { connection_a.await.unwrap() });
-        peer_a
-            .batch_execute(&format!("SET search_path TO {schema}"))
-            .await
-            .unwrap();
-        let (mut peer_b, connection_b) = tokio_postgres::connect(&state.database_url, NoTls)
-            .await
-            .unwrap();
-        tokio::spawn(async move { connection_b.await.unwrap() });
-        peer_b
-            .batch_execute(&format!("SET search_path TO {schema}"))
-            .await
-            .unwrap();
-        let (left, right) = tokio::join!(
-            claim_session(&mut peer_a, identities[0], &state),
-            claim_session(&mut peer_b, identities[1], &state)
-        );
-        let left = left.unwrap().unwrap();
-        let right = right.unwrap().unwrap();
-        assert_eq!(
-            [left.connection_epoch, right.connection_epoch]
-                .into_iter()
-                .collect::<std::collections::BTreeSet<_>>(),
-            [3, 4].into_iter().collect()
-        );
-        let current_session = if left.connection_epoch > right.connection_epoch {
-            left
-        } else {
-            right
-        };
-        assert!(
-            !session_current(&client, second_session, &state)
-                .await
-                .unwrap()
-        );
-        assert!(
-            session_current(&client, current_session, &state)
-                .await
-                .unwrap()
-        );
-        let stale_session = if current_session == left { right } else { left };
-        assert!(!renew_session(&client, stale_session, &state).await.unwrap());
-
-        client
-            .execute(
-                "UPDATE sites SET draining=TRUE WHERE site_id=$1",
-                &[&state.site_id],
-            )
-            .await
-            .unwrap();
-        assert!(
-            !session_current(&client, current_session, &state)
-                .await
-                .unwrap()
-        );
-        assert!(
-            !renew_session(&client, current_session, &state)
-                .await
-                .unwrap()
-        );
-        client
-            .execute(
-                "UPDATE sites SET draining=FALSE WHERE site_id=$1",
-                &[&state.site_id],
-            )
-            .await
-            .unwrap();
-        client
-            .execute("UPDATE deployment_authority SET epoch=2", &[])
-            .await
-            .unwrap();
-        assert!(
-            !session_current(&client, current_session, &state)
-                .await
-                .unwrap()
-        );
-        assert!(
-            !renew_session(&client, current_session, &state)
-                .await
-                .unwrap()
-        );
-        client
-            .execute("UPDATE deployment_authority SET epoch=1", &[])
-            .await
-            .unwrap();
-
-        client
-            .execute(
-                "UPDATE device_keys SET revoked_at=now() WHERE device_id=$1",
-                &[&device_id],
-            )
-            .await
-            .unwrap();
-        assert!(
-            !session_current(&client, current_session, &state)
-                .await
-                .unwrap()
-        );
-        assert!(
-            !renew_session(&client, current_session, &state)
-                .await
-                .unwrap()
-        );
-        assert!(matches!(
-            enrollment::issue_device_challenge(&client, &hasher, device_id).await,
-            Err(EnrollmentError::Unauthorized)
-        ));
-        client
-            .batch_execute(&format!(
-                "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
-            ))
-            .await
-            .unwrap();
-    }
-}
+mod tests;
 
 #[cfg(test)]
 mod admission_tests;
@@ -2380,6 +1484,8 @@ mod line_opt_out_wire_tests;
 mod virtual_inbound_tests;
 #[cfg(test)]
 mod virtual_line_opt_out_tests;
+#[cfg(test)]
+mod virtual_sms_line_activation_tests;
 
 #[cfg(test)]
 mod frame_budget_tests {

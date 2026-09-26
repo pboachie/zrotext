@@ -6,6 +6,13 @@
 //! bounds instead of a paused clock: auto-advance would fire the deadlines
 //! while the runtime waits on socket I/O.
 
+#[path = "database_capacity_tests.rs"]
+mod database_capacity_tests;
+#[path = "preconditions_lock_tests.rs"]
+mod preconditions_lock_tests;
+#[path = "preconditions_tests.rs"]
+mod preconditions_tests;
+
 use super::*;
 use crate::enrollment::{DeviceChallenge, device_challenge_bytes};
 use futures_util::{SinkExt, StreamExt};
@@ -35,6 +42,7 @@ fn socket_state(database_url: String, site_id: &str) -> DeviceSocketState {
         dispatch_runtime_enabled: false,
         inbound_pilot_enabled: false,
         line_opt_out_enabled: false,
+        sms_line_activation_enabled: false,
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),
     }

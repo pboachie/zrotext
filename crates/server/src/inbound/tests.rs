@@ -397,8 +397,26 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
         include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
         include_str!("../../../../deploy/compose/migrations/015_webhook_kek_commitments.sql"),
         include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+        include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
+        include_str!("../../../../deploy/compose/migrations/018_sealed_inbound_identity.sql"),
+        include_str!("../../../../deploy/compose/migrations/019_line_activation_contract.sql"),
+        include_str!("../../../../deploy/compose/migrations/020_enrollment_retention_indexes.sql"),
+        include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+        include_str!("../../../../deploy/compose/migrations/022_pending_owner_expiry.sql"),
+        include_str!(
+            "../../../../deploy/compose/migrations/023_billing_py_charge_and_unsupported.sql"
+        ),
+        include_str!("../../../../deploy/compose/migrations/024_billing_risk_operator_review.sql"),
+        include_str!("../../../../deploy/compose/migrations/025_account_recovery.sql"),
+        include_str!("../../../../deploy/compose/migrations/026_data_retention.sql"),
+        include_str!("../../../../deploy/compose/migrations/027_billing_test_config.sql"),
+        include_str!("../../../../deploy/compose/migrations/028_billing_provider_failures.sql"),
         include_str!("../../../../deploy/compose/migrations/029_webhook_dispatch_fairness.sql"),
+        include_str!("../../../../deploy/compose/migrations/030_terminal_dispatch_jobs.sql"),
         include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
+        include_str!("../../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
+        include_str!("../../../../deploy/compose/migrations/038_owner_opt_out_hold_guards.sql"),
+        include_str!("../../../../deploy/compose/migrations/039_inbound_device_clock_offset.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }
@@ -1072,6 +1090,26 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
     .unwrap();
     // STOP and START carry no body or sender field. The signed attempt binds
     // them to the writer's exact account-scoped recipient. Replays are inert.
+    let pending_sms = Uuid::new_v4();
+    zrotext_delivery_store::DeliveryStore::new(&mut db)
+        .accept(zrotext_delivery_store::NewMessage {
+            account_id: account,
+            device_id: device,
+            client_message_id: pending_sms,
+            idempotency_key: "signed-opt-out-cancellation",
+            recipient_e164: "+15551234567",
+            synthetic_payload: b"synthetic pending message",
+            expires_at_ms: i64::try_from(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis(),
+            )
+            .unwrap()
+                + 60_000,
+        })
+        .await
+        .unwrap();
     let stop = InboundEvent {
         event_id: Uuid::new_v4(),
         sequence: 2001,
@@ -1086,6 +1124,12 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
         ..stop
     };
     assert!(ingest(&mut db, session, &stop).await.unwrap().created);
+    let pending_state: String = db
+        .query_one("SELECT state FROM messages WHERE id=$1", &[&pending_sms])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(pending_state, "cancelled");
     assert!(!ingest(&mut db, session, &stop).await.unwrap().created);
     let active: bool = db.query_one(
         "SELECT active FROM recipient_suppressions WHERE account_id=$1 AND recipient_e164='+15551234567'",
@@ -1135,6 +1179,71 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
         "SELECT active FROM recipient_suppressions WHERE account_id=$1 AND recipient_e164='+15551234567'",
         &[&account],
     ).await.unwrap().get::<_, bool>(0));
+    // An owner-recorded off-channel hold predates this START. The signed START
+    // is verified new consent and releases it; nothing else can.
+    let hold_owner = Uuid::new_v4();
+    db.execute(
+        "INSERT INTO users(id,email,password_hash) VALUES($1,'inbound-hold@example.test','unused')",
+        &[&hold_owner],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO memberships(account_id,user_id,role) VALUES($1,$2,'owner')",
+        &[&account, &hold_owner],
+    )
+    .await
+    .unwrap();
+    // Migration 038: a hold starts unreleased at the insert time. Both inserts
+    // pass migration 036's own constraints; only the 038 guard rejects them.
+    let rejected = Uuid::new_v4();
+    assert!(
+        db.execute(
+            "INSERT INTO owner_recipient_holds(id,account_id,recipient_e164,channel,reason,reported_at,created_by,created_at)              VALUES($1,$2,'+15551234567','phone_call','consent_withdrawn',clock_timestamp()-interval '1 hour',$3,clock_timestamp()-interval '1 hour')",
+            &[&rejected, &account, &hold_owner],
+        )
+        .await
+        .is_err(),
+        "a hold cannot be backdated"
+    );
+    assert!(
+        db.execute(
+            "INSERT INTO owner_recipient_holds(id,account_id,recipient_e164,channel,reason,reported_at,created_by,released_at,release_event_id)              VALUES($1,$2,'+15551234567','phone_call','consent_withdrawn',clock_timestamp(),$3,clock_timestamp(),$4)",
+            &[&rejected, &account, &hold_owner, &stop.event_id],
+        )
+        .await
+        .is_err(),
+        "a hold cannot start released"
+    );
+    // Test setup only: record a hold two minutes before the STOP. Production
+    // inserts always pass the guard above.
+    let earlier_hold = Uuid::new_v4();
+    db.batch_execute(
+        "ALTER TABLE owner_recipient_holds DISABLE TRIGGER owner_recipient_holds_before_insert",
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO owner_recipient_holds(id,account_id,recipient_e164,channel,reason,reported_at,created_by,created_at) \
+         VALUES($1,$2,'+15551234567','phone_call','consent_withdrawn',to_timestamp($3::float8),$4,to_timestamp($3::float8))",
+        &[&earlier_hold, &account, &((stop.observed_at_ms - 120_000) as f64 / 1000.0), &hold_owner],
+    )
+    .await
+    .unwrap();
+    db.batch_execute(
+        "ALTER TABLE owner_recipient_holds ENABLE TRIGGER owner_recipient_holds_before_insert",
+    )
+    .await
+    .unwrap();
+    assert!(
+        db.execute(
+            "UPDATE owner_recipient_holds SET released_at=clock_timestamp(),release_event_id=$2 WHERE id=$1",
+            &[&earlier_hold, &stop.event_id],
+        )
+        .await
+        .is_err(),
+        "a STOP event cannot release an owner hold"
+    );
     let resume = InboundEvent {
         event_id: Uuid::new_v4(),
         sequence: 2003,
@@ -1166,6 +1275,289 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
         &[&account],
     ).await.unwrap().get(0);
     assert!(inactive);
+    // Observed only two minutes after the hold, inside the five-minute future
+    // skew inbound accepts, this START may predate the withdrawal on a phone
+    // whose clock runs fast. It clears the SMS suppression but not the hold,
+    // in the ingest path and in the database guard.
+    assert_eq!(hold_release_event(&db, earlier_hold).await, None);
+    assert!(
+        db.execute(
+            "UPDATE owner_recipient_holds SET released_at=clock_timestamp(),release_event_id=$2 WHERE id=$1",
+            &[&earlier_hold, &resume.event_id],
+        )
+        .await
+        .is_err(),
+        "the guard applies the same skew bound"
+    );
+    assert!(
+        db.execute(
+            "INSERT INTO owner_opt_out_audit(id,account_id,event,hold_id,release_event_id) \
+             VALUES($1,$2,'hold_released',$3,$4)",
+            &[&Uuid::new_v4(), &account, &earlier_hold, &resume.event_id],
+        )
+        .await
+        .is_err(),
+        "a release audit row must match a released hold"
+    );
+    // A START observed more than five minutes after the hold releases it.
+    let later_start = InboundEvent {
+        event_id: Uuid::new_v4(),
+        sequence: 2004,
+        observed_at_ms: stop.observed_at_ms + 181_000,
+        classification: Classification::OptIn,
+        signature_der: &[],
+        ..unsigned
+    };
+    let later_signature: Signature = signing.sign(&signed_event_bytes(session, &later_start));
+    let later_der = later_signature.to_der();
+    let later_start = InboundEvent {
+        signature_der: later_der.as_bytes(),
+        ..later_start
+    };
+    assert!(
+        ingest(&mut db, session, &later_start)
+            .await
+            .unwrap()
+            .created
+    );
+    assert!(
+        !ingest(&mut db, session, &later_start)
+            .await
+            .unwrap()
+            .created
+    );
+    assert_eq!(
+        hold_release_event(&db, earlier_hold).await,
+        Some(later_start.event_id)
+    );
+    let release_audits: i64 = db
+        .query_one(
+            "SELECT count(*) FROM owner_opt_out_audit WHERE hold_id=$1 AND event='hold_released' \
+             AND actor_user_id IS NULL AND release_event_id=$2",
+            &[&earlier_hold, &later_start.event_id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        release_audits, 1,
+        "the replayed START wrote no second release"
+    );
+    // Migration 039: a phone clock reading can only tighten the five-minute
+    // rule. Rows: observed, device_sent, received, hold_created (seconds from
+    // a fixed hub time; observed and device_sent on the phone clock) and the
+    // expected release.
+    for (observed, sent, received, created, expected, case) in [
+        (
+            400,
+            None,
+            100,
+            0,
+            true,
+            "no reading: more than five minutes later",
+        ),
+        (
+            290,
+            None,
+            100,
+            0,
+            false,
+            "no reading: inside the five-minute margin",
+        ),
+        (
+            600,
+            Some(1300),
+            100,
+            0,
+            false,
+            "phone 20 min fast, late upload: START was before the hold",
+        ),
+        (
+            400,
+            Some(500),
+            500,
+            0,
+            true,
+            "accurate phone: more than five minutes later",
+        ),
+        (
+            90,
+            Some(100),
+            100,
+            0,
+            false,
+            "accurate phone: the floor still needs five minutes",
+        ),
+        (
+            120,
+            Some(700),
+            700,
+            0,
+            false,
+            "clock stepped back before upload: floor holds",
+        ),
+        (0, Some(40), 120, 10, false, "network delay: floor holds"),
+        (
+            400,
+            Some(450),
+            100,
+            0,
+            false,
+            "reading shows the phone fast: corrected time too early",
+        ),
+    ] {
+        let allowed: bool = db
+            .query_one(
+                "SELECT owner_hold_release_allowed( \
+                   to_timestamp(1700000000+$1::float8), \
+                   to_timestamp(1700000000+$2::float8), \
+                   to_timestamp(1700000000+$3::float8), to_timestamp(1700000000+$4::float8))",
+                &[
+                    &f64::from(observed),
+                    &sent.map(f64::from),
+                    &f64::from(received),
+                    &f64::from(created),
+                ],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(allowed, expected, "{case}");
+    }
+    // Wiring through ingest_with_clock. Test setup only: record a hold ten
+    // minutes ago.
+    let clock_hold = Uuid::new_v4();
+    db.batch_execute(
+        "ALTER TABLE owner_recipient_holds DISABLE TRIGGER owner_recipient_holds_before_insert",
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO owner_recipient_holds(id,account_id,recipient_e164,channel,reason,reported_at,created_by,created_at) \
+         VALUES($1,$2,'+15551234567','email','consent_withdrawn',clock_timestamp()-interval '10 minutes',$3,clock_timestamp()-interval '10 minutes')",
+        &[&clock_hold, &account, &hold_owner],
+    )
+    .await
+    .unwrap();
+    db.batch_execute(
+        "ALTER TABLE owner_recipient_holds ENABLE TRIGGER owner_recipient_holds_before_insert",
+    )
+    .await
+    .unwrap();
+    let now_ms = || {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64
+    };
+    let signed_start = |sequence: i64, observed_at_ms: i64| {
+        let start = InboundEvent {
+            event_id: Uuid::new_v4(),
+            sequence,
+            observed_at_ms,
+            classification: Classification::OptIn,
+            signature_der: &[],
+            ..unsigned
+        };
+        let signature: Signature = signing.sign(&signed_event_bytes(session, &start));
+        (start, signature.to_der())
+    };
+    // A phone running 20 minutes fast uploads late a START it received before
+    // the withdrawal. Its own clock puts the START four minutes ahead of the
+    // hub, beyond the old five-minute margin after the hold; the measured
+    // offset places it before the hold, so the hold stays.
+    let (fast, fast_der) = signed_start(2090, now_ms() + 4 * 60_000);
+    let fast = InboundEvent {
+        signature_der: fast_der.as_bytes(),
+        ..fast
+    };
+    assert!(
+        ingest_with_clock(&mut db, session, &fast, Some(now_ms() + 20 * 60_000))
+            .await
+            .unwrap()
+            .created
+    );
+    assert_eq!(hold_release_event(&db, clock_hold).await, None);
+    // A reading more than a day away is not stored and keeps the old rule.
+    // Observed six minutes ago, inside the old margin after the hold.
+    let (wild, wild_der) = signed_start(2091, now_ms() - 6 * 60_000);
+    let wild = InboundEvent {
+        signature_der: wild_der.as_bytes(),
+        ..wild
+    };
+    assert!(
+        ingest_with_clock(&mut db, session, &wild, Some(now_ms() - 2 * 86_400_000))
+            .await
+            .unwrap()
+            .created
+    );
+    let wild_stored: bool = db
+        .query_one(
+            "SELECT device_sent_at IS NULL FROM inbound_events WHERE id=$1",
+            &[&wild.event_id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert!(wild_stored);
+    assert_eq!(hold_release_event(&db, clock_hold).await, None);
+    // An accurate phone's START now releases the hold.
+    let (accurate, accurate_der) = signed_start(2092, now_ms());
+    let accurate = InboundEvent {
+        signature_der: accurate_der.as_bytes(),
+        ..accurate
+    };
+    assert!(
+        ingest_with_clock(&mut db, session, &accurate, Some(now_ms()))
+            .await
+            .unwrap()
+            .created
+    );
+    assert_eq!(
+        hold_release_event(&db, clock_hold).await,
+        Some(accurate.event_id)
+    );
+    // A hold recorded after a START was observed is not released by it.
+    let later_hold = Uuid::new_v4();
+    db.execute(
+        "INSERT INTO owner_recipient_holds(id,account_id,recipient_e164,channel,reason,reported_at,created_by) \
+         VALUES($1,$2,'+15551234567','email','opt_out',clock_timestamp(),$3)",
+        &[&later_hold, &account, &hold_owner],
+    )
+    .await
+    .unwrap();
+    let stale_start = InboundEvent {
+        event_id: Uuid::new_v4(),
+        sequence: 2100,
+        observed_at_ms: stop.observed_at_ms + 1,
+        classification: Classification::OptIn,
+        signature_der: &[],
+        ..unsigned
+    };
+    let stale_signature: Signature = signing.sign(&signed_event_bytes(session, &stale_start));
+    let stale_der = stale_signature.to_der();
+    assert!(
+        ingest(
+            &mut db,
+            session,
+            &InboundEvent {
+                signature_der: stale_der.as_bytes(),
+                ..stale_start
+            }
+        )
+        .await
+        .unwrap()
+        .created
+    );
+    assert!(
+        db.query_one(
+            "SELECT released_at IS NULL FROM owner_recipient_holds WHERE id=$1",
+            &[&later_hold],
+        )
+        .await
+        .unwrap()
+        .get::<_, bool>(0)
+    );
     let forged = InboundEvent {
         classification: Classification::OptOut,
         ..resume
@@ -1319,6 +1711,55 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
         .unwrap()
         .is_none()
     );
+    // Data retention nulls a terminal source's recipient and payload. A stored
+    // event stays exact-replayable; a new event for that attempt is refused
+    // permanently instead of reading the NULL recipient.
+    db.execute(
+        "UPDATE recipient_suppressions SET active=FALSE,source_event_id=$2,source='sms_resume' WHERE account_id=$1",
+        &[&account, &resume.event_id],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "UPDATE messages SET state='delivered',recipient_e164=NULL,transport_payload=NULL WHERE id=$1",
+        &[&message],
+    )
+    .await
+    .unwrap();
+    let redacted_replay = ingest(&mut db, session, &resume).await.unwrap();
+    assert!(!redacted_replay.created);
+    assert!(redacted_replay.suppression_cleared);
+    assert!(!ingest(&mut db, session, &stop).await.unwrap().created);
+    let late_stop = InboundEvent {
+        event_id: Uuid::new_v4(),
+        sequence: 2005,
+        classification: Classification::OptOut,
+        signature_der: &[],
+        ..unsigned
+    };
+    let late_signature: Signature = signing.sign(&signed_event_bytes(session, &late_stop));
+    let late_der = late_signature.to_der();
+    let late_stop = InboundEvent {
+        signature_der: late_der.as_bytes(),
+        ..late_stop
+    };
+    assert!(matches!(
+        ingest(&mut db, session, &late_stop).await,
+        Err(InboundError::UnknownSource)
+    ));
+    assert!(
+        db.query_opt(
+            "SELECT 1 FROM inbound_events WHERE id=$1",
+            &[&late_stop.event_id]
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+    assert!(db.query_one(
+        "SELECT NOT active FROM recipient_suppressions WHERE account_id=$1 AND recipient_e164='+15551234567'",
+        &[&account],
+    ).await.unwrap().get::<_, bool>(0));
     db.execute(
         "UPDATE device_keys SET revoked_at=now() WHERE device_id=$1",
         &[&device],
@@ -1369,7 +1810,11 @@ async fn fresh_signed_events_share_a_durable_budget_and_replays_are_free() {
         include_str!("../../../../deploy/compose/migrations/015_webhook_kek_commitments.sql"),
         include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
         include_str!("../../../../deploy/compose/migrations/029_webhook_dispatch_fairness.sql"),
+        include_str!("../../../../deploy/compose/migrations/030_terminal_dispatch_jobs.sql"),
         include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
+        include_str!("../../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
+        include_str!("../../../../deploy/compose/migrations/038_owner_opt_out_hold_guards.sql"),
+        include_str!("../../../../deploy/compose/migrations/039_inbound_device_clock_offset.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }
@@ -1740,4 +2185,27 @@ async fn fresh_signed_events_share_a_durable_budget_and_replays_are_free() {
     db.batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
         .await
         .unwrap();
+}
+
+#[test]
+fn hold_release_skew_matches_the_database_guard() {
+    // Migration 039's shared release rule always keeps the same five-minute
+    // floor as MAX_FUTURE_MS; change both together.
+    assert_eq!(MAX_FUTURE_MS, 5 * 60 * 1000);
+    assert!(
+        include_str!("../../../../deploy/compose/migrations/039_inbound_device_clock_offset.sql")
+            .contains(
+                "extract(epoch FROM observed_at) > extract(epoch FROM hold_created_at) + 300"
+            )
+    );
+}
+
+async fn hold_release_event(db: &tokio_postgres::Client, hold: Uuid) -> Option<Uuid> {
+    db.query_one(
+        "SELECT release_event_id FROM owner_recipient_holds WHERE id=$1",
+        &[&hold],
+    )
+    .await
+    .unwrap()
+    .get(0)
 }

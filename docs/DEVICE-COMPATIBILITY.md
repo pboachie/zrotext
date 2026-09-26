@@ -2,6 +2,10 @@
 
 ZROtext does not yet claim support for any specific phone. This page records which devices have been exercised, what those runs show, and what is still untested. A single successful run on one device and carrier does not establish repeat delivery, long-running reliability, or behavior on other hardware.
 
+The supported-device list is also published as a machine-readable matrix in [device-compatibility.json](device-compatibility.json). Every entry records a status, an evidence level, and the repository checks that exercise that class. `python scripts/check_device_compatibility.py` re-verifies the matrix against the Gradle `minSdk`/`targetSdk`, the repository tree, and this page, and `python -m unittest discover -s scripts -p 'test_*.py'` runs the same rules as regression tests in CI. The validator checks the consistency of the recorded claims and that referenced tests exist; it does not run any device, and passing it says nothing about hardware behavior.
+
+Statuses mean: **supported** — exercised by repeatable repository checks for the role stated in the entry; **partial** — some recorded evidence with known limits; **excluded** — outside the app's supported envelope by construction; **unevaluated** — no recorded evidence. Evidence levels mean: **physical** — a controlled run on real hardware recorded on this page, which is a manual record rather than an automated test; **emulator** — an Android Virtual Device check; **device-sim** — the host-side `zrotext-device-sim` fault model. Emulator and host-simulator results never prove carrier delivery, OEM power management, or Keystore hardware behavior.
+
 The SMS gateway requires Android 9 (API 28) or later. Sealed-content mode, which is not yet enabled, requires API 31 or later. See [Android development and testing](ANDROID-TESTING.md) for how to run the device and emulator suites.
 
 ## Physical devices
@@ -18,6 +22,10 @@ These runs used a debug build, a local server, and a loopback TLS route over ADB
 ## Emulators
 
 The foreground-refusal and stale-evidence regressions run on API 28 and API 34 or later Android Virtual Devices. The virtual inbound SMS check also runs on an emulator. [Android development and testing](ANDROID-TESTING.md) describes each one. Emulator results are virtual evidence only: they do not prove carrier delivery, OEM power management, or Keystore hardware behavior.
+
+## Host simulator
+
+`crates/device-sim` models writer promotion and ambiguous radio outcomes deterministically on the host, with inline Rust tests and a simulator-timeline run in CI. It is evidence for delivery-state logic only: it represents no phone hardware, Android level, SIM, or carrier, and the matrix records it with the `device-sim` evidence level and no API range.
 
 ## Not yet tested
 

@@ -4,7 +4,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::{sleep, timeout};
 use tokio_postgres::{Config, NoTls};
 
-async fn connect(config: &Config) -> Client {
+pub(super) async fn connect(config: &Config) -> Client {
     let (client, connection) = config.connect(NoTls).await.unwrap();
     tokio::spawn(async move {
         let _ = connection.await;
@@ -12,7 +12,7 @@ async fn connect(config: &Config) -> Client {
     client
 }
 
-async fn disposable_database() -> (String, Client, Config) {
+pub(super) async fn disposable_database() -> (String, Client, Config) {
     let base = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
         .expect("set ZT_AUTH_TEST_DATABASE_URL to a disposable PostgreSQL cluster with CREATEDB");
     let admin_config: Config = base.parse().unwrap();
@@ -31,7 +31,7 @@ async fn disposable_database() -> (String, Client, Config) {
     (name, admin, database_config)
 }
 
-async fn finish_database(name: &str, admin: &Client) {
+pub(super) async fn finish_database(name: &str, admin: &Client) {
     admin
         .batch_execute(&format!("DROP DATABASE {name} WITH (FORCE)"))
         .await
@@ -58,14 +58,19 @@ async fn fresh_install_checks_index_and_rejects_conflicting_or_lost_index() {
     let mut client = connect(&config).await;
     let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/compose/migrations");
     let migrations = read_migrations(&directory).unwrap();
-    assert_eq!(
-        migrations.last().unwrap().version,
-        IN_FLIGHT_INDEX_MIGRATION
-    );
+    // Later migrations may follow 034; the ledger checks below cover them too.
+    let index_position = migrations
+        .iter()
+        .position(|migration| migration.version == IN_FLIGHT_INDEX_MIGRATION)
+        .unwrap();
+    let from_index: Vec<i64> = migrations[index_position..]
+        .iter()
+        .map(|migration| migration.version)
+        .collect();
 
     // A matching name with a wrong key order must not be replaced, and 034
     // must remain absent from the checksummed ledger.
-    apply_locked(&mut client, &migrations[..33], false)
+    apply_locked(&mut client, &migrations[..index_position], false)
         .await
         .unwrap();
     client
@@ -81,8 +86,8 @@ async fn fresh_install_checks_index_and_rejects_conflicting_or_lost_index() {
     ));
     let count: i64 = client
         .query_one(
-            "SELECT count(*) FROM schema_migrations WHERE version=34",
-            &[],
+            "SELECT count(*) FROM schema_migrations WHERE version>=$1",
+            &[&IN_FLIGHT_INDEX_MIGRATION],
         )
         .await
         .unwrap()
@@ -91,8 +96,13 @@ async fn fresh_install_checks_index_and_rejects_conflicting_or_lost_index() {
 
     client.batch_execute(DROP_IN_FLIGHT_INDEX).await.unwrap();
     let applied = apply(&mut client, &directory, false).await.unwrap();
-    assert_eq!(applied.len(), 1);
-    assert_eq!(applied[0].version, 34);
+    assert_eq!(
+        applied
+            .iter()
+            .map(|migration| migration.version)
+            .collect::<Vec<_>>(),
+        from_index
+    );
     verify_in_flight_index(&client).await.unwrap();
     assert!(
         apply(&mut client, &directory, false)

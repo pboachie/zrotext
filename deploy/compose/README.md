@@ -10,6 +10,10 @@ message payloads and states, an attempt and event, an ungranted dispatch job,
 an idempotency key, and usage records. The restore rehearsal verifies those
 exact records in both the source and the database-only restore target.
 
+For moving an existing deployment to a newer version of the source, follow the
+[upgrade guide](UPGRADE.md); it covers pre-flight recording, the migration
+sequence, and rollback.
+
 For a release image, use a checkout of its exact annotated source tag. Run
 `python3 scripts/release_source_metadata.py` there to obtain the web digest,
 device-stream schema digest and final migration number. Pass those values with
@@ -89,10 +93,20 @@ stops migration without being replaced. Once 034 is recorded, later migrator
 runs and dispatch-enabled API readiness fail if the index becomes absent,
 invalid, or different.
 
+Migration 040 uses the same online preparation and transactional validation for
+`message_events_attempt_evidence`, a btree index on `(attempt_id, evidence_code)`.
+It bounds the radio-evidence conflict and durable-intent lookups as retained
+history grows. The migrator refuses a same-name index with different keys,
+ordering, collation, operator classes, uniqueness, included columns or predicate.
+It will not interrupt an active build; an interrupted matching invalid build is
+retried concurrently. After 040 is recorded, a missing or changed index stops
+subsequent migration runs. This index does not change radio evidence or message
+state semantics; API readiness continues to enforce the separate 034 index.
+
 A concurrent build permits message writes but may wait for older transactions;
 monitor `pg_stat_progress_create_index` and allow migration to finish before
 starting API workers. If application rollback is needed, the valid index can
-remain; keep the migration package containing this 034 file so a rolled-back
+remain; keep the migration package containing the applied 034 and 040 files so a rolled-back
 API does not rerun an older migrator with a mismatched checksum. Removing the
 index later requires a separately planned
 `DROP INDEX CONCURRENTLY` outside a transaction, after workers that depend on
@@ -170,7 +184,9 @@ using another object owner needs an explicit grant review.
 For an **existing Compose volume**, back up first and stop both API services.
 Keep the existing admin password and URL, and add the independent runtime secret
 to the private `.env`. Do not delete or reinitialize the volume. For this upgrade
-and later migration or runtime-password changes, run from the repository root:
+and later migration or runtime-password changes, run from the repository root
+(the full procedure, including pre-flight recording and post-upgrade checks, is
+in the [upgrade guide](UPGRADE.md)):
 
 ```sh
 docker compose --env-file .env -f deploy/compose/compose.yaml stop app app_b
@@ -197,7 +213,7 @@ real restore, run migrations and `db-runtime` before starting any API. The resto
 rehearsal remains database-only and never enables a restored API. The fresh
 install smoke additionally checks runtime CRUD and application functions and
 rejects DDL, ledger writes, admin role switching, and server file/program access.
-Run `python scripts/test_runtime_db_role.py` to exercise repeat provisioning,
+Run `python scripts/tests/test_runtime_db_role.py` to exercise repeat provisioning,
 future migration grants, unsafe existing roles, and invalid/reused secrets in a
 new disposable local PostgreSQL container.
 
@@ -251,3 +267,169 @@ The fresh-install smoke uses `--expect-synthetic-fixture` when it invokes this
 drill. That flag checks the checked-in synthetic fixture on both sides of the
 restore and is intended for disposable projects only. Leave it off when
 rehearsing a real self-host database.
+
+## Production hardening checklist
+
+Work through this before exposing a deployment beyond local tests. Every item
+names a mechanism this repository ships, or says plainly when the control is
+operator guidance it does not automate. A ticked box is an operator statement
+about one deployment; nothing here is enforced by the repository.
+
+### Edge and TLS exposure
+
+- [ ] Run the `edge` profile (or an equivalent TLS proxy); the API service
+  itself stays published on host loopback (`127.0.0.1:${APP_PORT:-8080}`) and
+  the edge holds the only public ports.
+- [ ] Set `EDGE_DOMAIN` to a real DNS name and `AUTH_ORIGIN` to the exact
+  public HTTPS origin; account mutations reject any other `Origin`
+  ([Self-hosting](../../docs/SELF-HOSTING.md#public-https-and-device-wss)).
+- [ ] Serve the device stream under a publicly trusted certificate; Android
+  does not trust user-installed CAs by default. Keep the `caddy_data` volume so
+  certificate state survives restarts.
+- [ ] Rehearse the edge with `python deploy/compose/edge_smoke.py` (HTTPS
+  sign-in, secure cookies, exact-Origin handling, WSS upgrade) before pointing
+  production traffic at it.
+- [ ] Add per-source connection limits in front of `/v1/device-stream`. The
+  in-process budgets (32 authenticated sockets and 32 handshakes per process)
+  are not keyed by client address and the bundled Caddyfile adds no limiting;
+  this control is upstream guidance the repository does not ship.
+  The 16 device PostgreSQL clients per process are shared by short operations;
+  connected streams and pending proofs do not pin a client. Device operations
+  wait up to two seconds for pool admission, then close with retry-later on
+  exhaustion. Size database capacity using the separate request/device/worker
+  budgets in [self-hosting](../../docs/SELF-HOSTING.md#runtime-database-and-device-capacity).
+
+### Database roles and network isolation
+
+- [ ] Keep the `db` service on the private Compose network; it publishes no
+  host ports, and only the API services and the edge join the frontend
+  network.
+- [ ] Keep `RUNTIME_DATABASE_PASSWORD` an independent 64-hex-character secret
+  distinct from `POSTGRES_PASSWORD`, and rerun `db-runtime` explicitly on every
+  upgrade (see [Database role separation](#database-role-separation)).
+- [ ] After any real restore, run `migrate` and `db-runtime` before starting an
+  API; `--no-owner --no-acl` backups omit the runtime grants.
+- [ ] Use `sslmode=require` (and `DATABASE_TLS_CA_PEM_B64` for a private CA) in
+  every database URL that leaves the local Compose network. The local `db` does
+  not enable PostgreSQL transport TLS; it stays on the private network. Treat
+  `DATABASE_ALLOW_PLAINTEXT=true` as a warned exception, never a default.
+- [ ] Accept the stated limits honestly: the runtime role narrows a compromised
+  API but does not isolate tenants within the shared schema, and the migration
+  owner stays an administrative credential restricted to operator jobs.
+
+### Secrets
+
+- [ ] Keep every secret in the private `.env` or an operator secret store;
+  `.env` is git-ignored, and no credential belongs in a Compose file, a command
+  argument, an image layer, or the repository.
+- [ ] Generate `AUTH_TOKEN_PEPPER_B64` and `ENROLLMENT_TOKEN_PEPPER_B64`
+  independently and keep them stable across restarts and restores; sessions and
+  recovery-code verification depend on them.
+- [ ] After enrolling invited owners, remove the allowlists and the enrollment
+  master key and return `REGISTRATION_MODE` to `closed` (see
+  [Owner registration](#owner-registration)).
+- [ ] Supply SMTP credentials (`SMTP_USERNAME`/`SMTP_PASSWORD`; port 465 is
+  implicit TLS and other ports use STARTTLS, `SMTP_SECURE=false` is rejected)
+  only through the private environment.
+- [ ] If the TEST billing review command is used, supply its reconciliation key
+  through a protected temporary environment only, never a Compose file, a
+  command argument, or an image layer (see the billing review paragraph above).
+- [ ] Give every site the same webhook KEK pair and rotate only through the
+  staged two-site procedure with `zrotext-webhook-kek-rewrap --check/--apply`
+  ([KEK rotation](../../docs/WEBHOOK-KEK-ROTATION.md)). The repository ships
+  the procedure; the rotation cadence and its scheduling are operator policy it
+  does not automate.
+- [ ] Plan an MFA key change as a separate migration, never an ad hoc
+  replacement of `MFA_ENCRYPTION_KEY_B64`
+  ([MFA operations](../../docs/MFA-OPERATIONS.md)).
+
+### Backups and restore rehearsal
+
+- [ ] Take real backups with your own `pg_dump` policy before every upgrade and
+  on a defined cadence. There is no checked-in production backup script; the
+  drill below verifies you could restore, it does not produce a backup.
+- [ ] Rehearse a restore before every upgrade, as the
+  [upgrade pre-flight](UPGRADE.md) requires: quiesce writers, then
+  `python3 deploy/compose/restore_rehearsal.py --source-project zrotext --env-file .env`.
+  Rerun it against the upgraded database before it accumulates new data.
+- [ ] Record the pre-upgrade identity (image digest or source commit, highest
+  migration number, `/about/version`) and compare it with the post-upgrade
+  record; rollback means restoring the backup, because downgrades are
+  unsupported.
+- [ ] Rehearse the target version with `fresh_install_smoke.py` from that
+  version's checkout; for a release image, pass the immutable digest and
+  receipt metadata and verify the receipt per
+  [Releases](../../docs/RELEASING.md).
+- [ ] Protect every archive (it contains message content), keep it off the
+  machine, and plan encrypted archival, off-site recovery, and a measured
+  RPO/RTO yourself. The drill establishes none of these, and archive deletion
+  is not a secure erase. Backup cadence and retention are operator policy.
+
+### Monitoring and alerting
+
+- [ ] Probe `/healthz` (process liveness) and `/readyz` (adds database
+  readiness; returns 503 while draining). These two, plus `/about/version`,
+  are the only operational endpoints today; the per-surface `/readyz/api` and
+  `/readyz/hub` checks in
+  [Multi-location](../../docs/MULTI-LOCATION.md#health-endpoints-and-failure-behavior)
+  are design, not shipped routes.
+- [ ] While webhook delivery is enabled, watch the `webhook_queue
+  pending=... oldest_pending_age_seconds=... in_flight=...` line in container
+  logs (about once a minute) alongside the owner-visible pause state.
+- [ ] During migration 034, monitor `pg_stat_progress_create_index` and let
+  the migration finish before starting API workers.
+- [ ] Provide your own alerting. The stack has no metrics endpoint, dashboard,
+  or notifier; wiring the endpoints and log lines above into monitoring is
+  operator work the repository does not automate.
+
+### Dependency and image updates
+
+- [ ] Track the repository's update signals: CI builds the server image and
+  fails on critical fixable Trivy findings, keeping the report as an artifact
+  ([ci.yml](../../.github/workflows/ci.yml)); Dependabot opens weekly update
+  PRs for Cargo, Gradle, Actions, and Docker pins; and PR dependency review
+  fails on high severity.
+- [ ] Scan your own image on your own cadence. The CI scan covers the
+  repository's build on pull requests and `main`, not a running deployment.
+- [ ] Deploy release images only by immutable digest from a reviewed
+  `image-receipt.json`, verified with `scripts/verify_release_image.py`
+  ([Releases](../../docs/RELEASING.md)); never a mutable registry tag.
+- [ ] Rebuild and redeploy deliberately. This stack builds from a pinned
+  source checkout, so updates are the [upgrade procedure](UPGRADE.md), not an
+  automated channel; pinned versions and provenance are described in
+  [Dependencies](../../docs/DEPENDENCIES.md).
+
+### Account security
+
+- [ ] Create the first owner with `zrotext-admin create-owner` while
+  registration stays closed and the APIs are stopped; never leave
+  `REGISTRATION_MODE=open` on an instance you intend to keep private.
+- [ ] Enroll owner MFA per [MFA operations](../../docs/MFA-OPERATIONS.md): an
+  independent 32-byte `MFA_ENCRYPTION_KEY_B64`, the same value on every
+  account-serving site and across restores, older binaries drained before
+  `MFA_ENROLLMENT_ENABLED=true`, and recovery codes saved during enrollment.
+- [ ] If the MFA key becomes unavailable, use `MFA_RECOVERY_ONLY=true`
+  deliberately and restore the key afterwards; the mode is a fallback, not a
+  substitute for key custody.
+- [ ] Know the session behavior: owner sessions last a fixed 14 days, the
+  session cookie is `__Host-` Secure/HttpOnly/SameSite=Lax, and sign-out or a
+  password reset revokes sessions and owner-issued API keys. The lifetime is
+  fixed in code; there is no configurable idle timeout or session-listing
+  page, so treat shared workstations accordingly.
+- [ ] Reset a forgotten owner password without SMTP through
+  `zrotext-admin reset-password` and reissue integration keys afterwards
+  ([Self-hosting](../../docs/SELF-HOSTING.md#owner-password-recovery)).
+
+### Retention defaults
+
+- [ ] Choose the six `ZT_*_RETENTION_DAYS` values deliberately (defaults:
+  idempotency 7, message content 30, events 90, webhook history 30, inbound 30,
+  sealed inbound 30; integers 1-3650; an invalid value blocks startup) and
+  deploy the same values to every hub. Cutoffs are eligibility ages, not
+  deletion deadlines, and a longer value cannot restore redacted content.
+- [ ] Plan lifecycle controls beyond the worker: backups, WAL, replicas, and
+  PostgreSQL dead tuples keep data past these cutoffs and need their own
+  policy; the repository does not automate that.
+- [ ] Expect what retention does not do: opt-out rows and review audit records
+  are never pruned, and the worker is not an account-erasure API
+  ([Self-hosting](../../docs/SELF-HOSTING.md#data-retention)).

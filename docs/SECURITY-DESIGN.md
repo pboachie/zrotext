@@ -59,7 +59,7 @@ Phone receives plaintext SMS, normalizes multipart events, and encrypts once to 
 
 Customer automation must decrypt in the customer's runtime using the SDK. Provide a local connector recipe; a plain Zapier webhook does not magically decrypt HPKE. Webhook HMAC proves relay authenticity, while the device event signature preserves source authentication for reviewers able to verify it.
 
-The restricted M1 pilot classifies STOP-family keywords and likely free-text withdrawal requests on the phone. It stores a local recipient block immediately, even if an upload window is unavailable, and uploads only a signed metadata action when the reply matches a positively sent attempt and the selected SIM. The writer persists an account-scoped E.164 suppression and rejects both new acceptance and exact acceptance retries under the same account lock. An exact START or UNSTOP clears an existing server suppression only after authenticated, deduplicated inbound processing in the same outbound-attempt reply window. The phone retains its local STOP block after an affirmative writer acknowledgement because the current local record has no verified line and enrollment generation to compare with START. Neither action uploads SMS plaintext or sends an automatic confirmation. Authenticated owners can view active ambiguous SMS holds in a read-only, no-store review queue showing recipient metadata and event times. Off-channel withdrawal intake and durable review decisions remain open before a general send route; see [SMS compliance and current limits](SMS-COMPLIANCE.md).
+The restricted M1 pilot classifies STOP-family keywords and likely free-text withdrawal requests on the phone. It stores a local recipient block immediately, even if an upload window is unavailable, and uploads only a signed metadata action when the reply matches a positively sent attempt and the selected SIM. The writer persists an account-scoped E.164 suppression and rejects both new acceptance and exact acceptance retries under the same account lock. An exact START or UNSTOP clears an existing server suppression only after authenticated, deduplicated inbound processing in the same outbound-attempt reply window. The phone retains its local STOP block after an affirmative writer acknowledgement because the current local record has no verified line and enrollment generation to compare with START. Neither action uploads SMS plaintext or sends an automatic confirmation. Authenticated owners can view active ambiguous SMS holds in a no-store review queue showing recipient metadata and event times. They can record an off-channel withdrawal as a separate account-scoped hold and one immutable decision per review item. Both writes need the owner session, exact Origin and CSRF, take the admission account lock, and add an append-only audit row. Acceptance rejects a held recipient, including an exact retry. Only a signed START from that recipient observed more than five minutes (the accepted clock skew) after the hold releases it, and no decision lifts a signed suppression; see [SMS compliance and current limits](SMS-COMPLIANCE.md).
 
 ## Recovery, rotation and revocation
 
@@ -102,7 +102,11 @@ fleet-wide database connection pool. A canceled handler can leave a PostgreSQL
 query running until its connection driver receives the result, so this is not a
 hard bound on outstanding database queries or connections. Each process reuses
 PostgreSQL sockets within fixed per-class budgets (16 request, 16 device,
-4 worker); idle sockets count against those budgets. A released socket is reset
+4 worker); idle database sockets count against those budgets. Device clients
+are checked out per operation and released before peer reads/writes, including
+the pre-authentication proof wait. Up to 32 established device streams share the
+16-client device reserve; request and device checkouts wait at most two seconds
+for pool admission, while workers fail fast. A released socket is reset
 with `DISCARD ALL` before reuse and is closed instead when the reset does not
 finish within two seconds (for example a canceled query still running or an
 open transaction), after 60 idle seconds, or at 30 minutes old. A five-second

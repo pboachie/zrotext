@@ -67,6 +67,8 @@ jobs:
         run: python3 -m unittest discover -s protocol/v1/tests -p 'test_ztse_draft_vectors.py'
       - name: Sealed draft field-layout tests
         run: python3 -m unittest discover -s protocol/v1/tests -p 'test_zt_sealed_draft_shape.py'
+      - name: Sealed API v1 contract tests
+        run: python3 -m unittest discover -s protocol/v1/tests -p 'test_sealed_api_v1.py'
       - name: JavaScript syntax
         run: node --check web/owner/devices.js
       - name: Commit sign-off
@@ -128,7 +130,7 @@ jobs:
         run: |
           python3 -m venv /tmp/zrotext-postgres-tls-venv
           /tmp/zrotext-postgres-tls-venv/bin/pip install --disable-pip-version-check cryptography==46.0.4
-          /tmp/zrotext-postgres-tls-venv/bin/python scripts/test_postgres_tls.py
+          /tmp/zrotext-postgres-tls-venv/bin/python scripts/tests/test_postgres_tls.py
       - name: Simulator timeline
         run: cargo run --locked -p zrotext-device-sim
   android:

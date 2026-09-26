@@ -10,6 +10,14 @@ The authenticated socket determines the device identity for `radio_event`; that 
 
 [sealed-inbound-prerequisites.md](sealed-inbound-prerequisites.md) records the separate event identity and default-closed line-binding storage foundation for future sealed inbound content. It exposes no sealed-content route.
 
+[sealed-api-v1.md](sealed-api-v1.md) and its machine-readable companion
+[openapi/sealed-v1.json](openapi/sealed-v1.json) propose the sealed message-plane
+HTTP contract for outbound submission and inbound upload, derived from the ZT-009
+decisions recorded 2026-09-26. The proposal is contract-first: no sealed route
+exists, the sealed runtime stays disabled, and the synthetic-alpha and general
+send planes remain separate. Sealed device, webhook and usage endpoints are
+deferred to later slices.
+
 [line-activation-contract.md](line-activation-contract.md) defines an internal, challenge-bound, dual-signature generation transition. It is not wired to a transport or a trusted owner-key bootstrap.
 
 [vectors/ztse-draft-01.json](vectors/ztse-draft-01.json) contains public synthetic

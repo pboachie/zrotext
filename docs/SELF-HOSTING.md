@@ -20,7 +20,7 @@ The smoke stops its API before inserting synthetic tenants, devices, queued and 
 
 ## Running your own deployment
 
-Use separate secrets and a private database network, terminate HTTPS and WSS at a trusted edge, keep migrations serialized, and retain recoverable database backups. The server, Android gateway, and device protocol are evolving; test the exact release and phone model you intend to run. The [architecture](ARCHITECTURE.md) describes the database and device ownership model, while [MULTI-LOCATION.md](MULTI-LOCATION.md) describes how a second site can join without creating an independent writer.
+Use separate secrets and a private database network, terminate HTTPS and WSS at a trusted edge, keep migrations serialized, and retain recoverable database backups. The server, Android gateway, and device protocol are evolving; test the exact release and phone model you intend to run. The [architecture](ARCHITECTURE.md) describes the database and device ownership model, while [MULTI-LOCATION.md](MULTI-LOCATION.md) describes how a second site can join without creating an independent writer; the [promotion runbook](WRITER-PROMOTION.md) covers the fenced manual move of the writer.
 
 ### Public HTTPS and device WSS
 
@@ -80,7 +80,11 @@ own database, checks HTTPS sign-in,
 secure session cookies and exact-Origin handling, then performs a WSS upgrade
 and removes the test containers and volumes. It does not send mail or SMS.
 
-Production packaging and upgrade instructions will expand as release artifacts become available. For now, use this stack as a development environment and check the repository's releases for supported versions.
+Production packaging instructions will expand as release artifacts become
+available. For now, use this stack as a development environment, check the
+repository's releases for supported versions, and follow the
+[Compose upgrade guide](../deploy/compose/UPGRADE.md) when moving an existing
+deployment to a newer source snapshot or release image.
 
 ### PostgreSQL transport TLS
 
@@ -277,9 +281,15 @@ application tables.
 ### Runtime database and device capacity
 
 Each server process reserves separate PostgreSQL connection budgets: 16 ordinary
-requests, 16 device sessions, and 4 background jobs. A device fleet cannot consume
-the request/job reserves. Requests wait at most two seconds for admission;
-device/job admission fails immediately when its reserve is full. Count every hub
+requests, 16 device database operations, and 4 background jobs. A device fleet
+cannot consume the request/job reserves. Requests and device operations wait at
+most two seconds for pool admission; background jobs fail immediately when their
+reserve is full. Device sockets release their database clients between handshake
+steps and after each database operation, before waiting for or writing frames.
+The separate stream limits remain 32 authenticated sessions and 32 handshakes
+per process; idle phones and pending proofs do not reserve database clients.
+Database saturation can still close a stream with retry-later code 1013, so
+these socket limits are admission ceilings, not a throughput guarantee. Count every hub
 and other database client when sizing PostgreSQL: two hubs can use 72 runtime
 connections in total. These conservative limits are fixed in `runtime_db.rs`;
 adding replicas requires a database capacity review. Migration and operator CLI
@@ -356,7 +366,11 @@ and leased webhook deliveries also remain until terminal. The M1 and sealed
 inbound event rows keep their IDs, device sequence fences, and digests after
 content redaction, so replay cannot recreate a purged body. Message IDs, state,
 attempts, digests, and usage records remain; this worker is not an account-erasure
-API. Backups, WAL, replicas, and PostgreSQL dead tuples need their own lifecycle
+API. Restricted-pilot `recipient_suppressions` rows keep their E.164 recipient,
+whether active or cleared by START, so an opt-out outlives message content
+redaction; the worker never prunes them. Owner off-channel holds, review decisions
+and their append-only audit (`owner_recipient_holds`, `owner_opt_out_review_decisions`,
+`owner_opt_out_audit`) are kept the same way; they hold codes and IDs, never notes or SMS content. Backups, WAL, replicas, and PostgreSQL dead tuples need their own lifecycle
 policy. A database row update or deletion does not immediately erase old pages.
 
 Message events are deleted only after their parent message content has been
@@ -369,9 +383,13 @@ After content redaction, late radio receipts are rejected as stale even when
 their event ID used to exist in the audit timeline. Device clients must
 quarantine that terminal rejection rather than reconnecting with the same
 frame. The [stale-event protocol fix](https://github.com/pboachie/zrotext/issues/147)
-is a rollout dependency for this retention worker. Inbound source admission
-uses the attempt's durable `submitted` status after sent-callback audit events
-have been pruned; new inbound events still have a seven-day upload-age limit.
+is a rollout dependency for this retention worker. An M1 inbound event whose
+source message content has been redacted is rejected as an unknown source, so
+no reply content or suppression is recorded for it; an exact replay of an
+event stored before redaction is still acknowledged. New inbound events have a
+seven-day upload-age limit and the phone's reply window is 24 hours, so a
+content window of 8 days or less can reject a delayed STOP upload. The phone's
+local block still applies.
 
 When changing these settings across multiple hubs, deploy the same values to
 every hub. A shorter value can make data eligible immediately, while a longer
