@@ -19,6 +19,7 @@ pub mod runtime_db;
 pub mod sealed_envelope;
 pub mod sealed_inbound;
 pub mod sealed_manifest;
+pub mod sealed_manifest_store;
 pub mod webhook_egress;
 pub mod webhook_worker;
 

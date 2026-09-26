@@ -33,7 +33,7 @@ macro_rules! migration {
 }
 
 // Complete reviewed schema, embedded at build time.
-const TEST_MIGRATIONS: [(&str, &str); 39] = [
+const TEST_MIGRATIONS: [(&str, &str); 40] = [
     migration!("001_foundation.sql"),
     migration!("002_auth.sql"),
     migration!("003_delivery.sql"),
@@ -73,6 +73,7 @@ const TEST_MIGRATIONS: [(&str, &str); 39] = [
     migration!("037_sms_line_activation_exchange.sql"),
     migration!("038_owner_opt_out_hold_guards.sql"),
     migration!("039_inbound_device_clock_offset.sql"),
+    migration!("042_sealed_manifest_authority.sql"),
 ];
 
 #[test]
