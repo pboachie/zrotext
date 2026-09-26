@@ -112,6 +112,17 @@ async fn owner_queue_counts_are_bounded_tenant_scoped_and_preserve_writer_states
     db.batch_execute("ANALYZE messages; ANALYZE devices")
         .await
         .unwrap();
+    // The sparse partial-index plan may filter other active entries, but its
+    // entire index contains only six. Keep that fixture-specific budget honest.
+    let active: i64 = db
+        .query_one(
+            "SELECT count(*) FROM messages WHERE state IN ('claimed','submitting','submitted')",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(active, 6);
     let plan = explain_queue(&db, *account).await;
     validate_sparse_history_plan(&plan).unwrap_or_else(|reason| panic!("{reason}: {plan}"));
     // The two categories are capped independently; final/uncertain states do

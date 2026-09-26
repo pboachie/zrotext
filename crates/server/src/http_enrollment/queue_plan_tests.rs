@@ -34,49 +34,104 @@ pub(super) async fn explain_queue(db: &Client, account: Uuid) -> Value {
     .0
 }
 
-// With only a few active rows PostgreSQL may use a small bitmap intersection
-// and sort. Preserve the sparse-history assertion without prescribing that
-// harmless shape; the populated/capped case below requires direct index limits.
+// The sparse fixture has two tenants with three entries each in the in-flight
+// partial index. Filtering those six active entries is harmless; filtering the
+// 200,000 delivered entries is not. Also bound bitmap construction, not just the
+// resulting heap rows. The populated/capped validator below remains stricter.
 pub(super) fn validate_sparse_history_plan(plan: &Value) -> Result<(), &'static str> {
-    fn visit(node: &Value, rows: &mut Vec<f64>, indexed: &mut bool) -> Result<(), &'static str> {
-        if node["Index Name"] == "messages_device_state" {
-            *indexed = true;
+    fn counter(node: &Value, field: &str, optional: bool) -> Result<f64, &'static str> {
+        let value = match node.get(field) {
+            None if optional => return Ok(0.0), // PostgreSQL omits unused filter counters.
+            value => value
+                .and_then(Value::as_f64)
+                .ok_or("missing or invalid sparse counter")?,
+        };
+        if !value.is_finite() || value < 0.0 || value.fract() != 0.0 {
+            return Err("sparse work counter is not a finite nonnegative integer");
         }
-        if node["Relation Name"] == "messages" {
-            if node["Node Type"] == "Seq Scan" {
-                return Err("sparse queue scanned message history");
+        Ok(value)
+    }
+    fn bounded_inputs(
+        node: &Value,
+        total: &mut f64,
+        device_index: &mut bool,
+    ) -> Result<(), &'static str> {
+        let kind = node["Node Type"]
+            .as_str()
+            .ok_or("missing sparse node type")?;
+        if counter(node, "Actual Loops", false)? != 1.0 {
+            return Err("sparse probe must execute once");
+        }
+        if kind == "Seq Scan" {
+            return Err("sparse queue scanned message history");
+        }
+        if matches!(
+            kind,
+            "Index Scan" | "Index Only Scan" | "Bitmap Heap Scan" | "Bitmap Index Scan"
+        ) {
+            let work = counter(node, "Actual Rows", false)?
+                + counter(node, "Rows Removed by Filter", true)?
+                + counter(node, "Rows Removed by Index Recheck", true)?;
+            if work > 6.0 || counter(node, "Lossy Heap Blocks", true)? != 0.0 {
+                return Err("sparse index input exceeds the six active fixture rows");
             }
-            if node
-                .get("Rows Removed by Filter")
-                .is_some_and(|value| value.as_f64() != Some(0.0))
-                || node
-                    .get("Rows Removed by Index Recheck")
-                    .is_some_and(|value| value.as_f64() != Some(0.0))
-            {
-                return Err("sparse queue filtered unrelated message history");
+            *total += work;
+            // A bitmap intersection may inspect two six-entry inputs plus six
+            // heap entries. Bound their combined work as well as every input.
+            if *total > 18.0 {
+                return Err("sparse probe has excessive combined index work");
             }
-            rows.push(
-                node["Actual Rows"]
-                    .as_f64()
-                    .ok_or("missing sparse scan count")?,
-            );
+        } else if matches!(kind, "BitmapAnd" | "BitmapOr") {
+            // PostgreSQL reports zero output rows for bitmap combiners. Their
+            // leaf inputs above carry the actual work, but the counter must
+            // still be a valid number rather than malformed/missing data.
+            counter(node, "Actual Rows", false)?;
+        } else {
+            return Err("unsupported node in sparse message-index subtree");
+        }
+        if node["Index Name"] == "messages_device_state" {
+            *device_index = true;
         }
         if let Some(children) = node.get("Plans") {
             for child in children.as_array().ok_or("invalid sparse plan children")? {
-                visit(child, rows, indexed)?;
+                bounded_inputs(child, total, device_index)?;
             }
         }
         Ok(())
     }
-    let root = plan
-        .get(0)
-        .and_then(|value| value.get("Plan"))
-        .ok_or("missing sparse root")?;
+    fn visit(node: &Value, rows: &mut Vec<f64>) -> Result<(), &'static str> {
+        if node["Relation Name"] == "messages" {
+            let actual = counter(node, "Actual Rows", false)?;
+            let mut device_index = false;
+            let mut work = 0.0;
+            bounded_inputs(node, &mut work, &mut device_index)?;
+            match node["Node Type"].as_str() {
+                Some("Index Scan" | "Index Only Scan")
+                    if node["Index Name"] == "messages_device_state"
+                        || (actual == 2.0
+                            && node["Index Name"] == "messages_in_flight_updated") => {}
+                Some("Bitmap Heap Scan") if device_index => {}
+                _ => return Err("sparse probe has no supported bounded index path"),
+            }
+            rows.push(actual);
+            return Ok(()); // Its entire message-index subtree was accounted above.
+        }
+        if let Some(children) = node.get("Plans") {
+            for child in children.as_array().ok_or("invalid sparse plan children")? {
+                visit(child, rows)?;
+            }
+        }
+        Ok(())
+    }
+    let roots = plan.as_array().ok_or("invalid sparse EXPLAIN document")?;
+    if roots.len() != 1 {
+        return Err("expected exactly one sparse EXPLAIN plan");
+    }
+    let root = roots[0].get("Plan").ok_or("missing sparse root")?;
     let mut rows = Vec::new();
-    let mut indexed = false;
-    visit(root, &mut rows, &mut indexed)?;
+    visit(root, &mut rows)?;
     rows.sort_by(f64::total_cmp);
-    if !indexed || rows != [2.0, 3.0] {
+    if rows != [2.0, 3.0] {
         return Err("sparse queue must read only its two active-state sets");
     }
     Ok(())
@@ -194,12 +249,96 @@ fn sparse_history_allows_small_bitmap_probes_but_rejects_history_filtering() {
     let scan = &mut plan[0]["Plan"]["Plans"][1]["Plans"][0];
     scan["Node Type"] = json!("Bitmap Heap Scan");
     scan.as_object_mut().unwrap().remove("Index Name");
-    scan["Plans"] =
-        json!([{"Node Type":"Bitmap Index Scan", "Index Name":"messages_device_state"}]);
+    scan["Plans"] = json!([{"Node Type":"Bitmap Index Scan", "Index Name":"messages_device_state",
+        "Actual Rows":2, "Actual Loops":1}]);
     assert_eq!(validate_sparse_history_plan(&plan), Ok(()));
     plan[0]["Plan"]["Plans"][1]["Plans"][0]["Rows Removed by Filter"] = json!(200000);
     assert!(validate_sparse_history_plan(&plan).is_err());
     plan[0]["Plan"]["Plans"][1]["Plans"][0]["Rows Removed by Filter"] = json!(0);
     plan[0]["Plan"]["Plans"][1]["Plans"][0]["Node Type"] = json!("Seq Scan");
     assert!(validate_sparse_history_plan(&plan).is_err());
+}
+
+// Synthetic projection of PostgreSQL's sparse partial-index plan, with no
+// tenant identifiers or captured operational plan data in the fixture.
+fn sparse_partial_plan() -> Value {
+    let pending = json!({"Node Type":"Index Scan", "Relation Name":"messages",
+        "Index Name":"messages_device_state", "Actual Rows":3.00,"Actual Loops":1,
+        "Rows Removed by Filter":0,"Rows Removed by Index Recheck":0});
+    let in_flight = json!({"Node Type":"Index Scan", "Relation Name":"messages",
+        "Index Name":"messages_in_flight_updated", "Actual Rows":2.00,"Actual Loops":1,
+        "Rows Removed by Filter":4});
+    json!([{"Plan":{"Node Type":"CTE Scan","Plans":[
+        {"Node Type":"Limit","Actual Rows":3,"Actual Loops":1,"Plans":[pending]},
+        {"Node Type":"Limit","Actual Rows":2,"Actual Loops":1,"Plans":[
+            {"Node Type":"Sort","Actual Rows":2,"Actual Loops":1,"Plans":[in_flight]}]}
+    ]}}])
+}
+
+#[test]
+fn sparse_partial_index_can_filter_only_the_bounded_active_fixture() {
+    assert_eq!(validate_sparse_history_plan(&sparse_partial_plan()), Ok(()));
+    for (field, value) in [
+        ("Rows Removed by Filter", json!(5)),
+        ("Rows Removed by Filter", json!(200000)),
+        ("Rows Removed by Index Recheck", json!(1)),
+        ("Actual Loops", json!(2)),
+        ("Actual Rows", json!(-1)),
+        ("Actual Rows", json!(2.5)),
+        ("Actual Rows", json!("NaN")),
+        ("Rows Removed by Filter", json!(null)),
+        ("Rows Removed by Filter", json!(-1)),
+        ("Index Name", json!("messages_pkey")),
+        ("Node Type", json!("Seq Scan")),
+    ] {
+        let mut plan = sparse_partial_plan();
+        plan[0]["Plan"]["Plans"][1]["Plans"][0]["Plans"][0][field] = value;
+        assert!(validate_sparse_history_plan(&plan).is_err(), "{field}");
+    }
+    for field in ["Actual Rows", "Actual Loops"] {
+        let mut plan = sparse_partial_plan();
+        plan[0]["Plan"]["Plans"][1]["Plans"][0]["Plans"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        assert!(validate_sparse_history_plan(&plan).is_err(), "{field}");
+    }
+    // The sparse exception never applies to the populated capped validator.
+    assert!(validate_queue_plan(&sparse_partial_plan(), &[2.0, 3.0]).is_err());
+}
+
+#[test]
+fn sparse_bitmap_work_includes_every_input_not_only_heap_output() {
+    let mut plan = sparse_partial_plan();
+    let heap = &mut plan[0]["Plan"]["Plans"][1]["Plans"][0]["Plans"][0];
+    heap["Node Type"] = json!("Bitmap Heap Scan");
+    heap["Rows Removed by Filter"] = json!(0);
+    heap.as_object_mut().unwrap().remove("Index Name");
+    heap["Plans"] = json!([{"Node Type":"BitmapAnd", "Actual Rows":0,"Actual Loops":1,"Plans":[
+        {"Node Type":"Bitmap Index Scan","Index Name":"messages_device_state","Actual Rows":6,"Actual Loops":1},
+        {"Node Type":"Bitmap Index Scan","Index Name":"messages_account_created","Actual Rows":6,"Actual Loops":1}
+    ]}]);
+    assert_eq!(validate_sparse_history_plan(&plan), Ok(()));
+    for (field, value) in [
+        ("Actual Rows", json!(200000)),
+        ("Actual Loops", json!(2)),
+        ("Actual Rows", json!(-1)),
+        ("Actual Rows", json!("Infinity")),
+    ] {
+        let mut bad = plan.clone();
+        bad[0]["Plan"]["Plans"][1]["Plans"][0]["Plans"][0]["Plans"][0]["Plans"][1][field] = value;
+        assert!(validate_sparse_history_plan(&bad).is_err(), "{field}");
+    }
+    let mut missing = plan.clone();
+    missing[0]["Plan"]["Plans"][1]["Plans"][0]["Plans"][0]["Plans"][0]["Plans"][1]
+        .as_object_mut()
+        .unwrap()
+        .remove("Actual Rows");
+    assert!(validate_sparse_history_plan(&missing).is_err());
+    let mut excessive = plan.clone();
+    let inputs = excessive[0]["Plan"]["Plans"][1]["Plans"][0]["Plans"][0]["Plans"][0]["Plans"]
+        .as_array_mut()
+        .unwrap();
+    inputs.push(inputs[0].clone());
+    assert!(validate_sparse_history_plan(&excessive).is_err());
 }
