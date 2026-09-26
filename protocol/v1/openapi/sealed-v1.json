@@ -726,7 +726,7 @@
             }
           },
           "400": {
-            "description": "invalid_request: the JSON body is malformed or has unknown members. invalid_webhook_endpoint: the callback URL fails the strict HTTPS egress validator.",
+            "description": "invalid_request: the JSON body is malformed, not sent as application/json, has unknown or missing members, or has a member of the wrong type. invalid_webhook_endpoint: the callback URL fails the strict HTTPS egress validator.",
             "headers": {
               "Cache-Control": {
                 "$ref": "#/components/headers/NoStore"

@@ -7,6 +7,7 @@ use super::{
     AuthHttpError, AuthHttpState, CSRF_COOKIE, CSRF_HEADER, connect, cookie, map_auth,
     require_owner,
 };
+use crate::api_json::ApiJson;
 use crate::{
     auth::abuse_limits::{self, Limit},
     sealed_inbound::line_activation::exchange::{self, ExchangeError},
@@ -144,7 +145,7 @@ pub(super) async fn open(
     State(state): State<Arc<AuthHttpState>>,
     Path(line_id): Path<Uuid>,
     headers: HeaderMap,
-    Json(body): Json<OpenBody>,
+    ApiJson(body): ApiJson<OpenBody>,
 ) -> Result<(StatusCode, Json<OpenResponse>), AuthHttpError> {
     require_enabled(&state)?;
     require_ids(&[line_id, body.device_id])?;
@@ -301,7 +302,7 @@ pub(super) async fn approve(
     State(state): State<Arc<AuthHttpState>>,
     Path((line_id, challenge_id)): Path<(Uuid, Uuid)>,
     headers: HeaderMap,
-    Json(body): Json<ApproveBody>,
+    ApiJson(body): ApiJson<ApproveBody>,
 ) -> Result<StatusCode, AuthHttpError> {
     require_enabled(&state)?;
     require_ids(&[line_id, challenge_id])?;
