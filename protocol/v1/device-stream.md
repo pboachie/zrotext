@@ -127,3 +127,9 @@ or immediately in a newly authenticated session. Only a matching
 marks the row acknowledged locally. Observations older than six days remain
 local because the hub rejects them after seven days. Android never interprets
 this acknowledgment as authorization to send an SMS.
+
+## Optional reported preconditions
+
+New peers may negotiate [privacy-minimal Android preconditions](device-preconditions.md)
+at WebSocket upgrade. The original handshake and heartbeat frames stay unchanged;
+no report proves radio readiness or authorizes a send.

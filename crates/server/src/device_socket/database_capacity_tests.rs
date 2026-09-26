@@ -3,16 +3,16 @@
 
 use super::*;
 
-struct Fixture {
+pub(super) struct Fixture {
     admin: Client,
-    db: Client,
+    pub(super) db: Client,
     schema: String,
-    url: String,
-    account_id: Uuid,
+    pub(super) url: String,
+    pub(super) account_id: Uuid,
 }
 
 impl Fixture {
-    async fn new() -> Self {
+    pub(super) async fn new() -> Self {
         let url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
             .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
         let (admin, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
@@ -52,7 +52,7 @@ impl Fixture {
         }
     }
 
-    async fn device(&self) -> (Uuid, SigningKey) {
+    pub(super) async fn device(&self) -> (Uuid, SigningKey) {
         let device_id = Uuid::new_v4();
         let signing = SigningKey::generate_from_rng(&mut rng());
         let public_key = signing.verifying_key().to_sec1_point(false);
@@ -71,7 +71,7 @@ impl Fixture {
         (device_id, signing)
     }
 
-    async fn finish(self) {
+    pub(super) async fn finish(self) {
         self.admin
             .batch_execute(&format!("DROP SCHEMA {} CASCADE", self.schema))
             .await
@@ -91,7 +91,7 @@ async fn challenge(address: SocketAddr, device_id: Uuid) -> (TestSocket, Value) 
     (socket, frame)
 }
 
-async fn prove(socket: &mut TestSocket, frame: Value, signing: &SigningKey) -> i64 {
+pub(super) async fn prove(socket: &mut TestSocket, frame: Value, signing: &SigningKey) -> i64 {
     let challenge = DeviceChallenge {
         id: Uuid::parse_str(frame["challenge_id"].as_str().unwrap()).unwrap(),
         account_id: Uuid::parse_str(frame["account_id"].as_str().unwrap()).unwrap(),
