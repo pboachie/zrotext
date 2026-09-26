@@ -39,6 +39,8 @@ it does not validate the Android gateway's segment cap.
 The static page contains no account data and remains readable without a session;
 its editor starts disabled. The existing owner-session endpoint verifies access
 before enabling inputs, before each preview and every 15 seconds while visible.
+Routine checks keep a verified visible editor usable without interrupting typing;
+initial access and return from a hidden tab stay locked pending verification.
 The page also checks the session's account, owner and session identity, and clears
 old text if that identity changes. A network/authentication failure locks the
 editor and clears its contents. Revocation elsewhere is detected on the next

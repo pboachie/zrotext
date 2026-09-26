@@ -18,7 +18,18 @@ async function page({ signedIn = true } = {}) {
   let sequence = 0, session = identity(), nextResponse = null;
   function element(id) {
     if (!elements.has(id)) elements.set(id, {
-      value: "", textContent: "", disabled: true, listeners: {},
+      value: "", textContent: "", isDisabled: true, listeners: {},
+      selectionStart: 0, selectionEnd: 0,
+      get disabled() { return this.isDisabled; },
+      set disabled(value) {
+        this.isDisabled = value;
+        // Model the browser dropping focus when the containing fieldset disables.
+        if (id === "editor" && value &&
+            [element("template"), element("substitutions")].includes(document.activeElement)) {
+          document.activeElement = null;
+        }
+      },
+      focus() { document.activeElement = this; },
       addEventListener(event, listener) { this.listeners[event] = listener; },
       set innerHTML(_) { throw new Error("HTML rendering is forbidden"); },
     });
@@ -211,5 +222,29 @@ test("owner changes and revocation while hidden clear drafts before revealing th
     assert.equal(p.element("template").value, "");
     assert.equal(p.element("output").textContent, "");
     assert.equal(p.element("editor").disabled, action === "revoke");
+  }
+});
+
+
+test("periodic revalidation preserves focused editing and selection until auth loss", async () => {
+  for (const id of ["template", "substitutions"]) {
+    const p = await page();
+    p.enter(id, "draft");
+    const input = p.element(id);
+    input.focus(); input.selectionStart = 2; input.selectionEnd = 4;
+    const check = deferred(); p.reply(check.promise);
+    const pending = [...p.intervals.values()][0]();
+    assert.equal(p.element("editor").disabled, false);
+    assert.equal(p.document.activeElement, input);
+    assert.equal(input.selectionStart, 2); assert.equal(input.selectionEnd, 4);
+    p.enter(id, "draft continued while checking");
+    check.resolve(response(p.session())); await pending;
+    assert.equal(p.document.activeElement, input);
+    assert.equal(input.value, "draft continued while checking");
+    assert.equal(input.selectionStart, 2); assert.equal(input.selectionEnd, 4);
+    p.reply(response({}, 401)); await [...p.intervals.values()][0]();
+    assert.equal(p.document.activeElement, null);
+    assert.equal(input.value, "");
+    assert.equal(p.element("editor").disabled, true);
   }
 });

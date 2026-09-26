@@ -40,7 +40,11 @@
     pending = controller;
     const timeout = setTimeout(() => controller.abort(), 15000);
     const proof = cookie();
-    byId("editor").disabled = true;
+    // Keep a verified, visible editor usable during routine revalidation.
+    // Initial access and visibility resume remain locked until verification.
+    if (!owner || ownerCookie !== proof || byId("editor").hidden) {
+      byId("editor").disabled = true;
+    }
     try {
       if (!proof) throw new Error("no session");
       const response = await fetch("/v1/auth/session", {
