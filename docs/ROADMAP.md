@@ -364,6 +364,8 @@ Keep message content out of reach of the server, and give owners control of thei
 <details>
 <summary><b>Data export and account deletion</b> · build</summary>
 
+- [x] Owner takeout of messages with events, devices and the account profile (`GET /v1/owner/export`, no-store)
+- [x] Cursor-paginated full-history takeout via `?before=` with tenant-safe 404s
 - [x] Owner account erasure in one password-proven transaction, covering metering and billing rows and reporting retained sets (`POST /v1/owner/erasure`, fail-closed on schema-protected consent rows)
 - [ ] Extend export and erasure to future contacts, templates, workflow state and assistant access records
 
