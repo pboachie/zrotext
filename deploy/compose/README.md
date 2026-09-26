@@ -140,9 +140,13 @@ the API, migrator, and key rewrap tool must use `sslmode=require`. The applicati
 verifies the server certificate and URL hostname using system trust roots, or a
 private CA PEM bundle supplied as `DATABASE_TLS_CA_PEM_B64`. Provide that variable
 to each relevant container when using a private CA. A URL with `sslmode=prefer` or `disable` for
-any host other than loopback, a Unix socket, or Compose `db` fails unless
+any host other than loopback or a Unix socket fails unless
 `DATABASE_ALLOW_PLAINTEXT=true` is explicitly set; that override logs a warning
-and permits unencrypted database traffic. See the
+and permits unencrypted database traffic. The service name `db` gets no
+exemption, because it is ordinary DNS. Since the bundled `db` has no TLS,
+`compose.yaml` sets `DATABASE_ALLOW_PLAINTEXT` to `true` for `migrate`, `app`,
+and `app_b` unless `.env` overrides it, and `.env.example` states the same opt-in.
+Expect the plaintext warning in their logs. See the
 [self-hosting guide](../../docs/SELF-HOSTING.md#postgresql-transport-tls).
 
 The application image also includes `zrotext-webhook-kek-rewrap` for a staged
@@ -311,8 +315,10 @@ about one deployment; nothing here is enforced by the repository.
   API; `--no-owner --no-acl` backups omit the runtime grants.
 - [ ] Use `sslmode=require` (and `DATABASE_TLS_CA_PEM_B64` for a private CA) in
   every database URL that leaves the local Compose network. The local `db` does
-  not enable PostgreSQL transport TLS; it stays on the private network. Treat
-  `DATABASE_ALLOW_PLAINTEXT=true` as a warned exception, never a default.
+  not enable PostgreSQL transport TLS; it stays on the private network, and its
+  `DATABASE_ALLOW_PLAINTEXT=true` opt-in is logged as a warning. Keep `db` on a
+  single host or an encrypted network; do not use that opt-in for any other
+  database.
 - [ ] Accept the stated limits honestly: the runtime role narrows a compromised
   API but does not isolate tenants within the shared schema, and the migration
   owner stays an administrative credential restricted to operator jobs.

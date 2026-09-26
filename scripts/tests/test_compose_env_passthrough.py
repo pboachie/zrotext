@@ -25,34 +25,52 @@ PASSTHROUGH = (
 )
 
 
+def compose_config(settings):
+    """Render the Compose config with only OS variables plus `settings`."""
+    # Give Docker only the operating-system variables it needs to find
+    # the CLI/context. Never inherit this machine's deployment settings.
+    system_keys = ("PATH", "SYSTEMROOT", "COMSPEC", "USERPROFILE", "APPDATA",
+                   "LOCALAPPDATA", "HOME", "HOMEDRIVE", "HOMEPATH",
+                   "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432", "DOCKER_CONFIG")
+    environment = {key: os.environ[key] for key in system_keys if key in os.environ}
+    database_secret = secrets.token_hex(24)
+    environment.update({
+        "POSTGRES_PASSWORD": database_secret,
+        "RUNTIME_DATABASE_PASSWORD": secrets.token_hex(32),
+        "DATABASE_URL": f"postgres://zrotext:{database_secret}@db:5432/zrotext",
+    })
+    environment.update(settings)
+    with tempfile.TemporaryDirectory(prefix="zt-compose-config-") as directory:
+        empty_env = Path(directory) / "empty.env"
+        empty_env.write_text("", encoding="utf-8")
+        result = subprocess.run(
+            ["docker", "compose", "--profile", "two-hub", "--env-file",
+             str(empty_env), "-f", str(COMPOSE), "config", "--format", "json"],
+            env=environment, capture_output=True, text=True, timeout=30,
+            check=False,
+        )
+    if result.returncode:
+        raise AssertionError("Docker Compose config failed")
+    return json.loads(result.stdout)
+
+
 class ComposeEnvironmentTest(unittest.TestCase):
+    def test_bundled_database_plaintext_is_an_explicit_overridable_opt_in(self):
+        # `db` is not exempt from the transport policy, so the bundled stack
+        # must opt in itself; an operator's explicit value still wins.
+        services = ("migrate", "app", "app_b")
+        config = compose_config({})
+        for service in services:
+            environment = config["services"][service]["environment"]
+            self.assertEqual(environment["DATABASE_ALLOW_PLAINTEXT"], "true", service)
+        config = compose_config({"DATABASE_ALLOW_PLAINTEXT": "false"})
+        for service in services:
+            environment = config["services"][service]["environment"]
+            self.assertEqual(environment["DATABASE_ALLOW_PLAINTEXT"], "false", service)
+
     def test_feature_settings_reach_both_apps(self):
-        # Give Docker only the operating-system variables it needs to find
-        # the CLI/context. Never inherit this machine's deployment settings.
-        system_keys = ("PATH", "SYSTEMROOT", "COMSPEC", "USERPROFILE", "APPDATA",
-                       "LOCALAPPDATA", "HOME", "HOMEDRIVE", "HOMEPATH",
-                       "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432", "DOCKER_CONFIG")
-        environment = {key: os.environ[key] for key in system_keys if key in os.environ}
         probe = {key: f"probe_{key}" for key in PASSTHROUGH}
-        environment.update(probe)
-        database_secret = secrets.token_hex(24)
-        environment.update({
-            "POSTGRES_PASSWORD": database_secret,
-            "RUNTIME_DATABASE_PASSWORD": secrets.token_hex(32),
-            "DATABASE_URL": f"postgres://zrotext:{database_secret}@db:5432/zrotext",
-            "DISPATCH_ENABLED": "true",
-        })
-        with tempfile.TemporaryDirectory(prefix="zt-compose-config-") as directory:
-            empty_env = Path(directory) / "empty.env"
-            empty_env.write_text("", encoding="utf-8")
-            result = subprocess.run(
-                ["docker", "compose", "--profile", "two-hub", "--env-file",
-                 str(empty_env), "-f", str(COMPOSE), "config", "--format", "json"],
-                env=environment, capture_output=True, text=True, timeout=30,
-                check=False,
-            )
-        self.assertEqual(result.returncode, 0, "Docker Compose config failed")
-        config = json.loads(result.stdout)
+        config = compose_config({**probe, "DISPATCH_ENABLED": "true"})
         for service in ("app", "app_b"):
             app = config["services"][service]["environment"]
             for key, value in probe.items():

@@ -92,11 +92,14 @@ fn may_use_plaintext(config: &Config, allow_plaintext: bool) -> Result<bool, Con
     Ok(may_use_plaintext)
 }
 
+/// Only destinations that cannot leave this host count as local. A service
+/// name such as Compose's `db` is ordinary DNS and may resolve to another node,
+/// so plaintext to it needs the explicit, warned `DATABASE_ALLOW_PLAINTEXT`.
 fn local_destination(config: &Config) -> bool {
     config.get_hosts().iter().all(|host| match host {
         #[cfg(unix)]
         Host::Unix(_) => true,
-        Host::Tcp(name) if matches!(name.as_str(), "localhost" | "db") => true,
+        Host::Tcp(name) if name == "localhost" => true,
         Host::Tcp(name) => name.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback()),
     })
 }
@@ -165,12 +168,27 @@ mod tests {
     }
 
     #[test]
-    fn local_compose_and_loopback_allow_existing_plaintext_mode() {
-        for host in ["db", "localhost", "127.0.0.1", "[::1]"] {
+    fn loopback_allows_existing_plaintext_mode() {
+        for host in ["localhost", "127.0.0.1", "[::1]"] {
             let url = format!("postgres://u@{host}/zrotext?sslmode=disable");
             assert!(policy(&url, false).unwrap());
         }
         assert!(policy("postgres://u@10.0.0.2/zrotext?sslmode=prefer", false).is_err());
+    }
+
+    #[test]
+    fn service_names_need_explicit_plaintext_opt_in_and_warn() {
+        for url in [
+            "postgres://u@db/zrotext?sslmode=disable",
+            "postgres://u@db:5432/zrotext",
+            "postgres://u@localhost,db/zrotext?sslmode=prefer",
+        ] {
+            assert!(policy(url, false).is_err(), "{url}");
+            assert!(policy(url, true).unwrap(), "{url}");
+            // Opted-in plaintext to a name that may resolve remotely warns.
+            assert!(!local_destination(&url.parse().unwrap()), "{url}");
+        }
+        assert!(!policy("postgres://u@db/zrotext?sslmode=require", false).unwrap());
     }
 
     #[tokio::test]
