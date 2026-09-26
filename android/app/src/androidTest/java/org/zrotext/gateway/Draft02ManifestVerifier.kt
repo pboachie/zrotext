@@ -1,17 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 package org.zrotext.gateway
 
-import java.math.BigInteger
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.security.MessageDigest
-import java.security.Signature
 
 /** Test-only exact-byte Manifest02 verifier. No production caller or persistent trust store. */
 internal object Draft02ManifestVerifier {
     private const val DAY_MS = 86_400_000L
     private const val SKEW_MS = 300_000L
-    private val order = BigInteger("FFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551", 16)
     private val zero16 = ByteArray(16)
     private val zero32 = ByteArray(32)
     private val keyLabel = "ZTSE/key/v1\u0000".toByteArray(Charsets.US_ASCII)
@@ -198,30 +195,7 @@ internal object Draft02ManifestVerifier {
     }
 
     private fun verifySignature(point: ByteArray, raw: ByteArray, label: String, unsigned: ByteArray) {
-        require(raw.size == 64) { "Manifest signature width" }
-        val r = BigInteger(1, raw.copyOfRange(0, 32))
-        val s = BigInteger(1, raw.copyOfRange(32, 64))
-        require(r.signum() > 0 && r < order && s.signum() > 0 && s <= order.shiftRight(1)) {
-            "Manifest noncanonical signature"
-        }
-        val verifier = Signature.getInstance("SHA256withECDSA")
-        verifier.initVerify(DevicePayloadKeyStore.decodePoint(point))
-        verifier.update(label.toByteArray(Charsets.US_ASCII))
-        verifier.update(ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(unsigned.size).array())
-        verifier.update(unsigned)
-        require(verifier.verify(rawToDer(raw))) { "Manifest signature verification" }
-    }
-
-    private fun rawToDer(raw: ByteArray): ByteArray {
-        fun integer(offset: Int): ByteArray {
-            var first = offset
-            while (first < offset + 31 && raw[first] == 0.toByte()) first++
-            val magnitude = raw.copyOfRange(first, offset + 32)
-            val positive = if ((magnitude[0].toInt() and 0x80) != 0) byteArrayOf(0) + magnitude else magnitude
-            return byteArrayOf(2, positive.size.toByte()) + positive
-        }
-        val fields = integer(0) + integer(32)
-        return byteArrayOf(0x30, fields.size.toByte()) + fields
+        Draft02ManifestSignatures.verify(point, raw, label, unsigned)
     }
 
     private fun sha(bytes: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(bytes)
