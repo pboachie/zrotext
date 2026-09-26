@@ -1,0 +1,13 @@
+{
+  "status": "UNAPPROVED_DRAFT_02_SIGNATURE_ONLY",
+  "source": "Node Web Crypto ECDSA P-256 SHA-256, independent of the Rust verifier. Take draft-01 unsignedHex, replace profile byte with 02 and protected signer key ID with the SHA-256 key ID of signerPublicPointHex. Ciphertext is retained as opaque structural test data; these are not decryptable draft-02 envelope vectors.",
+  "signerPublicPointHex": "04d0efac6b36d139492c5248a983383e41f7a29b457a2ebd3e4536de59db4552ae2896e06e4cb227a1acb674953b70f874ef0e47a413043e5125759bdaf1f6635f",
+  "outbound": {
+    "signatureV2Hex": "892b24a816a284e3ea0a3df4557f1aef0210be484fc7d63e5d05555d21c4b1ee2f994ef37451a5efc638d3a9ab0d5fa9fe71355f975724038460be9c4c010491",
+    "wrongDomainSignatureV1Hex": "8ff29b0d16797e6aaa771165cb2b177fde01c7b9aaf83ac6e9374258f2ffa33e15952796b29f69da82623a3fd1710356dd7f9167c5a952d563df89fd72b878f7"
+  },
+  "inbound": {
+    "signatureV2Hex": "bd4ad52a9c0d841438848dbb7f827e651bff9a292d22d8f3deccb55d2fec22f70b3c43a0a6040fc95fb1bb1e0c022c0306c1210bcf1edba55f84c6b45ce5ee70",
+    "wrongDomainSignatureV1Hex": "5d0b125bcd93dfdf869c3bc08e36daf0dbc70c38f378ebc28137b973a4366c62224663864c422e012c1de195d2b5e09ac59ac7d75e17aef2efbd37983fe5b9c2"
+  }
+}
