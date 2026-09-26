@@ -48,6 +48,29 @@ it does not alter draft-01 acceptance. The pinned outbound draft-01 signature
 is valid high-`s`. Enforcing low-`s` requires a new profile revision and
 regenerated vectors.
 
+## Test-only message-plane client (task 21 slice 3)
+
+`src/msgplane-client.ts` binds to the slice-1 sealed message-plane contract
+([protocol/v1/sealed-api-v1.md](../../protocol/v1/sealed-api-v1.md) and its
+[OpenAPI document](../../protocol/v1/openapi/sealed-v1.json)), which is a
+proposal with **no mounted server route**. It is test-only evidence toward
+task 21, not a production SDK. `SealedMessagePlaneClient` posts the exact
+envelope bytes of one draft-01 envelope with the single allowed content type
+`application/vnd.zrotext.sealed.v1` to `/v1/sealed/messages` (kind 01) or
+`/v1/sealed/inbound-events` (kind 02), validates bounded syntax and the kind
+locally through `parseDraftEnvelope` before any transport call, and never
+sends a caller-supplied `idempotency-key` header: the unsigned-envelope digest
+is the identity (Q6). Responses map onto the contract's taxonomy as
+`SealedApiError` with a `retryable` classification; only `rate_limited`,
+`queue_full`, `quota_exceeded`, `billing_pending` and `unavailable` are
+retryable, and `withRetry` resends with a pinned digest guard, refusing a
+mutated envelope instead of silently sending different bytes. Off-taxonomy
+statuses and malformed bodies surface as `unexpected_response`. The client
+has no plaintext path and no method for the synthetic-alpha route; origins
+carrying a path, query or credentials are refused at construction. Tests use
+the pinned draft-01 vectors against a recording transport and no network.
+
+
 This is one slice of ZT-010 evidence. Independent Rust cross-open, full manifest
 chain/rollback vectors, production key lifecycle, and the Q1–Q11 decisions
 remain separate gates. The candidate profile says vectors must be regenerated
