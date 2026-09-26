@@ -16,6 +16,8 @@ async function ownerPage() {
     replaceChildren(...children) { this.children = children; },
     append(...children) { this.children.push(...children); },
     setAttribute() {},
+    contains(node) { return this === node || this.children.some((child) => child.contains(node)); },
+    querySelector() { return this.openDetails || null; },
     addEventListener(name, listener) { this.listeners[name] = listener; },
     querySelectorAll() { return [{ value: "messages:read" }]; },
   });
@@ -24,7 +26,13 @@ async function ownerPage() {
     return elements.get(id);
   };
   element("key-lifetime").value = "30";
+  element("auto-refresh").checked = true;
+  const timers = new Map();
+  const documentListeners = {};
+  const windowListeners = {};
+  let nextTimer = 0;
   const state = {
+    requests: [], devicePages: [], messagePages: [],
     unauthorized: false, pendingCreate: null, nextCreateResponse: null, pendingHistory: null,
     historyPages: [], historyRequests: [], webhookPages: [], webhookRequests: [], pendingWebhook: null,
     endpoints: [], pendingEndpoints: null, pendingDevices: null, messages: [],
@@ -35,6 +43,7 @@ async function ownerPage() {
       created_at_ms: 1000, expires_at_ms: 100000, last_used_at_ms: 2000 }],
   };
   const fetch = async (url, options) => {
+    state.requests.push(url);
     if (url === "/v1/auth/session") return response(200);
     if (url === "/v1/auth/login") return response(204);
     if (url === "/v1/auth/logout") return response(204);
@@ -49,9 +58,9 @@ async function ownerPage() {
       state.authRequests.push({ url, options });
       return response(204);
     }
-    if (url === "/v1/enrollment/devices") {
+    if (url.startsWith("/v1/enrollment/devices") && options.method === "GET") {
       if (state.pendingDevices) return state.pendingDevices;
-      return state.unauthorized ? response(401) : response(200, { devices: state.devices, next_cursor: null });
+      return state.unauthorized ? response(401) : response(200, state.devicePages.shift() || { devices: state.devices, next_cursor: null });
     }
     if (url === "/v1/billing/status") return state.billingCapacity
       ? response(200, { mode: "test", deviceCapacity: state.billingCapacity }) : response(404);
@@ -66,7 +75,7 @@ async function ownerPage() {
       if (state.billingCapacity) state.billingCapacity.active -= 1;
       return response(204);
     }
-    if (url === "/v1/owner/messages") return response(200, { messages: state.messages, next_cursor: null });
+    if (url.startsWith("/v1/owner/messages")) return response(200, state.messagePages.shift() || { messages: state.messages, next_cursor: null });
     if (url === "/v1/owner/opt-out-review/decisions") {
       state.decisionRequests.push({ url, options });
       return state.pendingDecision || { status: 201, ok: true, json: async () => { throw new Error("Empty body"); } };
@@ -108,14 +117,27 @@ async function ownerPage() {
     }
     throw new Error(`Unexpected request: ${url}`);
   };
-  globalThis.document = { cookie: "__Host-zrotext_csrf=ztc_synthetic", getElementById: element, createElement: makeElement };
-  globalThis.window = { location: { origin: "https://example.test" }, addEventListener() {}, confirm: () => false };
+  globalThis.document = { hidden: false, activeElement: null, addEventListener(name, callback) { documentListeners[name] = callback; }, cookie: "__Host-zrotext_csrf=ztc_synthetic", getElementById: element, createElement: makeElement };
+  globalThis.window = {
+    location: { origin: "https://example.test" }, confirm: () => false,
+    addEventListener(name, callback) { windowListeners[name] = callback; },
+    setTimeout(callback, delay) { timers.set(++nextTimer, { callback, delay }); return nextTimer; },
+    clearTimeout(id) { timers.delete(id); },
+  };
   globalThis.fetch = fetch;
   delete require.cache[require.resolve("./devices.js")];
   require("./devices.js");
   await new Promise(setImmediate);
   await new Promise(setImmediate);
-  return { element, state };
+  return { element, state, timers, documentListeners, windowListeners,
+    tick() {
+      assert.equal(timers.size, 1);
+      const [id, timer] = [...timers][0];
+      assert.equal(timer.delay, 15_000);
+      timers.delete(id);
+      return timer.callback();
+    },
+  };
 }
 
 const endpointId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -676,4 +698,154 @@ test("review decisions accept empty 201, suppress duplicate submits and never im
   assert.match(element("opt-out-review-status").textContent, /Decision recorded.*remains blocked/);
   assert.match(visibleText(element("opt-out-review-list")), /remains blocked/);
   assert.equal(element("opt-out-review-list").children[0].children.at(-1).listeners.submit, undefined);
+});
+
+
+test("automatic refresh updates device leases and recent message states", async () => {
+  const { element, state, tick, timers } = await ownerPage();
+  state.devices = [{ device_id: endpointId, display_name: "Synthetic gateway", revoked: false, active_socket_lease: true }];
+  state.messages = [{ message_id: eventId, device_id: endpointId, state: "unknown", created_at_ms: 1000, events: [] }];
+  const before = state.requests.length;
+  await tick();
+  assert.deepEqual(state.requests.slice(before), ["/v1/enrollment/devices", "/v1/owner/messages"]);
+  assert.match(visibleText(element("device-list")), /authenticated socket lease observed/);
+  assert.match(visibleText(element("message-list")), /Outcome unknown/);
+  assert.equal(timers.size, 1);
+});
+
+test("automatic refresh pauses for hidden tabs, page navigation and owner preference", async () => {
+  const { element, timers, documentListeners, windowListeners } = await ownerPage();
+  document.hidden = true;
+  documentListeners.visibilitychange();
+  assert.equal(timers.size, 0);
+  document.hidden = false;
+  documentListeners.visibilitychange();
+  assert.equal(timers.size, 1);
+  documentListeners.visibilitychange();
+  assert.equal(timers.size, 1);
+  element("auto-refresh").checked = false;
+  element("auto-refresh").listeners.change();
+  assert.equal(timers.size, 0);
+  element("auto-refresh").checked = true;
+  element("auto-refresh").listeners.change();
+  assert.equal(timers.size, 1);
+  windowListeners.pagehide();
+  assert.equal(timers.size, 0);
+  windowListeners.pageshow();
+  assert.equal(timers.size, 1);
+});
+
+test("automatic batches do not overlap and keep previous rows until completion", async () => {
+  const { element, state, tick, timers, documentListeners } = await ownerPage();
+  state.devices = [{ device_id: endpointId, display_name: "Synthetic gateway", revoked: true }];
+  await element("refresh-devices").listeners.click();
+  let resolve;
+  state.pendingDevices = new Promise((done) => { resolve = done; });
+  const pending = tick();
+  assert.equal(timers.size, 0);
+  assert.equal(element("device-list").children.length, 1);
+  documentListeners.visibilitychange();
+  assert.equal(timers.size, 0);
+  resolve(response(200, { devices: [], next_cursor: null }));
+  await pending;
+  assert.equal(element("device-list").children.length, 0);
+  assert.equal(timers.size, 1);
+});
+
+test("automatic refresh stops on session expiry and discards a late device response", async () => {
+  const { element, state, tick, timers } = await ownerPage();
+  let resolve;
+  state.pendingDevices = new Promise((done) => { resolve = done; });
+  const original = globalThis.fetch;
+  globalThis.fetch = (url, options) => url === "/v1/owner/messages" ? Promise.resolve(response(401)) : original(url, options);
+  const pending = tick();
+  await new Promise(setImmediate);
+  resolve(response(200, { devices: [{ device_id: endpointId, display_name: "Stale gateway", revoked: true }], next_cursor: null }));
+  await pending;
+  assert.equal(element("owner-content").hidden, true);
+  assert.equal(element("device-list").children.length, 0);
+  assert.equal(timers.size, 0);
+});
+
+test("automatic refresh preserves paginated history until manual refresh", async () => {
+  const { element, state, tick } = await ownerPage();
+  state.devicePages.push({ devices: [{ device_id: endpointId, display_name: "Gateway", revoked: true }], next_cursor: endpointId });
+  state.messagePages.push({ messages: [{ message_id: eventId, state: "unknown", events: [] }], next_cursor: eventId });
+  await element("refresh-devices").listeners.click();
+  await element("refresh-messages").listeners.click();
+  await element("more-devices").listeners.click();
+  await element("more-messages").listeners.click();
+  const before = state.requests.length;
+  await tick();
+  assert.equal(state.requests.length, before);
+  assert.equal(element("device-list").children.length, 1);
+  assert.equal(element("message-list").children.length, 1);
+  await element("refresh-devices").listeners.click();
+  await element("refresh-messages").listeners.click();
+  const refreshed = state.requests.length;
+  await tick();
+  assert.equal(state.requests.length, refreshed + 2);
+});
+
+test("automatic refresh preserves focused rows and expanded message events", async () => {
+  const { element, state, tick } = await ownerPage();
+  document.activeElement = element("device-list");
+  element("message-list").openDetails = {};
+  const before = state.requests.length;
+  await tick();
+  assert.equal(state.requests.length, before);
+  document.activeElement = null;
+  element("message-list").openDetails = null;
+  await tick();
+  assert.equal(state.requests.length, before + 2);
+});
+
+test("an automatic network failure keeps prior rows and retries on the next interval", async () => {
+  const { element, state, tick, timers } = await ownerPage();
+  state.devices = [{ device_id: endpointId, display_name: "Synthetic gateway", revoked: true }];
+  await element("refresh-devices").listeners.click();
+  const original = globalThis.fetch;
+  globalThis.fetch = () => Promise.reject(new TypeError("offline"));
+  await tick();
+  assert.equal(element("device-list").children.length, 1);
+  assert.match(element("device-status").textContent, /Could not reach the server/);
+  assert.equal(timers.size, 1);
+  globalThis.fetch = original;
+  await tick();
+  assert.doesNotMatch(element("device-status").textContent, /Could not reach/);
+});
+
+test("automatic refresh skips a list while its manual request is pending", async () => {
+  const { element, state, tick } = await ownerPage();
+  let resolve;
+  state.pendingDevices = new Promise((done) => { resolve = done; });
+  const pending = element("refresh-devices").listeners.click();
+  const before = state.requests.filter((path) => path === "/v1/enrollment/devices").length;
+  await tick();
+  assert.equal(state.requests.filter((path) => path === "/v1/enrollment/devices").length, before);
+  resolve(response(200, { devices: [], next_cursor: null }));
+  await pending;
+});
+
+
+test("focusing a row while an automatic request is pending preserves the row", async () => {
+  const { element, state, tick } = await ownerPage();
+  state.devices = [{ device_id: endpointId, display_name: "Synthetic gateway", revoked: true }];
+  await element("refresh-devices").listeners.click();
+  let resolve;
+  state.pendingDevices = new Promise((done) => { resolve = done; });
+  const pending = tick();
+  document.activeElement = element("device-list").children[0];
+  resolve(response(200, { devices: [], next_cursor: null }));
+  await pending;
+  assert.equal(element("device-list").children.length, 1);
+  assert.equal(element("more-devices").disabled, false);
+});
+
+test("signing out stops automatic refresh until a new sign-in completes", async () => {
+  const { element, timers } = await ownerPage();
+  await element("logout").listeners.click();
+  assert.equal(timers.size, 0);
+  await element("login-form").listeners.submit({ preventDefault() {} });
+  assert.equal(timers.size, 1);
 });
