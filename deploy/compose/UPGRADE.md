@@ -153,7 +153,7 @@ migration credential in an API environment.
 
 - Migrations are numbered SQL files in `deploy/compose/migrations/`, append-only
   and consecutive from `001_foundation.sql`. The current highest migration in
-  this repository is **039** (`039_inbound_device_clock_offset.sql`). Never
+  this repository is **040** (`040_radio_evidence_index.sql`). Never
   edit a file that is already applied; a change is always a new file with the
   next number.
 - The runner takes a fixed PostgreSQL advisory lock for the whole run, creates
@@ -166,10 +166,10 @@ migration credential in an API environment.
 - Editing an applied migration file makes the next run fail with
   "applied migration NNN differs from its file; restore the original file and
   add a new migration". Do not repair `schema_migrations` by hand.
-- Migration 034 is a documented exception: it builds its index with
+- Migrations 034 and 040 are documented exceptions: they build their indexes with
   `CREATE INDEX CONCURRENTLY` before recording the numbered file; see the
   [Compose guide](README.md) for the interrupted-build and rollback rules that
-  apply to it.
+  apply to them.
 - `TEST_MIGRATIONS` is not an operator setting. It is the name of private test
   constants in the Rust test suites (for example in
   `crates/delivery-store/src/tests.rs`) that embed the migration SQL so
