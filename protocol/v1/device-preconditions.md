@@ -65,3 +65,13 @@ or unavailable. It retains the receipt time and explicitly says carrier
 readiness is unknown. Turning off automatic refresh or viewing an old page does
 not transform the saved report into a current observation. Missing or malformed
 reports never become affirmative readiness or an empty/absent-SIM claim.
+
+## Automated platform smoke test
+
+The read-only Android device-smoke workflow builds the debug APKs and starts a
+fresh API 36 emulator. It selects only `DevicePreconditionsDeviceTest` and,
+when present, `GatewayAccessibilityDeviceTest` with its explicit isolated-emulator
+opt-in. It requires one precondition test and five accessibility tests when
+selected, with zero failures or skips. It does not run the full instrumentation
+suite or SMS probes. Commands target only the disposable emulator; no physical
+device is selected. This verifies platform behavior, not carrier delivery.
