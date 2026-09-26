@@ -86,7 +86,11 @@ caller-supplied account, message, device, line, keyset version, manifest digest,
 peer, signer and exact ordered recipient set. Its result includes the SHA-256
 unsigned-envelope digest; its constructor is private, and debug output omits
 identifiers and envelope bytes. Draft-01 interoperability keeps the pinned
-high-`s` fixture valid; candidate 02 rejects high-`s` signatures.
+high-`s` fixture valid with its `ZTSE/sign/v1` transcript; candidate 02 uses
+the distinct `ZTSE/sign/v2` transcript and rejects high-`s` signatures. The
+[pinned Web Crypto signature-only vectors](vectors/ztse-draft-02-signatures.json)
+cover both envelope kinds and reject the old signature domain. Their opaque
+ciphertext is structural test data, not a decryptable candidate-02 vector.
 
 No route calls this module. The expected context must come from independently
 verified owner-pinned manifest authority, not the received envelope or an

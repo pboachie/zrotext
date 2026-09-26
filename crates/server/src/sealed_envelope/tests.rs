@@ -475,47 +475,53 @@ fn draft01_signature_alias_preserves_unsigned_identity_without_authorizing_candi
 }
 
 #[test]
-fn signed_candidate02_requires_canonical_signature_and_explicit_profile() {
-    use p256::{
-        ecdsa::{SigningKey, signature::Signer},
-        elliptic_curve::Generate,
-    };
-    let key = SigningKey::generate_from_rng(&mut rand::rng());
-    let point = key.verifying_key().to_sec1_point(false);
-    let mut bytes = fixture("outbound");
-    bytes[4] = 2;
-    bytes[10 + 104..10 + 136].copy_from_slice(&Sha256::digest(
-        [b"ZTSE/key/v1\0".as_slice(), &[1, 1], point.as_bytes()].concat(),
-    ));
-    let unsigned_end = bytes.len() - SIGNATURE_LEN;
-    let transcript = [
-        b"ZTSE/sign/v1\0".as_slice(),
-        &(unsigned_end as u32).to_be_bytes(),
-        &bytes[..unsigned_end],
-    ]
-    .concat();
-    let signature: Signature = key.sign(&transcript);
-    let signature = signature.normalize_s();
-    bytes[unsigned_end..].copy_from_slice(&signature.to_bytes());
-    let parsed = parse(&bytes, Profile::Draft02Candidate).unwrap();
-    let recipients = recipients(&parsed);
-    let expected = context(&parsed, point.as_bytes(), &recipients);
-    verify(&bytes, &expected).unwrap();
-    let mut proof_context = expected.clone();
-    proof_context.profile = Profile::Draft01Proof;
-    assert!(verify(&bytes, &proof_context).is_err());
-    // The mathematically equivalent high-s signature is forbidden in candidate02.
-    let order = decode_hex("ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551");
-    let mut high = bytes.clone();
-    let mut borrow = 0i16;
-    for index in (0..32).rev() {
-        let difference =
-            i16::from(order[index]) - i16::from(bytes[unsigned_end + 32 + index]) - borrow;
-        high[unsigned_end + 32 + index] = difference.rem_euclid(256) as u8;
-        borrow = i16::from(difference < 0);
+fn webcrypto_candidate02_requires_v2_domain_canonical_signature_and_explicit_profile() {
+    // Independent Web Crypto signatures use the browser/Android candidate's v2
+    // transcript. This test never signs with the verifier's domain selector.
+    let vectors: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../protocol/v1/vectors/ztse-draft-02-signatures.json"
+    ))
+    .unwrap();
+    let point = decode_hex(vectors["signerPublicPointHex"].as_str().unwrap());
+    for kind in ["outbound", "inbound"] {
+        let mut bytes = fixture(kind);
+        bytes[4] = 2;
+        bytes[10 + 104..10 + 136].copy_from_slice(&Sha256::digest(
+            [b"ZTSE/key/v1\0".as_slice(), &[1, 1], &point].concat(),
+        ));
+        let unsigned_end = bytes.len() - SIGNATURE_LEN;
+        bytes[unsigned_end..].copy_from_slice(&decode_hex(
+            vectors[kind]["signatureV2Hex"].as_str().unwrap(),
+        ));
+        let parsed = parse(&bytes, Profile::Draft02Candidate).unwrap();
+        let recipients = recipients(&parsed);
+        let expected = context(&parsed, &point, &recipients);
+        verify(&bytes, &expected).unwrap();
+        let mut old_domain = bytes.clone();
+        old_domain[unsigned_end..].copy_from_slice(&decode_hex(
+            vectors[kind]["wrongDomainSignatureV1Hex"].as_str().unwrap(),
+        ));
+        assert_eq!(
+            verify(&old_domain, &expected).unwrap_err(),
+            VerifyError::InvalidSignature,
+            "{kind} must reject the proof-only signature domain"
+        );
+        let mut proof_context = expected.clone();
+        proof_context.profile = Profile::Draft01Proof;
+        assert!(verify(&bytes, &proof_context).is_err());
+        // The mathematically equivalent high-s signature is forbidden in candidate02.
+        let order = decode_hex("ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551");
+        let mut high = bytes.clone();
+        let mut borrow = 0i16;
+        for index in (0..32).rev() {
+            let difference =
+                i16::from(order[index]) - i16::from(bytes[unsigned_end + 32 + index]) - borrow;
+            high[unsigned_end + 32 + index] = difference.rem_euclid(256) as u8;
+            borrow = i16::from(difference < 0);
+        }
+        assert_eq!(
+            verify(&high, &expected).unwrap_err(),
+            VerifyError::InvalidEnvelope("high-s signature")
+        );
     }
-    assert_eq!(
-        verify(&high, &expected).unwrap_err(),
-        VerifyError::InvalidEnvelope("high-s signature")
-    );
 }

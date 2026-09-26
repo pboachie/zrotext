@@ -293,7 +293,8 @@ impl std::fmt::Debug for Envelope<'_> {
 }
 
 /// Bound and parse original bytes, match trusted context and verify P-256 over
-/// `ZTSE/sign/v1\0 || u32(len(unsigned)) || unsigned`. No reserialization,
+/// `profile_label || u32(len(unsigned)) || unsigned`: proof-only draft 01 uses
+/// `ZTSE/sign/v1\0`, candidate 02 uses `ZTSE/sign/v2\0`. No reserialization,
 /// plaintext fallback, profile negotiation, storage or other effect occurs.
 pub fn verify<'a>(
     input: &'a [u8],
@@ -328,8 +329,12 @@ pub fn verify<'a>(
     }
     let signature =
         Signature::from_slice(envelope.signature).map_err(|_| VerifyError::InvalidSignature)?;
+    let label = match expected.profile {
+        Profile::Draft01Proof => b"ZTSE/sign/v1\0",
+        Profile::Draft02Candidate => b"ZTSE/sign/v2\0",
+    };
     let transcript = [
-        b"ZTSE/sign/v1\0".as_slice(),
+        label.as_slice(),
         &(envelope.unsigned.len() as u32).to_be_bytes(),
         envelope.unsigned,
     ]
