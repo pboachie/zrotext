@@ -282,7 +282,8 @@ Make ZROtext practical to run, upgrade and build against.
 - [x] Separate migration and restricted runtime database roles
 - [x] Verified PostgreSQL TLS and an optional HTTPS edge
 - [x] Scripted fresh-install and database restore rehearsals
-- [x] Upgrade guide covering every release ([guide](../deploy/compose/UPGRADE.md))
+- [x] Upgrade guide for moving between source snapshots ([guide](../deploy/compose/UPGRADE.md))
+- [ ] Upgrade notes for each tagged release
 - [ ] Production hardening checklist
 
 </details>

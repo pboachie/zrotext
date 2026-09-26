@@ -155,9 +155,10 @@
             "Separate migration and restricted runtime database roles",
             "Verified PostgreSQL TLS and an optional HTTPS edge",
             "Scripted fresh-install and database restore rehearsals",
-            "Upgrade guide covering every release ([guide](../deploy/compose/UPGRADE.md))"
+            "Upgrade guide for moving between source snapshots ([guide](../deploy/compose/UPGRADE.md))"
           ],
           "todo": [
+            "Upgrade notes for each tagged release",
             "Production hardening checklist"
           ]
         },
