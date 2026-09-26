@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 zrotext-domain = { path = "../domain" }
+zrotext-root-material = { path = "../root-material" }
 zrotext-delivery-store = { path = "../delivery-store" }
 zrotext-postgres-connection = { path = "../postgres-connection" }
 axum = { version = "0.8.6", features = ["ws"] }
@@ -31,7 +32,6 @@ aes-gcm = { version = "0.11.1", features = ["zeroize"] }
 zeroize = "1.9.0"
 # Already locked transitively; verify Telnyx Ed25519 callbacks without custom crypto.
 ring = "0.17.14"
-hkdf = "0.13.0"
 
 [dev-dependencies]
 tokio = { version = "1.47.1", features = ["test-util"] }

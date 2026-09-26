@@ -2923,6 +2923,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "zrotext-root-material"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "hkdf",
+ "hmac",
+ "p256",
+ "rand 0.10.3",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "url",
+ "zeroize",
+]
+
+[[package]]
 name = "zrotext-server"
 version = "0.1.0"
 dependencies = [
@@ -2931,7 +2947,6 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "futures-util",
- "hkdf",
  "hmac",
  "lettre",
  "p256",
@@ -2954,4 +2969,5 @@ dependencies = [
  "zrotext-delivery-store",
  "zrotext-domain",
  "zrotext-postgres-connection",
+ "zrotext-root-material",
 ]
