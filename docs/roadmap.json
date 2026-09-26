@@ -1,5 +1,5 @@
 {
-  "snapshot": "2026-09-25",
+  "snapshot": "2026-09-26",
   "tracks": [
     {
       "id": "gateway",
@@ -59,7 +59,10 @@
             ["#207", "https://github.com/pboachie/zrotext/pull/207"],
             ["#210", "https://github.com/pboachie/zrotext/pull/210"],
             ["line-bound stream", "../protocol/v1/line-opt-out-contract.md"],
-            ["#237", "https://github.com/pboachie/zrotext/pull/237"]
+            ["#237", "https://github.com/pboachie/zrotext/pull/237"],
+            ["#242", "https://github.com/pboachie/zrotext/pull/242"],
+            ["#245", "https://github.com/pboachie/zrotext/pull/245"],
+            ["#247", "https://github.com/pboachie/zrotext/pull/247"]
           ],
           "done": [
             "STOP, STOPALL, UNSUBSCRIBE and similar keywords recognized in the outbound reply window",
@@ -68,11 +71,13 @@
             "Local block on the phone applies immediately, even while offline",
             "Local line binding and unsolicited opt-outs journaled on the phone ([#210](https://github.com/pboachie/zrotext/pull/210))",
             "Default-off signed line-bound STOP/review stream and durable Android replay identity; production activation remains open",
-            "Owner-only read-only queue for ambiguous SMS holds; it cannot clear holds or record off-channel requests ([#237](https://github.com/pboachie/zrotext/pull/237))"
+            "Owner-only read-only queue for ambiguous SMS holds ([#237](https://github.com/pboachie/zrotext/pull/237))",
+            "Owner-recorded off-channel holds and durable review decisions; a hold or signed opt-out cancels queued sends that have no radio grant ([#242](https://github.com/pboachie/zrotext/pull/242), [#245](https://github.com/pboachie/zrotext/pull/245))",
+            "A signed START releases a hold only when observed more than five minutes after it, tightened by the phone clock reading at upload ([#250](https://github.com/pboachie/zrotext/pull/250), [#253](https://github.com/pboachie/zrotext/pull/253))",
+            "Owner-approved SMS line activation implemented end to end, off by default: browser-held approval key, signed phone declaration and Android install ([#247](https://github.com/pboachie/zrotext/pull/247), [#248](https://github.com/pboachie/zrotext/pull/248), [#251](https://github.com/pboachie/zrotext/pull/251))"
           ],
           "todo": [
-            "Production SMS line activation and verified selected-SIM binding before enabling unsolicited opt-outs",
-            "Review off-channel holds and decisions ([#242](https://github.com/pboachie/zrotext/pull/242)), then dashboard controls and queued cancellation ([#245](https://github.com/pboachie/zrotext/pull/245))",
+            "Validate SMS line activation on physical SIMs, then enable it before unsolicited opt-outs",
             "End-to-end opt-out, offline replay and SIM-change evidence on real devices"
           ]
         },
@@ -108,13 +113,18 @@
             ["#36", "https://github.com/pboachie/zrotext/pull/36"],
             ["#74", "https://github.com/pboachie/zrotext/pull/74"],
             ["#76", "https://github.com/pboachie/zrotext/pull/76"],
-            ["#237", "https://github.com/pboachie/zrotext/pull/237"]
+            ["#237", "https://github.com/pboachie/zrotext/pull/237"],
+            ["#245", "https://github.com/pboachie/zrotext/pull/245"],
+            ["#251", "https://github.com/pboachie/zrotext/pull/251"],
+            ["#255", "https://github.com/pboachie/zrotext/pull/255"]
           ],
           "done": [
             "Device pairing and management page",
             "Authenticated connection lease shown per device",
             "Message state timeline, inbound activity and webhook history views",
-            "Read-only ambiguous opt-out review queue with recipient metadata and event times"
+            "Read-only ambiguous opt-out review queue with recipient metadata and event times",
+            "Opt-out hold and review decision forms ([#245](https://github.com/pboachie/zrotext/pull/245))",
+            "SMS lines page: approval key, line list and activation approval ([#251](https://github.com/pboachie/zrotext/pull/251), [#255](https://github.com/pboachie/zrotext/pull/255))"
           ],
           "todo": [
             "SIM, queue depth and radio readiness per device",
@@ -246,15 +256,17 @@
             ["Draft 01", "../protocol/drafts/zt-sealed-draft-01.md"],
             ["draft 02 proposal", "../protocol/drafts/zt-sealed-draft-02-proposal.md"],
             ["#159", "https://github.com/pboachie/zrotext/pull/159"],
-            ["#162", "https://github.com/pboachie/zrotext/pull/162"]
+            ["#162", "https://github.com/pboachie/zrotext/pull/162"],
+            ["#260", "https://github.com/pboachie/zrotext/pull/260"]
           ],
           "done": [
             "Draft protocol and validation gates",
             "TypeScript and Android test vectors, including signed manifests and root rotation",
-            "Test-only envelope parser and Android Keystore boundary"
+            "Test-only envelope parser and Android Keystore boundary",
+            "Q1-Q11 decisions recorded with cross-client manifest vectors ([#260](https://github.com/pboachie/zrotext/pull/260))"
           ],
           "todo": [
-            "Resolve and verify remaining Q1-Q11 decisions in the [protocol decision log](../protocol/drafts/zt-009-decision-log.md)",
+            "Verify the recorded Q1-Q11 decisions with the evidence each row still lists in the [protocol decision log](../protocol/drafts/zt-009-decision-log.md)",
             "Cross-client interoperability and adversarial security tests",
             "Recovery and unlock flows",
             "Enabled in the gateway for real messages"
@@ -414,7 +426,7 @@
             ["product proposal", "PRODUCT-PLAN.md#business-inbox"],
             ["synthetic demo PR #244", "https://github.com/pboachie/zrotext/pull/244"]
           ],
-          "evidence_note": "proposal only; scripted approval and handoff simulation under review in #244; no runtime implementation",
+          "evidence_note": "proposal only; scripted approval and handoff simulation in #244; no runtime implementation",
           "done": [],
           "todo": [
             "Durable owner decisions tied to the exact recipient and proposed action",
@@ -526,7 +538,7 @@
       },
       {
         "text": "Off-channel holds and durable review decisions",
-        "done": false
+        "done": true
       }
     ],
     [
