@@ -648,6 +648,80 @@ async fn postgres_sms_line_activation_exchange_binds_owner_device_and_live_sessi
         assert!(row.get::<_, bool>(2));
     }
 
+    // The owner lists their lines with the phone of each active binding.
+    let listed = app
+        .clone()
+        .oneshot(request(&owner, "GET", "/sms-lines", None))
+        .await
+        .unwrap();
+    assert_eq!(listed.status(), StatusCode::OK);
+    let listed = json(listed).await;
+    let lines = listed["lines"].as_array().unwrap();
+    assert_eq!(lines.len(), 2);
+    assert!(listed["next_cursor"].is_null());
+    // Newest first: the second line has no active binding yet.
+    assert_eq!(lines[0]["line_id"], serde_json::json!(second_line));
+    assert_eq!(lines[0]["state"], "pending");
+    assert!(lines[0].get("device_id").is_none());
+    assert_eq!(lines[1]["line_id"], serde_json::json!(line));
+    assert_eq!(lines[1]["state"], "active");
+    assert_eq!(lines[1]["generation"], serde_json::json!(generation));
+    assert_eq!(lines[1]["purpose"], "sms");
+    assert_eq!(lines[1]["device_id"], serde_json::json!(device));
+    assert_eq!(lines[1]["device_name"], "virtual sms device");
+    assert_eq!(lines[1]["device_revoked"], false);
+    assert!(lines[1]["approved_at_ms"].is_i64());
+    // Cursor paging stays in the account and ends after the oldest line.
+    let page_two = json(
+        app.clone()
+            .oneshot(request(
+                &owner,
+                "GET",
+                &format!("/sms-lines?before={second_line}"),
+                None,
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(page_two["lines"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        app.clone()
+            .oneshot(request(
+                &other,
+                "GET",
+                &format!("/sms-lines?before={line}"),
+                None
+            ))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    let others = json(
+        app.clone()
+            .oneshot(request(&other, "GET", "/sms-lines", None))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(others["lines"].as_array().unwrap().len(), 0);
+    // A listing needs the CSRF header, and the route is dormant by default.
+    let mut without_csrf = request(&owner, "GET", "/sms-lines", None);
+    without_csrf.headers_mut().remove("x-zrotext-csrf");
+    assert_eq!(
+        app.clone().oneshot(without_csrf).await.unwrap().status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        http_auth::router(state())
+            .oneshot(request(&owner, "GET", "/sms-lines", None))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+
     setup
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
         .await
