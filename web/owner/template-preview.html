@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Template preview · ZROtext</title>
+  <link rel="stylesheet" href="/owner/devices.css">
+  <link rel="stylesheet" href="/owner/template-preview.css">
+  <script defer src="/owner/template-preview-core.js"></script>
+  <script defer src="/owner/template-preview.js"></script>
+</head>
+<body>
+  <main>
+    <header><div><p class="eyebrow">ZROtext owner tool</p><h1>Template preview</h1></div><a href="/owner/account">Account</a></header>
+    <p>Preview only. Nothing is sent, scheduled or saved. Text stays in this page and is cleared when you leave it, hide the tab or lose your sign-in.</p>
+    <p id="session-status" role="status" aria-live="polite">Checking sign-in…</p>
+    <div class="actions"><a href="/owner/devices">Sign in</a><button id="check-session" type="button">Check sign-in</button><button id="sign-out" type="button" disabled>Sign out and clear</button></div>
+    <noscript><p>JavaScript and an owner sign-in are required. The preview is unavailable.</p></noscript>
+    <section aria-labelledby="editor-title">
+      <h2 id="editor-title">Personalize text</h2>
+      <p id="template-help">Use <code>{{name}}</code> for a variable. Identifiers use letters, digits and underscores, start with a letter or underscore, and are at most 32 characters. Other braces are refused.</p>
+      <fieldset id="editor" disabled>
+        <legend>Local preview inputs</legend>
+        <label for="template">Template (up to 4,096 UTF-16 code units)</label>
+        <textarea id="template" rows="5" maxlength="4096" autocomplete="off" spellcheck="false" aria-describedby="template-help" placeholder="Hello {{name}}"></textarea>
+        <label for="substitutions">Values: one name=value per line</label>
+        <textarea id="substitutions" rows="5" maxlength="4096" autocomplete="off" spellcheck="false" aria-describedby="values-help" placeholder="name=Alex"></textarea>
+        <p id="values-help">Up to 32 unique entries, 512 UTF-16 code units per value and 4,096 in total. Values keep spaces and are single-line literal text; variables inside values are not expanded. Reserved object-property names are refused.</p>
+        <div class="actions"><button id="preview" type="button">Preview text</button><button id="clear" type="button" class="quiet">Clear text</button></div>
+      </fieldset>
+      <p id="preview-status" role="status" aria-live="polite"></p>
+    </section>
+    <section aria-labelledby="output-title">
+      <h2 id="output-title">Rendered text</h2>
+      <p>Maximum 8,192 UTF-16 code units. This is not an SMS segment or delivery estimate; it does not check carrier limits.</p>
+      <pre id="output" aria-label="Rendered template text" tabindex="0"></pre>
+    </section>
+  </main>
+  <footer><a href="/source">Source code for this server</a> · <a href="/about/version">Build version</a></footer>
+</body>
+</html>
