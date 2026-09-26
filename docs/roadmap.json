@@ -124,11 +124,11 @@
             "Message state timeline, inbound activity and webhook history views",
             "Read-only ambiguous opt-out review queue with recipient metadata and event times",
             "Opt-out hold and review decision forms ([#245](https://github.com/pboachie/zrotext/pull/245))",
-            "SMS lines page: approval key, line list and activation approval ([#251](https://github.com/pboachie/zrotext/pull/251), [#255](https://github.com/pboachie/zrotext/pull/255))"
+            "SMS lines page: approval key, line list and activation approval ([#251](https://github.com/pboachie/zrotext/pull/251), [#255](https://github.com/pboachie/zrotext/pull/255))",
+            "Device health and recent messages refresh every 15 seconds while the owner page is visible; pagination and active interactions pause their list ([#295](https://github.com/pboachie/zrotext/pull/295))"
           ],
           "todo": [
-            "SIM, queue depth and radio readiness per device",
-            "Live updates instead of snapshots"
+            "SIM, queue depth and radio readiness per device"
           ]
         }
       ]

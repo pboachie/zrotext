@@ -17,7 +17,12 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tower::ServiceExt;
 
-fn request(method: Method, uri: &str, body: Value, session: Option<(&str, &str)>) -> Request<Body> {
+pub(super) fn request(
+    method: Method,
+    uri: &str,
+    body: Value,
+    session: Option<(&str, &str)>,
+) -> Request<Body> {
     let mut builder = Request::builder()
         .method(method)
         .uri(uri)
@@ -34,12 +39,12 @@ fn request(method: Method, uri: &str, body: Value, session: Option<(&str, &str)>
     builder.body(Body::from(body.to_string())).unwrap()
 }
 
-async fn json_response(response: Response) -> Value {
+pub(super) async fn json_response(response: Response) -> Value {
     let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
     serde_json::from_slice(&body).unwrap()
 }
 
-async fn apply_migrations(admin: &Client) {
+pub(super) async fn apply_migrations(admin: &Client) {
     for sql in [
         include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
         include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
@@ -495,6 +500,11 @@ async fn http_pairing_requires_csrf_proves_key_and_revokes_device() {
         .unwrap();
     let first_page = json_response(first_page).await;
     assert_eq!(first_page["devices"].as_array().unwrap().len(), 50);
+    for device in first_page["devices"].as_array().unwrap() {
+        assert_eq!(device["pending_messages"], 0);
+        assert_eq!(device["in_flight_messages"], 0);
+        assert!(device["status_observed_at_ms"].as_i64().unwrap() > 0);
+    }
     let cursor = first_page["next_cursor"].as_str().unwrap();
     let second_page = app
         .clone()
