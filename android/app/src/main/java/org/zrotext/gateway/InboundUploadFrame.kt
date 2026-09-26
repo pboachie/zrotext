@@ -33,8 +33,13 @@ internal object InboundUploadFrame {
         return bytes.array()
     }
 
-    fun encode(epoch: Long, upload: InboundUpload, event: InboundEvent): String {
-        require(epoch > 0 && upload.eventId == event.eventId)
+    /**
+     * [sentAtMs] is this phone's clock as the frame is sent. It is unsigned; the
+     * hub uses it only to tighten when a START may release an owner hold.
+     */
+    fun encode(epoch: Long, upload: InboundUpload, event: InboundEvent,
+               sentAtMs: Long = System.currentTimeMillis()): String {
+        require(epoch > 0 && upload.eventId == event.eventId && sentAtMs > 0)
         val signature = checkNotNull(upload.signatureDer)
         require(signature.size in 8..80)
         val frame = JSONObject().put("v", 1).put("type", "inbound_event")
@@ -44,6 +49,7 @@ internal object InboundUploadFrame {
             .put("observed_at_ms", event.receivedAtMs).put("part_count", event.partCount)
             .put("signature_der", Base64.getUrlEncoder().withoutPadding()
                 .encodeToString(signature))
+            .put("device_sent_at_ms", sentAtMs)
         return frame.toString().also { require(it.toByteArray(Charsets.UTF_8).size <= 4096) }
     }
 

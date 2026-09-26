@@ -124,11 +124,13 @@ class InboundUploadTest {
             "%02x".format(it.toInt() and 0xff)
         }
         assertEquals("a5c16315ba6fdd194c57fcf9104f05ec7da26830c5cf784a962c4363b87dd199", digest)
-        val wire = InboundUploadFrame.encode(3, upload, event)
+        val wire = InboundUploadFrame.encode(3, upload, event, sentAtMs = 1_700_000_123_456)
         val json = JSONObject(wire)
         assertEquals(setOf("v", "type", "connection_epoch", "event_id", "sequence",
             "message_id", "attempt_id", "classification", "observed_at_ms",
-            "part_count", "signature_der"), json.keys().asSequence().toSet())
+            "part_count", "signature_der", "device_sent_at_ms"), json.keys().asSequence().toSet())
+        // The clock reading is outside the signed bytes checked above.
+        assertEquals(1_700_000_123_456L, json.getLong("device_sent_at_ms"))
         assertFalse(wire.contains("encryptedBody") || wire.contains("ciphertext") ||
             wire.contains("sender") || wire.contains("nonce") || wire.contains("body"))
         assertTrue(wire.toByteArray(Charsets.UTF_8).size < 4096)
