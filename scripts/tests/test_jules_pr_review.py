@@ -26,6 +26,13 @@ def pull_request(*, draft=False, owner="pboachie", head_repo=review.REPO,
     }
 
 
+def report_json(**changes):
+    report = {"status": "complete", "head": SHA, "base": BASE_SHA, "findings": [],
+              "tests": "Not run; review only.", "limitations": "none"}
+    report.update(changes)
+    return json.dumps(report)
+
+
 class ReviewRoutingTests(unittest.TestCase):
     def test_only_exact_owner_comment_commands_route(self):
         event = {
@@ -264,7 +271,7 @@ class ReviewRoutingTests(unittest.TestCase):
             if url == f"{review.GITHUB}/pulls/74" and kwargs.get("method", "GET") == "GET":
                 return pull_request()
             if url.startswith(f"{review.JULES}/sessions/123/activities?"):
-                return {"activities": [{"agentMessaged": {"agentMessage": "No findings."}}]}
+                return {"activities": [{"agentMessaged": {"agentMessage": report_json()}}]}
             if url == f"{review.GITHUB}/pulls/74/reviews" and kwargs["method"] == "POST":
                 posted.append(kwargs["payload"])
                 return {}
@@ -277,7 +284,95 @@ class ReviewRoutingTests(unittest.TestCase):
         self.assertEqual(len(posted), 1)
         self.assertEqual(posted[0]["event"], "COMMENT")
         self.assertEqual(posted[0]["commit_id"], SHA)
-        self.assertIn("No findings.", posted[0]["body"])
+        self.assertIn("No actionable findings.", posted[0]["body"])
+        self.assertIn("Not run; review only.", posted[0]["body"])
+        self.assertIn("zrotext-jules-result", posted[0]["body"])
+
+    def test_prose_final_message_is_an_incomplete_review_comment(self):
+        posted = []
+        start = {"user": {"login": "github-actions[bot]"},
+                 "body": (f"<!-- zrotext-jules-start:v1 session=sessions/123 head={SHA} "
+                          "mode=review trigger=comment-7 -->")}
+
+        def fake_pages(path, _token):
+            return {
+                "/pulls?state=open": [{"number": 74}],
+                "/issues/74/comments": [start],
+                "/pulls/74/reviews": [],
+            }[path]
+
+        def fake_request(url, **kwargs):
+            if url == f"{review.JULES}/sessions/123":
+                return {"state": "COMPLETED"}
+            if url == f"{review.GITHUB}/pulls/74" and kwargs.get("method", "GET") == "GET":
+                return pull_request()
+            if url.startswith(f"{review.JULES}/sessions/123/activities?"):
+                return {"activities": [{"agentMessaged": {"agentMessage": "No findings."}}]}
+            if url == f"{review.GITHUB}/issues/74/comments" and kwargs["method"] == "POST":
+                posted.append(kwargs["payload"])
+                return {}
+            raise AssertionError(url)
+
+        with patch.object(review, "pages", side_effect=fake_pages), \
+             patch.object(review, "request_json", side_effect=fake_request):
+            review.poll_reviews("github-test", "jules-test")
+
+        self.assertEqual(len(posted), 1)
+        self.assertIn("incomplete review, not a clean result", posted[0]["body"])
+        self.assertIn("zrotext-jules-result", posted[0]["body"])
+
+    def poll_once(self, state, *, start_comments, sent):
+        start = {"user": {"login": "github-actions[bot]"},
+                 "body": (f"<!-- zrotext-jules-start:v1 session=sessions/123 head={SHA} "
+                          "mode=review trigger=comment-7 -->")}
+
+        def fake_pages(path, _token):
+            return {
+                "/pulls?state=open": [{"number": 74}],
+                "/issues/74/comments": [start, *start_comments],
+                "/pulls/74/reviews": [],
+            }[path]
+
+        def fake_request(url, **kwargs):
+            if url == f"{review.JULES}/sessions/123":
+                return {"state": state}
+            if url == f"{review.GITHUB}/pulls/74" and kwargs.get("method", "GET") == "GET":
+                return pull_request()
+            sent.append((url, kwargs.get("method", "GET"), kwargs.get("payload")))
+            return {}
+
+        with patch.object(review, "pages", side_effect=fake_pages), \
+             patch.object(review, "request_json", side_effect=fake_request):
+            review.poll_reviews("github-test", "jules-test")
+        return sent
+
+    def test_blocked_review_gets_one_reserved_follow_up(self):
+        sent = []
+        self.poll_once("AWAITING_USER_FEEDBACK", start_comments=[], sent=sent)
+        notices = [(u, p) for u, m, p in sent if u.endswith("/issues/74/comments")]
+        messages = [(u, p) for u, m, p in sent if u.endswith(":sendMessage")]
+        self.assertEqual(len(notices), 1)
+        self.assertIn("zrotext-jules-resume", notices[0][1]["body"])
+        self.assertIn("one automatic follow-up", notices[0][1]["body"])
+        self.assertEqual(len(messages), 1)
+        self.assertIn("unattended, read-only review", messages[0][1]["prompt"])
+
+    def test_already_resumed_session_is_left_alone(self):
+        sent = []
+        marker = {"user": {"login": "github-actions[bot]"},
+                  "body": "<!-- zrotext-jules-resume:v1 session=sessions/123 -->"}
+        self.poll_once("AWAITING_USER_FEEDBACK", start_comments=[marker], sent=sent)
+        self.assertEqual(sent, [])
+
+    def test_other_waiting_states_get_attention_notice_only(self):
+        for state in ("AWAITING_PLAN_APPROVAL", "PAUSED"):
+            sent = []
+            self.poll_once(state, start_comments=[], sent=sent)
+            notices = [(u, p) for u, m, p in sent if u.endswith("/issues/74/comments")]
+            messages = [(u, p) for u, m, p in sent if u.endswith(":sendMessage")]
+            self.assertEqual(len(notices), 1)
+            self.assertIn("needs attention in Jules", notices[0][1]["body"])
+            self.assertEqual(messages, [])
 
     def test_changed_parent_commit_makes_stacked_result_stale(self):
         posted = []
