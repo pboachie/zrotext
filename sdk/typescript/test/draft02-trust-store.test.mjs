@@ -256,7 +256,7 @@ test("an open store closes for another connection's version upgrade instead of b
         request.onerror = () => reject(request.error);
       });
       assert.equal(upgraded.version, 2);
-      await assert.rejects(store.read(), /clos|InvalidStateError/i);
+      await assert.rejects(store.read(), { name: "InvalidStateError" });
     } finally {
       store.close(); // Lets a blocked upgrade finish so a failing run still exits.
       upgraded?.close();
