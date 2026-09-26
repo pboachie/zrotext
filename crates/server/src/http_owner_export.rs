@@ -564,15 +564,19 @@ mod tests {
         .await
         .unwrap();
         let total = EXPORT_MESSAGE_LIMIT + 5;
-        let mut a_ids = Vec::new();
-        for index in 0..total {
-            let id = Uuid::new_v4();
-            a_ids.push(id);
+        let a_ids: Vec<_> = (0..total).map(|_| Uuid::new_v4()).collect();
+        // Timestamp order must not depend on insertion order or database clock
+        // adjustments. Reverse insertion also exercises that distinction.
+        for index in (0..total).rev() {
+            let id = a_ids[index];
+            let created_at_offset = i64::try_from(index).unwrap();
             db.execute(
-                "INSERT INTO messages(id,account_id,device_id,recipient_e164,recipient_digest,transport_mode,transport_payload,request_digest,state,expires_at) \
-                 VALUES($1,$2,$3,'+15551234567',$4,'synthetic_alpha',$5,$6,'queued',now()+interval '1 hour')",
+                "INSERT INTO messages(id,account_id,device_id,recipient_e164,recipient_digest,transport_mode,transport_payload,request_digest,state,expires_at,created_at) \
+                 VALUES($1,$2,$3,'+15551234567',$4,'synthetic_alpha',$5,$6,'queued',now()+interval '1 hour', \
+                        TIMESTAMPTZ '2000-01-01 00:00:00+00' + $7::bigint * interval '1 second')",
                 &[&id, &a.account_id, &device_a, &vec![1_u8; 32],
-                    &format!("EXPORT_PAGE_A_{index}").as_bytes().to_vec(), &vec![2_u8; 32]],
+                    &format!("EXPORT_PAGE_A_{index}").as_bytes().to_vec(), &vec![2_u8; 32],
+                    &created_at_offset],
             )
             .await
             .unwrap();
