@@ -229,6 +229,222 @@ fn registration_policy_defaults_closed_and_matches_exact_addresses_or_domains() 
     }
 }
 
+/// Reproduces the invite token format that shipped before expiring invites,
+/// from `invite_digest` in `crates/server/src/http_auth/mod.rs` at commit
+/// e13264c ("Integrate owner enrollment, account setup and mail diagnostics
+/// (#189)", 2026-09-24): a bare `STANDARD`-encoded HMAC-SHA256 over the
+/// `zrotext-registration-invite-v1\0` domain separator and the normalized
+/// email. Exactly 32 bytes, no expiry field. An authentic v1 token like this
+/// must stop admitting under the v2 format, since a leaked one would
+/// otherwise admit its address forever.
+fn legacy_v1_invite_token(key: &[u8; 32], normalized_email: &str) -> String {
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts 32-byte keys");
+    mac.update(b"zrotext-registration-invite-v1\0");
+    mac.update(normalized_email.as_bytes());
+    STANDARD.encode(mac.finalize().into_bytes())
+}
+
+#[test]
+fn invite_tokens_carry_a_signed_expiry_and_denials_stay_uniform() {
+    // The enrollment key rides the random per-process test master, like every
+    // other fixture secret, so no reusable key bytes appear in source.
+    let enrollment_key: [u8; 32] = crate::test_keys::key(91).try_into().unwrap();
+    let master = STANDARD.encode(enrollment_key);
+    let allowlist = RegistrationPolicy::parse(
+        Some("allowlist"),
+        Some("owner@example.test,second@example.test"),
+        None,
+        Some(&master),
+    )
+    .unwrap();
+    // Issuance and admission share one pinned instant, so every assertion is
+    // exact rather than leaving slack for wall-clock scheduling.
+    let now = 2_000_000_000u64;
+    let admitted = |token: &str, email: &str| {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-zrotext-registration-token",
+            HeaderValue::from_str(token).unwrap(),
+        );
+        allowlist.admitted_email_at(&headers, email, now).unwrap()
+    };
+
+    // Default issuance signs an expiry exactly seven days out.
+    let invite = allowlist
+        .issue_invite_with_lifetime_at("owner@example.test", INVITE_MAX_LIFETIME, now)
+        .unwrap();
+    let decoded = STANDARD.decode(&invite).unwrap();
+    assert_eq!(decoded.len(), INVITE_TOKEN_LEN);
+    assert_eq!(
+        u64::from_be_bytes(decoded[..8].try_into().unwrap()),
+        now + INVITE_MAX_LIFETIME.as_secs()
+    );
+
+    // A requested shorter lifetime lands exactly in the signed expiry.
+    let short = allowlist
+        .issue_invite_with_lifetime_at("owner@example.test", Duration::from_secs(3600), now)
+        .unwrap();
+    let short_bytes = STANDARD.decode(&short).unwrap();
+    assert_eq!(
+        u64::from_be_bytes(short_bytes[..8].try_into().unwrap()),
+        now + 3600
+    );
+
+    // The lifetime stays bounded: sub-second, zero, and over-cap requests are
+    // refused; whole-second lifetimes up to the cap are accepted. A 500ms
+    // lifetime would otherwise truncate to zero seconds of life and silently
+    // mint an already-expired token.
+    assert!(
+        allowlist
+            .issue_invite_with_lifetime_at("owner@example.test", Duration::from_millis(500), now)
+            .is_err()
+    );
+    assert!(
+        allowlist
+            .issue_invite_with_lifetime_at("owner@example.test", Duration::ZERO, now)
+            .is_err()
+    );
+    assert!(
+        allowlist
+            .issue_invite_with_lifetime_at(
+                "owner@example.test",
+                INVITE_MAX_LIFETIME + Duration::from_secs(1),
+                now
+            )
+            .is_err()
+    );
+    assert!(
+        allowlist
+            .issue_invite_with_lifetime_at("owner@example.test", INVITE_MAX_LIFETIME, now)
+            .is_ok()
+    );
+
+    // An unexpired invite still admits exactly its bound address, never
+    // another allowlisted one.
+    assert_eq!(
+        admitted(&short, "owner@example.test").as_deref(),
+        Some("owner@example.test")
+    );
+    assert_eq!(admitted(&short, "second@example.test"), None);
+
+    // An expired invite, and one expiring exactly now, are denied.
+    let expired = invite_token(&enrollment_key, "owner@example.test", now - 1);
+    assert_eq!(admitted(&expired, "owner@example.test"), None);
+    let boundary = invite_token(&enrollment_key, "owner@example.test", now);
+    assert_eq!(admitted(&boundary, "owner@example.test"), None);
+
+    // Admission holds the same lifetime cap as issuance: a correctly signed
+    // expiry further out than seven days is denied even though only the
+    // master key could have minted it, while the cap boundary still admits.
+    let overreaching = invite_token(
+        &enrollment_key,
+        "owner@example.test",
+        now + INVITE_MAX_LIFETIME.as_secs() + 1,
+    );
+    assert_eq!(admitted(&overreaching, "owner@example.test"), None);
+    let capped = invite_token(
+        &enrollment_key,
+        "owner@example.test",
+        now + INVITE_MAX_LIFETIME.as_secs(),
+    );
+    assert_eq!(
+        admitted(&capped, "owner@example.test").as_deref(),
+        Some("owner@example.test")
+    );
+
+    // Stretching the expiry without the master key breaks the tag.
+    let mut stretched = short_bytes.clone();
+    stretched[..8].copy_from_slice(&(now + 24 * 60 * 60).to_be_bytes());
+    assert_eq!(
+        admitted(&STANDARD.encode(stretched), "owner@example.test"),
+        None
+    );
+
+    // A flipped tag byte is denied.
+    let mut flipped = short_bytes;
+    let last = flipped.len() - 1;
+    flipped[last] ^= 1;
+    assert_eq!(
+        admitted(&STANDARD.encode(flipped), "owner@example.test"),
+        None
+    );
+
+    // An authentic pre-expiry v1 digest (the legacy_v1_invite_token
+    // construction above, 32 bytes with no expiry field) is denied.
+    let legacy = legacy_v1_invite_token(&enrollment_key, "owner@example.test");
+    assert_eq!(STANDARD.decode(&legacy).unwrap().len(), 32);
+    assert_eq!(admitted(&legacy, "owner@example.test"), None);
+
+    // A v2 token whose signed expiry is the Unix epoch is well-formed but
+    // never live. This is a v2 token with expiry zero, distinct from the
+    // legacy v1 format above.
+    let zero_expiry = invite_token(&enrollment_key, "owner@example.test", 0);
+    assert_eq!(
+        STANDARD.decode(&zero_expiry).unwrap().len(),
+        INVITE_TOKEN_LEN
+    );
+    assert_eq!(admitted(&zero_expiry, "owner@example.test"), None);
+}
+
+#[tokio::test]
+async fn expired_or_forged_invites_share_the_denial_no_op_without_database_access() {
+    let enrollment_key: [u8; 32] = crate::test_keys::key(92).try_into().unwrap();
+    let master = STANDARD.encode(enrollment_key);
+    let policy = RegistrationPolicy::parse(
+        Some("allowlist"),
+        Some("owner@example.test"),
+        None,
+        Some(&master),
+    )
+    .unwrap();
+    let state = AuthHttpState::new(
+        "postgres://unused".to_owned(),
+        Arc::new(TokenHasher::new(crate::test_keys::key(7)).unwrap()),
+        "https://zrotext.example".to_owned(),
+        Arc::new(CaptureVerification(Mutex::new(None))),
+    )
+    .unwrap()
+    .with_registration_policy(policy);
+    // The request path reads the wall clock itself, so fixtures are anchored
+    // to the instant captured before the requests run: the expired token can
+    // only grow more expired and the valid one keeps a full hour of signed
+    // life, whatever instant admission ends up observing.
+    let before = unix_now_secs().unwrap();
+    let expired = invite_token(
+        &enrollment_key,
+        "owner@example.test",
+        before.saturating_sub(1),
+    );
+    let valid = invite_token(&enrollment_key, "owner@example.test", before + 3600);
+    let mut stretched = STANDARD.decode(&valid).unwrap();
+    stretched[..8].copy_from_slice(&(before + 24 * 60 * 60).to_be_bytes());
+    let legacy = legacy_v1_invite_token(&enrollment_key, "owner@example.test");
+    // The database URL is unusable on purpose: a request that passed admission
+    // would fail to connect and answer 503 instead of the 202 no-op.
+    let app = router(state);
+    for token in [
+        expired.as_str(),
+        STANDARD.encode(stretched).as_str(),
+        legacy.as_str(),
+    ] {
+        assert_eq!(
+            app.clone()
+                .oneshot(invite_post(
+                    "/register",
+                    serde_json::json!({
+                        "email":"owner@example.test",
+                        "password":crate::test_keys::password(1)
+                    }),
+                    token,
+                ))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::ACCEPTED
+        );
+    }
+}
+
 #[test]
 fn canonical_origin_and_cookie_parsing_are_strict() {
     assert!(valid_canonical_origin("https://zrotext.example"));
