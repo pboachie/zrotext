@@ -1,4 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+use p256::ecdsa::{
+    Signature, SigningKey,
+    signature::{Signer, Verifier},
+};
+use p256::elliptic_curve::Generate;
 use serde_json::Value;
 use zrotext_server::sealed_root_enrollment::*;
 
@@ -14,6 +19,64 @@ fn bytes(v: &Value, name: &str) -> Vec<u8> {
         .step_by(2)
         .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
         .collect()
+}
+
+fn ephemeral_root(account: [u8; 16]) -> (SigningKey, Vec<u8>) {
+    let key = SigningKey::generate_from_rng(&mut rand::rng());
+    let pin = [
+        b"ZTRP\x02".as_slice(),
+        &account,
+        &1_u64.to_be_bytes(),
+        key.verifying_key().to_sec1_point(false).as_bytes(),
+    ]
+    .concat();
+    (key, pin)
+}
+
+fn sign_candidate(key: &SigningKey, unsigned: &[u8]) -> Vec<u8> {
+    let statement = transcript(unsigned).unwrap();
+    let signature: Signature = key.sign(&statement);
+    let signature = signature.normalize_s();
+    // Prove the signature is valid before testing a separate trust binding.
+    key.verifying_key().verify(&statement, &signature).unwrap();
+    signature.to_bytes().to_vec()
+}
+
+#[test]
+fn attacker_root_cannot_claim_the_independently_expected_fingerprint() {
+    let v = fixture();
+    let unsigned = bytes(&v, "unsignedHex");
+    let expected = parse(&unsigned).unwrap();
+    let (attacker, pin) = ephemeral_root(expected.account_id);
+    assert_ne!(
+        root_fingerprint(&pin, &expected.account_id).unwrap(),
+        expected.root_fingerprint
+    );
+    // Exact legitimate U/context/time, but a valid signature from the attacker's
+    // distinct on-curve root for the same account. Only the pin/fingerprint
+    // comparison prevents possession of that other root from claiming this pin.
+    let signature = sign_candidate(&attacker, &unsigned);
+    assert_eq!(
+        verify(&pin, &unsigned, &signature, &expected, expected.issued_ms).unwrap_err(),
+        "root fingerprint"
+    );
+}
+
+#[test]
+fn validly_resigned_context_change_cannot_replace_trusted_expectation() {
+    let v = fixture();
+    let mut expected = parse(&bytes(&v, "unsignedHex")).unwrap();
+    let (owner, pin) = ephemeral_root(expected.account_id);
+    expected.root_fingerprint = root_fingerprint(&pin, &expected.account_id).unwrap();
+    let mut changed = expected.clone();
+    changed.session_id = [9; 16];
+    let unsigned = encode(&changed).unwrap();
+    let signature = sign_candidate(&owner, &unsigned);
+    assert!(verify(&pin, &unsigned, &signature, &changed, expected.issued_ms).is_ok());
+    assert_eq!(
+        verify(&pin, &unsigned, &signature, &expected, expected.issued_ms).unwrap_err(),
+        "challenge context"
+    );
 }
 
 #[test]
