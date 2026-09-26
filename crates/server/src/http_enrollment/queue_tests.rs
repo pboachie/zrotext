@@ -212,19 +212,75 @@ async fn owner_queue_counts_are_bounded_tenant_scoped_and_preserve_writer_states
     .unwrap();
 }
 
-// Exercise the production index choices after every current migration, including
-// the indexes normally prepared online by the migrator before validation.
-async fn apply_queue_schema(db: &Client) {
+// Compile-time SQL keeps the fixture independent of runtime file content. The
+// separate inventory assertion makes newly added migrations fail closed until
+// this explicit list is updated.
+macro_rules! queue_schema {
+    ($($name:literal),+ $(,)?) => {
+        [$(($name, include_str!(concat!("../../../../deploy/compose/migrations/", $name)))),+]
+    };
+}
+const QUEUE_SCHEMA: [(&str, &str); 40] = queue_schema!(
+    "001_foundation.sql",
+    "002_auth.sql",
+    "003_delivery.sql",
+    "004_enrollment.sql",
+    "005_verification_outbox.sql",
+    "006_usage_metering.sql",
+    "007_inbound_webhook_foundation.sql",
+    "008_stripe_billing_foundation.sql",
+    "009_webhook_manual_replay.sql",
+    "010_billing_test_entitlement.sql",
+    "011_billing_payment_holds.sql",
+    "012_auth_abuse_limits.sql",
+    "013_owner_mfa.sql",
+    "014_owner_mfa_failure_budget.sql",
+    "015_webhook_kek_commitments.sql",
+    "016_auth_abuse_atomic.sql",
+    "017_billing_device_caps.sql",
+    "018_sealed_inbound_identity.sql",
+    "019_line_activation_contract.sql",
+    "020_enrollment_retention_indexes.sql",
+    "021_billing_payment_grace.sql",
+    "022_pending_owner_expiry.sql",
+    "023_billing_py_charge_and_unsupported.sql",
+    "024_billing_risk_operator_review.sql",
+    "025_account_recovery.sql",
+    "026_data_retention.sql",
+    "027_billing_test_config.sql",
+    "028_billing_provider_failures.sql",
+    "029_webhook_dispatch_fairness.sql",
+    "030_terminal_dispatch_jobs.sql",
+    "031_recipient_suppression.sql",
+    "032_line_opt_out_events.sql",
+    "033_sms_line_binding_scope.sql",
+    "034_delivery_sweep_index.sql",
+    "035_sms_owner_key_ceremony.sql",
+    "036_owner_opt_out_holds.sql",
+    "037_sms_line_activation_exchange.sql",
+    "038_owner_opt_out_hold_guards.sql",
+    "039_inbound_device_clock_offset.sql",
+    "040_radio_evidence_index.sql",
+);
+
+#[test]
+fn queue_fixture_includes_every_checked_in_migration() {
     let directory =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/compose/migrations");
-    let mut paths = std::fs::read_dir(directory)
+    let mut names = std::fs::read_dir(directory)
         .unwrap()
         .map(|entry| entry.unwrap().path())
         .filter(|path| path.extension().is_some_and(|ext| ext == "sql"))
+        .map(|path| path.file_name().unwrap().to_str().unwrap().to_owned())
         .collect::<Vec<_>>();
-    paths.sort();
-    for path in paths {
-        match path.file_name().unwrap().to_str().unwrap() {
+    names.sort();
+    assert_eq!(names, QUEUE_SCHEMA.map(|(name, _)| name));
+}
+
+// Exercise production index choices, including online preparation.
+async fn apply_queue_schema(db: &Client) {
+    for (name, sql) in QUEUE_SCHEMA {
+        match name {
             "034_delivery_sweep_index.sql" => {
                 db.batch_execute("CREATE INDEX messages_in_flight_updated ON messages(updated_at,id) WHERE state IN ('claimed','submitting','submitted')").await.unwrap();
             }
@@ -233,8 +289,6 @@ async fn apply_queue_schema(db: &Client) {
             }
             _ => {}
         }
-        db.batch_execute(&std::fs::read_to_string(path).unwrap())
-            .await
-            .unwrap();
+        db.batch_execute(sql).await.unwrap();
     }
 }
