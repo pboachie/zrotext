@@ -207,14 +207,16 @@
           "stage": "build",
           "evidence": [
             ["#81", "https://github.com/pboachie/zrotext/pull/81"],
-            ["#189", "https://github.com/pboachie/zrotext/pull/189"]
+            ["#189", "https://github.com/pboachie/zrotext/pull/189"],
+            ["#268", "https://github.com/pboachie/zrotext/pull/268"]
           ],
           "done": [
             "Owner enrollment, account setup and mail diagnostics",
-            "SMS and RCS readiness guidance for the gateway phone"
+            "SMS and RCS readiness guidance for the gateway phone",
+            "Accessibility review of the owner web pages ([review](ACCESSIBILITY-REVIEW.md))"
           ],
           "todo": [
-            "Accessibility review of owner pages and the Android app",
+            "Accessibility review of the Android app",
             "Supported-device list backed by repeatable tests"
           ]
         }
