@@ -99,6 +99,35 @@ freshness, active line generation, session/grant validity, replay safety, HPKE
 or body authentication, or permission to store, decrypt or send. The live
 transactional checks and the remaining Q1-Q11 evidence are still required.
 
+## Dormant manifest authority prerequisite
+
+The Rust [`sealed_manifest`](../../crates/server/src/sealed_manifest/mod.rs)
+module verifies bounded, exact RootPin02 and Manifest02 bytes against an
+independently authenticated account/root fingerprint and explicit chain position.
+It checks the owner signature, low-`s` canonicality, complete role/scope/subject
+matrix, key IDs and unique points, root/archive cardinality, and signed freshness
+window. The immutable result can derive a candidate-02 envelope context for an
+active line-bound outbound signer or device-and-line-bound inbound signer, plus
+exactly the selected authorized readers. No reader is added implicitly. Key
+validity and manifest freshness are checked again at context construction.
+
+The caller must supply trusted time and a chain position derived from durable
+owner-authenticated state: initial generation genesis requires a zero anchor;
+later generations require a nonzero, independently verified transition anchor.
+Advancement requires the next version and previous semantic digest, and reuse requires the
+exact current semantic digest. This API does not bootstrap trust, accept root
+transitions, persist a high-water mark, detect clock rollback, or perform an
+atomic compare-and-set. Persisting trust advances and rechecking current authority
+before effects remain mandatory. Constructing a context is not live admission;
+callers must immediately verify the exact envelope signature and enforce the
+transactional checks below. No HTTP/WSS route uses this module.
+
+Existing independent Python-generated genesis/rotation manifest vectors exercise
+the reusable verifier; rotation-signature verification remains a test-only proof.
+Signed authority tests cover both envelope kinds, revoked/expired/future keys,
+wrong subjects and scopes, missing/duplicate/unapproved readers, changed bytes,
+wrong pins, stale manifests, rollback, chain gaps and same-version forks.
+
 ## Required next ingest gate
 
 Before any sealed route can write `sealed_inbound_events`, it must bound and
