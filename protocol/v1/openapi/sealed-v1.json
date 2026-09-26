@@ -1,9 +1,9 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "ZROtext sealed API v1 message plane (proposed contract)",
-    "version": "1.0.0-proposal",
-    "description": "PROPOSAL ONLY, derived from the ZT-009 decisions recorded 2026-09-26 in protocol/drafts/zt-009-decision-log.md (rows Q4, Q6, Q8, Q9 and Q11). NO server route implementing this contract exists yet and the sealed runtime remains disabled: no production client may emit or accept a sealed profile-01/02 envelope, and no relay handler is mounted at either path. This document is the proposed HTTP surface for task 21 slice 1 so later slices can implement, review and audit against a pinned contract. The synthetic alpha plane (/v1/alpha/messages, an allowlisted fixed-body test route) and the closed general send plane stay separate: sealed credentials must not be accepted on alpha routes, alpha credentials must not be accepted on sealed routes, and no sealed envelope is ever translated into a synthetic-alpha submission (Q11). Sealed device, webhook and usage endpoints are DEFERRED to later slices of task 21 and intentionally absent here. Both operations accept ONLY the exact raw-binary content type application/vnd.zrotext.sealed.v1: there is no JSON request body, no plaintext body field, no downgrade flag and no plaintext fallback retry anywhere in this contract."
+    "title": "ZROtext sealed API v1 (proposed contract)",
+    "version": "1.1.0-proposal",
+    "description": "PROPOSAL ONLY, derived from the ZT-009 decisions recorded 2026-09-26 in protocol/drafts/zt-009-decision-log.md (rows Q4, Q6, Q8, Q9 and Q11). NO server route implementing this contract exists yet and the sealed runtime remains disabled: no production client may emit or accept a sealed profile-01/02 envelope, and no relay handler is mounted at any path in this document. Task 21 slice 1 pinned the sealed message plane (POST /v1/sealed/messages and POST /v1/sealed/inbound-events); task 21 slice 2 adds the proposed read-only devices surface, the sealed webhook endpoint-management and delivery/event surface, and the usage metering query, so later slices can implement, review and audit against a pinned contract. The synthetic alpha plane (/v1/alpha/messages, an allowlisted fixed-body test route) and the closed general send plane stay separate: sealed credentials must not be accepted on alpha routes, alpha credentials must not be accepted on sealed routes, and no sealed envelope is ever translated into a synthetic-alpha submission (Q11). Nothing here opens general plaintext sending: the two message-plane operations accept ONLY the exact raw-binary content type application/vnd.zrotext.sealed.v1 (no JSON request body, no plaintext body field, no downgrade flag and no plaintext fallback retry), and the resource operations defined in slice 2 carry only account-scoped metadata, ciphertext references and metering counters — never message content, recipients or plaintext. Sealed envelope status queries and sealed outbound dispatch-status fanout remain deferred to a later slice of task 21 and are intentionally absent here."
   },
   "security": [
     {
@@ -18,6 +18,18 @@
     {
       "name": "sealed-inbound",
       "description": "Proposed sealed inbound upload, a separate route and store from the M1 inbound pilot. Not implemented."
+    },
+    {
+      "name": "sealed-devices",
+      "description": "Proposed read-only list/status of the account's enrolled devices and their sealed-purpose line bindings. Not implemented; enrollment and revocation stay on the owner-session enrollment routes."
+    },
+    {
+      "name": "sealed-webhooks",
+      "description": "Proposed sealed-profile webhook endpoint management plus the delivery/event semantics for sealed ciphertext fanout. Not implemented; mirrors the owner-session lifecycle contract in protocol/v1/webhook-endpoints.md."
+    },
+    {
+      "name": "sealed-usage",
+      "description": "Proposed sealed usage metering query for the current period. Not implemented; mirrors the durable usage_periods/usage_ledger metering core."
     }
   ],
   "paths": {
@@ -215,7 +227,7 @@
         },
         "responses": {
           "202": {
-            "description": "Stored, or an identical replay no-op. created=false means this exact (account, device, event_id) with the same unsigned digest was already accepted and nothing new was created. Out-of-order arrival is accepted within the seven-day observed-time window (Q8). Acceptance is durable storage only; webhook fanout is a deferred separate contract.",
+            "description": "Stored, or an identical replay no-op. created=false means this exact (account, device, event_id) with the same unsigned digest was already accepted and nothing new was created. Out-of-order arrival is accepted within the seven-day observed-time window (Q8). Acceptance is durable storage only; ciphertext-only fanout of accepted events is specified by the sealed webhook delivery contract (SealedWebhookEventBody) and remains unimplemented.",
             "headers": {
               "Cache-Control": {
                 "$ref": "#/components/headers/NoStore"
@@ -370,6 +382,1185 @@
           }
         }
       }
+    },
+    "/v1/sealed/devices": {
+      "get": {
+        "tags": ["sealed-devices"],
+        "operationId": "listSealedDevices",
+        "summary": "List the account's enrolled devices with their sealed line bindings",
+        "description": "Proposed contract; no route exists. Read-only projection of the owner enrollment view onto the sealed API-key plane: one cursor page of the account's enrolled devices with revocation state, the current active_socket_lease observation, and each device's sealed-purpose line bindings (line_id, binding_generation, state) from the device_line_bindings table. Cursor pagination mirrors the owner route GET /v1/enrollment/devices: pass the returned next_cursor as before to fetch the next page; next_cursor is null after the last page. This surface never enrolls, approves, re-keys or revokes a device: pairing, owner approval and revocation stay on the owner-session enrollment routes because the Q1/Q4 ceremonies are out-of-band owner actions. No SIM identifier, phone number, ICCID, IMSI, Android subscription ID or key material is ever returned. Sealed-mode eligibility (Android API 31+, Q5) is a device property the owner verifies at enrollment; this list reports stored state only. Every response carries Cache-Control: no-store.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "before",
+            "in": "query",
+            "required": false,
+            "description": "Opaque cursor: the device_id returned as next_cursor on the preceding page. Absent on the first page.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of the account's devices and their sealed line bindings.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SealedDevicePage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: the before cursor is not a UUID.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": { "code": "invalid_request" }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: missing, malformed or unknown bearer credential.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": { "code": "unauthorized" }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: the credential lacks the devices:read scope or is bound to a different tenant.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": { "code": "forbidden" }
+              }
+            }
+          },
+          "503": {
+            "description": "unavailable: the store is temporarily unavailable; retry later.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": { "code": "unavailable" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sealed/devices/{device_id}": {
+      "get": {
+        "tags": ["sealed-devices"],
+        "operationId": "getSealedDevice",
+        "summary": "Get one enrolled device with its sealed line bindings",
+        "description": "Proposed contract; no route exists. The same device view as the list operation for one device_id. An unknown device_id and another account's device_id are both 404 not_found: the response never reveals whether a foreign device exists. Tenant scoped, read-only, Cache-Control: no-store, and no SIM identifier, phone number, ICCID, IMSI or key material in any field.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "required": true,
+            "description": "The enrolled device identity assigned at pairing.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The device and its sealed line bindings.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SealedDevice"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: device_id is not a UUID.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": { "code": "invalid_request" }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: missing, malformed or unknown bearer credential.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": { "code": "unauthorized" }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: the credential lacks the devices:read scope or is bound to a different tenant.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": { "code": "forbidden" }
+              }
+            }
+          },
+          "404": {
+            "description": "not_found: no such device in this account.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": { "code": "not_found" }
+              }
+            }
+          },
+          "503": {
+            "description": "unavailable: the store is temporarily unavailable; retry later.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": { "code": "unavailable" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sealed/webhooks": {
+      "get": {
+        "tags": ["sealed-webhooks"],
+        "operationId": "listSealedWebhookEndpoints",
+        "summary": "List this account's webhook endpoints",
+        "description": "Proposed contract; no route exists. The sealed-profile projection of the owner webhook lifecycle (protocol/v1/webhook-endpoints.md) onto API-key authentication with the webhooks:read scope. Returns every endpoint of this account (at most eight, including disabled ones) ordered by creation. Never includes signing secrets or encrypted secret bytes; only the create and rotate responses ever expose a secret, once per generated secret. paused_at_ms and failure_started_at_ms expose the 72-hour sustained-transport-failure pause exactly as the owner list does. Cache-Control: no-store.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "All of the account's webhook endpoints.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SealedWebhookEndpointList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: missing, malformed or unknown bearer credential.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": { "code": "unauthorized" }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: the credential lacks the webhooks:read scope or is bound to a different tenant.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": { "code": "forbidden" }
+              }
+            }
+          },
+          "503": {
+            "description": "unavailable: the store is temporarily unavailable; retry later.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": { "code": "unavailable" }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["sealed-webhooks"],
+        "operationId": "createSealedWebhookEndpoint",
+        "summary": "Create one disabled webhook endpoint for sealed event fanout",
+        "description": "Proposed contract; no route exists. Creates a disabled endpoint exactly as the owner-session POST /v1/webhooks does, returning the endpoint view plus the signing secret exactly once. The callback URL must pass the strict egress validator used by the owner route: an HTTPS DNS name on port 443, at most 2048 bytes, no IP literals, no userinfo, no fragment, no local/internal/special-use names and no invalid host labels; the URL is revalidated on enable and the resolved addresses are re-checked and pinned on every delivery attempt. The signing secret is 32 random bytes returned as unpadded base64url and is never retrievable again: only an AES-256-GCM ciphertext bound to account, endpoint and key version is stored, and losing the response requires rotation. The account cap is eight endpoints including disabled ones (409 endpoint_limit). Sealed event bodies delivered to this endpoint carry only ciphertext and metadata (see SealedWebhookEventBody); no route sends a test webhook, and no synthetic-alpha content is ever fanned out (Q11). Enabling actual delivery stays a separate operational gate. Cache-Control: no-store.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "The callback URL. Unknown JSON members are rejected.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SealedWebhookCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Endpoint created disabled. The signing secret appears in this response and in the rotate response only; there is no retrieval route.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SealedWebhookSecret"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: the JSON body is malformed or has unknown members. invalid_webhook_endpoint: the callback URL fails the strict HTTPS egress validator.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "invalidRequest": {
+                    "value": { "code": "invalid_request" }
+                  },
+                  "invalidWebhookEndpoint": {
+                    "value": { "code": "invalid_webhook_endpoint" }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: missing, malformed or unknown bearer credential.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": { "code": "unauthorized" }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: the credential lacks the webhooks:manage scope or is bound to a different tenant.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": { "code": "forbidden" }
+              }
+            }
+          },
+          "409": {
+            "description": "endpoint_limit: the account already has eight endpoints, including disabled ones.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": { "code": "endpoint_limit" }
+              }
+            }
+          },
+          "503": {
+            "description": "unavailable: storage or the secret vault is temporarily unavailable; retry later.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": { "code": "unavailable" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sealed/webhooks/{endpoint_id}/deliveries": {
+      "get": {
+        "tags": ["sealed-webhooks"],
+        "operationId": "listSealedWebhookDeliveries",
+        "summary": "Page delivery history for one webhook endpoint",
+        "description": "Proposed contract; no route exists. Read-only delivery and attempt metadata for this account's endpoint, mirroring the owner history route. Optional limit (1-20, default 20) and before (the delivery_id returned as next_before on the preceding page); ordered newest first by creation time then ID; attempts from every generation, including retired deliveries, are included as immutable audit history. No payload, callback URL, signing secret, response body, recipient, sender or inbound/sealed content is ever returned: event bodies stay ciphertext-only and this route returns none of them. An unknown or another account's endpoint or cursor is 404 not_found; invalid IDs and page sizes are 400. Cache-Control: no-store.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "endpoint_id",
+            "in": "path",
+            "required": true,
+            "description": "The webhook endpoint identity.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Page size, 1-20, default 20.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 20,
+              "default": 20
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "required": false,
+            "description": "Cursor: the delivery_id returned as next_before on the preceding page.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of delivery history with per-attempt metadata.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SealedWebhookDeliveryPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: malformed endpoint or cursor ID, or a page size outside 1-20.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": { "code": "invalid_request" }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: missing, malformed or unknown bearer credential.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": { "code": "unauthorized" }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: the credential lacks the webhooks:read scope or is bound to a different tenant.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": { "code": "forbidden" }
+              }
+            }
+          },
+          "404": {
+            "description": "not_found: no such endpoint or cursor in this account.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": { "code": "not_found" }
+              }
+            }
+          },
+          "503": {
+            "description": "unavailable: the store is temporarily unavailable; retry later.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": { "code": "unavailable" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sealed/webhooks/{endpoint_id}/deliveries/{delivery_id}/replay": {
+      "post": {
+        "tags": ["sealed-webhooks"],
+        "operationId": "replaySealedWebhookDelivery",
+        "summary": "Queue one bounded replay generation of an exhausted failed delivery",
+        "description": "Proposed contract; no route exists. Mirrors the owner manual-replay contract. The caller generates a random UUIDv4 Idempotency-Key and must reuse the exact same key after an uncertain response; the server never generates one on the caller's behalf. The endpoint must be enabled and the delivery must be dead with terminal_reason failed after seven completed transport failures in its current generation; pending, leased, succeeded, policy-rejected, retired and legacy rows are ineligible (409 replay_not_eligible), as is reusing the same key for a different delivery. A delivery has at most three generations (409 replay_limit): the initial seven attempts and two replay generations of seven attempts each (retry schedule 1m, 5m, 15m, 1h, 6h, 24h after each failure). Repeating a successful request returns 202 with the same generation and created:false. This action only queues work; the delivery sender remains a separate operational gate, and because a previous timeout may already have reached the receiver, the receiver must still deduplicate the event_id across every generation. Cache-Control: no-store.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "endpoint_id",
+            "in": "path",
+            "required": true,
+            "description": "The webhook endpoint identity.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "delivery_id",
+            "in": "path",
+            "required": true,
+            "description": "The exhausted failed delivery to replay.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "A caller-generated random UUIDv4, durable across HTTP retries and never server-generated. Reuse the exact key after an uncertain response; using it for another delivery is a conflict.",
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Replay generation queued, or an identical idempotent replay no-op (created:false with the same generation, even if that generation has since run).",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SealedWebhookReplayAccepted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: the Idempotency-Key is absent, malformed or not a UUIDv4, or a path ID is malformed.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": { "code": "invalid_request" }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: missing, malformed or unknown bearer credential.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": { "code": "unauthorized" }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: the credential lacks the webhooks:manage scope or is bound to a different tenant.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": { "code": "forbidden" }
+              }
+            }
+          },
+          "404": {
+            "description": "not_found: no such endpoint or delivery in this account.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": { "code": "not_found" }
+              }
+            }
+          },
+          "409": {
+            "description": "replay_not_eligible: the delivery is not an exhausted failed generation, the endpoint is disabled, or the Idempotency-Key was already used for a different delivery. replay_limit: the delivery already used all three generations.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "replayNotEligible": {
+                    "value": { "code": "replay_not_eligible" }
+                  },
+                  "replayLimit": {
+                    "value": { "code": "replay_limit" }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "unavailable: storage is temporarily unavailable; retry later with the same Idempotency-Key.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": { "code": "unavailable" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sealed/webhooks/{endpoint_id}/enable": {
+      "post": {
+        "tags": ["sealed-webhooks"],
+        "operationId": "enableSealedWebhookEndpoint",
+        "summary": "Enable future sealed event fanout to one endpoint",
+        "description": "Proposed contract; no route exists. Revalidates the callback URL against the strict egress validator and the decryptability of the stored signing secret, then enables future fan-out and clears any transport-failure pause, exactly as the owner enable route does. Enabling never replays work retired by disable or rotation: only sealed events accepted while the endpoint is enabled create new deliveries. Actual sending remains a separate operational gate. No request body. Cache-Control: no-store.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "endpoint_id",
+            "in": "path",
+            "required": true,
+            "description": "The webhook endpoint identity.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Enabled; future sealed events fan out to this endpoint.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: malformed endpoint ID. invalid_webhook_endpoint: the stored callback URL no longer passes the egress validator.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "invalidRequest": {
+                    "value": { "code": "invalid_request" }
+                  },
+                  "invalidWebhookEndpoint": {
+                    "value": { "code": "invalid_webhook_endpoint" }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: missing, malformed or unknown bearer credential.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": { "code": "unauthorized" }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: the credential lacks the webhooks:manage scope or is bound to a different tenant.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": { "code": "forbidden" }
+              }
+            }
+          },
+          "404": {
+            "description": "not_found: no such endpoint in this account.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": { "code": "not_found" }
+              }
+            }
+          },
+          "503": {
+            "description": "unavailable: storage or the secret vault is temporarily unavailable; retry later.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": { "code": "unavailable" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sealed/webhooks/{endpoint_id}/disable": {
+      "post": {
+        "tags": ["sealed-webhooks"],
+        "operationId": "disableSealedWebhookEndpoint",
+        "summary": "Disable an endpoint and permanently retire its pending deliveries",
+        "description": "Proposed contract; no route exists. Disables the endpoint and permanently retires its pending and leased deliveries in one transaction, exactly as the owner disable route does. Completed deliveries remain as audit history; retired deliveries can never be replayed, and re-enabling cannot revive them. An in-flight HTTPS request that already loaded a payload may still complete, so the receiver must deduplicate the event_id. No request body. Cache-Control: no-store.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "endpoint_id",
+            "in": "path",
+            "required": true,
+            "description": "The webhook endpoint identity.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Disabled; pending and leased deliveries permanently retired.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: malformed endpoint ID.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": { "code": "invalid_request" }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: missing, malformed or unknown bearer credential.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": { "code": "unauthorized" }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: the credential lacks the webhooks:manage scope or is bound to a different tenant.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": { "code": "forbidden" }
+              }
+            }
+          },
+          "404": {
+            "description": "not_found: no such endpoint in this account.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": { "code": "not_found" }
+              }
+            }
+          },
+          "503": {
+            "description": "unavailable: storage is temporarily unavailable; retry later.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": { "code": "unavailable" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sealed/webhooks/{endpoint_id}/rotate": {
+      "post": {
+        "tags": ["sealed-webhooks"],
+        "operationId": "rotateSealedWebhookEndpoint",
+        "summary": "Rotate the signing secret, disabling the endpoint and retiring its deliveries",
+        "description": "Proposed contract; no route exists. Generates a new 32-byte signing secret, disables the endpoint and permanently retires pending, leased and replayable failed deliveries in one transaction, exactly as the owner rotate route does. The new secret is returned as unpadded base64url exactly once; only the AES-256-GCM ciphertext bound to account, endpoint and key version is stored, and there is no retrieval route. Receivers should keep verifying with the old secret until deliveries signed with the new secret arrive. No request body. Cache-Control: no-store.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "endpoint_id",
+            "in": "path",
+            "required": true,
+            "description": "The webhook endpoint identity.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Secret rotated; endpoint disabled and its pending deliveries permanently retired. The new signing secret appears here and in the create response only.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SealedWebhookSecret"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: malformed endpoint ID.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": { "code": "invalid_request" }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: missing, malformed or unknown bearer credential.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": { "code": "unauthorized" }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: the credential lacks the webhooks:manage scope or is bound to a different tenant.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": { "code": "forbidden" }
+              }
+            }
+          },
+          "404": {
+            "description": "not_found: no such endpoint in this account.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": { "code": "not_found" }
+              }
+            }
+          },
+          "503": {
+            "description": "unavailable: storage or the secret vault is temporarily unavailable; retry later.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": { "code": "unavailable" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sealed/usage": {
+      "get": {
+        "tags": ["sealed-usage"],
+        "operationId": "getSealedUsage",
+        "summary": "Get the current metering period's usage snapshot",
+        "description": "Proposed contract; no route exists. Read-only query of the durable outbound metering core (usage_periods and usage_ledger) for the authenticated account: the current UTC calendar-month period, its unit limit, reserved units, refunded units, the derived used units, and the period boundary at which counters reset. Sealed outbound acceptance meters exactly one unit per accepted sealed envelope in the same transaction as admission, identical to the existing metered core; an idempotent digest replay reuses the original reservation and never reserves a second unit, even across a month boundary. Refunds exist only through the existing pre-grant cancellation/expiry path and are written against the original period; whether sealed messages expose cancellation at all is deferred with the message status queries. The metric stays the shared outbound_message unit in v1: sealed acceptance does not introduce a second metric. Units are integer counts of accepted messages, never currency, invoices or per-recipient pricing. History queries beyond the current period and per-device or per-line breakdowns are deferred. Cache-Control: no-store.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The current period's quota and usage counters.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SealedUsage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: missing, malformed or unknown bearer credential.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": { "code": "unauthorized" }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: the credential lacks the billing:read scope or is bound to a different tenant.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": { "code": "forbidden" }
+              }
+            }
+          },
+          "503": {
+            "description": "unavailable or billing_pending: usage storage or billing reconciliation is temporarily unavailable; retry later.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": { "code": "unavailable" }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -377,7 +1568,7 @@
       "bearerAuth": {
         "type": "http",
         "scheme": "bearer",
-        "description": "The existing customer API-key authentication, not a new auth model: an account API key issued by the owner API-key routes under /v1/auth and sent as 'Authorization: Bearer <key>', exactly as the existing message routes authenticate. Outbound submission requires the existing message-send scope bound to the device named in the envelope's protected record; inbound upload requires a credential authorized for the uploading device, and the protected account, device and line fields must match the authenticated identity and the active line-binding generation. This HTTP layer only names the tenant: the sealed manifest chain and device signature over the exact unsigned bytes carry the cryptographic authorization (Q2, Q7). Sealed and alpha credentials stay separate (Q11)."
+        "description": "The existing customer API-key authentication, not a new auth model: an account API key issued by the owner API-key routes under /v1/auth and sent as 'Authorization: Bearer <key>', exactly as the existing message routes authenticate. Outbound submission requires the existing message-send scope bound to the device named in the envelope's protected record; inbound upload requires a credential authorized for the uploading device, and the protected account, device and line fields must match the authenticated identity and the active line-binding generation. The slice 2 resource operations reuse the existing scope set and add no new scopes: devices list/status requires devices:read, webhook reads require webhooks:read, webhook management (create, replay, enable, disable, rotate) requires webhooks:manage, and the usage query requires billing:read. API keys never unlock content: no scope grants decryption, plaintext access or envelope bytes beyond the exact bytes a caller itself submitted. This HTTP layer only names the tenant: the sealed manifest chain and device signature over the exact unsigned bytes carry the cryptographic authorization (Q2, Q7). Sealed and alpha credentials stay separate (Q11)."
       }
     },
     "headers": {
@@ -429,6 +1620,430 @@
         },
         "additionalProperties": false
       },
+      "SealedDeviceLine": {
+        "type": "object",
+        "description": "One sealed-purpose line binding of a device, from the device_line_bindings rows with purpose 'sealed'. A phone line is a stable owner-assigned identity, never an Android subscription ID, SIM slot, phone number, ICCID or IMSI.",
+        "required": ["line_id", "binding_generation", "state"],
+        "properties": {
+          "line_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The owner-allocated stable line identity."
+          },
+          "binding_generation": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1,
+            "description": "The binding generation of this row. Sealed authorization must bind the active line-binding generation (Q7); rebinding after a SIM move increments it."
+          },
+          "state": {
+            "type": "string",
+            "enum": ["pending", "active", "revoked"],
+            "description": "Binding state. At most one active binding exists per line; revoked bindings never return to pending or active."
+          }
+        },
+        "additionalProperties": false
+      },
+      "SealedDevice": {
+        "type": "object",
+        "description": "One enrolled device of the account and its sealed-purpose line bindings. Read-only view; contains no SIM identifier, phone number, ICCID, IMSI, Android subscription ID or key material.",
+        "required": ["device_id", "display_name", "revoked", "active_socket_lease", "lines"],
+        "properties": {
+          "device_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The enrolled device identity assigned at pairing."
+          },
+          "display_name": {
+            "type": "string",
+            "description": "Owner-assigned label chosen at enrollment; free-form text, not a phone number or serial."
+          },
+          "revoked": {
+            "type": "boolean",
+            "description": "True once the owner revoked the device; revoked devices never appear active on the device stream."
+          },
+          "active_socket_lease": {
+            "type": "boolean",
+            "description": "Snapshot observation of the authoritative writer's current authenticated device session: true only while the lease is unexpired, the session deployment epoch is current, and the hosting site is enabled and not draining. A dropped socket can stay represented until its 90-second lease expires; this is not a continuous connection monitor and establishes neither SMS permission, SIM state, carrier service nor radio readiness."
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SealedDeviceLine"
+            },
+            "description": "The device's sealed-purpose line bindings. Empty when the device has none."
+          }
+        },
+        "additionalProperties": false
+      },
+      "SealedDevicePage": {
+        "type": "object",
+        "description": "One cursor page of the account's devices.",
+        "required": ["devices", "next_cursor"],
+        "properties": {
+          "devices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SealedDevice"
+            },
+            "description": "Devices in creation order."
+          },
+          "next_cursor": {
+            "type": ["string", "null"],
+            "format": "uuid",
+            "description": "The device_id to pass as before on the next request; null after the last page."
+          }
+        },
+        "additionalProperties": false
+      },
+      "SealedWebhookCreateRequest": {
+        "type": "object",
+        "description": "Create request for one webhook endpoint. Unknown members are rejected. The callback URL must pass the strict egress validator: HTTPS DNS name on port 443, at most 2048 bytes, no IP literals, userinfo, fragments, local/internal/special-use names or invalid host labels.",
+        "required": ["callback_url"],
+        "properties": {
+          "callback_url": {
+            "type": "string",
+            "maxLength": 2048,
+            "description": "The HTTPS URL sealed event deliveries are posted to."
+          }
+        },
+        "additionalProperties": false
+      },
+      "SealedWebhookEndpoint": {
+        "type": "object",
+        "description": "One webhook endpoint of the account. Never includes signing secrets or encrypted secret bytes.",
+        "required": ["endpoint_id", "callback_url", "enabled", "paused_at_ms", "failure_started_at_ms", "created_at_ms"],
+        "properties": {
+          "endpoint_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The endpoint identity."
+          },
+          "callback_url": {
+            "type": "string",
+            "description": "The validated HTTPS callback URL."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether sealed events accepted now create new deliveries for this endpoint."
+          },
+          "paused_at_ms": {
+            "type": ["integer", "null"],
+            "format": "int64",
+            "minimum": 0,
+            "description": "Unix milliseconds when the sender paused the endpoint after 72 hours of sustained transport failure; null while unpause. Pending deliveries stay queued and the sender skips the endpoint while this is set."
+          },
+          "failure_started_at_ms": {
+            "type": ["integer", "null"],
+            "format": "int64",
+            "minimum": 0,
+            "description": "Unix milliseconds of the first failure of the current streak; null when the last delivery was acknowledged."
+          },
+          "created_at_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "description": "Unix milliseconds of endpoint creation."
+          }
+        },
+        "additionalProperties": false
+      },
+      "SealedWebhookEndpointList": {
+        "type": "object",
+        "description": "All of the account's webhook endpoints, at most eight, ordered by creation.",
+        "required": ["endpoints"],
+        "properties": {
+          "endpoints": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SealedWebhookEndpoint"
+            },
+            "maxItems": 8,
+            "description": "The account's endpoints, including disabled ones."
+          }
+        },
+        "additionalProperties": false
+      },
+      "SealedWebhookSecret": {
+        "type": "object",
+        "description": "Create/rotate response exposing the signing secret exactly once per generated secret. Only an AES-256-GCM ciphertext bound to account, endpoint and key version is stored; there is no retrieval route, and losing this response requires rotation.",
+        "required": ["endpoint_id", "callback_url", "enabled", "signing_secret_b64url"],
+        "properties": {
+          "endpoint_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The endpoint identity."
+          },
+          "callback_url": {
+            "type": "string",
+            "description": "The validated HTTPS callback URL."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Always false in this response: a created endpoint starts disabled, and rotation disables the endpoint."
+          },
+          "signing_secret_b64url":
+          {
+            "type": "string",
+            "description": "32 random bytes as unpadded base64url. Decode to raw bytes for HMAC-SHA256 verification of the x-zrotext-signature delivery header."
+          }
+        },
+        "additionalProperties": false
+      },
+      "SealedWebhookDeliveryAttempt": {
+        "type": "object",
+        "description": "One completed or in-flight delivery attempt of the current or an earlier generation. Immutable audit history; contains no payload or response body.",
+        "required": ["generation", "attempt_number", "started_at_ms"],
+        "properties": {
+          "generation": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 1,
+            "maximum": 3,
+            "description": "The generation this attempt belongs to: the initial generation or one of at most two replay generations."
+          },
+          "attempt_number": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 1,
+            "maximum": 7,
+            "description": "The attempt's position within its generation (at most seven attempts per generation)."
+          },
+          "started_at_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "description": "Unix milliseconds when the sender leased this attempt."
+          },
+          "completed_at_ms": {
+            "type": ["integer", "null"],
+            "format": "int64",
+            "minimum": 0,
+            "description": "Unix milliseconds when the attempt finished; null while in flight."
+          },
+          "outcome": {
+            "type": ["string", "null"],
+            "enum": ["timeout", "http_error", "network_error", "policy_rejected", null],
+            "description": "The transport outcome; null while in flight."
+          },
+          "http_status": {
+            "type": ["integer", "null"],
+            "format": "int32",
+            "description": "The receiver's HTTP status when one was received; null otherwise."
+          }
+        },
+        "additionalProperties": false
+      },
+      "SealedWebhookDelivery": {
+        "type": "object",
+        "description": "Delivery metadata for one sealed event fan-out. No payload, callback URL, signing secret, response body, recipient or content is ever included.",
+        "required": ["delivery_id", "event_id", "status", "generation", "terminal_reason", "attempt_count", "created_at_ms", "updated_at_ms", "attempts"],
+        "properties": {
+          "delivery_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The delivery identity."
+          },
+          "event_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The stable sealed event identity being delivered; the receiver deduplicates on this value across generations."
+          },
+          "status": {
+            "type": "string",
+            "enum": ["pending", "leased", "succeeded", "dead"],
+            "description": "Delivery state. dead means terminal after exhaustion, policy rejection or retirement."
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 1,
+            "maximum": 3,
+            "description": "The current generation: initial plus at most two manual replays."
+          },
+          "terminal_reason": {
+            "type": ["string", "null"],
+            "enum": ["failed", "policy_rejected", "retired", "legacy", null],
+            "description": "Set exactly when status is dead; null otherwise."
+          },
+          "attempt_count": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0,
+            "maximum": 7,
+            "description": "Completed attempts in the current generation."
+          },
+          "next_attempt_at_ms": {
+            "type": ["integer", "null"],
+            "format": "int64",
+            "minimum": 0,
+            "description": "Unix milliseconds of the next retry; present only while pending, null otherwise. Retry schedule per generation: 1m, 5m, 15m, 1h, 6h, 24h after each failure."
+          },
+          "created_at_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "description": "Unix milliseconds of delivery creation."
+          },
+          "updated_at_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "description": "Unix milliseconds of the last state change."
+          },
+          "attempts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SealedWebhookDeliveryAttempt"
+            },
+            "description": "Attempts of every generation in order, including retired deliveries."
+          }
+        },
+        "additionalProperties": false
+      },
+      "SealedWebhookDeliveryPage": {
+        "type": "object",
+        "description": "One page of delivery history, newest first by creation time then ID.",
+        "required": ["deliveries", "next_before"],
+        "properties": {
+          "deliveries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SealedWebhookDelivery"
+            },
+            "description": "Deliveries of this endpoint."
+          },
+          "next_before": {
+            "type": ["string", "null"],
+            "format": "uuid",
+            "description": "The delivery_id to pass as before on the next request; null after the last page."
+          }
+        },
+        "additionalProperties": false
+      },
+      "SealedWebhookReplayAccepted": {
+        "type": "object",
+        "description": "Acceptance metadata for one bounded replay request. Contains no payload and no receiver data.",
+        "required": ["delivery_id", "generation", "created"],
+        "properties": {
+          "delivery_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The delivery a new generation was queued for."
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 2,
+            "maximum": 3,
+            "description": "The newly queued replay generation, or the existing generation on an idempotent replay with created false."
+          },
+          "created": {
+            "type": "boolean",
+            "description": "false when this exact Idempotency-Key was already honored (same generation returned)."
+          }
+        },
+        "additionalProperties": false
+      },
+      "SealedWebhookEventBody": {
+        "type": "object",
+        "description": "PROPOSED outbound body the delivery sender POSTs to the customer's callback URL for one accepted sealed inbound event. This is not a response of any API operation in this document. Ciphertext-only fanout: envelope_b64 carries the exact stored sealed envelope bytes and the relay never decrypts, never synthesizes plaintext and never substitutes synthetic-alpha content (Q11). Delivered with content type application/json and the headers x-zrotext-timestamp (ASCII Unix seconds) and x-zrotext-signature ('v1=' plus lowercase hex of HMAC-SHA256(timestamp || '.' || exact raw body) keyed by the endpoint signing secret); receivers enforce a five-minute timestamp tolerance and deduplicate the event_id across every generation. HTTP 2xx acknowledges; redirects are rejected; connect/read timeouts are bounded. Sealed outbound dispatch-status fanout is a separate deferred contract.",
+        "required": ["v", "type", "event_id", "delivery_id", "account_id", "device_id", "observed_at_ms", "envelope_b64", "unsigned_digest_b64"],
+        "properties": {
+          "v": {
+            "type": "integer",
+            "const": 1,
+            "description": "Event body version."
+          },
+          "type": {
+            "type": "string",
+            "const": "sealed.inbound_event",
+            "description": "The event kind: one accepted sealed inbound event (kind 02)."
+          },
+          "event_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The phone-allocated stable event identity (Q8); the receiver deduplicates on this value."
+          },
+          "delivery_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The delivery identity for this endpoint; changes across generations while event_id does not."
+          },
+          "account_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The account the event belongs to."
+          },
+          "device_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The capturing device named in the envelope's protected record."
+          },
+          "observed_at_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "description": "Device-observed time from the protected record, Unix milliseconds."
+          },
+          "envelope_b64": {
+            "type": "string",
+            "description": "The exact stored sealed envelope bytes (standard base64). Ciphertext only: the relay cannot open it and never emits plaintext, a JSON body alternative or a downgrade flag (Q11)."
+          },
+          "unsigned_digest_b64": {
+            "type": "string",
+            "description": "Standard base64 of the SHA-256 digest of the unsigned envelope bytes: the admission identity the receiver can compare against its own upload acknowledgment."
+          }
+        },
+        "additionalProperties": false
+      },
+      "SealedUsage": {
+        "type": "object",
+        "description": "The account's current metering period snapshot from the durable usage core. Integer message counts only; never currency, invoices or pricing.",
+        "required": ["metric", "period_start", "period_end", "limit_units", "reserved_units", "refunded_units", "used_units"],
+        "properties": {
+          "metric": {
+            "type": "string",
+            "const": "outbound_message",
+            "description": "The metered metric. Sealed outbound acceptance meters the shared outbound_message unit in v1; sealed acceptance does not introduce a second metric."
+          },
+          "period_start": {
+            "type": "string",
+            "format": "date",
+            "description": "Inclusive UTC calendar-month start of the current period (YYYY-MM-DD)."
+          },
+          "period_end": {
+            "type": "string",
+            "format": "date",
+            "description": "Exclusive end of the current period and reset boundary: counters restart at 00:00 UTC on this date."
+          },
+          "limit_units": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "description": "The period's unit limit copied from policy when the period row was first created."
+          },
+          "reserved_units": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "description": "Units reserved by accepted messages in this period, one per accepted sealed envelope, reserved in the same transaction as admission."
+          },
+          "refunded_units": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "description": "Units refunded against reservations in this period by the pre-grant cancellation/expiry path; never exceeds reserved_units."
+          },
+          "used_units": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "description": "reserved_units minus refunded_units: the units this period has consumed."
+          }
+        },
+        "additionalProperties": false
+      },
       "Error": {
         "type": "object",
         "description": "The existing error shape used by the message routes: a single machine-readable code and no content echo.",
@@ -436,18 +2051,23 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "Lowercase snake_case machine code for the admission failure; the response description defines the taxonomy.",
+            "description": "Lowercase snake_case machine code for the admission or resource failure; the response description defines the taxonomy.",
             "enum": [
               "invalid_request",
+              "invalid_webhook_endpoint",
               "future_manifest",
               "stale_event",
               "unauthorized",
               "forbidden",
+              "not_found",
               "stale_manifest",
               "re_enrollment_required",
               "idempotency_conflict",
               "event_id_conflict",
               "sequence_conflict",
+              "endpoint_limit",
+              "replay_not_eligible",
+              "replay_limit",
               "unsupported_media_type",
               "rate_limited",
               "queue_full",
