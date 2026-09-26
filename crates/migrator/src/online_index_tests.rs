@@ -4,7 +4,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::{sleep, timeout};
 use tokio_postgres::{Config, NoTls};
 
-async fn connect(config: &Config) -> Client {
+pub(super) async fn connect(config: &Config) -> Client {
     let (client, connection) = config.connect(NoTls).await.unwrap();
     tokio::spawn(async move {
         let _ = connection.await;
@@ -12,7 +12,7 @@ async fn connect(config: &Config) -> Client {
     client
 }
 
-async fn disposable_database() -> (String, Client, Config) {
+pub(super) async fn disposable_database() -> (String, Client, Config) {
     let base = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
         .expect("set ZT_AUTH_TEST_DATABASE_URL to a disposable PostgreSQL cluster with CREATEDB");
     let admin_config: Config = base.parse().unwrap();
@@ -31,7 +31,7 @@ async fn disposable_database() -> (String, Client, Config) {
     (name, admin, database_config)
 }
 
-async fn finish_database(name: &str, admin: &Client) {
+pub(super) async fn finish_database(name: &str, admin: &Client) {
     admin
         .batch_execute(&format!("DROP DATABASE {name} WITH (FORCE)"))
         .await

@@ -46,6 +46,9 @@ class RuntimeRoleTest(unittest.TestCase):
                 cls.sql("CREATE INDEX CONCURRENTLY messages_in_flight_updated "
                         "ON public.messages(updated_at,id) "
                         "WHERE state IN ('claimed','submitting','submitted');")
+            if migration.name == "040_radio_evidence_index.sql":
+                cls.sql("CREATE INDEX CONCURRENTLY message_events_attempt_evidence "
+                        "ON public.message_events(attempt_id,evidence_code)")
             cls.sql("BEGIN;\n" + migration.read_text(encoding="utf-8") + "\nCOMMIT;")
 
     @classmethod

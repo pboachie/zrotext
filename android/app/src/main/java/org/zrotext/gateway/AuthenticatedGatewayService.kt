@@ -252,9 +252,12 @@ class AuthenticatedGatewayService : Service() {
             keys.signDeviceChallenge(account, device, challenge, nonce)
         }
         var grantSeen = false
-        socket = client.newWebSocket(Request.Builder().url(url).build(), object : WebSocketListener() {
+        val statusPublisher = DeviceStatusPublisher()
+        socket = client.newWebSocket(Request.Builder().url(url)
+            .header("Sec-WebSocket-Protocol", DeviceStatusPublisher.PROTOCOL).build(), object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 if (generation != currentGeneration) return
+                statusPublisher.selectProtocol(response.header("Sec-WebSocket-Protocol"))
                 val hello = JSONObject().put("v", 1).put("type", "hello")
                     .put("device_id", machine.helloDeviceId().toString())
                 if (!webSocket.send(hello.toString()))
@@ -339,6 +342,13 @@ class AuthenticatedGatewayService : Service() {
                                             else HeartbeatTraceEvent.SEND_REJECTED, heartbeatEpoch)
                                         if (!queued) {
                                             disconnect(currentGeneration, DeviceReconnectPolicy.Loss.TRANSPORT)
+                                        } else {
+                                            val status = statusPublisher.nextFrame(heartbeatEpoch, SystemClock.elapsedRealtime()) {
+                                                DevicePreconditions.observe(applicationContext)
+                                            }
+                                            if (status != null && !webSocket.send(status)) {
+                                                disconnect(currentGeneration, DeviceReconnectPolicy.Loss.TRANSPORT)
+                                            }
                                         }
                                     } catch (_: IllegalStateException) {
                                         fail(webSocket, currentGeneration)

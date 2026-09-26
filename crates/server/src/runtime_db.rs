@@ -24,6 +24,8 @@ use tokio_postgres::Client;
 // Two default hubs use at most 72 connections, leaving room on a default
 // 100-connection PostgreSQL server for migrations, inspection and recovery.
 // Pooled idle sockets count against the same budgets as busy ones.
+// Device slots bound concurrent database work, not connected phones: the
+// stream admits 32 sessions and 32 handshakes without pinning their clients.
 const REQUEST_SLOTS: usize = 16;
 const DEVICE_SLOTS: usize = 16;
 const WORKER_SLOTS: usize = 4;
@@ -37,7 +39,7 @@ const IDLE_SWEEP_INTERVAL: Duration = Duration::from_secs(5);
 const MAX_LIFETIME: Duration = Duration::from_secs(30 * 60);
 const RESET_DEADLINE: Duration = Duration::from_secs(2);
 const CONNECT_DEADLINE: Duration = Duration::from_secs(3);
-const REQUEST_ADMISSION_WAIT: Duration = Duration::from_secs(2);
+const ADMISSION_WAIT: Duration = Duration::from_secs(2);
 /// Only used after evicting another database URL's idle socket, which frees a
 /// permit as soon as its driver observes the close.
 const EVICTION_WAIT: Duration = Duration::from_secs(1);
@@ -52,7 +54,7 @@ struct Idle {
 /// One admission class: a fixed socket budget plus the idle sockets it owns.
 struct ClassPool {
     slots: Arc<Semaphore>,
-    /// Request handlers may wait briefly; persistent sockets fail fast.
+    /// Request/device operations may wait briefly; background jobs fail fast.
     wait: bool,
     idle: Mutex<Vec<Idle>>,
     returned: Notify,
@@ -200,7 +202,7 @@ impl Pools {
     fn new() -> Self {
         Self {
             requests: ClassPool::new(REQUEST_SLOTS, true),
-            devices: ClassPool::new(DEVICE_SLOTS, false),
+            devices: ClassPool::new(DEVICE_SLOTS, true),
             workers: ClassPool::new(WORKER_SLOTS, false),
         }
     }
@@ -284,7 +286,7 @@ pub async fn connect_worker(url: &str) -> Result<PooledClient, ConnectError> {
 }
 
 async fn acquire(pool: &Arc<ClassPool>, url: &str) -> Result<PooledClient, ConnectError> {
-    let deadline = Instant::now() + REQUEST_ADMISSION_WAIT;
+    let deadline = Instant::now() + ADMISSION_WAIT;
     let url: Arc<str> = url.into();
     loop {
         // Register before checking so a socket returned in between wakes us.
@@ -312,9 +314,9 @@ async fn acquire(pool: &Arc<ClassPool>, url: &str) -> Result<PooledClient, Conne
                 .map_err(|_| ConnectError::Capacity)?;
             return open(pool, url, permit).await;
         }
-        // Request admission already bounds external handlers; permit a brief,
-        // cancellable wait for normal bursts, for either a free slot or a
-        // socket released back to the pool.
+        // HTTP and device socket admission already bound external callers.
+        // Permit a brief, cancellable wait for bursts (including synchronized
+        // heartbeats), for a free slot or a reset socket returned to the pool.
         pool.evict_other(&url);
         tokio::select! {
             permit = timeout_at(deadline, pool.slots.clone().acquire_owned()) => {
@@ -378,7 +380,7 @@ mod tests {
             acquire(&pool, "invalid").await,
             Err(ConnectError::Capacity)
         ));
-        assert_eq!(started.elapsed(), REQUEST_ADMISSION_WAIT);
+        assert_eq!(started.elapsed(), ADMISSION_WAIT);
     }
 
     #[tokio::test]

@@ -11,7 +11,7 @@ use crate::{
     enrollment::{self, AuthenticatedDevice, EnrollmentError, EnrollmentHasher},
     inbound::unsolicited::{self, LineOptOut, LineOptOutError},
     inbound::{self, Content, InboundError, InboundEvent, InboundSession},
-    runtime_db::{self, PooledClient},
+    runtime_db,
     sealed_inbound::line_activation::{SimObservation, exchange},
 };
 use axum::{
@@ -41,6 +41,8 @@ use tokio_postgres::Client;
 use uuid::Uuid;
 use zrotext_delivery_store::{DeliveryStore, GrantRecord, RadioEvent, SessionRecord, StoreError};
 use zrotext_domain::{Evidence, MessageState};
+
+mod preconditions;
 
 const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
 // Whole pre-session phase, from the upgrade request through proof verification,
@@ -145,6 +147,14 @@ enum ClientFrame {
     },
     #[serde(rename = "heartbeat")]
     Heartbeat { v: u8 },
+    #[serde(rename = "device_status")]
+    DeviceStatus {
+        v: u8,
+        connection_epoch: i64,
+        selected_sim: preconditions::SelectedSim,
+        sms_permission: preconditions::SmsPermission,
+        airplane_mode: preconditions::AirplaneMode,
+    },
     #[serde(rename = "alpha_ready")]
     AlphaReady {
         v: u8,
@@ -400,6 +410,7 @@ async fn upgrade(
     };
     let deadline = tokio::time::Instant::now() + admission.handshake_deadline;
     websocket
+        .protocols([preconditions::PROTOCOL])
         .max_message_size(MAX_FRAME_BYTES)
         .max_frame_size(MAX_FRAME_BYTES)
         .on_upgrade(move |socket| run_socket(socket, state, admission, handshake_slot, deadline))
@@ -528,13 +539,13 @@ async fn close_handshake(socket: &mut WebSocket, code: u16) {
 type HandshakeRefusal = Option<u16>;
 
 /// Hello, challenge and proof. Runs under the handshake deadline and returns the
-/// device-budget database client together with the verified identity.
+/// verified identity. Database checkouts never span a peer's proof wait.
 async fn authenticate(
     socket: &mut WebSocket,
     state: &DeviceSocketState,
     frame_budget: &mut FrameBudget,
     step_timeout: Duration,
-) -> Result<(PooledClient, AuthenticatedDevice), HandshakeRefusal> {
+) -> Result<AuthenticatedDevice, HandshakeRefusal> {
     let Some(ClientFrame::Hello { v: 1, device_id }) =
         timeout(step_timeout, receive_frame(socket, frame_budget))
             .await
@@ -543,7 +554,7 @@ async fn authenticate(
     else {
         return Err(Some(close_code::POLICY));
     };
-    let Ok(mut client) = runtime_db::connect_device(&state.database_url).await else {
+    let Ok(client) = runtime_db::connect_device(&state.database_url).await else {
         return Err(Some(RETRY_LATER));
     };
     // Share the HTTP enrollment budgets across transports and server instances.
@@ -566,6 +577,7 @@ async fn authenticate(
         enrollment::issue_device_challenge(&client, &state.enrollment_hasher, device_id)
             .await
             .map_err(|error| Some(enrollment_close_code(&error)))?;
+    drop(client);
     if !send_frame(
         socket,
         ServerFrame::Challenge {
@@ -608,6 +620,9 @@ async fn authenticate(
     {
         return Err(Some(close_code::POLICY));
     }
+    let Ok(mut client) = runtime_db::connect_device(&state.database_url).await else {
+        return Err(Some(RETRY_LATER));
+    };
     if !matches!(
         abuse_limits::consume_or_verify(
             &client,
@@ -629,7 +644,7 @@ async fn authenticate(
     )
     .await
     .map_err(|error| Some(enrollment_close_code(&error)))?;
-    Ok((client, identity))
+    Ok(identity)
 }
 
 async fn run_socket(
@@ -639,6 +654,10 @@ async fn run_socket(
     handshake_slot: OwnedSemaphorePermit,
     deadline: tokio::time::Instant,
 ) {
+    let status_negotiated = socket
+        .protocol()
+        .is_some_and(|value| value == preconditions::PROTOCOL);
+    let mut status_budget = preconditions::ReportBudget::default();
     let mut frame_budget = FrameBudget::new(Instant::now());
     let authenticated = timeout_at(
         deadline,
@@ -658,8 +677,8 @@ async fn run_socket(
     // The handshake budget is released on every path before any close write or
     // steady-state work; only a verified device continues with a session slot.
     drop(handshake_slot);
-    let (mut client, identity, _session_slot) = match (authenticated, session_slot) {
-        (Ok((client, identity)), Some(slot)) => (client, identity, slot),
+    let (identity, _session_slot) = match (authenticated, session_slot) {
+        (Ok(identity), Some(slot)) => (identity, slot),
         (Ok(_), None) => {
             close_handshake(&mut socket, RETRY_LATER).await;
             return;
@@ -674,6 +693,10 @@ async fn run_socket(
         close_handshake(&mut socket, RETRY_LATER).await;
         return;
     }
+    let Ok(mut client) = runtime_db::connect_device(&state.database_url).await else {
+        close_handshake(&mut socket, RETRY_LATER).await;
+        return;
+    };
     let session = match claim_session(&mut client, identity, &state).await {
         Ok(Some(session)) => session,
         Ok(None) => {
@@ -681,14 +704,17 @@ async fn run_socket(
                 Ok(false) => close_code::POLICY,
                 _ => RETRY_LATER,
             };
+            drop(client);
             close_handshake(&mut socket, code).await;
             return;
         }
         Err(_) => {
+            drop(client);
             close_handshake(&mut socket, RETRY_LATER).await;
             return;
         }
     };
+    drop(client);
     if !send_frame(
         &mut socket,
         ServerFrame::Session {
@@ -699,7 +725,7 @@ async fn run_socket(
     )
     .await
     {
-        let _ = release_session(&client, session).await;
+        release_socket_session(&state, session).await;
         return;
     }
     let mut last_heartbeat = Instant::now();
@@ -725,13 +751,37 @@ async fn run_socket(
         tokio::select! {
             message = receive_frame(&mut socket, &mut frame_budget) => {
                 match message {
+                    Some(ClientFrame::DeviceStatus { v: 1, connection_epoch, selected_sim, sms_permission, airplane_mode }) => {
+                        if !status_negotiated || connection_epoch != session.connection_epoch {
+                            close_with_code = Some(close_code::POLICY);
+                            break;
+                        }
+                        if !status_budget.admit(Instant::now()) { continue; }
+                        let Ok(mut client) = runtime_db::connect_device(&state.database_url).await else {
+                            close_with_code = Some(RETRY_LATER);
+                            break;
+                        };
+                        let report = preconditions::Report { selected_sim, sms_permission, airplane_mode };
+                        let accepted = preconditions::record(&mut client, session, &state, report).await;
+                        drop(client);
+                        match accepted {
+                            Ok(true) => {},
+                            Ok(false) => { close_with_code = Some(close_code::POLICY); break; },
+                            Err(_) => { close_with_code = Some(RETRY_LATER); break; },
+                        }
+                    }
                     Some(ClientFrame::Heartbeat { v: 1 }) => {
                         let received_at = Instant::now();
                         let since_prior_accepted_ms = received_at.duration_since(last_heartbeat).as_millis();
+                        let Ok(client) = runtime_db::connect_device(&state.database_url).await else {
+                            close_with_code = Some(RETRY_LATER);
+                            break;
+                        };
                         if !renew_session(&client, session, &state).await.unwrap_or(false) {
                             close_reason = "heartbeat_renew_failed_or_fenced";
                             break;
                         }
+                        drop(client);
                         last_heartbeat = Instant::now();
                         if !send_frame(&mut socket, ServerFrame::HeartbeatAck {
                             v: 1, connection_epoch: session.connection_epoch,
@@ -754,6 +804,10 @@ async fn run_socket(
                     {
                         let Ok(bytes) = URL_SAFE_NO_PAD.decode(recipient_digest.as_bytes()) else { break; };
                         let Ok(digest): Result<[u8; 32], _> = bytes.try_into() else { break; };
+                        let Ok(client) = runtime_db::connect_device(&state.database_url).await else {
+                            close_with_code = Some(RETRY_LATER);
+                            break;
+                        };
                         if URL_SAFE_NO_PAD.encode(digest) != recipient_digest
                             || !state.alpha_policy.allows_recipient_digest(session.account_id, &digest)
                             || !session_current(&client, session, &state).await.unwrap_or(false)
@@ -765,6 +819,10 @@ async fn run_socket(
                         v: 1, connection_epoch, event_id, message_id, attempt_id,
                         evidence, observed_at_ms, segment_index, segment_count,
                     }) if connection_epoch == session.connection_epoch => {
+                        let Ok(mut client) = runtime_db::connect_device(&state.database_url).await else {
+                            close_with_code = Some(RETRY_LATER);
+                            break;
+                        };
                         if !session_current(&client, session, &state).await.unwrap_or(false) {
                             break;
                         }
@@ -804,6 +862,7 @@ async fn run_socket(
                             && grant_still_current(&client, session, message_id, attempt_id, &state)
                                 .await
                                 .unwrap_or(false);
+                        drop(client);
                         if !send_frame(&mut socket, ServerFrame::RadioEventAck {
                             v: 1, event_id, state: next, submit_permitted,
                         }).await { break; }
@@ -835,6 +894,10 @@ async fn run_socket(
                             part_count, content: Content::MetadataOnly,
                             signature_der: &signature,
                         };
+                        let Ok(mut client) = runtime_db::connect_device(&state.database_url).await else {
+                            close_with_code = Some(RETRY_LATER);
+                            break;
+                        };
                         let outcome = match inbound::ingest_with_clock(
                             &mut client, inbound_session, &event, device_sent_at_ms,
                         ).await {
@@ -844,6 +907,7 @@ async fn run_socket(
                                 break;
                             }
                         };
+                        drop(client);
                         if !send_frame(&mut socket, ServerFrame::InboundEventAck {
                             v: 1, event_id,
                             created: outcome.created,
@@ -881,6 +945,10 @@ async fn run_socket(
                             recipient_e164: &recipient_e164, action: action.into(),
                             observed_at_ms, signature_der: &signature,
                         };
+                        let Ok(mut client) = runtime_db::connect_device(&state.database_url).await else {
+                            close_with_code = Some(RETRY_LATER);
+                            break;
+                        };
                         let created = match unsolicited::ingest_line_opt_out(
                             &mut client, inbound_session, &event,
                         ).await {
@@ -890,6 +958,7 @@ async fn run_socket(
                                 break;
                             }
                         };
+                        drop(client);
                         if !send_frame(&mut socket, ServerFrame::LineOptOutAck {
                             v: 1, event_id, created,
                         }).await { break; }
@@ -927,6 +996,10 @@ async fn run_socket(
                             },
                             signature_der: &signature,
                         };
+                        let Ok(mut client) = runtime_db::connect_device(&state.database_url).await else {
+                            close_with_code = Some(RETRY_LATER);
+                            break;
+                        };
                         let accepted = match exchange::record_device_proof(
                             &mut client, inbound_session, proof,
                         ).await {
@@ -936,6 +1009,7 @@ async fn run_socket(
                                 break;
                             }
                         };
+                        drop(client);
                         if !send_frame(&mut socket, ServerFrame::SmsLineProofAck {
                             v: 1, challenge_id, accepted,
                         }).await { break; }
@@ -948,15 +1022,16 @@ async fn run_socket(
                     close_reason = "heartbeat_deadline";
                     break;
                 }
+                let Ok(client) = runtime_db::connect_device(&state.database_url).await else {
+                    close_with_code = Some(RETRY_LATER);
+                    break;
+                };
                 if !session_current(&client, session, &state).await.unwrap_or(false) {
                     close_reason = "session_check_failed_or_fenced";
                     break;
                 }
             }
             _ = dispatch_checks.tick(), if alpha_ready.is_some() => {
-                if !session_current(&client, session, &state).await.unwrap_or(false) {
-                    break;
-                }
                 let Some((recipient_digest, armed_at)) = alpha_ready else { continue; };
                 if armed_at.elapsed() > Duration::from_secs(ALPHA_READY_SECONDS) {
                     alpha_ready = None;
@@ -965,7 +1040,16 @@ async fn run_socket(
                 if last_grant_at.is_some_and(|at| at.elapsed() < Duration::from_secs(MIN_SECONDS_BETWEEN_GRANTS)) {
                     continue;
                 }
-                match poll_synthetic_grant(&mut client, session, &state, &recipient_digest).await {
+                let Ok(mut client) = runtime_db::connect_device(&state.database_url).await else {
+                    close_with_code = Some(RETRY_LATER);
+                    break;
+                };
+                if !session_current(&client, session, &state).await.unwrap_or(false) {
+                    break;
+                }
+                let grant = poll_synthetic_grant(&mut client, session, &state, &recipient_digest).await;
+                drop(client);
+                match grant {
                     Ok(Some(frame)) => {
                         alpha_ready = None;
                         if !send_frame(&mut socket, frame).await { break; }
@@ -987,9 +1071,10 @@ async fn run_socket(
                 // Retire finished exchanges on the first poll and about once a minute.
                 let retire = sms_line_ticks.is_multiple_of(SMS_LINE_RETIRE_EVERY_TICKS);
                 sms_line_ticks = sms_line_ticks.wrapping_add(1);
-                if !push_sms_line_frames(&mut socket, &client, inbound_session,
+                if !push_sms_line_frames(&mut socket, &state.database_url, inbound_session,
                     &mut sms_line_acks_sent, retire).await {
                     close_reason = "sms_line_push_failed";
+                    close_with_code = Some(RETRY_LATER);
                     break;
                 }
             }
@@ -1006,7 +1091,7 @@ async fn run_socket(
             last_heartbeat.elapsed().as_millis()
         );
     }
-    let _ = release_session(&client, session).await;
+    release_socket_session(&state, session).await;
     let _ = socket
         .send(Message::Close(close_with_code.map(|code| CloseFrame {
             code,
@@ -1015,26 +1100,37 @@ async fn run_socket(
         .await;
 }
 
+async fn release_socket_session(state: &DeviceSocketState, session: DeviceSession) {
+    // Best effort: if storage is unavailable the bounded session lease expires.
+    if let Ok(client) = runtime_db::connect_device(&state.database_url).await {
+        let _ = release_session(&client, session).await;
+    }
+}
+
 /// Pushes at most one pending SMS line challenge and one activation
 /// acknowledgement. A challenge is marked pushed only after its frame was
 /// written; an acknowledgement repeats on each new connection until retired.
 async fn push_sms_line_frames(
     socket: &mut WebSocket,
-    client: &Client,
+    database_url: &str,
     session: InboundSession<'_>,
     acks_sent: &mut Vec<Uuid>,
     retire: bool,
 ) -> bool {
+    let Ok(client) = runtime_db::connect_device(database_url).await else {
+        return false;
+    };
     if retire
-        && exchange::retire(client, session, exchange::ACK_RESEND_SECONDS)
+        && exchange::retire(&client, session, exchange::ACK_RESEND_SECONDS)
             .await
             .is_err()
     {
         return false;
     }
-    let Ok(challenge) = exchange::next_challenge(client, session).await else {
+    let Ok(challenge) = exchange::next_challenge(&client, session).await else {
         return false;
     };
+    drop(client);
     if let Some(challenge) = challenge {
         let frame = ServerFrame::SmsLineChallenge {
             v: 1,
@@ -1046,10 +1142,15 @@ async fn push_sms_line_frames(
             nonce: URL_SAFE_NO_PAD.encode(challenge.nonce),
             expires_at_ms: challenge.expires_at_ms,
         };
-        if !send_frame(socket, frame).await
-            || exchange::mark_challenge_pushed(client, session, challenge.challenge_id)
-                .await
-                .is_err()
+        if !send_frame(socket, frame).await {
+            return false;
+        }
+        let Ok(client) = runtime_db::connect_device(database_url).await else {
+            return false;
+        };
+        if exchange::mark_challenge_pushed(&client, session, challenge.challenge_id)
+            .await
+            .is_err()
         {
             return false;
         }
@@ -1057,9 +1158,13 @@ async fn push_sms_line_frames(
     if acks_sent.len() >= MAX_SMS_LINE_ACKS_PER_CONNECTION {
         return true;
     }
-    let Ok(ack) = exchange::next_ack(client, session, acks_sent).await else {
+    let Ok(client) = runtime_db::connect_device(database_url).await else {
         return false;
     };
+    let Ok(ack) = exchange::next_ack(&client, session, acks_sent).await else {
+        return false;
+    };
+    drop(client);
     if let Some(ack) = ack {
         let frame = ServerFrame::SmsLineActivated {
             v: 1,

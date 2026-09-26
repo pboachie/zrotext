@@ -6,6 +6,13 @@
 //! bounds instead of a paused clock: auto-advance would fire the deadlines
 //! while the runtime waits on socket I/O.
 
+#[path = "database_capacity_tests.rs"]
+mod database_capacity_tests;
+#[path = "preconditions_lock_tests.rs"]
+mod preconditions_lock_tests;
+#[path = "preconditions_tests.rs"]
+mod preconditions_tests;
+
 use super::*;
 use crate::enrollment::{DeviceChallenge, device_challenge_bytes};
 use futures_util::{SinkExt, StreamExt};

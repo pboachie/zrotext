@@ -93,10 +93,20 @@ stops migration without being replaced. Once 034 is recorded, later migrator
 runs and dispatch-enabled API readiness fail if the index becomes absent,
 invalid, or different.
 
+Migration 040 uses the same online preparation and transactional validation for
+`message_events_attempt_evidence`, a btree index on `(attempt_id, evidence_code)`.
+It bounds the radio-evidence conflict and durable-intent lookups as retained
+history grows. The migrator refuses a same-name index with different keys,
+ordering, collation, operator classes, uniqueness, included columns or predicate.
+It will not interrupt an active build; an interrupted matching invalid build is
+retried concurrently. After 040 is recorded, a missing or changed index stops
+subsequent migration runs. This index does not change radio evidence or message
+state semantics; API readiness continues to enforce the separate 034 index.
+
 A concurrent build permits message writes but may wait for older transactions;
 monitor `pg_stat_progress_create_index` and allow migration to finish before
 starting API workers. If application rollback is needed, the valid index can
-remain; keep the migration package containing this 034 file so a rolled-back
+remain; keep the migration package containing the applied 034 and 040 files so a rolled-back
 API does not rerun an older migrator with a mismatched checksum. Removing the
 index later requires a separately planned
 `DROP INDEX CONCURRENTLY` outside a transaction, after workers that depend on
@@ -283,6 +293,11 @@ about one deployment; nothing here is enforced by the repository.
   in-process budgets (32 authenticated sockets and 32 handshakes per process)
   are not keyed by client address and the bundled Caddyfile adds no limiting;
   this control is upstream guidance the repository does not ship.
+  The 16 device PostgreSQL clients per process are shared by short operations;
+  connected streams and pending proofs do not pin a client. Device operations
+  wait up to two seconds for pool admission, then close with retry-later on
+  exhaustion. Size database capacity using the separate request/device/worker
+  budgets in [self-hosting](../../docs/SELF-HOSTING.md#runtime-database-and-device-capacity).
 
 ### Database roles and network isolation
 
