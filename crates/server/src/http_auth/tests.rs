@@ -453,7 +453,7 @@ async fn registration_fails_closed_without_delivery_and_never_returns_token() {
         .header(header::ORIGIN, "https://zrotext.example")
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(
-            r#"{"email":"owner@example.test","password":"correct horse 123"}"#,
+            serde_json::json!({"email":"owner@example.test","password":crate::test_keys::password(1)}).to_string(),
         ))
         .unwrap();
     let response = router(state).oneshot(request).await.unwrap();
@@ -517,7 +517,7 @@ async fn login_rejects_cross_origin_before_password_work() {
         .header(header::ORIGIN, "https://evil.example")
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(
-            r#"{"email":"owner@example.test","password":"correct horse 123"}"#,
+            serde_json::json!({"email":"owner@example.test","password":crate::test_keys::password(1)}).to_string(),
         ))
         .unwrap();
     let response = router(state).oneshot(request).await.unwrap();
@@ -721,7 +721,7 @@ async fn postgres_http_account_lifecycle_enforces_csrf_and_revocation() {
         denied
             .oneshot(json_post(
                 "/register",
-                serde_json::json!({"email":"owner@example.test","password":"correct horse 123"}),
+                serde_json::json!({"email":"owner@example.test","password":crate::test_keys::password(1)}),
             ))
             .await
             .unwrap()
@@ -766,7 +766,7 @@ async fn postgres_http_account_lifecycle_enforces_csrf_and_revocation() {
         app.clone()
             .oneshot(invite_post(
                 "/register",
-                serde_json::json!({"email":"stranger@example.test","password":"correct horse 123"}),
+                serde_json::json!({"email":"stranger@example.test","password":crate::test_keys::password(1)}),
                 &invite,
             ))
             .await
@@ -778,7 +778,7 @@ async fn postgres_http_account_lifecycle_enforces_csrf_and_revocation() {
         app.clone()
             .oneshot(invite_post(
                 "/register",
-                serde_json::json!({"email":"second@example.test","password":"correct horse 123"}),
+                serde_json::json!({"email":"second@example.test","password":crate::test_keys::password(1)}),
                 &invite,
             ))
             .await
@@ -806,7 +806,7 @@ async fn postgres_http_account_lifecycle_enforces_csrf_and_revocation() {
         .clone()
         .oneshot(invite_post(
             "/register",
-            serde_json::json!({"email":"owner@example.test","password":"correct horse 123"}),
+            serde_json::json!({"email":"owner@example.test","password":crate::test_keys::password(1)}),
             &invite,
         ))
         .await
@@ -828,10 +828,11 @@ async fn postgres_http_account_lifecycle_enforces_csrf_and_revocation() {
             .get::<_, i64>(0),
         1
     );
+    // Label 3 was never registered for this account; label 1 is the owner's.
     for (email, password) in [
-        ("unknown@example.test", "correct horse 123"),
-        ("owner@example.test", "wrong password"),
-        ("owner@example.test", "correct horse 123"),
+        ("unknown@example.test", crate::test_keys::password(4)),
+        ("owner@example.test", crate::test_keys::password(3)),
+        ("owner@example.test", crate::test_keys::password(1)),
     ] {
         let response = app
             .clone()
@@ -865,7 +866,7 @@ async fn postgres_http_account_lifecycle_enforces_csrf_and_revocation() {
         .clone()
         .oneshot(json_post(
             "/login",
-            serde_json::json!({"email":"owner@example.test","password":"correct horse 123"}),
+            serde_json::json!({"email":"owner@example.test","password":crate::test_keys::password(1)}),
         ))
         .await
         .unwrap();
@@ -901,7 +902,7 @@ async fn postgres_http_account_lifecycle_enforces_csrf_and_revocation() {
         .clone()
         .oneshot(json_post(
             "/login",
-            serde_json::json!({"email":"owner@example.test","password":"correct horse 123"}),
+            serde_json::json!({"email":"owner@example.test","password":crate::test_keys::password(1)}),
         ))
         .await
         .unwrap();
@@ -963,7 +964,7 @@ async fn postgres_http_account_lifecycle_enforces_csrf_and_revocation() {
     );
     let proven_request = owner_post(
         "/sessions/revoke-others",
-        serde_json::json!({"current_password":"correct horse 123"}),
+        serde_json::json!({"current_password":crate::test_keys::password(1)}),
         &cookie_header,
         csrf,
     );
@@ -1272,7 +1273,7 @@ async fn postgres_http_account_lifecycle_enforces_csrf_and_revocation() {
     let response = router(state)
         .oneshot(json_post(
             "/login",
-            serde_json::json!({"email":"OWNER@example.test","password":"correct horse 123"}),
+            serde_json::json!({"email":"OWNER@example.test","password":crate::test_keys::password(1)}),
         ))
         .await
         .unwrap();

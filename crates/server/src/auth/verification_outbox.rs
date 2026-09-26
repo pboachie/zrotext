@@ -218,9 +218,14 @@ mod tests {
         .await
         .unwrap();
         let hasher = TokenHasher::new(crate::test_keys::key(29)).unwrap();
-        let signup = register(&mut a, &hasher, "owner@example.test", "correct horse 123")
-            .await
-            .unwrap();
+        let signup = register(
+            &mut a,
+            &hasher,
+            "owner@example.test",
+            &crate::test_keys::password(1),
+        )
+        .await
+        .unwrap();
         let first = claim_verification_mail(&mut a, &hasher)
             .await
             .unwrap()
@@ -261,22 +266,33 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+        // Label 3 is a fixture password this account never registered with.
         assert!(
-            !request_verification_resend(&mut a, &hasher, "owner@example.test", "wrong password")
-                .await
-                .unwrap()
+            !request_verification_resend(
+                &mut a,
+                &hasher,
+                "owner@example.test",
+                &crate::test_keys::password(3)
+            )
+            .await
+            .unwrap()
         );
         assert!(
-            request_verification_resend(&mut a, &hasher, "owner@example.test", "correct horse 123")
-                .await
-                .unwrap()
+            request_verification_resend(
+                &mut a,
+                &hasher,
+                "owner@example.test",
+                &crate::test_keys::password(1)
+            )
+            .await
+            .unwrap()
         );
         assert!(
             !request_verification_resend(
                 &mut a,
                 &hasher,
                 "owner@example.test",
-                "correct horse 123"
+                &crate::test_keys::password(1)
             )
             .await
             .unwrap()
@@ -299,7 +315,7 @@ mod tests {
                 &mut a,
                 &hasher,
                 "owner@example.test",
-                "correct horse 123"
+                &crate::test_keys::password(1)
             )
             .await
             .unwrap()
@@ -342,7 +358,7 @@ mod tests {
             &mut client,
             &hasher,
             "limit@example.test",
-            "correct horse 123",
+            &crate::test_keys::password(1),
         )
         .await
         .unwrap();
@@ -358,7 +374,7 @@ mod tests {
                 &mut client,
                 &hasher,
                 "limit@example.test",
-                "correct horse 123"
+                &crate::test_keys::password(1)
             )
             .await
             .unwrap()
@@ -414,7 +430,7 @@ mod tests {
                     &mut client,
                     &hasher,
                     "limit@example.test",
-                    "correct horse 123"
+                    &crate::test_keys::password(1)
                 )
                 .await
                 .unwrap()
@@ -438,7 +454,7 @@ mod tests {
                 &mut client,
                 &hasher,
                 "limit@example.test",
-                "correct horse 123"
+                &crate::test_keys::password(1)
             )
             .await
             .unwrap()
