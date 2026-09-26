@@ -175,6 +175,19 @@ separate fields. Neither field establishes Android SMS permission, SIM state,
 carrier service, or radio send readiness. The owner API returns 503 rather than
 rendering a standby's potentially stale lease state.
 
+Each owner device response also includes `pending_messages` (accepted, queued or
+claimed), `in_flight_messages` (submitting or submitted), and the database
+`status_observed_at_ms`. Each count is capped at 1,000 and rendered as `1,000+`
+at the cap. The query first materializes at most 51 tenant-owned devices for the
+50-device page and its next cursor, then runs capped probes ordered by state and creation time to match the existing
+`messages_device_state` index. It excludes terminal and uncertain states; these
+remain in the message timeline. Counts describe stored writer states, including
+work waiting for expiry reconciliation, rather than permission to dispatch.
+Offline and revoked devices can still have recorded work. The dashboard shows
+the snapshot time, keeps unavailable counts distinct from zero, and marks a
+retained snapshot stale when an automatic refresh fails. No SIM identifiers,
+phone numbers, message content, or new readiness claim are exposed.
+
 The optional [Android preconditions extension](../protocol/v1/device-preconditions.md)
 adds only selected-SIM availability, SMS permission and airplane-mode enums to
 the device list. Reports are authenticated-session scoped, timestamped by the
