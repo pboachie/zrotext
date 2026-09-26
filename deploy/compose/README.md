@@ -10,6 +10,10 @@ message payloads and states, an attempt and event, an ungranted dispatch job,
 an idempotency key, and usage records. The restore rehearsal verifies those
 exact records in both the source and the database-only restore target.
 
+For moving an existing deployment to a newer version of the source, follow the
+[upgrade guide](UPGRADE.md); it covers pre-flight recording, the migration
+sequence, and rollback.
+
 For a release image, use a checkout of its exact annotated source tag. Run
 `python3 scripts/release_source_metadata.py` there to obtain the web digest,
 device-stream schema digest and final migration number. Pass those values with
@@ -170,7 +174,9 @@ using another object owner needs an explicit grant review.
 For an **existing Compose volume**, back up first and stop both API services.
 Keep the existing admin password and URL, and add the independent runtime secret
 to the private `.env`. Do not delete or reinitialize the volume. For this upgrade
-and later migration or runtime-password changes, run from the repository root:
+and later migration or runtime-password changes, run from the repository root
+(the full procedure, including pre-flight recording and post-upgrade checks, is
+in the [upgrade guide](UPGRADE.md)):
 
 ```sh
 docker compose --env-file .env -f deploy/compose/compose.yaml stop app app_b

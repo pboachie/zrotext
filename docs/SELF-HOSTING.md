@@ -80,7 +80,11 @@ own database, checks HTTPS sign-in,
 secure session cookies and exact-Origin handling, then performs a WSS upgrade
 and removes the test containers and volumes. It does not send mail or SMS.
 
-Production packaging and upgrade instructions will expand as release artifacts become available. For now, use this stack as a development environment and check the repository's releases for supported versions.
+Production packaging instructions will expand as release artifacts become
+available. For now, use this stack as a development environment, check the
+repository's releases for supported versions, and follow the
+[Compose upgrade guide](../deploy/compose/UPGRADE.md) when moving an existing
+deployment to a newer source snapshot or release image.
 
 ### PostgreSQL transport TLS
 
