@@ -13,7 +13,7 @@ use crate::{
 };
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -39,6 +39,40 @@ pub(super) struct OpenResponse {
 pub(super) struct ApproveBody {
     owner_signature_der_b64: String,
 }
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ListQuery {
+    #[serde(default)]
+    before: Option<Uuid>,
+}
+
+#[derive(Serialize)]
+pub(super) struct LineSummary {
+    line_id: Uuid,
+    state: String,
+    generation: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    purpose: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    device_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    device_name: Option<String>,
+    /// The bound phone was revoked; the line needs activating on another phone.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    device_revoked: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    approved_at_ms: Option<i64>,
+    created_at_ms: i64,
+}
+
+#[derive(Serialize)]
+pub(super) struct LinePage {
+    lines: Vec<LineSummary>,
+    next_cursor: Option<Uuid>,
+}
+
+const LINE_PAGE: i64 = 50;
 
 #[derive(Serialize)]
 pub(super) struct ViewResponse {
@@ -135,6 +169,88 @@ pub(super) async fn open(
             expires_at_ms,
         }),
     ))
+}
+
+/// The signed-in owner's phone lines, newest first, with the phone and scope
+/// of each line's active binding. Account-scoped and paginated.
+pub(super) async fn list(
+    State(state): State<Arc<AuthHttpState>>,
+    Query(query): Query<ListQuery>,
+    headers: HeaderMap,
+) -> Result<Json<LinePage>, AuthHttpError> {
+    require_enabled(&state)?;
+    let client = connect(&state.database_url).await?;
+    let owner = require_owner(
+        &client,
+        &state.hasher,
+        &state.canonical_origin,
+        &headers,
+        false,
+    )
+    .await?;
+    let csrf_cookie = cookie(&headers, CSRF_COOKIE).ok_or(AuthHttpError::Forbidden)?;
+    let csrf_header = headers
+        .get(CSRF_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .ok_or(AuthHttpError::Forbidden)?;
+    owner
+        .require_csrf_token(&state.hasher, csrf_cookie, csrf_header)
+        .map_err(map_auth)?;
+    let account_id = owner.tenant.account_id();
+    let before = match query.before {
+        Some(before) => Some(
+            client
+                .query_opt(
+                    "SELECT created_at,id FROM phone_lines WHERE account_id=$1 AND id=$2",
+                    &[&account_id, &before],
+                )
+                .await
+                .map_err(|_| AuthHttpError::Unavailable)?
+                .ok_or(AuthHttpError::NotFound)?,
+        ),
+        None => None,
+    };
+    let before_at: Option<std::time::SystemTime> = before.as_ref().map(|row| row.get(0));
+    let before_id: Option<Uuid> = before.as_ref().map(|row| row.get(1));
+    let rows = client
+        .query(
+            "SELECT l.id,l.state,l.current_binding_generation,b.purpose,b.device_id,d.display_name, \
+               (extract(epoch FROM l.approved_at)*1000)::bigint, \
+               (extract(epoch FROM l.created_at)*1000)::bigint, \
+               CASE WHEN d.id IS NULL THEN NULL ELSE d.revoked_at IS NOT NULL END \
+             FROM phone_lines l \
+             LEFT JOIN device_line_bindings b ON (b.account_id,b.line_id,b.generation) \
+               =(l.account_id,l.id,l.current_binding_generation) AND b.state='active' \
+             LEFT JOIN devices d ON (d.account_id,d.id)=(b.account_id,b.device_id) \
+             WHERE l.account_id=$1 \
+               AND ($2::timestamptz IS NULL OR (l.created_at,l.id)<($2,$3::uuid)) \
+             ORDER BY l.created_at DESC,l.id DESC LIMIT $4",
+            &[&account_id, &before_at, &before_id, &(LINE_PAGE + 1)],
+        )
+        .await
+        .map_err(|_| AuthHttpError::Unavailable)?;
+    let has_more = rows.len() as i64 > LINE_PAGE;
+    let lines: Vec<LineSummary> = rows
+        .into_iter()
+        .take(LINE_PAGE as usize)
+        .map(|row| LineSummary {
+            line_id: row.get(0),
+            state: row.get(1),
+            generation: row.get(2),
+            purpose: row.get(3),
+            device_id: row.get(4),
+            device_name: row.get(5),
+            device_revoked: row.get(8),
+            approved_at_ms: row.get(6),
+            created_at_ms: row.get(7),
+        })
+        .collect();
+    let next_cursor = if has_more {
+        lines.last().map(|line| line.line_id)
+    } else {
+        None
+    };
+    Ok(Json(LinePage { lines, next_cursor }))
 }
 
 pub(super) async fn view(

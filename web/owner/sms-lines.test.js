@@ -41,20 +41,23 @@ function verifies(sec1, message, der) {
   return verify("sha256", message, { key, dsaEncoding: "der" }, der);
 }
 
-async function smsLinesPage({ signedIn = true, tamper = null, register = "ok" } = {}) {
+async function smsLinesPage({ signedIn = true, tamper = null, register = "ok", linePages = null } = {}) {
   const elements = new Map();
   const makeElement = () => ({
     textContent: "", hidden: false, disabled: false, value: "", children: [], listeners: {},
     replaceChildren(...children) { this.children = children; },
+    append(...children) { this.children.push(...children); },
     addEventListener(name, listener) { this.listeners[name] = listener; },
   });
   const element = (id) => {
     if (!elements.has(id)) elements.set(id, makeElement());
     return elements.get(id);
   };
-  const server = { keys: [], sec1: null, registerSignatureValid: null, views: [], approvals: [], ownerSignatureValid: null };
+  const server = { keys: [], sec1: null, registerSignatureValid: null, views: [], approvals: [], ownerSignatureValid: null,
+    linePages: new Map([["", { lines: [], next_cursor: null }]]), lineRequests: [] };
   let stored = null;
   const timers = [];
+  if (linePages) server.linePages = linePages;
   globalThis.ZtSmsKeyStore = {
     get: async () => stored,
     put: async (value) => { stored = value; },
@@ -89,6 +92,11 @@ async function smsLinesPage({ signedIn = true, tamper = null, register = "ok" } 
       server.revoked = { path, body };
       server.keys = server.keys.map((key) => ({ ...key, active: false }));
       return response(204);
+    }
+    if (path.startsWith("/v1/auth/sms-lines") && !path.includes("/activations") && method === "GET") {
+      server.lineRequests.push(path);
+      const cursor = new URL(path, "https://example.test").searchParams.get("before") || "";
+      return response(200, server.linePages.get(cursor));
     }
     if (path === "/v1/enrollment/devices")
       return response(200, { devices: [{ id: DEVICE, display_name: "Pixel", revoked: false, active_socket_lease: true }] });
@@ -279,3 +287,47 @@ for (const [name, overrides] of [
     assert.equal(page.server.approvals.length, 0);
   });
 }
+
+const LINE_A = "00000000-0000-4000-8000-0000000000a1";
+const LINE_B = "00000000-0000-4000-8000-0000000000b2";
+
+test("the owner sees their lines and can pick one to activate", async () => {
+  const page = await smsLinesPage({ linePages: new Map([
+    ["", { lines: [{ line_id: LINE_A, state: "active", generation: 2, purpose: "sms", device_id: DEVICE,
+      device_name: "Pixel", approved_at_ms: 1, created_at_ms: 2 }], next_cursor: LINE_A }],
+    [LINE_A, { lines: [{ line_id: LINE_B, state: "active", generation: 1, purpose: "sms", device_id: DEVICE,
+      device_name: "Old phone", device_revoked: true, created_at_ms: 1 }], next_cursor: null }],
+  ]) });
+  const list = page.element("line-list");
+  assert.equal(page.element("lines").hidden, false);
+  assert.equal(list.children.length, 1);
+  assert.match(list.children[0].children[0].textContent, /active on Pixel \(sms\), generation 2/);
+  assert.equal(page.element("line-more").hidden, false);
+  await list.children[0].children[1].listeners.click();
+  assert.equal(page.element("activation-line").value, LINE_A);
+  await page.click("line-more");
+  assert.equal(page.server.lineRequests.at(-1), `/v1/auth/sms-lines?before=${LINE_A}`);
+  assert.equal(list.children.length, 2);
+  assert.match(list.children[1].children[0].textContent, /Old phone \(phone revoked; activate it on another phone\)/);
+  assert.equal(page.element("line-more").hidden, true);
+});
+
+test("an empty account is told how to start, and the list refreshes after activation", async () => {
+  const page = await smsLinesPage();
+  assert.match(page.element("lines-status").textContent, /No lines yet/);
+  page.element("key-mfa").value = "123456";
+  await page.submit("key-form");
+  await page.click("activation-new-line");
+  const line = page.element("activation-line").value;
+  page.element("activation-device").value = DEVICE;
+  page.server.views.push(await page.prepareDeclaration(line));
+  await page.submit("activation-form");
+  const before = page.server.lineRequests.length;
+  page.server.linePages.set("", { lines: [{ line_id: line, state: "active", generation: 3, purpose: "sms",
+    device_id: DEVICE, device_name: "Pixel", created_at_ms: 1 }], next_cursor: null });
+  page.server.views.push({ status: "activated", device_id: DEVICE, generation: 3, expires_at_ms: 0 });
+  await page.click("activation-approve");
+  assert.equal(page.server.lineRequests.length, before + 1);
+  assert.equal(page.element("line-list").children.length, 1);
+  assert.equal(page.element("lines-status").textContent, "");
+});
