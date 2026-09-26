@@ -5,7 +5,7 @@ ZROtext is an open-source Android SMS gateway in active development. This page s
 <!-- Generated regions come from docs/roadmap.json. Edit that file, then run `python3 scripts/roadmap.py`. -->
 
 <!-- roadmap:overview -->
-<p align="center"><img src="assets/roadmap-overview.svg" alt="Roadmap at a glance: 22 capabilities in five tracks. Four are in a restricted pilot, seven are being built, three are in design and eight are planned. None has reached general release." width="900"></p>
+<p align="center"><img src="assets/roadmap-overview.svg" alt="Roadmap at a glance: 22 capabilities in five tracks. Four are in a restricted pilot, eight are being built, three are in design and seven are planned. None has reached general release." width="900"></p>
 <!-- /roadmap:overview -->
 
 > [!NOTE]
@@ -44,16 +44,16 @@ Priority is delivery order, not availability or a release date. These outcomes a
 pie showData
     title Capabilities by stage (22 tracked)
     "Restricted pilot" : 4
-    "Build" : 7
+    "Build" : 8
     "Design" : 3
-    "Planned" : 8
+    "Planned" : 7
 ```
 
 | Track | General release | Restricted pilot | Build | Design | Planned |
 |---|:---:|:---:|:---:|:---:|:---:|
 | [Gateway messaging](#gateway-messaging) |  | 4 | 1 |  |  |
 | [Self-hosting and integrations](#self-hosting-and-integrations) |  |  | 3 | 1 |  |
-| [Privacy and account controls](#privacy-and-account-controls) |  |  | 1 | 1 | 1 |
+| [Privacy and account controls](#privacy-and-account-controls) |  |  | 2 | 1 |  |
 | [Managed service and resilience](#managed-service-and-resilience) |  |  | 2 | 1 | 2 |
 | [Workflows and AI](#workflows-and-ai) |  |  |  |  | 5 |
 <!-- /roadmap:summary -->
@@ -124,7 +124,7 @@ flowchart LR
         direction TB
         c_accounts["Accounts, MFA, API keys<br/>· build"]:::build
         c_sealed["Sealed-content protocol<br/>· design"]:::design
-        c_export["Export and deletion<br/>· planned"]:::planned
+        c_export["Export and deletion<br/>· build"]:::build
         c_accounts --> c_export
     end
 
@@ -329,7 +329,7 @@ Keep message content out of reach of the server, and give owners control of thei
 |---|---|---|
 | Owner accounts, MFA and scoped API keys | Build | [#43](https://github.com/pboachie/zrotext/pull/43), [#172](https://github.com/pboachie/zrotext/pull/172), [#175](https://github.com/pboachie/zrotext/pull/175), [MFA operations](MFA-OPERATIONS.md), [#240](https://github.com/pboachie/zrotext/pull/240) |
 | Sealed-content protocol (client-side keys) | Design | [Draft 01](../protocol/drafts/zt-sealed-draft-01.md), [draft 02 proposal](../protocol/drafts/zt-sealed-draft-02-proposal.md), [#159](https://github.com/pboachie/zrotext/pull/159), [#162](https://github.com/pboachie/zrotext/pull/162), [#260](https://github.com/pboachie/zrotext/pull/260) |
-| Data export and account deletion | Planned | [Data retention](SELF-HOSTING.md#data-retention) covers history pruning only |
+| Data export and account deletion | Build | [Data retention](SELF-HOSTING.md#data-retention), [#267](https://github.com/pboachie/zrotext/pull/267) retention evidence covers history pruning only |
 
 <a id="cap-accounts"></a>
 <details>
@@ -361,9 +361,10 @@ Keep message content out of reach of the server, and give owners control of thei
 
 <a id="cap-export"></a>
 <details>
-<summary><b>Data export and account deletion</b> · planned</summary>
+<summary><b>Data export and account deletion</b> · build</summary>
 
-- [ ] Owner export of messages, events and settings
+- [x] Owner takeout of messages with events, devices and the account profile (`GET /v1/owner/export`, no-store)
+- [ ] Paginated full-history export beyond the 500 most recent messages
 - [ ] Account erasure that covers metering and billing records where allowed
 - [ ] Extend export and erasure to future contacts, templates, workflow state and assistant access records
 
