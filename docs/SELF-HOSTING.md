@@ -238,6 +238,15 @@ SMTP worker rather than repeating registrations blindly. After verification,
 remove the allowlists and enrollment key, set `REGISTRATION_MODE=closed`, and
 restart every API instance. Closing registration does not revoke owner sessions.
 
+### Owner sessions and API keys
+
+Owner sessions last at most 14 days and end after 72 hours without use; sign in
+again after either. The API key list on `/owner/devices` shows when each key
+was last used, recorded at most once per 15 minutes per key. Revoke keys that
+show no recent use. Keys created without a lifetime never expire, so prefer a
+lifetime for new keys. See
+[SECURITY-DESIGN.md](SECURITY-DESIGN.md#owner-session-and-api-key-lifetime).
+
 ### Owner password recovery
 
 With SMTP configured, a signed-out owner can request a one-hour, one-use reset

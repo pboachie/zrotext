@@ -50,7 +50,7 @@ Every tenant-owned table includes `account_id`. Use composite foreign keys and r
 | Table | Essential fields / invariants |
 |---|---|
 | accounts, users, memberships | One owner seat for v1; distinct account/user IDs leave room for teams |
-| sessions, recovery_requests | Hashed session tokens, expiry, revoked_at; auth recovery separate from vault |
+| sessions, recovery_requests | Hashed session tokens, expiry, revoked_at, coarse last_used_at for the idle timeout; auth recovery separate from vault |
 | api_keys | Public prefix, random 256-bit token verifier, scopes, optional device restriction, expiry, last_used_at |
 | devices, device_keys | Owner account, capabilities, current SIM ID, key IDs, enrollment state, revoked_at |
 | pairing_requests | One-use hashed secret, 5-minute expiry, short human comparison code, approved key fingerprint |
