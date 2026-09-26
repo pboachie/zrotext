@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+data-encoding = "2.11.1"
 aes-gcm = { version = "0.11.1", features = ["zeroize"] }
 hkdf = "0.13.0"
 hmac = { version = "0.13.0", features = ["zeroize"] }
