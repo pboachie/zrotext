@@ -1,26 +1,27 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Owner data export: one takeout document with the account profile,
+//! Owner data export: one takeout page with the account profile,
 //! devices, messages and per-message events. Unlike the pilot timeline
 //! this carries the recipient and transport payload, so responses are
-//! always no-store and never cached.
+//! always no-store and never cached. Full history pages through the
+//! same `before` cursor semantics as the timeline.
 
 use crate::{auth::TokenHasher, http_auth::require_owner};
 use axum::{
     Json, Router,
-    extract::{Request, State},
+    extract::{Query, Request, State},
     http::{HeaderMap, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::get,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc, time::SystemTime};
 #[cfg(test)]
 use tokio_postgres::NoTls;
 use uuid::Uuid;
 
-// A takeout stays a bounded single response; a full-history export can
-// paginate on top of this later.
+// One takeout page stays bounded; full-history exports walk the same
+// before/next_cursor pagination as the pilot timeline.
 const EXPORT_MESSAGE_LIMIT: usize = 500;
 
 #[derive(Clone)]
@@ -44,6 +45,12 @@ async fn no_store(request: Request, next: Next) -> Response {
         header::HeaderValue::from_static("no-store"),
     );
     response
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExportQuery {
+    before: Option<Uuid>,
 }
 
 #[derive(Serialize)]
@@ -92,10 +99,12 @@ struct ExportView {
     devices: Vec<DeviceView>,
     messages: Vec<MessageView>,
     messages_truncated: bool,
+    next_cursor: Option<Uuid>,
 }
 
 async fn export_account(
     State(state): State<Arc<OwnerExportState>>,
+    Query(query): Query<ExportQuery>,
     headers: HeaderMap,
 ) -> Response {
     let Ok(client) = crate::runtime_db::connect(&state.database_url).await else {
@@ -114,6 +123,23 @@ async fn export_account(
         Err(error) => return error.into_response(),
     };
     let account_id = principal.tenant.account_id();
+    let before_point: Option<(SystemTime, Uuid)> = if let Some(before) = query.before {
+        match client
+            .query_opt(
+                "SELECT created_at FROM messages WHERE account_id=$1 AND id=$2",
+                &[&account_id, &before],
+            )
+            .await
+        {
+            Ok(Some(row)) => Some((row.get(0), before)),
+            Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+            Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        }
+    } else {
+        None
+    };
+    let before_at = before_point.map(|point| point.0);
+    let before_id = before_point.map(|point| point.1);
     let account = match client
         .query_opt(
             "SELECT a.id,u.email,(u.email_verified_at IS NOT NULL), \
@@ -160,9 +186,15 @@ async fn export_account(
              (extract(epoch FROM created_at)*1000)::bigint, \
              (extract(epoch FROM updated_at)*1000)::bigint, \
              (extract(epoch FROM expires_at)*1000)::bigint \
-             FROM messages WHERE account_id=$1 \
-             ORDER BY created_at DESC,id DESC LIMIT $2",
-            &[&account_id, &(EXPORT_MESSAGE_LIMIT as i64 + 1)],
+             FROM messages WHERE account_id=$1 AND \
+             ($2::timestamptz IS NULL OR (created_at,id)<($2,$3::uuid)) \
+             ORDER BY created_at DESC,id DESC LIMIT $4",
+            &[
+                &account_id,
+                &before_at,
+                &before_id,
+                &(EXPORT_MESSAGE_LIMIT as i64 + 1),
+            ],
         )
         .await
     {
@@ -223,6 +255,11 @@ async fn export_account(
             });
         }
     }
+    let next_cursor = if messages_truncated {
+        messages.last().map(|message| message.message_id)
+    } else {
+        None
+    };
     Json(ExportView {
         generated_at_ms: SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -232,6 +269,7 @@ async fn export_account(
         devices: device_rows,
         messages,
         messages_truncated,
+        next_cursor,
     })
     .into_response()
 }
@@ -257,6 +295,16 @@ mod tests {
 
     async fn body(response: Response) -> Value {
         serde_json::from_slice(&to_bytes(response.into_body(), 1024 * 1024).await.unwrap()).unwrap()
+    }
+
+    fn page_payload_index(item: &Value) -> usize {
+        item["transport_payload"]
+            .as_str()
+            .unwrap()
+            .strip_prefix("EXPORT_PAGE_A_")
+            .unwrap()
+            .parse()
+            .unwrap()
     }
 
     #[tokio::test]
@@ -446,6 +494,216 @@ mod tests {
         let foreign_messages = foreign["messages"].as_array().unwrap();
         assert_eq!(foreign_messages.len(), 1);
         assert_eq!(foreign_messages[0]["message_id"], b_id.to_string());
+        admin
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+    async fn export_paginates_full_history_beyond_the_first_page() {
+        let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
+        let (admin, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let schema = format!("owner_export_page_test_{}", Uuid::new_v4().simple());
+        admin
+            .batch_execute(&format!("CREATE SCHEMA {schema}"))
+            .await
+            .unwrap();
+        let separator = if base_url.contains('?') { '&' } else { '?' };
+        let database_url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
+        let (mut db, connection) = tokio_postgres::connect(&database_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        for migration in [
+            include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
+            include_str!("../../../deploy/compose/migrations/002_auth.sql"),
+            include_str!("../../../deploy/compose/migrations/003_delivery.sql"),
+            include_str!("../../../deploy/compose/migrations/004_enrollment.sql"),
+            include_str!("../../../deploy/compose/migrations/005_verification_outbox.sql"),
+            include_str!("../../../deploy/compose/migrations/013_owner_mfa.sql"),
+            include_str!("../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
+        ] {
+            db.batch_execute(migration).await.unwrap();
+        }
+        let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(19)).unwrap());
+        let a = register(
+            &mut db,
+            &hasher,
+            "export-page-a@example.test",
+            &crate::test_keys::password(1),
+        )
+        .await
+        .unwrap();
+        let b = register(
+            &mut db,
+            &hasher,
+            "export-page-b@example.test",
+            &crate::test_keys::password(2),
+        )
+        .await
+        .unwrap();
+        verify_email(&mut db, &hasher, &a.verification_token)
+            .await
+            .unwrap();
+        let session_a = login(
+            &db,
+            &hasher,
+            "export-page-a@example.test",
+            &crate::test_keys::password(1),
+        )
+        .await
+        .unwrap();
+        let device_a = Uuid::new_v4();
+        let device_b = Uuid::new_v4();
+        db.execute(
+            "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'Pager'),($3,$4,'Other')",
+            &[&device_a, &a.account_id, &device_b, &b.account_id],
+        )
+        .await
+        .unwrap();
+        let total = EXPORT_MESSAGE_LIMIT + 5;
+        let mut a_ids = Vec::new();
+        for index in 0..total {
+            let id = Uuid::new_v4();
+            a_ids.push(id);
+            db.execute(
+                "INSERT INTO messages(id,account_id,device_id,recipient_e164,recipient_digest,transport_mode,transport_payload,request_digest,state,expires_at) \
+                 VALUES($1,$2,$3,'+15551234567',$4,'synthetic_alpha',$5,$6,'queued',now()+interval '1 hour')",
+                &[&id, &a.account_id, &device_a, &vec![1_u8; 32],
+                    &format!("EXPORT_PAGE_A_{index}").as_bytes().to_vec(), &vec![2_u8; 32]],
+            )
+            .await
+            .unwrap();
+        }
+        let b_id = Uuid::new_v4();
+        db.execute(
+            "INSERT INTO messages(id,account_id,device_id,recipient_e164,recipient_digest,transport_mode,transport_payload,request_digest,state,expires_at) \
+             VALUES($1,$2,$3,'+15557654321',$4,'synthetic_alpha',$5,$6,'queued',now()+interval '1 hour')",
+            &[&b_id, &b.account_id, &device_b, &vec![3_u8; 32],
+                &b"EXPORT_PAGE_B_NEVER_LEAK".as_slice(), &vec![4_u8; 32]],
+        )
+        .await
+        .unwrap();
+        let attempt = Uuid::new_v4();
+        db.execute(
+            "INSERT INTO message_attempts(id,account_id,message_id,device_id,generation,session_epoch,deployment_epoch,status) \
+             VALUES($1,$2,$3,$4,1,1,1,'submitted')",
+            &[&attempt, &a.account_id, &a_ids[0], &device_a],
+        )
+        .await
+        .unwrap();
+        db.execute(
+            "INSERT INTO message_events(id,account_id,message_id,attempt_id,evidence_code,event_digest,observed_at,resulting_state,segment_index,segment_count) \
+             VALUES($1,$2,$3,$4,$5,$6,now(),$7,0,1)",
+            &[&Uuid::new_v4(), &a.account_id, &a_ids[0], &attempt,
+                &"sent_callback_ok", &vec![5_u8; 32], &"submitted"],
+        )
+        .await
+        .unwrap();
+        let app = router(OwnerExportState {
+            database_url,
+            auth_hasher: hasher,
+            canonical_origin: "https://test.example".to_owned(),
+        });
+        let first = body(
+            app.clone()
+                .oneshot(get("/v1/owner/export", Some(&session_a.token)))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let first_messages = first["messages"].as_array().unwrap();
+        assert_eq!(first_messages.len(), EXPORT_MESSAGE_LIMIT);
+        assert_eq!(first["messages_truncated"], true);
+        assert!(!first["next_cursor"].is_null());
+        let cursor = first["next_cursor"].as_str().unwrap().to_owned();
+        assert_eq!(
+            cursor,
+            first_messages[EXPORT_MESSAGE_LIMIT - 1]["message_id"]
+                .as_str()
+                .unwrap()
+        );
+        assert_eq!(
+            first_messages[0]["transport_payload"],
+            format!("EXPORT_PAGE_A_{}", total - 1)
+        );
+        assert_eq!(
+            first_messages[EXPORT_MESSAGE_LIMIT - 1]["transport_payload"],
+            format!("EXPORT_PAGE_A_{}", total - EXPORT_MESSAGE_LIMIT)
+        );
+        let first_text = serde_json::to_string(&first).unwrap();
+        assert!(!first_text.contains("EXPORT_PAGE_B"));
+        let second = body(
+            app.clone()
+                .oneshot(get(
+                    &format!("/v1/owner/export?before={cursor}"),
+                    Some(&session_a.token),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let second_messages = second["messages"].as_array().unwrap();
+        let remainder = total - EXPORT_MESSAGE_LIMIT;
+        assert_eq!(second_messages.len(), remainder);
+        assert_eq!(second["messages_truncated"], false);
+        assert!(second["next_cursor"].is_null());
+        assert_eq!(second["account"]["account_id"], a.account_id.to_string());
+        assert_eq!(second["devices"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            second_messages[0]["transport_payload"],
+            format!("EXPORT_PAGE_A_{}", remainder - 1)
+        );
+        assert_eq!(
+            second_messages[remainder - 1]["transport_payload"],
+            "EXPORT_PAGE_A_0"
+        );
+        let oldest = &second_messages[remainder - 1];
+        assert_eq!(oldest["message_id"], a_ids[0].to_string());
+        let events = oldest["events"].as_array().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["evidence_code"], "sent_callback_ok");
+        assert_eq!(events[0]["resulting_state"], "submitted");
+        let combined: Vec<&Value> = first_messages
+            .iter()
+            .chain(second_messages.iter())
+            .collect();
+        let indices: Vec<usize> = combined
+            .iter()
+            .map(|item| page_payload_index(item))
+            .collect();
+        assert!(
+            indices.windows(2).all(|pair| pair[0] > pair[1]),
+            "both pages come back newest-first: {indices:?}"
+        );
+        let seen: std::collections::HashSet<&str> = combined
+            .iter()
+            .map(|item| item["message_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(seen.len(), total);
+        for id in &a_ids {
+            assert!(seen.contains(id.to_string().as_str()));
+        }
+        let foreign = app
+            .clone()
+            .oneshot(get(
+                &format!("/v1/owner/export?before={b_id}"),
+                Some(&session_a.token),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(foreign.status(), StatusCode::NOT_FOUND);
+        let unknown = app
+            .clone()
+            .oneshot(get(
+                &format!("/v1/owner/export?before={}", Uuid::new_v4()),
+                Some(&session_a.token),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
         admin
             .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
             .await

@@ -282,14 +282,15 @@
           "stage": "build",
           "evidence": [
             ["Data retention", "SELF-HOSTING.md#data-retention"],
-            ["#267", "https://github.com/pboachie/zrotext/pull/267"]
+            ["#267", "https://github.com/pboachie/zrotext/pull/267"],
+            ["#271", "https://github.com/pboachie/zrotext/pull/271"]
           ],
           "evidence_note": "retention evidence covers history pruning only",
           "done": [
-            "Owner takeout of messages with events, devices and the account profile (`GET /v1/owner/export`, no-store)"
+            "Owner takeout of messages with events, devices and the account profile (`GET /v1/owner/export`, no-store)",
+            "Cursor-paginated full-history takeout via `?before=` with tenant-safe 404s"
           ],
           "todo": [
-            "Paginated full-history export beyond the 500 most recent messages",
             "Account erasure that covers metering and billing records where allowed",
             "Extend export and erasure to future contacts, templates, workflow state and assistant access records"
           ]
