@@ -32,6 +32,51 @@ let deviceLoadGeneration = 0;
 let messageLoadGeneration = 0;
 let keyLoadGeneration = 0;
 const requestTimeoutMs = 30_000;
+const dashboardRefreshMs = 15_000;
+let dashboardTimer = null;
+let dashboardRefreshing = false;
+let dashboardSignedIn = false;
+let dashboardPageActive = true;
+let deviceLoads = 0;
+let messageLoads = 0;
+let browsingOlderDevices = false;
+let browsingOlderMessages = false;
+
+function stopDashboardRefresh() {
+  if (dashboardTimer !== null) window.clearTimeout(dashboardTimer);
+  dashboardTimer = null;
+}
+
+function canRefreshDashboard() {
+  return dashboardSignedIn && dashboardPageActive && !document.hidden && byId("auto-refresh").checked;
+}
+
+function scheduleDashboardRefresh() {
+  stopDashboardRefresh();
+  if (canRefreshDashboard() && !dashboardRefreshing) {
+    dashboardTimer = window.setTimeout(refreshDashboard, dashboardRefreshMs);
+  }
+}
+
+function viewingList(id) {
+  const list = byId(id);
+  return list.contains(document.activeElement) || list.querySelector("details[open]") !== null;
+}
+
+async function refreshDashboard() {
+  stopDashboardRefresh();
+  if (!canRefreshDashboard() || dashboardRefreshing) return;
+  dashboardRefreshing = true;
+  try {
+    const requests = [];
+    if (!deviceLoads && !browsingOlderDevices && !viewingList("device-list")) requests.push(loadDevices(true, true));
+    if (!messageLoads && !browsingOlderMessages && !viewingList("message-list")) requests.push(loadMessages(true, true));
+    await Promise.all(requests);
+  } finally {
+    dashboardRefreshing = false;
+    scheduleDashboardRefresh();
+  }
+}
 const passwordResetPaths = new Set(["/v1/auth/password/reset/request", "/v1/auth/password/reset/confirm"]);
 const unauthenticatedPaths = new Set(["/v1/auth/login", "/v1/auth/login/mfa", ...passwordResetPaths]);
 const statusDescriptions = Object.freeze({
@@ -147,6 +192,8 @@ async function api(path, method = "GET", body = undefined) {
 }
 
 function showSignedIn(signedIn) {
+  dashboardSignedIn = signedIn;
+  if (!signedIn) stopDashboardRefresh();
   byId("sign-in").hidden = signedIn;
   byId("owner-content").hidden = !signedIn;
   byId("logout").hidden = !signedIn;
@@ -168,6 +215,7 @@ async function completeSignIn() {
   message("login-status", "");
   message("global-status", "Signed in.");
   await loadOwnerData();
+  scheduleDashboardRefresh();
 }
 
 function loadOwnerData() {
@@ -233,6 +281,8 @@ function clearWebhookEndpoints() {
 
 function clearOwnerState() {
   ownerEpoch += 1;
+  browsingOlderDevices = false;
+  browsingOlderMessages = false;
   sessionLoadGeneration += 1;
   deviceLoadGeneration += 1;
   messageLoadGeneration += 1;
@@ -595,16 +645,18 @@ async function loadDeviceCapacity() {
   }
 }
 
-async function loadDevices(reset = true) {
+async function loadDevices(reset = true, automatic = false) {
   if (!reset && !nextDeviceCursor) return;
+  deviceLoads += 1;
+  if (!automatic) browsingOlderDevices = !reset;
   const requestEpoch = ownerEpoch;
   const generation = ++deviceLoadGeneration;
   const stale = () => requestEpoch !== ownerEpoch || generation !== deviceLoadGeneration;
   const cursor = reset ? null : nextDeviceCursor;
   const moreButton = byId("more-devices");
   moreButton.disabled = true;
-  message("device-status", "Loading devices…");
-  if (reset) {
+  if (!automatic) message("device-status", "Loading devices…");
+  if (reset && !automatic) {
     byId("device-list").replaceChildren();
     moreButton.hidden = true;
     nextDeviceCursor = null;
@@ -616,8 +668,15 @@ async function loadDevices(reset = true) {
       : "/v1/enrollment/devices";
     const page = await api(path);
     if (stale()) return;
+    if (automatic && (!canRefreshDashboard() || viewingList("device-list"))) return;
     if (!page || !Array.isArray(page.devices)) throw new Error("The device response was invalid.");
     const devices = page.devices;
+    if (automatic) {
+      byId("device-list").replaceChildren();
+      moreButton.hidden = true;
+      nextDeviceCursor = null;
+      shownDeviceCount = 0;
+    }
     moreButton.disabled = false;
     if (reset && devices.length === 0) {
       message("device-status", "No approved devices yet.");
@@ -670,6 +729,9 @@ async function loadDevices(reset = true) {
     if (stale()) return;
     moreButton.disabled = false;
     message("device-status", `Could not load devices. ${error.message}`);
+  } finally {
+    deviceLoads -= 1;
+    if (!stale()) moreButton.disabled = false;
   }
 }
 
@@ -677,16 +739,18 @@ function localTime(milliseconds) {
   return formatTime(milliseconds, "Time unavailable");
 }
 
-async function loadMessages(reset = true) {
+async function loadMessages(reset = true, automatic = false) {
   if (!reset && !nextMessageCursor) return;
+  messageLoads += 1;
+  if (!automatic) browsingOlderMessages = !reset;
   const requestEpoch = ownerEpoch;
   const generation = ++messageLoadGeneration;
   const stale = () => requestEpoch !== ownerEpoch || generation !== messageLoadGeneration;
   const cursor = reset ? null : nextMessageCursor;
   const moreButton = byId("more-messages");
   moreButton.disabled = true;
-  message("message-status", "Loading message states…");
-  if (reset) {
+  if (!automatic) message("message-status", "Loading message states…");
+  if (reset && !automatic) {
     byId("message-list").replaceChildren();
     moreButton.hidden = true;
     nextMessageCursor = null;
@@ -698,9 +762,16 @@ async function loadMessages(reset = true) {
       : "/v1/owner/messages";
     const page = await api(path);
     if (stale()) return;
+    if (automatic && (!canRefreshDashboard() || viewingList("message-list"))) return;
     if (!page || !Array.isArray(page.messages) ||
         !page.messages.every((item) => item && typeof item.state === "string" && Array.isArray(item.events))) {
       throw new Error("The message response was invalid.");
+    }
+    if (automatic) {
+      byId("message-list").replaceChildren();
+      moreButton.hidden = true;
+      nextMessageCursor = null;
+      shownMessageCount = 0;
     }
     moreButton.disabled = false;
     if (reset && page.messages.length === 0) {
@@ -758,6 +829,9 @@ async function loadMessages(reset = true) {
     if (stale()) return;
     moreButton.disabled = false;
     message("message-status", `Could not load messages. ${error.message}`);
+  } finally {
+    messageLoads -= 1;
+    if (!stale()) moreButton.disabled = false;
   }
 }
 
@@ -1212,7 +1286,17 @@ byId("owner-hold-form").addEventListener("submit", exclusive(createOwnerHold));
 byId("refresh-keys").addEventListener("click", () => loadKeys());
 byId("more-keys").addEventListener("click", () => loadKeys(false));
 byId("dismiss-key-secret").addEventListener("click", clearKeySecret);
-window.addEventListener("pagehide", () => { clearKeySecret(); clearPasswordFields(); clearResetFields(); });
+byId("auto-refresh").addEventListener("change", scheduleDashboardRefresh);
+document.addEventListener("visibilitychange", scheduleDashboardRefresh);
+window.addEventListener("pagehide", () => {
+  dashboardPageActive = false;
+  stopDashboardRefresh();
+  clearKeySecret(); clearPasswordFields(); clearResetFields();
+});
+window.addEventListener("pageshow", () => {
+  dashboardPageActive = true;
+  scheduleDashboardRefresh();
+});
 byId("inbound-history-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const messageId = byId("inbound-message-id").value.trim();
@@ -1273,6 +1357,7 @@ byId("key-create-form").addEventListener("submit", exclusive(async (event) => {
     clearResetFields();
     showSignedIn(true);
     await loadOwnerData();
+    scheduleDashboardRefresh();
   } catch (error) {
     showSignedIn(false);
     message("global-status", error.message.startsWith("Your sign-in") ? "Sign in to manage devices." : `Could not verify session. ${error.message}`);
