@@ -57,7 +57,7 @@ The phone sends one durable event at a time and keeps its `event_id` until the
 hub acknowledges it:
 
 ```json
-{"v":1,"type":"radio_event","connection_epoch":1,"event_id":"UUID","message_id":"UUID","attempt_id":"UUID","evidence":"durable_submit_intent","observed_at_ms":0}
+{"v":1,"type":"radio_event","connection_epoch":1,"event_id":"UUID","message_id":"UUID","attempt_id":"UUID","evidence":"durable_submit_intent","observed_at_ms":1700000000000}
 ```
 
 Allowed evidence values are `durable_submit_intent`, `proven_no_submit`,
@@ -72,6 +72,18 @@ includes segment fields. The phone must reserve the attempt in its durable
 local journal, then receive an acknowledgement for `durable_submit_intent`
 before calling the radio API. The phone may report
 `proven_no_submit` only before any possible radio invocation.
+
+For a new event, `observed_at_ms` must be a positive Unix timestamp in
+milliseconds, no earlier than the original attempt's creation minus five
+minutes and no later than the writer's current database time plus five
+minutes. The tolerance accommodates phone clock skew. A timestamp outside
+this inclusive window is permanently rejected with close code `4409`, so the
+phone quarantines that row instead of retrying it. There is no rolling age
+limit: late callbacks for a retained attempt can still reconcile after a
+long offline period. An exact replay of an already recorded event returns its
+stored result without reapplying this window; other attempt and retention
+checks still apply. The example timestamp is illustrative; send the actual
+observation time.
 
 After the writer commits evidence, the hub replies:
 
