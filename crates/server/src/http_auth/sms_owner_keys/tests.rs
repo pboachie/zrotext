@@ -8,7 +8,7 @@ fn possession_statement_is_bound_to_account_session_nonce_and_key() {
     let user = Uuid::new_v4();
     let session = Uuid::new_v4();
     let challenge = Uuid::new_v4();
-    let nonce = [7u8; 32];
+    let nonce: [u8; 32] = rand::random();
     let key = SigningKey::from_bytes((&[9u8; 32]).into()).unwrap();
     let sec1 = key.verifying_key().to_sec1_point(false);
     let fingerprint = sha256(sec1.as_bytes());
