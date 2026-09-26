@@ -2,7 +2,7 @@ use super::*;
 
 // Keep the admission fixtures on the complete, reviewed schema. SQL is
 // embedded at build time so tests never execute files discovered at runtime.
-const TEST_MIGRATIONS: [(&str, &str); 39] = [
+const TEST_MIGRATIONS: [(&str, &str); 40] = [
     (
         "001_foundation.sql",
         include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
@@ -161,6 +161,10 @@ const TEST_MIGRATIONS: [(&str, &str); 39] = [
         "039_inbound_device_clock_offset.sql",
         include_str!("../../../deploy/compose/migrations/039_inbound_device_clock_offset.sql"),
     ),
+    (
+        "040_radio_evidence_index.sql",
+        include_str!("../../../deploy/compose/migrations/040_radio_evidence_index.sql"),
+    ),
 ];
 
 async fn apply_test_migrations(client: &Client) {
@@ -173,6 +177,15 @@ async fn apply_test_migrations(client: &Client) {
                     "CREATE INDEX CONCURRENTLY messages_in_flight_updated \
                      ON messages(updated_at,id) \
                      WHERE state IN ('claimed','submitting','submitted')",
+                )
+                .await
+                .unwrap();
+        }
+        if name == "040_radio_evidence_index.sql" {
+            client
+                .batch_execute(
+                    "CREATE INDEX CONCURRENTLY message_events_attempt_evidence \
+                 ON message_events(attempt_id,evidence_code)",
                 )
                 .await
                 .unwrap();
