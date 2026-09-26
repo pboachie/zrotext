@@ -1,5 +1,8 @@
 # Owner web pages accessibility review
 
+The separate [Android gateway review](ANDROID-ACCESSIBILITY.md) covers the app's
+Compose screen and records the limits of its automated and emulator checks.
+
 This is the first slice of the roadmap item "Accessibility review of owner pages and the Android app" (see `docs/ROADMAP.md`). It covers the owner web pages only; the Android app review remains open.
 
 ## Scope and method
