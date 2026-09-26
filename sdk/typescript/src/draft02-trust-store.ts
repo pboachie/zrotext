@@ -34,6 +34,18 @@ function copy(bytes: Uint8Array, length: number): Uint8Array {
   return Uint8Array.from(bytes);
 }
 
+/** Caller input copied before the first await; the verifiers check its size. */
+function input(bytes: Uint8Array, what: string): Uint8Array {
+  if (!(bytes instanceof Uint8Array)) fail(`${what} must be a Uint8Array`);
+  return Uint8Array.from(bytes);
+}
+
+/** A caller-owned snapshot copied (and validated) before the first await. */
+function captured(snapshot: Draft02TrustSnapshot): Draft02TrustSnapshot {
+  try { return decode(encode(snapshot)); }
+  catch { return fail("malformed expected snapshot"); }
+}
+
 function integer(value: unknown): bigint {
   if (typeof value !== "string" || value.length < 1 || value.length > 19) fail("corrupt stored integer");
   let result = 0n;
@@ -169,7 +181,9 @@ export class Draft02TrustStore {
    */
   async enroll(rootPin: Uint8Array, comparedFingerprint: Uint8Array, nowMs: bigint): Promise<Draft02TrustSnapshot> {
     checkedTime(nowMs);
-    const trust = await enrollRootPin02(rootPin, comparedFingerprint);
+    const pin = input(rootPin, "root pin");
+    const fingerprint = input(comparedFingerprint, "compared fingerprint");
+    const trust = await enrollRootPin02(pin, fingerprint);
     const next = { trust, lastTrustedTimeMs: 0n };
     await this.write(null, next);
     return decode(encode(next));
@@ -185,9 +199,12 @@ export class Draft02TrustStore {
     nowMs: bigint): Promise<Draft02TrustSnapshot> {
     if (!expected) fail("reenroll requires the current snapshot");
     checkedTime(nowMs);
-    const trust = await enrollRootPin02(rootPin, comparedFingerprint);
+    const before = captured(expected);
+    const pin = input(rootPin, "root pin");
+    const fingerprint = input(comparedFingerprint, "compared fingerprint");
+    const trust = await enrollRootPin02(pin, fingerprint);
     const next = { trust, lastTrustedTimeMs: 0n };
-    await this.write(expected, next);
+    await this.write(before, next);
     return decode(encode(next));
   }
 
@@ -200,8 +217,9 @@ export class Draft02TrustStore {
   async resetTrustedTime(expected: Draft02TrustSnapshot, nowMs: bigint): Promise<Draft02TrustSnapshot> {
     if (!expected) fail("resetTrustedTime requires the current snapshot");
     checkedTime(nowMs);
-    const next = { trust: expected.trust, lastTrustedTimeMs: nowMs };
-    await this.write(expected, next);
+    const before = captured(expected);
+    const next = { trust: before.trust, lastTrustedTimeMs: nowMs };
+    await this.write(before, next);
     return decode(encode(next));
   }
 
@@ -239,10 +257,11 @@ export class Draft02TrustStore {
    * The persisted time is at most the manifest's signed `issuedMs` plus clock skew.
    */
   async acceptManifest(bytes: Uint8Array, nowMs: bigint): Promise<Manifest02> {
+    const signed = input(bytes, "manifest");
     const before = await this.read();
     if (!before) fail("owner root is not enrolled");
     checkedTime(nowMs, before.lastTrustedTimeMs);
-    const manifest = await verifyManifest02(bytes, before.trust, nowMs);
+    const manifest = await verifyManifest02(signed, before.trust, nowMs);
     const next = {
       trust: advanceManifestTrust02(before.trust, manifest),
       lastTrustedTimeMs: ratchet(before.lastTrustedTimeMs, nowMs, manifest.issuedMs),
@@ -253,19 +272,24 @@ export class Draft02TrustStore {
 
   /** The expected new root must be pinned by the owner independently of the relay. */
   async acceptTransition(bytes: Uint8Array, expectedNewRoot: Uint8Array, nowMs: bigint): Promise<Draft02TrustSnapshot> {
+    // Verification and the time cap must read the same bytes, whatever the caller does
+    // with its buffers while this call is pending.
+    const signed = input(bytes, "transition");
+    const newRoot = input(expectedNewRoot, "expected new root");
     const before = await this.read();
     if (!before) fail("owner root is not enrolled");
     checkedTime(nowMs, before.lastTrustedTimeMs);
-    const trust = await verifyRootTransition02(bytes, before.trust, nowMs, expectedNewRoot);
+    const trust = await verifyRootTransition02(signed, before.trust, nowMs, newRoot);
     const next = {
       trust,
-      lastTrustedTimeMs: ratchet(before.lastTrustedTimeMs, nowMs, transitionIssuedMs(bytes)),
+      lastTrustedTimeMs: ratchet(before.lastTrustedTimeMs, nowMs, transitionIssuedMs(signed)),
     };
     await this.write(before, next);
     return decode(encode(next));
   }
 
   private write(before: Draft02TrustSnapshot | null, after: Draft02TrustSnapshot): Promise<void> {
+    const expected = before === null ? null : captured(before);
     const row = encode(after);
     return new Promise((resolve, reject) => {
       const tx = this.db.transaction(storeName, "readwrite");
@@ -274,7 +298,7 @@ export class Draft02TrustStore {
       request.onsuccess = () => {
         try {
           const current = request.result === undefined ? null : decode(request.result);
-          if (current === null ? before !== null : before === null || !sameSnapshot(current, before)) {
+          if (current === null ? expected !== null : expected === null || !sameSnapshot(current, expected)) {
             denied = true;
             tx.abort();
             return;
