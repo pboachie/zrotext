@@ -659,10 +659,6 @@ mod tests {
             .unwrap()
     }
 
-    async fn table_count(db: &tokio_postgres::Client, sql: &str) -> i64 {
-        db.query_one(sql, &[]).await.unwrap().get(0)
-    }
-
     /// Two accounts carrying delivery, enrollment, metering, webhook,
     /// billing and account-recovery fixtures. Returns both signups, both
     /// sessions and the hasher-backed router under test.
@@ -1166,15 +1162,15 @@ mod tests {
             .unwrap()
             .get(0);
         assert_eq!(attempts_left, 0, "webhook attempts still hold rows");
-        assert_eq!(
-            table_count(
-                &db,
-                &format!("SELECT count(*) FROM accounts WHERE id='{}'", a.account_id)
+        let account_gone: i64 = db
+            .query_one(
+                "SELECT count(*) FROM accounts WHERE id=$1",
+                &[&a.account_id],
             )
-            .await,
-            0,
-            "the erased account row is gone"
-        );
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(account_gone, 0, "the erased account row is gone");
         let users_gone: i64 = db
             .query_one("SELECT count(*) FROM users WHERE id=$1", &[&a.user_id])
             .await
