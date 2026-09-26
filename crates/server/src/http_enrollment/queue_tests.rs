@@ -8,6 +8,10 @@ use rand::rng;
 use serde_json::json;
 use tower::ServiceExt;
 
+#[path = "queue_plan_tests.rs"]
+mod queue_plan_tests;
+use queue_plan_tests::{explain_queue, validate_queue_plan, validate_sparse_history_plan};
+
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn owner_queue_counts_are_bounded_tenant_scoped_and_preserve_writer_states() {
@@ -108,22 +112,8 @@ async fn owner_queue_counts_are_bounded_tenant_scoped_and_preserve_writer_states
     db.batch_execute("ANALYZE messages; ANALYZE devices")
         .await
         .unwrap();
-    let plan = db
-        .query(
-            &format!(
-                "EXPLAIN (ANALYZE, BUFFERS) {}",
-                enrollment::OWNER_DEVICE_STATUS_QUERY
-            ),
-            &[account, &None::<Uuid>, &51_i64, &1_000_i64],
-        )
-        .await
-        .unwrap()
-        .into_iter()
-        .map(|row| row.get::<_, String>(0))
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(plan.contains("messages_device_state"), "{plan}");
-    assert!(!plan.contains("Seq Scan on messages"), "{plan}");
+    let plan = explain_queue(&db, *account).await;
+    validate_sparse_history_plan(&plan).unwrap_or_else(|reason| panic!("{reason}: {plan}"));
     // The two categories are capped independently; final/uncertain states do
     // not contribute. A revoked device retains its observed state counts.
     db.execute("INSERT INTO messages(id,account_id,device_id,recipient_e164,recipient_digest,transport_mode,transport_payload,request_digest,state,expires_at) SELECT md5('in-flight-'||g)::uuid,$1,$2,'+15551234567',decode(repeat('11',32),'hex'),'synthetic_alpha',decode('01','hex'),decode(repeat('22',32),'hex'),'submitted',now() FROM generate_series(1,100000) g", &[account, device]).await.unwrap();
@@ -139,47 +129,9 @@ async fn owner_queue_counts_are_bounded_tenant_scoped_and_preserve_writer_states
     assert_eq!(both_capped["devices"][0]["pending_messages"], 1_000);
     assert_eq!(both_capped["devices"][0]["in_flight_messages"], 1_000);
     db.batch_execute("ANALYZE messages").await.unwrap();
-    let capped_plan = db
-        .query(
-            &format!(
-                "EXPLAIN (ANALYZE, BUFFERS) {}",
-                enrollment::OWNER_DEVICE_STATUS_QUERY
-            ),
-            &[account, &None::<Uuid>, &51_i64, &1_000_i64],
-        )
-        .await
-        .unwrap()
-        .into_iter()
-        .map(|row| row.get::<_, String>(0))
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(
-        capped_plan.contains("messages_device_state"),
-        "{capped_plan}"
-    );
-    assert!(
-        !capped_plan.contains("Seq Scan on messages"),
-        "{capped_plan}"
-    );
-    assert_eq!(
-        capped_plan
-            .lines()
-            .filter(|line| line.contains("Limit") && line.contains("rows=1000 loops=1"))
-            .count(),
-        2,
-        "{capped_plan}"
-    );
-    assert_eq!(
-        capped_plan
-            .lines()
-            .filter(
-                |line| line.contains("Index Scan using messages_device_state")
-                    && line.contains("rows=1000 loops=1")
-            )
-            .count(),
-        2,
-        "{capped_plan}"
-    );
+    let capped_plan = explain_queue(&db, *account).await;
+    validate_queue_plan(&capped_plan, &[1_000.0, 1_000.0])
+        .unwrap_or_else(|reason| panic!("{reason}: {capped_plan}"));
     let other = &owners[1].2;
     let page = json_response(
         app.clone()
