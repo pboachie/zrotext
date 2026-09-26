@@ -6,6 +6,9 @@ use std::{collections::BTreeMap, fs, path::Path};
 use thiserror::Error;
 use tokio_postgres::Client;
 
+mod radio_evidence_index;
+use radio_evidence_index::*;
+
 // Fixed, project-specific advisory lock. Held on one connection for the full run.
 const MIGRATION_LOCK: i64 = 0x5a_52_4f_54_45_58_54;
 const IN_FLIGHT_INDEX_MIGRATION: i64 = 34;
@@ -89,6 +92,12 @@ pub enum MigrationError {
     InFlightIndexConflict,
     #[error("messages_in_flight_updated is still being built; refusing to interrupt it")]
     InFlightIndexBuildInProgress,
+    #[error("message_events_attempt_evidence is absent, invalid, or has the wrong definition")]
+    RadioEvidenceIndexUnavailable,
+    #[error("message_events_attempt_evidence has an unexpected definition; refusing to replace it")]
+    RadioEvidenceIndexConflict,
+    #[error("message_events_attempt_evidence is still being built; refusing to interrupt it")]
+    RadioEvidenceIndexBuildInProgress,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -242,6 +251,9 @@ async fn apply_locked(
     if ledger.contains_key(&IN_FLIGHT_INDEX_MIGRATION) {
         verify_in_flight_index(client).await?;
     }
+    if ledger.contains_key(&RADIO_EVIDENCE_INDEX_MIGRATION) {
+        verify_radio_evidence_index(client).await?;
+    }
 
     for migration in migrations {
         if ledger.contains_key(&migration.version) {
@@ -256,6 +268,14 @@ async fn apply_locked(
             // CREATE INDEX CONCURRENTLY cannot run in the numbered migration's
             // transaction. The advisory lock still serializes migrator jobs.
             prepare_in_flight_index(client).await?;
+        }
+        if migration.version == RADIO_EVIDENCE_INDEX_MIGRATION {
+            if migration.filename != RADIO_EVIDENCE_INDEX_FILE {
+                return Err(MigrationError::InvalidDirectory(format!(
+                    "migration 040 must be {RADIO_EVIDENCE_INDEX_FILE}"
+                )));
+            }
+            prepare_radio_evidence_index(client).await?;
         }
         let tx = client.transaction().await?;
         if let Err(error) = tx.batch_execute(&migration.sql).await {
@@ -280,6 +300,12 @@ async fn apply_locked(
         .any(|migration| migration.version == IN_FLIGHT_INDEX_MIGRATION)
     {
         verify_in_flight_index(client).await?;
+    }
+    if migrations
+        .iter()
+        .any(|migration| migration.version == RADIO_EVIDENCE_INDEX_MIGRATION)
+    {
+        verify_radio_evidence_index(client).await?;
     }
     Ok(applied)
 }
@@ -645,6 +671,8 @@ async fn verify_m0_shape(tx: &tokio_postgres::Transaction<'_>) -> Result<(), Mig
 
 #[cfg(test)]
 mod online_index_tests;
+#[cfg(test)]
+mod radio_evidence_index_tests;
 
 #[cfg(test)]
 mod tests {
