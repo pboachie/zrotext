@@ -252,7 +252,7 @@ mod tests {
             &mut db,
             &hasher,
             "timeline-a@example.test",
-            "correct horse 123",
+            &crate::test_keys::password(1),
         )
         .await
         .unwrap();
@@ -260,7 +260,7 @@ mod tests {
             &mut db,
             &hasher,
             "timeline-b@example.test",
-            "correct horse 456",
+            &crate::test_keys::password(2),
         )
         .await
         .unwrap();
@@ -270,12 +270,22 @@ mod tests {
         verify_email(&mut db, &hasher, &b.verification_token)
             .await
             .unwrap();
-        let session_a = login(&db, &hasher, "timeline-a@example.test", "correct horse 123")
-            .await
-            .unwrap();
-        let session_b = login(&db, &hasher, "timeline-b@example.test", "correct horse 456")
-            .await
-            .unwrap();
+        let session_a = login(
+            &db,
+            &hasher,
+            "timeline-a@example.test",
+            &crate::test_keys::password(1),
+        )
+        .await
+        .unwrap();
+        let session_b = login(
+            &db,
+            &hasher,
+            "timeline-b@example.test",
+            &crate::test_keys::password(2),
+        )
+        .await
+        .unwrap();
         let device_a = Uuid::new_v4();
         let device_b = Uuid::new_v4();
         db.execute(
