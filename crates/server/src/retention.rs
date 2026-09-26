@@ -70,6 +70,7 @@ pub struct RetentionCounts {
     pub webhook_deliveries: u64,
     pub inbound_events: u64,
     pub sealed_inbound_events: u64,
+    pub device_preconditions: u64,
 }
 
 impl RetentionCounts {
@@ -83,6 +84,7 @@ impl RetentionCounts {
             self.webhook_deliveries,
             self.inbound_events,
             self.sealed_inbound_events,
+            self.device_preconditions,
         ]
         .into_iter()
         .any(|count| count >= limit)
@@ -195,6 +197,15 @@ pub async fn prune(
             &[&policy.sealed_inbound_days, &limit],
         )
         .await?;
+    let device_preconditions = client
+        .execute(
+            "WITH due AS (SELECT device_id FROM device_preconditions \
+         WHERE received_at<now()-interval '1 day' ORDER BY received_at,device_id \
+         FOR UPDATE SKIP LOCKED LIMIT $1) \
+         DELETE FROM device_preconditions r USING due WHERE r.device_id=due.device_id",
+            &[&limit],
+        )
+        .await?;
     Ok(RetentionCounts {
         idempotency_keys,
         messages,
@@ -202,6 +213,7 @@ pub async fn prune(
         webhook_deliveries,
         inbound_events,
         sealed_inbound_events,
+        device_preconditions,
     })
 }
 

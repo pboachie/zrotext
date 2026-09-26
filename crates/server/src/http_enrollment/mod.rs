@@ -602,6 +602,7 @@ struct OwnerDeviceResponse {
     display_name: String,
     revoked: bool,
     active_socket_lease: bool,
+    reported_preconditions: Option<enrollment::ReportedPreconditions>,
 }
 
 #[derive(Deserialize)]
@@ -645,6 +646,7 @@ async fn list_devices(
                     display_name: device.display_name,
                     revoked: device.revoked,
                     active_socket_lease: device.active_socket_lease,
+                    reported_preconditions: device.reported_preconditions,
                 })
                 .collect::<Vec<_>>(),
             next_cursor: page.next_cursor,

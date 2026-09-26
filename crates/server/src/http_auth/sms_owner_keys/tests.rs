@@ -18,7 +18,7 @@ macro_rules! migration {
 
 // The ceremony runs on the complete schema. SQL is embedded at build time so
 // the test never executes files discovered at runtime.
-const TEST_MIGRATIONS: [(&str, &str); 40] = [
+const TEST_MIGRATIONS: [(&str, &str); 42] = [
     ("001_foundation.sql", migration!("001_foundation.sql")),
     ("002_auth.sql", migration!("002_auth.sql")),
     ("003_delivery.sql", migration!("003_delivery.sql")),
@@ -159,6 +159,14 @@ const TEST_MIGRATIONS: [(&str, &str); 40] = [
     (
         "039_inbound_device_clock_offset.sql",
         migration!("039_inbound_device_clock_offset.sql"),
+    ),
+    (
+        "040_radio_evidence_index.sql",
+        migration!("040_radio_evidence_index.sql"),
+    ),
+    (
+        "041_device_preconditions.sql",
+        migration!("041_device_preconditions.sql"),
     ),
     (
         "042_sealed_manifest_authority.sql",
@@ -323,6 +331,14 @@ async fn postgres_owner_key_ceremony_requires_possession_mfa_and_revokes_only_sm
                 "CREATE INDEX CONCURRENTLY messages_in_flight_updated \
                  ON messages(updated_at,id) \
                  WHERE state IN ('claimed','submitting','submitted')",
+            )
+            .await
+            .unwrap();
+        }
+        if name == "040_radio_evidence_index.sql" {
+            db.batch_execute(
+                "CREATE INDEX CONCURRENTLY message_events_attempt_evidence \
+                 ON message_events(attempt_id,evidence_code)",
             )
             .await
             .unwrap();

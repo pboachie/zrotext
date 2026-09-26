@@ -79,6 +79,7 @@ impl Fixture {
             include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
             include_str!("../../../../deploy/compose/migrations/032_line_opt_out_events.sql"),
             include_str!("../../../../deploy/compose/migrations/033_sms_line_binding_scope.sql"),
+            include_str!("../../../../deploy/compose/migrations/034_delivery_sweep_index.sql"),
             include_str!("../../../../deploy/compose/migrations/035_sms_owner_key_ceremony.sql"),
             include_str!("../../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
             include_str!(
@@ -88,8 +89,18 @@ impl Fixture {
             include_str!(
                 "../../../../deploy/compose/migrations/039_inbound_device_clock_offset.sql"
             ),
+            include_str!("../../../../deploy/compose/migrations/040_radio_evidence_index.sql"),
+            include_str!("../../../../deploy/compose/migrations/041_device_preconditions.sql"),
             include_str!("../../../../deploy/compose/migrations/042_sealed_manifest_authority.sql"),
         ] {
+            // Mirror the migrator's autocommit index preparation, followed by
+            // each exact numbered validation gate on this complete schema.
+            if sql.contains("CREATE FUNCTION messages_in_flight_index_ready") {
+                db.batch_execute("CREATE INDEX CONCURRENTLY messages_in_flight_updated ON messages(updated_at,id) WHERE state IN ('claimed','submitting','submitted')").await.unwrap();
+            }
+            if sql.contains("CREATE FUNCTION message_events_radio_evidence_index_ready") {
+                db.batch_execute("CREATE INDEX CONCURRENTLY message_events_attempt_evidence ON message_events(attempt_id,evidence_code)").await.unwrap();
+            }
             db.batch_execute(sql).await.unwrap();
         }
         let account = Uuid::new_v4();

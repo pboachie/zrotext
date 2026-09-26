@@ -94,12 +94,22 @@ pub struct PairingView {
     pub key_fingerprint: Option<String>,
 }
 
+#[derive(serde::Serialize)]
+pub struct ReportedPreconditions {
+    pub selected_sim: String,
+    pub sms_permission: String,
+    pub airplane_mode: String,
+    pub received_at_ms: i64,
+    pub fresh: bool,
+}
+
 pub struct OwnerDevice {
     pub id: Uuid,
     pub display_name: String,
     pub revoked: bool,
     /// A current authenticated hub lease, not evidence of SIM or SMS readiness.
     pub active_socket_lease: bool,
+    pub reported_preconditions: Option<ReportedPreconditions>,
 }
 
 pub struct OwnerDevicePage {
@@ -424,12 +434,22 @@ pub async fn list_owner_devices(
                COALESCE(d.revoked_at IS NULL AND k.revoked_at IS NULL AND a.disabled_at IS NULL \
                  AND ds.lease_until>now() AND ds.connection_epoch>0 \
                  AND ds.deployment_epoch=p.epoch AND s.enabled=TRUE AND s.draining=FALSE \
-                 AND NOT pg_is_in_recovery(),FALSE) AS active_socket_lease \
+                 AND NOT pg_is_in_recovery(),FALSE) AS active_socket_lease, \
+               r.selected_sim AS report_selected_sim,r.sms_permission AS report_sms_permission, \
+               r.airplane_mode AS report_airplane_mode, \
+               (extract(epoch FROM r.received_at)*1000)::bigint AS report_received_at_ms, \
+               COALESCE(r.received_at>=statement_timestamp()-interval '90 seconds' \
+                 AND ds.lease_until>now() AND s.enabled=TRUE AND s.draining=FALSE,FALSE) AS report_fresh \
              FROM devices d JOIN device_keys k ON (k.account_id,k.device_id)=(d.account_id,d.id) \
              JOIN accounts a ON a.id=d.account_id \
              LEFT JOIN device_sessions ds ON (ds.account_id,ds.device_id)=(d.account_id,d.id) \
              LEFT JOIN sites s ON s.site_id=ds.site_id \
              LEFT JOIN deployment_authority p ON p.singleton=TRUE \
+             LEFT JOIN device_preconditions r ON (r.account_id,r.device_id)=(d.account_id,d.id) \
+               AND r.connection_epoch=ds.connection_epoch AND r.deployment_epoch=ds.deployment_epoch \
+               AND r.deployment_epoch=p.epoch AND d.revoked_at IS NULL AND k.revoked_at IS NULL \
+               AND a.disabled_at IS NULL AND r.received_at<=statement_timestamp() \
+               AND r.received_at>=statement_timestamp()-interval '1 day' \
              WHERE d.account_id=$1 AND ($2::uuid IS NULL OR (d.created_at,d.id) < \
                (SELECT c.created_at,c.id FROM devices c JOIN device_keys ck \
                 ON (ck.account_id,ck.device_id)=(c.account_id,c.id) \
@@ -447,6 +467,15 @@ pub async fn list_owner_devices(
             display_name: row.get(1),
             revoked: row.get(2),
             active_socket_lease: row.get(3),
+            reported_preconditions: row.get::<_, Option<String>>("report_selected_sim").map(
+                |selected_sim| ReportedPreconditions {
+                    selected_sim,
+                    sms_permission: row.get("report_sms_permission"),
+                    airplane_mode: row.get("report_airplane_mode"),
+                    received_at_ms: row.get("report_received_at_ms"),
+                    fresh: row.get("report_fresh"),
+                },
+            ),
         })
         .collect();
     Ok(OwnerDevicePage {
