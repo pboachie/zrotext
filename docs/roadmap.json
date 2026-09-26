@@ -148,18 +148,19 @@
             ["#105", "https://github.com/pboachie/zrotext/pull/105"],
             ["#173", "https://github.com/pboachie/zrotext/pull/173"],
             ["#183", "https://github.com/pboachie/zrotext/pull/183"],
-            ["#259", "https://github.com/pboachie/zrotext/pull/259"]
+            ["#259", "https://github.com/pboachie/zrotext/pull/259"],
+            ["#275", "https://github.com/pboachie/zrotext/pull/275"]
           ],
           "done": [
             "Complete Compose stack with migrations before API start ([guide](../deploy/compose/README.md))",
             "Separate migration and restricted runtime database roles",
             "Verified PostgreSQL TLS and an optional HTTPS edge",
             "Scripted fresh-install and database restore rehearsals",
-            "Upgrade guide for moving between source snapshots ([guide](../deploy/compose/UPGRADE.md))"
+            "Upgrade guide for moving between source snapshots ([guide](../deploy/compose/UPGRADE.md))",
+            "Production hardening checklist ([checklist](../deploy/compose/README.md#production-hardening-checklist))"
           ],
           "todo": [
-            "Upgrade notes for each tagged release",
-            "Production hardening checklist"
+            "Upgrade notes for each tagged release"
           ]
         },
         {
