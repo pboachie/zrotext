@@ -339,6 +339,13 @@ expiry age in seconds, silent attempts, and overdue delivery receipts waiting
 contains no IDs, phone numbers, or content. A count that stays high or keeps
 growing means recovery is falling behind.
 
+Unauthenticated and malformed requests are rejected before they take a request
+connection: the alpha message routes check the `Authorization: Bearer` header
+shape and owner routes check for a session cookie first. `/readyz` runs its database
+checks at most once per second per process and shares the result across
+concurrent probes, so frequent load-balancer probes use at most one request
+connection at a time.
+
 Migration 029 (`029_webhook_dispatch_fairness.sql`; its error text still says "027") requires a webhook maintenance window. Stop webhook delivery on
 **every** old dispatch node (`WEBHOOK_DELIVERY_ENABLED=false`) before migrating.
 The migration takes an exclusive delivery-table lock, records expired leases as

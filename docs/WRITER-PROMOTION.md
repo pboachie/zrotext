@@ -34,10 +34,17 @@ runbook cites them so you know what each check proves.
   deployment_authority WHERE singleton=TRUE AND epoch=$1`). A process running
   yesterday's epoch refuses traffic even if it can still reach the database.
 - **Site fence.** The `sites` table (`site_id`, `enabled`, `draining`) is
-  checked live on every `/readyz` request and every device-session
-  validation: a site marked `draining` or not `enabled` stops being
-  write-ready without a restart. A process whose site row is fenced also
-  refuses to start (`configured site is disabled or draining`).
+  checked on every device-session validation and by `/readyz`: a site marked
+  `draining` or not `enabled` stops being write-ready without a restart. A
+  process whose site row is fenced also refuses to start (`configured site is
+  disabled or draining`).
+
+`/readyz` is unauthenticated, so its database checks (writer, epoch, site,
+message index, billing authorization) run at most once per second per process
+and concurrent probes share that one result; a probe that cannot finish within
+five seconds counts as not ready. A database-side fence change therefore shows
+on `/readyz` within about a second. The in-process draining flag and billing
+provider authorization flags are still read on every request.
 - **Device-session fence.** Each new authenticated device connection
   upserts `device_sessions` with `connection_epoch = connection_epoch + 1`
   and takes over the lease; validation matches the exact `site_id`,
@@ -119,8 +126,9 @@ ever came back with stale state — could no longer validate that session.
 
 ### A3. Demonstrate the site fence (live, reversible)
 
-The `sites.draining` column is checked per request, so it fences a running
-process without touching it. Fence B, watch it refuse, then unfence:
+The `sites.draining` column is read by a running process, so it fences that
+process without touching it. Fence B, watch it refuse (allow a second for the
+readiness cache), then unfence:
 
 ```sql
 UPDATE sites SET draining = TRUE WHERE site_id = 'local-b';

@@ -170,6 +170,9 @@ async fn create_pairing(
     headers: HeaderMap,
     ApiJson(body): ApiJson<CreatePairingBody>,
 ) -> Response {
+    if let Err(error) = crate::http_auth::require_session_cookie(&headers) {
+        return error.into_response();
+    }
     let Ok(client) = connect(&state).await else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
@@ -219,6 +222,9 @@ async fn view_pairing(
     Path(pairing_id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Response {
+    if let Err(error) = crate::http_auth::require_session_cookie(&headers) {
+        return error.into_response();
+    }
     let Ok(client) = connect(&state).await else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
@@ -404,6 +410,9 @@ async fn approve_pairing(
     if body.comparison_code.len() > 8 || body.key_fingerprint.len() > 64 {
         return StatusCode::BAD_REQUEST.into_response();
     }
+    if let Err(error) = crate::http_auth::require_session_cookie(&headers) {
+        return error.into_response();
+    }
     let Ok(mut client) = connect(&state).await else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
@@ -440,6 +449,9 @@ async fn cancel_pairing(
     Path(pairing_id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Response {
+    if let Err(error) = crate::http_auth::require_session_cookie(&headers) {
+        return error.into_response();
+    }
     let Ok(client) = connect(&state).await else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
@@ -575,6 +587,9 @@ async fn revoke_device(
     Path(device_id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Response {
+    if let Err(error) = crate::http_auth::require_session_cookie(&headers) {
+        return error.into_response();
+    }
     let Ok(mut client) = connect(&state).await else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
@@ -625,6 +640,9 @@ async fn list_devices(
     Query(query): Query<ListDevicesQuery>,
     headers: HeaderMap,
 ) -> Response {
+    if let Err(error) = crate::http_auth::require_session_cookie(&headers) {
+        return error.into_response();
+    }
     let Ok(client) = connect(&state).await else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };

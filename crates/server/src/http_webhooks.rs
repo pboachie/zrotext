@@ -150,6 +150,9 @@ async fn list_endpoints(
     State(state): State<Arc<WebhookHttpState>>,
     headers: HeaderMap,
 ) -> Response {
+    if let Err(error) = crate::http_auth::require_session_cookie(&headers) {
+        return error.into_response();
+    }
     let Ok(client) = connect(&state).await else {
         return EndpointError::Unavailable.into_response();
     };
@@ -247,6 +250,9 @@ async fn list_inbound_events(
     Query(query): Query<HistoryQuery>,
     headers: HeaderMap,
 ) -> Response {
+    if let Err(error) = crate::http_auth::require_session_cookie(&headers) {
+        return error.into_response();
+    }
     let Ok(client) = connect(&state).await else {
         return EndpointError::Unavailable.into_response();
     };
@@ -342,6 +348,9 @@ async fn list_deliveries(
     Query(query): Query<HistoryQuery>,
     headers: HeaderMap,
 ) -> Response {
+    if let Err(error) = crate::http_auth::require_session_cookie(&headers) {
+        return error.into_response();
+    }
     let Ok(client) = connect(&state).await else {
         return EndpointError::Unavailable.into_response();
     };
@@ -481,6 +490,9 @@ async fn replay_delivery(
     Path((endpoint_id, delivery_id)): Path<(Uuid, Uuid)>,
     headers: HeaderMap,
 ) -> Response {
+    if let Err(error) = crate::http_auth::require_session_cookie(&headers) {
+        return error.into_response();
+    }
     let Ok(mut client) = connect(&state).await else {
         return EndpointError::Unavailable.into_response();
     };
@@ -633,6 +645,9 @@ async fn create_endpoint(
     headers: HeaderMap,
     ApiJson(body): ApiJson<CreateBody>,
 ) -> Response {
+    if let Err(error) = crate::http_auth::require_session_cookie(&headers) {
+        return error.into_response();
+    }
     let Ok(mut client) = connect(&state).await else {
         return EndpointError::Unavailable.into_response();
     };
@@ -715,6 +730,9 @@ async fn enable_endpoint(
     Path(endpoint_id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Response {
+    if let Err(error) = crate::http_auth::require_session_cookie(&headers) {
+        return error.into_response();
+    }
     let Ok(mut client) = connect(&state).await else {
         return EndpointError::Unavailable.into_response();
     };
@@ -775,6 +793,9 @@ async fn disable_endpoint(
     Path(endpoint_id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Response {
+    if let Err(error) = crate::http_auth::require_session_cookie(&headers) {
+        return error.into_response();
+    }
     let Ok(mut client) = connect(&state).await else {
         return EndpointError::Unavailable.into_response();
     };
@@ -793,6 +814,9 @@ async fn rotate_endpoint(
     Path(endpoint_id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Response {
+    if let Err(error) = crate::http_auth::require_session_cookie(&headers) {
+        return error.into_response();
+    }
     let Ok(mut client) = connect(&state).await else {
         return EndpointError::Unavailable.into_response();
     };

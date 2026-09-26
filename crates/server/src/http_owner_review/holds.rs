@@ -200,6 +200,9 @@ pub(super) async fn create_hold(
     if !valid_hold(&body, now) {
         return error(StatusCode::BAD_REQUEST, "invalid_request");
     }
+    if let Err(error) = crate::http_auth::require_session_cookie(&headers) {
+        return error.into_response();
+    }
     let Ok(mut client) = crate::runtime_db::connect(&state.database_url).await else {
         return unavailable();
     };
@@ -280,6 +283,9 @@ pub(super) async fn list_holds(
     Query(query): Query<HoldListQuery>,
     headers: HeaderMap,
 ) -> Response {
+    if let Err(error) = crate::http_auth::require_session_cookie(&headers) {
+        return error.into_response();
+    }
     let Ok(client) = crate::runtime_db::connect(&state.database_url).await else {
         return unavailable();
     };
@@ -355,6 +361,9 @@ pub(super) async fn decide_review(
     headers: HeaderMap,
     ApiJson(body): ApiJson<DecisionBody>,
 ) -> Response {
+    if let Err(error) = crate::http_auth::require_session_cookie(&headers) {
+        return error.into_response();
+    }
     let Ok(mut client) = crate::runtime_db::connect(&state.database_url).await else {
         return unavailable();
     };

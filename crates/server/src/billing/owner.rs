@@ -93,6 +93,7 @@ async fn connect(database_url: &str) -> Result<crate::runtime_db::PooledClient, 
 }
 
 async fn owner_id(state: &AuthHttpState, headers: &HeaderMap) -> Result<Uuid, AuthHttpError> {
+    http_auth::require_session_cookie(headers)?;
     let db = connect(&state.database_url).await?;
     Ok(
         http_auth::require_owner(&db, &state.hasher, &state.canonical_origin, headers, false)
@@ -106,6 +107,7 @@ async fn status(
     State(state): State<Arc<AuthHttpState>>,
     headers: HeaderMap,
 ) -> Result<Json<BillingStatus>, AuthHttpError> {
+    http_auth::require_session_cookie(&headers)?;
     let db = connect(&state.database_url).await?;
     let owner =
         http_auth::require_owner(&db, &state.hasher, &state.canonical_origin, &headers, false)

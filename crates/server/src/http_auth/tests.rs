@@ -503,6 +503,53 @@ async fn allowlist_without_address_bound_invite_never_reaches_database() {
 }
 
 #[tokio::test]
+async fn owner_routes_reject_missing_session_cookie_before_database() {
+    // An unparseable URL fails any connection attempt with 503, so a 401 here
+    // proves the handler never asked the pool for a connection.
+    let state = AuthHttpState::new(
+        "not a database url".to_owned(),
+        Arc::new(TokenHasher::new(crate::test_keys::key(7)).unwrap()),
+        "https://zrotext.example".to_owned(),
+        Arc::new(DisabledVerificationDispatcher),
+    )
+    .unwrap();
+    let app = router(state);
+    let key = format!("/api-keys/{}", Uuid::new_v4());
+    for (method, uri) in [
+        ("GET", "/session"),
+        ("GET", "/sessions"),
+        ("GET", "/mfa"),
+        ("GET", "/api-keys"),
+        ("DELETE", key.as_str()),
+        ("POST", "/logout"),
+    ] {
+        let request = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(header::ORIGIN, "https://zrotext.example")
+            .header(header::COOKIE, "unrelated=1")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "{method} {uri}"
+        );
+    }
+    // With a session cookie the handler does need the database.
+    let request = Request::builder()
+        .uri("/session")
+        .header(header::COOKIE, format!("{SESSION_COOKIE}=zts_fixture"))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        app.oneshot(request).await.unwrap().status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+}
+
+#[tokio::test]
 async fn login_rejects_cross_origin_before_password_work() {
     let state = AuthHttpState::new(
         "postgres://unused".to_owned(),
