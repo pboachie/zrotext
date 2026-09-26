@@ -161,8 +161,16 @@ authenticated device session. It is true only while the lease is unexpired,
 the session deployment epoch is current, the hosting site is enabled and not
 draining, and the device, key, and account remain active. Reconnection replaces
 the device's prior session with a higher connection epoch. A dropped socket can
-remain represented until its 90-second lease expires; the page is a snapshot,
-not a continuous connection monitor. Approval/revocation and this lease are
+remain represented until its 90-second lease expires. The owner dashboard polls
+device leases and recent message states every 15 seconds after the previous
+refresh finishes, only while signed in with a visible page. Owners can turn off
+automatic refresh; browsing older entries, focusing a list row, or opening
+message events pauses that list until the owner returns to the latest entries
+with Refresh or finishes the interaction. Hidden tabs and page navigation stop
+the timer; returning resumes it. A failed automatic refresh retains the previous
+rows with a visible error, and session expiry clears owner data and stops polling.
+These periodic observations are not a continuous connection monitor.
+Approval/revocation and this lease are
 separate fields. Neither field establishes Android SMS permission, SIM state,
 carrier service, or radio send readiness. The owner API returns 503 rather than
 rendering a standby's potentially stale lease state.
