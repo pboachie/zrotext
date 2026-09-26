@@ -77,6 +77,24 @@ currently active generation. A missing pending device can be superseded and
 its generation burned without interrupting the old active binding. A late
 proof for the superseded generation is rejected.
 
+## Dormant envelope verification prerequisite
+
+The server library's [sealed envelope module](../../crates/server/src/sealed_envelope/mod.rs)
+provides bounded candidate parsing and exact-byte P-256 signature verification.
+It requires explicit proof-only draft-01 or candidate-02 selection, and checks
+caller-supplied account, message, device, line, keyset version, manifest digest,
+peer, signer and exact ordered recipient set. Its result includes the SHA-256
+unsigned-envelope digest; its constructor is private, and debug output omits
+identifiers and envelope bytes. Draft-01 interoperability keeps the pinned
+high-`s` fixture valid; candidate 02 rejects high-`s` signatures.
+
+No route calls this module. The expected context must come from independently
+verified owner-pinned manifest authority, not the received envelope or an
+untrusted relay directory. A successful signature does not prove manifest
+freshness, active line generation, session/grant validity, replay safety, HPKE
+or body authentication, or permission to store, decrypt or send. The live
+transactional checks and the remaining Q1-Q11 evidence are still required.
+
 ## Required next ingest gate
 
 Before any sealed route can write `sealed_inbound_events`, it must bound and
