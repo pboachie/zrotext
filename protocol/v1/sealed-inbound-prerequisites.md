@@ -68,8 +68,14 @@ fingerprints. It does not recover keys deleted before migration, classify
 unregistered payload keys, or establish a global cross-account key policy.
 
 The migration fences source-table writes across backfill and trigger installation
-and rejects preexisting incompatible aliases. Account-row locks serialize absent
-genesis and role reservation. Checks of existing authority use ordinary reads,
+and rejects preexisting incompatible aliases. Each account/point has one immutable
+compatibility-family reservation; generated claim families and a foreign key
+allow line/device sharing while excluding root and SMS aliases. Unique constraints
+also fence writers whose repeatable-read or serializable snapshot predates another
+reservation. Such transactions can abort with a serialization error and must be
+retried as a whole; the registration never silently changes an existing family.
+Account-row locks serialize absent genesis and role reservation. Checks of existing
+authority use ordinary reads,
 never account-then-authority row locking; manifest admission still locks authority
 before its account/session fences. Existing authority updates take no new lock.
 These records prove neither independent human comparison nor root possession.

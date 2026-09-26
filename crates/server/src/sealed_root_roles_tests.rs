@@ -55,7 +55,10 @@ async fn role(
 async fn count(db: &impl GenericClient, table: &str, account: Uuid) -> i64 {
     assert!(matches!(
         table,
-        "sealed_manifest_authorities" | "sealed_root_enrollments" | "known_signing_role_claims"
+        "sealed_manifest_authorities"
+            | "sealed_root_enrollments"
+            | "known_signing_role_claims"
+            | "known_signing_point_reservations"
     ));
     db.query_one(
         &format!("SELECT count(*) FROM {table} WHERE account_id=$1"),
@@ -97,6 +100,104 @@ async fn root_reservations_simultaneous_genesis_commits_one_permanent_identity()
     );
     assert!(provision(&f.db, f.account, &expected).await.is_err());
     f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn root_reservations_stale_snapshot_cannot_cross_role_families() {
+    for isolation in [
+        tokio_postgres::IsolationLevel::RepeatableRead,
+        tokio_postgres::IsolationLevel::Serializable,
+    ] {
+        for kind in ["device", "line", "sms"] {
+            for root_first in [false, true] {
+                let f = Fixture::without_authority().await;
+                let device = extra_device(&f).await;
+                let mut stale = f.connect().await;
+                let tx = stale
+                    .build_transaction()
+                    .isolation_level(isolation)
+                    .start()
+                    .await
+                    .unwrap();
+                // Fix a snapshot before another connection commits the point.
+                let before = count(&tx, "known_signing_role_claims", f.account).await;
+                if root_first {
+                    provision(&f.db, f.account, &f.pin).await.unwrap();
+                } else {
+                    role(&f.db, f.account, device, &f.pin[29..], kind)
+                        .await
+                        .unwrap();
+                }
+                assert_eq!(
+                    count(&tx, "known_signing_role_claims", f.account).await,
+                    before,
+                    "the contender must retain its earlier snapshot"
+                );
+                let result = if root_first {
+                    role(&tx, f.account, device, &f.pin[29..], kind).await
+                } else {
+                    provision(&tx, f.account, &f.pin).await
+                };
+                let error = result.expect_err("a stale snapshot must not create an alias");
+                assert!(matches!(
+                    error.code(),
+                    Some(&tokio_postgres::error::SqlState::T_R_SERIALIZATION_FAILURE)
+                        | Some(&tokio_postgres::error::SqlState::FOREIGN_KEY_VIOLATION)
+                ));
+                tx.rollback().await.unwrap();
+                let roles: Vec<String> = f
+                    .db
+                    .query(
+                        "SELECT role FROM known_signing_role_claims WHERE account_id=$1 AND signing_key_sec1=$2",
+                        &[&f.account, &&f.pin[29..]],
+                    )
+                    .await
+                    .unwrap()
+                    .iter()
+                    .map(|row| row.get(0))
+                    .collect();
+                assert_eq!(roles.len(), 1);
+                assert_eq!(roles[0] == "sealed_root", root_first);
+                f.cleanup().await;
+            }
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn root_reservations_share_only_the_generated_compatible_family() {
+    for isolation in [
+        tokio_postgres::IsolationLevel::RepeatableRead,
+        tokio_postgres::IsolationLevel::Serializable,
+    ] {
+        let f = Fixture::without_authority().await;
+        let key = point();
+        role(&f.db, f.account, extra_device(&f).await, &key, "device")
+            .await
+            .unwrap();
+        let mut db = f.connect().await;
+        let tx = db
+            .build_transaction()
+            .isolation_level(isolation)
+            .start()
+            .await
+            .unwrap();
+        role(&tx, f.account, f.device, &key, "line").await.unwrap();
+        tx.commit().await.unwrap();
+        let row = f.db.query_one("SELECT family,(SELECT count(*) FROM known_signing_role_claims c WHERE c.account_id=p.account_id AND c.signing_key_sec1=p.signing_key_sec1) FROM known_signing_point_reservations p WHERE account_id=$1 AND signing_key_sec1=$2", &[&f.account,&key]).await.unwrap();
+        assert_eq!(row.get::<_, String>(0), "line_device");
+        assert_eq!(row.get::<_, i64>(1), 2);
+        let error = f.db.execute("INSERT INTO known_signing_role_claims(account_id,signing_key_sec1,role) VALUES($1,$2,'sealed_root')", &[&f.account,&key]).await.unwrap_err();
+        assert_eq!(
+            error.code(),
+            Some(&tokio_postgres::error::SqlState::FOREIGN_KEY_VIOLATION)
+        );
+        // A direct writer cannot supply a compatible family for an exclusive role.
+        assert!(f.db.execute("INSERT INTO known_signing_role_claims(account_id,signing_key_sec1,role,family) VALUES($1,$2,'sealed_root','line_device')", &[&f.account,&key]).await.is_err());
+        f.cleanup().await;
+    }
 }
 
 #[tokio::test]
@@ -166,6 +267,7 @@ async fn root_reservations_rollback_does_not_leave_a_marker_or_point_claim() {
         0
     );
     assert!(!f.db.query_one("SELECT EXISTS(SELECT 1 FROM known_signing_role_claims WHERE account_id=$1 AND role='sealed_root')", &[&f.account]).await.unwrap().get::<_,bool>(0));
+    assert_eq!(f.db.query_one("SELECT family FROM known_signing_point_reservations WHERE account_id=$1 AND signing_key_sec1=$2", &[&f.account,&&f.pin[29..]]).await.unwrap().get::<_,String>(0), "line_device");
     f.cleanup().await;
 }
 
@@ -180,6 +282,9 @@ async fn root_reservations_survive_authority_deletion_and_reject_history_mutatio
         "UPDATE known_signing_role_claims SET role=role",
         "DELETE FROM known_signing_role_claims",
         "TRUNCATE known_signing_role_claims",
+        "UPDATE known_signing_point_reservations SET family=family",
+        "DELETE FROM known_signing_point_reservations",
+        "TRUNCATE known_signing_point_reservations CASCADE",
     ] {
         assert!(f.db.batch_execute(sql).await.is_err(), "{sql}");
     }
@@ -247,13 +352,45 @@ async fn root_reservations_keep_revoked_replaced_and_deleted_device_points_reser
     provision(&f.db, f.account, &f.pin).await.unwrap();
     // Identity UPDATE must respect root reservation, not only device INSERT.
     let device = extra_device(&f).await;
-    role(&f.db, f.account, device, &point(), "device")
+    let moved_point = point();
+    role(&f.db, f.account, device, &moved_point, "device")
         .await
         .unwrap();
     assert!(
         f.db.execute(
             "UPDATE device_keys SET signing_key_sec1=$2 WHERE device_id=$1",
             &[&device, &&f.pin[29..]]
+        )
+        .await
+        .is_err()
+    );
+    // Moving an otherwise unreferenced key identity reserves it in the new
+    // account without releasing the old account's historical claim.
+    let other_account = Uuid::new_v4();
+    let other_device = Uuid::new_v4();
+    f.db.execute("INSERT INTO accounts(id) VALUES($1)", &[&other_account])
+        .await
+        .unwrap();
+    f.db.execute(
+        "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'synthetic')",
+        &[&other_device, &other_account],
+    )
+    .await
+    .unwrap();
+    f.db.execute(
+        "UPDATE device_keys SET account_id=$2,device_id=$3 WHERE device_id=$1",
+        &[&device, &other_account, &other_device],
+    )
+    .await
+    .unwrap();
+    for account in [f.account, other_account] {
+        assert!(f.db.query_one("SELECT EXISTS(SELECT 1 FROM known_signing_role_claims WHERE account_id=$1 AND signing_key_sec1=$2 AND role='device_auth')", &[&account,&moved_point]).await.unwrap().get::<_,bool>(0));
+    }
+    assert!(
+        provision(
+            &f.db,
+            other_account,
+            &pin_for(&f, other_account, &moved_point)
         )
         .await
         .is_err()
@@ -311,6 +448,7 @@ async fn root_reservations_preserve_existing_role_matrix_and_account_erasure() {
         "sealed_manifest_authorities",
         "sealed_root_enrollments",
         "known_signing_role_claims",
+        "known_signing_point_reservations",
     ] {
         assert_eq!(count(&f.db, table, erased).await, 0);
     }

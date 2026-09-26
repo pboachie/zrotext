@@ -6,12 +6,28 @@
 -- The migrator owns this transaction; lock failure rolls back the entire change.
 LOCK TABLE sealed_manifest_authorities, device_keys,
     line_owner_approval_keys, sms_line_owner_approval_keys IN SHARE ROW EXCLUSIVE MODE;
+-- One immutable compatibility family owns each account/point. Uniqueness and
+-- the claims' foreign key enforce exclusion even with an older transaction
+-- snapshot; row locks plus a SELECT of other claims would not suffice.
+CREATE TABLE known_signing_point_reservations (
+    account_id uuid NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    signing_key_sec1 bytea NOT NULL CHECK (octet_length(signing_key_sec1)=65),
+    family text NOT NULL CHECK (family IN ('sealed_root','sms_approval','line_device')),
+    recorded_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (account_id,signing_key_sec1),
+    UNIQUE (account_id,signing_key_sec1,family)
+);
 CREATE TABLE known_signing_role_claims (
     account_id uuid NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
     signing_key_sec1 bytea NOT NULL CHECK (octet_length(signing_key_sec1)=65),
     role text NOT NULL CHECK (role IN ('sealed_root','sms_approval','line_approval','device_auth')),
+    family text GENERATED ALWAYS AS
+        (CASE WHEN role IN ('line_approval','device_auth') THEN 'line_device' ELSE role END) STORED,
     recorded_at timestamptz NOT NULL DEFAULT clock_timestamp(),
-    PRIMARY KEY (account_id,signing_key_sec1,role)
+    PRIMARY KEY (account_id,signing_key_sec1,role),
+    FOREIGN KEY (account_id,signing_key_sec1,family)
+        REFERENCES known_signing_point_reservations(account_id,signing_key_sec1,family)
+        ON DELETE CASCADE
 );
 
 CREATE TABLE sealed_root_enrollments (
@@ -30,16 +46,13 @@ BEGIN
     IF NOT FOUND THEN
         RAISE EXCEPTION 'signing role account is absent' USING ERRCODE='23503';
     END IF;
-    IF EXISTS (
-        SELECT 1 FROM known_signing_role_claims c
-        WHERE c.account_id=NEW.account_id AND c.signing_key_sec1=NEW.signing_key_sec1
-          AND c.role<>NEW.role
-          AND (c.role IN ('sealed_root','sms_approval') OR
-               NEW.role IN ('sealed_root','sms_approval'))
-    ) THEN
-        RAISE EXCEPTION 'public point is reserved for another signing role'
-            USING ERRCODE='23514';
-    END IF;
+    INSERT INTO known_signing_point_reservations(account_id,signing_key_sec1,family)
+    VALUES(NEW.account_id,NEW.signing_key_sec1,
+        CASE WHEN NEW.role IN ('line_approval','device_auth') THEN 'line_device' ELSE NEW.role END)
+    ON CONFLICT DO NOTHING;
+    -- A conflicting family fails the generated-column FK. Under a stale RR/SSI
+    -- snapshot, the unique conflict can instead abort with serialization failure.
+    -- Both outcomes roll back the complete registration; neither rewrites history.
     RETURN NEW;
 END;
 $$;
@@ -61,6 +74,12 @@ BEGIN
     RAISE EXCEPTION 'sealed trust history is immutable' USING ERRCODE='23514';
 END;
 $$;
+CREATE TRIGGER known_signing_point_before_update_or_delete
+    BEFORE UPDATE OR DELETE ON known_signing_point_reservations
+    FOR EACH ROW EXECUTE FUNCTION sealed_trust_history_immutable();
+CREATE TRIGGER known_signing_point_before_truncate
+    BEFORE TRUNCATE ON known_signing_point_reservations
+    FOR EACH STATEMENT EXECUTE FUNCTION sealed_trust_history_immutable();
 CREATE TRIGGER known_signing_role_before_update_or_delete
     BEFORE UPDATE OR DELETE ON known_signing_role_claims
     FOR EACH ROW EXECUTE FUNCTION sealed_trust_history_immutable();
