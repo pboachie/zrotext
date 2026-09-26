@@ -104,7 +104,7 @@ fn bearer_and_case_id_inputs_are_strict() {
 
 #[tokio::test]
 async fn status_and_cancel_reject_missing_bearer_before_database() {
-    // An unparseable URL fails any connection attempt with 503, so a 401 here
+    // An unparsable URL fails any connection attempt with 503, so a 401 here
     // proves the handler never asked the pool for a connection.
     let app = router(
         MessagesHttpState::new(

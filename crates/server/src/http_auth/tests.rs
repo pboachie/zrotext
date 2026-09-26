@@ -504,7 +504,7 @@ async fn allowlist_without_address_bound_invite_never_reaches_database() {
 
 #[tokio::test]
 async fn owner_routes_reject_missing_session_cookie_before_database() {
-    // An unparseable URL fails any connection attempt with 503, so a 401 here
+    // An unparsable URL fails any connection attempt with 503, so a 401 here
     // proves the handler never asked the pool for a connection.
     let state = AuthHttpState::new(
         "not a database url".to_owned(),
