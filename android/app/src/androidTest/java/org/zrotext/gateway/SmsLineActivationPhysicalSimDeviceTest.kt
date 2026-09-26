@@ -24,7 +24,8 @@ import java.util.UUID
 /**
  * No-radio physical-SIM activation and continuity on real hardware. It uses a throwaway
  * software key and an in-memory journal, so it never touches the app's device key or data,
- * and it never sends an SMS. Only the line count and embedded flags are logged.
+ * and it never sends an SMS. It logs the line count, embedded flags and, for the reboot/swap
+ * reference, the device-local subscription and card integers (never ICCIDs or numbers).
  *
  * Pass `-e expected_sub N -e expected_card M` (from an earlier run's local logcat) to check
  * continuity after a reboot or SIM swap; without them that check is skipped.
@@ -120,7 +121,10 @@ class SmsLineActivationPhysicalSimDeviceTest {
         Log.i("ZTSimCheck", "continuity observed=${observed?.size} embedded=${observed?.map { it.isEmbedded }}")
         val same = SimCardContinuity.matches(ActivatedSimCard(sub!!, card!!), observed)
         Log.i("ZTSimCheck", "continuity matches=$same")
-        val expectMatch = args.getString("expect_match")?.toBooleanStrictOrNull() ?: true
+        val rawExpect = args.getString("expect_match")
+        val expectMatch = if (rawExpect == null) true else requireNotNull(rawExpect.toBooleanStrictOrNull()) {
+            "expect_match must be true or false"
+        }
         assertEquals("continuity after reboot (true) or a different SIM (false)", expectMatch, same)
     }
 }
