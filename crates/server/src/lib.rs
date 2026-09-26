@@ -52,3 +52,6 @@ pub(crate) mod test_keys {
         format!("fixture-{}", URL_SAFE_NO_PAD.encode(Sha256::digest(input)))
     }
 }
+
+#[cfg(test)]
+mod sealed_root_roles_tests;

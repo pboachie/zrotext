@@ -28,6 +28,15 @@ impl Fixture {
         Self::with_purpose("sealed").await
     }
     pub(crate) async fn with_purpose(purpose: &str) -> Self {
+        Self::build(purpose, true, true).await
+    }
+    pub(crate) async fn without_authority() -> Self {
+        Self::build("sealed", false, true).await
+    }
+    pub(crate) async fn before_role_reservations() -> Self {
+        Self::build("sealed", true, false).await
+    }
+    async fn build(purpose: &str, provision: bool, role_reservations: bool) -> Self {
         let url = std::env::var("ZT_INBOUND_TEST_DATABASE_URL").expect("disposable test database");
         let (db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
         tokio::spawn(async move { connection.await.unwrap() });
@@ -94,7 +103,18 @@ impl Fixture {
             include_str!("../../../../deploy/compose/migrations/041_device_preconditions.sql"),
             include_str!("../../../../deploy/compose/migrations/042_sealed_manifest_authority.sql"),
             include_str!("../../../../deploy/compose/migrations/043_sealed_candidate_inbound.sql"),
+            include_str!(
+                "../../../../deploy/compose/migrations/044_sealed_root_role_reservations.sql"
+            ),
         ] {
+            if !role_reservations
+                && sql
+                    == include_str!(
+                        "../../../../deploy/compose/migrations/044_sealed_root_role_reservations.sql"
+                    )
+            {
+                continue;
+            }
             // Mirror the migrator's autocommit index preparation, followed by
             // each exact numbered validation gate on this complete schema.
             if sql.contains("CREATE FUNCTION messages_in_flight_index_ready") {
@@ -203,7 +223,9 @@ impl Fixture {
         // Test-only provisioning models an already independently compared root.
         let fingerprint =
             Sha256::digest([b"ZTSE/root-pin/v2\0".as_slice(), &fixture.pin].concat()).to_vec();
-        fixture.db.execute("INSERT INTO sealed_manifest_authorities(account_id,root_pin,root_fingerprint,generation,anchor_digest) VALUES($1,$2,$3,1,$4)", &[&account,&fixture.pin,&fingerprint,&vec![0u8;32]]).await.unwrap();
+        if provision {
+            fixture.db.execute("INSERT INTO sealed_manifest_authorities(account_id,root_pin,root_fingerprint,generation,anchor_digest) VALUES($1,$2,$3,1,$4)", &[&account,&fixture.pin,&fingerprint,&vec![0u8;32]]).await.unwrap();
+        }
         fixture
     }
     pub(crate) async fn connect(&self) -> Client {
