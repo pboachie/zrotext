@@ -67,6 +67,8 @@ jobs:
         run: python3 -m unittest discover -s protocol/v1/tests -p 'test_ztse_draft_vectors.py'
       - name: Sealed draft field-layout tests
         run: python3 -m unittest discover -s protocol/v1/tests -p 'test_zt_sealed_draft_shape.py'
+      - name: Sealed API v1 contract tests
+        run: python3 -m unittest discover -s protocol/v1/tests -p 'test_sealed_api_v1.py'
       - name: JavaScript syntax
         run: node --check web/owner/devices.js
       - name: Commit sign-off
