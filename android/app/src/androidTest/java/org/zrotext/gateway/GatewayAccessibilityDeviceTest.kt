@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+package org.zrotext.gateway
+
+import android.content.Intent
+import android.os.Build
+import androidx.compose.ui.ExperimentalComposeUiApi
+import androidx.compose.ui.node.RootForTest
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import org.junit.Assume.assumeTrue
+import org.junit.runner.RunWith
+
+/** Explicitly opt in on a disposable emulator; no buttons or radio actions. */
+@RunWith(AndroidJUnit4::class)
+@OptIn(ExperimentalComposeUiApi::class)
+class GatewayAccessibilityDeviceTest : GatewayAccessibilityChecks() {
+    override fun onScreen(check: (RootForTest) -> Unit) {
+        assumeTrue(InstrumentationRegistry.getArguments().getString("a11yIsolatedEmulator") == "true")
+        assumeTrue(Build.HARDWARE in setOf("ranchu", "goldfish"))
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val activity = instrumentation.startActivitySync(
+            Intent(instrumentation.targetContext, MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        try {
+            instrumentation.waitForIdleSync()
+            instrumentation.runOnMainSync {
+                val root = requireNotNull(findRoot(activity.window.decorView))
+                root.measureAndLayoutForTest()
+                check(root)
+            }
+        } finally {
+            instrumentation.runOnMainSync { activity.finish() }
+            instrumentation.waitForIdleSync()
+        }
+    }
+}
