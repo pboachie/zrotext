@@ -9,6 +9,10 @@ It is a library, not an owner CLI or a custody implementation.
 - `root_backup` seals and opens the candidate encrypted root-only container.
   Callers supply the root, recovery secret and independently expected identity;
   sealing obtains fresh cryptographic randomness from the operating system.
+- `recovery_kit` formats/parses a candidate secret transcription token and public
+  root card. Its checksum detects accidental errors only; it does not authenticate
+  the backup or independently compare the intended identity. Secret token bytes
+  require explicit borrowed exposure and must never be implicitly displayed.
 
 The server re-exports both modules at their existing public paths. Shared types,
 formats, error behavior and public vectors are unchanged by this extraction.
@@ -22,8 +26,8 @@ server API interoperability against fixed vectors. Existing workspace CI
 discovers both suites. Protocol tests also retain their independent Node/OpenSSL
 verification.
 
-There is no recovery-kit/card grammar, terminal or filesystem adapter, network
-client, private-key cache, registration, rotation, reset or archive recovery.
+There is no kit lifecycle, terminal or filesystem adapter, network client,
+private-key cache, registration, rotation, reset or archive recovery.
 These remain separate design and release gates. Memory zeroization is best-effort
 hygiene and does not protect a compromised process or promise erasure of every
 compiler/library temporary.

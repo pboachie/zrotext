@@ -58,6 +58,11 @@ impl RecoverySecret {
     pub fn new(bytes: Zeroizing<[u8; 32]>) -> Self {
         Self(bytes)
     }
+
+    /// Internal explicit borrow for the pure recovery-token encoder; never a reveal operation.
+    pub(crate) fn encoding_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
 }
 impl std::fmt::Debug for RecoverySecret {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
