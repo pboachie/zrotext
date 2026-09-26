@@ -265,7 +265,7 @@ Make ZROtext practical to run, upgrade and build against.
 
 | Capability | Stage | Evidence |
 |---|---|---|
-| Compose deployment and upgrade guides | Build | [#35](https://github.com/pboachie/zrotext/pull/35), [#105](https://github.com/pboachie/zrotext/pull/105), [#173](https://github.com/pboachie/zrotext/pull/173), [#183](https://github.com/pboachie/zrotext/pull/183) |
+| Compose deployment and upgrade guides | Build | [#35](https://github.com/pboachie/zrotext/pull/35), [#105](https://github.com/pboachie/zrotext/pull/105), [#173](https://github.com/pboachie/zrotext/pull/173), [#183](https://github.com/pboachie/zrotext/pull/183), [#259](https://github.com/pboachie/zrotext/pull/259) |
 | Signed release artifacts and SBOMs | Build | [#86](https://github.com/pboachie/zrotext/pull/86), [#135](https://github.com/pboachie/zrotext/pull/135), [#169](https://github.com/pboachie/zrotext/pull/169), [#197](https://github.com/pboachie/zrotext/pull/197) |
 | Stable public API v1 and client SDK | Design | [API outline](ARCHITECTURE.md#planned-api-v1-outline), [test-only sealed reader](../sdk/typescript/README.md) |
 | Setup diagnostics and device guidance | Build | [#81](https://github.com/pboachie/zrotext/pull/81), [#189](https://github.com/pboachie/zrotext/pull/189) |
@@ -278,7 +278,7 @@ Make ZROtext practical to run, upgrade and build against.
 - [x] Separate migration and restricted runtime database roles
 - [x] Verified PostgreSQL TLS and an optional HTTPS edge
 - [x] Scripted fresh-install and database restore rehearsals
-- [ ] Upgrade guide covering every release
+- [x] Upgrade guide covering every release ([guide](../deploy/compose/UPGRADE.md))
 - [ ] Production hardening checklist
 
 </details>
