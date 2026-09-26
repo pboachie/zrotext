@@ -1,0 +1,74 @@
+{
+  "status": "UNAPPROVED_TEST_ONLY",
+  "source": "ZT-009 Q6 critical-correction vector: manifest identity = SHA-256(unsigned bytes) with canonical low-s P-256",
+  "profile": 2,
+  "signatureDomain": "ZTSE/manifest/v2",
+  "rootPublicPointHex": "04388dcba6da25555054a7dab5c9b689c824aa9792b307fe28bfd41c5315fd6ea58a37fdcf0124ecede80120b91fd2550c45fd900c127bad9da800b62a59013ccb",
+  "ownerIdHex": "e58eeb797a2c99b600d39d7565dd02c917e9269b0894cc19d75137bc8297f0f9",
+  "unsignedHex": "5a544d4102c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c300000000000000010000000000000001000001a3185c5000000001a31d82ac00000000000000000000000000000000000000000000000000000000000000000004388dcba6da25555054a7dab5c9b689c824aa9792b307fe28bfd41c5315fd6ea58a37fdcf0124ecede80120b91fd2550c45fd900c127bad9da800b62a59013ccb0106e58eeb797a2c99b600d39d7565dd02c917e9269b0894cc19d75137bc8297f0f904388dcba6da25555054a7dab5c9b689c824aa9792b307fe28bfd41c5315fd6ea58a37fdcf0124ecede80120b91fd2550c45fd900c127bad9da800b62a59013ccb00000000000000000000000000000000000000000000000000000000000000000000000001a3185c5000000001a31d82ac0001",
+  "semanticDigestHex": "dccda0bda3ecf865cfaef6b5546dc53e76c31bfab4007eab0c66de03f41e2a40",
+  "signatures": [
+    {
+      "name": "canonical-low-s-a",
+      "rawHex": "bc4259aca2cf71b650b101f428416c00f6cb120ab8c16a96db5122406f3cd8822c1a0c444a1006fa65421f611ccf5e66ed215c6bfcc972e9dfd1048657bba08b",
+      "verifies": true,
+      "canonicalLowS": true,
+      "completeSignedDigestHex": "9586ea327f57e11b6c01577ff28cfce4d8080394a15a4e052a73829a3f210e27"
+    },
+    {
+      "name": "canonical-low-s-b",
+      "rawHex": "0e30d7759e65b98c378896a7d596b1956cdadee630611bf4a916443ec9457f4c395b2ea4dadf60d8a0aad582236b7a73192726287ce6a1e750321536f1f266d5",
+      "verifies": true,
+      "canonicalLowS": true,
+      "completeSignedDigestHex": "3691eac7ca817464c6250f4fecafeeec5957bc75d4a66af88ea857e0381acfc2"
+    }
+  ],
+  "highSTwinOfA": {
+    "rawHex": "bc4259aca2cf71b650b101f428416c00f6cb120ab8c16a96db5122406f3cd882d3e5f3bab5eff9069abde09ee330a198cfc59e41aa4e2b9b13e8c63ca4a784c6",
+    "verifiesUnderPlainEcdsa": true,
+    "strictVerdict": "reject"
+  },
+  "derCases": [
+    {
+      "name": "valid-a",
+      "derHex": "3045022100bc4259aca2cf71b650b101f428416c00f6cb120ab8c16a96db5122406f3cd88202202c1a0c444a1006fa65421f611ccf5e66ed215c6bfcc972e9dfd1048657bba08b",
+      "expected": "accept"
+    },
+    {
+      "name": "nonminimal-s",
+      "derHex": "3046022100bc4259aca2cf71b650b101f428416c00f6cb120ab8c16a96db5122406f3cd8820221002c1a0c444a1006fa65421f611ccf5e66ed215c6bfcc972e9dfd1048657bba08b",
+      "expected": "reject"
+    },
+    {
+      "name": "negative-r",
+      "derHex": "30440220bc4259aca2cf71b650b101f428416c00f6cb120ab8c16a96db5122406f3cd88202202c1a0c444a1006fa65421f611ccf5e66ed215c6bfcc972e9dfd1048657bba08b",
+      "expected": "reject"
+    },
+    {
+      "name": "zero-r",
+      "derHex": "302502010002202c1a0c444a1006fa65421f611ccf5e66ed215c6bfcc972e9dfd1048657bba08b",
+      "expected": "reject"
+    },
+    {
+      "name": "overflow-r-equals-order",
+      "derHex": "3045022100ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc63255102202c1a0c444a1006fa65421f611ccf5e66ed215c6bfcc972e9dfd1048657bba08b",
+      "expected": "reject"
+    },
+    {
+      "name": "trailing-byte",
+      "derHex": "3045022100bc4259aca2cf71b650b101f428416c00f6cb120ab8c16a96db5122406f3cd88202202c1a0c444a1006fa65421f611ccf5e66ed215c6bfcc972e9dfd1048657bba08b00",
+      "expected": "reject"
+    },
+    {
+      "name": "sequence-length-mismatch",
+      "derHex": "3044022100bc4259aca2cf71b650b101f428416c00f6cb120ab8c16a96db5122406f3cd88202202c1a0c444a1006fa65421f611ccf5e66ed215c6bfcc972e9dfd1048657bba08b",
+      "expected": "reject"
+    }
+  ],
+  "mutatedUnsigned": {
+    "field": "keyset_version u64 at offset 29, byte 36: 1 -> 2",
+    "unsignedHex": "5a544d4102c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c300000000000000010000000000000002000001a3185c5000000001a31d82ac00000000000000000000000000000000000000000000000000000000000000000004388dcba6da25555054a7dab5c9b689c824aa9792b307fe28bfd41c5315fd6ea58a37fdcf0124ecede80120b91fd2550c45fd900c127bad9da800b62a59013ccb0106e58eeb797a2c99b600d39d7565dd02c917e9269b0894cc19d75137bc8297f0f904388dcba6da25555054a7dab5c9b689c824aa9792b307fe28bfd41c5315fd6ea58a37fdcf0124ecede80120b91fd2550c45fd900c127bad9da800b62a59013ccb00000000000000000000000000000000000000000000000000000000000000000000000001a3185c5000000001a31d82ac0001",
+    "semanticDigestHex": "bb2b068924729d77593a385cdbec84dc6cbeb380deb8a5be308a79b4e61d125c",
+    "signatureAVerifies": false
+  }
+}
