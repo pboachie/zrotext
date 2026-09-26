@@ -215,7 +215,7 @@ fn interrupted_failure_streak_resets_on_healthy_consensus() {
 }
 
 #[test]
-fn quorum_lost_rounds_fail_closed_and_preserve_prior_evidence() {
+fn quorum_lost_rounds_fail_closed_and_reset_hysteresis() {
     let mut controller = test_controller();
     controller.observe(all(|member| unreachable(member, 1_000)), 1_000);
     controller.observe(all(|member| unreachable(member, 2_000)), 2_000);
@@ -227,19 +227,108 @@ fn quorum_lost_rounds_fail_closed_and_preserve_prior_evidence() {
         3_000,
     );
     assert_eq!(decision, Decision::QuorumLost);
+    // The unknown round broke the consecutive-failure evidence, so the
+    // streak restarts instead of resuming toward the fencing threshold.
+    assert_eq!(controller.phase(), &Phase::Steady);
+    let decision = controller.observe(all(|member| unreachable(member, 4_000)), 4_000);
     assert_eq!(
-        controller.phase(),
-        &Phase::Suspecting {
-            consecutive_failures: 2
-        }
+        decision,
+        Decision::Hold(HoldReason::WriterFailureSuspected {
+            consecutive_failures: 1
+        })
     );
-    // The previously observed failures still count once evidence returns.
+}
+
+#[test]
+fn duplicate_reports_from_one_member_are_not_a_quorum() {
+    let mut controller = test_controller();
     assert_eq!(
-        controller.observe(all(|member| unreachable(member, 4_000)), 4_000),
-        Decision::FenceOldWriter {
-            site_id: "site-a".to_owned()
-        }
+        controller.observe(all(|member| reachable(member, 4, 1_000)), 1_000),
+        Decision::Hold(HoldReason::WriterHealthy)
     );
+    // Two identical submissions from workload-a are one failure domain, not
+    // two: every such round must fail closed.
+    for now_ms in [2_000, 3_000, 4_000, 5_000] {
+        let duplicate = unreachable("workload-a", now_ms);
+        let decision = controller.observe(
+            Round {
+                reports: vec![duplicate.clone(), duplicate],
+            },
+            now_ms,
+        );
+        assert_eq!(decision, Decision::QuorumLost);
+        assert_eq!(controller.phase(), &Phase::Steady);
+    }
+}
+
+#[test]
+fn conflicting_duplicate_reports_keep_the_reachable_veto() {
+    let mut controller = test_controller();
+    let decision = controller.observe(
+        Round {
+            reports: vec![
+                reachable("workload-a", 4, 1_000),
+                unreachable("workload-a", 1_000),
+                unreachable("workload-b", 1_000),
+            ],
+        },
+        1_000,
+    );
+    // workload-a's reachable duplicate dominates its own unreachable one, so
+    // the round is conflicting evidence rather than a failure consensus of
+    // two agreeing members.
+    assert_eq!(
+        decision,
+        Decision::Hold(HoldReason::ConflictingEvidence {
+            reachable: 1,
+            unreachable: 1
+        })
+    );
+    assert_eq!(controller.phase(), &Phase::Steady);
+}
+
+#[test]
+fn fencing_evidence_from_duplicated_reports_must_be_unanimous() {
+    let mut controller = test_controller();
+    drive_to_fencing(&mut controller);
+    // workload-a submits both a fenced and an unfenced view of the old
+    // writer's site row, so its fence evidence is ambiguous and must not
+    // count toward the fencing majority. workload-b carries full evidence;
+    // the witness has no fence view at all.
+    let now_ms = 5_000;
+    let mut ambiguous = fenced(unreachable("workload-a", now_ms));
+    ambiguous = stopped(ambiguous);
+    let unfenced_view = {
+        let mut view = standby_ready(ambiguous.clone());
+        view.writer_site_fence = Some(SiteFenceState {
+            enabled: true,
+            draining: false,
+        });
+        view
+    };
+    let full = {
+        let report = fenced(unreachable("workload-b", now_ms));
+        let report = stopped(report);
+        standby_ready(report)
+    };
+    let no_fence_view = {
+        let report = stopped(unreachable("witness", now_ms));
+        standby_ready(report)
+    };
+    let decision = controller.observe(
+        Round {
+            reports: vec![ambiguous, unfenced_view, full, no_fence_view],
+        },
+        now_ms,
+    );
+    assert_eq!(
+        decision,
+        Decision::Hold(HoldReason::AwaitingFencingEvidence {
+            site_fenced: false,
+            stop_confirmed: true
+        })
+    );
+    assert_eq!(controller.phase(), &Phase::FencingOldWriter);
 }
 
 #[test]
@@ -501,6 +590,42 @@ fn epoch_exhaustion_holds_rather_than_promoting() {
 }
 
 #[test]
+fn promotion_refuses_epochs_that_exceed_database_bigint_storage() {
+    // deployment_authority.epoch is a PostgreSQL bigint; i64::MAX + 1 is not
+    // representable, so the decision must refuse rather than emit an epoch
+    // no executor could apply.
+    let mut controller = test_controller();
+    controller.observe(
+        all(|member| reachable(member, i64::MAX as u64, 1_000)),
+        1_000,
+    );
+    for now_ms in [2_000, 3_000, 4_000] {
+        controller.observe(all(|member| unreachable(member, now_ms)), now_ms);
+    }
+    assert_eq!(
+        controller.observe(evidence_round(5_000), 5_000),
+        Decision::Hold(HoldReason::EpochExhausted)
+    );
+    assert_eq!(controller.phase(), &Phase::FencingOldWriter);
+    // One below the bound is the last promotable epoch.
+    let mut controller = test_controller();
+    controller.observe(
+        all(|member| reachable(member, (i64::MAX - 1) as u64, 1_000)),
+        1_000,
+    );
+    for now_ms in [2_000, 3_000, 4_000] {
+        controller.observe(all(|member| unreachable(member, now_ms)), now_ms);
+    }
+    assert_eq!(
+        controller.observe(evidence_round(5_000), 5_000),
+        Decision::PromoteStandby {
+            site_id: "site-b".to_owned(),
+            new_epoch: i64::MAX as u64
+        }
+    );
+}
+
+#[test]
 fn dispatch_stays_paused_after_promotion_until_explicit_reconciliation() {
     let mut controller = test_controller();
     drive_to_fencing(&mut controller);
@@ -573,6 +698,41 @@ fn former_writer_rejoins_only_as_a_replica_after_sustained_recovery() {
             now_ms
         ),
         Decision::Hold(HoldReason::SteadyOnNewWriter)
+    );
+}
+
+#[test]
+fn recovery_stability_does_not_span_a_quorum_lost_round() {
+    let mut controller = test_controller();
+    drive_to_fencing(&mut controller);
+    controller.observe(evidence_round(5_000), 5_000);
+    controller.reconcile_complete().unwrap();
+    // Four healthy checks, one minute apart.
+    for index in 0..4_u64 {
+        let now_ms = 6_000 + index * 60_000;
+        controller.observe(
+            all(|member| former_writer(reachable(member, 5, now_ms), true)),
+            now_ms,
+        );
+    }
+    // A full minute passes with no quorum evidence at all: that interval is
+    // not stable recovery time, and the streak does not survive it.
+    assert_eq!(
+        controller.observe(Round::default(), 246_000),
+        Decision::QuorumLost
+    );
+    // The next healthy sample restarts the streak instead of completing the
+    // threshold while counting the unknown minute as stable.
+    let decision = controller.observe(
+        all(|member| former_writer(reachable(member, 5, 306_000), true)),
+        306_000,
+    );
+    assert_eq!(
+        decision,
+        Decision::Hold(HoldReason::FormerWriterRecovering {
+            healthy_checks: 1,
+            stable_ms: 0
+        })
     );
 }
 

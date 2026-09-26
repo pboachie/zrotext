@@ -410,8 +410,7 @@ Offer an operated service built from the same public code, and keep it available
 <details>
 <summary><b>Automatic failover with independent quorum</b> · design</summary>
 
-- [x] Design requiring an independent quorum member and fencing control
-- [x] First increment: pure quorum promotion-decision model with failure-scenario tests, disabled by default
+- [x] Design requiring an independent quorum member and fencing control; first increment recorded as evidence only (pure promotion-decision model with failure-scenario tests, disabled by default)
 - [ ] Implementation and failure-scenario tests
 
 </details>

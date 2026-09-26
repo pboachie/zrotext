@@ -360,8 +360,7 @@
             ["Implementation status", "MULTI-LOCATION.md#implementation-status-first-increment"]
           ],
           "done": [
-            "Design requiring an independent quorum member and fencing control",
-            "First increment: pure quorum promotion-decision model with failure-scenario tests, disabled by default"
+            "Design requiring an independent quorum member and fencing control; first increment recorded as evidence only (pure promotion-decision model with failure-scenario tests, disabled by default)"
           ],
           "todo": [
             "Implementation and failure-scenario tests"

@@ -9,20 +9,26 @@
 //!
 //! * an action needs a majority of the three configured failure domains to
 //!   agree, and any fresh reachable observation of the writer vetoes
-//!   promotion (uncertain evidence fails closed);
+//!   promotion (uncertain evidence fails closed). Reports are folded per
+//!   member identity, so duplicated submissions can never act as extra
+//!   failure domains, a reachable duplicate still vetoes, and positive
+//!   fencing/readiness evidence from a member must be unanimous;
 //! * promotion happens only after the old writer's site fence and an
 //!   externally confirmed stop are observed by a majority, and only while the
 //!   standby is observed ready — fencing is never skipped to regain
 //!   availability;
 //! * the promoted epoch must be strictly above every epoch any member ever
-//!   observed, and the controller must have observed at least one epoch at
+//!   observed, must fit the signed 64-bit `deployment_authority.epoch`
+//!   storage, and the controller must have observed at least one epoch at
 //!   all, so processes pinned to an old epoch keep refusing traffic;
 //! * dispatch stays paused after an unplanned promotion until an explicit
 //!   reconciliation input, never as a consequence of health checks;
 //! * the former writer may rejoin only as a replica, after sustained recovery
 //!   (5 successful checks and 5 minutes stable by default). Restoring it as
 //!   the writer stays a planned, manual procedure; no decision variant
-//!   exists for it.
+//!   exists for it. Hysteresis never spans a round without quorum evidence:
+//!   fences, the promotion epoch and reconciliation state are preserved, but
+//!   an unknown interval restarts any incomplete streak.
 
 use crate::policy::REQUIRED_MEMBERS;
 
@@ -34,6 +40,10 @@ pub const DEFAULT_RECOVERY_CHECKS_REQUIRED: u32 = 5;
 pub const DEFAULT_RECOVERY_STABLE_MS: u64 = 5 * 60 * 1000;
 /// Age beyond which a member observation is no longer evidence.
 pub const DEFAULT_OBSERVATION_FRESHNESS_MS: u64 = 10_000;
+/// Highest epoch a promotion may name: `deployment_authority.epoch` is a
+/// PostgreSQL bigint (signed 64-bit), so a successor above this value could
+/// never be applied by the executor.
+pub const MAX_STORED_EPOCH: u64 = i64::MAX as u64;
 
 /// Configured quorum: three member identities plus the two sites whose
 /// writer/standby roles the controller watches.
@@ -177,7 +187,8 @@ pub struct MemberReport {
 }
 
 /// The reports one check round gathered. A member that could not be reached
-/// simply contributes no report.
+/// simply contributes no report, and a member that appears more than once is
+/// folded into a single vote (see [`FailoverController::observe`]).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Round {
     pub reports: Vec<MemberReport>,
@@ -211,15 +222,18 @@ pub enum Phase {
 pub enum Decision {
     /// Take no action this round; the reason records what the quorum saw.
     Hold(HoldReason),
-    /// Fewer than a majority of fresh member reports: there is no evidence to
-    /// act on, and the controller must keep every fence in place.
+    /// Fewer than a majority of distinct fresh member votes: there is no
+    /// evidence to act on, and the controller must keep every fence in place.
+    /// Incomplete hysteresis streaks restart; an unknown interval is not
+    /// stable evidence.
     QuorumLost,
     /// Request fencing the old writer's site and stopping its PostgreSQL so it
     /// cannot accept mutations or restart as a writer.
     FenceOldWriter { site_id: String },
     /// Request promoting the standby under a strictly higher deployment
     /// epoch. The executor must keep dispatch paused after an unplanned
-    /// promotion.
+    /// promotion. `new_epoch` is guaranteed to fit the signed 64-bit
+    /// `deployment_authority.epoch` storage.
     PromoteStandby { site_id: String, new_epoch: u64 },
     /// The promoted writer serves, but dispatch stays paused until the
     /// explicit reconciliation input arrives.
@@ -254,7 +268,9 @@ pub enum HoldReason {
     /// No reachable epoch was ever observed, so no provably higher promotion
     /// epoch exists. This controller fails closed instead of guessing.
     EpochUnknown,
-    /// Every observable epoch was consumed and no higher epoch exists.
+    /// No epoch representable in the authority's signed 64-bit storage exists
+    /// above every observed epoch; promoting would emit an unexecutable
+    /// successor.
     EpochExhausted,
     /// Promoted and reconciled; steady on the new writer.
     SteadyOnNewWriter,
@@ -307,9 +323,17 @@ impl FailoverController {
     }
 
     /// Evaluate one check round. Reports that are missing, stale, or from
-    /// members outside the configured quorum are not evidence. If fewer than
-    /// a majority of fresh reports from configured members remains, the round
-    /// fails closed with [`Decision::QuorumLost`] and no state changes.
+    /// members outside the configured quorum are not evidence, and duplicate
+    /// submissions from one member identity are folded into that member's
+    /// single vote so they can never act as extra failure domains: a
+    /// reachable report always dominates the member's writer vote (the veto
+    /// is never dropped), while positive fencing, stop, standby-readiness and
+    /// former-writer-health evidence counts only when unanimous across that
+    /// member's reports. If fewer than a majority of distinct fresh members
+    /// remains, the round fails closed with [`Decision::QuorumLost`]: fences,
+    /// the promotion epoch and reconciliation state are preserved, but any
+    /// incomplete hysteresis streak restarts, because an unknown interval is
+    /// not stable evidence.
     pub fn observe(&mut self, round: Round, now_ms: u64) -> Decision {
         let fresh: Vec<&MemberReport> = round
             .reports
@@ -320,34 +344,64 @@ impl FailoverController {
                     && now_ms - report.observed_at_ms <= self.config.observation_freshness_ms
             })
             .collect();
-        for report in &fresh {
-            if let WriterObservation::Reachable { epoch } = report.writer {
+        let mut votes: Vec<MemberVote> = Vec::with_capacity(self.config.members.len());
+        for report in fresh {
+            if let Some(slot) = votes
+                .iter_mut()
+                .find(|vote| vote.member_id == report.member_id)
+            {
+                slot.fold(report);
+            } else {
+                votes.push(MemberVote::from(report));
+            }
+        }
+        for vote in &votes {
+            if let Some(epoch) = vote.reachable_epoch {
                 self.max_epoch_seen = self.max_epoch_seen.max(epoch);
             }
         }
         let majority = self.majority();
-        if fresh.len() < majority {
+        if votes.len() < majority {
+            self.reset_hysteresis_on_lost_evidence();
             return Decision::QuorumLost;
         }
-        let reachable = fresh
+        let reachable = votes
             .iter()
-            .filter(|report| matches!(report.writer, WriterObservation::Reachable { .. }))
+            .filter(|vote| vote.reachable_epoch.is_some())
             .count();
         let consensus = Consensus {
             majority,
             healthy: reachable >= majority,
-            // Any fresh reachable observation vetoes a failure consensus.
-            failure: fresh.len() - reachable >= majority && reachable == 0,
+            // Any fresh reachable member vote vetoes a failure consensus.
+            failure: votes.len() - reachable >= majority && reachable == 0,
             reachable,
-            unreachable: fresh.len() - reachable,
+            unreachable: votes.len() - reachable,
         };
         match self.phase.clone() {
             Phase::Steady => self.observe_steady(consensus),
             Phase::Suspecting {
                 consecutive_failures,
             } => self.observe_suspecting(consecutive_failures, consensus),
-            Phase::FencingOldWriter => self.observe_fencing(&fresh, consensus),
-            Phase::Promoted { .. } => self.observe_promoted(&fresh, consensus.majority, now_ms),
+            Phase::FencingOldWriter => self.observe_fencing(&votes, consensus),
+            Phase::Promoted { .. } => self.observe_promoted(&votes, consensus.majority, now_ms),
+        }
+    }
+
+    /// A round without a majority of fresh member votes preserves fences,
+    /// the promotion epoch and reconciliation state, but restarts any
+    /// incomplete hysteresis: an interval with no evidence is not stable.
+    fn reset_hysteresis_on_lost_evidence(&mut self) {
+        if matches!(self.phase, Phase::Suspecting { .. }) {
+            self.phase = Phase::Steady;
+        }
+        if let Phase::Promoted {
+            healthy_streak,
+            stable_since_ms,
+            ..
+        } = &mut self.phase
+        {
+            *healthy_streak = 0;
+            *stable_since_ms = None;
         }
     }
 
@@ -400,7 +454,7 @@ impl FailoverController {
         })
     }
 
-    fn observe_fencing(&mut self, fresh: &[&MemberReport], consensus: Consensus) -> Decision {
+    fn observe_fencing(&mut self, votes: &[MemberVote], consensus: Consensus) -> Decision {
         if consensus.healthy {
             // The writer recovered before promotion was authorized. Cancel the
             // failover; an already-applied fence is reversed manually, never
@@ -416,31 +470,18 @@ impl FailoverController {
                 unreachable: consensus.unreachable,
             });
         }
-        let site_fenced = fresh
-            .iter()
-            .filter(|report| {
-                report
-                    .writer_site_fence
-                    .is_some_and(|fence| fence.is_fenced())
-            })
-            .count()
-            >= consensus.majority;
-        let stop_confirmed = fresh
-            .iter()
-            .filter(|report| report.writer_stop_confirmed == Some(true))
-            .count()
-            >= consensus.majority;
+        let site_fenced =
+            votes.iter().filter(|vote| vote.site_fenced).count() >= consensus.majority;
+        let stop_confirmed =
+            votes.iter().filter(|vote| vote.stop_confirmed).count() >= consensus.majority;
         if !site_fenced || !stop_confirmed {
             return Decision::Hold(HoldReason::AwaitingFencingEvidence {
                 site_fenced,
                 stop_confirmed,
             });
         }
-        let standby_ready = fresh
-            .iter()
-            .filter(|report| report.standby_ready == Some(true))
-            .count()
-            >= consensus.majority;
+        let standby_ready =
+            votes.iter().filter(|vote| vote.standby_ready).count() >= consensus.majority;
         if !standby_ready {
             return Decision::Hold(HoldReason::AwaitingStandbyReadiness);
         }
@@ -448,6 +489,13 @@ impl FailoverController {
         // promotion epoch is higher; fail closed instead of guessing.
         if self.max_epoch_seen == 0 {
             return Decision::Hold(HoldReason::EpochUnknown);
+        }
+        // deployment_authority.epoch is a PostgreSQL bigint and the server
+        // pins it to i64: a promotion epoch outside the signed 64-bit range
+        // could never be applied. Refuse instead of emitting an unexecutable
+        // successor epoch.
+        if self.max_epoch_seen >= MAX_STORED_EPOCH {
+            return Decision::Hold(HoldReason::EpochExhausted);
         }
         let Some(new_epoch) = self.max_epoch_seen.checked_add(1) else {
             return Decision::Hold(HoldReason::EpochExhausted);
@@ -465,12 +513,7 @@ impl FailoverController {
         }
     }
 
-    fn observe_promoted(
-        &mut self,
-        fresh: &[&MemberReport],
-        majority: usize,
-        now_ms: u64,
-    ) -> Decision {
+    fn observe_promoted(&mut self, votes: &[MemberVote], majority: usize, now_ms: u64) -> Decision {
         let Phase::Promoted {
             reconciled,
             rejoin_emitted,
@@ -487,9 +530,9 @@ impl FailoverController {
         if *rejoin_emitted {
             return Decision::Hold(HoldReason::SteadyOnNewWriter);
         }
-        let former_healthy = fresh
+        let former_healthy = votes
             .iter()
-            .filter(|report| report.former_writer_healthy == Some(true))
+            .filter(|vote| vote.former_writer_healthy)
             .count()
             >= majority;
         if !former_healthy {
@@ -521,4 +564,50 @@ struct Consensus {
     failure: bool,
     reachable: usize,
     unreachable: usize,
+}
+
+/// One member's folded vote for a round, built from that member's fresh
+/// reports. Duplicate submissions never act as extra failure domains: a
+/// reachable report always dominates the writer vote (the veto is never
+/// dropped), and positive fencing/readiness/health evidence counts only when
+/// unanimous across the member's reports.
+#[derive(Clone, Debug)]
+struct MemberVote {
+    member_id: String,
+    /// Highest epoch among this member's reachable reports; `None` when
+    /// every report saw the writer unreachable.
+    reachable_epoch: Option<u64>,
+    site_fenced: bool,
+    stop_confirmed: bool,
+    standby_ready: bool,
+    former_writer_healthy: bool,
+}
+
+impl From<&MemberReport> for MemberVote {
+    fn from(report: &MemberReport) -> Self {
+        let mut vote = MemberVote {
+            member_id: report.member_id.clone(),
+            reachable_epoch: None,
+            site_fenced: true,
+            stop_confirmed: true,
+            standby_ready: true,
+            former_writer_healthy: true,
+        };
+        vote.fold(report);
+        vote
+    }
+}
+
+impl MemberVote {
+    fn fold(&mut self, report: &MemberReport) {
+        if let WriterObservation::Reachable { epoch } = report.writer {
+            self.reachable_epoch = Some(self.reachable_epoch.map_or(epoch, |seen| seen.max(epoch)));
+        }
+        self.site_fenced &= report
+            .writer_site_fence
+            .is_some_and(|fence| fence.is_fenced());
+        self.stop_confirmed &= report.writer_stop_confirmed == Some(true);
+        self.standby_ready &= report.standby_ready == Some(true);
+        self.former_writer_healthy &= report.former_writer_healthy == Some(true);
+    }
 }
