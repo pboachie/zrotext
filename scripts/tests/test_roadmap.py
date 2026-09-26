@@ -31,15 +31,15 @@ class RoadmapTest(unittest.TestCase):
     def test_stage_change_updates_every_view(self):
         data = copy.deepcopy(self.data)
         cap = next(c for c in roadmap.capabilities(data) if c["id"] == "export")
-        self.assertEqual(cap["stage"], "planned")
-        planned_before = roadmap.counts(data)["planned"]
+        self.assertEqual(cap["stage"], "build")
+        build_before = roadmap.counts(data)["build"]
         cap["stage"] = "design"
         cap["done"] = ["Draft design"]
         total = roadmap.counts(data)
-        self.assertEqual(total["planned"], planned_before - 1)
-        self.assertIn(f'"Planned" : {total["planned"]}', roadmap.summary(data))
+        self.assertEqual(total["build"], build_before - 1)
+        self.assertIn(f'"Build" : {total["build"]}', roadmap.summary(data))
         self.assertIn(f'"Design" : {total["design"]}', roadmap.summary(data))
-        self.assertIn(f"{roadmap.number(total['planned'])} are planned", roadmap.alt_text(data))
+        self.assertIn(f"{roadmap.number(total['build'])} are being built", roadmap.alt_text(data))
         self.assertIn("Export and deletion<br/>· design\"]:::design", roadmap.track_map(data))
         self.assertIn("<b>Data export and account deletion</b> · design", roadmap.tracks(data))
 
@@ -47,7 +47,7 @@ class RoadmapTest(unittest.TestCase):
         self.assertEqual(
             roadmap.alt_text(self.data),
             "Roadmap at a glance: 22 capabilities in five tracks. Four are in a restricted "
-            "pilot, seven are being built, three are in design and eight are planned. None has "
+            "pilot, eight are being built, three are in design and seven are planned. None has "
             "reached general release.",
         )
 

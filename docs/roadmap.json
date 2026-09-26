@@ -277,14 +277,17 @@
           "id": "export",
           "name": "Data export and account deletion",
           "short": "Export and deletion",
-          "stage": "planned",
+          "stage": "build",
           "evidence": [
-            ["Data retention", "SELF-HOSTING.md#data-retention"]
+            ["Data retention", "SELF-HOSTING.md#data-retention"],
+            ["#267", "https://github.com/pboachie/zrotext/pull/267"]
           ],
-          "evidence_note": "covers history pruning only",
-          "done": [],
+          "evidence_note": "retention evidence covers history pruning only",
+          "done": [
+            "Owner takeout of messages with events, devices and the account profile (`GET /v1/owner/export`, no-store)"
+          ],
           "todo": [
-            "Owner export of messages, events and settings",
+            "Paginated full-history export beyond the 500 most recent messages",
             "Account erasure that covers metering and billing records where allowed",
             "Extend export and erasure to future contacts, templates, workflow state and assistant access records"
           ]

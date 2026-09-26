@@ -213,7 +213,7 @@ Hosts need to reach guests personally and follow up without repeatedly messaging
 - [Templates and scheduled follow-ups](ROADMAP.md#cap-scheduling) (Planned)
 - [Approvals and reply tracking](ROADMAP.md#cap-approvals) (Planned)
 - [Workflow connector and integrations](ROADMAP.md#cap-integrations) (Planned)
-- [Data export and account deletion](ROADMAP.md#cap-export) (Planned)
+- [Data export and account deletion](ROADMAP.md#cap-export) (Build)
 
 These also inherit their upstream roadmap dependencies and the [general sending gates](ROADMAP.md#path-to-general-sending).
 
