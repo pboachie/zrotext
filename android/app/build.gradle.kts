@@ -67,6 +67,13 @@ android {
     buildFeatures {
         compose = true
     }
+    // The same signature corpus runs in CI's JVM suite and on an Android device.
+    for (testSource in listOf("test", "androidTest")) {
+        sourceSets.getByName(testSource) {
+            java.srcDir("src/sharedTest/java")
+            resources.srcDir("../../protocol/v1/vectors")
+        }
+    }
 }
 
 androidComponents {
