@@ -94,7 +94,7 @@ async fn http_pairing_requires_csrf_proves_key_and_revokes_device() {
         &mut admin,
         &auth_hasher,
         "http-a@example.test",
-        "correct horse 123",
+        &crate::test_keys::password(1),
     )
     .await
     .unwrap();
@@ -102,7 +102,7 @@ async fn http_pairing_requires_csrf_proves_key_and_revokes_device() {
         &mut admin,
         &auth_hasher,
         "http-b@example.test",
-        "correct horse 456",
+        &crate::test_keys::password(2),
     )
     .await
     .unwrap();
@@ -116,7 +116,7 @@ async fn http_pairing_requires_csrf_proves_key_and_revokes_device() {
         &admin,
         &auth_hasher,
         "http-a@example.test",
-        "correct horse 123",
+        &crate::test_keys::password(1),
     )
     .await
     .unwrap();
@@ -124,7 +124,7 @@ async fn http_pairing_requires_csrf_proves_key_and_revokes_device() {
         &admin,
         &auth_hasher,
         "http-b@example.test",
-        "correct horse 456",
+        &crate::test_keys::password(2),
     )
     .await
     .unwrap();

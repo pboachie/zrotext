@@ -29,7 +29,7 @@ async fn owner(
     hasher: &TokenHasher,
     email: &str,
 ) -> (Uuid, Uuid, String, String, String) {
-    let signup = auth::register(client, hasher, email, "correct horse 123")
+    let signup = auth::register(client, hasher, email, &crate::test_keys::password(1))
         .await
         .unwrap();
     assert!(
@@ -37,7 +37,7 @@ async fn owner(
             .await
             .unwrap()
     );
-    let session = auth::login(client, hasher, email, "correct horse 123")
+    let session = auth::login(client, hasher, email, &crate::test_keys::password(1))
         .await
         .unwrap();
     let principal = auth::authenticate_session(client, hasher, &session.token)
