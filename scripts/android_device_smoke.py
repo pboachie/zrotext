@@ -57,10 +57,9 @@ def verify_results(output, expected):
 def main():
     if os.environ.get("GITHUB_ACTIONS") != "true":
         raise SystemExit("This runner is restricted to the disposable GitHub Actions emulator")
-    adb = str(Path(os.environ["ANDROID_HOME"]) / "platform-tools/adb")
 
     def command(*args, timeout=60):
-        result = subprocess.run([adb, "-s", SERIAL, *args], capture_output=True, text=True, timeout=timeout)
+        result = subprocess.run(["adb", "-s", SERIAL, *args], capture_output=True, text=True, timeout=timeout)
         if result.returncode:
             raise RuntimeError("Selected emulator command failed")
         return result.stdout

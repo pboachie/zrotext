@@ -31,7 +31,9 @@ database client. Reconnection still consumes the existing shared device
 challenge/proof budgets; it does not create an unbounded upload path.
 The writer derives identity from the socket and checks its account, device,
 key, site, lease, connection epoch and deployment epoch for each accepted
-write. It stores only the latest snapshot per device with its own receipt time.
+write. After acquiring mutation locks it rechecks the lease against the current
+clock and the local draining flag, rolling back if either fence was lost during
+a lock wait. It stores only the latest snapshot per device with its own receipt time.
 Both account deletion and device deletion cascade to the snapshot. Reports
 older than one day become eligible for the bounded retention worker's prune
 batches; there is no historical telemetry log.

@@ -8,6 +8,8 @@
 
 #[path = "database_capacity_tests.rs"]
 mod database_capacity_tests;
+#[path = "preconditions_lock_tests.rs"]
+mod preconditions_lock_tests;
 #[path = "preconditions_tests.rs"]
 mod preconditions_tests;
 
