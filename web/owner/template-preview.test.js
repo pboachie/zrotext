@@ -2,11 +2,21 @@
 "use strict";
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const vm = require("node:vm");
-const fs = require("node:fs");
 const { randomUUID } = require("node:crypto");
 const core = require("./template-preview-core.js");
-const source = fs.readFileSync(require.resolve("./template-preview.js"), "utf8");
+// Use Node's static module loader, matching the other owner-page harnesses.
+// Node runs this file in its own process; tests here use the default serial mode.
+const originalGlobals = new Map();
+function setGlobal(name, descriptor) {
+  if (!originalGlobals.has(name)) originalGlobals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
+  Object.defineProperty(globalThis, name, { configurable: true, ...descriptor });
+}
+test.after(() => {
+  for (const [name, descriptor] of originalGlobals) {
+    if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+    else delete globalThis[name];
+  }
+});
 const tick = () => new Promise(setImmediate);
 const identity = () => ({ account_id: randomUUID(), user_id: randomUUID(), session_id: randomUUID() });
 const response = (body, status = 200) => ({ ok: status === 200, status, json: async () => body });
@@ -37,7 +47,7 @@ async function page({ signedIn = true } = {}) {
   }
   const document = { hidden: false, cookie: signedIn ? "__Host-zrotext_csrf=ztc_synthetic" : "",
     getElementById: element, addEventListener(event, listener) { documentEvents[event] = listener; } };
-  const context = vm.createContext({
+  const context = {
     document, window: { addEventListener(event, listener) { windowEvents[event] = listener; } },
     ZtTemplatePreview: core, AbortController,
     setTimeout: () => ++sequence, clearTimeout() {},
@@ -51,11 +61,13 @@ async function page({ signedIn = true } = {}) {
       if (path === "/v1/auth/logout") { document.cookie = ""; return response(null); }
       throw new Error("Unexpected network request");
     },
-  });
-  for (const name of ["localStorage", "sessionStorage", "indexedDB"]) Object.defineProperty(context, name, {
+  };
+  for (const [name, value] of Object.entries(context)) setGlobal(name, { value, writable: true });
+  for (const name of ["localStorage", "sessionStorage", "indexedDB"]) setGlobal(name, {
     get() { throw new Error("persistence is forbidden"); },
   });
-  vm.runInContext(source, context);
+  delete require.cache[require.resolve("./template-preview.js")];
+  require("./template-preview.js");
   await tick();
   return { element, calls, document, windowEvents, documentEvents, intervals,
     session() { return { ...session }; },
