@@ -175,6 +175,24 @@ class SmsLineActivationFramesTest {
         }
     }
 
+    @Test fun acknowledgementRecognisesAnInstalledOrConflictingBinding() {
+        val ack = AuthenticatedSmsLineActivationAck.fromActivatedFrame(challengeId, account, line,
+            device, 3, ByteArray(32), ByteArray(32))
+        fun binding(lineId: UUID = line, generation: Long = 3, accountId: UUID = account) =
+            LocalLineBinding(accountId = accountId.toString(), deviceId = device.toString(),
+                lineId = lineId.toString(), generation = generation, subscriptionId = 7,
+                installedAtMs = 1, cardId = 42)
+        assertTrue(ack.isInstalledAs(binding()))
+        assertFalse(ack.isInstalledAs(null))
+        assertFalse(ack.isInstalledAs(binding(generation = 2)))
+        assertFalse(ack.isInstalledAs(binding(accountId = UUID.randomUUID())))
+        assertFalse(ack.conflictsWith(null))
+        assertFalse(ack.conflictsWith(binding()))
+        assertFalse(ack.conflictsWith(binding(generation = 2)))
+        assertTrue(ack.conflictsWith(binding(generation = 4)))
+        assertTrue(ack.conflictsWith(binding(lineId = UUID.randomUUID(), generation = 1)))
+    }
+
     private fun sha256(bytes: ByteArray): ByteArray =
         MessageDigest.getInstance("SHA-256").digest(bytes)
 }

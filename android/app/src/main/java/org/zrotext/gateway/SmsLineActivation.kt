@@ -99,6 +99,15 @@ internal class AuthenticatedSmsLineActivationAck private constructor(
     private fun sha256(bytes: ByteArray): ByteArray =
         MessageDigest.getInstance("SHA-256").digest(bytes)
 
+    /** The phone's stored binding is this acknowledged activation. */
+    fun isInstalledAs(binding: LocalLineBinding?): Boolean = binding != null &&
+        binding.accountId == accountId.toString() && binding.deviceId == deviceId.toString() &&
+        binding.lineId == lineId.toString() && binding.generation == generation
+
+    /** A different line or an equal or newer generation is already installed; retrying cannot help. */
+    fun conflictsWith(binding: LocalLineBinding?): Boolean = binding != null && !isInstalledAs(binding) &&
+        (binding.lineId != lineId.toString() || binding.generation >= generation)
+
     internal companion object {
         /** The server sends this only after the owner approved this exact proof. */
         fun fromActivatedFrame(challengeId: UUID, accountId: UUID, lineId: UUID, deviceId: UUID,

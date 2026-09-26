@@ -726,16 +726,22 @@ class AuthenticatedGatewayService : Service() {
                                        deviceId: UUID, ack: AuthenticatedSmsLineActivationAck) {
         JournalRuntime.io.execute {
             if (ack.challengeId == installedSmsLineChallenge) return@execute
+            val dao = SmsJournalDatabase.get(applicationContext).attempts()
             val proof = smsLineActivation
             if (proof == null || !ack.matches(proof)) {
-                AuthenticatedGatewayStatus.value =
-                    "SMS line approved for a proof this app no longer holds; start a new activation"
+                // After an app restart the proof is gone, but a resend of an
+                // activation installed before the restart is not an error.
+                val installedBefore = runCatching { ack.isInstalledAs(dao.currentLineBinding()) }
+                    .getOrDefault(false)
+                if (installedBefore) installedSmsLineChallenge = ack.challengeId
+                AuthenticatedGatewayStatus.value = if (installedBefore)
+                    "SMS line activated on this phone"
+                else "SMS line approved for a proof this app no longer holds; start a new activation"
                 return@execute
             }
             val installed = try {
                 SmsLineActivationDevice.forGateway(applicationContext, keys).installAfterAuthenticatedAck(
-                    SmsJournalDatabase.get(applicationContext).attempts(), proof, ack,
-                    accountId, deviceId)
+                    dao, proof, ack, accountId, deviceId)
             } catch (_: Exception) { false }
             // Keep the proof after a failed install: the hub resends the ack on
             // the next connection and installAfterAuthenticatedAck bounds retries
@@ -744,9 +750,16 @@ class AuthenticatedGatewayService : Service() {
                 smsLineActivation = null
                 installedSmsLineChallenge = ack.challengeId
             }
-            AuthenticatedGatewayStatus.value = if (installed) "SMS line activated on this phone"
-                else "SMS line approved, but this phone's SIM, selection or clock does not match " +
-                    "the proof yet; it retries when the hub resends, or start a new activation"
+            val conflict = !installed &&
+                runCatching { ack.conflictsWith(dao.currentLineBinding()) }.getOrDefault(false)
+            if (conflict) smsLineActivation = null
+            AuthenticatedGatewayStatus.value = when {
+                installed -> "SMS line activated on this phone"
+                conflict -> "This phone already holds a different or newer SMS line binding; " +
+                    "this approval cannot be installed"
+                else -> "SMS line approved, but this phone's SIM, selection or clock does not " +
+                    "match the proof yet; it retries when the hub resends, or start a new activation"
+            }
         }
     }
 
