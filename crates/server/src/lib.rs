@@ -7,6 +7,7 @@ pub mod enrollment;
 pub mod http_auth;
 pub mod http_enrollment;
 pub mod http_messages;
+pub mod http_owner_export;
 pub mod http_owner_messages;
 pub mod http_owner_review;
 pub mod http_webhooks;
