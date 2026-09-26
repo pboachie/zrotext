@@ -2955,6 +2955,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "zrotext-root-terminal"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+ "windows-sys 0.61.2",
+ "zeroize",
+]
+
+[[package]]
 name = "zrotext-server"
 version = "0.1.0"
 dependencies = [

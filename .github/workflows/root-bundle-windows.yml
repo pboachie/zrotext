@@ -19,3 +19,7 @@ jobs:
         run: cargo clippy --locked -p zrotext-root-bundle --all-targets -- -D warnings
       - name: Exercise native NTFS permissions, races and failures
         run: cargo test --locked -p zrotext-root-bundle
+      - name: Lint bounded console transport
+        run: cargo clippy --locked -p zrotext-root-terminal --all-targets -- -D warnings
+      - name: Exercise isolated hidden native console contracts
+        run: cargo test --locked -p zrotext-root-terminal
