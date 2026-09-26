@@ -417,10 +417,18 @@ async fn expired_message_replay_keeps_identity_without_new_dispatch() {
             .unwrap()
             .created
     );
-    tokio::time::sleep(std::time::Duration::from_millis(
-        (expiry - now_ms() + 10).max(0) as u64,
-    ))
-    .await;
+    // Admission judges expiry by the wall clock (`now_ms`), which can step
+    // backward under NTP or VM time sync while a monotonic sleep runs. Wait on
+    // that same clock, with a margin for a step between here and the expired
+    // admissions below, instead of trusting the sleep duration.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while now_ms() <= expiry + 1_000 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "wall clock did not pass message expiry"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
     let replay = DeliveryStore::new(&mut client)
         .accept(input())
         .await
