@@ -6,6 +6,48 @@ webhook delivery. They accept no HTTP or WebSocket body. The `ZTSE` profile-01
 kind-02 byte prefix and length constraint is a storage guard, not a parser or
 cryptographic verification. No production sealed-content claim follows.
 
+## Dormant candidate-02 manifest persistence
+
+Migration 042 adds an initially empty `sealed_manifest_authorities` table and
+`sealed_manifest_store::admit` composes the candidate-02 manifest verifier with
+the existing sealed line/session preflight. Neither has a production caller.
+There is no root provisioning, reset, rotation or content-ingest API. A future
+independently authenticated owner ceremony must establish the exact RootPin02,
+fingerprint, generation and transition anchor; request bytes and the separate
+SMS/line-approval keys are not a trust source. An absent or revoked authority
+fails closed. This assumes trusted database storage and administrative access;
+the verifier cannot authenticate an administrator's choice of initial pin.
+
+The caller supplies a database transaction. Admission locks its account's
+authority row first, then retains the preflight's account, device, enrolled key,
+site, deployment authority, session, line and binding locks through transaction
+completion. Revocation and rebinding writers serialize against those locks.
+Database wall time is sampled after lock waits. A transaction may advance only
+one linked version or replay the same current unsigned semantic digest; a fork,
+gap, rollback, expired manifest, wrong tenant or regressing database time fails.
+Replay preserves the originally stored signed bytes and original acceptance
+time. A fresh next version may follow an expired predecessor, whose signature
+is reverified at its recorded acceptance time. The monotonic database-time
+high-water is retained through restarts. It detects clock rollback, not a
+malicious or incorrectly advanced database clock.
+
+The returned non-cloneable `Admission` borrows the transaction. Its `context`
+method requires inbound kind and the same account/device/line, checks the live
+session, current authority and manifest/key freshness again, and constructs the
+exact expected envelope context. It exposes no unfenced manifest getter. A
+future caller must verify the exact signed envelope, enforce event/sequence
+identity and perform all effects in this transaction, calling `context`
+immediately before those effects and commit. The caller must roll back on any
+error. This does not guarantee a lease remains valid through arbitrary caller
+delays; it is not a substitute for future ingest's final atomic acceptance
+contract. The table permits account-erasure cascades and has no delete trigger;
+deleting authority cannot bootstrap replacement trust through this API.
+
+This layer does not change the existing profile-01 sealed-event storage guard,
+resolve the candidate inbound segment-count contract, journal phone events,
+insert ciphertext or mount a route. Candidate-02 remains a proposal, and no
+sealed release gate is closed by this persistence prerequisite.
+
 ## Distinct source identity
 
 The current [M1 inbound pilot](inbound-foundation.md) signs an outbound
