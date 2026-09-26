@@ -75,7 +75,7 @@ flowchart LR
     g3_0["✓ Account-scoped suppression<br/>checked at acceptance"]:::done
     g4_0["○ Production SMS line<br/>activation and SIM binding"]:::open
     g4_1["○ Enable and validate<br/>unsolicited opt-out capture"]:::open
-    g4_2["○ Off-channel holds and<br/>durable review decisions"]:::open
+    g4_2["✓ Off-channel holds and<br/>durable review decisions"]:::done
     g5_0["○ Sealed send and inbound<br/>runtime with stable API"]:::open
     g6_0["○ End-to-end evidence<br/>on real devices"]:::open
     G{{"General send route"}}:::gate
@@ -184,9 +184,9 @@ Connect a dedicated Android phone and SIM, send and receive SMS through the serv
 |---|---|---|
 | Phone + SIM enrollment and device stream | Restricted pilot | [#9](https://github.com/pboachie/zrotext/pull/9), [#24](https://github.com/pboachie/zrotext/pull/24), [#160](https://github.com/pboachie/zrotext/pull/160), [device compatibility](DEVICE-COMPATIBILITY.md) |
 | Outbound send with honest delivery states | Restricted pilot | [#17](https://github.com/pboachie/zrotext/pull/17), [#19](https://github.com/pboachie/zrotext/pull/19), [#21](https://github.com/pboachie/zrotext/pull/21) |
-| Opt-out handling and recipient suppression | Restricted pilot | [#207](https://github.com/pboachie/zrotext/pull/207), [#210](https://github.com/pboachie/zrotext/pull/210), [line-bound stream](../protocol/v1/line-opt-out-contract.md), [#237](https://github.com/pboachie/zrotext/pull/237) |
+| Opt-out handling and recipient suppression | Restricted pilot | [#207](https://github.com/pboachie/zrotext/pull/207), [#210](https://github.com/pboachie/zrotext/pull/210), [line-bound stream](../protocol/v1/line-opt-out-contract.md), [#237](https://github.com/pboachie/zrotext/pull/237), [#242](https://github.com/pboachie/zrotext/pull/242), [#245](https://github.com/pboachie/zrotext/pull/245), [#247](https://github.com/pboachie/zrotext/pull/247) |
 | Inbound capture and signed webhooks | Restricted pilot | [#25](https://github.com/pboachie/zrotext/pull/25), [#29](https://github.com/pboachie/zrotext/pull/29), [#39](https://github.com/pboachie/zrotext/pull/39), [#80](https://github.com/pboachie/zrotext/pull/80) |
-| Owner dashboard: device health and history | Build | [#36](https://github.com/pboachie/zrotext/pull/36), [#74](https://github.com/pboachie/zrotext/pull/74), [#76](https://github.com/pboachie/zrotext/pull/76), [#237](https://github.com/pboachie/zrotext/pull/237) |
+| Owner dashboard: device health and history | Build | [#36](https://github.com/pboachie/zrotext/pull/36), [#74](https://github.com/pboachie/zrotext/pull/74), [#76](https://github.com/pboachie/zrotext/pull/76), [#237](https://github.com/pboachie/zrotext/pull/237), [#245](https://github.com/pboachie/zrotext/pull/245), [#251](https://github.com/pboachie/zrotext/pull/251), [#255](https://github.com/pboachie/zrotext/pull/255) |
 
 <a id="cap-enrollment"></a>
 <details>
@@ -225,9 +225,11 @@ Connect a dedicated Android phone and SIM, send and receive SMS through the serv
 - [x] Local block on the phone applies immediately, even while offline
 - [x] Local line binding and unsolicited opt-outs journaled on the phone ([#210](https://github.com/pboachie/zrotext/pull/210))
 - [x] Default-off signed line-bound STOP/review stream and durable Android replay identity; production activation remains open
-- [x] Owner-only read-only queue for ambiguous SMS holds; it cannot clear holds or record off-channel requests ([#237](https://github.com/pboachie/zrotext/pull/237))
-- [ ] Production SMS line activation and verified selected-SIM binding before enabling unsolicited opt-outs
-- [ ] Review off-channel holds and decisions ([#242](https://github.com/pboachie/zrotext/pull/242)), then dashboard controls and queued cancellation ([#245](https://github.com/pboachie/zrotext/pull/245))
+- [x] Owner-only read-only queue for ambiguous SMS holds ([#237](https://github.com/pboachie/zrotext/pull/237))
+- [x] Owner-recorded off-channel holds and durable review decisions; a hold or signed opt-out cancels queued sends that have no radio grant ([#242](https://github.com/pboachie/zrotext/pull/242), [#245](https://github.com/pboachie/zrotext/pull/245))
+- [x] A signed START releases a hold only when observed more than five minutes after it, tightened by the phone clock reading at upload ([#250](https://github.com/pboachie/zrotext/pull/250), [#253](https://github.com/pboachie/zrotext/pull/253))
+- [x] Owner-approved SMS line activation implemented end to end, off by default: browser-held approval key, signed phone declaration and Android install ([#247](https://github.com/pboachie/zrotext/pull/247), [#248](https://github.com/pboachie/zrotext/pull/248), [#251](https://github.com/pboachie/zrotext/pull/251))
+- [ ] Validate SMS line activation on physical SIMs, then enable it before unsolicited opt-outs
 - [ ] End-to-end opt-out, offline replay and SIM-change evidence on real devices
 
 </details>
@@ -254,6 +256,8 @@ Connect a dedicated Android phone and SIM, send and receive SMS through the serv
 - [x] Authenticated connection lease shown per device
 - [x] Message state timeline, inbound activity and webhook history views
 - [x] Read-only ambiguous opt-out review queue with recipient metadata and event times
+- [x] Opt-out hold and review decision forms ([#245](https://github.com/pboachie/zrotext/pull/245))
+- [x] SMS lines page: approval key, line list and activation approval ([#251](https://github.com/pboachie/zrotext/pull/251), [#255](https://github.com/pboachie/zrotext/pull/255))
 - [ ] SIM, queue depth and radio readiness per device
 - [ ] Live updates instead of snapshots
 
@@ -278,7 +282,8 @@ Make ZROtext practical to run, upgrade and build against.
 - [x] Separate migration and restricted runtime database roles
 - [x] Verified PostgreSQL TLS and an optional HTTPS edge
 - [x] Scripted fresh-install and database restore rehearsals
-- [x] Upgrade guide covering every release ([guide](../deploy/compose/UPGRADE.md))
+- [x] Upgrade guide for moving between source snapshots ([guide](../deploy/compose/UPGRADE.md))
+- [ ] Upgrade notes for each tagged release
 - [ ] Production hardening checklist
 
 </details>
@@ -323,7 +328,7 @@ Keep message content out of reach of the server, and give owners control of thei
 | Capability | Stage | Evidence |
 |---|---|---|
 | Owner accounts, MFA and scoped API keys | Build | [#43](https://github.com/pboachie/zrotext/pull/43), [#172](https://github.com/pboachie/zrotext/pull/172), [#175](https://github.com/pboachie/zrotext/pull/175), [MFA operations](MFA-OPERATIONS.md), [#240](https://github.com/pboachie/zrotext/pull/240) |
-| Sealed-content protocol (client-side keys) | Design | [Draft 01](../protocol/drafts/zt-sealed-draft-01.md), [draft 02 proposal](../protocol/drafts/zt-sealed-draft-02-proposal.md), [#159](https://github.com/pboachie/zrotext/pull/159), [#162](https://github.com/pboachie/zrotext/pull/162) |
+| Sealed-content protocol (client-side keys) | Design | [Draft 01](../protocol/drafts/zt-sealed-draft-01.md), [draft 02 proposal](../protocol/drafts/zt-sealed-draft-02-proposal.md), [#159](https://github.com/pboachie/zrotext/pull/159), [#162](https://github.com/pboachie/zrotext/pull/162), [#260](https://github.com/pboachie/zrotext/pull/260) |
 | Data export and account deletion | Planned | [Data retention](SELF-HOSTING.md#data-retention) covers history pruning only |
 
 <a id="cap-accounts"></a>
@@ -346,7 +351,8 @@ Keep message content out of reach of the server, and give owners control of thei
 - [x] Draft protocol and validation gates
 - [x] TypeScript and Android test vectors, including signed manifests and root rotation
 - [x] Test-only envelope parser and Android Keystore boundary
-- [ ] Resolve and verify remaining Q1-Q11 decisions in the [protocol decision log](../protocol/drafts/zt-009-decision-log.md)
+- [x] Q1-Q11 decisions recorded with cross-client manifest vectors ([#260](https://github.com/pboachie/zrotext/pull/260))
+- [ ] Verify the recorded Q1-Q11 decisions with the evidence each row still lists in the [protocol decision log](../protocol/drafts/zt-009-decision-log.md)
 - [ ] Cross-client interoperability and adversarial security tests
 - [ ] Recovery and unlock flows
 - [ ] Enabled in the gateway for real messages
@@ -433,7 +439,7 @@ Build useful conversations for local service operators and individuals through t
 |---|---|---|
 | Contacts, consent and conversations | Planned | [product proposal](PRODUCT-PLAN.md#business-inbox) proposal only; no runtime implementation |
 | Templates and scheduled follow-ups | Planned | [product proposal](PRODUCT-PLAN.md#business-inbox) proposal only; no runtime implementation |
-| Approvals and reply tracking | Planned | [product proposal](PRODUCT-PLAN.md#business-inbox), [synthetic demo PR #244](https://github.com/pboachie/zrotext/pull/244) proposal only; scripted approval and handoff simulation under review in #244; no runtime implementation |
+| Approvals and reply tracking | Planned | [product proposal](PRODUCT-PLAN.md#business-inbox), [synthetic demo PR #244](https://github.com/pboachie/zrotext/pull/244) proposal only; scripted approval and handoff simulation in #244; no runtime implementation |
 | Workflow connector and integrations | Planned | [product proposal](PRODUCT-PLAN.md#customer-controlled-assistant) proposal only; no runtime implementation |
 | Customer-controlled AI assistant | Planned | [product proposal](PRODUCT-PLAN.md#customer-controlled-assistant) proposal only; no runtime implementation |
 
