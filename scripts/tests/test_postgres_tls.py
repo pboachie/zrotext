@@ -111,10 +111,19 @@ def main():
         wrong_host = trusted.copy()
         wrong_host["DATABASE_URL"] = f"postgresql://postgres@127.0.0.1:{port}/postgres?sslmode=require"
         cargo(wrong_host, False, "run", "--locked", "-p", "zrotext-migrator")
+        # libpq's verify modes are accepted as require: chain and hostname
+        # are verified for both, so verify-ca still rejects the wrong host.
+        for mode in ("verify-full", "verify-ca"):
+            verified = trusted.copy()
+            verified["DATABASE_URL"] = f"postgresql://postgres@localhost:{port}/postgres?sslmode={mode}"
+            cargo(verified, True, "run", "--locked", "-p", "zrotext-migrator")
+            verified["DATABASE_URL"] = f"postgresql://postgres@127.0.0.1:{port}/postgres?sslmode={mode}"
+            cargo(verified, False, "run", "--locked", "-p", "zrotext-migrator")
         wrong_ca = trusted.copy()
         wrong_ca["DATABASE_TLS_CA_PEM_B64"] = base64.b64encode((directory / "wrong-ca.pem").read_bytes()).decode("ascii")
         cargo(wrong_ca, False, "run", "--locked", "-p", "zrotext-migrator")
-        print("PostgreSQL TLS: migration and encrypted query passed; wrong host and CA rejected")
+        print("PostgreSQL TLS: migration (require, verify-full, verify-ca) and encrypted query "
+              "passed; wrong host and CA rejected")
     finally:
         subprocess.run(["docker", "rm", "--force", container], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if directory.parent != root or not directory.name.startswith("zrotext-postgres-tls-"):

@@ -3,6 +3,7 @@
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use std::{
+    borrow::Cow,
     env,
     future::Future,
     net::IpAddr,
@@ -37,8 +38,91 @@ pub async fn connect(
     ),
     ConnectError,
 > {
-    let config: Config = url.parse()?;
-    connect_config(config).await
+    connect_config(parse_config(url)?).await
+}
+
+/// Parse a connection string. Every mode that permits TLS verifies the
+/// certificate chain and hostname, so libpq's `verify-full` and `verify-ca`
+/// in a `postgres://` URL are accepted as `require` (for `verify-ca`, the
+/// hostname check makes this stricter than libpq). Parse failures are
+/// configuration errors whose text never includes the URL or its secrets.
+pub fn parse_config(url: &str) -> Result<Config, ConnectError> {
+    normalize_verified_sslmode(url)
+        .parse()
+        .map_err(|error| ConnectError::Configuration(describe_parse_error(&error)))
+}
+
+/// Apply the full transport policy to a connection string without connecting,
+/// so a process can reject an unusable `DATABASE_URL` at startup instead of
+/// later reporting the database as unreachable.
+pub fn check_url(url: &str) -> Result<(), ConnectError> {
+    let config = parse_config(url)?;
+    may_use_plaintext(&config, allow_plaintext()?)?;
+    tls_config()?;
+    Ok(())
+}
+
+fn normalize_verified_sslmode(url: &str) -> Cow<'_, str> {
+    let Some(rest) = ["postgres://", "postgresql://"]
+        .into_iter()
+        .find_map(|prefix| url.strip_prefix(prefix))
+    else {
+        return Cow::Borrowed(url);
+    };
+    // Mirror tokio-postgres: credentials end at the first '@', and the
+    // parameters start at the first '?' after them.
+    let after_credentials = rest.find('@').map_or(0, |at| at + 1);
+    let Some(query) = rest[after_credentials..].find('?') else {
+        return Cow::Borrowed(url);
+    };
+    let (head, query) = url.split_at(url.len() - rest.len() + after_credentials + query + 1);
+    let mut changed = false;
+    let params: Vec<&str> = query
+        .split('&')
+        .map(|param| match param.split_once('=') {
+            Some(("sslmode", "verify-full" | "verify-ca")) => {
+                changed = true;
+                "sslmode=require"
+            }
+            _ => param,
+        })
+        .collect();
+    if changed {
+        Cow::Owned(format!("{head}{}", params.join("&")))
+    } else {
+        Cow::Borrowed(url)
+    }
+}
+
+fn describe_parse_error(error: &tokio_postgres::Error) -> String {
+    // The causes tokio-postgres reports name an option, never its value.
+    let detail = std::error::Error::source(error).map(ToString::to_string);
+    match detail {
+        Some(detail) if detail.contains("`sslmode`") => "unsupported sslmode; use sslmode=require \
+             (certificate chain and hostname are always verified), prefer, or disable; \
+             postgres:// URLs also accept verify-full and verify-ca as require"
+            .into(),
+        Some(detail) => format!("cannot parse PostgreSQL connection string: {detail}"),
+        None => "cannot parse PostgreSQL connection string".into(),
+    }
+}
+
+fn allow_plaintext() -> Result<bool, ConnectError> {
+    match env::var("DATABASE_ALLOW_PLAINTEXT") {
+        Ok(value) if value == "true" => Ok(true),
+        Ok(value) if value == "false" => Ok(false),
+        Err(env::VarError::NotPresent) => Ok(false),
+        _ => Err(ConnectError::Configuration(
+            "DATABASE_ALLOW_PLAINTEXT must be true or false".into(),
+        )),
+    }
+}
+
+fn tls_config() -> Result<&'static Arc<rustls::ClientConfig>, ConnectError> {
+    TLS_CONFIG
+        .get_or_init(load_tls_config)
+        .as_ref()
+        .map_err(|message| ConnectError::Configuration(message.clone()))
 }
 
 pub async fn connect_config(
@@ -50,17 +134,7 @@ pub async fn connect_config(
     ),
     ConnectError,
 > {
-    let allow_plaintext = match env::var("DATABASE_ALLOW_PLAINTEXT") {
-        Ok(value) if value == "true" => true,
-        Ok(value) if value == "false" => false,
-        Err(env::VarError::NotPresent) => false,
-        _ => {
-            return Err(ConnectError::Configuration(
-                "DATABASE_ALLOW_PLAINTEXT must be true or false".into(),
-            ));
-        }
-    };
-    let may_use_plaintext = may_use_plaintext(&config, allow_plaintext)?;
+    let may_use_plaintext = may_use_plaintext(&config, allow_plaintext()?)?;
     if may_use_plaintext
         && !local_destination(&config)
         && !PLAINTEXT_WARNING.swap(true, Ordering::Relaxed)
@@ -69,11 +143,7 @@ pub async fn connect_config(
             "warning: PostgreSQL transport permits plaintext to a non-local host; set sslmode=require for verified TLS"
         );
     }
-    let tls = TLS_CONFIG
-        .get_or_init(load_tls_config)
-        .as_ref()
-        .map_err(|message| ConnectError::Configuration(message.clone()))?;
-    let tls = MakeRustlsConnect::new((**tls).clone());
+    let tls = MakeRustlsConnect::new((**tls_config()?).clone());
     Ok(config.connect(tls).await?)
 }
 
@@ -189,6 +259,59 @@ mod tests {
             assert!(!local_destination(&url.parse().unwrap()), "{url}");
         }
         assert!(!policy("postgres://u@db/zrotext?sslmode=require", false).unwrap());
+    }
+
+    #[test]
+    fn libpq_verified_sslmodes_parse_as_verified_tls() {
+        for mode in ["verify-full", "verify-ca"] {
+            for scheme in ["postgres", "postgresql"] {
+                let url = format!(
+                    "{scheme}://u:p%40ss@writer.example:6543/zrotext?application_name=api&sslmode={mode}&connect_timeout=5"
+                );
+                let config = parse_config(&url).unwrap();
+                assert_eq!(config.get_ssl_mode(), SslMode::Require);
+                assert_eq!(config.get_ports(), [6543]);
+                assert_eq!(config.get_dbname(), Some("zrotext"));
+                assert_eq!(config.get_application_name(), Some("api"));
+                assert_eq!(config.get_password(), Some(&b"p@ss"[..]));
+                assert!(!may_use_plaintext(&config, false).unwrap());
+            }
+        }
+    }
+
+    #[test]
+    fn sslmode_normalization_leaves_credentials_and_other_modes_alone() {
+        let config =
+            parse_config("postgres://u:<sslmode=verify-full>@db/zrotext?sslmode=disable").unwrap();
+        assert_eq!(config.get_password(), Some(&b"<sslmode=verify-full>"[..]));
+        assert_eq!(config.get_ssl_mode(), SslMode::Disable);
+        let config = parse_config("host=writer.example sslmode=require dbname=zrotext").unwrap();
+        assert_eq!(config.get_ssl_mode(), SslMode::Require);
+    }
+
+    #[test]
+    fn invalid_connection_strings_are_redacted_configuration_errors() {
+        for url in [
+            "postgres://u:<secret>@writer.example/zrotext?sslmode=allow",
+            "host=writer.example password=hunter2-secret sslmode=verify-full",
+        ] {
+            let Err(ConnectError::Configuration(message)) = parse_config(url) else {
+                panic!("expected a configuration error");
+            };
+            assert!(message.contains("unsupported sslmode"), "{message}");
+            assert!(!message.contains("hunter2") && !message.contains("<secret>"));
+        }
+        let Err(ConnectError::Configuration(message)) =
+            parse_config("postgres://u:<secret>@writer.example/zrotext?sslrootcert=ca.pem")
+        else {
+            panic!("expected a configuration error");
+        };
+        assert!(message.contains("sslrootcert"), "{message}");
+        assert!(!message.contains("<secret>") && !message.contains("ca.pem"));
+        assert!(matches!(
+            check_url("postgres://u@writer.example/zrotext?sslmode=verify-any"),
+            Err(ConnectError::Configuration(_))
+        ));
     }
 
     #[tokio::test]
