@@ -272,7 +272,7 @@ Make ZROtext practical to run, upgrade and build against.
 | Compose deployment and upgrade guides | Build | [#35](https://github.com/pboachie/zrotext/pull/35), [#105](https://github.com/pboachie/zrotext/pull/105), [#173](https://github.com/pboachie/zrotext/pull/173), [#183](https://github.com/pboachie/zrotext/pull/183), [#259](https://github.com/pboachie/zrotext/pull/259) |
 | Signed release artifacts and SBOMs | Build | [#86](https://github.com/pboachie/zrotext/pull/86), [#135](https://github.com/pboachie/zrotext/pull/135), [#169](https://github.com/pboachie/zrotext/pull/169), [#197](https://github.com/pboachie/zrotext/pull/197) |
 | Stable public API v1 and client SDK | Design | [API outline](ARCHITECTURE.md#planned-api-v1-outline), [test-only sealed reader](../sdk/typescript/README.md) |
-| Setup diagnostics and device guidance | Build | [#81](https://github.com/pboachie/zrotext/pull/81), [#189](https://github.com/pboachie/zrotext/pull/189) |
+| Setup diagnostics and device guidance | Build | [#81](https://github.com/pboachie/zrotext/pull/81), [#189](https://github.com/pboachie/zrotext/pull/189), [#268](https://github.com/pboachie/zrotext/pull/268) |
 
 <a id="cap-compose"></a>
 <details>
@@ -316,7 +316,8 @@ Make ZROtext practical to run, upgrade and build against.
 
 - [x] Owner enrollment, account setup and mail diagnostics
 - [x] SMS and RCS readiness guidance for the gateway phone
-- [ ] Accessibility review of owner pages and the Android app
+- [x] Accessibility review of the owner web pages ([review](ACCESSIBILITY-REVIEW.md))
+- [ ] Accessibility review of the Android app
 - [ ] Supported-device list backed by repeatable tests
 
 </details>
@@ -329,7 +330,7 @@ Keep message content out of reach of the server, and give owners control of thei
 |---|---|---|
 | Owner accounts, MFA and scoped API keys | Build | [#43](https://github.com/pboachie/zrotext/pull/43), [#172](https://github.com/pboachie/zrotext/pull/172), [#175](https://github.com/pboachie/zrotext/pull/175), [MFA operations](MFA-OPERATIONS.md), [#240](https://github.com/pboachie/zrotext/pull/240) |
 | Sealed-content protocol (client-side keys) | Design | [Draft 01](../protocol/drafts/zt-sealed-draft-01.md), [draft 02 proposal](../protocol/drafts/zt-sealed-draft-02-proposal.md), [#159](https://github.com/pboachie/zrotext/pull/159), [#162](https://github.com/pboachie/zrotext/pull/162), [#260](https://github.com/pboachie/zrotext/pull/260) |
-| Data export and account deletion | Build | [Data retention](SELF-HOSTING.md#data-retention), [#267](https://github.com/pboachie/zrotext/pull/267) retention evidence covers history pruning only |
+| Data export and account deletion | Build | [Data retention](SELF-HOSTING.md#data-retention), [#267](https://github.com/pboachie/zrotext/pull/267), [#271](https://github.com/pboachie/zrotext/pull/271) retention evidence covers history pruning only |
 
 <a id="cap-accounts"></a>
 <details>
@@ -364,7 +365,7 @@ Keep message content out of reach of the server, and give owners control of thei
 <summary><b>Data export and account deletion</b> · build</summary>
 
 - [x] Owner takeout of messages with events, devices and the account profile (`GET /v1/owner/export`, no-store)
-- [ ] Paginated full-history export beyond the 500 most recent messages
+- [x] Cursor-paginated full-history takeout via `?before=` with tenant-safe 404s
 - [ ] Account erasure that covers metering and billing records where allowed
 - [ ] Extend export and erasure to future contacts, templates, workflow state and assistant access records
 

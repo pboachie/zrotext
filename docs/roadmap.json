@@ -207,14 +207,16 @@
           "stage": "build",
           "evidence": [
             ["#81", "https://github.com/pboachie/zrotext/pull/81"],
-            ["#189", "https://github.com/pboachie/zrotext/pull/189"]
+            ["#189", "https://github.com/pboachie/zrotext/pull/189"],
+            ["#268", "https://github.com/pboachie/zrotext/pull/268"]
           ],
           "done": [
             "Owner enrollment, account setup and mail diagnostics",
-            "SMS and RCS readiness guidance for the gateway phone"
+            "SMS and RCS readiness guidance for the gateway phone",
+            "Accessibility review of the owner web pages ([review](ACCESSIBILITY-REVIEW.md))"
           ],
           "todo": [
-            "Accessibility review of owner pages and the Android app",
+            "Accessibility review of the Android app",
             "Supported-device list backed by repeatable tests"
           ]
         }
@@ -280,14 +282,15 @@
           "stage": "build",
           "evidence": [
             ["Data retention", "SELF-HOSTING.md#data-retention"],
-            ["#267", "https://github.com/pboachie/zrotext/pull/267"]
+            ["#267", "https://github.com/pboachie/zrotext/pull/267"],
+            ["#271", "https://github.com/pboachie/zrotext/pull/271"]
           ],
           "evidence_note": "retention evidence covers history pruning only",
           "done": [
-            "Owner takeout of messages with events, devices and the account profile (`GET /v1/owner/export`, no-store)"
+            "Owner takeout of messages with events, devices and the account profile (`GET /v1/owner/export`, no-store)",
+            "Cursor-paginated full-history takeout via `?before=` with tenant-safe 404s"
           ],
           "todo": [
-            "Paginated full-history export beyond the 500 most recent messages",
             "Account erasure that covers metering and billing records where allowed",
             "Extend export and erasure to future contacts, templates, workflow state and assistant access records"
           ]
