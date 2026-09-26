@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/domain", "crates/root-material", "crates/server", "crates/device-sim", "crates/delivery-store", "crates/migrator", "crates/postgres-connection", "crates/failover-quorum"]
+members = ["crates/domain", "crates/root-material", "crates/root-bundle", "crates/server", "crates/device-sim", "crates/delivery-store", "crates/migrator", "crates/postgres-connection", "crates/failover-quorum"]
 resolver = "3"
 
 [workspace.package]
