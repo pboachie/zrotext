@@ -102,7 +102,11 @@ fleet-wide database connection pool. A canceled handler can leave a PostgreSQL
 query running until its connection driver receives the result, so this is not a
 hard bound on outstanding database queries or connections. Each process reuses
 PostgreSQL sockets within fixed per-class budgets (16 request, 16 device,
-4 worker); idle sockets count against those budgets. A released socket is reset
+4 worker); idle database sockets count against those budgets. Device clients
+are checked out per operation and released before peer reads/writes, including
+the pre-authentication proof wait. Up to 32 established device streams share the
+16-client device reserve; request and device checkouts wait at most two seconds
+for pool admission, while workers fail fast. A released socket is reset
 with `DISCARD ALL` before reuse and is closed instead when the reset does not
 finish within two seconds (for example a canceled query still running or an
 open transaction), after 60 idle seconds, or at 30 minutes old. A five-second

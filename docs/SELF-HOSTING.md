@@ -281,9 +281,15 @@ application tables.
 ### Runtime database and device capacity
 
 Each server process reserves separate PostgreSQL connection budgets: 16 ordinary
-requests, 16 device sessions, and 4 background jobs. A device fleet cannot consume
-the request/job reserves. Requests wait at most two seconds for admission;
-device/job admission fails immediately when its reserve is full. Count every hub
+requests, 16 device database operations, and 4 background jobs. A device fleet
+cannot consume the request/job reserves. Requests and device operations wait at
+most two seconds for pool admission; background jobs fail immediately when their
+reserve is full. Device sockets release their database clients between handshake
+steps and after each database operation, before waiting for or writing frames.
+The separate stream limits remain 32 authenticated sessions and 32 handshakes
+per process; idle phones and pending proofs do not reserve database clients.
+Database saturation can still close a stream with retry-later code 1013, so
+these socket limits are admission ceilings, not a throughput guarantee. Count every hub
 and other database client when sizing PostgreSQL: two hubs can use 72 runtime
 connections in total. These conservative limits are fixed in `runtime_db.rs`;
 adding replicas requires a database capacity review. Migration and operator CLI
