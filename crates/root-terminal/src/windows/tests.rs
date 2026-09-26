@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 use super::*;
 use std::{ffi::OsStr, os::windows::ffi::OsStrExt, sync::atomic::AtomicU32};
 

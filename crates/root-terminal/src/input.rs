@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 use crate::{Error, Result, SensitiveLine};
 use zeroize::{Zeroize, Zeroizing};
 
