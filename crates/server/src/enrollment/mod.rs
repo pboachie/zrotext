@@ -109,6 +109,10 @@ pub struct OwnerDevice {
     pub revoked: bool,
     /// A current authenticated hub lease, not evidence of SIM or SMS readiness.
     pub active_socket_lease: bool,
+    /// Writer-state counts, capped at OWNER_DEVICE_QUEUE_LIMIT, not sendability.
+    pub pending_messages: i64,
+    pub in_flight_messages: i64,
+    pub status_observed_at_ms: i64,
     pub reported_preconditions: Option<ReportedPreconditions>,
 }
 
@@ -118,6 +122,45 @@ pub struct OwnerDevicePage {
 }
 
 const OWNER_DEVICE_PAGE_SIZE: usize = 50;
+const OWNER_DEVICE_QUEUE_LIMIT: i64 = 1_000;
+// Materialize the bounded tenant page before probing each device/state index.
+pub(crate) const OWNER_DEVICE_STATUS_QUERY: &str = "WITH page AS MATERIALIZED ( \
+             SELECT d.id,d.display_name,(d.revoked_at IS NOT NULL OR k.revoked_at IS NOT NULL) AS revoked, \
+               COALESCE(d.revoked_at IS NULL AND k.revoked_at IS NULL AND a.disabled_at IS NULL \
+                 AND ds.lease_until>now() AND ds.connection_epoch>0 \
+                 AND ds.deployment_epoch=p.epoch AND s.enabled=TRUE AND s.draining=FALSE \
+                 AND NOT pg_is_in_recovery(),FALSE) AS active_socket_lease,d.created_at, \
+               r.selected_sim AS report_selected_sim,r.sms_permission AS report_sms_permission, \
+               r.airplane_mode AS report_airplane_mode, \
+               (extract(epoch FROM r.received_at)*1000)::bigint AS report_received_at_ms, \
+               COALESCE(r.received_at>=statement_timestamp()-interval '90 seconds' \
+                 AND ds.lease_until>now() AND s.enabled=TRUE AND s.draining=FALSE,FALSE) AS report_fresh \
+             FROM devices d JOIN device_keys k ON (k.account_id,k.device_id)=(d.account_id,d.id) \
+             JOIN accounts a ON a.id=d.account_id \
+             LEFT JOIN device_sessions ds ON (ds.account_id,ds.device_id)=(d.account_id,d.id) \
+             LEFT JOIN sites s ON s.site_id=ds.site_id \
+             LEFT JOIN deployment_authority p ON p.singleton=TRUE \
+             LEFT JOIN device_preconditions r ON (r.account_id,r.device_id)=(d.account_id,d.id) \
+               AND r.connection_epoch=ds.connection_epoch AND r.deployment_epoch=ds.deployment_epoch \
+               AND r.deployment_epoch=p.epoch AND d.revoked_at IS NULL AND k.revoked_at IS NULL \
+               AND a.disabled_at IS NULL AND r.received_at<=statement_timestamp() \
+               AND r.received_at>=statement_timestamp()-interval '1 day' \
+             WHERE d.account_id=$1 AND ($2::uuid IS NULL OR (d.created_at,d.id) < \
+               (SELECT c.created_at,c.id FROM devices c JOIN device_keys ck \
+                ON (ck.account_id,ck.device_id)=(c.account_id,c.id) \
+                WHERE c.account_id=$1 AND c.id=$2)) \
+             ORDER BY d.created_at DESC,d.id DESC LIMIT $3) \
+             SELECT page.id,page.display_name,page.revoked,page.active_socket_lease, \
+               (SELECT count(*) FROM (SELECT 1 FROM messages m \
+                 WHERE m.account_id=$1 AND m.device_id=page.id \
+                   AND m.state IN ('accepted','queued','claimed') ORDER BY m.state,m.created_at LIMIT $4) pending), \
+               (SELECT count(*) FROM (SELECT 1 FROM messages m \
+                 WHERE m.account_id=$1 AND m.device_id=page.id \
+                   AND m.state IN ('submitting','submitted') ORDER BY m.state,m.created_at LIMIT $4) in_flight), \
+               (extract(epoch FROM statement_timestamp())*1000)::bigint, \
+               page.report_selected_sim,page.report_sms_permission,page.report_airplane_mode, \
+               page.report_received_at_ms,page.report_fresh \
+             FROM page ORDER BY page.created_at DESC,page.id DESC";
 
 pub struct DeviceChallenge {
     pub id: Uuid,
@@ -430,32 +473,13 @@ pub async fn list_owner_devices(
     }
     let rows = client
         .query(
-            "SELECT d.id,d.display_name,(d.revoked_at IS NOT NULL OR k.revoked_at IS NOT NULL) AS revoked, \
-               COALESCE(d.revoked_at IS NULL AND k.revoked_at IS NULL AND a.disabled_at IS NULL \
-                 AND ds.lease_until>now() AND ds.connection_epoch>0 \
-                 AND ds.deployment_epoch=p.epoch AND s.enabled=TRUE AND s.draining=FALSE \
-                 AND NOT pg_is_in_recovery(),FALSE) AS active_socket_lease, \
-               r.selected_sim AS report_selected_sim,r.sms_permission AS report_sms_permission, \
-               r.airplane_mode AS report_airplane_mode, \
-               (extract(epoch FROM r.received_at)*1000)::bigint AS report_received_at_ms, \
-               COALESCE(r.received_at>=statement_timestamp()-interval '90 seconds' \
-                 AND ds.lease_until>now() AND s.enabled=TRUE AND s.draining=FALSE,FALSE) AS report_fresh \
-             FROM devices d JOIN device_keys k ON (k.account_id,k.device_id)=(d.account_id,d.id) \
-             JOIN accounts a ON a.id=d.account_id \
-             LEFT JOIN device_sessions ds ON (ds.account_id,ds.device_id)=(d.account_id,d.id) \
-             LEFT JOIN sites s ON s.site_id=ds.site_id \
-             LEFT JOIN deployment_authority p ON p.singleton=TRUE \
-             LEFT JOIN device_preconditions r ON (r.account_id,r.device_id)=(d.account_id,d.id) \
-               AND r.connection_epoch=ds.connection_epoch AND r.deployment_epoch=ds.deployment_epoch \
-               AND r.deployment_epoch=p.epoch AND d.revoked_at IS NULL AND k.revoked_at IS NULL \
-               AND a.disabled_at IS NULL AND r.received_at<=statement_timestamp() \
-               AND r.received_at>=statement_timestamp()-interval '1 day' \
-             WHERE d.account_id=$1 AND ($2::uuid IS NULL OR (d.created_at,d.id) < \
-               (SELECT c.created_at,c.id FROM devices c JOIN device_keys ck \
-                ON (ck.account_id,ck.device_id)=(c.account_id,c.id) \
-                WHERE c.account_id=$1 AND c.id=$2)) \
-             ORDER BY d.created_at DESC,d.id DESC LIMIT $3",
-            &[&principal.tenant.account_id(), &before, &((OWNER_DEVICE_PAGE_SIZE + 1) as i64)],
+            OWNER_DEVICE_STATUS_QUERY,
+            &[
+                &principal.tenant.account_id(),
+                &before,
+                &((OWNER_DEVICE_PAGE_SIZE + 1) as i64),
+                &OWNER_DEVICE_QUEUE_LIMIT,
+            ],
         )
         .await?;
     let has_more = rows.len() > OWNER_DEVICE_PAGE_SIZE;
@@ -467,6 +491,9 @@ pub async fn list_owner_devices(
             display_name: row.get(1),
             revoked: row.get(2),
             active_socket_lease: row.get(3),
+            pending_messages: row.get(4),
+            in_flight_messages: row.get(5),
+            status_observed_at_ms: row.get(6),
             reported_preconditions: row.get::<_, Option<String>>("report_selected_sim").map(
                 |selected_sim| ReportedPreconditions {
                     selected_sim,

@@ -645,6 +645,15 @@ async function loadDeviceCapacity() {
   }
 }
 
+function deviceQueueText(device) {
+  const validCount = (value) => Number.isSafeInteger(value) && value >= 0 && value <= 1_000;
+  if (!validCount(device.pending_messages) || !validCount(device.in_flight_messages) ||
+      !Number.isSafeInteger(device.status_observed_at_ms) || device.status_observed_at_ms <= 0 ||
+      device.status_observed_at_ms > 8_640_000_000_000_000) return "Queue status unavailable.";
+  const count = (value) => value === 1_000 ? "1,000+" : String(value);
+  return `Pending: ${count(device.pending_messages)} · In flight: ${count(device.in_flight_messages)} · Snapshot ${dateText(device.status_observed_at_ms)}`;
+}
+
 function devicePreconditionsText(device) {
   const report = device.reported_preconditions;
   if (!report || !["not_selected", "active", "inactive", "unavailable"].includes(report.selected_sim) ||
@@ -716,9 +725,11 @@ async function loadDevices(reset = true, automatic = false) {
           : device.active_socket_lease === false
             ? "Approved · no current authenticated socket lease · SMS readiness unknown"
             : "Approved for connection · live status unavailable";
+      const queue = document.createElement("span");
+      queue.textContent = deviceQueueText(device);
       const preconditions = document.createElement("span");
       preconditions.textContent = devicePreconditionsText(device);
-      detail.append(name, id, state, preconditions);
+      detail.append(name, id, state, queue, preconditions);
       row.append(detail);
       if (!device.revoked) {
         const revoke = document.createElement("button");
@@ -744,7 +755,7 @@ async function loadDevices(reset = true, automatic = false) {
   } catch (error) {
     if (stale()) return;
     moreButton.disabled = false;
-    message("device-status", `Could not load devices. ${error.message}`);
+    message("device-status", `Could not load devices. ${automatic ? "Showing the previous snapshot; counts may be stale. " : ""}${error.message}`);
   } finally {
     deviceLoads -= 1;
     if (!stale()) moreButton.disabled = false;
