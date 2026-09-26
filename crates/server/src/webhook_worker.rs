@@ -10,10 +10,10 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use hmac::{Hmac, Mac, digest::KeyInit as HmacKeyInit};
 use serde_json::json;
 use sha2::Sha256;
-use std::future::Future;
+use std::{future::Future, sync::Arc};
 use subtle::ConstantTimeEq;
 use thiserror::Error;
-use tokio_postgres::{Client, Transaction};
+use tokio_postgres::{Client, GenericClient, Transaction};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
@@ -52,6 +52,8 @@ pub enum RewrapError {
     Database(#[from] tokio_postgres::Error),
     #[error("webhook key rewrap batch size must be 1..=500")]
     BatchSize,
+    #[error("{total} stored endpoint signing secrets cannot be opened with the configured keys")]
+    Unreadable { total: u64, endpoint_ids: Vec<Uuid> },
 }
 
 impl WebhookSecretVault {
@@ -224,56 +226,143 @@ async fn check_key_commitments(
     Ok(())
 }
 
-async fn check_endpoint_secrets(
-    tx: &Transaction<'_>,
+/// Upper bound on endpoint IDs one sweep keeps for logging.
+pub const MAX_REPORTED_ENDPOINTS: usize = 100;
+
+/// Result of opening every stored endpoint signing secret. It holds only
+/// endpoint IDs and counts, never ciphertext or plaintext.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct SecretSweep {
+    pub checked: u64,
+    pub unreadable_total: u64,
+    /// The first `MAX_REPORTED_ENDPOINTS` unreadable endpoint IDs, by ID.
+    pub unreadable: Vec<Uuid>,
+}
+
+/// Keyset-paged scan; each page is one short statement. Opening a secret is
+/// only a check here: the plaintext is dropped (and zeroized) immediately.
+async fn sweep_endpoint_secrets<C: GenericClient>(
+    client: &C,
     vault: &WebhookSecretVault,
-) -> Result<(), RewrapError> {
+) -> Result<SecretSweep, tokio_postgres::Error> {
+    let mut sweep = SecretSweep::default();
     let mut after = Uuid::nil();
     loop {
-        let rows = tx
+        let rows = client
             .query(
                 "SELECT id,account_id,signing_secret_key_version,signing_secret_ciphertext FROM webhook_endpoints WHERE id>$1 ORDER BY id LIMIT 128",
                 &[&after],
             )
             .await?;
         if rows.is_empty() {
-            return Ok(());
+            return Ok(sweep);
         }
         for row in &rows {
             let endpoint_id: Uuid = row.get(0);
             let account_id: Uuid = row.get(1);
             let version: i32 = row.get(2);
             let ciphertext: Vec<u8> = row.get(3);
-            vault.open(account_id, endpoint_id, version, &ciphertext)?;
+            sweep.checked += 1;
+            if vault
+                .open(account_id, endpoint_id, version, &ciphertext)
+                .is_err()
+            {
+                sweep.unreadable_total += 1;
+                if sweep.unreadable.len() < MAX_REPORTED_ENDPOINTS {
+                    sweep.unreadable.push(endpoint_id);
+                }
+            }
             after = endpoint_id;
         }
     }
 }
 
-/// Called before mounting webhook management or starting delivery. The
-/// commitment transaction rolls back if any stored endpoint cannot open.
+/// Fail-closed startup gate, called before mounting webhook management or
+/// starting delivery: every configured KEK must match its registered
+/// commitment. It deliberately does not open stored endpoint secrets, so one
+/// bad row cannot stop the whole server; see `audit_endpoint_secrets`.
 pub async fn validate_runtime_keys(
     client: &mut Client,
     vault: &WebhookSecretVault,
 ) -> Result<(), RewrapError> {
     let tx = client.transaction().await?;
     check_key_commitments(&tx, vault, true).await?;
-    check_endpoint_secrets(&tx, vault).await?;
     tx.commit().await?;
     Ok(())
 }
 
 /// Read-only operator preflight. Both configured key versions must already
-/// have been registered by an application site.
+/// have been registered by an application site, and every stored endpoint
+/// secret must open; otherwise it fails and names the unreadable endpoints.
 pub async fn check_runtime_keys(
     client: &mut Client,
     vault: &WebhookSecretVault,
 ) -> Result<(), RewrapError> {
     let tx = client.transaction().await?;
     check_key_commitments(&tx, vault, false).await?;
-    check_endpoint_secrets(&tx, vault).await?;
+    let sweep = sweep_endpoint_secrets(&tx, vault).await?;
     tx.commit().await?;
+    if sweep.unreadable_total != 0 {
+        return Err(RewrapError::Unreadable {
+            total: sweep.unreadable_total,
+            endpoint_ids: sweep.unreadable,
+        });
+    }
     Ok(())
+}
+
+/// Non-fatal runtime sweep that reports endpoints whose stored secret cannot
+/// be opened with the configured keys. It changes nothing: a delivery for
+/// such an endpoint is already deferred without using a send attempt (see
+/// `inbound::defer_webhook_key_failure`), and the endpoint cannot be enabled
+/// until the key ring is repaired or the owner rotates its signing secret.
+pub async fn audit_endpoint_secrets(
+    client: &Client,
+    vault: &WebhookSecretVault,
+) -> Result<SecretSweep, tokio_postgres::Error> {
+    sweep_endpoint_secrets(client, vault).await
+}
+
+/// Payload-free lines for private process logs: endpoint IDs and counts only.
+pub fn secret_sweep_log_lines(sweep: &SecretSweep) -> Vec<String> {
+    if sweep.unreadable_total == 0 {
+        return Vec::new();
+    }
+    let mut lines: Vec<String> = sweep
+        .unreadable
+        .iter()
+        .map(|id| format!("webhook_endpoint_secret_unreadable endpoint_id={id}"))
+        .collect();
+    lines.push(format!(
+        "webhook_endpoint_secret_audit checked={} unreadable={} listed={}",
+        sweep.checked,
+        sweep.unreadable_total,
+        sweep.unreadable.len()
+    ));
+    lines
+}
+
+/// Run `audit_endpoint_secrets` once in the background after startup.
+pub fn spawn_endpoint_secret_audit(database_url: String, vault: Arc<WebhookSecretVault>) {
+    tokio::spawn(async move {
+        let result = async {
+            let client = crate::runtime_db::connect_worker(&database_url)
+                .await
+                .map_err(|_| ())?;
+            audit_endpoint_secrets(&client, &vault)
+                .await
+                .map_err(|_| ())
+        }
+        .await;
+        match result {
+            Ok(sweep) => {
+                for line in secret_sweep_log_lines(&sweep) {
+                    eprintln!("{line}");
+                }
+            }
+            Err(()) => eprintln!("webhook endpoint secret audit unavailable"),
+        }
+    });
 }
 
 /// Re-encrypt one bounded batch with the active KEK while preserving the
@@ -527,6 +616,33 @@ mod tests {
         );
     }
 
+    #[test]
+    fn secret_sweep_logs_only_endpoint_ids_and_counts() {
+        assert!(secret_sweep_log_lines(&SecretSweep::default()).is_empty());
+        assert!(
+            secret_sweep_log_lines(&SecretSweep {
+                checked: 3,
+                ..SecretSweep::default()
+            })
+            .is_empty()
+        );
+        let first = Uuid::from_u128(1);
+        let second = Uuid::from_u128(2);
+        let lines = secret_sweep_log_lines(&SecretSweep {
+            checked: 500,
+            unreadable_total: 250,
+            unreadable: vec![first, second],
+        });
+        assert_eq!(
+            lines,
+            vec![
+                format!("webhook_endpoint_secret_unreadable endpoint_id={first}"),
+                format!("webhook_endpoint_secret_unreadable endpoint_id={second}"),
+                "webhook_endpoint_secret_audit checked=500 unreadable=250 listed=2".to_owned(),
+            ]
+        );
+    }
+
     #[tokio::test]
     #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn postgres_rewrap_preserves_secret_and_unknown_version_rolls_back() {
@@ -645,7 +761,41 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(check_runtime_keys(&mut db, &rotated).await.is_err());
+        match check_runtime_keys(&mut db, &rotated).await {
+            Err(RewrapError::Unreadable {
+                total,
+                endpoint_ids,
+            }) => {
+                assert_eq!(total, 1);
+                assert_eq!(endpoint_ids, vec![endpoint]);
+            }
+            other => panic!("expected an unreadable-endpoint preflight failure, got {other:?}"),
+        }
+        // One corrupted row no longer blocks startup: the commitment gate
+        // passes, and the background audit names only the bad endpoint.
+        let healthy_endpoint = Uuid::new_v4();
+        let healthy_ciphertext = rotated.seal(account, healthy_endpoint, &secret).unwrap();
+        db.execute(
+            "INSERT INTO webhook_endpoints(id,account_id,callback_url,signing_secret_ciphertext,signing_secret_key_version) VALUES($1,$2,'https://example.test/hook',$3,8)",
+            &[&healthy_endpoint, &account, &healthy_ciphertext],
+        ).await.unwrap();
+        validate_runtime_keys(&mut db, &rotated).await.unwrap();
+        validate_runtime_keys(&mut db, &active_only).await.unwrap();
+        let sweep = audit_endpoint_secrets(&db, &rotated).await.unwrap();
+        assert_eq!(
+            sweep,
+            SecretSweep {
+                checked: 2,
+                unreadable_total: 1,
+                unreadable: vec![endpoint],
+            }
+        );
+        // A wrong KEK still fails the startup gate with a bad row present.
+        assert!(
+            validate_runtime_keys(&mut db, &wrong_same_version)
+                .await
+                .is_err()
+        );
         db.execute(
             "UPDATE webhook_endpoints SET signing_secret_ciphertext=$2 WHERE id=$1",
             &[&endpoint, &new_ciphertext],
@@ -653,6 +803,9 @@ mod tests {
         .await
         .unwrap();
         check_runtime_keys(&mut db, &rotated).await.unwrap();
+        let sweep = audit_endpoint_secrets(&db, &rotated).await.unwrap();
+        assert_eq!(sweep.checked, 2);
+        assert!(secret_sweep_log_lines(&sweep).is_empty());
         setup
             .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
             .await

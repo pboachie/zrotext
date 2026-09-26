@@ -319,6 +319,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         quotas_reset = true;
         if let Some(vault) = webhook_vault {
             let vault = Arc::new(vault);
+            webhook_worker::spawn_endpoint_secret_audit(config.database_url.clone(), vault.clone());
             app = app.merge(http_webhooks::router(WebhookHttpState {
                 database_url: config.database_url.clone(),
                 auth_hasher: auth_state.hasher.clone(),
