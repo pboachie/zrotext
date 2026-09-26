@@ -14,6 +14,7 @@ pub mod http_owner_review;
 pub mod http_webhooks;
 pub mod inbound;
 pub mod ingress;
+pub mod maintenance;
 pub mod owner_ui;
 pub mod provider_sms;
 pub mod retention;
