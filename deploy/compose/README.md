@@ -293,6 +293,11 @@ about one deployment; nothing here is enforced by the repository.
   in-process budgets (32 authenticated sockets and 32 handshakes per process)
   are not keyed by client address and the bundled Caddyfile adds no limiting;
   this control is upstream guidance the repository does not ship.
+  The 16 device PostgreSQL clients per process are shared by short operations;
+  connected streams and pending proofs do not pin a client. Device operations
+  wait up to two seconds for pool admission, then close with retry-later on
+  exhaustion. Size database capacity using the separate request/device/worker
+  budgets in [self-hosting](../../docs/SELF-HOSTING.md#runtime-database-and-device-capacity).
 
 ### Database roles and network isolation
 
