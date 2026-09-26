@@ -90,7 +90,9 @@ export type SealedFetch = (
 export type SealedOutboundAccepted = Readonly<{ messageId: string; created: boolean }>;
 export type SealedInboundAccepted = Readonly<{ eventId: string; created: boolean }>;
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+// Envelope identities are opaque 16-byte values, rendered as lowercase UUID text.
+// The contract does not constrain their version or variant bits.
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 function acceptedFields(body: unknown, identity: "message_id" | "event_id", status: number): { id: string; created: boolean } {
   if (typeof body !== "object" || body === null || Array.isArray(body)) {
@@ -102,7 +104,7 @@ function acceptedFields(body: unknown, identity: "message_id" | "event_id", stat
     throw new SealedApiError("unexpected_response", status, false, `202 body must contain exactly ${identity} and created`);
   }
   const id = record[identity];
-  if (typeof id !== "string" || !UUID.test(id)) {
+  if (typeof id !== "string" || id.length !== 36 || !UUID.test(id)) {
     throw new SealedApiError("unexpected_response", status, false, `202 ${identity} is not a lowercase UUID`);
   }
   if (typeof record.created !== "boolean") {

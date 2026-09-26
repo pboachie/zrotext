@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { webcrypto } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
+import { parseDraftEnvelope } from "../dist/draft01.js";
 import { SealedApiError, SealedMessagePlaneClient, SEALED_CONTENT_TYPE, isRetryableSealedCode } from "../dist/msgplane-client.js";
 
 globalThis.crypto ??= webcrypto;
@@ -51,6 +52,17 @@ test("inbound upload targets the separate sealed inbound route and maps event_id
   assert.equal(transport.calls[0].url, "https://relay.example/v1/sealed/inbound-events");
   assert.equal(transport.calls[0].headers["content-type"], SEALED_CONTENT_TYPE);
   assert.deepEqual(transport.calls[0].body, inbound);
+});
+
+test("accepted identities preserve the vector event bytes without UUID version restrictions", async () => {
+  const hex = Buffer.from(parseDraftEnvelope(inbound).eventId).toString("hex");
+  const eventId = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  const transport = recordingTransport([jsonResponse(202, { event_id: eventId, created: false })]);
+  assert.deepEqual(await client(transport.fetchImpl).uploadInboundEvent(inbound), { eventId, created: false });
+  for (const messageId of ["1f0e5b0a-9c2d-7b6a-8e3f-7a1c2d4e5f60", "1f0e5b0a-9c2d-8b6a-8e3f-7a1c2d4e5f60"]) {
+    const accepted = recordingTransport([jsonResponse(202, { message_id: messageId, created: true })]);
+    assert.equal((await client(accepted.fetchImpl).submitOutbound(outbound)).messageId, messageId);
+  }
 });
 
 test("local bounded validation refuses non-envelope bodies before any transport call", async () => {
@@ -125,7 +137,8 @@ test("off-taxonomy statuses and malformed bodies are unexpected responses", asyn
 
 test("202 shape violations are refused: extra fields, missing fields, non-UUID identities", async () => {
   const cases = [
-    { message_id: "not-a-uuid", created: true },
+    ...["not-a-uuid", "1f0e5b0a9c2d4b6a8e3f7a1c2d4e5f60", "1f0e5b0a-9c2d-4b6a-8e3f-7a1c2d4e5f6g", "1f0e5b0a-9c2d-4b6a-8e3f-7a1c2d4e5f60\n", "1F0E5B0A-9C2D-4B6A-8E3F-7A1C2D4E5F60"]
+      .map((message_id) => ({ message_id, created: true })),
     { message_id: "1f0e5b0a-9c2d-4b6a-8e3f-7a1c2d4e5f60", created: true, extra: 1 },
     { created: true },
     { message_id: "1f0e5b0a-9c2d-4b6a-8e3f-7a1c2d4e5f60", created: "yes" },
