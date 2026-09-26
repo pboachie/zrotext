@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "note": "Machine-readable supported-device list for the ZROtext Android gateway. scripts/check_device_compatibility.py re-verifies this file against android/app/build.gradle.kts, the repository tree, and docs/DEVICE-COMPATIBILITY.md. Validation checks the consistency of recorded claims and that referenced tests exist; it does not run any device, emulator, or simulator.",
+  "statuses": ["supported", "partial", "excluded", "unevaluated"],
+  "sim_types": ["physical", "esim", "none", "unknown"],
+  "evidence_levels": ["physical", "emulator", "device-sim", "none"],
+  "devices": [
+    {
+      "id": "samsung-galaxy-s24-ultra",
+      "name": "Samsung Galaxy S24 Ultra (SM-S928U)",
+      "api": {"min": 36, "max": 36},
+      "sim": "unknown",
+      "status": "partial",
+      "evidence": "physical",
+      "tests": [],
+      "source": "docs/DEVICE-COMPATIBILITY.md",
+      "notes": "One controlled physical run on Android 16 recorded in the source document: one authorized send with positive sent and delivery callbacks and recipient confirmation, one captured inbound upload, a roughly 275-second screen-off socket run, and recovery after a loopback TLS proxy cut. This is a manual record, not a repeatable repository test, so the status stays partial. The record states one active SIM without stating physical SIM or eSIM."
+    },
+    {
+      "id": "emulator-api-28",
+      "name": "Android Virtual Device, API 28 (Android 9)",
+      "api": {"min": 28, "max": 28},
+      "sim": "none",
+      "status": "supported",
+      "evidence": "emulator",
+      "tests": [
+        "android/app/src/androidTest/java/org/zrotext/gateway/ForegroundRefusalDeviceTest.kt",
+        "android/app/src/androidTest/java/org/zrotext/gateway/StaleEvidenceVirtualDeviceTest.kt",
+        "android/app/src/androidTest/java/org/zrotext/gateway/VirtualInboundSmsDeviceTest.kt",
+        "android/tools/virtual_inbound_sms.py"
+      ],
+      "source": "docs/ANDROID-TESTING.md",
+      "notes": "Supported as a virtual regression environment: the foreground-refusal and stale-evidence suites and the virtual inbound receiver check run on API 28 emulators. An emulator proves nothing about carrier delivery, OEM power management, or Keystore hardware behavior, and is not a production gateway."
+    },
+    {
+      "id": "emulator-api-34-plus",
+      "name": "Android Virtual Device, API 34 or later",
+      "api": {"min": 34, "max": 36},
+      "sim": "none",
+      "status": "supported",
+      "evidence": "emulator",
+      "tests": [
+        "android/app/src/androidTest/java/org/zrotext/gateway/ForegroundRefusalDeviceTest.kt",
+        "android/app/src/androidTest/java/org/zrotext/gateway/StaleEvidenceVirtualDeviceTest.kt",
+        "android/app/src/androidTest/java/org/zrotext/gateway/VirtualInboundSmsDeviceTest.kt",
+        "android/tools/virtual_inbound_sms.py"
+      ],
+      "source": "docs/ANDROID-TESTING.md",
+      "notes": "The same suites on API 34 or later emulators. The recorded upper bound follows the app targetSdk, the newest Android level the app targets and has exercised; levels above it are unevaluated. The virtual inbound check does not pin one API level. Emulator evidence does not cover carrier behavior or real hardware."
+    },
+    {
+      "id": "host-delivery-simulator",
+      "name": "Host delivery simulator (zrotext-device-sim)",
+      "api": null,
+      "sim": "none",
+      "status": "supported",
+      "evidence": "device-sim",
+      "tests": ["crates/device-sim/src/main.rs"],
+      "source": "crates/device-sim/src/main.rs",
+      "notes": "The deterministic two-hub fault model with inline Rust tests and a simulator-timeline run in the CI rust job. It models writer and radio-ambiguity decisions on the host and represents no phone hardware, Android level, SIM, or carrier, so it carries no API range."
+    },
+    {
+      "id": "devices-below-api-28",
+      "name": "Android devices below API 28",
+      "api": null,
+      "sim": "unknown",
+      "status": "excluded",
+      "evidence": "none",
+      "tests": [],
+      "source": "docs/DEVICE-COMPATIBILITY.md",
+      "notes": "The gateway requires Android 9 (API 28) or later, and the Gradle minSdk enforces the same floor by construction. No per-model testing exists below that line."
+    },
+    {
+      "id": "other-physical-oem",
+      "name": "Other physical OEM models",
+      "api": null,
+      "sim": "unknown",
+      "status": "unevaluated",
+      "evidence": "none",
+      "tests": [],
+      "source": "docs/DEVICE-COMPATIBILITY.md",
+      "notes": "No comparison OEM, for example a Pixel, has been exercised. The not-yet-tested list in the source document records this gap."
+    },
+    {
+      "id": "esim-only-devices",
+      "name": "eSIM-only devices",
+      "api": null,
+      "sim": "esim",
+      "status": "unevaluated",
+      "evidence": "none",
+      "tests": [],
+      "source": "docs/DEVICE-COMPATIBILITY.md",
+      "notes": "No eSIM line has been exercised. The single physical record states one active SIM without naming its type."
+    }
+  ]
+}
