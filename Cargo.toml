@@ -11,3 +11,15 @@ license = "AGPL-3.0-only"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 uuid = { version = "1.18.1", features = ["serde", "v4"] }
+
+# Test-only build-profile override: the dev profile compiles dependencies at
+# opt-level 0, and the auth-heavy test suites pay ~2.6s per argon2id hash
+# instead of ~0.08s (~32x) plus a several-fold p256 penalty (measured locally,
+# 2026-09-26; exact factors vary by toolchain). Release builds are unaffected,
+# and dev-profile debug assertions and overflow checks stay enabled because
+# only opt-level is overridden here.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.p256]
+opt-level = 3
