@@ -61,6 +61,7 @@ enum MeteringTime {
 const MAX_PENDING_PER_DEVICE: i64 = 16;
 const MAX_PENDING_PER_ACCOUNT: i64 = 128;
 const MAX_ALPHA_EXPIRY_MS: i64 = 15 * 60 * 1000;
+const RADIO_CLOCK_SKEW_MS: i64 = 5 * 60 * 1000;
 
 pub struct NewMessage<'a> {
     pub account_id: Uuid,
@@ -1065,13 +1066,17 @@ impl<'a> DeliveryStore<'a> {
         }
         let attempt = tx
             .query_opt(
-                "SELECT id FROM message_attempts WHERE id=$1 AND account_id=$2 AND message_id=$3 AND device_id=$4 FOR UPDATE",
+                "SELECT (extract(epoch FROM created_at)*1000)::bigint, \
+                 (extract(epoch FROM clock_timestamp())*1000)::bigint \
+                 FROM message_attempts WHERE id=$1 AND account_id=$2 AND message_id=$3 AND device_id=$4 FOR UPDATE",
                 &[&event.attempt_id, &event.account_id, &event.message_id, &event.device_id],
             )
-            .await?;
-        if attempt.is_none() {
-            return Err(StoreError::StaleFence);
-        }
+            .await?
+            .ok_or(StoreError::StaleFence)?;
+        // Bound new evidence before converting its timestamp in PostgreSQL.
+        // Use the writer clock and original attempt, not a rolling age limit:
+        // a retained attempt can still reconcile a long-offline callback.
+        validate_radio_timestamp(event.observed_at_ms, attempt.get(0), attempt.get(1))?;
         // A no-submit proof releases the attempt's fence. Later evidence with
         // a fresh event ID must not change a replacement attempt's message.
         // Keep exact receipt replays above this check and allow late callbacks
@@ -1449,6 +1454,20 @@ fn request_digest(input: &NewMessage<'_>) -> Vec<u8> {
     hash.update(input.synthetic_payload);
     hash.update(input.expires_at_ms.to_be_bytes());
     hash.finalize().to_vec()
+}
+
+fn validate_radio_timestamp(
+    observed_at_ms: i64,
+    attempt_created_ms: i64,
+    now_ms: i64,
+) -> Result<(), StoreError> {
+    if observed_at_ms <= 0
+        || observed_at_ms < attempt_created_ms.saturating_sub(RADIO_CLOCK_SKEW_MS)
+        || observed_at_ms > now_ms.saturating_add(RADIO_CLOCK_SKEW_MS)
+    {
+        return Err(StoreError::InvalidInput);
+    }
+    Ok(())
 }
 
 fn radio_event_digest(event: &RadioEvent, code: &str) -> Vec<u8> {
