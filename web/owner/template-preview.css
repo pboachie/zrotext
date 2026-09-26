@@ -5,3 +5,5 @@ textarea { box-sizing: border-box; width: 100%; padding: .65rem; border: 1px sol
 textarea:focus-visible { outline: 3px solid #b56516; outline-offset: 2px; }
 #output { white-space: pre-wrap; overflow-wrap: anywhere; min-height: 3rem; font: inherit; user-select: text; }
 @media (prefers-color-scheme: dark) { textarea { background: #14232c; color: #e7f0f2; border-color: #879ea7; } }
+
+[hidden] { display: none !important; }

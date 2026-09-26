@@ -18,12 +18,16 @@
     say("output", "");
     say("preview-status", "");
   }
+  function conceal(hidden) {
+    for (const id of ["editor", "output", "preview-status"]) byId(id).hidden = hidden;
+  }
   function lock(message) {
     epoch++;
     pending?.abort();
     pending = null;
     owner = ownerCookie = null;
     clearText();
+    conceal(false);
     byId("editor").disabled = true;
     byId("sign-out").disabled = true;
     say("session-status", message);
@@ -52,6 +56,7 @@
       if (owner !== identity || ownerCookie !== proof) clearText();
       owner = identity;
       ownerCookie = proof;
+      conceal(false);
       byId("editor").disabled = false;
       byId("sign-out").disabled = false;
       say("session-status", "Signed in. Preview text stays in this page.");
@@ -100,6 +105,18 @@
       signingOut = false;
     }
   }
+  function hide() {
+    active = false;
+    epoch++;
+    pending?.abort();
+    pending = null;
+    clearInterval(timer);
+    timer = null;
+    byId("editor").disabled = true;
+    byId("sign-out").disabled = true;
+    conceal(true);
+    say("session-status", "Preview hidden until sign-in is checked again.");
+  }
   function suspend() {
     active = false;
     clearInterval(timer);
@@ -126,7 +143,7 @@
   window.addEventListener("pagehide", suspend);
   window.addEventListener("beforeunload", suspend);
   window.addEventListener("pageshow", resume);
-  document.addEventListener("visibilitychange", () => document.hidden ? suspend() : resume());
+  document.addEventListener("visibilitychange", () => document.hidden ? hide() : resume());
   clearText();
   resume();
 })();

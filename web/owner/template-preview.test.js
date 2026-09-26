@@ -161,16 +161,55 @@ test("a cookie change during authentication cannot authorize old text", async ()
   assert.equal(p.element("editor").disabled, true);
 });
 
-test("tab hiding, unload, and periodic session loss erase the page", async () => {
-  for (const action of ["hide", "unload", "poll"]) {
+test("unload and periodic session loss erase the page", async () => {
+  for (const action of ["unload", "poll"]) {
     const p = await page();
     p.enter("template", "private fixture");
     await p.click("preview");
-    if (action === "hide") { p.document.hidden = true; p.documentEvents.visibilitychange(); }
-    else if (action === "unload") p.windowEvents.beforeunload();
+    if (action === "unload") p.windowEvents.beforeunload();
     else { p.reply(response({}, 401)); await [...p.intervals.values()][0](); }
     assert.equal(p.element("template").value, "");
     assert.equal(p.element("output").textContent, "");
     assert.equal(p.element("editor").disabled, true);
+  }
+});
+
+
+test("switching tabs preserves a hidden draft only after the same session is verified", async () => {
+  const p = await page();
+  p.enter("template", "Hello {{name}}"); p.enter("substitutions", "name=Alex");
+  await p.click("preview");
+  p.document.hidden = true; p.documentEvents.visibilitychange();
+  assert.equal(p.element("editor").disabled, true);
+  assert.equal(p.element("editor").hidden, true);
+  assert.equal(p.element("output").hidden, true);
+  assert.equal(p.intervals.size, 0);
+  const check = deferred(); p.reply(check.promise);
+  p.document.hidden = false; p.documentEvents.visibilitychange();
+  assert.equal(p.element("editor").hidden, true);
+  check.resolve(response(p.session())); await tick();
+  assert.equal(p.element("editor").disabled, false);
+  assert.equal(p.element("editor").hidden, false);
+  assert.equal(p.element("template").value, "Hello {{name}}");
+  assert.equal(p.element("substitutions").value, "name=Alex");
+  assert.equal(p.element("output").textContent, "Hello Alex");
+});
+
+test("owner changes and revocation while hidden clear drafts before revealing the editor", async () => {
+  for (const action of ["owner", "revoke", "cookie"]) {
+    const p = await page();
+    p.enter("template", "private fixture"); await p.click("preview");
+    const stale = deferred(); p.reply(stale.promise);
+    const pending = p.click("check-session");
+    p.document.hidden = true; p.documentEvents.visibilitychange();
+    stale.resolve(response(p.session())); await pending;
+    assert.equal(p.element("editor").hidden, true);
+    if (action === "owner") p.changeOwner();
+    else if (action === "cookie") p.document.cookie = "__Host-zrotext_csrf=ztc_new_synthetic";
+    else p.reply(response({}, 401));
+    p.document.hidden = false; p.documentEvents.visibilitychange(); await tick();
+    assert.equal(p.element("template").value, "");
+    assert.equal(p.element("output").textContent, "");
+    assert.equal(p.element("editor").disabled, action === "revoke");
   }
 });

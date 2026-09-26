@@ -47,7 +47,11 @@ check, not by a push notification.
 Text is held only in the page's DOM and short-lived JavaScript values. The app
 uses no storage, analytics or content requests. The only API calls are the existing
 session check and optional sign-out (which has no body). Inputs and output clear
-on sign-out, navigation, tab hiding, or a detected session change/loss. Returning
+on sign-out, navigation, or a detected session change/loss. Switching tabs suspends
+polling and hides and disables the editor and output, retaining the draft only in
+page memory. Returning rechecks access before showing anything: only the exact
+same account, owner, session and CSRF cookie can retain that draft. A changed or
+failed session check clears it before unlocking or showing the page. Returning
 from browser history starts empty and rechecks access; older asynchronous results
 cannot restore text from a previous owner. This is application-level clearing,
 not a secure erasure guarantee for browser or operating-system memory.
