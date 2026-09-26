@@ -58,6 +58,9 @@ pub(super) struct LineSummary {
     device_id: Option<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     device_name: Option<String>,
+    /// The bound phone was revoked; the line needs activating on another phone.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    device_revoked: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     approved_at_ms: Option<i64>,
     created_at_ms: i64,
@@ -213,7 +216,8 @@ pub(super) async fn list(
         .query(
             "SELECT l.id,l.state,l.current_binding_generation,b.purpose,b.device_id,d.display_name, \
                (extract(epoch FROM l.approved_at)*1000)::bigint, \
-               (extract(epoch FROM l.created_at)*1000)::bigint \
+               (extract(epoch FROM l.created_at)*1000)::bigint, \
+               CASE WHEN d.id IS NULL THEN NULL ELSE d.revoked_at IS NOT NULL END \
              FROM phone_lines l \
              LEFT JOIN device_line_bindings b ON (b.account_id,b.line_id,b.generation) \
                =(l.account_id,l.id,l.current_binding_generation) AND b.state='active' \
@@ -236,6 +240,7 @@ pub(super) async fn list(
             purpose: row.get(3),
             device_id: row.get(4),
             device_name: row.get(5),
+            device_revoked: row.get(8),
             approved_at_ms: row.get(6),
             created_at_ms: row.get(7),
         })

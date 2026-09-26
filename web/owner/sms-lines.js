@@ -155,14 +155,27 @@ async function revokeKey(mfaCode) {
 }
 
 let lineCursor = null;
+let linesLoading = false;
 
 function lineLabel(line) {
-  const phone = line.device_name ? ` on ${line.device_name}` : "";
+  const revoked = line.device_revoked ? " (phone revoked; activate it on another phone)" : "";
+  const phone = line.device_name ? ` on ${line.device_name}${revoked}` : "";
   const scope = line.purpose ? ` (${line.purpose})` : "";
   return `${line.line_id.slice(0, 8)}… ${line.state}${phone}${scope}, generation ${line.generation}`;
 }
 
 async function loadLines(more = false) {
+  // One request at a time, so a double click cannot append the same page twice.
+  if (linesLoading) return;
+  linesLoading = true;
+  try {
+    await loadLinePage(more);
+  } finally {
+    linesLoading = false;
+  }
+}
+
+async function loadLinePage(more) {
   const query = more && lineCursor ? `?before=${encodeURIComponent(lineCursor)}` : "";
   const page = await api(`/v1/auth/sms-lines${query}`);
   const items = page.lines.map((line) => {

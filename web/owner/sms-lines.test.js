@@ -295,7 +295,8 @@ test("the owner sees their lines and can pick one to activate", async () => {
   const page = await smsLinesPage({ linePages: new Map([
     ["", { lines: [{ line_id: LINE_A, state: "active", generation: 2, purpose: "sms", device_id: DEVICE,
       device_name: "Pixel", approved_at_ms: 1, created_at_ms: 2 }], next_cursor: LINE_A }],
-    [LINE_A, { lines: [{ line_id: LINE_B, state: "pending", generation: 0, created_at_ms: 1 }], next_cursor: null }],
+    [LINE_A, { lines: [{ line_id: LINE_B, state: "active", generation: 1, purpose: "sms", device_id: DEVICE,
+      device_name: "Old phone", device_revoked: true, created_at_ms: 1 }], next_cursor: null }],
   ]) });
   const list = page.element("line-list");
   assert.equal(page.element("lines").hidden, false);
@@ -307,7 +308,7 @@ test("the owner sees their lines and can pick one to activate", async () => {
   await page.click("line-more");
   assert.equal(page.server.lineRequests.at(-1), `/v1/auth/sms-lines?before=${LINE_A}`);
   assert.equal(list.children.length, 2);
-  assert.match(list.children[1].children[0].textContent, /pending, generation 0/);
+  assert.match(list.children[1].children[0].textContent, /Old phone \(phone revoked; activate it on another phone\)/);
   assert.equal(page.element("line-more").hidden, true);
 });
 

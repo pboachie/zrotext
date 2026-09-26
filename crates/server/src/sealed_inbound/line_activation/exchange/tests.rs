@@ -669,6 +669,7 @@ async fn postgres_sms_line_activation_exchange_binds_owner_device_and_live_sessi
     assert_eq!(lines[1]["purpose"], "sms");
     assert_eq!(lines[1]["device_id"], serde_json::json!(device));
     assert_eq!(lines[1]["device_name"], "virtual sms device");
+    assert_eq!(lines[1]["device_revoked"], false);
     assert!(lines[1]["approved_at_ms"].is_i64());
     // Cursor paging stays in the account and ends after the oldest line.
     let page_two = json(
