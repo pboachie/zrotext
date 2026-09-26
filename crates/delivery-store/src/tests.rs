@@ -213,6 +213,179 @@ fn admission_fixture_tracks_numbered_migrations() {
 
 #[tokio::test]
 #[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn radio_timestamp_rejection_preserves_state_and_accepts_offline_evidence() {
+    let url = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL")
+        .expect("set ZT_DELIVERY_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let (mut client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let schema = format!("radio_time_test_{}", Uuid::new_v4().simple());
+    client
+        .batch_execute(&format!(
+            "CREATE SCHEMA {schema}; SET search_path TO {schema}"
+        ))
+        .await
+        .unwrap();
+    apply_test_migrations(&client).await;
+    let account_id = Uuid::new_v4();
+    let device_id = Uuid::new_v4();
+    let message_id = Uuid::new_v4();
+    client
+        .execute("INSERT INTO accounts(id) VALUES($1)", &[&account_id])
+        .await
+        .unwrap();
+    client
+        .execute(
+            "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'synthetic phone')",
+            &[&device_id, &account_id],
+        )
+        .await
+        .unwrap();
+    client
+        .execute("UPDATE deployment_authority SET dispatch_enabled=TRUE", &[])
+        .await
+        .unwrap();
+    let mut store = DeliveryStore::new(&mut client);
+    store
+        .accept(NewMessage {
+            account_id,
+            device_id,
+            client_message_id: message_id,
+            idempotency_key: "radio-time",
+            recipient_e164: "+15551234567",
+            synthetic_payload: b"synthetic regression",
+            expires_at_ms: now_ms() + 60_000,
+        })
+        .await
+        .unwrap();
+    let session = store
+        .connect_session(account_id, device_id, "test", "test", 60)
+        .await
+        .unwrap();
+    let claim = store
+        .claim_due_for_device("test", account_id, device_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let attempt_id = Uuid::new_v4();
+    store
+        .issue_grant(&claim, &session, attempt_id)
+        .await
+        .unwrap();
+    let event = RadioEvent {
+        event_id: Uuid::new_v4(),
+        account_id,
+        device_id,
+        message_id,
+        attempt_id,
+        evidence: Evidence::DurableSubmitIntent,
+        observed_at_ms: now_ms(),
+        segment_index: None,
+        segment_count: None,
+    };
+    for observed_at_ms in [
+        i64::MIN,
+        0,
+        1,
+        now_ms() - 600_000,
+        now_ms() + 600_000,
+        i64::MAX,
+    ] {
+        assert!(
+            matches!(
+                store
+                    .record_radio_event(RadioEvent {
+                        observed_at_ms,
+                        ..event
+                    })
+                    .await,
+                Err(StoreError::InvalidInput)
+            ),
+            "timestamp {observed_at_ms}"
+        );
+    }
+    assert_eq!(
+        store
+            .status(account_id, message_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        MessageState::Claimed
+    );
+    let events: i64 = client
+        .query_one(
+            "SELECT count(*) FROM message_events WHERE attempt_id=$1",
+            &[&attempt_id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(events, 0);
+
+    // A long-offline phone is bounded by its original attempt, not today's date.
+    client
+        .execute(
+            "UPDATE message_attempts SET created_at=now()-interval '30 days' WHERE id=$1",
+            &[&attempt_id],
+        )
+        .await
+        .unwrap();
+    let offline = RadioEvent {
+        observed_at_ms: now_ms() - 29 * 24 * 60 * 60 * 1000,
+        ..event
+    };
+    assert_eq!(
+        DeliveryStore::new(&mut client)
+            .record_radio_event(offline)
+            .await
+            .unwrap(),
+        MessageState::Submitting
+    );
+    assert_eq!(
+        DeliveryStore::new(&mut client)
+            .record_radio_event(offline)
+            .await
+            .unwrap(),
+        MessageState::Submitting
+    );
+    let events: i64 = client
+        .query_one(
+            "SELECT count(*) FROM message_events WHERE attempt_id=$1",
+            &[&attempt_id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(events, 1, "exact replay must not create another event");
+    client
+        .batch_execute(&format!(
+            "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
+        ))
+        .await
+        .unwrap();
+}
+
+#[test]
+fn radio_timestamp_window_includes_both_clock_skew_boundaries() {
+    let now = 1_700_000_000_000;
+    let created = now - 60_000;
+    let lower = created - RADIO_CLOCK_SKEW_MS;
+    let upper = now + RADIO_CLOCK_SKEW_MS;
+    for timestamp in [lower, created, now, upper] {
+        assert!(validate_radio_timestamp(timestamp, created, now).is_ok());
+    }
+    for timestamp in [i64::MIN, 0, lower - 1, upper + 1, i64::MAX] {
+        assert!(matches!(
+            validate_radio_timestamp(timestamp, created, now),
+            Err(StoreError::InvalidInput)
+        ));
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn released_attempt_cannot_change_a_new_grant() {
     let url = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL")
         .expect("set ZT_DELIVERY_TEST_DATABASE_URL for PostgreSQL-backed tests");

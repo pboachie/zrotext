@@ -58,6 +58,16 @@ fn stale_radio_replay_after_retention_has_permanent_close_only_for_current_sessi
 }
 
 #[test]
+fn invalid_radio_timestamp_is_permanently_rejected() {
+    for current_session in [true, false] {
+        assert_eq!(
+            radio_evidence_close_code(&StoreError::InvalidInput, current_session),
+            EVIDENCE_REJECTED
+        );
+    }
+}
+
+#[test]
 fn inbound_invalid_content_is_permanent_but_storage_failure_is_retryable() {
     assert_eq!(
         inbound_evidence_close_code(&InboundError::InvalidSignature),
