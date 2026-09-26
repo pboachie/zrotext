@@ -574,6 +574,7 @@ pub fn router(state: AuthHttpState) -> Router {
             "/sms-line-owner-keys/{fingerprint}",
             delete(sms_owner_keys::revoke),
         )
+        .route("/sms-lines", get(sms_lines::list))
         .route("/sms-lines/{line_id}/activations", post(sms_lines::open))
         .route(
             "/sms-lines/{line_id}/activations/{challenge_id}",

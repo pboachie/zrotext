@@ -127,6 +127,11 @@ challenge is superseded, revoked or has been expired for 15 minutes. Stored
 proofs, recorded acknowledgements and cleared nonces are write-once in the
 database. The server never receives the owner's private key.
 
+`GET /v1/auth/sms-lines` lists the owner's lines, newest first and 50 per page
+(`?before=<line_id>` for the next page), with each line's state, current
+generation, and the phone and scope of its active binding. It needs the owner
+session and CSRF header and is disabled along with the exchange.
+
 The current PostgreSQL tests use synthetic keys and declared subscription
 values. The Android gateway answers a pushed challenge only for API 29+ with
 exactly one selected, active physical SIM, keeps the prepared proof in memory,
