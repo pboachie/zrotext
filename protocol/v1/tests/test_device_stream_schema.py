@@ -56,6 +56,13 @@ class DeviceStreamSchemaTest(unittest.TestCase):
         self.assertFalse(self.validator.is_valid({**frame, "attempt_id": frame["event_id"]}))
         self.assertFalse(self.validator.is_valid({**ack, "suppression_cleared": True}))
 
+    def test_radio_timestamp_requires_a_positive_observation(self):
+        frame = next(frame for frame in self.frames if frame["type"] == "radio_event")
+        for observed_at_ms in (-1, 0):
+            self.assertFalse(self.validator.is_valid({**frame, "observed_at_ms": observed_at_ms}))
+        # Dynamic attempt/database clock bounds are exercised by delivery-store.
+        self.assertTrue(self.validator.is_valid({**frame, "observed_at_ms": 1}))
+
 
 if __name__ == "__main__":
     unittest.main()
