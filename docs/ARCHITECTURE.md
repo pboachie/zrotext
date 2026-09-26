@@ -93,12 +93,12 @@ Index queue due times and `(account_id, created_at DESC, id)`. Cursor pagination
 ## Message semantics and the duplicate-send problem
 
 ```text
-accepted â†’ queued â†’ claimed â†’ submitting â†’ submitted â†’ delivered
-                    â”‚           â”‚              â”œâ”€â”€ failed
-                    â”‚           â””â”€â”€ unknown    â””â”€â”€ delivery_unknown
-                    â””â”€â”€ queued (only with evidence no submit began)
-accepted/queued â†’ cancelled | expired | failed
-inbound: received â†’ stored â†’ webhook_pending â†’ webhook_acked
+accepted → queued → claimed → submitting → submitted → delivered
+                    │           │              ├── failed
+                    │           └── unknown    └── delivery_unknown
+                    └── queued (only with evidence no submit began)
+accepted/queued → cancelled | expired | failed
+inbound: received → stored → webhook_pending → webhook_acked
 ```
 
 `submitted` requires a successful Android sent callback; it does not mean delivered. If all required segment delivery callbacks succeed, show `delivered`. If the carrier/device provides no delivery receipt, show `delivery_unknown` after the display timeout while preserving the submission fact. Multipart partial submission has an explicit error/result object; do not resend the entire body automatically.
@@ -234,7 +234,7 @@ User-initiated gateway mode, persistent visible notification with Pause, explici
 
 Use P-256 device signing keys in Android Keystore, with capability-tested StrongBox preference and explicit fallback metadata. Content encryption keys are distinct. Android documents a limited StrongBox algorithm set; portable Ed25519 hardware storage cannot be assumed. [Keystore](https://developer.android.com/privacy-and-security/keystore)
 
-Android background execution depends on platform and device policy. `dataSync` is not a perpetual-connection loophole on modern Android. Periodic WorkManager is recovery work, not a real-time heartbeat. APK sideloading does not remove operating-system restrictions. The gateway targets dedicated devices; any wake-only push option would carry no message content. [Timeouts](https://developer.android.com/develop/background-work/services/fgs/timeout) Â· [WorkManager](https://developer.android.com/develop/background-work/background-tasks/persistent/getting-started/define-work) Â· [Play permissions](https://support.google.com/googleplay/android-developer/answer/10208820)
+Android background execution depends on platform and device policy. `dataSync` is not a perpetual-connection loophole on modern Android. Periodic WorkManager is recovery work, not a real-time heartbeat. APK sideloading does not remove operating-system restrictions. The gateway targets dedicated devices; any wake-only push option would carry no message content. [Timeouts](https://developer.android.com/develop/background-work/services/fgs/timeout) · [WorkManager](https://developer.android.com/develop/background-work/background-tasks/persistent/getting-started/define-work) · [Play permissions](https://support.google.com/googleplay/android-developer/answer/10208820)
 
 ## Webhooks, billing, operations
 
