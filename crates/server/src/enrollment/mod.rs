@@ -133,10 +133,10 @@ pub(crate) const OWNER_DEVICE_STATUS_QUERY: &str = "WITH page AS MATERIALIZED ( 
              SELECT page.id,page.display_name,page.revoked,page.active_socket_lease, \
                (SELECT count(*) FROM (SELECT 1 FROM messages m \
                  WHERE m.account_id=$1 AND m.device_id=page.id \
-                   AND m.state IN ('accepted','queued','claimed') LIMIT $4) pending), \
+                   AND m.state IN ('accepted','queued','claimed') ORDER BY m.state,m.created_at LIMIT $4) pending), \
                (SELECT count(*) FROM (SELECT 1 FROM messages m \
                  WHERE m.account_id=$1 AND m.device_id=page.id \
-                   AND m.state IN ('submitting','submitted') LIMIT $4) in_flight), \
+                   AND m.state IN ('submitting','submitted') ORDER BY m.state,m.created_at LIMIT $4) in_flight), \
                (extract(epoch FROM statement_timestamp())*1000)::bigint \
              FROM page ORDER BY page.created_at DESC,page.id DESC";
 

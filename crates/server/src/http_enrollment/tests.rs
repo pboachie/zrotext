@@ -44,7 +44,7 @@ pub(super) async fn json_response(response: Response) -> Value {
     serde_json::from_slice(&body).unwrap()
 }
 
-pub(super) async fn apply_migrations(admin: &Client) {
+async fn apply_migrations(admin: &Client) {
     for sql in [
         include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
         include_str!("../../../../deploy/compose/migrations/002_auth.sql"),

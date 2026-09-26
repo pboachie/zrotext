@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-use super::tests::{apply_migrations, json_response, request};
+use super::tests::{json_response, request};
 use super::*;
 use crate::auth::{login, register, verify_email};
 use axum::http::Method;
@@ -20,7 +20,7 @@ async fn owner_queue_counts_are_bounded_tenant_scoped_and_preserve_writer_states
     ))
     .await
     .unwrap();
-    apply_migrations(&db).await;
+    apply_queue_schema(&db).await;
     let hasher = Arc::new(TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
     let mut owners = Vec::new();
     for label in ["queue-a", "queue-b"] {
@@ -104,7 +104,7 @@ async fn owner_queue_counts_are_bounded_tenant_scoped_and_preserve_writer_states
         assert!(status.get(private).is_none());
     }
     // A large final history must not make these active-state probes scan it.
-    db.execute("INSERT INTO messages(id,account_id,device_id,recipient_e164,recipient_digest,transport_mode,transport_payload,request_digest,state,expires_at) SELECT md5('history-'||g)::uuid,$1,$2,'+15551234567',decode(repeat('11',32),'hex'),'synthetic_alpha',decode('01','hex'),decode(repeat('22',32),'hex'),'delivered',now() FROM generate_series(1,10000) g", &[account, device]).await.unwrap();
+    db.execute("INSERT INTO messages(id,account_id,device_id,recipient_e164,recipient_digest,transport_mode,transport_payload,request_digest,state,expires_at) SELECT md5('history-'||g)::uuid,$1,$2,'+15551234567',decode(repeat('11',32),'hex'),'synthetic_alpha',decode('01','hex'),decode(repeat('22',32),'hex'),'delivered',now() FROM generate_series(1,200000) g", &[account, device]).await.unwrap();
     db.batch_execute("ANALYZE messages; ANALYZE devices")
         .await
         .unwrap();
@@ -126,7 +126,7 @@ async fn owner_queue_counts_are_bounded_tenant_scoped_and_preserve_writer_states
     assert!(!plan.contains("Seq Scan on messages"), "{plan}");
     // The two categories are capped independently; final/uncertain states do
     // not contribute. A revoked device retains its observed state counts.
-    db.execute("INSERT INTO messages(id,account_id,device_id,recipient_e164,recipient_digest,transport_mode,transport_payload,request_digest,state,expires_at) SELECT md5('in-flight-'||g)::uuid,$1,$2,'+15551234567',decode(repeat('11',32),'hex'),'synthetic_alpha',decode('01','hex'),decode(repeat('22',32),'hex'),'submitted',now() FROM generate_series(1,1005) g", &[account, device]).await.unwrap();
+    db.execute("INSERT INTO messages(id,account_id,device_id,recipient_e164,recipient_digest,transport_mode,transport_payload,request_digest,state,expires_at) SELECT md5('in-flight-'||g)::uuid,$1,$2,'+15551234567',decode(repeat('11',32),'hex'),'synthetic_alpha',decode('01','hex'),decode(repeat('22',32),'hex'),'submitted',now() FROM generate_series(1,100000) g", &[account, device]).await.unwrap();
     db.execute("UPDATE devices SET revoked_at=now() WHERE id=$1", &[device])
         .await
         .unwrap();
@@ -134,7 +134,7 @@ async fn owner_queue_counts_are_bounded_tenant_scoped_and_preserve_writer_states
     assert_eq!(capped["devices"][0]["pending_messages"], 3);
     assert_eq!(capped["devices"][0]["in_flight_messages"], 1_000);
     assert_eq!(capped["devices"][0]["revoked"], true);
-    db.execute("INSERT INTO messages(id,account_id,device_id,recipient_e164,recipient_digest,transport_mode,transport_payload,request_digest,state,expires_at) SELECT md5('pending-'||g)::uuid,$1,$2,'+15551234567',decode(repeat('11',32),'hex'),'synthetic_alpha',decode('01','hex'),decode(repeat('22',32),'hex'),'queued',now() FROM generate_series(1,1005) g", &[account, device]).await.unwrap();
+    db.execute("INSERT INTO messages(id,account_id,device_id,recipient_e164,recipient_digest,transport_mode,transport_payload,request_digest,state,expires_at) SELECT md5('pending-'||g)::uuid,$1,$2,'+15551234567',decode(repeat('11',32),'hex'),'synthetic_alpha',decode('01','hex'),decode(repeat('22',32),'hex'),'queued',now() FROM generate_series(1,100000) g", &[account, device]).await.unwrap();
     let both_capped = json_response(app.clone().oneshot(get()).await.unwrap()).await;
     assert_eq!(both_capped["devices"][0]["pending_messages"], 1_000);
     assert_eq!(both_capped["devices"][0]["in_flight_messages"], 1_000);
@@ -169,6 +169,17 @@ async fn owner_queue_counts_are_bounded_tenant_scoped_and_preserve_writer_states
         2,
         "{capped_plan}"
     );
+    assert_eq!(
+        capped_plan
+            .lines()
+            .filter(
+                |line| line.contains("Index Scan using messages_device_state")
+                    && line.contains("rows=1000 loops=1")
+            )
+            .count(),
+        2,
+        "{capped_plan}"
+    );
     let other = &owners[1].2;
     let page = json_response(
         app.clone()
@@ -199,4 +210,31 @@ async fn owner_queue_counts_are_bounded_tenant_scoped_and_preserve_writer_states
     ))
     .await
     .unwrap();
+}
+
+// Exercise the production index choices after every current migration, including
+// the indexes normally prepared online by the migrator before validation.
+async fn apply_queue_schema(db: &Client) {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/compose/migrations");
+    let mut paths = std::fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "sql"))
+        .collect::<Vec<_>>();
+    paths.sort();
+    for path in paths {
+        match path.file_name().unwrap().to_str().unwrap() {
+            "034_delivery_sweep_index.sql" => {
+                db.batch_execute("CREATE INDEX messages_in_flight_updated ON messages(updated_at,id) WHERE state IN ('claimed','submitting','submitted')").await.unwrap();
+            }
+            "040_radio_evidence_index.sql" => {
+                db.batch_execute("CREATE INDEX message_events_attempt_evidence ON message_events(attempt_id,evidence_code)").await.unwrap();
+            }
+            _ => {}
+        }
+        db.batch_execute(&std::fs::read_to_string(path).unwrap())
+            .await
+            .unwrap();
+    }
 }
