@@ -42,6 +42,8 @@ use uuid::Uuid;
 use zrotext_delivery_store::{DeliveryStore, GrantRecord, RadioEvent, SessionRecord, StoreError};
 use zrotext_domain::{Evidence, MessageState};
 
+mod preconditions;
+
 const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
 // Whole pre-session phase, from the upgrade request through proof verification,
 // including storage work. Each of hello and proof still has `AUTH_TIMEOUT`.
@@ -145,6 +147,14 @@ enum ClientFrame {
     },
     #[serde(rename = "heartbeat")]
     Heartbeat { v: u8 },
+    #[serde(rename = "device_status")]
+    DeviceStatus {
+        v: u8,
+        connection_epoch: i64,
+        selected_sim: preconditions::SelectedSim,
+        sms_permission: preconditions::SmsPermission,
+        airplane_mode: preconditions::AirplaneMode,
+    },
     #[serde(rename = "alpha_ready")]
     AlphaReady {
         v: u8,
@@ -400,6 +410,7 @@ async fn upgrade(
     };
     let deadline = tokio::time::Instant::now() + admission.handshake_deadline;
     websocket
+        .protocols([preconditions::PROTOCOL])
         .max_message_size(MAX_FRAME_BYTES)
         .max_frame_size(MAX_FRAME_BYTES)
         .on_upgrade(move |socket| run_socket(socket, state, admission, handshake_slot, deadline))
@@ -643,6 +654,10 @@ async fn run_socket(
     handshake_slot: OwnedSemaphorePermit,
     deadline: tokio::time::Instant,
 ) {
+    let status_negotiated = socket
+        .protocol()
+        .is_some_and(|value| value == preconditions::PROTOCOL);
+    let mut status_budget = preconditions::ReportBudget::default();
     let mut frame_budget = FrameBudget::new(Instant::now());
     let authenticated = timeout_at(
         deadline,
@@ -736,6 +751,25 @@ async fn run_socket(
         tokio::select! {
             message = receive_frame(&mut socket, &mut frame_budget) => {
                 match message {
+                    Some(ClientFrame::DeviceStatus { v: 1, connection_epoch, selected_sim, sms_permission, airplane_mode }) => {
+                        if !status_negotiated || connection_epoch != session.connection_epoch {
+                            close_with_code = Some(close_code::POLICY);
+                            break;
+                        }
+                        if !status_budget.admit(Instant::now()) { continue; }
+                        let Ok(mut client) = runtime_db::connect_device(&state.database_url).await else {
+                            close_with_code = Some(RETRY_LATER);
+                            break;
+                        };
+                        let report = preconditions::Report { selected_sim, sms_permission, airplane_mode };
+                        let accepted = preconditions::record(&mut client, session, &state, report).await;
+                        drop(client);
+                        match accepted {
+                            Ok(true) => {},
+                            Ok(false) => { close_with_code = Some(close_code::POLICY); break; },
+                            Err(_) => { close_with_code = Some(RETRY_LATER); break; },
+                        }
+                    }
                     Some(ClientFrame::Heartbeat { v: 1 }) => {
                         let received_at = Instant::now();
                         let since_prior_accepted_ms = received_at.duration_since(last_heartbeat).as_millis();

@@ -605,6 +605,7 @@ struct OwnerDeviceResponse {
     pending_messages: i64,
     in_flight_messages: i64,
     status_observed_at_ms: i64,
+    reported_preconditions: Option<enrollment::ReportedPreconditions>,
 }
 
 #[derive(Deserialize)]
@@ -651,6 +652,7 @@ async fn list_devices(
                     pending_messages: device.pending_messages,
                     in_flight_messages: device.in_flight_messages,
                     status_observed_at_ms: device.status_observed_at_ms,
+                    reported_preconditions: device.reported_preconditions,
                 })
                 .collect::<Vec<_>>(),
             next_cursor: page.next_cursor,

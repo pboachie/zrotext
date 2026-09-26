@@ -188,6 +188,14 @@ the snapshot time, keeps unavailable counts distinct from zero, and marks a
 retained snapshot stale when an automatic refresh fails. No SIM identifiers,
 phone numbers, message content, or new readiness claim are exposed.
 
+The optional [Android preconditions extension](../protocol/v1/device-preconditions.md)
+adds only selected-SIM availability, SMS permission and airplane-mode enums to
+the device list. Reports are authenticated-session scoped, timestamped by the
+writer and explicitly distinguished as fresh at snapshot time, stale,
+disconnected or unavailable. No report authorizes a send or establishes carrier
+readiness. Migration 041 stores one latest snapshot with deletion cascades;
+reports older than one day are eligible for bounded retention pruning.
+
 ## Planned API v1 outline
 
 The following routes remain design targets, not current server behavior.

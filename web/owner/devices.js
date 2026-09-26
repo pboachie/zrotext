@@ -654,6 +654,20 @@ function deviceQueueText(device) {
   return `Pending: ${count(device.pending_messages)} · In flight: ${count(device.in_flight_messages)} · Snapshot ${dateText(device.status_observed_at_ms)}`;
 }
 
+function devicePreconditionsText(device) {
+  const report = device.reported_preconditions;
+  if (!report || !["not_selected", "active", "inactive", "unavailable"].includes(report.selected_sim) ||
+      !["granted", "denied", "unavailable"].includes(report.sms_permission) ||
+      !["enabled", "disabled", "unavailable"].includes(report.airplane_mode) ||
+      typeof report.fresh !== "boolean" || !Number.isSafeInteger(report.received_at_ms) ||
+      report.received_at_ms <= 0 || report.received_at_ms > 8_640_000_000_000_000) {
+    return "Android preconditions unavailable; carrier readiness unknown.";
+  }
+  const freshness = device.active_socket_lease !== true ? "disconnected; last report" :
+    report.fresh ? "fresh at snapshot time" : "stale report";
+  return `Android (${freshness}): selected SIM ${report.selected_sim.replaceAll("_", " ")}; SMS permission ${report.sms_permission}; airplane mode ${report.airplane_mode}. Received ${dateText(report.received_at_ms)}. Carrier readiness unknown.`;
+}
+
 async function loadDevices(reset = true, automatic = false) {
   if (!reset && !nextDeviceCursor) return;
   deviceLoads += 1;
@@ -713,7 +727,9 @@ async function loadDevices(reset = true, automatic = false) {
             : "Approved for connection · live status unavailable";
       const queue = document.createElement("span");
       queue.textContent = deviceQueueText(device);
-      detail.append(name, id, state, queue);
+      const preconditions = document.createElement("span");
+      preconditions.textContent = devicePreconditionsText(device);
+      detail.append(name, id, state, queue, preconditions);
       row.append(detail);
       if (!device.revoked) {
         const revoke = document.createElement("button");

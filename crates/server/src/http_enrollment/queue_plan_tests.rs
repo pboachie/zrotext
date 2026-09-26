@@ -39,26 +39,46 @@ pub(super) async fn explain_queue(db: &Client, account: Uuid) -> Value {
 // harmless shape; the populated/capped case below requires direct index limits.
 pub(super) fn validate_sparse_history_plan(plan: &Value) -> Result<(), &'static str> {
     fn visit(node: &Value, rows: &mut Vec<f64>, indexed: &mut bool) -> Result<(), &'static str> {
-        if node["Index Name"] == "messages_device_state" { *indexed = true; }
+        if node["Index Name"] == "messages_device_state" {
+            *indexed = true;
+        }
         if node["Relation Name"] == "messages" {
-            if node["Node Type"] == "Seq Scan" { return Err("sparse queue scanned message history"); }
-            if node.get("Rows Removed by Filter").is_some_and(|value| value.as_f64() != Some(0.0))
-                || node.get("Rows Removed by Index Recheck").is_some_and(|value| value.as_f64() != Some(0.0)) {
+            if node["Node Type"] == "Seq Scan" {
+                return Err("sparse queue scanned message history");
+            }
+            if node
+                .get("Rows Removed by Filter")
+                .is_some_and(|value| value.as_f64() != Some(0.0))
+                || node
+                    .get("Rows Removed by Index Recheck")
+                    .is_some_and(|value| value.as_f64() != Some(0.0))
+            {
                 return Err("sparse queue filtered unrelated message history");
             }
-            rows.push(node["Actual Rows"].as_f64().ok_or("missing sparse scan count")?);
+            rows.push(
+                node["Actual Rows"]
+                    .as_f64()
+                    .ok_or("missing sparse scan count")?,
+            );
         }
         if let Some(children) = node.get("Plans") {
-            for child in children.as_array().ok_or("invalid sparse plan children")? { visit(child, rows, indexed)?; }
+            for child in children.as_array().ok_or("invalid sparse plan children")? {
+                visit(child, rows, indexed)?;
+            }
         }
         Ok(())
     }
-    let root = plan.get(0).and_then(|value| value.get("Plan")).ok_or("missing sparse root")?;
+    let root = plan
+        .get(0)
+        .and_then(|value| value.get("Plan"))
+        .ok_or("missing sparse root")?;
     let mut rows = Vec::new();
     let mut indexed = false;
     visit(root, &mut rows, &mut indexed)?;
     rows.sort_by(f64::total_cmp);
-    if !indexed || rows != [2.0, 3.0] { return Err("sparse queue must read only its two active-state sets"); }
+    if !indexed || rows != [2.0, 3.0] {
+        return Err("sparse queue must read only its two active-state sets");
+    }
     Ok(())
 }
 
@@ -165,4 +185,21 @@ fn json_plan_assertions_reject_history_scans_unbounded_work_and_missing_probes()
     let mut missing = synthetic_plan(json!(1000), json!(1));
     missing[0]["Plan"]["Plans"].as_array_mut().unwrap().pop();
     assert!(validate_queue_plan(&missing, &[1000.0, 1000.0]).is_err());
+}
+
+#[test]
+fn sparse_history_allows_small_bitmap_probes_but_rejects_history_filtering() {
+    let mut plan = synthetic_plan(json!(3), json!(1));
+    plan[0]["Plan"]["Plans"][1]["Plans"][0]["Actual Rows"] = json!(2.0);
+    let scan = &mut plan[0]["Plan"]["Plans"][1]["Plans"][0];
+    scan["Node Type"] = json!("Bitmap Heap Scan");
+    scan.as_object_mut().unwrap().remove("Index Name");
+    scan["Plans"] =
+        json!([{"Node Type":"Bitmap Index Scan", "Index Name":"messages_device_state"}]);
+    assert_eq!(validate_sparse_history_plan(&plan), Ok(()));
+    plan[0]["Plan"]["Plans"][1]["Plans"][0]["Rows Removed by Filter"] = json!(200000);
+    assert!(validate_sparse_history_plan(&plan).is_err());
+    plan[0]["Plan"]["Plans"][1]["Plans"][0]["Rows Removed by Filter"] = json!(0);
+    plan[0]["Plan"]["Plans"][1]["Plans"][0]["Node Type"] = json!("Seq Scan");
+    assert!(validate_sparse_history_plan(&plan).is_err());
 }
