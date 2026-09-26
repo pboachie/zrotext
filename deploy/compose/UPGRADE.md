@@ -7,11 +7,12 @@ migration role, re-provisioning the runtime database role, restarting, and
 checking health. Read it together with the [Compose guide](README.md) and
 [Self-hosting](../../docs/SELF-HOSTING.md).
 
-**No tagged releases exist yet.** Until the first `vMAJOR.MINOR.PATCH` tag is
-published (see [Releases and version tags](../../docs/RELEASING.md)), an
-upgrade is a move between two deployed *source snapshots*, not between named
-releases. Identify the version you are running and the version you are moving
-to by three things, and record all three before and after every upgrade:
+Select a reviewed source commit or a published version tag using
+[Releases and version tags](../../docs/RELEASING.md). An installation made
+before the first release is a *source snapshot*: do not infer its migration
+level or compatibility from a release name. Identify the version you are
+running and the version you are moving to by three things, and record all
+three before and after every upgrade:
 
 1. the image digest or source commit the API was built from,
 2. the highest applied migration number, and
@@ -232,14 +233,28 @@ Expect to lose data written between the backup and the rollback, and note
 that retention deletions and content redaction performed by the newer version
 cannot be undone by restoring unless your backup predates them.
 
-## When the first tagged release exists
+## Moving to a tagged release or candidate
 
 The release process is defined in
-[Releases and version tags](../../docs/RELEASING.md). Once a tag exists, this
-guide's procedure stays the same and only the image source changes:
+[Releases and version tags](../../docs/RELEASING.md). A source release and a
+verified server image are separate artifacts. A tag alone does not publish an
+image, and a release candidate does not establish general sending, supported
+hardware, or a hosted deployment.
 
-- Each tag publishes a server image to `ghcr.io/pboachie/zrotext`, with its
-  digest recorded in the workflow's reviewed `image-receipt.json`. Promote and
+For the first release, apply the same backup, stop, migrate, runtime-role and
+restart sequence above to the exact source commit selected by its tag. Use
+the target checkout's migrator to apply every missing migration; do not copy
+SQL files individually or assume a pre-release snapshot already has the
+release's schema. Read all intervening migration and compatibility notes.
+Keep dispatch and experimental feature gates at their reviewed settings;
+upgrading the software does not authorize enabling them.
+
+If the release offers a verified server image, the procedure stays the same
+and the image source changes:
+
+- Publishing a GitHub Release starts the server image build. Only a successful
+  workflow produces an `image-receipt.json` eligible for independent review.
+  The image digest is recorded in that receipt. Promote and
   deploy only the immutable digest reference (`ghcr.io/pboachie/zrotext@sha256:...`)
   from a reviewed receipt, never a mutable registry tag.
 - Verify the image before deploying it with
@@ -254,6 +269,8 @@ guide's procedure stays the same and only the image source changes:
 - Release images populate `/about/version`, so the pre- and post-upgrade
   records gain the tag, full source commit, web and schema digests, and
   `migration_last` without a local `git rev-parse`.
-- Each GitHub Release then carries its own upgrade steps and compatibility
-  notes; this page will link them release by release instead of describing
-  snapshot-to-snapshot moves.
+- Read the selected [GitHub Release](https://github.com/pboachie/zrotext/releases)
+  for its upgrade steps, compatibility notes, and verified artifact links.
+  If image verification is incomplete, use only the source artifacts described
+  by that release; do not infer an approved image from a registry tag or a
+  successful upload.
