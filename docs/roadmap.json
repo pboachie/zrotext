@@ -356,10 +356,12 @@
           "short": "Automatic failover",
           "stage": "design",
           "evidence": [
-            ["Failover design", "MULTI-LOCATION.md#automatic-failover-needs-an-independent-decision"]
+            ["Failover design", "MULTI-LOCATION.md#automatic-failover-needs-an-independent-decision"],
+            ["Implementation status", "MULTI-LOCATION.md#implementation-status-first-increment"]
           ],
           "done": [
-            "Design requiring an independent quorum member and fencing control"
+            "Design requiring an independent quorum member and fencing control",
+            "First increment: pure quorum promotion-decision model with failure-scenario tests, disabled by default"
           ],
           "todo": [
             "Implementation and failure-scenario tests"
