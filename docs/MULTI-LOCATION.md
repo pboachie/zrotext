@@ -76,7 +76,7 @@ A supported failover manager such as Patroni plus a properly placed quorum store
 
 ## Automatic failover needs an independent decision
 
-Two isolated sites alone cannot reliably tell whether the other site died or the link failed. Initially require manual promotion after proving the old writer is stopped/fenced. If it cannot be fenced or its role remains uncertain, preserve write safety and remain unavailable for new sends.
+Two isolated sites alone cannot reliably tell whether the other site died or the link failed. Initially require manual promotion after proving the old writer is stopped/fenced; the [promotion runbook](WRITER-PROMOTION.md) walks through a fenced rehearsal and the manual procedure. If it cannot be fenced or its role remains uncertain, preserve write safety and remain unavailable for new sends.
 
 Later use a quorum-based authority across three independent failure domains (for example a supported three-member consensus store: one per workload location plus a lightweight third member) and externally enforceable fencing/watchdog rules. The third member need not run SMS application workloads. A shared CDN and witness provider is a correlated dependency; record it. A simple “ping both sites” script or an arbitrary Worker endpoint is not automatically a correct consensus/fencing system.
 
