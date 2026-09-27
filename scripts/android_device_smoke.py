@@ -15,6 +15,7 @@ PRECONDITIONS = PACKAGE + "DevicePreconditionsDeviceTest"
 ACCESSIBILITY = PACKAGE + "GatewayAccessibilityDeviceTest"
 MANIFEST_AUTHORITY = PACKAGE + "ManifestAuthorityDeviceTest"
 NETWORK_SERVICE = PACKAGE + "NetworkServiceDeviceTest"
+OUTBOUND_ENVELOPE = PACKAGE + "OutboundEnvelopeDeviceTest"
 SERIAL = "emulator-5562"
 
 
@@ -29,6 +30,9 @@ def selected_tests(root=ROOT):
     source = root / "android/app/src/androidTest/java/org/zrotext/gateway/NetworkServiceDeviceTest.kt"
     if source.is_file():
         expected[NETWORK_SERVICE] = 1
+    source = root / "android/app/src/androidTest/java/org/zrotext/gateway/OutboundEnvelopeDeviceTest.kt"
+    if source.is_file():
+        expected[OUTBOUND_ENVELOPE] = 10
     return expected
 
 

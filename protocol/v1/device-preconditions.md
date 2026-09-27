@@ -113,11 +113,12 @@ They do not change dispatch rules, Android permissions, protocol fields or queri
 ## Automated platform smoke test
 
 The read-only Android device-smoke workflow builds the debug APKs and starts a
-fresh API 36 emulator. It selects `DevicePreconditionsDeviceTest`, the one-case `NetworkServiceDeviceTest` and,
-when present, `GatewayAccessibilityDeviceTest` with its explicit isolated-emulator
-opt-in. It requires one precondition test and five accessibility tests when
-selected, with zero failures or skips. It does not run the full instrumentation
-suite or SMS probes. The network-service case requires a real selected-subscription
+fresh API 36 emulator. It selects one `DevicePreconditionsDeviceTest`, one
+`NetworkServiceDeviceTest`, five `GatewayAccessibilityDeviceTest` cases,
+twelve `ManifestAuthorityDeviceTest` cases and ten `OutboundEnvelopeDeviceTest`
+cases when their sources are present. The applicable isolated-emulator opt-ins
+are explicit, and every selected case must pass with zero failures or skips.
+It does not run the full instrumentation suite or SMS probes. The network-service case requires a real selected-subscription
 callback; unknown-only output and skips fail. Only the existing READ_PHONE_STATE
 grant is applied to that disposable emulator app; no location or SMS grant,
 radio action or stored subscription selection is changed. Commands target only
