@@ -62,6 +62,12 @@ public static class Native {
         try {try{Check(false,"pure-first-failure");}finally{Check(false,"pure-cleanup-failure");}}catch(InvalidOperationException){}
         bool firstPreserved=Stage=="pure-first-failure";Stage="not-started";ErrorCode=0;
         Check(firstPreserved,"pure-first-failure-preserved");
+        string merged=MergeBlocks("Path=a\0TEMP=user\0USERPROFILE=p\0\0","TEMP=fixture\0GITHUB_ACTIONS=true\0\0");
+        Check(merged=="GITHUB_ACTIONS=true\0Path=a\0TEMP=fixture\0USERPROFILE=p\0\0","pure-environment-merge");
+        Check(MergeBlocks("temp=user\0\0","TEMP=fixture\0\0")=="temp=fixture\0\0","pure-environment-case-insensitive-override");
+        bool badEntry=false;try{MergeBlocks("novalue\0\0","A=b\0\0");}catch(InvalidOperationException){badEntry=true;}
+        Stage="not-started";ErrorCode=0;
+        Check(badEntry,"pure-environment-entry-refusal");
     }
     static void Check(bool ok, string stage) {
         if (!ok) { if(Stage=="not-started"){Stage = stage; ErrorCode = Marshal.GetLastWin32Error();} throw new InvalidOperationException("native fixture refused"); }
@@ -123,6 +129,8 @@ public static class Native {
     [DllImport("user32.dll",SetLastError=true)] static extern bool GetUserObjectSecurity(IntPtr handle,ref uint info,byte[] buffer,uint length,out uint needed);
     [DllImport("user32.dll",SetLastError=true)] static extern bool SetUserObjectSecurity(IntPtr handle,ref uint info,byte[] buffer);
     [DllImport("userenv.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool DeleteProfileW(string sid,string path,string computer);
+    [DllImport("userenv.dll",SetLastError=true)] static extern bool CreateEnvironmentBlock(out IntPtr environment,IntPtr token,bool inherit);
+    [DllImport("userenv.dll",SetLastError=true)] static extern bool DestroyEnvironmentBlock(IntPtr environment);
 
     static T Token<T>(IntPtr token,int kind,Func<IntPtr,int,T> inspect) {
         int needed;
@@ -276,6 +284,41 @@ public static class Native {
         } finally {Marshal.FreeHGlobal(buffer);}
     }
     public static void DeleteProfile(string sid) {Check(DeleteProfileW(sid,null,null),"profile-cleanup");}
+    static SortedDictionary<string,string> ParseBlock(string block) {
+        var values=new SortedDictionary<string,string>(StringComparer.OrdinalIgnoreCase);
+        foreach(string entry in block.Split('\0')) {
+            if(entry.Length==0)continue;
+            int split=entry.IndexOf('=',1);
+            Check(split>0,"environment-entry-shape");
+            values[entry.Substring(0,split)]=entry.Substring(split+1);
+        }
+        return values;
+    }
+    // The fixture's fixed variables override the standard user's own default
+    // environment. The runner's environment is never inherited.
+    static string MergeBlocks(string user,string fixedValues) {
+        var merged=ParseBlock(user);
+        foreach(var pair in ParseBlock(fixedValues)) merged[pair.Key]=pair.Value;
+        var result=new StringBuilder();
+        foreach(var pair in merged) {Check(pair.Key.IndexOf('\0')<0 && pair.Value.IndexOf('\0')<0,"environment-nul");result.Append(pair.Key).Append('=').Append(pair.Value).Append('\0');}
+        result.Append('\0');
+        Check(result.Length<32767,"environment-bound");
+        return result.ToString();
+    }
+    static string UserEnvironment(IntPtr token,string fixedValues) {
+        IntPtr block;
+        Check(CreateEnvironmentBlock(out block,token,false),"user-environment");
+        try {
+            var text=new StringBuilder();
+            for(int offset=0;;offset+=2) {
+                char c=(char)Marshal.ReadInt16(block,offset);
+                if(c=='\0' && text.Length>0 && text[text.Length-1]=='\0')break;
+                Check(text.Length<32767,"user-environment-bound");
+                text.Append(c);
+            }
+            return MergeBlocks(text.ToString(),fixedValues);
+        } finally {DestroyEnvironmentBlock(block);}
+    }
 
     public static int Run(string user,string expectedSid,SecureString password,string executable,string command,string environment,string cwd,string probeExecutable) {
         Stage="not-started";ErrorCode=0;ProbeState="not-started";CleanupState="not-started";
@@ -310,7 +353,9 @@ public static class Native {
             Grant(station,logonSid,StationGrant,"station-grant");
             Grant(desktop,logonSid,DesktopGrant,"desktop-grant");
             desktopPath=Marshal.StringToHGlobalUni(stationName+"\\"+desktopName);
-            env=Marshal.StringToHGlobalUni(environment);
+            // PowerShell never reached its first script line with only the fixed
+            // variables; give the child the standard user's own default block.
+            env=Marshal.StringToHGlobalUni(UserEnvironment(tokenHandle,environment));
             for(int phase=0;phase<2;phase++) {
             bool probing=phase==0;
             if(probing)ProbeState="running";
