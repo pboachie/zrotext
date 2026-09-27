@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use super::*;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::{sleep, timeout};
 use tokio_postgres::{Config, NoTls};
@@ -12,6 +13,43 @@ pub(super) async fn connect(config: &Config) -> Client {
     client
 }
 
+fn database_name(process_id: u32, timestamp_nanos: u128) -> String {
+    static NEXT_DATABASE: AtomicU64 = AtomicU64::new(0);
+    // A wall clock can return the same tick to concurrent callers or move back.
+    let sequence = NEXT_DATABASE
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            value.checked_add(1)
+        })
+        .expect("disposable database sequence exhausted");
+    // Even maximum-width values fit PostgreSQL's 63-byte identifier limit.
+    format!("zt_m_{process_id:x}_{timestamp_nanos:x}_{sequence:x}")
+}
+
+#[test]
+fn database_names_are_unique_for_parallel_callers_with_the_same_clock_tick() {
+    let names: Vec<_> = std::thread::scope(|scope| {
+        let callers: Vec<_> = (0..32)
+            .map(|_| scope.spawn(|| database_name(42, 123)))
+            .collect();
+        callers
+            .into_iter()
+            .map(|caller| caller.join().unwrap())
+            .collect()
+    });
+    let unique: std::collections::HashSet<_> = names.iter().collect();
+    assert_eq!(unique.len(), names.len());
+}
+
+#[test]
+fn database_names_fit_unquoted_postgres_identifiers() {
+    let name = database_name(u32::MAX, u128::MAX);
+    assert!(name.len() <= 63);
+    assert!(
+        name.bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+    );
+}
+
 pub(super) async fn disposable_database() -> (String, Client, Config) {
     let base = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
         .expect("set ZT_AUTH_TEST_DATABASE_URL to a disposable PostgreSQL cluster with CREATEDB");
@@ -21,7 +59,7 @@ pub(super) async fn disposable_database() -> (String, Client, Config) {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let name = format!("zt_online_index_{}_{nonce}", std::process::id());
+    let name = database_name(std::process::id(), nonce);
     admin
         .batch_execute(&format!("CREATE DATABASE {name}"))
         .await

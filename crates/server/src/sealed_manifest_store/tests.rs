@@ -414,6 +414,7 @@ async fn manifest_store_serializes_revocation_in_both_lock_orders() {
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn manifest_store_rechecks_expiry_after_lock_wait_and_before_effects() {
     for expire_manifest in [false, true] {
+        let phase = if expire_manifest { "manifest" } else { "lease" };
         let mut f = Fixture::new().await;
         let mut db = f.connect().await;
         let mut blocker = f.connect().await;
@@ -442,10 +443,54 @@ async fn manifest_store_rechecks_expiry_after_lock_wait_and_before_effects() {
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(650), &mut future)
                 .await
-                .is_err()
+                .is_err(),
+            "{phase}: admission must still wait for the account lock"
+        );
+        // Host elapsed time does not establish a database-clock deadline.
+        // Keep the blocker until PostgreSQL itself observes expiration; compare
+        // the lease's stored timestamp directly, without millisecond rounding.
+        let manifest_deadline =
+            i64::try_from(u64::from_be_bytes(f.bytes[45..53].try_into().unwrap())).unwrap();
+        let mut last_observation: Option<(String, String)> = None;
+        let expired = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let observation = lock
+                    .query_one(
+                        "WITH observed AS MATERIALIZED (SELECT clock_timestamp() AS now) \
+                     SELECT observed.now::text,s.lease_until::text, \
+                     CASE WHEN $2 THEN floor(extract(epoch FROM observed.now)*1000)::bigint >= $3 \
+                          ELSE observed.now >= s.lease_until END \
+                     FROM observed CROSS JOIN device_sessions s WHERE s.device_id=$1",
+                        &[&f.device, &expire_manifest, &manifest_deadline],
+                    )
+                    .await
+                    .unwrap();
+                last_observation = Some((observation.get(0), observation.get(1)));
+                if observation.get::<_, bool>(2) {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(
+            expired.is_ok(),
+            "{phase}: database expiry barrier timed out; (now,lease)={last_observation:?}, signed_deadline_ms={manifest_deadline}"
         );
         lock.commit().await.unwrap();
-        assert!(future.await.is_err());
+        let rejected = future.await.is_err();
+        let after = tx
+            .query_one(
+                "SELECT clock_timestamp()::text,last_verified_ms FROM sealed_manifest_authorities WHERE account_id=$1",
+                &[&f.account],
+            )
+            .await
+            .ok()
+            .map(|row| (row.get::<_, String>(0), row.get::<_, i64>(1)));
+        assert!(
+            rejected,
+            "{phase}: admission must reject after database expiry; (now,lease)={last_observation:?}, signed_deadline_ms={manifest_deadline}, after(now,accepted_ms)={after:?}"
+        );
         tx.rollback().await.unwrap();
         f.cleanup().await;
     }
