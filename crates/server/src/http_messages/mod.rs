@@ -3,6 +3,7 @@
 //! test-case identifier; this module constructs the fixed plaintext body.
 //! Never mount as a general customer message-content endpoint.
 
+use crate::api_json::ApiJson;
 use crate::{
     alpha_policy::AlphaPolicy,
     auth::{self, AuthError, Scope, TokenHasher},
@@ -245,7 +246,7 @@ struct AcceptedBody {
 async fn accept(
     State(state): State<Arc<MessagesHttpState>>,
     headers: HeaderMap,
-    Json(body): Json<AcceptBody>,
+    ApiJson(body): ApiJson<AcceptBody>,
 ) -> Result<Response, MessageHttpError> {
     if !state.policy.enabled() {
         return Err(MessageHttpError::NotFound);

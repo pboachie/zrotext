@@ -2,6 +2,7 @@
 //! Browser-facing account routes. All cookie-authenticated writes require an
 //! exact, configured HTTPS Origin and the double-submit CSRF token.
 
+use crate::api_json::ApiJson;
 use crate::auth::{
     self, AuthError, Scope, SessionPrincipal, TokenHasher,
     abuse_limits::{self, Limit},
@@ -733,7 +734,7 @@ struct RegisterBody {
 async fn register(
     State(state): State<Arc<AuthHttpState>>,
     headers: HeaderMap,
-    Json(body): Json<RegisterBody>,
+    ApiJson(body): ApiJson<RegisterBody>,
 ) -> Result<StatusCode, AuthHttpError> {
     require_origin(&headers, &state.canonical_origin)?;
     // Private modes first require an address-bound operator invite. Missing
@@ -783,7 +784,7 @@ struct ResendBody {
 async fn resend_verification(
     State(state): State<Arc<AuthHttpState>>,
     headers: HeaderMap,
-    Json(body): Json<ResendBody>,
+    ApiJson(body): ApiJson<ResendBody>,
 ) -> Result<StatusCode, AuthHttpError> {
     require_origin(&headers, &state.canonical_origin)?;
     if !state.dispatcher.ready() {
@@ -936,7 +937,7 @@ struct VerifyBody {
 async fn verify_email(
     State(state): State<Arc<AuthHttpState>>,
     headers: HeaderMap,
-    Json(body): Json<VerifyBody>,
+    ApiJson(body): ApiJson<VerifyBody>,
 ) -> Result<StatusCode, AuthHttpError> {
     require_origin(&headers, &state.canonical_origin)?;
     let mut client = connect(&state.database_url).await?;
@@ -971,7 +972,7 @@ struct LoginBody {
 async fn login(
     State(state): State<Arc<AuthHttpState>>,
     headers: HeaderMap,
-    Json(body): Json<LoginBody>,
+    ApiJson(body): ApiJson<LoginBody>,
 ) -> Result<Response, AuthHttpError> {
     require_origin(&headers, &state.canonical_origin)?;
     let client = connect(&state.database_url).await?;
@@ -1063,7 +1064,7 @@ struct MfaLoginBody {
 async fn complete_mfa_login(
     State(state): State<Arc<AuthHttpState>>,
     headers: HeaderMap,
-    Json(body): Json<MfaLoginBody>,
+    ApiJson(body): ApiJson<MfaLoginBody>,
 ) -> Result<Response, AuthHttpError> {
     require_origin(&headers, &state.canonical_origin)?;
     let mut client = connect(&state.database_url).await?;
@@ -1199,7 +1200,7 @@ struct RevokeOtherSessionsBody {
 async fn revoke_other_sessions(
     State(state): State<Arc<AuthHttpState>>,
     headers: HeaderMap,
-    Json(body): Json<RevokeOtherSessionsBody>,
+    ApiJson(body): ApiJson<RevokeOtherSessionsBody>,
 ) -> Result<StatusCode, AuthHttpError> {
     let mut client = connect(&state.database_url).await?;
     let owner = require_owner(
@@ -1253,7 +1254,7 @@ struct ChangePasswordBody {
 async fn change_password(
     State(state): State<Arc<AuthHttpState>>,
     headers: HeaderMap,
-    Json(body): Json<ChangePasswordBody>,
+    ApiJson(body): ApiJson<ChangePasswordBody>,
 ) -> Result<Response, AuthHttpError> {
     let mut client = connect(&state.database_url).await?;
     let owner = require_owner(
@@ -1322,7 +1323,7 @@ struct ResetRequestBody {
 async fn request_password_reset(
     State(state): State<Arc<AuthHttpState>>,
     headers: HeaderMap,
-    Json(body): Json<ResetRequestBody>,
+    ApiJson(body): ApiJson<ResetRequestBody>,
 ) -> Result<StatusCode, AuthHttpError> {
     require_origin(&headers, &state.canonical_origin)?;
     if !state.dispatcher.password_reset_ready() {
@@ -1369,7 +1370,7 @@ struct ResetConfirmBody {
 async fn confirm_password_reset(
     State(state): State<Arc<AuthHttpState>>,
     headers: HeaderMap,
-    Json(body): Json<ResetConfirmBody>,
+    ApiJson(body): ApiJson<ResetConfirmBody>,
 ) -> Result<StatusCode, AuthHttpError> {
     require_origin(&headers, &state.canonical_origin)?;
     let mut client = connect(&state.database_url).await?;
@@ -1460,7 +1461,7 @@ struct MfaEnrollBodyResponse {
 async fn begin_mfa_enrollment(
     State(state): State<Arc<AuthHttpState>>,
     headers: HeaderMap,
-    Json(body): Json<MfaEnrollBody>,
+    ApiJson(body): ApiJson<MfaEnrollBody>,
 ) -> Result<Response, AuthHttpError> {
     if !state.mfa_enrollment_enabled {
         return Err(AuthHttpError::NotFound);
@@ -1509,7 +1510,7 @@ struct MfaRecoveryBody {
 async fn confirm_mfa_enrollment(
     State(state): State<Arc<AuthHttpState>>,
     headers: HeaderMap,
-    Json(body): Json<MfaCodeBody>,
+    ApiJson(body): ApiJson<MfaCodeBody>,
 ) -> Result<Response, AuthHttpError> {
     if !state.mfa_enrollment_enabled {
         return Err(AuthHttpError::NotFound);
@@ -1548,7 +1549,7 @@ struct MfaDisableBody {
 async fn disable_mfa(
     State(state): State<Arc<AuthHttpState>>,
     headers: HeaderMap,
-    Json(body): Json<MfaDisableBody>,
+    ApiJson(body): ApiJson<MfaDisableBody>,
 ) -> Result<StatusCode, AuthHttpError> {
     let mut client = connect(&state.database_url).await?;
     let owner = require_owner(
@@ -1707,7 +1708,7 @@ fn parse_scope(value: &str) -> Option<Scope> {
 async fn create_api_key(
     State(state): State<Arc<AuthHttpState>>,
     headers: HeaderMap,
-    Json(body): Json<CreateKeyBody>,
+    ApiJson(body): ApiJson<CreateKeyBody>,
 ) -> Result<Response, AuthHttpError> {
     let scopes = body
         .scopes
