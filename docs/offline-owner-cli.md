@@ -79,4 +79,30 @@ directories and deterministic synthetic root/recovery fixtures supplied through
 test-only dependencies. Creation and restore run in distinct processes. No secret
 argument/environment interface or production seed/path override exists. Eligibility
 checks remain active in tests; an ineligible runner fails rather than skipping.
-The production `init` command is not executed with real owner material by tests.
+Hidden native test children never run with administrator rights. A
+non-elevated test parent launches them directly. An elevated parent first
+confirms that production eligibility rejects it, then uses its existing limited
+linked token (UAC) when Windows provides one. Otherwise it derives a
+UAC-equivalent reduced-rights token of the same account in the same session:
+BUILTIN\Administrators deny-only, administrator privileges removed, Medium
+integrity and a standard default DACL so the child can open itself to start
+its console host. Before launch the token must be non-elevated, primary, at or below
+Medium integrity, without Administrators enabled and without administrator
+privileges, and every child checks its own token the same way first. Launch
+refusal fails the test; there is no credential, privilege-enabling or policy
+bypass fallback. This launcher is compiled only for tests.
+
+The GitHub-hosted Windows runner is elevated and has no linked token, so the
+terminal and owner suites run there through the reduced-rights launcher and
+must report exact counts with zero failed or ignored tests. The bundle suite
+runs separately as an explicitly provisioned disposable standard user. That
+fixture compiles the bundle test executable first, gives the user only an
+immutable hash-checked copy and a private temporary directory, and requires the
+exact suite count with zero ignored tests. Its script refuses workstation and
+self-hosted environments. Passwords stay in secure/unmanaged buffers, never
+arguments, files or environment values. Only the new logon SID's temporary
+desktop permissions are removed; unrelated permissions are preserved.
+Process-tree, account, optional profile and owned-directory cleanup must
+succeed. Forced VM termination may prevent cleanup; the disposable VM is the
+final containment boundary. Neither path changes UAC, machine policy,
+repository permissions or production eligibility checks.The production `init` command is not executed with real owner material by tests.

@@ -11,7 +11,6 @@ use std::{
         ffi::OsStrExt,
         io::{AsRawHandle, FromRawHandle, OwnedHandle},
     },
-    ptr::null,
 };
 use windows_sys::Win32::{
     Foundation::*,
@@ -49,17 +48,13 @@ fn launch(stage: &str, parent: &std::path::Path) {
         startup.wShowWindow = 0;
         let mut process = zeroed();
         assert_ne!(
-            CreateProcessW(
+            crate::native_process::create(
                 application.as_ptr(),
                 command.as_mut_ptr(),
-                null(),
-                null(),
-                0,
-                CREATE_NEW_CONSOLE | CREATE_UNICODE_ENVIRONMENT,
                 environment.as_ptr().cast(),
-                null(),
                 &startup,
-                &mut process
+                &mut process,
+                || verify_process_eligibility().is_ok(),
             ),
             0
         );
@@ -248,6 +243,9 @@ fn native_create_then_fresh_restore() {
                     0
                 );
             }
+            phase(14);
+            crate::native_process::assert_current_process_limited();
+            phase(15);
             verify_process_eligibility().unwrap();
             match stage.as_str() {
                 "create" => create_child(),
