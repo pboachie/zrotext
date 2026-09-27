@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = "org.zrotext.gateway."
 PRECONDITIONS = PACKAGE + "DevicePreconditionsDeviceTest"
 ACCESSIBILITY = PACKAGE + "GatewayAccessibilityDeviceTest"
+MANIFEST_AUTHORITY = PACKAGE + "ManifestAuthorityDeviceTest"
 SERIAL = "emulator-5562"
 
 
@@ -21,6 +22,9 @@ def selected_tests(root=ROOT):
     source = root / "android/app/src/androidTest/java/org/zrotext/gateway/GatewayAccessibilityDeviceTest.kt"
     if source.is_file():
         expected[ACCESSIBILITY] = 5
+    source = root / "android/app/src/androidTest/java/org/zrotext/gateway/ManifestAuthorityDeviceTest.kt"
+    if source.is_file():
+        expected[MANIFEST_AUTHORITY] = 12
     return expected
 
 
