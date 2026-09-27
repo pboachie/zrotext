@@ -259,6 +259,7 @@ Connect a dedicated Android phone and SIM, send and receive SMS through the serv
 - [x] Opt-out hold and review decision forms ([#245](https://github.com/pboachie/zrotext/pull/245))
 - [x] SMS lines page: approval key, line list and activation approval ([#251](https://github.com/pboachie/zrotext/pull/251), [#255](https://github.com/pboachie/zrotext/pull/255))
 - [x] Device health and recent messages refresh every 15 seconds while the owner page is visible; pagination and active interactions pause their list ([#295](https://github.com/pboachie/zrotext/pull/295))
+- [x] Live device and message updates over an owner event stream; the 15-second snapshot refresh stays as the fallback
 - [ ] SIM, queue depth and radio readiness per device
 
 </details>
@@ -440,7 +441,7 @@ Build useful conversations for local service operators and individuals through t
 | Capability | Stage | Evidence |
 |---|---|---|
 | Contacts, consent and conversations | Planned | [product proposal](PRODUCT-PLAN.md#business-inbox) proposal only; no runtime implementation |
-| Templates and scheduled follow-ups | Planned | [product proposal](PRODUCT-PLAN.md#business-inbox) proposal only; no runtime implementation |
+| Templates and scheduled follow-ups | Planned | [product proposal](PRODUCT-PLAN.md#business-inbox), [Local preview only](TEMPLATE-PREVIEW.md) browser-only personalized text preview; no saved templates, segment estimate or scheduling implementation |
 | Approvals and reply tracking | Planned | [product proposal](PRODUCT-PLAN.md#business-inbox), [synthetic demo PR #244](https://github.com/pboachie/zrotext/pull/244) proposal only; scripted approval and handoff simulation in #244; no runtime implementation |
 | Workflow connector and integrations | Planned | [product proposal](PRODUCT-PLAN.md#customer-controlled-assistant) proposal only; no runtime implementation |
 | Customer-controlled AI assistant | Planned | [product proposal](PRODUCT-PLAN.md#customer-controlled-assistant) proposal only; no runtime implementation |

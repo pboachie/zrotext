@@ -584,14 +584,14 @@ async fn postgres_owner_key_ceremony_requires_possession_mfa_and_revokes_only_sm
             .status(),
         StatusCode::UNAUTHORIZED
     );
-    let failed: i32 = db
-        .query_one(
-            "SELECT failed_attempts FROM owner_mfa WHERE account_id=$1",
-            &[&signup.account_id],
-        )
-        .await
-        .unwrap()
-        .get(0);
+    let failed = auth::abuse_limits::failures_in_window(
+        &db,
+        &hasher,
+        auth::abuse_limits::Limit::MfaStepUp,
+        &signup.user_id.to_string(),
+    )
+    .await
+    .unwrap();
     assert_eq!(failed, 1);
     assert_eq!(
         app.clone()

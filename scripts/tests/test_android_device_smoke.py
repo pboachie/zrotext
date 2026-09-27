@@ -32,6 +32,47 @@ class DeviceSmokeTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     smoke.verify_results(bad + "INSTRUMENTATION_CODE: -1\n", expected)
 
+    def test_root_storage_requires_all_three_cases_with_no_skips(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "android/app/src/androidTest/java/org/zrotext/gateway/Draft02RootStorageDeviceTest.kt"
+            source.parent.mkdir(parents=True)
+            source.touch()
+            expected = {smoke.PRECONDITIONS: 1, smoke.ROOT_STORAGE: 3}
+            self.assertEqual(smoke.selected_tests(root), expected)
+            output = result(smoke.PRECONDITIONS)
+            for index in range(3):
+                output += result(smoke.ROOT_STORAGE, f"case{index}")
+            custody = "INSTRUMENTATION_RESULT: rootStorageCustody=unsupported\n"
+            self.assertEqual(smoke.verify_results(output + custody + "INSTRUMENTATION_CODE: -1\n", expected), "unsupported")
+            for bad_custody in ["", custody * 2, custody.replace("unsupported", "unknown")]:
+                with self.assertRaises(ValueError):
+                    smoke.verify_results(output + bad_custody + "INSTRUMENTATION_CODE: -1\n", expected)
+            for bad in [output.replace(result(smoke.ROOT_STORAGE, "case2"), ""),
+                        output.replace(result(smoke.ROOT_STORAGE, "case2"), result(smoke.ROOT_STORAGE, "case2", -3))]:
+                with self.assertRaises(ValueError):
+                    smoke.verify_results(bad + custody + "INSTRUMENTATION_CODE: -1\n", expected)
+    def test_sealed_preparation_exact_counts_and_custody_are_required(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for name in ["SealedBodyDeviceTest", "SealedPreparationDeviceTest"]:
+                source = root / f"android/app/src/androidTest/java/org/zrotext/gateway/{name}.kt"
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.touch()
+            expected = {smoke.PRECONDITIONS: 1, smoke.SEALED_BODY: 5, smoke.SEALED_PREPARATION: 2}
+            self.assertEqual(smoke.selected_tests(root), expected)
+            output = "".join(result(cls, f"case{i}") for cls, count in expected.items() for i in range(count))
+            suffix = "INSTRUMENTATION_RESULT: preparationCustody=unsupported\nINSTRUMENTATION_CODE: -1\n"
+            smoke.verify_results(output + suffix, expected)
+            for bad in [suffix.replace("unsupported", "unknown"), "INSTRUMENTATION_CODE: -1\n",
+                        suffix.replace("INSTRUMENTATION_CODE", "INSTRUMENTATION_RESULT: preparationCustody=unsupported\nINSTRUMENTATION_CODE")]:
+                with self.assertRaises(ValueError):
+                    smoke.verify_results(output + bad, expected)
+            for bad in [output.replace(result(smoke.SEALED_BODY, "case4"), ""),
+                        output.replace(result(smoke.SEALED_BODY, "case4"), result(smoke.SEALED_BODY, "case4", -3))]:
+                with self.assertRaises(ValueError):
+                    smoke.verify_results(bad + suffix, expected)
+
     def test_exact_selected_counts_pass(self):
         output = result(smoke.PRECONDITIONS, code=1) + result(smoke.PRECONDITIONS)
         smoke.verify_results(output + "INSTRUMENTATION_CODE: -1\n", {smoke.PRECONDITIONS: 1})

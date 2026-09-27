@@ -16,6 +16,10 @@ const ACCOUNT_SCRIPT: &str = include_str!("../../../web/owner/account.js");
 const SMS_LINES_PAGE: &str = include_str!("../../../web/owner/sms-lines.html");
 const SMS_LINES_SCRIPT: &str = include_str!("../../../web/owner/sms-lines.js");
 const SMS_LINE_SIGNING_SCRIPT: &str = include_str!("../../../web/owner/sms-line-signing.js");
+const TEMPLATE_PAGE: &str = include_str!("../../../web/owner/template-preview.html");
+const TEMPLATE_SCRIPT: &str = include_str!("../../../web/owner/template-preview.js");
+const TEMPLATE_CORE: &str = include_str!("../../../web/owner/template-preview-core.js");
+const TEMPLATE_STYLE: &str = include_str!("../../../web/owner/template-preview.css");
 const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
 
 pub fn router() -> Router {
@@ -28,6 +32,10 @@ pub fn router() -> Router {
         .route("/owner/sms-lines", get(sms_lines_page))
         .route("/owner/sms-lines.js", get(sms_lines_script))
         .route("/owner/sms-line-signing.js", get(sms_line_signing_script))
+        .route("/owner/template-preview", get(template_page))
+        .route("/owner/template-preview.js", get(template_script))
+        .route("/owner/template-preview-core.js", get(template_core))
+        .route("/owner/template-preview.css", get(template_style))
 }
 
 pub fn source_router<S>(source_url: String) -> Router<S>
@@ -145,11 +153,82 @@ async fn sms_line_signing_script() -> Response {
     )
 }
 
+async fn template_page() -> Response {
+    let mut response = secure_response(
+        Html(TEMPLATE_PAGE).into_response(),
+        "text/html; charset=utf-8",
+    );
+    // A local-only editor must never gain a native form submission fallback.
+    response.headers_mut().insert(header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'"));
+    response
+}
+
+async fn template_script() -> Response {
+    secure_response(
+        TEMPLATE_SCRIPT.into_response(),
+        "text/javascript; charset=utf-8",
+    )
+}
+
+async fn template_core() -> Response {
+    secure_response(
+        TEMPLATE_CORE.into_response(),
+        "text/javascript; charset=utf-8",
+    )
+}
+
+async fn template_style() -> Response {
+    secure_response(TEMPLATE_STYLE.into_response(), "text/css; charset=utf-8")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use axum::{body::Body, http::Request};
     use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn template_preview_has_no_submission_fallback_or_reflection() {
+        assert!(ACCOUNT_PAGE.contains("href=\"/owner/template-preview\""));
+        assert!(TEMPLATE_PAGE.contains("<fieldset id=\"editor\" disabled>"));
+        assert!(!TEMPLATE_PAGE.contains("<form"));
+        assert!(!TEMPLATE_PAGE.contains("type=\"submit\""));
+        for method in ["GET", "POST"] {
+            let response = router()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri("/owner/template-preview?template=synthetic-sentinel")
+                        .body(Body::from("synthetic-sentinel"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            if method == "POST" {
+                assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+            } else {
+                assert_eq!(response.status(), StatusCode::OK);
+                let csp = response.headers()[header::CONTENT_SECURITY_POLICY]
+                    .to_str()
+                    .unwrap();
+                for directive in [
+                    "default-src 'none'",
+                    "script-src 'self'",
+                    "form-action 'none'",
+                    "frame-ancestors 'none'",
+                ] {
+                    assert!(csp.contains(directive));
+                }
+                assert!(!csp.contains("unsafe-inline"));
+                assert!(!csp.contains("unsafe-eval"));
+            }
+            let bytes = axum::body::to_bytes(response.into_body(), 65536)
+                .await
+                .unwrap();
+            assert!(!String::from_utf8_lossy(&bytes).contains("synthetic-sentinel"));
+        }
+    }
 
     #[tokio::test]
     async fn source_route_uses_configured_corresponding_source() {
@@ -273,6 +352,16 @@ mod tests {
             ("/owner/devices.css", "text/css; charset=utf-8"),
             ("/owner/account", "text/html; charset=utf-8"),
             ("/owner/account.js", "text/javascript; charset=utf-8"),
+            ("/owner/template-preview", "text/html; charset=utf-8"),
+            (
+                "/owner/template-preview.js",
+                "text/javascript; charset=utf-8",
+            ),
+            (
+                "/owner/template-preview-core.js",
+                "text/javascript; charset=utf-8",
+            ),
+            ("/owner/template-preview.css", "text/css; charset=utf-8"),
             ("/owner/sms-lines", "text/html; charset=utf-8"),
             ("/owner/sms-lines.js", "text/javascript; charset=utf-8"),
             (
@@ -288,6 +377,7 @@ mod tests {
             assert_eq!(response.headers()[header::CONTENT_TYPE], content_type);
             assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
             assert_eq!(response.headers()["x-content-type-options"], "nosniff");
+            assert_eq!(response.headers()["referrer-policy"], "no-referrer");
             assert_eq!(
                 response.headers()[header::STRICT_TRANSPORT_SECURITY],
                 "max-age=63072000; includeSubDomains"
