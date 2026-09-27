@@ -194,6 +194,18 @@ exists. While the route-wide budgets are exhausted, sign-in from a new browser,
 registration and verification resend still wait for the window to reset, and
 the process-wide password worker gate still applies.
 
+Password reset requests spend an anonymous per-address budget of 3 per day,
+which anyone can spend by naming the address. When it refuses, a verified owner
+address is admitted through a verified lane that charges its own per-address
+subject, distinct from the anonymous counter, and rolls over with the
+one-code-per-15-minutes throttle that sets the real cadence for known
+addresses. Anonymous requests naming a real address can therefore delay the
+owner's next code by at most one throttle window, not a day, and cannot cause
+more mail than the throttle allows. Unknown addresses charge their exhausted
+anonymous counter once more instead, so a refused request runs the same probe
+and counter statements whether or not the address exists, and the response is
+202 either way. The verified-route ceiling still bounds the lane as a whole.
+
 Argon2id uses 64 MiB per operation, so each process runs at most two password
 operations at once (sign-in, registration, verification resend, password change
 and reset, revoking other sessions, and authenticator enrollment or removal).
