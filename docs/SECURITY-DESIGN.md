@@ -122,6 +122,25 @@ the budget; key revocation does not refund it. Exhaustion returns 429, and budge
 storage failure returns 503 without creating a key. This bounds issuance rate,
 not the lifetime retention of audit metadata for previously created keys.
 
+### Owner session and API key lifetime
+
+An owner session expires 14 days after sign-in, and earlier if it goes unused
+for 72 hours. A session never used after sign-in is measured from its creation.
+Both limits are fixed in the server (`SESSION_DAYS`, `SESSION_IDLE_HOURS`); the
+idle limit bounds how long a cookie left on an unattended or shared machine
+stays useful. Rejected idle sessions return 401 and are not revived, and the
+session inventory omits them and reports the earlier of the two deadlines.
+
+Sessions and API keys record `last_used_at` after the credential verifies, at
+most once per 15 minutes per credential. A wrong secret behind a known public
+key prefix never moves it. Because of that write window, the recorded time can
+trail the true last use by up to 15 minutes, and a session can lapse up to 15
+minutes before 72 hours after its true last request. The owner key list
+(`GET /v1/auth/api-keys`) returns `last_used_at_ms` (`null` if never used) so
+owners can find and revoke keys no integration uses. API keys keep their
+optional lifetime (1 to 365 days); omitting `lifetime_days` still creates a key
+without an expiry, which the owner dashboard shows as "expires Never".
+
 ### Public sign-in and enrollment budgets
 
 Password sign-in, second-factor completion, pairing claim and proof, and device

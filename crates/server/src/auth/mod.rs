@@ -14,6 +14,14 @@ use tokio_postgres::Client;
 use uuid::Uuid;
 
 const SESSION_DAYS: i32 = 14;
+/// A session unused for this long is rejected even before its absolute
+/// `SESSION_DAYS` expiry. Activity is recorded at most every
+/// `ACTIVITY_WRITE_MINUTES`, so a session may lapse up to that much earlier
+/// than its true last use.
+const SESSION_IDLE_HOURS: i32 = 72;
+/// Coarse write guard shared by session and API key `last_used_at`, so an
+/// authenticated request rewrites the row at most once per window.
+const ACTIVITY_WRITE_MINUTES: i32 = 15;
 /// Lifetime of a verification code and of the unverified owner that requested
 /// it. The pending window is anchored at `users.created_at` and is not
 /// extended by resends, so an unverified sign-up cannot reserve an address
@@ -112,6 +120,8 @@ pub struct ApiKeyMetadata {
     pub created_at_ms: i64,
     pub expires_at_ms: Option<i64>,
     pub revoked_at_ms: Option<i64>,
+    /// Coarse: updated at most once per 15 minutes of use.
+    pub last_used_at_ms: Option<i64>,
 }
 
 pub struct ApiKeyPage {
@@ -630,22 +640,26 @@ pub async fn authenticate_session(
         return Err(AuthError::Unauthorized);
     }
     let hash = hasher.digest(b"session-v1", token);
+    // A session that has not been used within the idle window is treated as
+    // expired. A never-used session is measured from its creation.
     let row = client
         .query_opt(
-            "SELECT s.id,s.account_id,s.user_id,s.csrf_hash FROM sessions s JOIN memberships m ON (m.account_id,m.user_id)=(s.account_id,s.user_id) JOIN users u ON u.id=s.user_id JOIN accounts a ON a.id=s.account_id WHERE m.role='owner' AND s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at>now() AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL",
-            &[&&hash[..]],
+            "SELECT s.id,s.account_id,s.user_id,s.csrf_hash,(s.last_used_at IS NULL OR s.last_used_at<now()-($3::integer * interval '1 minute')) FROM sessions s JOIN memberships m ON (m.account_id,m.user_id)=(s.account_id,s.user_id) JOIN users u ON u.id=s.user_id JOIN accounts a ON a.id=s.account_id WHERE m.role='owner' AND s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at>now() AND COALESCE(s.last_used_at,s.created_at)>now()-($2::integer * interval '1 hour') AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL",
+            &[&&hash[..], &SESSION_IDLE_HOURS, &ACTIVITY_WRITE_MINUTES],
         )
         .await?
         .ok_or(AuthError::Unauthorized)?;
     let csrf: Vec<u8> = row.get(3);
     let csrf_hash: [u8; 32] = csrf.try_into().map_err(|_| AuthError::Unauthorized)?;
-    // Coarse activity metadata for the owner's session inventory. The guard
-    // avoids a row rewrite on every authenticated request.
+    // Coarse activity metadata for the owner's session inventory and the idle
+    // timeout. The guard avoids a row rewrite on every authenticated request.
     let session_id: Uuid = row.get(0);
-    client.execute(
-        "UPDATE sessions SET last_used_at=now() WHERE id=$1 AND revoked_at IS NULL AND (last_used_at IS NULL OR last_used_at<now()-interval '15 minutes')",
-        &[&session_id],
-    ).await?;
+    if row.get::<_, bool>(4) {
+        client.execute(
+            "UPDATE sessions SET last_used_at=now() WHERE id=$1 AND revoked_at IS NULL AND (last_used_at IS NULL OR last_used_at<now()-($2::integer * interval '1 minute'))",
+            &[&session_id, &ACTIVITY_WRITE_MINUTES],
+        ).await?;
+    }
     Ok(SessionPrincipal {
         session_id,
         tenant: Tenant {
@@ -735,8 +749,8 @@ pub async fn authenticate_api_key(
     let hash = hasher.digest(b"api-key-v1", token);
     let row = client
         .query_opt(
-            "SELECT k.id,k.account_id,k.token_hash,k.scopes,k.bound_device_id FROM api_keys k JOIN memberships m ON (m.account_id,m.user_id)=(k.account_id,k.created_by_user_id) JOIN users u ON u.id=k.created_by_user_id JOIN accounts a ON a.id=k.account_id WHERE m.role='owner' AND k.public_prefix=$1 AND k.revoked_at IS NULL AND (k.expires_at IS NULL OR k.expires_at>now()) AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL",
-            &[&prefix],
+            "SELECT k.id,k.account_id,k.token_hash,k.scopes,k.bound_device_id,(k.last_used_at IS NULL OR k.last_used_at<now()-($2::integer * interval '1 minute')) FROM api_keys k JOIN memberships m ON (m.account_id,m.user_id)=(k.account_id,k.created_by_user_id) JOIN users u ON u.id=k.created_by_user_id JOIN accounts a ON a.id=k.account_id WHERE m.role='owner' AND k.public_prefix=$1 AND k.revoked_at IS NULL AND (k.expires_at IS NULL OR k.expires_at>now()) AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL",
+            &[&prefix, &ACTIVITY_WRITE_MINUTES],
         )
         .await?
         .ok_or(AuthError::Unauthorized)?;
@@ -749,8 +763,20 @@ pub async fn authenticate_api_key(
         .iter()
         .map(|name| Scope::from_str(name).ok_or(AuthError::Unauthorized))
         .collect::<Result<Vec<_>, _>>()?;
+    let key_id: Uuid = row.get(0);
+    // Recorded only after the verifier matched, so a caller who knows a
+    // public prefix but not the secret cannot move a key's last-use time.
+    // The guard bounds writes to one per key per window.
+    if row.get::<_, bool>(5) {
+        client
+            .execute(
+                "UPDATE api_keys SET last_used_at=now() WHERE id=$1 AND revoked_at IS NULL AND (last_used_at IS NULL OR last_used_at<now()-($2::integer * interval '1 minute'))",
+                &[&key_id, &ACTIVITY_WRITE_MINUTES],
+            )
+            .await?;
+    }
     Ok(ApiPrincipal {
-        key_id: row.get(0),
+        key_id,
         tenant: Tenant {
             account_id: row.get(1),
         },
@@ -800,7 +826,8 @@ pub async fn list_api_keys(
             "SELECT id,public_prefix,scopes,bound_device_id, \
              (extract(epoch FROM created_at)*1000)::bigint, \
              (extract(epoch FROM expires_at)*1000)::bigint, \
-             (extract(epoch FROM revoked_at)*1000)::bigint \
+             (extract(epoch FROM revoked_at)*1000)::bigint, \
+             (extract(epoch FROM last_used_at)*1000)::bigint \
              FROM api_keys WHERE account_id=$1 AND \
              ($2::timestamptz IS NULL OR (created_at,id)<($2,$3)) \
              ORDER BY created_at DESC,id DESC LIMIT 51",
@@ -823,6 +850,7 @@ pub async fn list_api_keys(
             created_at_ms: row.get(4),
             expires_at_ms: row.get(5),
             revoked_at_ms: row.get(6),
+            last_used_at_ms: row.get(7),
         })
         .collect();
     Ok(ApiKeyPage {
