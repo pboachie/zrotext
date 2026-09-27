@@ -23,3 +23,7 @@ jobs:
         run: cargo clippy --locked -p zrotext-root-terminal --all-targets -- -D warnings
       - name: Exercise isolated hidden native console contracts
         run: cargo test --locked -p zrotext-root-terminal
+      - name: Lint offline owner commands
+        run: cargo clippy --locked -p zrotext-owner --all-targets -- -D warnings
+      - name: Exercise synthetic fresh-process owner recovery
+        run: cargo test --locked -p zrotext-owner

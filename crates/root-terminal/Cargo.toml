@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+zrotext-root-material = { path = "../root-material" }
 zeroize = "1.9.0"
 thiserror = "2.0.16"
 

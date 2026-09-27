@@ -46,4 +46,4 @@ mod input;
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
-pub use windows::Session;
+pub use windows::{Session, verify_process_eligibility};
