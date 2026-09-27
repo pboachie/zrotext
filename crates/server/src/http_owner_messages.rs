@@ -17,7 +17,7 @@ use std::{collections::HashMap, sync::Arc, time::SystemTime};
 use tokio_postgres::NoTls;
 use uuid::Uuid;
 
-const PAGE_SIZE: usize = 20;
+pub(crate) const PAGE_SIZE: usize = 20;
 const MAX_EVENTS_PER_MESSAGE: usize = 32;
 
 #[derive(Clone)]
