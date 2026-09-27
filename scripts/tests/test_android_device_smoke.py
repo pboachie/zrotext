@@ -14,6 +14,24 @@ def result(class_name, name="sample", code=0):
 
 
 class DeviceSmokeTests(unittest.TestCase):
+    def test_outbound_corpus_requires_exact_ten_successful_cases(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "android/app/src/androidTest/java/org/zrotext/gateway/OutboundEnvelopeDeviceTest.kt"
+            source.parent.mkdir(parents=True)
+            source.touch()
+            expected = {smoke.PRECONDITIONS: 1, smoke.OUTBOUND_ENVELOPE: 10}
+            self.assertEqual(smoke.selected_tests(root), expected)
+            output = result(smoke.PRECONDITIONS)
+            for index in range(10):
+                output += result(smoke.OUTBOUND_ENVELOPE, f"case{index}")
+            smoke.verify_results(output + "INSTRUMENTATION_CODE: -1\n", expected)
+            for bad in [output.replace(result(smoke.OUTBOUND_ENVELOPE, "case9"), ""),
+                        output.replace(result(smoke.OUTBOUND_ENVELOPE, "case9"), result(smoke.OUTBOUND_ENVELOPE, "case9", -3)),
+                        output + result(smoke.OUTBOUND_ENVELOPE, "case9")]:
+                with self.assertRaises(ValueError):
+                    smoke.verify_results(bad + "INSTRUMENTATION_CODE: -1\n", expected)
+
     def test_exact_selected_counts_pass(self):
         output = result(smoke.PRECONDITIONS, code=1) + result(smoke.PRECONDITIONS)
         smoke.verify_results(output + "INSTRUMENTATION_CODE: -1\n", {smoke.PRECONDITIONS: 1})
