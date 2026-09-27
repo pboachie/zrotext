@@ -920,6 +920,165 @@ async fn verified_password_reset_survives_anonymous_request_and_confirm_exhausti
         .unwrap();
 }
 
+#[test]
+fn verified_reset_subject_is_distinct_and_rolls_with_the_code_throttle() {
+    let email = "owner@example.test";
+    let start = UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+    let subject = verified_reset_subject(email, start);
+    assert_ne!(subject, email);
+    assert!(subject.starts_with("owner@example.test\0verified\0"));
+    assert_eq!(
+        verified_reset_subject(
+            email,
+            start + VERIFIED_RESET_WINDOW - Duration::from_secs(1)
+        ),
+        subject
+    );
+    assert_ne!(
+        verified_reset_subject(email, start + VERIFIED_RESET_WINDOW),
+        subject
+    );
+    assert_ne!(verified_reset_subject("other@example.test", start), subject);
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn stranger_spending_address_budget_does_not_block_owner_password_reset() {
+    let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+        .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let schema = format!("http_reset_address_{}", Uuid::new_v4().simple());
+    setup
+        .batch_execute(&format!("CREATE SCHEMA {schema}"))
+        .await
+        .unwrap();
+    let separator = if base_url.contains('?') { '&' } else { '?' };
+    let url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
+    let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    for migration in [
+        include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+        include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+        include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
+        include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
+        include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
+        include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+        include_str!("../../../../deploy/compose/migrations/025_account_recovery.sql"),
+    ] {
+        db.batch_execute(migration).await.unwrap();
+    }
+    let hasher = Arc::new(TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
+    let password = Uuid::new_v4().to_string();
+    let owner = auth::register(&mut db, &hasher, "owner@example.test", &password)
+        .await
+        .unwrap();
+    assert!(
+        auth::verify_email(&mut db, &hasher, &owner.verification_token)
+            .await
+            .unwrap()
+    );
+    let state = AuthHttpState::new(
+        url,
+        hasher.clone(),
+        "https://zrotext.example".to_owned(),
+        Arc::new(CaptureVerification(Mutex::new(None))),
+    )
+    .unwrap();
+    let app = router(state);
+    let request = |email: &str| {
+        json_post(
+            "/password/reset/request",
+            serde_json::json!({"email":email}),
+        )
+    };
+    async fn queued(db: &Client) -> i64 {
+        db.query_one(
+            "SELECT count(*) FROM password_reset_mail_outbox WHERE canceled_at IS NULL",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0)
+    }
+    async fn issued(db: &Client) -> i64 {
+        db.query_one("SELECT count(*) FROM password_resets", &[])
+            .await
+            .unwrap()
+            .get(0)
+    }
+    // A stranger naming the owner's address spends the anonymous per-address
+    // budget (3 per day). The first request issues a code; the inner throttle
+    // makes the rest no-ops.
+    for _ in 0..3 {
+        let response = app
+            .clone()
+            .oneshot(request("owner@example.test"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+    }
+    assert_eq!(queued(&db).await, 1);
+    assert_eq!(issued(&db).await, 1);
+    // The owner's next request inside the throttle window stays a no-op with
+    // the same 202: the address budget is spent and the code is recent.
+    let response = app
+        .clone()
+        .oneshot(request("owner@example.test"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    assert_eq!(issued(&db).await, 1);
+    // Once the throttle window has passed, the owner still gets a fresh code
+    // although the anonymous per-address budget stays spent for a day.
+    db.execute(
+        "UPDATE password_resets SET created_at=created_at-interval '16 minutes'",
+        &[],
+    )
+    .await
+    .unwrap();
+    let response = app
+        .clone()
+        .oneshot(request("owner@example.test"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    assert_eq!(issued(&db).await, 2);
+    assert_eq!(queued(&db).await, 1);
+    let reset = account::claim_reset_mail(&mut db, &hasher)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(reset.email, "owner@example.test");
+    // The verified lane keeps the code cadence: further requests in the same
+    // throttle window issue nothing.
+    for _ in 0..3 {
+        let response = app
+            .clone()
+            .oneshot(request("owner@example.test"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+    }
+    assert_eq!(issued(&db).await, 2);
+    // Unknown addresses get the same 202 before and after their budget is
+    // spent, and never queue anything.
+    for _ in 0..4 {
+        let response = app
+            .clone()
+            .oneshot(request("nobody@example.test"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+    }
+    assert_eq!(issued(&db).await, 2);
+    assert_eq!(queued(&db).await, 1);
+    setup
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn postgres_http_account_lifecycle_enforces_csrf_and_revocation() {
