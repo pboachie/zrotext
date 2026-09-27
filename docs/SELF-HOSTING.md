@@ -316,6 +316,19 @@ attempt per endpoint can exist. Private process logs emit `webhook_queue` with
 pending count, oldest pending age in seconds, and in-flight count about once a
 minute. Monitor these alongside the owner-visible pause state.
 
+The delivery recovery worker runs every 15 seconds. It expires pre-grant
+messages past their expiry and refunds their quota, marks silent granted or
+submitting attempts `unknown`, and closes submitted messages with no delivery
+receipt after 24 hours. Each sweep handles 100 rows per transaction and repeats
+while batches come back full, for at most 10 batches per sweep per tick. It
+stops early when the process begins draining. About once a minute, and on every
+tick that reaches the batch bound, private process logs emit
+`delivery_recovery` with the number of expired pending messages, the oldest
+expiry age in seconds, silent attempts, and overdue delivery receipts waiting
+(each count capped at 10,000), plus whether the tick reached its bound. The line
+contains no IDs, phone numbers, or content. A count that stays high or keeps
+growing means recovery is falling behind.
+
 Migration 029 (`029_webhook_dispatch_fairness.sql`; its error text still says "027") requires a webhook maintenance window. Stop webhook delivery on
 **every** old dispatch node (`WEBHOOK_DELIVERY_ENABLED=false`) before migrating.
 The migration takes an exclusive delivery-table lock, records expired leases as
