@@ -245,7 +245,8 @@ try {
     }
     Write-Output 'Native CI executables and working directory: verified'
     $environment='GITHUB_ACTIONS=true'+[char]0+"ImageOS=$env:ImageOS"+[char]0+'RUNNER_ENVIRONMENT=github-hosted'+[char]0+'RUNNER_OS=Windows'+[char]0+"SystemRoot=$env:SystemRoot"+[char]0+"TEMP=$(Join-Path $fixture 'temp')"+[char]0+"TMP=$(Join-Path $fixture 'temp')"+[char]0+[char]0
-    $probe=@($tests | Where-Object Name -CEQ 'zrotext_root_bundle')
+    # The terminal suite is the one that loads user32; probe its startup.
+    $probe=@($tests | Where-Object Name -CEQ 'zrotext_root_terminal')
     if($probe.Count -ne 1){throw 'Ambiguous native startup probe.'}
     $probeExe=Assert-ChildPath $probe[0].Executable (Join-Path $fixture 'bin')
     $codes=@([ZrotextCi.Native]::Run($username,$sid.Value,$password,$apps.ToArray(),$commands.ToArray(),$timeouts.ToArray(),$environment,$fixture,$probeExe))
@@ -277,6 +278,7 @@ try {
                 # Only synthetic test output; credentials never reach the fixture user.
                 try {
                     $checkedLog=Assert-ChildPath $log $fixture
+                    Write-Output ('Native CI '+$name+' log bytes: '+(Get-Item -LiteralPath $checkedLog).Length)
                     Get-Content -LiteralPath $checkedLog -Tail 30 | ForEach-Object {Write-Output $_}
                 } catch {Write-Output 'Native CI fixture log refused.'}
             }
