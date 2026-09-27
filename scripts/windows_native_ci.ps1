@@ -378,8 +378,13 @@ try {
         try {
             $profile=@(Get-CimInstance Win32_UserProfile | Where-Object SID -eq $sid.Value)
             if($profile.Count -gt 1){throw 'Ambiguous fixture profile.'}
-            if($profile.Count -eq 1){[ZrotextCi.Native]::DeleteProfile($sid.Value)}
-        } catch {$cleanupFailures.Add('profile')}
+            if($profile.Count -eq 1){
+                if([ZrotextCi.Native]::CleanupState -cne 'passed'){throw 'Native cleanup not verified.'}
+                [ZrotextCi.Native]::DeleteProfile($sid.Value)
+                if(@(Get-CimInstance Win32_UserProfile | Where-Object SID -eq $sid.Value).Count){throw 'Fixture profile remains.'}
+                Write-Output 'Native CI profile cleanup: deleted and verified absent'
+            } else {Write-Output 'Native CI profile cleanup: absent'}
+        } catch {$cleanupFailures.Add('profile');Write-Output 'Native CI profile cleanup: failed'}
         try {
             $current=Get-LocalUser -Name $username
             if($current.SID.Value -cne $sid.Value){throw 'Fixture user changed.'}

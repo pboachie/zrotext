@@ -12,6 +12,7 @@ using System.Threading;
 
 namespace ZrotextCi {
 public static class Native {
+    const int LogonWithProfile = 1;
     public static string Stage = "not-started";
     public static int ErrorCode;
     public static string LaunchState = "not-started", ResumeState = "not-attempted", WaitState = "not-attempted", ExitState = "not-queried";
@@ -27,6 +28,7 @@ public static class Native {
     static string WaitClass(uint value) {return value==0?"signaled":value==258?"timeout":"failed";}
     static string ExitClass(bool queried,uint value) {return !queried?"query-failed":value==0?"zero":value==259?"still-active-code":"other";}
     public static void TestDiagnostics() {
+        Check(LogonWithProfile==1,"pure-fixture-profile-policy");
         Check(ResumeClass(0)=="zero" && ResumeClass(1)=="one" && ResumeClass(2)=="greater-than-one" && ResumeClass(0xffffffff)=="failed","pure-resume-classes");
         Check(WaitClass(0)=="signaled" && WaitClass(258)=="timeout" && WaitClass(0xffffffff)=="failed","pure-wait-classes");
         Check(ExitClass(false,0)=="query-failed" && ExitClass(true,0)=="zero" && ExitClass(true,259)=="still-active-code" && ExitClass(true,1)=="other","pure-exit-classes");
@@ -220,7 +222,7 @@ public static class Native {
             if(probing)ProbeState="running";
             var startup=new Startup{cb=Marshal.SizeOf(typeof(Startup)),flags=1,show=0};
             desktopAccessMayChange=true;
-            Check(CreateProcessWithTokenW(tokenHandle,0,probing?probeExecutable:executable,new StringBuilder(probing?probeCommand:command),0x414,env,cwd,ref startup,out process),probing?"probe-create-suspended":"worker-create-suspended");
+            Check(CreateProcessWithTokenW(tokenHandle,LogonWithProfile,probing?probeExecutable:executable,new StringBuilder(probing?probeCommand:command),0x414,env,cwd,ref startup,out process),probing?"probe-create-suspended":"worker-create-suspended");
             LaunchState="created-suspended";
             Check(AssignProcessToJobObject(job,process.process),"worker-job-assign");assigned=true;
             LaunchState="job-assigned";
