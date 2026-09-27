@@ -3,6 +3,16 @@ use crate::auth::{self, TokenHasher};
 use tokio_postgres::NoTls;
 
 #[test]
+fn consumed_factor_receipt_rechecks_the_original_totp_window_without_spending_again() {
+    let factor = ConsumedFactor { step: Some(10) };
+    assert!(factor.current_at(9 * 30_000));
+    assert!(factor.current_at(11 * 30_000 + 29_999));
+    assert!(!factor.current_at(8 * 30_000 + 29_999));
+    assert!(!factor.current_at(12 * 30_000));
+    assert!(ConsumedFactor { step: None }.current_at(12 * 30_000));
+}
+
+#[test]
 fn encrypted_secret_is_bound_to_owner_identity() {
     let mut key = vec![0u8; 32];
     rng().fill_bytes(&mut key);

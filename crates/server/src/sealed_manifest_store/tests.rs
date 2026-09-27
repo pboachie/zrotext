@@ -106,13 +106,21 @@ impl Fixture {
             include_str!(
                 "../../../../deploy/compose/migrations/044_sealed_root_role_reservations.sql"
             ),
+            include_str!("../../../../deploy/compose/migrations/045_sealed_outbound_queue.sql"),
+            include_str!("../../../../deploy/compose/migrations/046_sealed_root_ceremonies.sql"),
         ] {
             if !role_reservations
-                && sql
+                && (sql
                     == include_str!(
                         "../../../../deploy/compose/migrations/044_sealed_root_role_reservations.sql"
                     )
+                    || sql
+                        == include_str!(
+                            "../../../../deploy/compose/migrations/046_sealed_root_ceremonies.sql"
+                        ))
             {
+                // Backfill tests intentionally start before trust-history
+                // guards; the later ceremony triggers depend on those guards.
                 continue;
             }
             // Mirror the migrator's autocommit index preparation, followed by

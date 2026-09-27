@@ -65,3 +65,4 @@ summary { cursor: pointer; }
   #device-list li, #key-list li, #message-list > li, #inbound-event-list li, #webhook-delivery-list > li, #session-list li, #subscriptions li, .account-recovery { border-color: #425861; }
 }
 @media (max-width: 35rem) { dl { grid-template-columns: 1fr; } .section-head, #device-list li, #key-list li { align-items: flex-start; } }
+#device-list li > div > span { display: block; margin-top: .35rem; }
