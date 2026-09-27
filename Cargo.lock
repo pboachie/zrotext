@@ -2937,6 +2937,7 @@ dependencies = [
  "futures-util",
  "hkdf",
  "hmac",
+ "http-body",
  "lettre",
  "p256",
  "rand 0.10.3",

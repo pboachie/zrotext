@@ -39,6 +39,8 @@ hkdf = "0.13.0"
 # Already in the lockfile through axum; the owner event stream uses its
 # `unfold` combinator, so it moves from dev- to regular dependency.
 futures-util = { version = "0.3.31", default-features = false, features = ["std", "sink"] }
+# Already locked through axum/hyper; names `Frame` for the ingress body-deadline wrapper.
+http-body = "1.1.0"
 
 [dev-dependencies]
 tokio = { version = "1.47.1", features = ["test-util"] }
