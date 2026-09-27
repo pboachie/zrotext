@@ -238,7 +238,9 @@ try {
     $artifacts=Select-TestArtifacts @($build | ForEach-Object {$_ | ConvertFrom-Json}) (Join-Path $workspace 'target') $packageIds
     $stage='account-create'
     $username='ztci'+[Guid]::NewGuid().ToString('N').Substring(0,12)
+    $stage='account-name-check'
     if(Get-LocalUser -Name $username -ErrorAction SilentlyContinue){throw 'Fixture username collision.'}
+    $stage='account-password-buffer'
     $password=[Security.SecureString]::new()
     $random=[byte[]]::new(48)
     try {
@@ -248,10 +250,13 @@ try {
         foreach($b in $random){$password.AppendChar($alphabet[$b -band 63])}
         $password.MakeReadOnly()
     } finally {[Array]::Clear($random,0,$random.Length);$b=0}
+    $stage='account-new-local-user'
     $account=New-LocalUser -Name $username -Password $password -Description 'Disposable native test fixture' -AccountNeverExpires
     $sid=$account.SID
     $users=[Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')
-    if(-not @(Get-LocalGroupMember -SID $users | Where-Object SID -eq $sid).Count){Add-LocalGroupMember -SID $users -Member $sid}
+    $stage='account-users-membership'
+    if(-not @(Get-LocalGroupMember -SID $users | Where-Object SID -eq $sid).Count){Add-LocalGroupMember -SID $users -Member $account}
+    $stage='account-groups-verify'
     $groups=@(Get-LocalGroup | Where-Object {@(Get-LocalGroupMember -SID $_.SID | Where-Object SID -eq $sid).Count -ne 0})
     if($groups.Count -ne 1 -or $groups[0].SID.Value -cne 'S-1-5-32-545'){throw 'Fixture group membership is not standard Users only.'}
     $stage='fixture-files'
