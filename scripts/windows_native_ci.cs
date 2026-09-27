@@ -27,6 +27,17 @@ public static class Native {
     static string ResumeClass(uint value) {return value==0xffffffff?"failed":value==0?"zero":value==1?"one":"greater-than-one";}
     static string WaitClass(uint value) {return value==0?"signaled":value==258?"timeout":"failed";}
     static string ExitClass(bool queried,uint value) {return !queried?"query-failed":value==0?"zero":value==259?"still-active-code":"other";}
+    public static string JobState = "not-observed", NoWindowProbeState = "not-started";
+    // Fixed classes only: never report arbitrary process names or paths.
+    static readonly string[] KnownImages = {"conhost.exe","openconsole.exe","werfault.exe","wermgr.exe","csrss.exe","consent.exe"};
+    static string ImageClass(string image,string probe) {
+        if(String.IsNullOrEmpty(image))return "unreadable";
+        string name=System.IO.Path.GetFileName(image).ToLowerInvariant();
+        if(name==System.IO.Path.GetFileName(probe).ToLowerInvariant())return "probe";
+        return Array.IndexOf(KnownImages,name)>=0?name:"other";
+    }
+    // NTSTATUS/exit codes are fixed numeric classes, not user data.
+    static string ExitCodeClass(uint code) {return code==0?"zero":code==259?"still-active-code":"0x"+code.ToString("x8");}
     public static void TestDiagnostics() {
         Check(LogonWithProfile==1,"pure-fixture-profile-policy");
         Check(ResumeClass(0)=="zero" && ResumeClass(1)=="one" && ResumeClass(2)=="greater-than-one" && ResumeClass(0xffffffff)=="failed","pure-resume-classes");
@@ -37,6 +48,9 @@ public static class Native {
         Check(ProbeComplete(0,0) && !ProbeComplete(1,0) && !ProbeComplete(0,1),"pure-probe-gate");
         Check(CleanupTarget(true,true,true)=="job" && CleanupTarget(true,true,false)=="job" && CleanupTarget(true,false,true)=="process" && CleanupTarget(false,false,true)=="process" && CleanupTarget(true,false,false)=="none","pure-owned-cleanup-selection");
         Check(ProbeCommand("fixture suite.exe")=="\"fixture suite.exe\" --list","pure-probe-command");
+        Check(ImageClass(@"fixture\bin\Suite.EXE",@"x\suite.exe")=="probe" && ImageClass(@"System32\conhost.exe","suite.exe")=="conhost.exe" && ImageClass(@"System32\WerFault.exe","suite.exe")=="werfault.exe","pure-image-known-classes");
+        Check(ImageClass(@"Tools\unrelated-tool.exe","suite.exe")=="other" && ImageClass("","suite.exe")=="unreadable" && ImageClass(null,"suite.exe")=="unreadable","pure-image-other-classes");
+        Check(ExitCodeClass(0)=="zero" && ExitCodeClass(259)=="still-active-code" && ExitCodeClass(0xc0000142)=="0xc0000142" && ExitCodeClass(1)=="0x00000001","pure-exit-code-classes");
         foreach(string value in new[]{"","bad\"arg","bad\narg","bad\0arg","trailing\\",new string('x',1000)}) {
             bool rejected=false;try{ProbeCommand(value);}catch(ArgumentException){rejected=true;}Check(rejected,"pure-probe-argument-refusal");
         }
@@ -86,6 +100,9 @@ public static class Native {
     [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern IntPtr CreateJobObjectW(IntPtr attributes,string name);
     [DllImport("kernel32.dll",SetLastError=true)] static extern bool SetInformationJobObject(IntPtr job,int kind,ref ExtendedLimit value,int length);
     [DllImport("kernel32.dll",SetLastError=true)] static extern bool QueryInformationJobObject(IntPtr job,int kind,out Accounting value,int length,IntPtr needed);
+    [DllImport("kernel32.dll",SetLastError=true,EntryPoint="QueryInformationJobObject")] static extern bool QueryJobList(IntPtr job,int kind,IntPtr buffer,int length,IntPtr needed);
+    [DllImport("kernel32.dll",SetLastError=true)] static extern IntPtr OpenProcess(uint access,bool inherit,uint pid);
+    [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool QueryFullProcessImageNameW(IntPtr process,uint flags,StringBuilder name,ref uint size);
     [DllImport("kernel32.dll",SetLastError=true)] static extern bool AssignProcessToJobObject(IntPtr job,IntPtr process);
     [DllImport("kernel32.dll",SetLastError=true)] static extern bool TerminateJobObject(IntPtr job,uint code);
     [DllImport("kernel32.dll",SetLastError=true)] static extern bool TerminateProcess(IntPtr process,uint code);
@@ -232,11 +249,53 @@ public static class Native {
         Check(!impersonating && error==1008,"worker-no-impersonation");
         CheckSession();
     }
+    static string JobImages(IntPtr job,string probe) {
+        const int max=32;
+        int length=8+max*IntPtr.Size;
+        IntPtr buffer=Marshal.AllocHGlobal(length);
+        try {
+            if(!QueryJobList(job,3,buffer,length,IntPtr.Zero))return "list-failed";
+            int listed=Math.Min(Marshal.ReadInt32(buffer,4),max);
+            var classes=new List<string>();
+            for(int i=0;i<listed;i++) {
+                uint pid=(uint)Marshal.ReadIntPtr(buffer,8+i*IntPtr.Size).ToInt64();
+                string image=null;
+                IntPtr handle=OpenProcess(0x1000,false,pid);
+                if(handle!=IntPtr.Zero) {
+                    try {var name=new StringBuilder(1024);uint size=(uint)name.Capacity;if(QueryFullProcessImageNameW(handle,0,name,ref size))image=name.ToString();}
+                    finally {CloseHandle(handle);}
+                }
+                classes.Add(ImageClass(image,probe));
+            }
+            classes.Sort(StringComparer.Ordinal);
+            return listed==0?"empty":String.Join(",",classes);
+        } finally {Marshal.FreeHGlobal(buffer);}
+    }
+    static bool EmptyJob(IntPtr job) {
+        for(int i=0;i<100;i++){Accounting value;if(QueryInformationJobObject(job,1,out value,Marshal.SizeOf(typeof(Accounting)),IntPtr.Zero)&&value.activeProcesses==0)return true;Thread.Sleep(100);}
+        return false;
+    }
+    // Diagnostic only: the same probe without a console. Its result never
+    // gates the run; it tells console startup failures apart from others.
+    static string NoWindowProbe(IntPtr token,string probe,string command,IntPtr env,string cwd,IntPtr desktopPath,IntPtr job) {
+        var startup=new Startup{cb=Marshal.SizeOf(typeof(Startup)),desktop=desktopPath};
+        Process p;
+        if(!CreateProcessWithTokenW(token,LogonWithProfile,probe,new StringBuilder(command),0x08000404,env,cwd,ref startup,out p))return "create-failed-"+Marshal.GetLastWin32Error();
+        try {
+            if(!AssignProcessToJobObject(job,p.process)){TerminateProcess(p.process,99);WaitForSingleObject(p.process,10000);return "assign-failed";}
+            if(ResumeThread(p.thread)==0xffffffff){TerminateJobObject(job,99);EmptyJob(job);return "resume-failed";}
+            if(WaitForSingleObject(p.process,30000)!=0){string images=JobImages(job,probe);TerminateJobObject(job,99);return "timeout["+images+"]"+(EmptyJob(job)?"":"-not-emptied");}
+            uint code;if(!GetExitCodeProcess(p.process,out code))return "exit-query-failed";
+            if(!EmptyJob(job)){TerminateJobObject(job,99);EmptyJob(job);return "exit-"+ExitCodeClass(code)+"-job-not-empty";}
+            return "exit-"+ExitCodeClass(code);
+        } finally {CloseHandle(p.thread);CloseHandle(p.process);}
+    }
     public static void DeleteProfile(string sid) {Check(DeleteProfileW(sid,null,null),"profile-cleanup");}
 
     public static int Run(string user,string expectedSid,SecureString password,string executable,string command,string environment,string cwd,string probeExecutable) {
         Stage="not-started";ErrorCode=0;ProbeState="not-started";CleanupState="not-started";
         LaunchState="not-started";ResumeState="not-attempted";WaitState="not-attempted";ExitState="not-queried";
+        JobState="not-observed";NoWindowProbeState="not-started";
         Check(command.Length<1024 && command.IndexOf('\0')<0,"command-bound");
         string probeCommand=ProbeCommand(probeExecutable);
         IntPtr passwordBuffer=IntPtr.Zero,tokenHandle=IntPtr.Zero,env=IntPtr.Zero,job=IntPtr.Zero;
@@ -270,6 +329,7 @@ public static class Native {
             var limits=new ExtendedLimit();limits.basic.flags=0x2000;
             Check(SetInformationJobObject(job,9,ref limits,Marshal.SizeOf(typeof(ExtendedLimit))),"job-kill-on-close");
             env=Marshal.StringToHGlobalUni(environment);
+            NoWindowProbeState=NoWindowProbe(tokenHandle,probeExecutable,probeCommand,env,cwd,desktopPath,job);
             for(int phase=0;phase<2;phase++) {
             bool probing=phase==0;
             if(probing)ProbeState="running";
@@ -304,6 +364,7 @@ public static class Native {
             if(passwordBuffer!=IntPtr.Zero) Marshal.ZeroFreeGlobalAllocUnicode(passwordBuffer);
             string cleanupTarget=CleanupTarget(job!=IntPtr.Zero,assigned,process.process!=IntPtr.Zero);
             if(cleanupTarget=="job") {
+                if(WaitState=="timeout")JobState=JobImages(job,probeExecutable);
                 cleanup &= TerminateJobObject(job,99);
                 bool empty=false;
                 for(int i=0;i<100;i++){Accounting value;if(QueryInformationJobObject(job,1,out value,Marshal.SizeOf(typeof(Accounting)),IntPtr.Zero)&&value.activeProcesses==0){empty=true;break;}Thread.Sleep(100);}
