@@ -26,7 +26,19 @@ public static class Native {
     static string ResumeClass(uint value) {return value==0xffffffff?"failed":value==0?"zero":value==1?"one":"greater-than-one";}
     static string WaitClass(uint value) {return value==0?"signaled":value==258?"timeout":"failed";}
     static string ExitClass(bool queried,uint value) {return !queried?"query-failed":value==0?"zero":value==259?"still-active-code":"other";}
-    public static string JobState = "not-observed";
+    public static string JobState = "not-observed", StationClass = "not-observed";
+    public static int DialogsBefore = -1, DialogsAtTimeout = -1;
+    delegate bool WindowVisitor(IntPtr window,IntPtr state);
+    [DllImport("user32.dll")] static extern bool EnumWindows(WindowVisitor visit,IntPtr state);
+    [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern int GetClassNameW(IntPtr window,StringBuilder name,int length);
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
+    // Counts visible standard dialog windows (for example a loader hard-error
+    // box) on the caller's desktop; only the number is reported.
+    static int DialogCount() {
+        int count=0;
+        EnumWindows((window,state)=>{var name=new StringBuilder(16);if(IsWindowVisible(window)&&GetClassNameW(window,name,name.Capacity)>0&&name.ToString()=="#32770")count++;return true;},IntPtr.Zero);
+        return count;
+    }
     // Fixed classes only: never report arbitrary process names or paths.
     static readonly string[] KnownImages = {"conhost.exe","openconsole.exe","werfault.exe","wermgr.exe","csrss.exe","consent.exe"};
     static string ImageClass(string image,string probe) {
@@ -366,12 +378,13 @@ public static class Native {
             foreach(GenericAce ace in stationBefore.DiscretionaryAcl) Check(!FixtureAce(ace,fixtureSids),"station-no-preexisting-fixture-ace");
             foreach(GenericAce ace in desktopBefore.DiscretionaryAcl) Check(!FixtureAce(ace,fixtureSids),"desktop-no-preexisting-fixture-ace");
             desktopAccessMayChange=true;
-            Grant(station,logonSid,StationGrant,"station-grant");
-            Grant(desktop,logonSid,DesktopGrant,"desktop-grant");
-            // Native suites that load user32 never started on the runner's own
-            // desktop even with the grant. An empty desktop name gives the
-            // fixture logon its own non-interactive window station instead.
-            desktopPath=Marshal.StringToHGlobalUni("");
+            foreach(string grantee in new[]{logonSid,expectedSid}) {
+                Grant(station,grantee,StationGrant,"station-grant");
+                Grant(desktop,grantee,DesktopGrant,"desktop-grant");
+            }
+            StationClass=(stationName.Equals("WinSta0",StringComparison.OrdinalIgnoreCase)?"winsta0":"other-station")+"/"+(desktopName.Equals("Default",StringComparison.OrdinalIgnoreCase)?"default":"other-desktop");
+            desktopPath=Marshal.StringToHGlobalUni(stationName+"\\"+desktopName);
+            DialogsBefore=DialogCount();
             // The fixture user's own default environment, with the fixed
             // fixture variables overriding it; the runner's is never inherited.
             env=Marshal.StringToHGlobalUni(UserEnvironment(tokenHandle,environment));
@@ -427,7 +440,7 @@ public static class Native {
             if(passwordBuffer!=IntPtr.Zero) Marshal.ZeroFreeGlobalAllocUnicode(passwordBuffer);
             string cleanupTarget=CleanupTarget(job!=IntPtr.Zero,assigned,process.process!=IntPtr.Zero);
             if(cleanupTarget=="job") {
-                if(WaitState=="timeout")JobState=JobImages(job,observedApp);
+                if(WaitState=="timeout"){JobState=JobImages(job,observedApp);DialogsAtTimeout=DialogCount();}
                 cleanup &= TerminateJobObject(job,99);
                 bool empty=false;
                 for(int i=0;i<100;i++){Accounting value;if(QueryInformationJobObject(job,1,out value,Marshal.SizeOf(typeof(Accounting)),IntPtr.Zero)&&value.activeProcesses==0){empty=true;break;}Thread.Sleep(100);}
