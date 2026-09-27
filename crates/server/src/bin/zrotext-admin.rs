@@ -18,13 +18,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
             create_owner(email).await
         }
         [command, flag, email] if command == "issue-invite" && flag == "--email" => {
-            issue_invite(email)
+            issue_invite(email, None)
+        }
+        [command, flag, email, lifetime_flag, hours]
+            if command == "issue-invite"
+                && flag == "--email"
+                && lifetime_flag == "--lifetime-hours" =>
+        {
+            issue_invite(email, Some(hours))
         }
         [command, flag, email] if command == "reset-password" && flag == "--email" => {
             reset_password(email).await
         }
         _ => Err(
-            "usage: zrotext-admin create-owner|issue-invite|reset-password --email <address>"
+            "usage: zrotext-admin create-owner|reset-password --email <address> | issue-invite --email <address> [--lifetime-hours 1-168]"
                 .into(),
         ),
     }
@@ -105,7 +112,19 @@ fn optional_env(name: &'static str) -> Result<Option<String>, Box<dyn Error>> {
     }
 }
 
-fn issue_invite(email: &str) -> Result<(), Box<dyn Error>> {
+fn issue_invite(email: &str, lifetime_hours: Option<&str>) -> Result<(), Box<dyn Error>> {
+    let lifetime = match lifetime_hours {
+        None => None,
+        Some(raw) => {
+            let hours: u64 = raw
+                .parse()
+                .map_err(|_| "--lifetime-hours must be an integer between 1 and 168")?;
+            if !(1..=168).contains(&hours) {
+                return Err("--lifetime-hours must be an integer between 1 and 168".into());
+            }
+            Some(std::time::Duration::from_secs(hours * 60 * 60))
+        }
+    };
     let mode = optional_env("REGISTRATION_MODE")?;
     let emails = optional_env("REGISTRATION_ALLOWED_EMAILS")?;
     let domains = optional_env("REGISTRATION_ALLOWED_DOMAINS")?;
@@ -116,7 +135,10 @@ fn issue_invite(email: &str) -> Result<(), Box<dyn Error>> {
         domains.as_deref(),
         key.as_ref().map(|key| key.as_str()),
     )?;
-    let invite = policy.issue_invite(email)?;
+    let invite = match lifetime {
+        None => policy.issue_invite(email)?,
+        Some(lifetime) => policy.issue_invite_with_lifetime(email, lifetime)?,
+    };
     println!("{invite}");
     Ok(())
 }

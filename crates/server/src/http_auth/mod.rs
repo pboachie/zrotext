@@ -30,7 +30,7 @@ use std::{
     future::Future,
     pin::Pin,
     sync::Arc,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use subtle::ConstantTimeEq;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -384,6 +384,27 @@ impl RegistrationPolicy {
         headers: &HeaderMap,
         raw_email: &str,
     ) -> Result<Option<String>, AuthError> {
+        match unix_now_secs() {
+            Some(now) => self.admitted_email_at(headers, raw_email, now),
+            // A pre-epoch clock cannot prove token liveness; the clock-free
+            // policies keep their own behavior and allowlist fails closed.
+            None => match self {
+                Self::Closed => Ok(None),
+                Self::Open => auth::normalize_email(raw_email).map(Some),
+                Self::Allowlist { .. } => Ok(None),
+            },
+        }
+    }
+
+    /// The admission decision for `now_secs` seconds after the Unix epoch.
+    /// [`Self::admitted_email`] reads the wall clock; tests pin the instant
+    /// here so no assertion depends on scheduling granularity.
+    fn admitted_email_at(
+        &self,
+        headers: &HeaderMap,
+        raw_email: &str,
+        now_secs: u64,
+    ) -> Result<Option<String>, AuthError> {
         match self {
             Self::Closed => Ok(None),
             Self::Open => auth::normalize_email(raw_email).map(Some),
@@ -393,23 +414,61 @@ impl RegistrationPolicy {
                     .and_then(|value| value.to_str().ok())
                     .and_then(|value| STANDARD.decode(value).ok())
                     .map(Zeroizing::new);
-                let Some(candidate) = candidate.filter(|candidate| candidate.len() == 32) else {
+                let Some(candidate) =
+                    candidate.filter(|candidate| candidate.len() == INVITE_TOKEN_LEN)
+                else {
                     return Ok(None);
                 };
                 let Ok(email) = auth::normalize_email(raw_email) else {
                     return Ok(None);
                 };
-                let expected = invite_digest(enrollment_key, &email);
-                let valid = bool::from(expected.as_slice().ct_eq(candidate.as_slice()));
+                let expires_at =
+                    u64::from_be_bytes(candidate[..8].try_into().expect("length checked above"));
+                let expected = invite_mac(enrollment_key, &email, expires_at);
+                let valid = bool::from(expected.as_slice().ct_eq(candidate[8..].as_ref()));
+                // The API server's own clock decides liveness; a client cannot
+                // extend a token by delaying or replaying the request.
+                let live = expires_at > now_secs;
+                // Defense in depth for a compromised or misused master key:
+                // admission holds the same lifetime cap as issuance, so even a
+                // validly signed token cannot outlive INVITE_MAX_LIFETIME.
+                let within_cap =
+                    expires_at <= now_secs.saturating_add(INVITE_MAX_LIFETIME.as_secs());
                 let allowed = self.admits(&email);
-                Ok((allowed & valid).then_some(email))
+                Ok((live & valid & allowed & within_cap).then_some(email))
             }
         }
     }
 
-    /// Mint a token bound to one allowlisted email. Only the operator CLI
-    /// should expose this; the master key never leaves private configuration.
+    /// Mint a token bound to one allowlisted email, expiring after the
+    /// default [`INVITE_MAX_LIFETIME`]. Only the operator CLI should expose
+    /// this; the master key never leaves private configuration.
     pub fn issue_invite(&self, raw_email: &str) -> Result<String, &'static str> {
+        self.issue_invite_with_lifetime(raw_email, INVITE_MAX_LIFETIME)
+    }
+
+    /// Mint an invite that stops admitting after `lifetime`, which must be
+    /// at least one second and no longer than [`INVITE_MAX_LIFETIME`]. The
+    /// expiry is part of the signed token, so no database row is needed to
+    /// enforce it.
+    pub fn issue_invite_with_lifetime(
+        &self,
+        raw_email: &str,
+        lifetime: Duration,
+    ) -> Result<String, &'static str> {
+        let now_secs = unix_now_secs()
+            .ok_or("invite issuance requires the system clock after the Unix epoch")?;
+        self.issue_invite_with_lifetime_at(raw_email, lifetime, now_secs)
+    }
+
+    /// Issuance pinned to `now_secs` seconds after the Unix epoch, so tests
+    /// can assert the exact signed expiry instead of wall-clock bounds.
+    fn issue_invite_with_lifetime_at(
+        &self,
+        raw_email: &str,
+        lifetime: Duration,
+        now_secs: u64,
+    ) -> Result<String, &'static str> {
         let email = auth::normalize_email(raw_email).map_err(|_| "invalid invited email")?;
         let Self::Allowlist { enrollment_key, .. } = self else {
             return Err("invite issuance requires allowlist mode");
@@ -417,7 +476,15 @@ impl RegistrationPolicy {
         if !self.admits(&email) {
             return Err("email is not allowlisted");
         }
-        Ok(STANDARD.encode(invite_digest(enrollment_key, &email)))
+        // Sub-second lifetimes are refused outright: `as_secs()` truncates
+        // them to zero and would silently mint an already-expired token.
+        if lifetime < MIN_INVITE_LIFETIME || lifetime > INVITE_MAX_LIFETIME {
+            return Err("invite lifetime must be at least one second and at most seven days");
+        }
+        let expires_at = now_secs
+            .checked_add(lifetime.as_secs())
+            .ok_or("invite expiry does not fit the token format")?;
+        Ok(invite_token(enrollment_key, &email, expires_at))
     }
 
     fn admits(&self, normalized_email: &str) -> bool {
@@ -436,10 +503,38 @@ impl RegistrationPolicy {
     }
 }
 
-fn invite_digest(key: &[u8; 32], normalized_email: &str) -> [u8; 32] {
+/// Default and maximum invite lifetime. Invites are handed to one person and
+/// verified by email within a day, so seven days covers slow operators while
+/// keeping a leaked token useful only for a bounded window.
+const INVITE_MAX_LIFETIME: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+
+/// Shortest accepted invite lifetime. Below one second, `Duration::as_secs`
+/// truncates to zero and issuance would sign an already-expired token, so
+/// sub-second requests are rejected explicitly instead.
+const MIN_INVITE_LIFETIME: Duration = Duration::from_secs(1);
+
+/// `expires_at` seconds (big-endian) followed by the HMAC tag.
+const INVITE_TOKEN_LEN: usize = 8 + 32;
+
+fn unix_now_secs() -> Option<u64> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|elapsed| elapsed.as_secs())
+}
+
+fn invite_token(key: &[u8; 32], normalized_email: &str, expires_at_unix: u64) -> String {
+    let mut token = [0u8; INVITE_TOKEN_LEN];
+    token[..8].copy_from_slice(&expires_at_unix.to_be_bytes());
+    token[8..].copy_from_slice(&invite_mac(key, normalized_email, expires_at_unix));
+    STANDARD.encode(token)
+}
+
+fn invite_mac(key: &[u8; 32], normalized_email: &str, expires_at_unix: u64) -> [u8; 32] {
     let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts 32-byte keys");
-    mac.update(b"zrotext-registration-invite-v1\0");
+    mac.update(b"zrotext-registration-invite-v2\0");
     mac.update(normalized_email.as_bytes());
+    mac.update(&expires_at_unix.to_be_bytes());
     mac.finalize().into_bytes().into()
 }
 
