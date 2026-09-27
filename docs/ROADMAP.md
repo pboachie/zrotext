@@ -330,7 +330,7 @@ Keep message content out of reach of the server, and give owners control of thei
 |---|---|---|
 | Owner accounts, MFA and scoped API keys | Build | [#43](https://github.com/pboachie/zrotext/pull/43), [#172](https://github.com/pboachie/zrotext/pull/172), [#175](https://github.com/pboachie/zrotext/pull/175), [MFA operations](MFA-OPERATIONS.md), [#240](https://github.com/pboachie/zrotext/pull/240), [#207](https://github.com/pboachie/zrotext/pull/207), [#217](https://github.com/pboachie/zrotext/pull/217), [Recovery tests](../crates/server/src/auth/account/tests.rs) |
 | Sealed-content protocol (client-side keys) | Design | [Draft 01](../protocol/drafts/zt-sealed-draft-01.md), [draft 02 proposal](../protocol/drafts/zt-sealed-draft-02-proposal.md), [#159](https://github.com/pboachie/zrotext/pull/159), [#162](https://github.com/pboachie/zrotext/pull/162), [#260](https://github.com/pboachie/zrotext/pull/260) |
-| Data export and account deletion | Build | [Data retention](SELF-HOSTING.md#data-retention), [#267](https://github.com/pboachie/zrotext/pull/267), [#271](https://github.com/pboachie/zrotext/pull/271), [#320](https://github.com/pboachie/zrotext/pull/320) retention evidence covers history pruning only |
+| Data export and account deletion | Build | [Data retention](SELF-HOSTING.md#data-retention), [#267](https://github.com/pboachie/zrotext/pull/267), [#271](https://github.com/pboachie/zrotext/pull/271) retention evidence covers history pruning only |
 
 <a id="cap-accounts"></a>
 <details>
@@ -366,7 +366,7 @@ Keep message content out of reach of the server, and give owners control of thei
 
 - [x] Owner takeout of messages with events, devices and the account profile (`GET /v1/owner/export`, no-store)
 - [x] Cursor-paginated full-history takeout via `?before=` with tenant-safe 404s
-- [x] Owner account erasure in one password-proven transaction, covering metering and billing rows and reporting retained sets (`POST /v1/owner/erasure`, fail-closed on schema-protected consent rows)
+- [ ] Account erasure that covers metering and billing records where allowed
 - [ ] Extend export and erasure to future contacts, templates, workflow state and assistant access records
 
 </details>
