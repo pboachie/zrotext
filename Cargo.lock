@@ -2921,6 +2921,7 @@ dependencies = [
  "p256",
  "rand 0.10.3",
  "reqwest",
+ "ring",
  "serde",
  "serde_json",
  "sha2",
