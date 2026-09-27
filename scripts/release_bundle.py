@@ -35,6 +35,10 @@ WEB_FILES = (
     "web/owner/sms-lines.html",
     "web/owner/sms-lines.js",
     "web/owner/sms-line-signing.js",
+    "web/owner/template-preview.html",
+    "web/owner/template-preview.js",
+    "web/owner/template-preview-core.js",
+    "web/owner/template-preview.css",
     "crates/server/static/billing-dashboard.html",
     "crates/server/static/billing-dashboard.js",
 )

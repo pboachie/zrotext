@@ -424,9 +424,10 @@
           "short": "Templates and scheduling",
           "stage": "planned",
           "evidence": [
-            ["product proposal", "PRODUCT-PLAN.md#business-inbox"]
+            ["product proposal", "PRODUCT-PLAN.md#business-inbox"],
+            ["Local preview only", "TEMPLATE-PREVIEW.md"]
           ],
-          "evidence_note": "proposal only; no runtime implementation",
+          "evidence_note": "browser-only personalized text preview; no saved templates, segment estimate or scheduling implementation",
           "done": [],
           "todo": [
             "Personalized templates, segment preview, recipient-local timing and explicit expiry",
