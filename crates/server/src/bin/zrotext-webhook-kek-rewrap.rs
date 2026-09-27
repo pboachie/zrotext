@@ -6,7 +6,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use std::{env, error::Error};
 use zeroize::Zeroizing;
 use zrotext_server::webhook_worker::{
-    WebhookSecretVault, check_runtime_keys, rewrap_endpoint_secrets,
+    RewrapError, WebhookSecretVault, check_runtime_keys, rewrap_endpoint_secrets,
 };
 
 #[tokio::main]
@@ -41,7 +41,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if !locked {
         return Err("another webhook key rewrap is running".into());
     }
-    check_runtime_keys(&mut db, &vault).await?;
+    if let Err(error) = check_runtime_keys(&mut db, &vault).await {
+        // Endpoint IDs only; no ciphertext, secret, or key material.
+        if let RewrapError::Unreadable { endpoint_ids, .. } = &error {
+            for endpoint_id in endpoint_ids {
+                eprintln!("unreadable endpoint signing secret: endpoint_id={endpoint_id}");
+            }
+        }
+        return Err(error.into());
+    }
     let unknown: i64 = db
         .query_one(
             "SELECT count(*) FROM webhook_endpoints
