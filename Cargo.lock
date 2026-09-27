@@ -2898,6 +2898,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "zrotext-failover-quorum"
+version = "0.1.0"
+
+[[package]]
 name = "zrotext-migrator"
 version = "0.1.0"
 dependencies = [
@@ -2955,5 +2959,6 @@ dependencies = [
  "zeroize",
  "zrotext-delivery-store",
  "zrotext-domain",
+ "zrotext-failover-quorum",
  "zrotext-postgres-connection",
 ]
