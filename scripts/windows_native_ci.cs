@@ -320,6 +320,26 @@ public static class Native {
         } finally {DestroyEnvironmentBlock(block);}
     }
 
+    public static string DiagnosticState = "not-started";
+    // Diagnostic only, never gating: start a fixed trivial command as the
+    // fixture user in its own kill-on-close job and report a fixed class.
+    static string DiagnosticLaunch(IntPtr token,string app,string command,IntPtr env,string cwd,IntPtr desktopPath) {
+        IntPtr job=CreateJobObjectW(IntPtr.Zero,null);
+        if(job==IntPtr.Zero)return "job-failed";
+        try {
+            var limits=new ExtendedLimit();limits.basic.flags=0x2000;
+            if(!SetInformationJobObject(job,9,ref limits,Marshal.SizeOf(typeof(ExtendedLimit))))return "job-limit-failed";
+            var startup=new Startup{cb=Marshal.SizeOf(typeof(Startup)),desktop=desktopPath};
+            Process p;
+            if(!CreateProcessWithTokenW(token,LogonWithProfile,app,new StringBuilder(command),CreateFlags,env,cwd,ref startup,out p))return "create-failed-"+Marshal.GetLastWin32Error();
+            try {
+                if(!AssignProcessToJobObject(job,p.process)){TerminateProcess(p.process,99);WaitForSingleObject(p.process,10000);return "assign-failed";}
+                if(ResumeThread(p.thread)==0xffffffff)return "resume-failed";
+                if(WaitForSingleObject(p.process,30000)!=0)return "timeout["+JobImages(job,app)+"]";
+                uint code;return GetExitCodeProcess(p.process,out code)?"exit-"+ExitCodeClass(code):"exit-query-failed";
+            } finally {CloseHandle(p.thread);CloseHandle(p.process);}
+        } finally {TerminateJobObject(job,99);Thread.Sleep(500);CloseHandle(job);}
+    }
     public static int Run(string user,string expectedSid,SecureString password,string executable,string command,string environment,string cwd,string probeExecutable) {
         Stage="not-started";ErrorCode=0;ProbeState="not-started";CleanupState="not-started";
         LaunchState="not-started";ResumeState="not-attempted";WaitState="not-attempted";ExitState="not-queried";
@@ -356,6 +376,10 @@ public static class Native {
             // PowerShell never reached its first script line with only the fixed
             // variables; give the child the standard user's own default block.
             env=Marshal.StringToHGlobalUni(UserEnvironment(tokenHandle,environment));
+            string system=Environment.GetFolderPath(Environment.SpecialFolder.System);
+            DiagnosticState="cmd="+DiagnosticLaunch(tokenHandle,System.IO.Path.Combine(system,"cmd.exe"),"cmd.exe /d /c exit 0",env,cwd,desktopPath)
+                +"; powershell="+DiagnosticLaunch(tokenHandle,System.IO.Path.Combine(system,@"WindowsPowerShell\v1.0\powershell.exe"),"powershell.exe -NoLogo -NoProfile -NonInteractive -Command exit 0",env,cwd,desktopPath)
+                +"; pwsh="+DiagnosticLaunch(tokenHandle,executable,"pwsh.exe -NoLogo -NoProfile -NonInteractive -Command exit 0",env,cwd,desktopPath);
             for(int phase=0;phase<2;phase++) {
             bool probing=phase==0;
             if(probing)ProbeState="running";
