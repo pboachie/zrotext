@@ -258,8 +258,8 @@ Connect a dedicated Android phone and SIM, send and receive SMS through the serv
 - [x] Read-only ambiguous opt-out review queue with recipient metadata and event times
 - [x] Opt-out hold and review decision forms ([#245](https://github.com/pboachie/zrotext/pull/245))
 - [x] SMS lines page: approval key, line list and activation approval ([#251](https://github.com/pboachie/zrotext/pull/251), [#255](https://github.com/pboachie/zrotext/pull/255))
+- [x] Device health and recent messages refresh every 15 seconds while the owner page is visible; pagination and active interactions pause their list ([#295](https://github.com/pboachie/zrotext/pull/295))
 - [ ] SIM, queue depth and radio readiness per device
-- [ ] Live updates instead of snapshots
 
 </details>
 
@@ -272,7 +272,7 @@ Make ZROtext practical to run, upgrade and build against.
 | Compose deployment and upgrade guides | Build | [#35](https://github.com/pboachie/zrotext/pull/35), [#105](https://github.com/pboachie/zrotext/pull/105), [#173](https://github.com/pboachie/zrotext/pull/173), [#183](https://github.com/pboachie/zrotext/pull/183), [#259](https://github.com/pboachie/zrotext/pull/259), [#275](https://github.com/pboachie/zrotext/pull/275) |
 | Signed release artifacts and SBOMs | Build | [#86](https://github.com/pboachie/zrotext/pull/86), [#135](https://github.com/pboachie/zrotext/pull/135), [#169](https://github.com/pboachie/zrotext/pull/169), [#197](https://github.com/pboachie/zrotext/pull/197) |
 | Stable public API v1 and client SDK | Design | [API outline](ARCHITECTURE.md#planned-api-v1-outline), [test-only sealed reader](../sdk/typescript/README.md) |
-| Setup diagnostics and device guidance | Build | [#81](https://github.com/pboachie/zrotext/pull/81), [#189](https://github.com/pboachie/zrotext/pull/189), [#268](https://github.com/pboachie/zrotext/pull/268) |
+| Setup diagnostics and device guidance | Build | [#81](https://github.com/pboachie/zrotext/pull/81), [#189](https://github.com/pboachie/zrotext/pull/189), [#268](https://github.com/pboachie/zrotext/pull/268), [#313](https://github.com/pboachie/zrotext/pull/313), [Android review](ANDROID-ACCESSIBILITY.md) Android review covers the current Compose screen and automated/emulator checks; interactive assistive-technology validation remains open |
 
 <a id="cap-compose"></a>
 <details>
@@ -317,7 +317,7 @@ Make ZROtext practical to run, upgrade and build against.
 - [x] Owner enrollment, account setup and mail diagnostics
 - [x] SMS and RCS readiness guidance for the gateway phone
 - [x] Accessibility review of the owner web pages ([review](ACCESSIBILITY-REVIEW.md))
-- [ ] Accessibility review of the Android app
+- [x] Accessibility review of the Android app ([review](ANDROID-ACCESSIBILITY.md))
 - [ ] Supported-device list backed by repeatable tests
 
 </details>
