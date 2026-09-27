@@ -141,6 +141,10 @@ login-client cookie issued for that address. Each check is a single indexed read
 with no password or signature work. Admitted requests spend the same per-subject
 budget plus a separate verified-route ceiling ten times the anonymous one, which
 made-up subjects cannot reach. Refused requests leave no counter rows.
+A background worker deletes idle counter rows only after the longest window of
+their budget, plus one minute, has passed, so pruning never resets a budget
+that is still in force. Retention is derived from the same policy table the
+budgets use; scopes it does not know are kept for two minutes.
 
 The login-client cookie (`__Host-zrotext_login_client`; HttpOnly,
 SameSite=Strict, 180 days) is set after a full sign-in from a browser that lacks

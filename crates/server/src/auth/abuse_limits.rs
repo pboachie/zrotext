@@ -20,8 +20,36 @@ use tokio_postgres::{Client, GenericClient, Transaction};
 /// It is a backstop against many real subjects, not the per-subject limit.
 const VERIFIED_CEILING_FACTOR: i32 = 10;
 
-#[derive(Clone, Copy, Debug)]
-pub enum Limit {
+/// Counter rows idle this much longer than their longest window are pruned.
+/// The slack absorbs the gap between the prune query's `now()` and the
+/// `clock_timestamp()` the charge function records.
+const PRUNE_SLACK_SECONDS: i32 = 60;
+
+/// Retention for scopes that no `Limit` or `OTHER_SCOPES` entry names, such
+/// as the deployment smoke check's scope.
+const DEFAULT_RETENTION_SECONDS: i32 = 120;
+
+/// Scopes charged through `auth_abuse_consume` outside `Limit`, with their
+/// longest window in seconds. `inbound_daily` is charged by
+/// `inbound::consume_storage_budget` with fixed 24-hour windows.
+const OTHER_SCOPES: &[(&str, i32)] = &[("inbound_daily", 86_400)];
+
+/// Declares `Limit` and `Limit::ALL` from one list so a new variant cannot be
+/// left out of prune retention.
+macro_rules! limits {
+    ($($variant:ident),+ $(,)?) => {
+        #[derive(Clone, Copy, Debug)]
+        pub enum Limit {
+            $($variant),+
+        }
+
+        impl Limit {
+            pub const ALL: &'static [Limit] = &[$(Self::$variant),+];
+        }
+    };
+}
+
+limits! {
     OutboundAccept,
     Registration,
     Login,
@@ -43,6 +71,14 @@ pub enum Limit {
 }
 
 impl Limit {
+    /// The longest window, route or subject, that this limit's rows track.
+    fn longest_window_seconds(self) -> i32 {
+        let (_, _, global_seconds, subject) = self.policy();
+        subject.map_or(global_seconds, |(_, subject_seconds)| {
+            global_seconds.max(subject_seconds)
+        })
+    }
+
     fn policy(self) -> (&'static str, i32, i32, Option<(i32, i32)>) {
         // (scope, global attempts, global window seconds, subject policy)
         match self {
@@ -179,29 +215,42 @@ async fn charge(
     Ok(row.get(0))
 }
 
+/// Per-scope prune retention in seconds, derived from each scope's longest
+/// window. A counter row's `updated_at` is never earlier than its
+/// `window_started_at`, so a row idle past its longest window has no budget
+/// left to enforce; deleting it cannot reset a live window.
+fn prune_retention() -> Vec<(&'static str, i32)> {
+    let mut retention: Vec<(&'static str, i32)> = Vec::new();
+    let windows = Limit::ALL
+        .iter()
+        .map(|limit| (limit.policy().0, limit.longest_window_seconds()))
+        .chain(OTHER_SCOPES.iter().copied());
+    for (scope, window) in windows {
+        let seconds = (window + PRUNE_SLACK_SECONDS).max(DEFAULT_RETENTION_SECONDS);
+        match retention.iter_mut().find(|(known, _)| *known == scope) {
+            Some((_, kept)) => *kept = (*kept).max(seconds),
+            None => retention.push((scope, seconds)),
+        }
+    }
+    retention
+}
+
 /// Bounded cleanup; safe for concurrent workers due to SKIP LOCKED.
 pub async fn prune(client: &Client) -> Result<u64, tokio_postgres::Error> {
+    let (scopes, seconds): (Vec<&str>, Vec<i32>) = prune_retention().into_iter().unzip();
     client
         .execute(
-            "WITH stale AS (
-                SELECT scope,subject_hash FROM auth_abuse_counters
-                WHERE updated_at < now() - CASE scope
-                    WHEN 'registration' THEN interval '25 hours'
-                    WHEN 'password_reset_request' THEN interval '25 hours'
-                    WHEN 'password_reset_confirm' THEN interval '61 minutes'
-                    WHEN 'api_key_create' THEN interval '25 hours'
-                    WHEN 'inbound_daily' THEN interval '25 hours'
-                    WHEN 'login' THEN interval '16 minutes'
-                    WHEN 'resend' THEN interval '16 minutes'
-                    WHEN 'mfa_manage' THEN interval '16 minutes'
-                    WHEN 'password_change' THEN interval '16 minutes'
-                    WHEN 'sessions_revoke_others' THEN interval '16 minutes'
-                    WHEN 'mfa_challenge' THEN interval '6 minutes'
-                    ELSE interval '2 minutes' END
-                ORDER BY updated_at LIMIT 5000 FOR UPDATE SKIP LOCKED
+            "WITH retention(scope, seconds) AS (
+                SELECT * FROM unnest($1::text[], $2::int4[])
+             ), stale AS (
+                SELECT a.scope,a.subject_hash FROM auth_abuse_counters a
+                LEFT JOIN retention r ON r.scope=a.scope
+                WHERE a.updated_at < now() - make_interval(secs => $3::int4)
+                  AND a.updated_at < now() - make_interval(secs => coalesce(r.seconds, $3::int4))
+                ORDER BY a.updated_at LIMIT 5000 FOR UPDATE OF a SKIP LOCKED
              ) DELETE FROM auth_abuse_counters a USING stale s
              WHERE a.scope=s.scope AND a.subject_hash=s.subject_hash",
-            &[],
+            &[&scopes, &seconds, &DEFAULT_RETENTION_SECONDS],
         )
         .await
 }
