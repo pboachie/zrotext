@@ -140,9 +140,7 @@ async fn drain_jobs<T: BillingJobs>(
     let mut empty = false;
     while let Some(result) = jobs.join_next().await {
         #[cfg(test)]
-        if let Some(diagnostic) = failure_diagnostics::classify(&result) {
-            eprintln!("billing drain test failure: {diagnostic}");
-        }
+        failure_diagnostics::emit(&result);
         match result {
             Ok(Ok(true)) => {}
             Ok(Ok(false)) => empty = true,

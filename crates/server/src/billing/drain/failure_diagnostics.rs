@@ -3,9 +3,31 @@
 
 use super::BillingError;
 use crate::{billing::worker::ProviderFailure, runtime_db::ConnectError};
+use std::cell::RefCell;
 use tokio::task::JoinError;
 
 type JobResult = Result<Result<bool, BillingError>, JoinError>;
+
+const PREFIX: &str = "billing drain test failure: ";
+
+thread_local! {
+    /// Lines emitted on this thread, so tests can observe the exact output
+    /// without re-running the test binary in a child process.
+    static EMITTED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Writes the fixed failure class for a failed job to the test output.
+pub(super) fn emit(result: &JobResult) {
+    if let Some(diagnostic) = classify(result) {
+        let line = format!("{PREFIX}{diagnostic}");
+        eprintln!("{line}");
+        EMITTED.with(|emitted| emitted.borrow_mut().push(line));
+    }
+}
+
+fn take_emitted() -> Vec<String> {
+    EMITTED.with(|emitted| std::mem::take(&mut *emitted.borrow_mut()))
+}
 
 pub(super) fn classify(result: &JobResult) -> Option<String> {
     let error = match result {
@@ -176,8 +198,10 @@ mod tests {
         assert_eq!(classify(&Err(cancelled)).as_deref(), Some("task_cancelled"));
     }
 
-    #[tokio::test]
-    async fn synthetic_capacity_batch_has_safe_output() {
+    // The drain loop runs on the test thread with the current-thread runtime,
+    // so the thread-local record holds exactly what this batch wrote.
+    #[tokio::test(flavor = "current_thread")]
+    async fn failed_batch_emits_safe_diagnostic() {
         use super::super::{BillingJobs, drain_jobs};
         use std::sync::{Arc, atomic::AtomicBool};
         use tokio::sync::Semaphore;
@@ -188,6 +212,7 @@ mod tests {
                 Err(BillingError::RuntimeDatabase(ConnectError::Capacity))
             }
         }
+        take_emitted();
         assert!(
             drain_jobs(
                 &Arc::new(CapacityJobs),
@@ -200,53 +225,14 @@ mod tests {
             )
             .await
         );
-    }
-
-    #[test]
-    fn failed_batch_emits_safe_diagnostic_in_test_output() {
-        use std::{
-            process::{Command, Stdio},
-            time::{Duration, Instant},
-        };
-        let mut child = Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact", "billing::drain::failure_diagnostics::tests::synthetic_capacity_batch_has_safe_output",
-                "--nocapture", "--test-threads=1",
-            ])
-            .stdout(Stdio::piped()).stderr(Stdio::piped())
-            .spawn().expect("synthetic diagnostic child could not start");
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            match child.try_wait() {
-                Ok(Some(_)) => break,
-                Ok(None) if Instant::now() < deadline => {
-                    std::thread::sleep(Duration::from_millis(10))
-                }
-                _ => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    panic!(
-                        "synthetic diagnostic child exceeded its deadline or could not be observed"
-                    );
-                }
-            }
-        }
-        // Only the one fixed synthetic test runs; its output fits within the pipe buffers.
-        let output = child
-            .wait_with_output()
-            .expect("read synthetic diagnostic output");
-        assert!(
-            output.status.success(),
-            "synthetic diagnostic child must pass"
-        );
-        let combined = [output.stdout, output.stderr].concat();
-        let output = String::from_utf8(combined).expect("synthetic child uses UTF-8 output");
-        assert!(
-            output.contains("billing drain test failure: runtime_capacity"),
+        let emitted = take_emitted();
+        assert_eq!(
+            emitted,
+            ["billing drain test failure: runtime_capacity"],
             "failed drain must emit the fixed typed diagnostic"
         );
         assert!(
-            !output.contains(SENTINEL),
+            emitted.iter().all(|line| !line.contains(SENTINEL)),
             "diagnostic must omit synthetic input"
         );
     }
