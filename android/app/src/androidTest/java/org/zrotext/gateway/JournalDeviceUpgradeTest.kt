@@ -10,15 +10,16 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class JournalDeviceUpgradeTest {
-    @Test fun installedJournalOpensAtVersionElevenWithIdentityBoundOutbox() {
+    @Test fun installedJournalOpensAtVersionTwelveWithIdentityBoundOutbox() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val db = SmsJournalDatabase.get(context)
-        assertEquals(11, db.openHelper.readableDatabase.version)
+        assertEquals(12, db.openHelper.readableDatabase.version)
         db.attempts().nextAlphaEvent("11111111-1111-4111-8111-111111111111",
             "22222222-2222-4222-8222-222222222222", "a".repeat(64))
         db.openHelper.readableDatabase.query("SELECT COUNT(*) FROM inbound_windows").close()
         db.openHelper.readableDatabase.query("SELECT COUNT(*) FROM inbound_events").close()
         db.openHelper.readableDatabase.query("SELECT COUNT(*) FROM inbound_uploads").close()
+        db.openHelper.readableDatabase.query("SELECT COUNT(*) FROM sealed_preparations").close()
         db.openHelper.readableDatabase.query("PRAGMA table_info(sms_attempts)").use { cursor ->
             val name = cursor.getColumnIndexOrThrow("name")
             var found = false
