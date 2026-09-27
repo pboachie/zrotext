@@ -33,7 +33,6 @@ test("root enrollment and manifest high-water survive a second client connection
     assert.equal(persisted.lastTrustedTimeMs, now + 1n);
     await second.acceptManifest(manifest, now + 2n); // Identical semantic replay is safe.
     assert.equal((await first.read()).lastTrustedTimeMs, now + 2n);
-    await assert.rejects(first.acceptManifest(manifest, now + 1n), /clock moved backwards/);
   } finally {
     first.close();
     second.close();
@@ -49,7 +48,7 @@ test("failed verification leaves the durable high-water unchanged", async () => 
     await assert.rejects(store.acceptManifest(changed, now + 1n), /pin mismatch/);
     const state = await store.read();
     assert.equal(state.trust.version, 0n);
-    assert.equal(state.lastTrustedTimeMs, now);
+    assert.equal(state.lastTrustedTimeMs, 0n);
   } finally { store.close(); }
 });
 
@@ -131,5 +130,135 @@ test("corrupt or replaced storage fails closed and cannot be silently reenrolled
     });
     await assert.rejects(store.read(), /corrupt stored state/);
     await assert.rejects(store.enroll(rootPin, fingerprint, now + 1n), /stale or corrupt state/);
+
+    // The documented recovery deletes only an undecodable row, then enrollment is explicit.
+    assert.equal(await store.clearCorruptState(), true);
+    assert.equal(await store.read(), null);
+    assert.equal(await store.clearCorruptState(), false);
+    await store.enroll(rootPin, fingerprint, now + 1n);
+    await assert.rejects(store.clearCorruptState(), /stored state is valid; use reenroll/);
+    assert.equal((await store.read()).trust.generation, 1n);
   } finally { store.close(); }
 });
+
+const skew = 300_000n; // DRAFT02_CLOCK_SKEW_MS
+const issued = new DataView(manifest.buffer, manifest.byteOffset).getBigUint64(37, false);
+
+async function writeRawState(name, patch) {
+  await new Promise((resolve, reject) => {
+    const raw = indexedDB.open(name, 1);
+    raw.onsuccess = () => {
+      const db = raw.result;
+      const tx = db.transaction("owner-root-high-water", "readwrite");
+      const store = tx.objectStore("owner-root-high-water");
+      const get = store.get("state");
+      get.onsuccess = () => store.put({ ...get.result, ...patch }, "state");
+      tx.oncomplete = () => { db.close(); resolve(); };
+      tx.onabort = () => { db.close(); reject(tx.error); };
+    };
+    raw.onerror = () => reject(raw.error);
+  });
+}
+
+test("small backward clock steps are tolerated without moving the high-water back", async () => {
+  const store = await Draft02TrustStore.open(`ztse-draft02-${randomUUID()}`);
+  try {
+    const enrolled = await store.enroll(rootPin, fingerprint, now);
+    assert.equal(enrolled.lastTrustedTimeMs, 0n); // Enrollment carries no signed time.
+    await store.acceptManifest(manifest, now + 250_000n);
+    assert.equal((await store.read()).lastTrustedTimeMs, now + 250_000n);
+    // An NTP correction a few seconds (up to the skew) backwards still verifies.
+    await store.acceptManifest(manifest, now + 245_000n);
+    await store.acceptManifest(manifest, now + 250_000n - skew);
+    assert.equal((await store.read()).lastTrustedTimeMs, now + 250_000n);
+    // A step larger than the skew is still refused.
+    await assert.rejects(store.acceptManifest(manifest, now + 250_000n - skew - 1n), /clock moved backwards/);
+    assert.equal((await store.read()).lastTrustedTimeMs, now + 250_000n);
+  } finally { store.close(); }
+});
+
+test("a far-ahead clock reading cannot ratchet the store past signed evidence", async () => {
+  const store = await Draft02TrustStore.open(`ztse-draft02-${randomUUID()}`);
+  try {
+    await store.enroll(rootPin, fingerprint, now);
+    // A reading years ahead fails verification and persists nothing.
+    await assert.rejects(store.acceptManifest(manifest, now + 10n ** 12n), /stale or future signed object/);
+    assert.equal((await store.read()).lastTrustedTimeMs, 0n);
+    // A reading near the end of the signed window is capped at issuedMs + skew.
+    await store.acceptManifest(manifest, issued + 3_000_000n);
+    assert.equal((await store.read()).lastTrustedTimeMs, issued + skew);
+    // A corrected clock back at the real time is still accepted.
+    await store.acceptManifest(manifest, now + 1n);
+    assert.equal((await store.read()).trust.version, 1n);
+  } finally { store.close(); }
+});
+
+test("a far-future stored high-water recovers only through an explicit compare-and-swap reset", async () => {
+  const name = `ztse-draft02-${randomUUID()}`;
+  const store = await Draft02TrustStore.open(name);
+  try {
+    await store.enroll(rootPin, fingerprint, now);
+    await store.acceptManifest(manifest, now + 1n);
+    // Simulate a high-water saved from a bad clock (for example by an earlier release).
+    const farFuture = now + 50n * 365n * 86_400_000n;
+    await writeRawState(name, { lastTrustedTimeMs: farFuture.toString() });
+    await assert.rejects(store.acceptManifest(manifest, now + 2n), /clock moved backwards/);
+
+    const current = await store.read();
+    assert.equal(current.lastTrustedTimeMs, farFuture);
+    const stale = { ...current, lastTrustedTimeMs: now };
+    await assert.rejects(store.resetTrustedTime(stale, now + 2n), /stale or corrupt state/);
+    const reset = await store.resetTrustedTime(current, now + 2n);
+    assert.equal(reset.lastTrustedTimeMs, now + 2n);
+    assert.equal(reset.trust.version, 1n); // The version/digest ratchet is kept.
+    await store.acceptManifest(manifest, now + 3n);
+    assert.equal((await store.read()).lastTrustedTimeMs, now + 3n);
+    // Replaying the old snapshot cannot reset again.
+    await assert.rejects(store.resetTrustedTime(current, now), /stale or corrupt state/);
+  } finally { store.close(); }
+});
+
+test("reenroll replaces the root only against the current snapshot", async () => {
+  const name = `ztse-draft02-${randomUUID()}`;
+  const store = await Draft02TrustStore.open(name);
+  try {
+    await store.enroll(rootPin, fingerprint, now);
+    await store.acceptManifest(manifest, now + 1n);
+    const before = await store.read();
+    await assert.rejects(store.reenroll(null, rootPin, fingerprint, now + 2n), /requires the current snapshot/);
+    const wrong = Uint8Array.from(fingerprint);
+    wrong[0] ^= 1;
+    await assert.rejects(store.reenroll(before, rootPin, wrong, now + 2n), /root pin comparison/);
+    await assert.rejects(store.reenroll({ ...before, lastTrustedTimeMs: 7n }, rootPin, fingerprint, now + 2n),
+      /stale or corrupt state/);
+    assert.equal((await store.read()).trust.version, 1n);
+
+    const replaced = await store.reenroll(before, bytes(rotation.old_root_pin_b64),
+      bytes(rotation.old_root_fingerprint_b64), now + 2n);
+    assert.equal(replaced.trust.version, 0n);
+    assert.equal(replaced.lastTrustedTimeMs, 0n);
+    await store.acceptManifest(bytes(rotation.old_manifest_b64), now + 3n);
+    assert.equal((await store.read()).trust.version, 1n);
+  } finally { store.close(); }
+});
+
+test("an open store closes for another connection's version upgrade instead of blocking it",
+  { timeout: 5000 }, async () => {
+    const name = `ztse-draft02-${randomUUID()}`;
+    const store = await Draft02TrustStore.open(name);
+    await store.enroll(rootPin, fingerprint, now);
+    let upgraded;
+    try {
+      upgraded = await new Promise((resolve, reject) => {
+        const request = indexedDB.open(name, 2);
+        request.onblocked = () => reject(new Error("upgrade blocked"));
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      assert.equal(upgraded.version, 2);
+      await assert.rejects(store.read(), { name: "InvalidStateError" });
+    } finally {
+      store.close(); // Lets a blocked upgrade finish so a failing run still exits.
+      upgraded?.close();
+    }
+  });

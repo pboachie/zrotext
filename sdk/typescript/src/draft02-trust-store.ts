@@ -1,7 +1,7 @@
 /** Experimental profile-02 trust persistence. No production sealed route uses this. */
 
 import {
-  advanceManifestTrust02, enrollRootPin02, verifyManifest02, verifyRootTransition02,
+  advanceManifestTrust02, DRAFT02_CLOCK_SKEW_MS, enrollRootPin02, verifyManifest02, verifyRootTransition02,
   type Manifest02, type ManifestTrust02,
 } from "./draft02-manifest.js";
 
@@ -32,6 +32,18 @@ function fail(reason: string): never {
 function copy(bytes: Uint8Array, length: number): Uint8Array {
   if (!(bytes instanceof Uint8Array) || bytes.length !== length) fail("corrupt stored bytes");
   return Uint8Array.from(bytes);
+}
+
+/** Caller input copied before the first await; the verifiers check its size. */
+function input(bytes: Uint8Array, what: string): Uint8Array {
+  if (!(bytes instanceof Uint8Array)) fail(`${what} must be a Uint8Array`);
+  return Uint8Array.from(bytes);
+}
+
+/** A caller-owned snapshot copied (and validated) before the first await. */
+function captured(snapshot: Draft02TrustSnapshot): Draft02TrustSnapshot {
+  try { return decode(encode(snapshot)); }
+  catch { return fail("malformed expected snapshot"); }
 }
 
 function integer(value: unknown): bigint {
@@ -93,8 +105,25 @@ function sameSnapshot(a: Draft02TrustSnapshot, b: Draft02TrustSnapshot): boolean
 }
 
 function checkedTime(nowMs: bigint, previous?: bigint): void {
-  if (nowMs < 0n || nowMs > maxSigned) fail("trusted time out of range");
-  if (previous !== undefined && nowMs < previous) fail("clock moved backwards");
+  if (typeof nowMs !== "bigint" || nowMs < 0n || nowMs > maxSigned) fail("trusted time out of range");
+  // A backward step within the profile's clock skew (NTP slew or correction) is tolerated;
+  // the high-water itself never moves backwards.
+  if (previous !== undefined && nowMs < previous - DRAFT02_CLOCK_SKEW_MS) fail("clock moved backwards");
+}
+
+/**
+ * The ratchet advances only as far as owner-signed evidence supports: a local clock
+ * reading past `issuedMs + skew` of the object just verified is not persisted, so one
+ * bad reading cannot push the high-water beyond what a later correct clock can meet.
+ */
+function ratchet(previous: bigint, nowMs: bigint, signedIssuedMs: bigint): bigint {
+  const bounded = nowMs < signedIssuedMs + DRAFT02_CLOCK_SKEW_MS ? nowMs : signedIssuedMs + DRAFT02_CLOCK_SKEW_MS;
+  return bounded > previous ? bounded : previous;
+}
+
+function transitionIssuedMs(bytes: Uint8Array): bigint {
+  // Only called after verifyRootTransition02 accepted this exact 343-byte body.
+  return new DataView(Uint8Array.from(bytes).buffer).getBigUint64(199, false);
 }
 
 function open(name: string): Promise<IDBDatabase> {
@@ -105,10 +134,16 @@ function open(name: string): Promise<IDBDatabase> {
       if (!request.result.objectStoreNames.contains(storeName)) request.result.createObjectStore(storeName);
     };
     request.onsuccess = () => {
-      if (!request.result.objectStoreNames.contains(storeName)) {
-        request.result.close();
+      const db = request.result;
+      if (!db.objectStoreNames.contains(storeName)) {
+        db.close();
         reject(new Error("ZTSE draft-02 trust store: missing object store"));
-      } else resolve(request.result);
+        return;
+      }
+      // Another tab or a newer schema asked to upgrade: step aside instead of blocking it.
+      // Later calls on this instance fail; the caller reopens.
+      db.onversionchange = () => db.close();
+      resolve(db);
     };
     request.onerror = () => reject(request.error ?? new Error("IndexedDB open failed"));
     request.onblocked = () => reject(new Error("ZTSE draft-02 trust store: database upgrade blocked"));
@@ -139,24 +174,97 @@ export class Draft02TrustStore {
     });
   }
 
-  /** Caller must compare the fingerprint through a channel independent of the relay. */
+  /**
+   * Caller must compare the fingerprint through a channel independent of the relay.
+   * Enrollment carries no owner-signed time, so the time high-water starts at zero and
+   * first advances on an accepted manifest; `nowMs` is only range-checked.
+   */
   async enroll(rootPin: Uint8Array, comparedFingerprint: Uint8Array, nowMs: bigint): Promise<Draft02TrustSnapshot> {
     checkedTime(nowMs);
-    const trust = await enrollRootPin02(rootPin, comparedFingerprint);
-    const next = { trust, lastTrustedTimeMs: nowMs };
+    const pin = input(rootPin, "root pin");
+    const fingerprint = input(comparedFingerprint, "compared fingerprint");
+    const trust = await enrollRootPin02(pin, fingerprint);
+    const next = { trust, lastTrustedTimeMs: 0n };
     await this.write(null, next);
     return decode(encode(next));
   }
 
-  /** The manifest is checked outside the transaction, then installed by atomic CAS. */
+  /**
+   * Explicit recovery: replace the enrolled root, discarding the stored version and time
+   * high-water. `expected` must equal the current stored snapshot (compare-and-swap), so a
+   * caller cannot discard anti-rollback state it has not read. The new fingerprint must be
+   * compared through a channel independent of the relay, exactly as for `enroll`.
+   */
+  async reenroll(expected: Draft02TrustSnapshot, rootPin: Uint8Array, comparedFingerprint: Uint8Array,
+    nowMs: bigint): Promise<Draft02TrustSnapshot> {
+    if (!expected) fail("reenroll requires the current snapshot");
+    checkedTime(nowMs);
+    const before = captured(expected);
+    const pin = input(rootPin, "root pin");
+    const fingerprint = input(comparedFingerprint, "compared fingerprint");
+    const trust = await enrollRootPin02(pin, fingerprint);
+    const next = { trust, lastTrustedTimeMs: 0n };
+    await this.write(before, next);
+    return decode(encode(next));
+  }
+
+  /**
+   * Explicit recovery from a bad clock: keep the root, generation, version and digest
+   * ratchet, but set the time high-water to `nowMs`, which may be earlier. `expected` must
+   * equal the current stored snapshot (compare-and-swap). Call only when the caller has
+   * independent reason to trust `nowMs`; the version ratchet still refuses older manifests.
+   */
+  async resetTrustedTime(expected: Draft02TrustSnapshot, nowMs: bigint): Promise<Draft02TrustSnapshot> {
+    if (!expected) fail("resetTrustedTime requires the current snapshot");
+    checkedTime(nowMs);
+    const before = captured(expected);
+    const next = { trust: before.trust, lastTrustedTimeMs: nowMs };
+    await this.write(before, next);
+    return decode(encode(next));
+  }
+
+  /**
+   * Explicit recovery from a row that `read()` rejects as corrupt or of an unknown schema.
+   * Deletes the row only if it does not decode; a valid enrollment is never removed here.
+   * Returns false when nothing is stored. Afterwards the caller must `enroll` again.
+   */
+  clearCorruptState(): Promise<boolean> {
+    return new Promise((resolve, reject) => {
+      const tx = this.db.transaction(storeName, "readwrite");
+      const request = tx.objectStore(storeName).get(stateKey);
+      let cleared = false;
+      let valid = false;
+      request.onsuccess = () => {
+        if (request.result === undefined) return;
+        try {
+          decode(request.result);
+          valid = true;
+          tx.abort();
+        } catch {
+          tx.objectStore(storeName).delete(stateKey);
+          cleared = true;
+        }
+      };
+      tx.oncomplete = () => resolve(cleared);
+      tx.onabort = () => reject(new Error(valid ? "ZTSE draft-02 trust store: stored state is valid; use reenroll" :
+        "ZTSE draft-02 trust store: clear aborted"));
+      tx.onerror = () => reject(tx.error ?? new Error("IndexedDB clear failed"));
+    });
+  }
+
+  /**
+   * The manifest is checked outside the transaction, then installed by atomic CAS.
+   * The persisted time is at most the manifest's signed `issuedMs` plus clock skew.
+   */
   async acceptManifest(bytes: Uint8Array, nowMs: bigint): Promise<Manifest02> {
+    const signed = input(bytes, "manifest");
     const before = await this.read();
     if (!before) fail("owner root is not enrolled");
     checkedTime(nowMs, before.lastTrustedTimeMs);
-    const manifest = await verifyManifest02(bytes, before.trust, nowMs);
+    const manifest = await verifyManifest02(signed, before.trust, nowMs);
     const next = {
       trust: advanceManifestTrust02(before.trust, manifest),
-      lastTrustedTimeMs: nowMs,
+      lastTrustedTimeMs: ratchet(before.lastTrustedTimeMs, nowMs, manifest.issuedMs),
     };
     await this.write(before, next);
     return manifest;
@@ -164,18 +272,24 @@ export class Draft02TrustStore {
 
   /** The expected new root must be pinned by the owner independently of the relay. */
   async acceptTransition(bytes: Uint8Array, expectedNewRoot: Uint8Array, nowMs: bigint): Promise<Draft02TrustSnapshot> {
+    // Verification and the time cap must read the same bytes, whatever the caller does
+    // with its buffers while this call is pending.
+    const signed = input(bytes, "transition");
+    const newRoot = input(expectedNewRoot, "expected new root");
     const before = await this.read();
     if (!before) fail("owner root is not enrolled");
     checkedTime(nowMs, before.lastTrustedTimeMs);
+    const trust = await verifyRootTransition02(signed, before.trust, nowMs, newRoot);
     const next = {
-      trust: await verifyRootTransition02(bytes, before.trust, nowMs, expectedNewRoot),
-      lastTrustedTimeMs: nowMs,
+      trust,
+      lastTrustedTimeMs: ratchet(before.lastTrustedTimeMs, nowMs, transitionIssuedMs(signed)),
     };
     await this.write(before, next);
     return decode(encode(next));
   }
 
   private write(before: Draft02TrustSnapshot | null, after: Draft02TrustSnapshot): Promise<void> {
+    const expected = before === null ? null : captured(before);
     const row = encode(after);
     return new Promise((resolve, reject) => {
       const tx = this.db.transaction(storeName, "readwrite");
@@ -184,7 +298,7 @@ export class Draft02TrustStore {
       request.onsuccess = () => {
         try {
           const current = request.result === undefined ? null : decode(request.result);
-          if (current === null ? before !== null : before === null || !sameSnapshot(current, before)) {
+          if (current === null ? expected !== null : expected === null || !sameSnapshot(current, expected)) {
             denied = true;
             tx.abort();
             return;

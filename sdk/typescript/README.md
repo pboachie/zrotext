@@ -52,6 +52,48 @@ it does not alter draft-01 acceptance. The pinned outbound draft-01 signature
 is valid high-`s`. Enforcing low-`s` requires a new profile revision and
 regenerated vectors.
 
+## Draft-02 trust store clock and recovery semantics
+
+`Draft02TrustStore` (`src/draft02-trust-store.ts`) is a test-only IndexedDB
+adapter for the profile-02 candidate. It persists the enrolled owner root, the
+manifest version/digest ratchet, and a time high-water `lastTrustedTimeMs`.
+Every write is a compare-and-swap against the snapshot the caller started from.
+
+- **Enrollment** carries no owner-signed time, so `enroll` stores a time
+  high-water of `0`; `nowMs` is only range-checked.
+- **Backward steps** of up to `DRAFT02_CLOCK_SKEW_MS` (five minutes) below the
+  high-water are accepted, so NTP slews and small corrections keep working. The
+  high-water itself never moves backwards. A larger step fails with
+  `clock moved backwards`.
+- **Forward jumps** cannot run the ratchet away. A far-future `nowMs` fails the
+  manifest or transition validity window and persists nothing. For an accepted
+  object the stored time is at most its signed `issuedMs` plus
+  `DRAFT02_CLOCK_SKEW_MS`, so a corrected clock is still within tolerance.
+- **Recovery is explicit.** Each method below needs caller intent and never runs
+  automatically:
+  - `resetTrustedTime(current, nowMs)` sets the time high-water to `nowMs`
+    (possibly earlier) and keeps the root and version/digest ratchet. Use it
+    only when the caller has independent reason to trust `nowMs`.
+  - `reenroll(current, rootPin, comparedFingerprint, nowMs)` replaces the
+    enrolled root and discards the version and time ratchet. Compare the
+    fingerprint through a channel independent of the relay, as for `enroll`.
+  - `clearCorruptState()` deletes the stored row only if it fails to decode
+    (corrupt, or an unknown schema) and returns whether it deleted one. It
+    refuses to remove a valid enrollment; call `enroll` afterwards.
+
+  `current` must equal the snapshot returned by `read()`. A stale or edited
+  snapshot fails with `stale or corrupt state`, so a caller cannot discard
+  anti-rollback state it has not read. Deleting the IndexedDB database by hand
+  also discards that state and is not a supported recovery path.
+- **Schema upgrades** from another tab or a newer version close this
+  connection (`onversionchange`) instead of blocking the upgrade. Later calls on
+  that instance fail; open the store again.
+
+The caller's clock is still not independently trusted, and browser storage
+can be deleted, evicted, or restored from an older copy. Production use needs
+an authenticated freshness checkpoint; see the
+[profile-02 manifest candidate](../../protocol/drafts/zt-sealed-draft-02-manifest-candidate.md).
+
 ## Test-only message-plane client (task 21 slice 3)
 
 `src/msgplane-client.ts` binds to the slice-1 sealed message-plane contract
