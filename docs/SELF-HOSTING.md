@@ -399,6 +399,17 @@ When changing these settings across multiple hubs, deploy the same values to
 every hub. A shorter value can make data eligible immediately, while a longer
 value cannot restore content already redacted or history already deleted.
 
+A separate maintenance task runs every 60 seconds and removes expired auth
+abuse counters, MFA login challenges, device authentication challenges, pairing
+requests, unverified pending owners, and password resets. Each task repeats
+while its batch comes back full, for at most 10 batches per pass. When a task or
+its database connection fails, the process log shows one
+`maintenance prune unavailable (task=NAME)` line per failure streak, where
+`NAME` is `connect`, `abuse_limits`, `mfa_challenges`, `enrollment`,
+`pending_owners`, or `password_resets`. The line has no SQL error text or row
+data, and a later success re-arms it. Investigate the failure before these
+tables grow.
+
 ## Source for modified deployments
 
 The server's HTML pages link to `/source`. Published release images point this link to the exact upstream commit used for the build. If you modify ZROtext and let people use your server over a network, set `SOURCE_URL` to a downloadable copy of the full corresponding source for **your running version**, including your changes and applicable build instructions. A link to the unmodified upstream repository is insufficient for a modified deployment. See [AGPL-3.0 section 13](https://www.gnu.org/licenses/agpl-3.0.en.html). Review the license for your situation.
