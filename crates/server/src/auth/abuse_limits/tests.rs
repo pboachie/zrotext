@@ -368,3 +368,163 @@ async fn exhausted_route_does_not_store_rejected_unique_subjects() {
         .await
         .unwrap();
 }
+
+fn retention_for(scope: &str) -> i32 {
+    prune_retention()
+        .into_iter()
+        .find(|(known, _)| *known == scope)
+        .map_or(DEFAULT_RETENTION_SECONDS, |(_, seconds)| seconds)
+}
+
+#[test]
+fn every_limit_keeps_rows_longer_than_its_longest_window() {
+    for limit in Limit::ALL {
+        let (scope, _, global_seconds, subject) = limit.policy();
+        let retention = retention_for(scope);
+        assert!(
+            retention > global_seconds,
+            "{scope}: route window {global_seconds}s outlives prune retention {retention}s"
+        );
+        if let Some((_, subject_seconds)) = subject {
+            assert!(
+                retention > subject_seconds,
+                "{scope}: subject window {subject_seconds}s outlives prune retention {retention}s"
+            );
+        }
+    }
+    for (scope, window) in OTHER_SCOPES {
+        assert!(retention_for(scope) > *window, "{scope}");
+    }
+    assert!(retention_for("sms_line_activation") > 900);
+}
+
+#[test]
+fn limit_scopes_are_distinct() {
+    let mut scopes: Vec<&str> = Limit::ALL
+        .iter()
+        .map(|limit| limit.policy().0)
+        .chain(OTHER_SCOPES.iter().map(|(scope, _)| *scope))
+        .collect();
+    let total = scopes.len();
+    scopes.sort_unstable();
+    scopes.dedup();
+    assert_eq!(scopes.len(), total, "two limits share a counter scope");
+}
+
+async fn abuse_schema() -> (Client, Client, String) {
+    let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+        .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let schema = format!("abuse_test_{}", Uuid::new_v4().simple());
+    setup
+        .batch_execute(&format!("CREATE SCHEMA {schema}"))
+        .await
+        .unwrap();
+    let separator = if base_url.contains('?') { '&' } else { '?' };
+    let url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
+    let (db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    for migration in [
+        include_str!("../../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
+        include_str!("../../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+    ] {
+        db.batch_execute(migration).await.unwrap();
+    }
+    (setup, db, schema)
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn exhausted_sms_line_activation_subject_stays_refused_through_prune() {
+    let (setup, db, schema) = abuse_schema().await;
+    let hasher = TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap();
+    let activate = || consume(&db, &hasher, Limit::SmsLineActivation, Some("line-owner"));
+    for _ in 0..30 {
+        assert!(activate().await.unwrap());
+    }
+    assert!(!activate().await.unwrap());
+    // A refused subject stops refreshing its row. Inside its 15-minute window
+    // the prune worker must not delete the row and so reset the budget.
+    db.execute(
+        "UPDATE auth_abuse_counters SET window_started_at=now()-interval '14 minutes',
+             updated_at=now()-interval '14 minutes' WHERE scope='sms_line_activation'",
+        &[],
+    )
+    .await
+    .unwrap();
+    assert_eq!(prune(&db).await.unwrap(), 0);
+    assert!(!activate().await.unwrap());
+    // Once the window has passed, the rows are eligible and the budget renews.
+    db.execute(
+        "UPDATE auth_abuse_counters SET window_started_at=now()-interval '16 minutes',
+             updated_at=now()-interval '16 minutes' WHERE scope='sms_line_activation'",
+        &[],
+    )
+    .await
+    .unwrap();
+    assert_eq!(prune(&db).await.unwrap(), 2);
+    assert!(activate().await.unwrap());
+    setup
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn prune_keeps_every_scope_for_its_longest_window() {
+    let (setup, db, schema) = abuse_schema().await;
+    let hasher = TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap();
+    for limit in Limit::ALL {
+        assert!(
+            consume(&db, &hasher, *limit, Some("subject"))
+                .await
+                .unwrap()
+        );
+    }
+    db.execute(
+        "INSERT INTO auth_abuse_counters(scope,subject_hash,window_started_at,attempts,updated_at)
+             VALUES('unlisted-scope',$1,now(),1,now())",
+        &[&&[7u8; 32][..]],
+    )
+    .await
+    .unwrap();
+    let set_idle = |scope: &'static str, seconds: i32| {
+        let db = &db;
+        async move {
+            db.execute(
+                "UPDATE auth_abuse_counters SET updated_at=now()-make_interval(secs => $2::int4)
+                     WHERE scope=$1",
+                &[&scope, &seconds],
+            )
+            .await
+            .unwrap();
+        }
+    };
+    for limit in Limit::ALL {
+        set_idle(limit.policy().0, limit.longest_window_seconds() - 5).await;
+    }
+    set_idle("unlisted-scope", 180).await;
+    // Only the unlisted scope falls back to the two-minute default.
+    assert_eq!(prune(&db).await.unwrap(), 1);
+    let kept: i64 = db
+        .query_one("SELECT count(*) FROM auth_abuse_counters", &[])
+        .await
+        .unwrap()
+        .get(0);
+    let with_subject = Limit::ALL
+        .iter()
+        .filter(|limit| limit.policy().3.is_some())
+        .count();
+    assert_eq!(kept as usize, Limit::ALL.len() + with_subject);
+    for limit in Limit::ALL {
+        let scope = limit.policy().0;
+        set_idle(scope, retention_for(scope) + 5).await;
+    }
+    assert_eq!(prune(&db).await.unwrap(), kept as u64);
+    setup
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
