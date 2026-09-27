@@ -99,9 +99,17 @@ reproducible; Web Crypto ECDSA signatures vary per run, and the module returns
 the unsigned transcript and its SHA-256 alongside the envelope. Recipient wraps
 are emitted in strict `(role, key_id)` wire order and each wrap's `key_id` must
 match its own point, so the emitted wrap set is exactly the manifest-authorized
-set. Tests pin the full outbound and inbound unsigned transcripts, reopen a
-wrap and the body as an independent consumer, verify the signature and its
-low-`s` form, and exercise the denial corpus. No Rust cross-verification or
+set. Every caller-held input (byte arrays, recipient entries, scalars, and the
+manifest field values used for composition) is deep-copied into an owned
+snapshot synchronously before the first `await`; the order from there is
+public identity hashing, then `authorizeOutbound02` / `authorizeInbound02`
+against the exact verified manifest object, then encryption, wrapping, and
+signing. Mutating
+the input objects after the call therefore cannot redirect an envelope that
+authorization already approved. Tests pin the full outbound and inbound unsigned
+transcripts, reopen a wrap and the body as an independent consumer, verify the
+signature and its low-`s` form, and exercise the denial corpus, including
+post-call input mutation. No Rust cross-verification or
 Android run is part of this slice; those remain separate gates.
 
 This is one slice of ZT-010 evidence. Independent Rust cross-open, full manifest

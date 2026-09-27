@@ -157,13 +157,18 @@ function structuralWalk(prepared, kind) {
 }
 
 // Independent consumer: reopen a prepared wrap exactly as the Rust/Android readers do.
-async function openWrapAndBody(prepared, role, recipientPrivateKey, expectedContent) {
+async function openWrap(prepared, role, recipientPrivateKey) {
   const wrap = prepared.wraps.find((item) => item.role === role);
   const recipient = await suite.createRecipientContext({
     recipientKey: recipientPrivateKey, enc: buffer(wrap.enc), info: buffer(wrap.info),
   });
   const cek = new Uint8Array(await recipient.open(buffer(wrap.ct), new ArrayBuffer(0)));
   assert.equal(cek.length, 32, "recovered CEK width");
+  return cek;
+}
+
+async function openWrapAndBody(prepared, role, recipientPrivateKey, expectedContent) {
+  const cek = await openWrap(prepared, role, recipientPrivateKey);
   const bodyKey = await crypto.subtle.importKey("raw", buffer(cek), "AES-GCM", false, ["decrypt"]);
   const body = new Uint8Array(await crypto.subtle.decrypt({
     name: "AES-GCM", iv: buffer(prepared.envelope.subarray(10 + prepared.protected.length, 10 + prepared.protected.length + 12)),
@@ -355,4 +360,95 @@ test("localSequence and observedMs must stay inside signed u64 storage", async (
   await prepareInboundEnvelope02(inboundInput(fixture, { localSequence: maxSigned }));
   await assert.rejects(prepareOutboundEnvelope02(outboundInput(fixture, { observedMs: -1n, expiresMs: 299_999n })), /u64 exceeds/);
   await assert.rejects(prepareInboundEnvelope02(inboundInput(fixture, { localSequence: maxSigned + 1n })), /identity\/sequence/);
+});
+
+test("outbound post-call input mutation cannot redirect the authorized envelope", async () => {
+  const fixture = await manifestFixture();
+  const attacker = await kemKey(0x99);
+  const control = await prepareOutboundEnvelope02(outboundInput(fixture));
+  // Caller-held copies only; the fixture's own material stays pristine for assertions.
+  const input = {
+    ...outboundInput(fixture),
+    messageId: Uint8Array.from(fixed.message),
+    cek: repeat(0xc1, 32),
+    nonce: repeat(0xa5, 12),
+    recipients: [
+      { role: 1, keyId: Uint8Array.from(fixture.device.keyId), point: Uint8Array.from(fixture.device.point), ekm: repeat(0x51, 32) },
+      { role: 2, keyId: Uint8Array.from(fixture.archive.keyId), point: Uint8Array.from(fixture.archive.point), ekm: repeat(0x52, 32) },
+    ],
+  };
+  const pending = prepareOutboundEnvelope02(input); // snapshot is taken synchronously here
+  // Mutate every caller-held value immediately, before the first await can resume.
+  input.recipients[0].point.set(attacker.point);
+  input.recipients[0].keyId.set(attacker.keyId);
+  input.recipients[1].ekm.fill(0xee);
+  input.cek.fill(0xee);
+  input.nonce.fill(0xee);
+  input.content = "mutated content";
+  input.signer = { privateKey: fixture.inboundSigner.privateKey, publicPoint: fixture.inboundSigner.point };
+  input.expiresMs = now + 1n;
+  fixture.manifest.digest.fill(0);
+  fixture.manifest.version = 99n;
+  const prepared = await pending;
+  // The whole unsigned transcript is byte-identical to the un-mutated control run.
+  assert.deepEqual(prepared.unsigned, control.unsigned);
+  assert.deepEqual(prepared.unsignedSha256, control.unsignedSha256);
+  assert.equal(hex(prepared.unsigned), pinnedOutboundUnsignedHex);
+  // Protected still carries the pre-call manifest digest and version, not the zeroed ones.
+  assert.deepEqual(prepared.protected.subarray(72, 104), control.protected.subarray(72, 104));
+  assert.notDeepEqual(prepared.protected.subarray(72, 104), fixture.manifest.digest);
+  // The device wrap is issued under the authorized pre-call key id and point.
+  assert.deepEqual(prepared.wraps[0].keyId, fixture.device.keyId);
+  await openWrap(prepared, 1, fixture.device.pair.privateKey);
+  await assert.rejects(openWrap(prepared, 1, attacker.pair.privateKey));
+  // Body key material and nonce are the pre-call values.
+  assert.deepEqual(await openWrap(prepared, 2, fixture.archive.pair.privateKey), repeat(0xc1, 32));
+  assert.deepEqual(prepared.envelope.subarray(10 + prepared.protected.length, 10 + prepared.protected.length + 12), repeat(0xa5, 12));
+  await openWrapAndBody(prepared, 2, fixture.archive.pair.privateKey, fixed.outboundText);
+  // The signature came from the pre-call signer, not the swapped reference.
+  await verifyOriginSignature(prepared, fixture.outboundSigner.point);
+  // The module never wrote back into caller state.
+  assert.equal(input.cek[0], 0xee);
+  assert.deepEqual(input.recipients[0].point, attacker.point);
+});
+
+test("inbound post-call input mutation cannot redirect the authorized envelope", async () => {
+  const fixture = await manifestFixture();
+  const attacker = await kemKey(0x99);
+  const control = await prepareInboundEnvelope02(inboundInput(fixture));
+  const input = {
+    ...inboundInput(fixture),
+    messageId: Uint8Array.from(fixed.message),
+    eventId: Uint8Array.from(fixed.message),
+    cek: repeat(0xc2, 32),
+    nonce: repeat(0xa6, 12),
+    recipients: [
+      { role: 2, keyId: Uint8Array.from(fixture.archive.keyId), point: Uint8Array.from(fixture.archive.point), ekm: repeat(0x52, 32) },
+    ],
+  };
+  const pending = prepareInboundEnvelope02(input);
+  input.recipients[0].point.set(attacker.point);
+  input.recipients[0].keyId.set(attacker.keyId);
+  input.recipients[0].ekm.fill(0xee);
+  input.cek.fill(0xee);
+  input.nonce.fill(0xee);
+  input.content = "mutated content";
+  input.signer = { privateKey: fixture.outboundSigner.privateKey, publicPoint: fixture.outboundSigner.point };
+  input.localSequence = 5n;
+  input.eventId.fill(0);
+  fixture.manifest.digest.fill(0);
+  const prepared = await pending;
+  assert.deepEqual(prepared.unsigned, control.unsigned);
+  assert.deepEqual(prepared.unsignedSha256, control.unsignedSha256);
+  assert.equal(hex(prepared.unsigned), pinnedInboundUnsignedHex);
+  assert.deepEqual(prepared.protected.subarray(72, 104), control.protected.subarray(72, 104));
+  assert.notDeepEqual(prepared.protected.subarray(72, 104), fixture.manifest.digest);
+  assert.deepEqual(prepared.wraps[0].keyId, fixture.archive.keyId);
+  assert.deepEqual(await openWrap(prepared, 2, fixture.archive.pair.privateKey), repeat(0xc2, 32));
+  await assert.rejects(openWrap(prepared, 2, attacker.pair.privateKey));
+  assert.deepEqual(prepared.envelope.subarray(10 + prepared.protected.length, 10 + prepared.protected.length + 12), repeat(0xa6, 12));
+  await openWrapAndBody(prepared, 2, fixture.archive.pair.privateKey, fixed.inboundText);
+  await verifyOriginSignature(prepared, fixture.inboundSigner.point);
+  assert.equal(input.cek[0], 0xee);
+  assert.deepEqual(input.recipients[0].point, attacker.point);
 });

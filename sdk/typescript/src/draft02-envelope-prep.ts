@@ -3,7 +3,12 @@
  * path: nothing here may be connected to a send, inbound, webhook, or radio
  * route. Composition is refused unless the exact `Manifest02` object returned by
  * `verifyManifest02` authorizes the request through `authorizeOutbound02` /
- * `authorizeInbound02` first; authorization is never re-implemented locally.
+ * `authorizeInbound02`, which run after the input snapshot and the public
+ * identity hashing and before any encryption, HPKE wrap, or signature;
+ * authorization is never re-implemented locally.
+ * Every caller-held input is deep-copied into an owned snapshot synchronously
+ * before the first await, so mutating the input while the prepare promise is in
+ * flight cannot redirect an already-authorized envelope.
  */
 import { Aes128Gcm, CipherSuite, DhkemP256HkdfSha256, HkdfSha256 } from "@hpke/core";
 import { keyId } from "./draft01.js";
@@ -107,6 +112,63 @@ export type InboundEnvelopePrepInput02 = CommonPrepInput & Readonly<{
   localSequence: bigint;
 }>;
 
+/**
+ * Owned preparation state. Every caller-held value is deep-copied synchronously
+ * before the first await, so mutating the input objects while the prepare
+ * promise is in flight cannot redirect an already-authorized envelope: the wrap
+ * set, body key material, and manifest field values frozen here are the only
+ * bytes composition ever reads. The manifest reference itself stays the exact
+ * object `verifyManifest02` returned, because authorization binds to its
+ * identity; only its composition-relevant field values are copied.
+ */
+type OwnedPrep = Readonly<{
+  manifest: Manifest02;
+  accountId: Uint8Array;
+  manifestDigest: Uint8Array;
+  keysetVersion: bigint;
+  nowMs: bigint;
+  observedMs: bigint;
+  messageId: Uint8Array;
+  deviceId: Uint8Array;
+  lineId: Uint8Array;
+  peer: Uint8Array;
+  content: string;
+  cek: Uint8Array;
+  nonce: Uint8Array;
+  signerPrivateKey: CryptoKey;
+  signerPoint: Uint8Array;
+  recipients: readonly { role: 1 | 2 | 3; keyId: Uint8Array; point: Uint8Array; ekm: Uint8Array }[];
+}>;
+
+function copy(bytes: Uint8Array): Uint8Array { return Uint8Array.from(bytes); }
+
+/** Must be called before any await or other async suspension. */
+function snapshot(input: CommonPrepInput): OwnedPrep {
+  return {
+    manifest: input.manifest,
+    accountId: copy(input.manifest.accountId),
+    manifestDigest: copy(input.manifest.digest),
+    keysetVersion: input.manifest.version,
+    nowMs: input.nowMs,
+    observedMs: input.observedMs,
+    messageId: copy(input.messageId),
+    deviceId: copy(input.deviceId),
+    lineId: copy(input.lineId),
+    peer: copy(input.peer),
+    content: input.content,
+    cek: copy(input.cek),
+    nonce: copy(input.nonce),
+    signerPrivateKey: input.signer.privateKey,
+    signerPoint: copy(input.signer.publicPoint),
+    recipients: input.recipients.map((recipient) => ({
+      role: recipient.role,
+      keyId: copy(recipient.keyId),
+      point: copy(recipient.point),
+      ekm: copy(recipient.ekm),
+    })),
+  };
+}
+
 export type PreparedWrap02 = Readonly<{
   role: number;
   keyId: Uint8Array;
@@ -154,21 +216,21 @@ function orderedRecipients(recipients: readonly Draft02PrepRecipient[]): Draft02
   return ordered;
 }
 
-async function compose(kind: 1 | 2, input: CommonPrepInput, protectedTail: Uint8Array, signerKeyId: Uint8Array): Promise<PreparedEnvelope02> {
-  const message = fixed(input.messageId, 16, "message id");
-  const commonProtected = concat(input.manifest.accountId, message, fixed(input.deviceId, 16, "device id"),
-    fixed(input.lineId, 16, "line id"), u64(input.manifest.version), input.manifest.digest, signerKeyId, u64(input.observedMs));
-  const peer = peerBytes(input.peer);
+async function compose(kind: 1 | 2, snap: OwnedPrep, protectedTail: Uint8Array, signerKeyId: Uint8Array): Promise<PreparedEnvelope02> {
+  const message = fixed(snap.messageId, 16, "message id");
+  const commonProtected = concat(snap.accountId, message, fixed(snap.deviceId, 16, "device id"),
+    fixed(snap.lineId, 16, "line id"), u64(snap.keysetVersion), snap.manifestDigest, signerKeyId, u64(snap.observedMs));
+  const peer = peerBytes(snap.peer);
   const protectedBytes = concat(commonProtected, protectedTail, Uint8Array.of(peer.length), peer);
   const header = concat(encoder.encode("ZTSE"), Uint8Array.of(2, kind, 0, 0), u16(protectedBytes.length));
   const bodyAad = concat(label("ZTSE/body/v2"), header, protectedBytes);
-  const text = contentBytes(input.content);
-  const cek = fixed(input.cek, 32, "content key");
-  const nonce = fixed(input.nonce, 12, "body nonce");
+  const text = contentBytes(snap.content);
+  const cek = fixed(snap.cek, 32, "content key");
+  const nonce = fixed(snap.nonce, 12, "body nonce");
   const bodyKey = await crypto.subtle.importKey("raw", ab(cek), "AES-GCM", false, ["encrypt"]);
   const bodyCt = new Uint8Array(await crypto.subtle.encrypt(
     { name: "AES-GCM", iv: ab(nonce), additionalData: ab(bodyAad), tagLength: 128 }, bodyKey, ab(text)));
-  const recipients = orderedRecipients(input.recipients);
+  const recipients = orderedRecipients(snap.recipients);
   const count = recipients.length;
   if (count < (kind === 1 ? 2 : 1) || count > (kind === 1 ? 8 : 7)) fail("wrap count");
   const wraps: PreparedWrap02[] = [];
@@ -189,7 +251,7 @@ async function compose(kind: 1 | 2, input: CommonPrepInput, protectedTail: Uint8
   const unsigned = concat(header, protectedBytes, nonce, u32(bodyCt.length), bodyCt, Uint8Array.of(count), ...wrapParts);
   const transcript = concat(label("ZTSE/sign/v2"), u32(unsigned.length), unsigned);
   const signature = canonicalSignature02(new Uint8Array(
-    await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, input.signer.privateKey, ab(transcript))));
+    await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, snap.signerPrivateKey, ab(transcript))));
   const envelope = concat(unsigned, signature);
   const kindMax = kind === 1 ? 34_213 : 34_082;
   if (envelope.length < 426 || envelope.length > 36_864 || envelope.length > kindMax) fail("envelope size");
@@ -197,39 +259,46 @@ async function compose(kind: 1 | 2, input: CommonPrepInput, protectedTail: Uint8
   return { envelope, unsigned, unsignedSha256, header, protected: protectedBytes, bodyAad, signerKeyId, signature, wraps };
 }
 
-/** Authorizes first, then composes a kind-1 outbound candidate-02 envelope; never emits unauthorized bytes. */
+/**
+ * Snapshots every caller-held value synchronously, derives the public
+ * identity hashes, authorizes the frozen claims against the exact verified
+ * manifest object, and only then encrypts, wraps, and signs. Nothing
+ * reads the original `input` objects after the snapshot, so in-flight mutation
+ * cannot redirect an authorized wrap, body, or protected record.
+ */
 export async function prepareOutboundEnvelope02(input: OutboundEnvelopePrepInput02): Promise<PreparedEnvelope02> {
-  const signerKeyId = await keyId(0x0101, input.signer.publicPoint);
-  authorizeOutbound02(input.manifest, {
-    accountId: input.manifest.accountId,
-    deviceId: input.deviceId,
-    lineId: input.lineId,
-    manifestDigest: input.manifest.digest,
-    keysetVersion: input.manifest.version,
+  const snap = { ...snapshot(input), expiresMs: input.expiresMs };
+  const signerKeyId = await keyId(0x0101, snap.signerPoint);
+  authorizeOutbound02(snap.manifest, {
+    accountId: snap.accountId,
+    deviceId: snap.deviceId,
+    lineId: snap.lineId,
+    manifestDigest: snap.manifestDigest,
+    keysetVersion: snap.keysetVersion,
     signerKeyId,
-    wraps: input.recipients.map((recipient) => ({ role: recipient.role, keyId: recipient.keyId })),
-  }, input.nowMs);
-  if (input.observedMs >= input.expiresMs || input.expiresMs - input.observedMs > maxExpiryDelta) fail("intent/expiry");
-  return compose(1, input, concat(u64(input.expiresMs), Uint8Array.of(1)), signerKeyId);
+    wraps: snap.recipients.map((recipient) => ({ role: recipient.role, keyId: recipient.keyId })),
+  }, snap.nowMs);
+  if (snap.observedMs >= snap.expiresMs || snap.expiresMs - snap.observedMs > maxExpiryDelta) fail("intent/expiry");
+  return compose(1, snap, concat(u64(snap.expiresMs), Uint8Array.of(1)), signerKeyId);
 }
 
-/** Authorizes first, then composes a kind-2 inbound candidate-02 envelope; never emits unauthorized bytes. */
 export async function prepareInboundEnvelope02(input: InboundEnvelopePrepInput02): Promise<PreparedEnvelope02> {
-  const signerKeyId = await keyId(0x0101, input.signer.publicPoint);
-  authorizeInbound02(input.manifest, {
+  const snap = { ...snapshot(input), eventId: copy(input.eventId), localSequence: input.localSequence };
+  const signerKeyId = await keyId(0x0101, snap.signerPoint);
+  authorizeInbound02(snap.manifest, {
     kind: 2,
-    accountId: input.manifest.accountId,
-    deviceId: input.deviceId,
-    lineId: input.lineId,
-    messageId: input.messageId,
-    eventId: input.eventId,
-    localSequence: input.localSequence,
-    manifestDigest: input.manifest.digest,
-    keysetVersion: input.manifest.version,
+    accountId: snap.accountId,
+    deviceId: snap.deviceId,
+    lineId: snap.lineId,
+    messageId: snap.messageId,
+    eventId: snap.eventId,
+    localSequence: snap.localSequence,
+    manifestDigest: snap.manifestDigest,
+    keysetVersion: snap.keysetVersion,
     signerKeyId,
-    wraps: input.recipients.map((recipient) => ({ role: recipient.role, keyId: recipient.keyId })),
-  }, input.nowMs);
-  if (input.localSequence < 1n || input.localSequence > maxSigned) fail("inbound identity/sequence");
-  if (!same(input.messageId, fixed(input.eventId, 16, "event id"))) fail("inbound identity/sequence");
-  return compose(2, input, concat(fixed(input.eventId, 16, "event id"), u64(input.localSequence)), signerKeyId);
+    wraps: snap.recipients.map((recipient) => ({ role: recipient.role, keyId: recipient.keyId })),
+  }, snap.nowMs);
+  if (snap.localSequence < 1n || snap.localSequence > maxSigned) fail("inbound identity/sequence");
+  if (!same(snap.messageId, fixed(snap.eventId, 16, "event id"))) fail("inbound identity/sequence");
+  return compose(2, snap, concat(fixed(snap.eventId, 16, "event id"), u64(snap.localSequence)), signerKeyId);
 }
