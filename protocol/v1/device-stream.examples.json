@@ -3,6 +3,7 @@
   {"type":"proof","v":1,"challenge_id":"00000000-0000-4000-8000-000000000001","account_id":"00000000-0000-4000-8000-000000000001","device_id":"00000000-0000-4000-8000-000000000001","nonce":"AQ","signature_der":"Ag"},
   {"type":"heartbeat","v":1},
   {"type":"device_status","v":1,"connection_epoch":7,"selected_sim":"active","sms_permission":"granted","airplane_mode":"disabled"},
+  {"type":"device_status_v2","v":1,"connection_epoch":7,"selected_sim":"active","sms_permission":"granted","airplane_mode":"disabled","network_service":"out_of_service"},
   {"type":"alpha_ready","v":1,"connection_epoch":7,"recipient_digest":"AQ"},
   {"type":"radio_event","v":1,"connection_epoch":7,"event_id":"00000000-0000-4000-8000-000000000001","message_id":"00000000-0000-4000-8000-000000000001","attempt_id":"00000000-0000-4000-8000-000000000001","evidence":"durable_submit_intent","observed_at_ms":1700000000000},
   {"type":"inbound_event","v":1,"connection_epoch":7,"event_id":"00000000-0000-4000-8000-000000000001","sequence":1,"message_id":"00000000-0000-4000-8000-000000000001","attempt_id":"00000000-0000-4000-8000-000000000001","classification":"captured_local","observed_at_ms":1700000000000,"part_count":1,"signature_der":"Ag"},

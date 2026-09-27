@@ -15,12 +15,17 @@ pub mod http_webhooks;
 pub mod inbound;
 pub mod ingress;
 pub mod owner_ui;
+pub mod provider_sms;
 pub mod retention;
+pub mod root_backup;
 pub mod runtime_db;
 pub mod sealed_envelope;
 pub mod sealed_inbound;
 pub mod sealed_manifest;
 pub mod sealed_manifest_store;
+pub mod sealed_outbound;
+pub mod sealed_root_ceremony;
+pub mod sealed_root_enrollment;
 pub mod webhook_egress;
 pub mod webhook_worker;
 
@@ -53,3 +58,6 @@ pub(crate) mod test_keys {
         format!("fixture-{}", URL_SAFE_NO_PAD.encode(Sha256::digest(input)))
     }
 }
+
+#[cfg(test)]
+mod sealed_root_roles_tests;

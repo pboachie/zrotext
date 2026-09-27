@@ -249,7 +249,7 @@ async fn check_owner_password(
     password: &str,
 ) -> Result<(), AuthError> {
     let row = client.query_opt(
-        "SELECT u.password_hash FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id JOIN sessions s ON s.account_id=m.account_id AND s.user_id=u.id WHERE m.account_id=$1 AND u.id=$2 AND s.id=$3 AND s.revoked_at IS NULL AND s.expires_at>now() AND a.disabled_at IS NULL",
+        "SELECT u.password_hash FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id JOIN sessions s ON s.account_id=m.account_id AND s.user_id=u.id WHERE m.role='owner' AND m.account_id=$1 AND u.id=$2 AND s.id=$3 AND s.revoked_at IS NULL AND s.expires_at>now() AND a.disabled_at IS NULL",
         &[&principal.tenant.account_id(), &principal.user_id, &principal.session_id],
     ).await?.ok_or(AuthError::Unauthorized)?;
     let stored: String = row.get(0);
@@ -260,6 +260,7 @@ async fn require_live_session(
     tx: &Transaction<'_>,
     principal: &SessionPrincipal,
 ) -> Result<(), AuthError> {
+    super::require_current_owner(tx, principal).await?;
     tx.query_opt(
         "SELECT id FROM sessions WHERE id=$1 AND account_id=$2 AND user_id=$3 AND revoked_at IS NULL AND expires_at>now() FOR UPDATE",
         &[&principal.session_id, &principal.tenant.account_id(), &principal.user_id],
@@ -268,6 +269,7 @@ async fn require_live_session(
 }
 
 pub async fn status(client: &Client, principal: &SessionPrincipal) -> Result<Status, AuthError> {
+    super::require_current_owner(client, principal).await?;
     let row = client.query_opt(
         "SELECT enabled_at IS NOT NULL, COALESCE(pending_expires_at>now(),false) FROM owner_mfa WHERE account_id=$1 AND user_id=$2",
         &[&principal.tenant.account_id(), &principal.user_id],
@@ -295,7 +297,7 @@ pub async fn begin_enrollment(
     check_owner_password(client, principal, password).await?;
     let tx = client.transaction().await?;
     let user = tx.query_one(
-        "SELECT u.email,u.mfa_enabled FROM users u JOIN memberships m ON m.user_id=u.id WHERE u.id=$1 AND m.account_id=$2 FOR UPDATE OF u",
+        "SELECT u.email,u.mfa_enabled FROM users u JOIN memberships m ON m.user_id=u.id WHERE m.role='owner' AND u.id=$1 AND m.account_id=$2 FOR UPDATE OF u",
         &[&principal.user_id, &principal.tenant.account_id()],
     ).await?;
     if user.get::<_, bool>(1) {
@@ -402,7 +404,7 @@ pub async fn begin_login_challenge(
 ) -> Result<String, AuthError> {
     let row = client
         .query_opt(
-            "SELECT u.password_hash FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE u.id=$1 AND m.account_id=$2 AND u.mfa_enabled AND a.disabled_at IS NULL",
+            "SELECT u.password_hash FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE m.role='owner' AND u.id=$1 AND m.account_id=$2 AND u.mfa_enabled AND a.disabled_at IS NULL",
             &[&user_id, &account_id],
         )
         .await?
@@ -412,7 +414,7 @@ pub async fn begin_login_challenge(
     let token = super::random_token("ztm_");
     let hash = hasher.digest(b"mfa-login-challenge-v1", &token);
     let inserted = client.execute(
-        "INSERT INTO owner_mfa_login_challenges(id,account_id,user_id,token_hash,expires_at) SELECT $1,$2,$3,$4,now()+($5::integer * interval '1 minute') FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE u.id=$3 AND m.account_id=$2 AND u.password_hash=$6 AND u.mfa_enabled AND a.disabled_at IS NULL FOR UPDATE OF u",
+        "INSERT INTO owner_mfa_login_challenges(id,account_id,user_id,token_hash,expires_at) SELECT $1,$2,$3,$4,now()+($5::integer * interval '1 minute') FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE m.role='owner' AND u.id=$3 AND m.account_id=$2 AND u.password_hash=$6 AND u.mfa_enabled AND a.disabled_at IS NULL FOR UPDATE OF u",
         &[&Uuid::new_v4(), &account_id, &user_id, &&hash[..], &CHALLENGE_MINUTES, &stored],
     ).await?;
     if inserted != 1 {
@@ -457,16 +459,45 @@ pub(super) async fn use_factor(
     user_id: Uuid,
     code: &str,
 ) -> Result<bool, AuthError> {
+    Ok(
+        use_factor_at(tx, cipher, hasher, account_id, user_id, code, None)
+            .await?
+            .is_some(),
+    )
+}
+
+/// Private evidence of factor consumption in the caller's transaction.
+pub(crate) struct ConsumedFactor {
+    step: Option<i64>,
+}
+
+impl ConsumedFactor {
+    pub(crate) fn current_at(&self, now_ms: u64) -> bool {
+        let current = (now_ms / 30_000) as i64;
+        self.step
+            .is_none_or(|step| step >= current - 1 && step <= current + 1)
+    }
+}
+
+async fn use_factor_at(
+    tx: &Transaction<'_>,
+    cipher: Option<&MfaCipher>,
+    hasher: &TokenHasher,
+    account_id: Uuid,
+    user_id: Uuid,
+    code: &str,
+    now_seconds: Option<u64>,
+) -> Result<Option<ConsumedFactor>, AuthError> {
     let row = tx.query_opt(
         "SELECT secret_nonce,secret_ciphertext,last_accepted_step FROM owner_mfa WHERE account_id=$1 AND user_id=$2 AND enabled_at IS NOT NULL FOR UPDATE",
         &[&account_id, &user_id],
     ).await?.ok_or(AuthError::Unauthorized)?;
     if valid_recovery_code(code) {
         let hash = recovery_hash(hasher, account_id, user_id, code);
-        return Ok(tx.execute(
+        return Ok((tx.execute(
             "UPDATE owner_mfa_recovery_codes SET used_at=now() WHERE account_id=$1 AND user_id=$2 AND code_hash=$3 AND used_at IS NULL",
             &[&account_id, &user_id, &&hash[..]],
-        ).await? == 1);
+        ).await? == 1).then_some(ConsumedFactor { step: None }));
     }
     let cipher = cipher.ok_or(AuthError::Crypto)?;
     let secret = cipher.open(
@@ -475,15 +506,48 @@ pub(super) async fn use_factor(
         &row.get::<_, Vec<u8>>(0),
         &row.get::<_, Vec<u8>>(1),
     )?;
-    let Some(step) = accepted_step(secret, code, row.get(2), unix_seconds()?)? else {
-        return Ok(false);
+    let now = match now_seconds {
+        Some(now) => now,
+        None => unix_seconds()?,
+    };
+    let Some(step) = accepted_step(secret, code, row.get(2), now)? else {
+        return Ok(None);
     };
     tx.execute(
         "UPDATE owner_mfa SET last_accepted_step=$3 WHERE account_id=$1 AND user_id=$2",
         &[&account_id, &user_id, &step],
     )
     .await?;
-    Ok(true)
+    Ok(Some(ConsumedFactor { step: Some(step) }))
+}
+
+/// Dormant ceremony caller already holds account, user, membership, session and
+/// owner MFA locks. A rejected factor changes only the existing failure budget;
+/// commit that budget before reporting rejection. All other errors roll back.
+pub(crate) async fn consume_ceremony_factor(
+    tx: &Transaction<'_>,
+    cipher: &MfaCipher,
+    hasher: &TokenHasher,
+    principal: &SessionPrincipal,
+    code: &str,
+    now_ms: u64,
+) -> Result<Option<ConsumedFactor>, AuthError> {
+    let account = principal.tenant.account_id();
+    ensure_factor_budget(tx, account, principal.user_id).await?;
+    let factor = use_factor_at(
+        tx,
+        Some(cipher),
+        hasher,
+        account,
+        principal.user_id,
+        code,
+        Some(now_ms / 1000),
+    )
+    .await?;
+    if factor.is_none() {
+        record_failed_factor(tx, account, principal.user_id).await?;
+    }
+    Ok(factor)
 }
 
 /// Verify a fresh factor for a high-trust owner mutation inside the caller's
@@ -545,7 +609,7 @@ pub async fn complete_login(
     let user_id: Uuid = identity.get(1);
     let tx = client.transaction().await?;
     let user = tx.query_opt(
-        "SELECT u.mfa_enabled FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE u.id=$1 AND m.account_id=$2 AND a.disabled_at IS NULL FOR UPDATE OF u",
+        "SELECT u.mfa_enabled FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE m.role='owner' AND u.id=$1 AND m.account_id=$2 AND a.disabled_at IS NULL FOR UPDATE OF u",
         &[&user_id, &account_id],
     ).await?.ok_or(AuthError::Unauthorized)?;
     if !user.get::<_, bool>(0) {

@@ -56,6 +56,15 @@ class DeviceStreamSchemaTest(unittest.TestCase):
         self.assertFalse(self.validator.is_valid({**frame, "attempt_id": frame["event_id"]}))
         self.assertFalse(self.validator.is_valid({**ack, "suppression_cleared": True}))
 
+    def test_network_service_is_v2_only_and_never_a_readiness_flag(self):
+        frame = next(frame for frame in self.frames if frame["type"] == "device_status_v2")
+        for state in ("in_service", "out_of_service", "emergency_only", "power_off", "unavailable"):
+            self.assertTrue(self.validator.is_valid({**frame, "network_service": state}))
+        for invalid in (None, True, "ready", "", "x" * 5000):
+            self.assertFalse(self.validator.is_valid({**frame, "network_service": invalid}))
+        self.assertFalse(self.validator.is_valid({**frame, "type": "device_status"}))
+        self.assertFalse(self.validator.is_valid({**frame, "subscription_id": 7}))
+
     def test_device_status_accepts_only_fixed_preconditions_without_identity_or_clock(self):
         frame = next(frame for frame in self.frames if frame["type"] == "device_status")
         for key, valid in (("selected_sim", "unavailable"), ("sms_permission", "denied"), ("airplane_mode", "enabled")):

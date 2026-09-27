@@ -1340,7 +1340,7 @@ async fn request_password_reset(
             async {
                 client
                     .query_one(
-                        "SELECT EXISTS(SELECT 1 FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE u.email=$1 AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL)",
+                        "SELECT EXISTS(SELECT 1 FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE m.role='owner' AND u.email=$1 AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL)",
                         &[&subject],
                     )
                     .await

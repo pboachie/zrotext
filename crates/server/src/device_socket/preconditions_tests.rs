@@ -41,6 +41,153 @@ async fn authenticated(
     (socket, epoch)
 }
 
+fn report_v2(epoch: i64) -> Value {
+    let mut frame = report(epoch);
+    frame["type"] = json!("device_status_v2");
+    frame["network_service"] = json!("in_service");
+    frame
+}
+
+#[test]
+fn network_service_has_strict_versioned_shape() {
+    for state in [
+        "in_service",
+        "out_of_service",
+        "emergency_only",
+        "power_off",
+        "unavailable",
+    ] {
+        let mut frame = report_v2(1);
+        frame["network_service"] = json!(state);
+        assert!(serde_json::from_value::<ClientFrame>(frame.clone()).is_ok());
+        frame["type"] = json!("device_status");
+        assert!(serde_json::from_value::<ClientFrame>(frame).is_err());
+    }
+    for invalid in [
+        json!(null),
+        json!(true),
+        json!("ready"),
+        json!(""),
+        json!(7),
+    ] {
+        let mut frame = report_v2(1);
+        frame["network_service"] = invalid;
+        assert!(serde_json::from_value::<ClientFrame>(frame).is_err());
+    }
+    let mut missing = report_v2(1);
+    missing.as_object_mut().unwrap().remove("network_service");
+    assert!(serde_json::from_value::<ClientFrame>(missing).is_err());
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn v2_status_is_explicitly_negotiated_and_v1_replacement_clears_radio() {
+    let fixture = Fixture::new().await;
+    fixture
+        .db
+        .batch_execute(include_str!(
+            "../../../../deploy/compose/migrations/041_device_preconditions.sql"
+        ))
+        .await
+        .unwrap();
+    fixture
+        .db
+        .batch_execute(include_str!(
+            "../../../../deploy/compose/migrations/047_device_network_service.sql"
+        ))
+        .await
+        .unwrap();
+    let (device, signing) = fixture.device().await;
+    let state = socket_state(fixture.url.clone(), "capacity-test");
+    let (address, server) = serve(
+        state.clone(),
+        SocketAdmission::new(8, 8, AUTH_TIMEOUT, HANDSHAKE_DEADLINE),
+    )
+    .await;
+    let mut request = format!("ws://{address}/v1/device-stream")
+        .into_client_request()
+        .unwrap();
+    request.headers_mut().insert(
+        "Sec-WebSocket-Protocol",
+        format!(
+            "{}, {}",
+            preconditions::PROTOCOL,
+            preconditions::PROTOCOL_V2
+        )
+        .parse()
+        .unwrap(),
+    );
+    let (mut socket, response) = connect_async(request).await.unwrap();
+    assert_eq!(
+        response.headers()["Sec-WebSocket-Protocol"],
+        preconditions::PROTOCOL_V2
+    );
+    send_json(
+        &mut socket,
+        json!({"v":1,"type":"hello","device_id":device}),
+    )
+    .await;
+    let challenge = receive_json(&mut socket).await;
+    let epoch = prove(&mut socket, challenge, &signing).await;
+    send_json(&mut socket, report_v2(epoch)).await;
+    send_json(&mut socket, json!({"v":1,"type":"heartbeat"})).await;
+    assert_eq!(receive_json(&mut socket).await["type"], "heartbeat_ack");
+    assert_eq!(
+        fixture
+            .db
+            .query_one(
+                "SELECT network_service FROM device_preconditions WHERE device_id=$1",
+                &[&device]
+            )
+            .await
+            .unwrap()
+            .get::<_, String>(0),
+        "in_service"
+    );
+    let mut throttled = report_v2(epoch);
+    throttled["network_service"] = json!("power_off");
+    send_json(&mut socket, throttled).await;
+    send_json(&mut socket, json!({"v":1,"type":"heartbeat"})).await;
+    receive_json(&mut socket).await;
+    assert_eq!(
+        fixture
+            .db
+            .query_one(
+                "SELECT network_service FROM device_preconditions WHERE device_id=$1",
+                &[&device]
+            )
+            .await
+            .unwrap()
+            .get::<_, String>(0),
+        "in_service"
+    );
+    // A v1-shaped frame cannot bypass v2 negotiation or share an alternate budget.
+    send_json(&mut socket, report(epoch)).await;
+    assert_eq!(expect_close(&mut socket).await, close_code::POLICY);
+    let (mut replacement, new_epoch) = authenticated(address, device, &signing, true).await;
+    send_json(&mut replacement, report(new_epoch)).await;
+    send_json(&mut replacement, json!({"v":1,"type":"heartbeat"})).await;
+    receive_json(&mut replacement).await;
+    assert!(
+        fixture
+            .db
+            .query_one(
+                "SELECT network_service FROM device_preconditions WHERE device_id=$1",
+                &[&device]
+            )
+            .await
+            .unwrap()
+            .get::<_, Option<String>>(0)
+            .is_none()
+    );
+    send_json(&mut replacement, report_v2(new_epoch)).await;
+    assert_eq!(expect_close(&mut replacement).await, close_code::POLICY);
+    drop(socket);
+    drop(replacement);
+    server.abort();
+    fixture.finish().await;
+}
+
 #[test]
 fn status_frames_reject_unknown_enums_private_fields_and_large_payload_values() {
     assert!(serde_json::from_value::<ClientFrame>(report(1)).is_ok());
@@ -99,6 +246,13 @@ async fn negotiated_status_is_bounded_session_fenced_and_old_clients_keep_heartb
         .db
         .batch_execute(include_str!(
             "../../../../deploy/compose/migrations/041_device_preconditions.sql"
+        ))
+        .await
+        .unwrap();
+    fixture
+        .db
+        .batch_execute(include_str!(
+            "../../../../deploy/compose/migrations/047_device_network_service.sql"
         ))
         .await
         .unwrap();
@@ -163,6 +317,7 @@ async fn negotiated_status_is_bounded_session_fenced_and_old_clients_keep_heartb
         selected_sim: preconditions::SelectedSim::Active,
         sms_permission: preconditions::SmsPermission::Granted,
         airplane_mode: preconditions::AirplaneMode::Disabled,
+        network_service: None,
     };
     assert!(
         !preconditions::record(&mut fixture.db, prior, &state, input())

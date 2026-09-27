@@ -99,6 +99,7 @@ pub struct ReportedPreconditions {
     pub selected_sim: String,
     pub sms_permission: String,
     pub airplane_mode: String,
+    pub network_service: Option<String>,
     pub received_at_ms: i64,
     pub fresh: bool,
 }
@@ -131,7 +132,7 @@ pub(crate) const OWNER_DEVICE_STATUS_QUERY: &str = "WITH page AS MATERIALIZED ( 
                  AND ds.deployment_epoch=p.epoch AND s.enabled=TRUE AND s.draining=FALSE \
                  AND NOT pg_is_in_recovery(),FALSE) AS active_socket_lease,d.created_at, \
                r.selected_sim AS report_selected_sim,r.sms_permission AS report_sms_permission, \
-               r.airplane_mode AS report_airplane_mode, \
+               r.airplane_mode AS report_airplane_mode,r.network_service AS report_network_service, \
                (extract(epoch FROM r.received_at)*1000)::bigint AS report_received_at_ms, \
                COALESCE(r.received_at>=statement_timestamp()-interval '90 seconds' \
                  AND ds.lease_until>now() AND s.enabled=TRUE AND s.draining=FALSE,FALSE) AS report_fresh \
@@ -158,7 +159,7 @@ pub(crate) const OWNER_DEVICE_STATUS_QUERY: &str = "WITH page AS MATERIALIZED ( 
                  WHERE m.account_id=$1 AND m.device_id=page.id \
                    AND m.state IN ('submitting','submitted') ORDER BY m.state,m.created_at LIMIT $4) in_flight), \
                (extract(epoch FROM statement_timestamp())*1000)::bigint, \
-               page.report_selected_sim,page.report_sms_permission,page.report_airplane_mode, \
+               page.report_selected_sim,page.report_sms_permission,page.report_airplane_mode,page.report_network_service, \
                page.report_received_at_ms,page.report_fresh \
              FROM page ORDER BY page.created_at DESC,page.id DESC";
 
@@ -248,7 +249,7 @@ async fn owner_session_active(
 ) -> Result<bool, EnrollmentError> {
     Ok(client
         .query_opt(
-            "SELECT 1 FROM sessions s JOIN users u ON u.id=s.user_id JOIN accounts a ON a.id=s.account_id WHERE s.id=$1 AND s.account_id=$2 AND s.user_id=$3 AND s.revoked_at IS NULL AND s.expires_at>now() AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL",
+            "SELECT 1 FROM sessions s JOIN users u ON u.id=s.user_id JOIN memberships m ON (m.account_id,m.user_id)=(s.account_id,s.user_id) JOIN accounts a ON a.id=s.account_id WHERE m.role='owner' AND s.id=$1 AND s.account_id=$2 AND s.user_id=$3 AND s.revoked_at IS NULL AND s.expires_at>now() AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL",
             &[&principal.session_id, &principal.tenant.account_id(), &principal.user_id],
         )
         .await?
@@ -277,7 +278,7 @@ pub async fn create_pairing(
     let digest = hasher.digest(b"pairing-token-v1", token.as_bytes());
     let id = Uuid::new_v4();
     let inserted = client.execute(
-        "INSERT INTO pairing_requests(id,account_id,created_by_user_id,token_digest,display_name,expires_at) SELECT $1,$2,$3,$4,$5,now()+($6::integer * interval '1 second') FROM sessions s WHERE s.id=$7 AND s.account_id=$2 AND s.user_id=$3 AND s.revoked_at IS NULL AND s.expires_at>now()",
+        "INSERT INTO pairing_requests(id,account_id,created_by_user_id,token_digest,display_name,expires_at) SELECT $1,$2,$3,$4,$5,now()+($6::integer * interval '1 second') FROM sessions s JOIN memberships m ON (m.account_id,m.user_id)=(s.account_id,s.user_id) WHERE m.role='owner' AND s.id=$7 AND s.account_id=$2 AND s.user_id=$3 AND s.revoked_at IS NULL AND s.expires_at>now()",
         &[&id, &principal.tenant.account_id(), &principal.user_id, &&digest[..], &display_name, &PAIRING_LIFETIME_SECS, &principal.session_id],
     ).await?;
     if inserted != 1 {
@@ -499,6 +500,7 @@ pub async fn list_owner_devices(
                     selected_sim,
                     sms_permission: row.get("report_sms_permission"),
                     airplane_mode: row.get("report_airplane_mode"),
+                    network_service: row.get("report_network_service"),
                     received_at_ms: row.get("report_received_at_ms"),
                     fresh: row.get("report_fresh"),
                 },

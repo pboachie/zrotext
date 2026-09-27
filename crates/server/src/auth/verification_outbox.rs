@@ -35,7 +35,7 @@ pub async fn request_verification_resend(
     };
     let row = client
         .query_opt(
-            "SELECT u.id,u.password_hash FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE u.email=$1 AND u.email_verified_at IS NULL AND u.created_at>now()-($2::integer * interval '1 hour') AND a.disabled_at IS NULL",
+            "SELECT u.id,u.password_hash FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE m.role='owner' AND u.email=$1 AND u.email_verified_at IS NULL AND u.created_at>now()-($2::integer * interval '1 hour') AND a.disabled_at IS NULL",
             &[&email, &VERIFICATION_HOURS],
         )
         .await?;
@@ -88,7 +88,7 @@ pub async fn request_verification_resend(
         let token_hash = hasher.digest(b"email-verification-v1", &token);
         let account_id: Uuid = tx
             .query_one(
-                "SELECT account_id FROM memberships WHERE user_id=$1",
+                "SELECT account_id FROM memberships WHERE user_id=$1 AND role='owner'",
                 &[&user_id],
             )
             .await?
@@ -118,7 +118,7 @@ pub async fn claim_verification_mail(
     let tx = client.transaction().await?;
     let row = tx
         .query_opt(
-            "SELECT o.verification_id,u.email,v.token_hash,o.attempt_count FROM verification_mail_outbox o JOIN email_verifications v ON v.id=o.verification_id JOIN users u ON u.id=v.user_id JOIN accounts a ON a.id=v.account_id WHERE o.delivered_at IS NULL AND o.canceled_at IS NULL AND o.dead_at IS NULL AND o.attempt_count<6 AND o.next_attempt_at<=now() AND (o.leased_until IS NULL OR o.leased_until<=now()) AND v.used_at IS NULL AND v.expires_at>now() AND u.email_verified_at IS NULL AND u.created_at>now()-($1::integer * interval '1 hour') AND a.disabled_at IS NULL ORDER BY o.next_attempt_at,o.verification_id LIMIT 1 FOR UPDATE OF o SKIP LOCKED",
+            "SELECT o.verification_id,u.email,v.token_hash,o.attempt_count FROM verification_mail_outbox o JOIN email_verifications v ON v.id=o.verification_id JOIN users u ON u.id=v.user_id JOIN memberships m ON (m.account_id,m.user_id)=(v.account_id,v.user_id) JOIN accounts a ON a.id=v.account_id WHERE m.role='owner' AND o.delivered_at IS NULL AND o.canceled_at IS NULL AND o.dead_at IS NULL AND o.attempt_count<6 AND o.next_attempt_at<=now() AND (o.leased_until IS NULL OR o.leased_until<=now()) AND v.used_at IS NULL AND v.expires_at>now() AND u.email_verified_at IS NULL AND u.created_at>now()-($1::integer * interval '1 hour') AND a.disabled_at IS NULL ORDER BY o.next_attempt_at,o.verification_id LIMIT 1 FOR UPDATE OF o SKIP LOCKED",
             &[&VERIFICATION_HOURS],
         )
         .await?;

@@ -75,7 +75,10 @@ android {
     for (testSource in listOf("test", "androidTest")) {
         sourceSets.getByName(testSource) {
             java.srcDir("src/sharedTest/java")
+            resources.srcDir("src/sharedTest/resources")
             resources.srcDir("../../protocol/v1/vectors")
+            // Reuse the exact independent fixtures consumed by the Rust/TypeScript clients.
+            resources.srcDir("../../sdk/typescript/test/vectors")
         }
     }
 }
