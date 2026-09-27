@@ -27,6 +27,7 @@ use tokio_postgres::NoTls;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 use zrotext_delivery_store::{DeliveryStore, RECOVERY_BATCH, RECOVERY_BATCHES_PER_TICK};
+use zrotext_failover_quorum::policy::QuorumPolicy;
 use zrotext_server::{
     alpha_policy::AlphaPolicy,
     auth::{
@@ -215,6 +216,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mfa_recovery_only = optional_bool("MFA_RECOVERY_ONLY")?;
     let mfa_enrollment_enabled = optional_bool("MFA_ENROLLMENT_ENABLED")?;
     let sms_line_activation_enabled = optional_bool("SMS_LINE_ACTIVATION_ENABLED")?;
+    // Independent-quorum failover decision module. Disabled by default; when
+    // enabled, this increment validates the three-member configuration at
+    // startup only — no controller loop runs yet, and no route or readiness
+    // behavior changes in either state.
+    let failover_quorum_policy = QuorumPolicy::parse(
+        env::var("FAILOVER_QUORUM_ENABLED").ok().as_deref(),
+        env::var("FAILOVER_QUORUM_MEMBERS").ok().as_deref(),
+    )?;
     if mfa_recovery_only && mfa_enrollment_enabled {
         return Err("MFA enrollment cannot be enabled in recovery-only mode".into());
     }
@@ -639,6 +648,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 permits: permits.clone(),
             }));
         }
+    }
+    if failover_quorum_policy.enabled() {
+        eprintln!(
+            "failover quorum decision module enabled with {} members; no controller loop in this build",
+            failover_quorum_policy.members().len()
+        );
     }
     eprintln!(
         "zrotext site={} instance={} listening={bind}",
