@@ -34,6 +34,7 @@ pub(crate) unsafe fn create(
     environment: *const std::ffi::c_void,
     startup: *const STARTUPINFOW,
     process: *mut PROCESS_INFORMATION,
+    production_eligible: fn() -> bool,
 ) -> i32 {
     unsafe {
         let mut raw = null_mut();
@@ -57,6 +58,11 @@ pub(crate) unsafe fn create(
                 process,
             );
         }
+        eprintln!("native launcher: parent is elevated; requiring a genuine limited primary token");
+        assert!(
+            !production_eligible(),
+            "production preflight must reject the elevated parent"
+        );
         let mut linked: TOKEN_LINKED_TOKEN = zeroed();
         let mut length = 0;
         assert_ne!(
@@ -77,9 +83,24 @@ pub(crate) unsafe fn create(
             !elevated(linked.as_raw_handle()),
             "linked token must actually be non-elevated"
         );
+        let mut kind: TOKEN_TYPE = 0;
+        assert_ne!(
+            GetTokenInformation(
+                linked.as_raw_handle(),
+                TokenType,
+                (&mut kind as *mut TOKEN_TYPE).cast(),
+                size_of::<TOKEN_TYPE>() as u32,
+                &mut length
+            ),
+            0,
+            "query linked token type (OS error {})",
+            GetLastError()
+        );
+        assert_eq!(length as usize, size_of::<TOKEN_TYPE>());
+        assert_eq!(kind, TokenPrimary, "linked token must be PRIMARY");
         // Same user's limited primary token, no alternate credentials, profile
         // loading, inherited handles, or fallback if Windows refuses this launch.
-        CreateProcessWithTokenW(
+        let created = CreateProcessWithTokenW(
             linked.as_raw_handle(),
             0,
             application,
@@ -89,6 +110,13 @@ pub(crate) unsafe fn create(
             null(),
             startup,
             process,
-        )
+        );
+        assert_ne!(
+            created,
+            0,
+            "limited primary token launch refused; QUERY/DUPLICATE/ASSIGN_PRIMARY and existing SeImpersonate are required (OS error {})",
+            GetLastError()
+        );
+        created
     }
 }

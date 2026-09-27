@@ -71,7 +71,8 @@ fn isolated(name: &str, run: fn()) {
                 command.as_mut_ptr(),
                 environment.as_ptr().cast(),
                 &startup,
-                &mut process
+                &mut process,
+                || verify_process_eligibility().is_ok(),
             ),
             0
         );
