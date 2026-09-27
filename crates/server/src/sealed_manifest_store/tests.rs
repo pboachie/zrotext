@@ -8,25 +8,35 @@ use p256::{
 use sha2::{Digest, Sha256};
 use tokio_postgres::{Client, NoTls};
 
-struct Fixture {
-    url: String,
-    schema: String,
-    db: Client,
-    account: Uuid,
-    device: Uuid,
-    line: Uuid,
-    root: SigningKey,
-    pin: Vec<u8>,
-    bytes: Vec<u8>,
-    readers: Vec<ExpectedRecipient>,
-    signer: [u8; 32],
+pub(crate) struct Fixture {
+    pub(crate) url: String,
+    pub(crate) schema: String,
+    pub(crate) db: Client,
+    pub(crate) account: Uuid,
+    pub(crate) device: Uuid,
+    pub(crate) line: Uuid,
+    pub(crate) root: SigningKey,
+    pub(crate) pin: Vec<u8>,
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) readers: Vec<ExpectedRecipient>,
+    pub(crate) signer: [u8; 32],
+    pub(crate) event_signer: SigningKey,
 }
 
 impl Fixture {
-    async fn new() -> Self {
+    pub(crate) async fn new() -> Self {
         Self::with_purpose("sealed").await
     }
-    async fn with_purpose(purpose: &str) -> Self {
+    pub(crate) async fn with_purpose(purpose: &str) -> Self {
+        Self::build(purpose, true, true).await
+    }
+    pub(crate) async fn without_authority() -> Self {
+        Self::build("sealed", false, true).await
+    }
+    pub(crate) async fn before_role_reservations() -> Self {
+        Self::build("sealed", true, false).await
+    }
+    async fn build(purpose: &str, provision: bool, role_reservations: bool) -> Self {
         let url = std::env::var("ZT_INBOUND_TEST_DATABASE_URL").expect("disposable test database");
         let (db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
         tokio::spawn(async move { connection.await.unwrap() });
@@ -92,7 +102,28 @@ impl Fixture {
             include_str!("../../../../deploy/compose/migrations/040_radio_evidence_index.sql"),
             include_str!("../../../../deploy/compose/migrations/041_device_preconditions.sql"),
             include_str!("../../../../deploy/compose/migrations/042_sealed_manifest_authority.sql"),
+            include_str!("../../../../deploy/compose/migrations/043_sealed_candidate_inbound.sql"),
+            include_str!(
+                "../../../../deploy/compose/migrations/044_sealed_root_role_reservations.sql"
+            ),
+            include_str!("../../../../deploy/compose/migrations/045_sealed_outbound_queue.sql"),
+            include_str!("../../../../deploy/compose/migrations/046_sealed_root_ceremonies.sql"),
+            include_str!("../../../../deploy/compose/migrations/047_device_network_service.sql"),
         ] {
+            if !role_reservations
+                && (sql
+                    == include_str!(
+                        "../../../../deploy/compose/migrations/044_sealed_root_role_reservations.sql"
+                    )
+                    || sql
+                        == include_str!(
+                            "../../../../deploy/compose/migrations/046_sealed_root_ceremonies.sql"
+                        ))
+            {
+                // Backfill tests intentionally start before trust-history
+                // guards; the later ceremony triggers depend on those guards.
+                continue;
+            }
             // Mirror the migrator's autocommit index preparation, followed by
             // each exact numbered validation gate on this complete schema.
             if sql.contains("CREATE FUNCTION messages_in_flight_index_ready") {
@@ -148,6 +179,7 @@ impl Fixture {
         bytes.push(3);
         let mut readers = Vec::new();
         let mut signer = [0; 32];
+        let mut event_signer = None;
         for (role, scope) in [(2, 12u16), (4, 2), (6, 0)] {
             let key = SigningKey::generate_from_rng(&mut rand::rng());
             let point = if role == 6 {
@@ -178,6 +210,7 @@ impl Fixture {
             }
             if role == 4 {
                 signer = id;
+                event_signer = Some(key);
             }
         }
         bytes.extend([0; 64]);
@@ -193,15 +226,18 @@ impl Fixture {
             bytes,
             readers,
             signer,
+            event_signer: event_signer.unwrap(),
         };
         fixture.resign();
         // Test-only provisioning models an already independently compared root.
         let fingerprint =
             Sha256::digest([b"ZTSE/root-pin/v2\0".as_slice(), &fixture.pin].concat()).to_vec();
-        fixture.db.execute("INSERT INTO sealed_manifest_authorities(account_id,root_pin,root_fingerprint,generation,anchor_digest) VALUES($1,$2,$3,1,$4)", &[&account,&fixture.pin,&fingerprint,&vec![0u8;32]]).await.unwrap();
+        if provision {
+            fixture.db.execute("INSERT INTO sealed_manifest_authorities(account_id,root_pin,root_fingerprint,generation,anchor_digest) VALUES($1,$2,$3,1,$4)", &[&account,&fixture.pin,&fingerprint,&vec![0u8;32]]).await.unwrap();
+        }
         fixture
     }
-    async fn connect(&self) -> Client {
+    pub(crate) async fn connect(&self) -> Client {
         let (db, connection) = tokio_postgres::connect(&self.url, NoTls).await.unwrap();
         tokio::spawn(async move { connection.await.unwrap() });
         db.batch_execute(&format!(
@@ -212,7 +248,7 @@ impl Fixture {
         .unwrap();
         db
     }
-    fn session(&self) -> InboundSession<'static> {
+    pub(crate) fn session(&self) -> InboundSession<'static> {
         InboundSession {
             account_id: self.account,
             device_id: self.device,
@@ -222,7 +258,7 @@ impl Fixture {
             deployment_epoch: 1,
         }
     }
-    fn wanted(&self) -> EnvelopeAuthority<'_> {
+    pub(crate) fn wanted(&self) -> EnvelopeAuthority<'_> {
         EnvelopeAuthority {
             kind: Kind::Inbound,
             account_id: *self.account.as_bytes(),
@@ -234,7 +270,7 @@ impl Fixture {
             recipients: &self.readers,
         }
     }
-    fn resign(&mut self) {
+    pub(crate) fn resign(&mut self) {
         let n = self.bytes.len() - 64;
         let signature: Signature = self.root.sign(
             &[
@@ -246,14 +282,14 @@ impl Fixture {
         );
         self.bytes[n..].copy_from_slice(&signature.normalize_s().to_bytes());
     }
-    fn advance(&mut self) {
+    pub(crate) fn advance(&mut self) {
         let digest = Sha256::digest(&self.bytes[..self.bytes.len() - 64]);
         let version = u64::from_be_bytes(self.bytes[29..37].try_into().unwrap());
         self.bytes[29..37].copy_from_slice(&(version + 1).to_be_bytes());
         self.bytes[53..85].copy_from_slice(&digest);
         self.resign();
     }
-    async fn cleanup(self) {
+    pub(crate) async fn cleanup(self) {
         self.db
             .batch_execute(&format!("DROP SCHEMA {} CASCADE", self.schema))
             .await

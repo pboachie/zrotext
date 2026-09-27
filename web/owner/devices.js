@@ -41,6 +41,37 @@ let deviceLoads = 0;
 let messageLoads = 0;
 let browsingOlderDevices = false;
 let browsingOlderMessages = false;
+const preconditionFreshMs = 90_000;
+let preconditionTimer = null;
+let preconditionRows = [];
+
+function stopPreconditionAging() {
+  if (preconditionTimer !== null) window.clearTimeout(preconditionTimer);
+  preconditionTimer = null;
+}
+
+function clearPreconditionRows() {
+  stopPreconditionAging();
+  preconditionRows = [];
+}
+
+function agePreconditions() {
+  stopPreconditionAging();
+  if (!dashboardSignedIn || !dashboardPageActive || document.hidden) return;
+  let nextExpiry = Infinity;
+  for (const entry of preconditionRows) {
+    // Include request latency and time spent suspended. Once expired, a clock
+    // adjustment cannot make a saved observation fresh again.
+    const elapsed = Math.max(0, performance.now() - entry.started, Date.now() - entry.wallStarted);
+    entry.expired ||= elapsed >= entry.remaining;
+    const text = devicePreconditionsText(entry.device, entry.expired);
+    if (entry.element.textContent !== text) entry.element.textContent = text;
+    if (!entry.expired) nextExpiry = Math.min(nextExpiry, entry.remaining - elapsed);
+  }
+  if (Number.isFinite(nextExpiry)) {
+    preconditionTimer = window.setTimeout(agePreconditions, Math.max(1, Math.ceil(nextExpiry)));
+  }
+}
 
 function stopDashboardRefresh() {
   if (dashboardTimer !== null) window.clearTimeout(dashboardTimer);
@@ -193,7 +224,10 @@ async function api(path, method = "GET", body = undefined) {
 
 function showSignedIn(signedIn) {
   dashboardSignedIn = signedIn;
-  if (!signedIn) stopDashboardRefresh();
+  if (!signedIn) {
+    stopDashboardRefresh();
+    clearPreconditionRows();
+  }
   byId("sign-in").hidden = signedIn;
   byId("owner-content").hidden = !signedIn;
   byId("logout").hidden = !signedIn;
@@ -654,18 +688,52 @@ function deviceQueueText(device) {
   return `Pending: ${count(device.pending_messages)} · In flight: ${count(device.in_flight_messages)} · Snapshot ${dateText(device.status_observed_at_ms)}`;
 }
 
-function devicePreconditionsText(device) {
+function validPreconditionReport(device) {
   const report = device.reported_preconditions;
   if (!report || !["not_selected", "active", "inactive", "unavailable"].includes(report.selected_sim) ||
       !["granted", "denied", "unavailable"].includes(report.sms_permission) ||
       !["enabled", "disabled", "unavailable"].includes(report.airplane_mode) ||
       typeof report.fresh !== "boolean" || !Number.isSafeInteger(report.received_at_ms) ||
       report.received_at_ms <= 0 || report.received_at_ms > 8_640_000_000_000_000) {
+    return false;
+  }
+  return Number.isSafeInteger(device.status_observed_at_ms) &&
+    device.status_observed_at_ms >= report.received_at_ms &&
+    device.status_observed_at_ms <= 8_640_000_000_000_000;
+}
+
+function preconditionRemaining(device) {
+  if (!validPreconditionReport(device) || device.revoked ||
+      device.active_socket_lease !== true || !device.reported_preconditions.fresh) return 0;
+  return Math.max(0, preconditionFreshMs - (device.status_observed_at_ms - device.reported_preconditions.received_at_ms));
+}
+
+function devicePreconditionsText(device, expired = false) {
+  if (!validPreconditionReport(device) || device.revoked) {
     return "Android preconditions unavailable; carrier readiness unknown.";
   }
-  const freshness = device.active_socket_lease !== true ? "disconnected; last report" :
-    report.fresh ? "fresh at snapshot time" : "stale report";
-  return `Android (${freshness}): selected SIM ${report.selected_sim.replaceAll("_", " ")}; SMS permission ${report.sms_permission}; airplane mode ${report.airplane_mode}. Received ${dateText(report.received_at_ms)}. Carrier readiness unknown.`;
+  const report = device.reported_preconditions;
+  const fresh = !expired && preconditionRemaining(device) > 0;
+  const freshness = device.active_socket_lease === false ? "disconnected; last report" :
+    device.active_socket_lease !== true ? "connection status unavailable; last report" :
+      fresh ? "fresh at snapshot time" : "stale report";
+  const networkNames = { in_service: "in service", out_of_service: "out of service",
+    emergency_only: "emergency only", power_off: "radio powered off", unavailable: "unavailable" };
+  const network = typeof report.network_service === "string" && Object.hasOwn(networkNames, report.network_service)
+    ? networkNames[report.network_service] : "unavailable";
+  const observations = `Android (${freshness}): selected SIM ${report.selected_sim.replaceAll("_", " ")}; SMS permission ${report.sms_permission}; airplane mode ${report.airplane_mode}; Android-reported network service ${network}. Received ${dateText(report.received_at_ms)}.`;
+  if (!fresh) return `${observations} Historical observations; refresh to check for a newer report. Carrier readiness unknown.`;
+  const blockers = [];
+  if (report.selected_sim === "not_selected") blockers.push("No SIM selected: select a SIM in the gateway app");
+  if (report.selected_sim === "inactive") blockers.push("Selected SIM inactive: check the selected SIM on the phone");
+  if (report.sms_permission === "denied") blockers.push("SMS permission denied: check the gateway app permissions on the phone");
+  if (report.airplane_mode === "enabled") blockers.push("Airplane mode enabled: check the phone settings");
+  if (["out_of_service", "emergency_only", "power_off"].includes(report.network_service))
+    blockers.push("Network service limited: check the selected SIM's network service on the phone");
+  const unknown = [report.selected_sim, report.sms_permission, report.airplane_mode].includes("unavailable");
+  const explanation = blockers.length ? `Reported local blockers: ${blockers.join(". ")}.` :
+    unknown ? "Local preconditions are incomplete; check the gateway app on the phone." : "No reported local blockers at snapshot time.";
+  return `${observations} ${explanation}${blockers.length && unknown ? " Other local preconditions are unavailable." : ""} Carrier readiness unknown.`;
 }
 
 async function loadDevices(reset = true, automatic = false) {
@@ -674,12 +742,15 @@ async function loadDevices(reset = true, automatic = false) {
   if (!automatic) browsingOlderDevices = !reset;
   const requestEpoch = ownerEpoch;
   const generation = ++deviceLoadGeneration;
+  const started = performance.now();
+  const wallStarted = Date.now();
   const stale = () => requestEpoch !== ownerEpoch || generation !== deviceLoadGeneration;
   const cursor = reset ? null : nextDeviceCursor;
   const moreButton = byId("more-devices");
   moreButton.disabled = true;
   if (!automatic) message("device-status", "Loading devices…");
   if (reset && !automatic) {
+    clearPreconditionRows();
     byId("device-list").replaceChildren();
     moreButton.hidden = true;
     nextDeviceCursor = null;
@@ -695,6 +766,7 @@ async function loadDevices(reset = true, automatic = false) {
     if (!page || !Array.isArray(page.devices)) throw new Error("The device response was invalid.");
     const devices = page.devices;
     if (automatic) {
+      clearPreconditionRows();
       byId("device-list").replaceChildren();
       moreButton.hidden = true;
       nextDeviceCursor = null;
@@ -728,7 +800,10 @@ async function loadDevices(reset = true, automatic = false) {
       const queue = document.createElement("span");
       queue.textContent = deviceQueueText(device);
       const preconditions = document.createElement("span");
+      preconditions.setAttribute("aria-live", "off");
       preconditions.textContent = devicePreconditionsText(device);
+      preconditionRows.push({ device, element: preconditions, started, wallStarted,
+        remaining: preconditionRemaining(device), expired: false });
       detail.append(name, id, state, queue, preconditions);
       row.append(detail);
       if (!device.revoked) {
@@ -752,6 +827,7 @@ async function loadDevices(reset = true, automatic = false) {
       rows.push(row);
     }
     byId("device-list").append(...rows);
+    agePreconditions();
   } catch (error) {
     if (stale()) return;
     moreButton.disabled = false;
@@ -1314,14 +1390,19 @@ byId("refresh-keys").addEventListener("click", () => loadKeys());
 byId("more-keys").addEventListener("click", () => loadKeys(false));
 byId("dismiss-key-secret").addEventListener("click", clearKeySecret);
 byId("auto-refresh").addEventListener("change", scheduleDashboardRefresh);
-document.addEventListener("visibilitychange", scheduleDashboardRefresh);
+document.addEventListener("visibilitychange", () => {
+  scheduleDashboardRefresh();
+  agePreconditions();
+});
 window.addEventListener("pagehide", () => {
   dashboardPageActive = false;
   stopDashboardRefresh();
+  stopPreconditionAging();
   clearKeySecret(); clearPasswordFields(); clearResetFields();
 });
 window.addEventListener("pageshow", () => {
   dashboardPageActive = true;
+  agePreconditions();
   scheduleDashboardRefresh();
 });
 byId("inbound-history-form").addEventListener("submit", async (event) => {

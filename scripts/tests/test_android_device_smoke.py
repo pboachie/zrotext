@@ -14,12 +14,34 @@ def result(class_name, name="sample", code=0):
 
 
 class DeviceSmokeTests(unittest.TestCase):
+    def test_outbound_corpus_requires_exact_ten_successful_cases(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "android/app/src/androidTest/java/org/zrotext/gateway/OutboundEnvelopeDeviceTest.kt"
+            source.parent.mkdir(parents=True)
+            source.touch()
+            expected = {smoke.PRECONDITIONS: 1, smoke.OUTBOUND_ENVELOPE: 10}
+            self.assertEqual(smoke.selected_tests(root), expected)
+            output = result(smoke.PRECONDITIONS)
+            for index in range(10):
+                output += result(smoke.OUTBOUND_ENVELOPE, f"case{index}")
+            smoke.verify_results(output + "INSTRUMENTATION_CODE: -1\n", expected)
+            for bad in [output.replace(result(smoke.OUTBOUND_ENVELOPE, "case9"), ""),
+                        output.replace(result(smoke.OUTBOUND_ENVELOPE, "case9"), result(smoke.OUTBOUND_ENVELOPE, "case9", -3)),
+                        output + result(smoke.OUTBOUND_ENVELOPE, "case9")]:
+                with self.assertRaises(ValueError):
+                    smoke.verify_results(bad + "INSTRUMENTATION_CODE: -1\n", expected)
+
     def test_exact_selected_counts_pass(self):
         output = result(smoke.PRECONDITIONS, code=1) + result(smoke.PRECONDITIONS)
         smoke.verify_results(output + "INSTRUMENTATION_CODE: -1\n", {smoke.PRECONDITIONS: 1})
         for index in range(5):
             output += result(smoke.ACCESSIBILITY, f"example{index}")
         smoke.verify_results(output + "INSTRUMENTATION_CODE: -1\n", {smoke.PRECONDITIONS: 1, smoke.ACCESSIBILITY: 5})
+        for index in range(12):
+            output += result(smoke.MANIFEST_AUTHORITY, f"example{index}")
+        smoke.verify_results(output + "INSTRUMENTATION_CODE: -1\n",
+                             {smoke.PRECONDITIONS: 1, smoke.ACCESSIBILITY: 5, smoke.MANIFEST_AUTHORITY: 12})
 
     def test_failure_skips_and_incomplete_runs_fail(self):
         for code in [-1, -2, -3, -4]:
@@ -44,3 +66,38 @@ class DeviceSmokeTests(unittest.TestCase):
             source.parent.mkdir(parents=True)
             source.touch()
             self.assertEqual(smoke.selected_tests(root), {smoke.PRECONDITIONS: 1, smoke.ACCESSIBILITY: 5})
+
+    def test_manifest_authority_is_selected_only_when_source_exists(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "android/app/src/androidTest/java/org/zrotext/gateway/ManifestAuthorityDeviceTest.kt"
+            source.parent.mkdir(parents=True)
+            source.touch()
+            self.assertEqual(smoke.selected_tests(root), {smoke.PRECONDITIONS: 1, smoke.MANIFEST_AUTHORITY: 12})
+
+    def test_missing_skipped_or_unselected_manifest_corpus_fails(self):
+        expected = {smoke.PRECONDITIONS: 1, smoke.MANIFEST_AUTHORITY: 12}
+        partial = result(smoke.PRECONDITIONS)
+        for index in range(11):
+            partial += result(smoke.MANIFEST_AUTHORITY, f"example{index}")
+        for output in [partial, partial + result(smoke.MANIFEST_AUTHORITY, "last", -3),
+                       partial + result(smoke.MANIFEST_AUTHORITY, "example0")]:
+            with self.subTest(output=output), self.assertRaises(ValueError):
+                smoke.verify_results(output + "INSTRUMENTATION_CODE: -1\n", expected)
+        with self.assertRaises(ValueError):
+            smoke.verify_results(result(smoke.MANIFEST_AUTHORITY) + "INSTRUMENTATION_CODE: -1\n",
+                                 {smoke.PRECONDITIONS: 1})
+
+    def test_network_service_requires_one_actual_completed_test(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "android/app/src/androidTest/java/org/zrotext/gateway/NetworkServiceDeviceTest.kt"
+            source.parent.mkdir(parents=True)
+            source.touch()
+            expected = {smoke.PRECONDITIONS: 1, smoke.NETWORK_SERVICE: 1}
+            self.assertEqual(smoke.selected_tests(root), expected)
+            complete = result(smoke.PRECONDITIONS) + result(smoke.NETWORK_SERVICE)
+            smoke.verify_results(complete + "INSTRUMENTATION_CODE: -1\n", expected)
+            for incomplete in (result(smoke.PRECONDITIONS), result(smoke.PRECONDITIONS) + result(smoke.NETWORK_SERVICE, code=-3)):
+                with self.assertRaises(ValueError):
+                    smoke.verify_results(incomplete + "INSTRUMENTATION_CODE: -1\n", expected)

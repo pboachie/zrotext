@@ -6,6 +6,7 @@ use super::{
     AuthHttpError, AuthHttpState, CSRF_COOKIE, CSRF_HEADER, connect, cookie, map_auth, mfa,
     mfa_manage_budget, require_owner,
 };
+use crate::api_json::ApiJson;
 use axum::{
     Json,
     extract::{Path, State},
@@ -158,7 +159,7 @@ async fn alias_exists(
 pub(super) async fn challenge(
     State(state): State<Arc<AuthHttpState>>,
     headers: HeaderMap,
-    Json(body): Json<ChallengeBody>,
+    ApiJson(body): ApiJson<ChallengeBody>,
 ) -> Result<Json<ChallengeResponse>, AuthHttpError> {
     let sec1 = key_bytes(&body.signing_key_sec1_b64)?;
     let fingerprint = sha256(&sec1);
@@ -219,7 +220,7 @@ pub(super) async fn challenge(
 pub(super) async fn register(
     State(state): State<Arc<AuthHttpState>>,
     headers: HeaderMap,
-    Json(body): Json<RegisterBody>,
+    ApiJson(body): ApiJson<RegisterBody>,
 ) -> Result<StatusCode, AuthHttpError> {
     let nonce = decode_canonical::<32>(&body.nonce_b64)?;
     if body.signature_der_b64.len() > 108 || body.mfa_code.len() > 30 || body.challenge_id.is_nil()
@@ -371,7 +372,7 @@ pub(super) async fn revoke(
     State(state): State<Arc<AuthHttpState>>,
     Path(fingerprint): Path<String>,
     headers: HeaderMap,
-    Json(body): Json<RevokeBody>,
+    ApiJson(body): ApiJson<RevokeBody>,
 ) -> Result<StatusCode, AuthHttpError> {
     let fingerprint = parse_fingerprint(&fingerprint)?;
     if body.mfa_code.len() > 30 {

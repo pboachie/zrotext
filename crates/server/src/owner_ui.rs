@@ -248,7 +248,8 @@ mod tests {
                 .unwrap();
             assert!(request.uri().query().is_none());
             let response = app.clone().oneshot(request).await.unwrap();
-            assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+            // The JSON-only extractor answers with the API error envelope.
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
             assert!(!response.headers().contains_key(header::SET_COOKIE));
             assert!(!response.headers().contains_key(header::LOCATION));
             assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");

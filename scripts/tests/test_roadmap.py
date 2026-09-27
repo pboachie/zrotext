@@ -51,6 +51,34 @@ class RoadmapTest(unittest.TestCase):
             "reached general release.",
         )
 
+    def test_completed_checklist_keeps_visible_release_gate_and_stage(self):
+        data = copy.deepcopy(self.data)
+        cap = next(c for c in roadmap.capabilities(data) if c["id"] == "releases")
+        counts_before = roadmap.counts(data)
+        item_count = len(cap["done"]) + len(cap["todo"])
+        cap["done"].extend(cap["todo"])
+        cap["todo"] = []
+        note = "Listed work is complete; general production acceptance remains unverified."
+        cap["release_gate_note"] = note
+        roadmap.validate(data)
+        self.assertEqual(roadmap.counts(data), counts_before)
+        self.assertEqual(len(cap["done"]) + len(cap["todo"]), item_count)
+        self.assertIn(f"**Release gate:** {note}", roadmap.tracks(data))
+        self.assertIn("Signed release artifacts and SBOMs | Build |", roadmap.tracks(data))
+
+    def test_completed_unreleased_checklist_requires_nonempty_gate_note(self):
+        for value in (None, "", " \t", [], True):
+            with self.subTest(value=value):
+                data = copy.deepcopy(self.data)
+                cap = next(c for c in roadmap.capabilities(data) if c["id"] == "compose")
+                cap["todo"] = []
+                if value is None:
+                    cap.pop("release_gate_note", None)
+                else:
+                    cap["release_gate_note"] = value
+                with self.assertRaisesRegex(ValueError, "release.?gate"):
+                    roadmap.validate(data)
+
     def test_rejects_misleading_data(self):
         cases = {
             "unknown stage": lambda d: d["tracks"][0]["capabilities"][0].update(stage="beta"),

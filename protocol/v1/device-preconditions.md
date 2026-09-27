@@ -1,7 +1,7 @@
 # Android-reported device preconditions
 
 This optional device-stream extension reports selected SIM availability, SMS
-permission and airplane mode. It carries no SIM/card/subscription identifiers,
+permission, airplane mode and optional coarse network service. It carries no SIM/card/subscription identifiers,
 phone numbers, carrier names, location, message content or client clock. These
 are untrusted observations from an authenticated app, not hardware attestation,
 permission to dispatch, a statement of carrier readiness or delivery proof.
@@ -9,12 +9,12 @@ Positive sent/delivery callbacks remain separate message-timeline evidence.
 
 ## Negotiation and compatibility
 
-A new phone offers `Sec-WebSocket-Protocol: zrotext-device-status-v1` during
-upgrade. It samples and sends reports only if the hub selects that exact
-subprotocol in its response. Existing hello, challenge, proof, session and
-heartbeat frames are unchanged. An old hub selects no extension, so a new phone
-continues its existing heartbeat behavior without sending status. An old phone
-does not offer the extension and receives no new frames from a new hub.
+A new phone offers `zrotext-device-status-v2, zrotext-device-status-v1` in
+`Sec-WebSocket-Protocol`. The hub prefers v2 when both are offered; it selects
+v1 for existing phones. The phone samples only for the exact selected extension.
+An old v1 hub receives exactly the existing v1 frame. A hub that selects neither
+extension receives heartbeat traffic only. Hello, challenge, proof, session and
+heartbeat frames are unchanged; this versions only optional metadata.
 
 After authentication the phone may send the `device_status` frame in
 [the shared schema and examples](device-stream.schema.json): version, current
@@ -24,6 +24,14 @@ connection epoch, `selected_sim` (`not_selected`, `active`, `inactive`,
 values are rejected. The existing 4 KiB frame bound applies. A status received
 before proof, without negotiation or for another connection epoch is refused.
 There is no status acknowledgment, durable phone queue or replay history.
+
+Under v2 selection the distinct strict `device_status_v2` type retains stream
+`v:1` and the existing fields, and requires `network_service`: `in_service`,
+`out_of_service`, `emergency_only`, `power_off` or `unavailable`. The old type
+is accepted only with v1 selected, and the new type only with v2 selected.
+Both share one report budget, identity and authority checks. Neither accepts
+subscription identifiers, client clocks, unknown fields or readiness flags.
+A later v1 report clears any previously stored network-service value.
 
 The client samples after its regular heartbeat, no more often than every 30
 seconds. The hub ignores excess reports per connection before acquiring a
@@ -47,16 +55,29 @@ The local subscription ID is used only for matching and is never serialized.
 SEND_SMS permission and airplane mode are independent observations: permission
 granted plus airplane mode disabled does not prove the radio can send.
 
-This slice does not request location permission or sample network registration.
-Android's [TelephonyManager.getServiceState documentation](https://developer.android.com/reference/android/telephony/TelephonyManager#getServiceState())
-requires READ_PHONE_STATE and ACCESS_COARSE_LOCATION. Radio registration and
-carrier readiness therefore remain explicitly unknown. No device state here
-changes the synthetic-send guard or enables sealed-message dispatch.
+Network service uses an initial `TelephonyCallback.ServiceStateListener`
+callback for the explicitly selected active subscription on API 33 and later,
+with `INCLUDE_LOCATION_DATA_NONE`. Only `ServiceState.getState()` is mapped;
+the full platform object, cell/operator details and subscription identifier are
+not retained or sent. No location or SMS permission is added. The
+[callback contract](https://developer.android.com/reference/android/telephony/TelephonyManager#registerTelephonyCallback(int,java.util.concurrent.Executor,android.telephony.TelephonyCallback))
+provides redacted service state; the differently permissioned `getServiceState`
+getter is not used. API 28–32 report unavailable for this field.
+
+Sampling is asynchronous and bounded to five seconds, so it does not wait on
+or interrupt regular heartbeats. Only the initial callback is used. Timeout,
+missing phone-state permission, inactive selection, platform error, changed
+selection or reversed monotonic time yields unavailable. Socket replacement
+cancels the sample; late or repeated callbacks cannot revive it. Registration
+is removed after completion, cancellation or timeout. No old cached callback
+is relabeled as a newly sampled report. Android may itself return cached radio
+state, so an in-service result still proves neither SMS ability nor delivery.
+No report changes the synthetic-send guard or enables sealed-message dispatch.
 
 ## Owner display
 
 The existing owner device list returns `reported_preconditions` only for that
-account's current connection and deployment epochs. It returns the three enums,
+account's current connection and deployment epochs. It returns the three existing enums, nullable network service,
 server `received_at_ms` and a `fresh` flag. Fresh requires a current socket lease
 at an enabled, non-draining site and receipt within 90 seconds. Future-dated or
 over-one-day snapshots are not returned. Revoked devices/keys, disabled accounts,
@@ -68,12 +89,38 @@ readiness is unknown. Turning off automatic refresh or viewing an old page does
 not transform the saved report into a current observation. Missing or malformed
 reports never become affirmative readiness or an empty/absent-SIM claim.
 
+Network service is labeled as Android-reported. Missing v1 metadata, unknown
+values and unavailable observations never become a positive network claim.
+Fresh out-of-service, emergency-only or powered-off reports suggest checking
+the selected SIM's network service; historical reports show no current action
+or readiness assertion. In-service still leaves carrier SMS readiness unknown.
+The same local aging timer updates this text in place without moving focus,
+announcing live changes or making extra requests.
+
+Fresh observations explain reported local blockers: an unselected or inactive
+selected SIM, denied SMS permission, or enabled airplane mode. Unavailable fields
+remain unknown. All-positive observations say only that there were no reported
+local blockers at snapshot time; carrier readiness remains unknown.
+
+The browser subtracts the report's age at the server snapshot from the 90-second
+window, then includes request latency and elapsed time while displaying it.
+Reports become historical even when polling is paused or the owner is viewing
+older pages. Resuming a hidden page updates the labels before scheduling polling.
+Expired reports cannot become fresh through a local clock adjustment. These local
+label updates make no requests, move no focus and use no live announcements.
+They do not change dispatch rules, Android permissions, protocol fields or queries.
+
 ## Automated platform smoke test
 
 The read-only Android device-smoke workflow builds the debug APKs and starts a
-fresh API 36 emulator. It selects only `DevicePreconditionsDeviceTest` and,
-when present, `GatewayAccessibilityDeviceTest` with its explicit isolated-emulator
-opt-in. It requires one precondition test and five accessibility tests when
-selected, with zero failures or skips. It does not run the full instrumentation
-suite or SMS probes. Commands target only the disposable emulator; no physical
+fresh API 36 emulator. It selects one `DevicePreconditionsDeviceTest`, one
+`NetworkServiceDeviceTest`, five `GatewayAccessibilityDeviceTest` cases,
+twelve `ManifestAuthorityDeviceTest` cases and ten `OutboundEnvelopeDeviceTest`
+cases when their sources are present. The applicable isolated-emulator opt-ins
+are explicit, and every selected case must pass with zero failures or skips.
+It does not run the full instrumentation suite or SMS probes. The network-service case requires a real selected-subscription
+callback; unknown-only output and skips fail. Only the existing READ_PHONE_STATE
+grant is applied to that disposable emulator app; no location or SMS grant,
+radio action or stored subscription selection is changed. Commands target only
+the disposable emulator; no physical
 device is selected. This verifies platform behavior, not carrier delivery.

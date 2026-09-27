@@ -180,7 +180,7 @@ Q4:
 
 | Code | Status | Meaning |
 | --- | --- | --- |
-| `invalid_request` | 400 | The bytes are not a bounded, exactly parsed sealed envelope, or manifest-chain, signing-key/scope or device-signature verification failed. On resource routes: malformed IDs, cursors, page sizes, JSON bodies or a missing/invalid replay `Idempotency-Key`. |
+| `invalid_request` | 400 | The bytes are not a bounded, exactly parsed sealed envelope, or manifest-chain, signing-key/scope or device-signature verification failed. On resource routes: malformed IDs, cursors, page sizes, JSON bodies (including a body not sent as `application/json`, or with unknown, missing or mistyped members) or a missing/invalid replay `Idempotency-Key`. |
 | `invalid_webhook_endpoint` | 400 | A webhook callback URL failed the strict HTTPS egress validator (create, or enable when the stored URL no longer passes). |
 | `future_manifest` | 400 | The manifest's `issued_at` is more than five minutes ahead of trusted server time; resubmitting the same bytes will not help until a fresh manifest is pinned. |
 | `stale_event` | 400 | Inbound observed time is outside the seven-day observed-time window. |

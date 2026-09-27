@@ -15,7 +15,7 @@ async function ownerPage() {
     children: [], listeners: {},
     replaceChildren(...children) { this.children = children; },
     append(...children) { this.children.push(...children); },
-    setAttribute() {},
+    attributes: {}, setAttribute(name, value) { this.attributes[name] = value; },
     contains(node) { return this === node || this.children.some((child) => child.contains(node)); },
     querySelector() { return this.openDetails || null; },
     addEventListener(name, listener) { this.listeners[name] = listener; },
@@ -897,10 +897,10 @@ test("Android preconditions distinguish fresh, stale, disconnected and unavailab
   const { element, state } = await ownerPage();
   const report = { selected_sim: "active", sms_permission: "granted", airplane_mode: "disabled", received_at_ms: 1000, fresh: true };
   state.devices = [
-    { device_id: endpointId, active_socket_lease: true, reported_preconditions: report },
-    { device_id: otherEndpointId, active_socket_lease: true, reported_preconditions: { ...report, fresh: false } },
-    { device_id: deliveryId, active_socket_lease: false, reported_preconditions: report },
-    { device_id: endpointId, active_socket_lease: true, reported_preconditions: null },
+    { device_id: endpointId, active_socket_lease: true, status_observed_at_ms: 2000, reported_preconditions: report },
+    { device_id: otherEndpointId, active_socket_lease: true, status_observed_at_ms: 2000, reported_preconditions: { ...report, fresh: false } },
+    { device_id: deliveryId, active_socket_lease: false, status_observed_at_ms: 2000, reported_preconditions: report },
+    { device_id: endpointId, active_socket_lease: true, status_observed_at_ms: 2000, reported_preconditions: null },
   ];
   await element("refresh-devices").listeners.click();
   const rows = element("device-list").children.map(visibleText);
@@ -915,11 +915,11 @@ test("invalid Android report values fail closed and reports clear on sign-out", 
   const { element, state } = await ownerPage();
   const report = { selected_sim: "unavailable", sms_permission: "denied", airplane_mode: "enabled", received_at_ms: 1000, fresh: true };
   for (const invalid of [{ selected_sim: "ready" }, { sms_permission: "<script>" }, { airplane_mode: false }, { received_at_ms: 0 }, { fresh: "true" }]) {
-    state.devices = [{ device_id: endpointId, active_socket_lease: true, reported_preconditions: { ...report, ...invalid } }];
+    state.devices = [{ device_id: endpointId, active_socket_lease: true, status_observed_at_ms: 2000, reported_preconditions: { ...report, ...invalid } }];
     await element("refresh-devices").listeners.click();
     assert.match(visibleText(element("device-list")), /preconditions unavailable/);
   }
-  state.devices = [{ device_id: endpointId, active_socket_lease: true, reported_preconditions: report }];
+  state.devices = [{ device_id: endpointId, active_socket_lease: true, status_observed_at_ms: 2000, reported_preconditions: report }];
   await element("refresh-devices").listeners.click();
   assert.match(visibleText(element("device-list")), /selected SIM unavailable.*permission denied.*mode enabled/);
   await element("logout").listeners.click();
@@ -937,4 +937,190 @@ test("one device preserves queue counts alongside its reported Android precondit
   assert.match(text, /Pending: 7.*In flight: 2/);
   assert.match(text, /fresh at snapshot time.*selected SIM active.*SMS permission denied/);
   assert.match(text, /Carrier readiness unknown/);
+});
+
+test("every valid precondition combination preserves blockers and unknown carrier status", async () => {
+  const { element, state } = await ownerPage();
+  for (const selected_sim of ["not_selected", "active", "inactive", "unavailable"]) {
+    for (const sms_permission of ["granted", "denied", "unavailable"]) {
+      for (const airplane_mode of ["enabled", "disabled", "unavailable"]) {
+        state.devices = [{ device_id: endpointId, active_socket_lease: true, status_observed_at_ms: 2000,
+          reported_preconditions: { selected_sim, sms_permission, airplane_mode, received_at_ms: 1000, fresh: true } }];
+        await element("refresh-devices").listeners.click();
+        const text = visibleText(element("device-list"));
+        assert.equal(text.includes("No SIM selected: select a SIM"), selected_sim === "not_selected");
+        assert.equal(text.includes("Selected SIM inactive: check"), selected_sim === "inactive");
+        assert.equal(text.includes("SMS permission denied: check"), sms_permission === "denied");
+        assert.equal(text.includes("Airplane mode enabled: check"), airplane_mode === "enabled");
+        const positive = selected_sim === "active" && sms_permission === "granted" && airplane_mode === "disabled";
+        assert.equal(text.includes("No reported local blockers"), positive);
+        assert.match(text, /Carrier readiness unknown/);
+        assert.doesNotMatch(text, /ready to send|can_send|carrier ready/i);
+      }
+    }
+  }
+});
+
+test("invalid identity snapshot and historical reports never offer fresh blocker instructions", async () => {
+  const { element, state } = await ownerPage();
+  const device = { device_id: endpointId, active_socket_lease: true, status_observed_at_ms: 2000,
+    reported_preconditions: { selected_sim: "not_selected", sms_permission: "denied", airplane_mode: "enabled", received_at_ms: 1000, fresh: true } };
+  for (const change of [{ revoked: true }, { status_observed_at_ms: undefined }, { status_observed_at_ms: 999 },
+    { status_observed_at_ms: 91000 }, { active_socket_lease: false }, { active_socket_lease: undefined },
+    { reported_preconditions: null }, { reported_preconditions: { ...device.reported_preconditions, fresh: false } }]) {
+    state.devices = [{ ...device, ...change }];
+    await element("refresh-devices").listeners.click();
+    const text = visibleText(element("device-list"));
+    assert.doesNotMatch(text, /Reported local blockers:|No reported local blockers|fresh at snapshot time/);
+    assert.match(text, /carrier readiness unknown/i);
+  }
+});
+
+test("paused polling ages reports in place without requests or focus changes", async (t) => {
+  let monotonic = 0;
+  t.mock.method(performance, "now", () => monotonic);
+  const { element, state, timers } = await ownerPage();
+  state.devices = [{ device_id: endpointId, display_name: "<b>Literal gateway</b>", active_socket_lease: true,
+    status_observed_at_ms: 90000, reported_preconditions: { selected_sim: "active", sms_permission: "denied", airplane_mode: "disabled", received_at_ms: 1000, fresh: true } }];
+  await element("refresh-devices").listeners.click();
+  element("auto-refresh").checked = false;
+  element("auto-refresh").listeners.change();
+  assert.equal(timers.size, 1, "local aging continues independently of polling");
+  const row = element("device-list").children[0];
+  const label = row.children[0].children[4];
+  const button = row.children[1];
+  document.activeElement = button;
+  assert.equal(label.attributes["aria-live"], "off");
+  assert.match(label.textContent, /Reported local blockers/);
+  const requestCount = state.requests.length;
+  const [id, timer] = [...timers][0];
+  assert.ok(timer.delay <= 1000);
+  timers.delete(id);
+  monotonic = 1001;
+  timer.callback();
+  assert.equal(element("device-list").children[0], row);
+  assert.equal(document.activeElement, button);
+  assert.match(label.textContent, /stale report.*Historical observations/);
+  assert.doesNotMatch(label.textContent, /Reported local blockers/);
+  assert.equal(state.requests.length, requestCount);
+  assert.equal(timers.size, 0);
+  assert.match(visibleText(row), /<b>Literal gateway<\/b>/);
+});
+
+test("request latency consumes freshness and hidden page resume cannot revive an expired snapshot", async (t) => {
+  let monotonic = 0;
+  t.mock.method(performance, "now", () => monotonic);
+  const { element, state, timers, documentListeners, windowListeners } = await ownerPage();
+  const device = { device_id: endpointId, active_socket_lease: true, status_observed_at_ms: 90000,
+    reported_preconditions: { selected_sim: "active", sms_permission: "granted", airplane_mode: "disabled", received_at_ms: 1000, fresh: true } };
+  let resolveDevices;
+  state.pendingDevices = new Promise(resolve => { resolveDevices = resolve; });
+  const pending = element("refresh-devices").listeners.click();
+  monotonic = 2000;
+  resolveDevices(response(200, { devices: [device], next_cursor: null }));
+  await pending;
+  assert.match(visibleText(element("device-list")), /stale report/);
+  state.pendingDevices = null;
+  state.devices = [device];
+  await element("refresh-devices").listeners.click();
+  assert.match(visibleText(element("device-list")), /No reported local blockers/);
+  document.hidden = true;
+  documentListeners.visibilitychange();
+  assert.equal(timers.size, 0);
+  monotonic = 4000;
+  document.hidden = false;
+  documentListeners.visibilitychange();
+  assert.match(visibleText(element("device-list")), /Historical observations/);
+  monotonic = 0;
+  windowListeners.pagehide();
+  windowListeners.pageshow();
+  assert.doesNotMatch(visibleText(element("device-list")), /No reported local blockers/);
+  await element("logout").listeners.click();
+  assert.equal(timers.size, 0);
+  assert.equal(element("device-list").children.length, 0);
+  windowListeners.pageshow();
+  assert.equal(element("device-list").children.length, 0);
+});
+
+test("late precondition response cannot repopulate a signed-out or replacement session", async () => {
+  const { element, state, timers } = await ownerPage();
+  let resolveDevices;
+  state.pendingDevices = new Promise(resolve => { resolveDevices = resolve; });
+  const pending = element("refresh-devices").listeners.click();
+  await element("logout").listeners.click();
+  resolveDevices(response(200, { devices: [{ device_id: endpointId, active_socket_lease: true, status_observed_at_ms: 2000,
+    reported_preconditions: { selected_sim: "active", sms_permission: "granted", airplane_mode: "disabled", received_at_ms: 1000, fresh: true } }], next_cursor: null }));
+  await pending;
+  assert.equal(element("device-list").children.length, 0);
+  assert.equal(timers.size, 0);
+  state.pendingDevices = null;
+  state.devices = [{ device_id: otherEndpointId, reported_preconditions: null }];
+  await element("login-form").listeners.submit({ preventDefault() {} });
+  assert.match(visibleText(element("device-list")), /preconditions unavailable/);
+  assert.doesNotMatch(visibleText(element("device-list")), /No reported local blockers/);
+});
+
+test("older device pages age independently and suspended wall time consumes freshness", async (t) => {
+  let monotonic = 0;
+  let wall = 100000;
+  t.mock.method(performance, "now", () => monotonic);
+  t.mock.method(Date, "now", () => wall);
+  const { element, state, timers, windowListeners } = await ownerPage();
+  const device = { device_id: endpointId, active_socket_lease: true, status_observed_at_ms: 89000,
+    reported_preconditions: { selected_sim: "active", sms_permission: "granted", airplane_mode: "disabled", received_at_ms: 1000, fresh: true } };
+  state.devicePages.push({ devices: [device], next_cursor: endpointId });
+  await element("refresh-devices").listeners.click();
+  monotonic = 1000;
+  wall += 1000;
+  state.devicePages.push({ devices: [{ ...device, device_id: otherEndpointId }], next_cursor: null });
+  await element("more-devices").listeners.click();
+  const rows = element("device-list").children;
+  windowListeners.pagehide();
+  assert.equal(timers.size, 0);
+  wall += 1100; // Simulate suspension on a platform whose monotonic clock pauses.
+  windowListeners.pageshow();
+  assert.match(visibleText(rows[0]), /stale report/);
+  assert.match(visibleText(rows[1]), /No reported local blockers/);
+  wall += 1000;
+  windowListeners.pagehide();
+  windowListeners.pageshow();
+  assert.match(visibleText(rows[1]), /stale report/);
+  assert.equal(element("device-list").children[0], rows[0]);
+  assert.equal(element("device-list").children.length, 2);
+});
+
+
+test("network service is bounded metadata, never SMS readiness", async () => {
+  const { element, state } = await ownerPage();
+  const report = { selected_sim: "active", sms_permission: "granted", airplane_mode: "disabled", received_at_ms: 1000, fresh: true };
+  for (const [value, expected] of [["in_service", "in service"], ["out_of_service", "out of service"],
+      ["emergency_only", "emergency only"], ["power_off", "radio powered off"], ["unavailable", "unavailable"],
+      [undefined, "unavailable"], [null, "unavailable"], ["<b>ready</b>", "unavailable"], ["__proto__", "unavailable"]]) {
+    state.devices = [{ device_id: endpointId, active_socket_lease: true, status_observed_at_ms: 2000,
+      reported_preconditions: { ...report, network_service: value } }];
+    await element("refresh-devices").listeners.click();
+    const text = visibleText(element("device-list"));
+    assert.ok(text.includes(`Android-reported network service ${expected}`));
+    assert.match(text, /Carrier readiness unknown/);
+    assert.doesNotMatch(text, /SMS ready|<b>ready|__proto__/);
+  }
+});
+
+test("network observation expires in place without revival after clock rollback", async (t) => {
+  let monotonic=0, wall=10000;
+  t.mock.method(performance,"now",()=>monotonic);
+  t.mock.method(Date,"now",()=>wall);
+  const {element,state,timers}=await ownerPage();
+  state.devices=[{device_id:endpointId,active_socket_lease:true,status_observed_at_ms:90000,
+    reported_preconditions:{selected_sim:"active",sms_permission:"granted",airplane_mode:"disabled",network_service:"out_of_service",received_at_ms:1000,fresh:true}}];
+  await element("refresh-devices").listeners.click();
+  element("auto-refresh").checked=false; element("auto-refresh").listeners.change();
+  const row=element("device-list").children[0], button=row.children[1];
+  document.activeElement=button;
+  const [id,timer]=[...timers][0];timers.delete(id);monotonic=1001;wall=1;timer.callback();
+  assert.equal(document.activeElement,button);assert.equal(element("device-list").children[0],row);
+  const text=visibleText(row);
+  assert.match(text,/stale report.*network service out of service.*Historical observations/);
+  assert.doesNotMatch(text,/Network service limited:|fresh at snapshot time/);
+  await element("logout").listeners.click();assert.equal(timers.size,0);
 });

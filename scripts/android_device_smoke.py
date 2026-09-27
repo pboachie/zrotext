@@ -13,6 +13,9 @@ ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = "org.zrotext.gateway."
 PRECONDITIONS = PACKAGE + "DevicePreconditionsDeviceTest"
 ACCESSIBILITY = PACKAGE + "GatewayAccessibilityDeviceTest"
+MANIFEST_AUTHORITY = PACKAGE + "ManifestAuthorityDeviceTest"
+NETWORK_SERVICE = PACKAGE + "NetworkServiceDeviceTest"
+OUTBOUND_ENVELOPE = PACKAGE + "OutboundEnvelopeDeviceTest"
 SERIAL = "emulator-5562"
 
 
@@ -21,6 +24,15 @@ def selected_tests(root=ROOT):
     source = root / "android/app/src/androidTest/java/org/zrotext/gateway/GatewayAccessibilityDeviceTest.kt"
     if source.is_file():
         expected[ACCESSIBILITY] = 5
+    source = root / "android/app/src/androidTest/java/org/zrotext/gateway/ManifestAuthorityDeviceTest.kt"
+    if source.is_file():
+        expected[MANIFEST_AUTHORITY] = 12
+    source = root / "android/app/src/androidTest/java/org/zrotext/gateway/NetworkServiceDeviceTest.kt"
+    if source.is_file():
+        expected[NETWORK_SERVICE] = 1
+    source = root / "android/app/src/androidTest/java/org/zrotext/gateway/OutboundEnvelopeDeviceTest.kt"
+    if source.is_file():
+        expected[OUTBOUND_ENVELOPE] = 10
     return expected
 
 
@@ -69,8 +81,13 @@ def main():
     expected = selected_tests()
     command("install", "-r", "-t", str(ROOT / "android/app/build/outputs/apk/debug/app-debug.apk"))
     command("install", "-r", "-t", str(ROOT / "android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk"))
+    # Only the opted-in disposable emulator receives the existing phone-state grant.
+    # Never grant location or SMS permission. No stored gateway selection is changed.
+    if NETWORK_SERVICE in expected:
+        command("shell", "pm", "grant", "org.zrotext.gateway", "android.permission.READ_PHONE_STATE")
     output = command("shell", "am", "instrument", "-w", "-r", "-e", "class", ",".join(expected),
                      "-e", "a11yIsolatedEmulator", "true",
+                     "-e", "networkServiceIsolatedEmulator", "true",
                      "org.zrotext.gateway.test/androidx.test.runner.AndroidJUnitRunner", timeout=420)
     # Raw platform output stays temporary, never in a public artifact or repository.
     with tempfile.TemporaryDirectory(prefix="zrotext-device-smoke-") as temporary:

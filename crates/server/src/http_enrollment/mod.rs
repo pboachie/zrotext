@@ -4,6 +4,7 @@
 //! The challenge proof acknowledges a device key. It does not issue a socket
 //! credential or authenticate the M0 heartbeat socket.
 
+use crate::api_json::ApiJson;
 use crate::{
     auth::{
         TokenHasher,
@@ -167,7 +168,7 @@ struct CreatePairingResponse {
 async fn create_pairing(
     State(state): State<Arc<EnrollmentHttpState>>,
     headers: HeaderMap,
-    Json(body): Json<CreatePairingBody>,
+    ApiJson(body): ApiJson<CreatePairingBody>,
 ) -> Response {
     let Ok(client) = connect(&state).await else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
@@ -266,7 +267,7 @@ struct ClaimResponse {
 async fn claim_pairing(
     State(state): State<Arc<EnrollmentHttpState>>,
     Path(pairing_id): Path<Uuid>,
-    Json(body): Json<ClaimBody>,
+    ApiJson(body): ApiJson<ClaimBody>,
 ) -> Response {
     let Ok(mut client) = connect(&state).await else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
@@ -330,7 +331,7 @@ struct ProveResponse {
 async fn prove_pairing(
     State(state): State<Arc<EnrollmentHttpState>>,
     Path(pairing_id): Path<Uuid>,
-    Json(body): Json<ProveBody>,
+    ApiJson(body): ApiJson<ProveBody>,
 ) -> Response {
     let Ok(mut client) = connect(&state).await else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
@@ -398,7 +399,7 @@ async fn approve_pairing(
     State(state): State<Arc<EnrollmentHttpState>>,
     Path(pairing_id): Path<Uuid>,
     headers: HeaderMap,
-    Json(body): Json<ApproveBody>,
+    ApiJson(body): ApiJson<ApproveBody>,
 ) -> Response {
     if body.comparison_code.len() > 8 || body.key_fingerprint.len() > 64 {
         return StatusCode::BAD_REQUEST.into_response();
@@ -511,7 +512,7 @@ struct AuthenticateBody {
 
 async fn device_authenticate(
     State(state): State<Arc<EnrollmentHttpState>>,
-    Json(body): Json<AuthenticateBody>,
+    ApiJson(body): ApiJson<AuthenticateBody>,
 ) -> Response {
     let Ok(mut client) = connect(&state).await else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
