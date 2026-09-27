@@ -368,7 +368,10 @@ public static class Native {
             desktopAccessMayChange=true;
             Grant(station,logonSid,StationGrant,"station-grant");
             Grant(desktop,logonSid,DesktopGrant,"desktop-grant");
-            desktopPath=Marshal.StringToHGlobalUni(stationName+"\\"+desktopName);
+            // Native suites that load user32 never started on the runner's own
+            // desktop even with the grant. An empty desktop name gives the
+            // fixture logon its own non-interactive window station instead.
+            desktopPath=Marshal.StringToHGlobalUni("");
             // The fixture user's own default environment, with the fixed
             // fixture variables overriding it; the runner's is never inherited.
             env=Marshal.StringToHGlobalUni(UserEnvironment(tokenHandle,environment));
