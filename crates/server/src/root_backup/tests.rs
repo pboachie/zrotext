@@ -128,8 +128,11 @@ fn every_changed_byte_and_all_truncations_fail_without_plaintext() {
             "length {at}"
         );
     }
-    assert!(open(&[bytes, vec![0]].concat(), &recovery, &expected).is_err());
-    assert!(open(&vec![0; 749], &recovery, &expected).is_err());
+    assert!(open(&[bytes.clone(), vec![0]].concat(), &recovery, &expected).is_err());
+    let mut oversized = bytes;
+    oversized.resize(MAX_FILE + 1, 0);
+    assert_eq!(oversized.len(), MAX_FILE + 1);
+    assert!(open(&oversized, &recovery, &expected).is_err());
 }
 
 #[test]

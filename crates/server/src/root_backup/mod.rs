@@ -206,16 +206,16 @@ fn seal_with_rng<R: TryCryptoRng>(
     let mut salt = [0; 32];
     let mut wrap_nonce = [0; 12];
     let mut body_nonce = [0; 12];
-    for output in [
-        &mut backup_id[..],
-        vault_key.as_mut_slice(),
-        &mut salt[..],
-        &mut wrap_nonce[..],
-        &mut body_nonce[..],
-    ] {
-        rng.try_fill_bytes(output)
-            .map_err(|_| BackupError::Randomness)?;
-    }
+    rng.try_fill_bytes(&mut backup_id)
+        .map_err(|_| BackupError::Randomness)?;
+    rng.try_fill_bytes(vault_key.as_mut_slice())
+        .map_err(|_| BackupError::Randomness)?;
+    rng.try_fill_bytes(&mut salt)
+        .map_err(|_| BackupError::Randomness)?;
+    rng.try_fill_bytes(&mut wrap_nonce)
+        .map_err(|_| BackupError::Randomness)?;
+    rng.try_fill_bytes(&mut body_nonce)
+        .map_err(|_| BackupError::Randomness)?;
     if backup_id == [0; 16] {
         return Err(BackupError::Randomness);
     }
