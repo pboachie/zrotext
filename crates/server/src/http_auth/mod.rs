@@ -1450,25 +1450,11 @@ async fn request_password_reset(
     }
     let mut client = connect(&state.database_url).await?;
     let subject = auth::normalize_email(&body.email).ok();
-    let admitted = if let Some(subject) = subject.as_deref() {
-        abuse_limits::consume_or_verify(
-            &client,
-            &state.hasher,
-            Limit::PasswordResetRequest,
-            subject,
-            async {
-                client
-                    .query_one(
-                        "SELECT EXISTS(SELECT 1 FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE m.role='owner' AND u.email=$1 AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL)",
-                        &[&subject],
-                    )
-                    .await
-                    .map(|row| row.get::<_, bool>(0))
-            },
-        )
-        .await
-    } else {
-        abuse_limits::consume(&client, &state.hasher, Limit::PasswordResetRequest, None).await
+    let admitted = match subject.as_deref() {
+        Some(subject) => admit_password_reset_request(&client, &state.hasher, subject).await,
+        None => {
+            abuse_limits::consume(&client, &state.hasher, Limit::PasswordResetRequest, None).await
+        }
     }
     .map_err(|_| AuthHttpError::Unavailable)?;
     if !admitted {
@@ -1478,6 +1464,53 @@ async fn request_password_reset(
         .await
         .map_err(map_auth)?;
     Ok(StatusCode::ACCEPTED)
+}
+
+/// Window of the verified reset lane's per-address budget. It matches the
+/// one-code-per-15-minutes throttle in [`account::request_password_reset`],
+/// which is the real cadence for a known address.
+const VERIFIED_RESET_WINDOW: Duration = Duration::from_secs(15 * 60);
+
+/// The subject the verified lane charges for a live owner address. Anyone can
+/// spend the anonymous per-address counter by naming the address, so the lane
+/// must not share it: this subject is distinct, and it rolls over with the
+/// code throttle, so anonymous requests can hold back the owner's next code by
+/// at most one throttle window instead of a day. The verified route ceiling
+/// still bounds the lane as a whole.
+fn verified_reset_subject(subject: &str, now: SystemTime) -> String {
+    let window = now.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+        / VERIFIED_RESET_WINDOW.as_secs();
+    format!("{subject}\0verified\0{window}")
+}
+
+/// Spend the anonymous per-address budget first. When it refuses, a live
+/// verified owner address is charged the verified lane's own subject rather
+/// than the anonymous counter a stranger may have spent. An unknown address
+/// charges the refused anonymous counter once more instead, so both outcomes
+/// run the same probe and one further counter statement before the uniform
+/// 202; that charge admits at most what the anonymous lane would have.
+async fn admit_password_reset_request(
+    client: &Client,
+    hasher: &TokenHasher,
+    subject: &str,
+) -> Result<bool, tokio_postgres::Error> {
+    let limit = Limit::PasswordResetRequest;
+    if abuse_limits::consume(client, hasher, limit, Some(subject)).await? {
+        return Ok(true);
+    }
+    let live = client
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE m.role='owner' AND u.email=$1 AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL)",
+            &[&subject],
+        )
+        .await?
+        .get::<_, bool>(0);
+    if live {
+        let verified = verified_reset_subject(subject, SystemTime::now());
+        abuse_limits::consume_verified(client, hasher, limit, &verified).await
+    } else {
+        abuse_limits::consume(client, hasher, limit, Some(subject)).await
+    }
 }
 
 #[derive(Deserialize)]
