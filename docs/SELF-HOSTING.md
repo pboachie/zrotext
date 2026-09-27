@@ -339,12 +339,14 @@ expiry age in seconds, silent attempts, and overdue delivery receipts waiting
 contains no IDs, phone numbers, or content. A count that stays high or keeps
 growing means recovery is falling behind.
 
-Unauthenticated and malformed requests are rejected before they take a request
-connection: the alpha message routes check the `Authorization: Bearer` header
-shape and owner routes check for a session cookie first. `/readyz` runs its database
-checks at most once per second per process and shares the result across
-concurrent probes, so frequent load-balancer probes use at most one request
-connection at a time.
+Some requests are rejected before they take a request connection. The alpha
+message routes reject a missing or malformed `Authorization: Bearer` header, and
+owner routes reject a request with no session cookie. A request that carries a
+well-formed but invalid bearer or session cookie still needs the database to
+reject it. `/readyz` runs at most one readiness probe at a time per process,
+reuses its result for one second after the probe finishes, and shares that
+result across concurrent callers. A probe that times out can leave its
+connection busy for up to two more seconds while the pool resets it.
 
 Migration 029 (`029_webhook_dispatch_fairness.sql`; its error text still says "027") requires a webhook maintenance window. Stop webhook delivery on
 **every** old dispatch node (`WEBHOOK_DELIVERY_ENABLED=false`) before migrating.

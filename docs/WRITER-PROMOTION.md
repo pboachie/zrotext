@@ -40,11 +40,17 @@ runbook cites them so you know what each check proves.
   disabled or draining`).
 
 `/readyz` is unauthenticated, so its database checks (writer, epoch, site,
-message index, billing authorization) run at most once per second per process
-and concurrent probes share that one result; a probe that cannot finish within
-five seconds counts as not ready. A database-side fence change therefore shows
-on `/readyz` within about a second. The in-process draining flag and billing
-provider authorization flags are still read on every request.
+message index, billing authorization) run as one probe at a time per process,
+and concurrent callers share its result. The result is reused for one second
+after the probe finishes. A probe that cannot finish within five seconds counts
+as not ready. The authority query (writer, epoch, site) runs first, so a slow
+probe can report an observation made almost five seconds earlier, and the cache
+can serve it for one more second. A database-side fence change can therefore
+take up to about six seconds, plus your probe interval, to show on `/readyz`.
+This delay affects only load-balancer routing: device-session validation and
+grant issuance still check the fences live on every operation. The in-process
+draining flag and billing provider authorization flags are read on every
+request.
 - **Device-session fence.** Each new authenticated device connection
   upserts `device_sessions` with `connection_epoch = connection_epoch + 1`
   and takes over the lease; validation matches the exact `site_id`,
@@ -127,8 +133,8 @@ ever came back with stale state — could no longer validate that session.
 ### A3. Demonstrate the site fence (live, reversible)
 
 The `sites.draining` column is read by a running process, so it fences that
-process without touching it. Fence B, watch it refuse (allow a second for the
-readiness cache), then unfence:
+process without touching it. Fence B, watch it refuse (allow a few seconds for
+the readiness cache; see the staleness bound above), then unfence:
 
 ```sql
 UPDATE sites SET draining = TRUE WHERE site_id = 'local-b';
