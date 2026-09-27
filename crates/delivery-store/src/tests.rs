@@ -766,13 +766,12 @@ async fn exact_alpha_replay_survives_customer_binding_without_new_work() {
         synthetic_payload: b"fixture",
         expires_at_ms: expiry,
     };
-    assert!(
-        DeliveryStore::new(&mut client)
-            .accept_alpha(input(), false)
-            .await
-            .unwrap()
-            .created
-    );
+    let first = DeliveryStore::new(&mut client)
+        .accept_alpha(input(), false)
+        .await
+        .unwrap();
+    assert!(first.created);
+    assert_eq!(first.message_id, alpha_message_id(account, message));
     client
         .execute(
             "INSERT INTO billing_customers(account_id,stripe_customer_id) \
@@ -786,7 +785,7 @@ async fn exact_alpha_replay_survives_customer_binding_without_new_work() {
             .accept_alpha(input(), billing_enabled)
             .await
             .unwrap();
-        assert_eq!(replay.message_id, message);
+        assert_eq!(replay.message_id, first.message_id);
         assert!(!replay.created);
     }
     assert!(matches!(
