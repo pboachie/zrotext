@@ -217,6 +217,42 @@ pub enum Phase {
     },
 }
 
+/// The subset of controller phase that is worth persisting across a
+/// restart. Suspecting streaks are deliberately absent: a restart is an
+/// unknown interval, and the decision model already refuses to count unknown
+/// intervals as stable evidence, so a restored controller resumes hysteresis
+/// from zero instead of inheriting a possibly-stale streak.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RestorablePhase {
+    /// No durable action was taken yet.
+    Steady,
+    /// Fencing the old writer was requested and applied.
+    FencingOldWriter,
+    /// A promotion was decided and its intent journaled; the promotion
+    /// applies exactly `new_epoch`. Restoring re-derives the fencing phase
+    /// with an epoch memory of `new_epoch - 1`, so the next promotion
+    /// decision re-emits the same epoch rather than inventing a new one.
+    Promoting { new_epoch: u64 },
+    /// The promotion applied: the authority serves `new_epoch`.
+    Promoted {
+        new_epoch: u64,
+        reconciled: bool,
+        rejoin_emitted: bool,
+    },
+}
+
+impl RestorablePhase {
+    /// Stable label for the journal encoding.
+    pub fn label(&self) -> &'static str {
+        match self {
+            RestorablePhase::Steady => "steady",
+            RestorablePhase::FencingOldWriter => "fencing",
+            RestorablePhase::Promoting { .. } => "promoting",
+            RestorablePhase::Promoted { .. } => "promoted",
+        }
+    }
+}
+
 /// The action (or deliberate non-action) for one check round.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Decision {
@@ -302,6 +338,49 @@ impl FailoverController {
     /// The current phase.
     pub fn phase(&self) -> &Phase {
         &self.phase
+    }
+
+    /// The highest writer epoch any fresh observation ever reported. A
+    /// restored controller never regresses below this value.
+    pub fn max_epoch_seen(&self) -> u64 {
+        self.max_epoch_seen
+    }
+
+    /// Rebuild a controller from durable state. Hysteresis streaks restart at
+    /// zero (an unknown interval is not stable evidence), while fences, the
+    /// promotion epoch memory and the reconciliation/rejoin flags survive.
+    /// Restoring a [`RestorablePhase::Promoting`] intent pins the epoch memory
+    /// to `new_epoch - 1` so the promotion decision re-emits exactly the
+    /// journaled epoch; a crafted `new_epoch` of zero leaves the epoch memory
+    /// unknown, which can only hold.
+    pub fn restore(config: FailoverConfig, max_epoch_seen: u64, phase: RestorablePhase) -> Self {
+        let max_epoch_seen = match phase {
+            RestorablePhase::Promoting { new_epoch }
+            | RestorablePhase::Promoted { new_epoch, .. } => new_epoch.saturating_sub(1),
+            _ => max_epoch_seen,
+        };
+        let phase = match phase {
+            RestorablePhase::Steady => Phase::Steady,
+            RestorablePhase::FencingOldWriter | RestorablePhase::Promoting { .. } => {
+                Phase::FencingOldWriter
+            }
+            RestorablePhase::Promoted {
+                new_epoch,
+                reconciled,
+                rejoin_emitted,
+            } => Phase::Promoted {
+                new_epoch,
+                reconciled,
+                rejoin_emitted,
+                healthy_streak: 0,
+                stable_since_ms: None,
+            },
+        };
+        Self {
+            config,
+            phase,
+            max_epoch_seen,
+        }
     }
 
     /// The configuration this controller was built with.

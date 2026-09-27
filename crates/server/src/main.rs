@@ -27,7 +27,6 @@ use tokio_postgres::NoTls;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 use zrotext_delivery_store::{DeliveryStore, RECOVERY_BATCH, RECOVERY_BATCHES_PER_TICK};
-use zrotext_failover_quorum::policy::QuorumPolicy;
 use zrotext_server::{
     alpha_policy::AlphaPolicy,
     auth::{
@@ -44,6 +43,7 @@ use zrotext_server::{
     },
     device_socket::{self, DeviceSocketState},
     enrollment::EnrollmentHasher,
+    failover_executor,
     http_auth::{
         self, AuthHttpState, DisabledVerificationDispatcher, RegistrationPolicy,
         SmtpVerificationDispatcher, VerificationDispatchOutcome, VerificationDispatcher,
@@ -226,13 +226,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mfa_recovery_only = optional_bool("MFA_RECOVERY_ONLY")?;
     let mfa_enrollment_enabled = optional_bool("MFA_ENROLLMENT_ENABLED")?;
     let sms_line_activation_enabled = optional_bool("SMS_LINE_ACTIVATION_ENABLED")?;
-    // Independent-quorum failover decision module. Disabled by default; when
-    // enabled, this increment validates the three-member configuration at
-    // startup only — no controller loop runs yet, and no route or readiness
-    // behavior changes in either state.
-    let failover_quorum_policy = QuorumPolicy::parse(
+    // Independent-quorum failover executor. Disabled by default; when off
+    // (or absent) nothing further is read and no thread or database access
+    // exists. When on, the validated configuration runs the controller loop
+    // against the authoritative writer database; its observation source is
+    // the in-process placeholder until quorum members report (see
+    // docs/MULTI-LOCATION.md), so every round holds fail-closed.
+    let failover_executor_env = failover_executor::ExecutorEnv::parse(
         env::var("FAILOVER_QUORUM_ENABLED").ok().as_deref(),
         env::var("FAILOVER_QUORUM_MEMBERS").ok().as_deref(),
+        env::var("FAILOVER_QUORUM_WRITER_SITE_ID").ok().as_deref(),
+        env::var("FAILOVER_QUORUM_STANDBY_SITE_ID").ok().as_deref(),
+        env::var("FAILOVER_QUORUM_CHECK_INTERVAL_MS")
+            .ok()
+            .as_deref(),
     )?;
     if mfa_recovery_only && mfa_enrollment_enabled {
         return Err("MFA enrollment cannot be enabled in recovery-only mode".into());
@@ -669,12 +676,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }));
         }
     }
-    if failover_quorum_policy.enabled() {
-        eprintln!(
-            "failover quorum decision module enabled with {} members; no controller loop in this build",
-            failover_quorum_policy.members().len()
-        );
-    }
+    let _failover_executor_thread = failover_executor::spawn_failover_executor(
+        failover_executor_env,
+        config.database_url.clone(),
+        config.draining.clone(),
+    );
     eprintln!(
         "zrotext site={} instance={} listening={bind}",
         config.site_id, config.instance_id
