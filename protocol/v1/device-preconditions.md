@@ -89,6 +89,14 @@ readiness is unknown. Turning off automatic refresh or viewing an old page does
 not transform the saved report into a current observation. Missing or malformed
 reports never become affirmative readiness or an empty/absent-SIM claim.
 
+Network service is labeled as Android-reported. Missing v1 metadata, unknown
+values and unavailable observations never become a positive network claim.
+Fresh out-of-service, emergency-only or powered-off reports suggest checking
+the selected SIM's network service; historical reports show no current action
+or readiness assertion. In-service still leaves carrier SMS readiness unknown.
+The same local aging timer updates this text in place without moving focus,
+announcing live changes or making extra requests.
+
 Fresh observations explain reported local blockers: an unselected or inactive
 selected SIM, denied SMS permission, or enabled airplane mode. Unavailable fields
 remain unknown. All-positive observations say only that there were no reported
