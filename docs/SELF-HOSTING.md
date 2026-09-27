@@ -426,6 +426,14 @@ and their append-only audit (`owner_recipient_holds`, `owner_opt_out_review_deci
 `owner_opt_out_audit`) are kept the same way; they hold codes and IDs, never notes or SMS content. Backups, WAL, replicas, and PostgreSQL dead tuples need their own lifecycle
 policy. A database row update or deletion does not immediately erase old pages.
 
+The owner takeout (`GET /v1/owner/export`) still lists a message after its
+content has been redacted: `recipient_e164`, `transport_payload` and
+`payload_encoding` are `null` and `content_scrubbed` is `true`, while the
+message ID, state, timestamps and any remaining events are exported as usual.
+A message that still carries content reports `content_scrubbed: false` and a
+`payload_encoding` of `utf8` for a `synthetic_alpha` text body, or `base64`
+for a `sealed_candidate02` envelope or any body that is not valid UTF-8.
+
 Message events are deleted only after their parent message content has been
 redacted. If the event window is shorter than the content window, or an old
 unknown message becomes terminal recently, the content cutoff is the effective
