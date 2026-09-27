@@ -6,6 +6,229 @@ use totp_rs::{Builder, Secret};
 
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn email_reset_preserves_mfa_and_revokes_owner_credentials() {
+    assert_reset_preserves_mfa(ResetPath::Email).await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn operator_reset_preserves_mfa_and_revokes_owner_credentials() {
+    assert_reset_preserves_mfa(ResetPath::Operator).await;
+}
+
+enum ResetPath {
+    Email,
+    Operator,
+}
+
+async fn mfa_state(db: &Client, user_id: Uuid) -> (bool, String, Vec<(Vec<u8>, bool)>) {
+    let owner = db.query_one(
+        "SELECT u.mfa_enabled,row_to_json(m)::text FROM users u JOIN owner_mfa m ON m.user_id=u.id WHERE u.id=$1",
+        &[&user_id],
+    ).await.unwrap();
+    let codes = db.query(
+        "SELECT code_hash,used_at IS NOT NULL FROM owner_mfa_recovery_codes WHERE user_id=$1 ORDER BY code_hash",
+        &[&user_id],
+    ).await.unwrap().into_iter().map(|row| (row.get(0), row.get(1))).collect();
+    (owner.get(0), owner.get(1), codes)
+}
+
+async fn assert_reset_preserves_mfa(path: ResetPath) {
+    let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+        .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let schema = format!("mfa_reset_{}", Uuid::new_v4().simple());
+    setup
+        .batch_execute(&format!("CREATE SCHEMA {schema}"))
+        .await
+        .unwrap();
+    let separator = if base_url.contains('?') { '&' } else { '?' };
+    let url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
+    let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    for migration in [
+        include_str!("../../../../../deploy/compose/migrations/002_auth.sql"),
+        include_str!("../../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+        include_str!("../../../../../deploy/compose/migrations/013_owner_mfa.sql"),
+        include_str!("../../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
+        include_str!("../../../../../deploy/compose/migrations/025_account_recovery.sql"),
+    ] {
+        db.batch_execute(migration).await.unwrap();
+    }
+    let hasher = TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap();
+    let cipher = mfa::MfaCipher::new(rand::random::<[u8; 32]>().to_vec()).unwrap();
+    let old_password = Uuid::new_v4().to_string();
+    let new_password = Uuid::new_v4().to_string();
+    let owner = auth::register(&mut db, &hasher, "owner@example.test", &old_password)
+        .await
+        .unwrap();
+    assert!(
+        auth::verify_email(&mut db, &hasher, &owner.verification_token)
+            .await
+            .unwrap()
+    );
+    let first = auth::login(&db, &hasher, "owner@example.test", &old_password)
+        .await
+        .unwrap();
+    let principal = auth::authenticate_session(&db, &hasher, &first.token)
+        .await
+        .unwrap();
+    let pending = mfa::begin_enrollment(&mut db, &cipher, &principal, &old_password)
+        .await
+        .unwrap();
+    let code = Builder::new()
+        .with_secret(Secret::try_from_base32(&pending.secret_base32).unwrap())
+        .build()
+        .unwrap()
+        .generate_current()
+        .to_string();
+    let recovery = mfa::confirm_enrollment(&mut db, &cipher, &hasher, &principal, &code)
+        .await
+        .unwrap();
+
+    // Enrollment revokes other sessions, so create the second session through
+    // MFA before testing that a reset revokes both live sessions.
+    let challenge =
+        mfa::begin_login_challenge(&db, &hasher, owner.account_id, owner.user_id, &old_password)
+            .await
+            .unwrap();
+    let second = mfa::complete_login(
+        &mut db,
+        Some(&cipher),
+        &hasher,
+        &challenge,
+        &recovery.codes[0],
+    )
+    .await
+    .unwrap();
+    let key = auth::create_api_key(
+        &mut db,
+        &hasher,
+        &principal,
+        &[Scope::MessagesRead],
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let stale_challenge =
+        mfa::begin_login_challenge(&db, &hasher, owner.account_id, owner.user_id, &old_password)
+            .await
+            .unwrap();
+    for token in [&first.token, &second.token] {
+        assert!(
+            auth::authenticate_session(&db, &hasher, token)
+                .await
+                .is_ok()
+        );
+    }
+    assert!(
+        auth::authenticate_api_key(&db, &hasher, &key.token)
+            .await
+            .is_ok()
+    );
+    assert!(
+        mfa::login_challenge_is_live(&db, &hasher, &stale_challenge)
+            .await
+            .unwrap()
+    );
+    let before = mfa_state(&db, owner.user_id).await;
+    assert!(before.0);
+
+    request_password_reset(&mut db, &hasher, "owner@example.test")
+        .await
+        .unwrap();
+    // Claim the synthetic outbox entry directly. No SMTP is used in either path.
+    let emailed = claim_reset_mail(&mut db, &hasher).await.unwrap().unwrap();
+    match path {
+        ResetPath::Email => assert!(
+            confirm_password_reset(&mut db, &hasher, &emailed.token, &new_password)
+                .await
+                .unwrap()
+        ),
+        ResetPath::Operator => assert!(
+            operator_reset_password(&mut db, "owner@example.test", &new_password)
+                .await
+                .unwrap()
+        ),
+    }
+    assert_eq!(
+        mfa_state(&db, owner.user_id).await,
+        before,
+        "reset must preserve enrollment, encrypted factor, replay state and recovery codes"
+    );
+    for token in [&first.token, &second.token] {
+        assert!(matches!(
+            auth::authenticate_session(&db, &hasher, token).await,
+            Err(AuthError::Unauthorized)
+        ));
+    }
+    assert!(matches!(
+        auth::authenticate_api_key(&db, &hasher, &key.token).await,
+        Err(AuthError::Unauthorized)
+    ));
+    assert!(
+        !mfa::login_challenge_is_live(&db, &hasher, &stale_challenge)
+            .await
+            .unwrap()
+    );
+    assert!(matches!(
+        mfa::complete_login(
+            &mut db,
+            Some(&cipher),
+            &hasher,
+            &stale_challenge,
+            &recovery.codes[1]
+        )
+        .await,
+        Err(AuthError::Unauthorized)
+    ));
+    assert!(
+        !confirm_password_reset(&mut db, &hasher, &emailed.token, &old_password)
+            .await
+            .unwrap()
+    );
+    assert!(matches!(
+        auth::login(&db, &hasher, "owner@example.test", &old_password).await,
+        Err(AuthError::InvalidCredentials)
+    ));
+    assert!(
+        matches!(auth::login(&db, &hasher, "owner@example.test", &new_password).await,
+        Err(AuthError::MfaRequired { account_id, user_id }) if account_id == owner.account_id && user_id == owner.user_id)
+    );
+    let fresh_challenge =
+        mfa::begin_login_challenge(&db, &hasher, owner.account_id, owner.user_id, &new_password)
+            .await
+            .unwrap();
+    // The same unused factor rejected with the stale challenge still works
+    // with a fresh proof of the new password; reset does not strand the owner.
+    let restored = mfa::complete_login(
+        &mut db,
+        Some(&cipher),
+        &hasher,
+        &fresh_challenge,
+        &recovery.codes[1],
+    )
+    .await
+    .unwrap();
+    assert!(
+        auth::authenticate_session(&db, &hasher, &restored.token)
+            .await
+            .is_ok()
+    );
+    assert_eq!(
+        claim_reset_notice(&mut db).await.unwrap().unwrap().email,
+        "owner@example.test"
+    );
+    setup
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn expired_reset_mail_is_pruned_in_bounded_batches_before_live_mail() {
     let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
         .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
