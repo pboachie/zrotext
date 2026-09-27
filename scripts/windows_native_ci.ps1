@@ -9,6 +9,13 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
+$workerStages=@('worker-start','worker-manifest','worker-ownership','worker-helper-compile','worker-eligibility','worker-test-prepare','worker-test-launch','worker-test-wait','worker-test-output','worker-test-result','worker-results','worker-cleanup','worker-complete','worker-failed')
+
+function Write-WorkerCheckpoint([string]$Value) {
+    if($Value -cnotin $workerStages){throw 'Unknown worker checkpoint.'}
+    $script:workerStage=$Value
+    [IO.File]::WriteAllText($script:checkpointPath,$Value)
+}
 
 function Assert-CiHost([hashtable]$Values) {
     foreach($pair in @(@('GITHUB_ACTIONS','true'),@('RUNNER_ENVIRONMENT','github-hosted'),@('RUNNER_OS','Windows'))) {
@@ -103,6 +110,13 @@ function Test-PureGuards {
         $created=@();$junction=$null
         [IO.Directory]::CreateDirectory($root) | Out-Null
         try {
+            $script:checkpointPath=Join-Path $root 'worker-stage.txt';$created+=$script:checkpointPath
+            foreach($value in $workerStages) {
+                Write-WorkerCheckpoint $value
+                if([IO.File]::ReadAllText($script:checkpointPath) -cne $value -or (Get-Item -LiteralPath $script:checkpointPath).Length -gt 64){throw 'Checkpoint regression.'}
+            }
+            $rejected=$false;try{Write-WorkerCheckpoint 'unapproved-stage'}catch{$rejected=$true}
+            if(-not $rejected -or [IO.File]::ReadAllText($script:checkpointPath) -cne $workerStages[-1]){throw 'Checkpoint refusal regression.'}
             $ids=@{'zrotext_root_bundle'='bundle-fixture';'zrotext_root_terminal'='terminal-fixture';'zrotext-owner'='owner-fixture'}
             $records=@()
             foreach($name in $ids.Keys) {
@@ -145,12 +159,18 @@ if($WorkerManifest) {
     $workerStage='worker-manifest'
     $workerFailed=$false;$privateTemp=$null
     try {
+        $checkpointRoot=Assert-PlainPath ([IO.Path]::GetDirectoryName($WorkerManifest))
+        if([IO.Path]::GetFileName($checkpointRoot) -notmatch '^zrotext-native-[a-f0-9]{32}$'){throw 'Worker checkpoint boundary failed.'}
+        $script:checkpointPath=Assert-ChildPath (Join-Path $checkpointRoot 'results/worker-stage.txt') $checkpointRoot
+        Write-WorkerCheckpoint 'worker-start'
         Assert-CiHost @{GITHUB_ACTIONS=$env:GITHUB_ACTIONS;RUNNER_ENVIRONMENT=$env:RUNNER_ENVIRONMENT;RUNNER_OS=$env:RUNNER_OS;ImageOS=$env:ImageOS}
         $root=Assert-PlainPath ([IO.Path]::GetDirectoryName($WorkerManifest))
         if([IO.Path]::GetFileName($root) -notmatch '^zrotext-native-[a-f0-9]{32}$' -or (Assert-PlainPath $env:TEMP) -cne (Join-Path $root 'temp')){throw 'Worker fixture boundary failed.'}
+        Write-WorkerCheckpoint 'worker-manifest'
         $manifest=Get-Content -LiteralPath (Assert-ChildPath $WorkerManifest $root) -Raw | ConvertFrom-Json
         $identity=[Security.Principal.WindowsIdentity]::GetCurrent().User
         if($identity.Value -cne $manifest.Sid){throw 'Wrong worker identity.'}
+        Write-WorkerCheckpoint 'worker-ownership'
         foreach($part in @('temp','results')) {
             $directory=Assert-ChildPath (Join-Path $root $part) $root
             $acl=Get-Acl -LiteralPath $directory
@@ -158,12 +178,14 @@ if($WorkerManifest) {
             Set-Acl -LiteralPath $directory -AclObject $acl
             if((Get-Acl -LiteralPath $directory).GetOwner([Security.Principal.SecurityIdentifier]).Value -cne $manifest.Sid){throw 'Worker directory ownership failed.'}
         }
+        Write-WorkerCheckpoint 'worker-helper-compile'
         Add-Type -Path (Assert-ChildPath (Join-Path $root 'bin/windows_native_ci.cs') $root)
+        Write-WorkerCheckpoint 'worker-eligibility'
         [ZrotextCi.Native]::CheckWorker([string]$manifest.Sid)
         $privateTemp=Assert-ChildPath (Join-Path $root 'temp') $root
         $results=@()
         foreach($test in $manifest.Tests) {
-            $workerStage='worker-test'
+            Write-WorkerCheckpoint 'worker-test-prepare'
             $exe=Assert-ChildPath ([string]$test.Executable) (Join-Path $root 'bin')
             if((Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash -cne $test.Hash){throw 'Fixture executable changed.'}
             $log=Assert-ChildPath (Join-Path $root ('results/'+$test.Name+'.log')) $root
@@ -173,18 +195,23 @@ if($WorkerManifest) {
             $start.RedirectStandardOutput=$true;$start.RedirectStandardError=$true
             $process=[Diagnostics.Process]::new();$process.StartInfo=$start
             try {
+                Write-WorkerCheckpoint 'worker-test-launch'
                 if(-not $process.Start()){throw 'Native suite launch failed.'}
                 $stdout=$process.StandardOutput.ReadToEndAsync();$stderr=$process.StandardError.ReadToEndAsync()
+                Write-WorkerCheckpoint 'worker-test-wait'
                 if(-not $process.WaitForExit(90000)){$process.Kill($true);$process.WaitForExit();throw 'Native suite timed out.'}
                 $code=$process.ExitCode
+                Write-WorkerCheckpoint 'worker-test-output'
                 $text=$stdout.GetAwaiter().GetResult()+$stderr.GetAwaiter().GetResult()
                 if($text.Length -gt 1048576){throw 'Native suite output exceeded fixture bound.'}
                 Set-Content -LiteralPath $log -Value $text
             } finally {$process.Dispose()}
+            Write-WorkerCheckpoint 'worker-test-result'
             $summary='test result: ok. '+$test.Passed+' passed; 0 failed; 0 ignored;'
             if($code -ne 0 -or -not $text.Contains($summary)){throw 'Native suite failed or expected count changed.'}
             $results+=@{Name=$test.Name;Passed=$test.Passed;ExitCode=$code}
         }
+        Write-WorkerCheckpoint 'worker-results'
         $results | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $root 'results/result.json')
     } catch {
         # Never render exception objects or bound arguments.
@@ -193,6 +220,7 @@ if($WorkerManifest) {
     } finally {
         if($privateTemp) {
             try {
+                Write-WorkerCheckpoint 'worker-cleanup'
                 $checked=Assert-ChildPath $privateTemp $root
                 if([IO.Path]::GetFileName($checked) -cne 'temp'){throw 'Worker cleanup boundary failed.'}
                 Assert-NoReparseDescendants $checked
@@ -202,6 +230,7 @@ if($WorkerManifest) {
         }
     }
     if($workerFailed){exit 1}
+    Write-WorkerCheckpoint 'worker-complete'
     exit 0
 }
 
@@ -301,6 +330,15 @@ try {
     Write-Output "Native CI fixture failed at $stage."
     if('ZrotextCi.Native' -as [type]){Write-Output ('Native stage: '+[ZrotextCi.Native]::Stage+'; OS code: '+[ZrotextCi.Native]::ErrorCode)}
     if($fixture) {
+        try {
+            $checkpoint=Assert-ChildPath (Join-Path $fixture 'results/worker-stage.txt') $fixture
+            if(Test-Path -LiteralPath $checkpoint -PathType Leaf) {
+                if((Get-Item -LiteralPath $checkpoint).Length -gt 64){throw 'Checkpoint exceeds bound.'}
+                $lastStage=[IO.File]::ReadAllText($checkpoint)
+                if($lastStage -cnotin $workerStages){throw 'Unknown worker checkpoint.'}
+                Write-Output ('Native CI worker checkpoint: '+$lastStage)
+            } else {Write-Output 'Native CI worker checkpoint: unavailable'}
+        } catch {Write-Output 'Native CI worker checkpoint refused.'}
         foreach($name in @('zrotext_root_bundle','zrotext_root_terminal','zrotext-owner')) {
             $log=Join-Path $fixture ('results/'+$name+'.log')
             if(Test-Path -LiteralPath $log -PathType Leaf) {
