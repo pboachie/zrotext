@@ -5,7 +5,7 @@ use p256::ecdsa::{
 };
 use p256::elliptic_curve::Generate;
 use serde_json::Value;
-use zrotext_server::sealed_root_enrollment::*;
+use zrotext_root_material::sealed_root_enrollment::*;
 
 fn fixture() -> Value {
     serde_json::from_str(include_str!(

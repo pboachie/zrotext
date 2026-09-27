@@ -116,7 +116,7 @@ fingerprint card is not a private-key recovery kit.
 The public [fixture](../v1/vectors/root-enrollment-01.json) was generated with an
 ephemeral Node/OpenSSL P-256 key; only public bytes and signatures are retained.
 Rust checks parsing, encoding and possession through
-`cargo test --locked -p zrotext-server --test root_enrollment`.
+`cargo test --locked -p zrotext-root-material --test root_enrollment`.
 An independent Node/OpenSSL consumer checks exact offsets, fingerprint,
 transcript, signature and altered-field/high-s rejection. It runs through the
 existing `test_ztse_draft_vectors.py` CI discovery, without SDK modifications or
