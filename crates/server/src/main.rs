@@ -51,7 +51,7 @@ use zrotext_server::{
     },
     http_enrollment::{self, EnrollmentHttpState},
     http_messages::{self, MessagesHttpState},
-    http_owner_events::{self, OwnerEventsState},
+    http_owner_events::{self, OwnerEventsState, OwnerStreamLimits},
     http_owner_export::{self, OwnerExportState},
     http_owner_messages::{self, OwnerMessagesState},
     http_owner_review::{self, OwnerReviewState},
@@ -562,6 +562,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             database_url: config.database_url.clone(),
             auth_hasher: auth_state.hasher.clone(),
             canonical_origin: auth_state.canonical_origin.clone(),
+            stream_limits: Arc::new(OwnerStreamLimits::default()),
         };
         let owner_review_state = OwnerReviewState {
             database_url: config.database_url.clone(),
