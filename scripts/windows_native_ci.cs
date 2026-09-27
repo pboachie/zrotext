@@ -94,6 +94,11 @@ public static class Native {
     [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetExitCodeProcess(IntPtr process,out uint code);
     [DllImport("user32.dll")] static extern IntPtr GetProcessWindowStation();
     [DllImport("user32.dll")] static extern IntPtr GetThreadDesktop(uint tid);
+    [DllImport("user32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool GetUserObjectInformationW(IntPtr handle,int index,StringBuilder buffer,int length,out int needed);
+    [DllImport("user32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern IntPtr OpenWindowStationW(string name,bool inherit,uint access);
+    [DllImport("user32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern IntPtr OpenDesktopW(string name,uint flags,bool inherit,uint access);
+    [DllImport("user32.dll",SetLastError=true)] static extern bool CloseWindowStation(IntPtr handle);
+    [DllImport("user32.dll",SetLastError=true)] static extern bool CloseDesktop(IntPtr handle);
     [DllImport("user32.dll",SetLastError=true)] static extern bool GetUserObjectSecurity(IntPtr handle,ref uint info,byte[] buffer,uint length,out uint needed);
     [DllImport("user32.dll",SetLastError=true)] static extern bool SetUserObjectSecurity(IntPtr handle,ref uint info,byte[] buffer);
     [DllImport("userenv.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool DeleteProfileW(string sid,string path,string computer);
@@ -136,6 +141,16 @@ public static class Native {
         foreach(GenericAce ace in source) if(!FixtureAce(ace,sids)) result.InsertAce(result.Count,ace);
         return result;
     }
+    // Window station and desktop rights granted only to the fixture logon SID
+    // for the duration of Run, then removed by CleanDesktop.
+    const uint StationGrant = 0x37f;     // WINSTA_ALL_ACCESS
+    const uint DesktopGrant = 0x000f01ff; // DESKTOP_ALL_ACCESS incl. standard rights
+    static RawAcl WithFixtureGrant(RawAcl source,string sid,uint mask) {
+        var result=new RawAcl(source.Revision,source.Count+1);
+        foreach(GenericAce ace in source) result.InsertAce(result.Count,ace);
+        result.InsertAce(result.Count,new CommonAce(AceFlags.None,AceQualifier.AccessAllowed,unchecked((int)mask),new SecurityIdentifier(sid),false,null));
+        return result;
+    }
     public static void TestAclFilter() {
         var before=new RawSecurityDescriptor("D:P(A;;GA;;;SY)(A;;GR;;;BU)(D;;GW;;;S-1-5-5-1-2)(A;;GR;;;SY)");
         var sids=new HashSet<string>{"S-1-5-32-545","S-1-5-5-1-2"};
@@ -144,6 +159,33 @@ public static class Native {
         Check(AceKey(filtered[0])==AceKey(before.DiscretionaryAcl[0]) && AceKey(filtered[1])==AceKey(before.DiscretionaryAcl[3]),"pure-acl-preserve-unrelated-order");
         Check(WithoutFixture(filtered,sids).Count==2,"pure-acl-filter-idempotent");
         Check(before.DiscretionaryAcl.Count==4,"pure-acl-source-unchanged");
+        // The grant appends exactly one allow ACE for the logon SID, keeps every
+        // existing ACE in order, and is fully removed by the cleanup filter.
+        var granted=WithFixtureGrant(filtered,"S-1-5-5-1-2",DesktopGrant);
+        Check(granted.Count==filtered.Count+1,"pure-acl-grant-count");
+        for(int i=0;i<filtered.Count;i++) Check(AceKey(granted[i])==AceKey(filtered[i]),"pure-acl-grant-preserves-existing");
+        var grant=granted[granted.Count-1] as CommonAce;
+        Check(grant!=null && grant.AceQualifier==AceQualifier.AccessAllowed && grant.SecurityIdentifier.Value=="S-1-5-5-1-2" && unchecked((uint)grant.AccessMask)==DesktopGrant && grant.AceFlags==AceFlags.None,"pure-acl-grant-shape");
+        var restored=WithoutFixture(granted,sids);
+        Check(restored.Count==filtered.Count,"pure-acl-grant-removed-count");
+        for(int i=0;i<filtered.Count;i++) Check(AceKey(restored[i])==AceKey(filtered[i]),"pure-acl-grant-removed-exactly");
+        Check(filtered.Count==2,"pure-acl-grant-source-unchanged");
+    }
+    static string ObjectName(IntPtr handle) {
+        int needed;
+        GetUserObjectInformationW(handle,2,null,0,out needed);
+        Check(needed>2 && needed<=512,"desktop-name-size");
+        var name=new StringBuilder(needed/2);
+        Check(GetUserObjectInformationW(handle,2,name,needed,out needed),"desktop-name-read");
+        string value=name.ToString();
+        Check(value.Length>0 && value.Length<128 && value.IndexOfAny(new[]{'\\','\0'})<0,"desktop-name-shape");
+        return value;
+    }
+    static void Grant(IntPtr handle,string sid,uint mask,string stage) {
+        var current=Descriptor(handle);
+        current.DiscretionaryAcl=WithFixtureGrant(current.DiscretionaryAcl,sid,mask);
+        byte[] bytes=new byte[current.BinaryLength];current.GetBinaryForm(bytes,0);
+        uint info=4;Check(SetUserObjectSecurity(handle,ref info,bytes),stage);
     }
     static void CleanDesktop(IntPtr handle,RawSecurityDescriptor before,HashSet<string> sids) {
         var current=Descriptor(handle);
@@ -199,7 +241,7 @@ public static class Native {
         string probeCommand=ProbeCommand(probeExecutable);
         IntPtr passwordBuffer=IntPtr.Zero,tokenHandle=IntPtr.Zero,env=IntPtr.Zero,job=IntPtr.Zero;
         Process process=new Process(); bool assigned=false; bool cleanup=true; bool desktopAccessMayChange=false;
-        IntPtr station=IntPtr.Zero,desktop=IntPtr.Zero;
+        IntPtr station=IntPtr.Zero,desktop=IntPtr.Zero,desktopPath=IntPtr.Zero;
         RawSecurityDescriptor stationBefore=null,desktopBefore=null;
         HashSet<string> fixtureSids=null;
         try {
@@ -207,12 +249,23 @@ public static class Native {
             try{Check(LogonUserW(user,".",passwordBuffer,2,0,out tokenHandle),"fixture-logon");}
             finally{Marshal.ZeroFreeGlobalAllocUnicode(passwordBuffer);passwordBuffer=IntPtr.Zero;}
             Check(Scalar(tokenHandle,8)==1 && Scalar(tokenHandle,20)==0 && User(tokenHandle)==expectedSid,"fixture-standard-primary-identity");
-            fixtureSids=new HashSet<string>{expectedSid,LogonSid(tokenHandle)};
-            station=GetProcessWindowStation();desktop=GetThreadDesktop(GetCurrentThreadId());
-            Check(station!=IntPtr.Zero && desktop!=IntPtr.Zero,"desktop-handles");
+            string logonSid=LogonSid(tokenHandle);
+            fixtureSids=new HashSet<string>{expectedSid,logonSid};
+            IntPtr currentStation=GetProcessWindowStation(),currentDesktop=GetThreadDesktop(GetCurrentThreadId());
+            Check(currentStation!=IntPtr.Zero && currentDesktop!=IntPtr.Zero,"desktop-handles");
+            string stationName=ObjectName(currentStation),desktopName=ObjectName(currentDesktop);
+            // CreateProcessWithTokenW does not grant the new logon access to the
+            // caller's window station and desktop; without it the child's console
+            // cannot start. Open writable handles by name for a scoped grant.
+            station=OpenWindowStationW(stationName,false,0x60000);Check(station!=IntPtr.Zero,"station-open-dacl");
+            desktop=OpenDesktopW(desktopName,0,false,0x60000);Check(desktop!=IntPtr.Zero,"desktop-open-dacl");
             stationBefore=Descriptor(station);desktopBefore=Descriptor(desktop);
             foreach(GenericAce ace in stationBefore.DiscretionaryAcl) Check(!FixtureAce(ace,fixtureSids),"station-no-preexisting-fixture-ace");
             foreach(GenericAce ace in desktopBefore.DiscretionaryAcl) Check(!FixtureAce(ace,fixtureSids),"desktop-no-preexisting-fixture-ace");
+            desktopAccessMayChange=true;
+            Grant(station,logonSid,StationGrant,"station-grant");
+            Grant(desktop,logonSid,DesktopGrant,"desktop-grant");
+            desktopPath=Marshal.StringToHGlobalUni(stationName+"\\"+desktopName);
             job=CreateJobObjectW(IntPtr.Zero,null);Check(job!=IntPtr.Zero,"job-create");
             var limits=new ExtendedLimit();limits.basic.flags=0x2000;
             Check(SetInformationJobObject(job,9,ref limits,Marshal.SizeOf(typeof(ExtendedLimit))),"job-kill-on-close");
@@ -220,8 +273,7 @@ public static class Native {
             for(int phase=0;phase<2;phase++) {
             bool probing=phase==0;
             if(probing)ProbeState="running";
-            var startup=new Startup{cb=Marshal.SizeOf(typeof(Startup)),flags=1,show=0};
-            desktopAccessMayChange=true;
+            var startup=new Startup{cb=Marshal.SizeOf(typeof(Startup)),desktop=desktopPath,flags=1,show=0};
             Check(CreateProcessWithTokenW(tokenHandle,LogonWithProfile,probing?probeExecutable:executable,new StringBuilder(probing?probeCommand:command),0x414,env,cwd,ref startup,out process),probing?"probe-create-suspended":"worker-create-suspended");
             LaunchState="created-suspended";
             Check(AssignProcessToJobObject(job,process.process),"worker-job-assign");assigned=true;
@@ -263,6 +315,9 @@ public static class Native {
             if(env!=IntPtr.Zero) Marshal.FreeHGlobal(env);
             if(desktopAccessMayChange && desktopBefore!=null) {try{CleanDesktop(desktop,desktopBefore,fixtureSids);}catch{cleanup=false;}}
             if(desktopAccessMayChange && stationBefore!=null) {try{CleanDesktop(station,stationBefore,fixtureSids);}catch{cleanup=false;}}
+            if(desktop!=IntPtr.Zero) cleanup &= CloseDesktop(desktop);
+            if(station!=IntPtr.Zero) cleanup &= CloseWindowStation(station);
+            if(desktopPath!=IntPtr.Zero) Marshal.FreeHGlobal(desktopPath);
             if(tokenHandle!=IntPtr.Zero) cleanup &= CloseHandle(tokenHandle);
             CleanupState=cleanup?"passed":"failed";
             Check(cleanup,"native-cleanup");

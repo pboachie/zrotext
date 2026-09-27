@@ -318,7 +318,7 @@ try {
     @{Sid=$sid.Value;Tests=$tests} | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifest
     $stage='standard-user-run'
     $pwsh=Assert-PlainPath (Get-Process -Id $PID).Path
-    if([IO.Path]::GetFileName($pwsh) -ine 'pwsh.exe' -or -not (Test-Path -LiteralPath $pwsh -PathType Leaf)){throw 'Unexpected fixture executable.'}
+    if([IO.Path]::GetFileName($pwsh) -ne 'pwsh.exe' -or -not (Test-Path -LiteralPath $pwsh -PathType Leaf)){throw 'Unexpected fixture executable.'}
     $fixture=Assert-PlainPath $fixture
     if(-not (Test-Path -LiteralPath $fixture -PathType Container)){throw 'Fixture working directory unavailable.'}
     Write-Output 'Native CI executable and working directory: verified'
