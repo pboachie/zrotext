@@ -98,25 +98,6 @@ pub async fn revoke_other_sessions(
     Ok(revoked)
 }
 
-/// Password proof for owner-confirmed destructive actions outside this
-/// module. Same live-session lookup and argon2 verification as
-/// [`revoke_other_sessions`], without any of its side effects: the caller
-/// still re-verifies under its own locks before acting.
-pub async fn verify_current_password(
-    client: &Client,
-    owner: &SessionPrincipal,
-    current_password: &str,
-) -> Result<(), AuthError> {
-    let old_hash: Option<String> = client
-        .query_opt(
-            "SELECT u.password_hash FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id JOIN sessions s ON s.account_id=m.account_id AND s.user_id=u.id WHERE u.id=$1 AND m.account_id=$2 AND s.id=$3 AND s.revoked_at IS NULL AND s.expires_at>now() AND a.disabled_at IS NULL",
-            &[&owner.user_id, &owner.tenant.account_id(), &owner.session_id],
-        )
-        .await?
-        .map(|row| row.get(0));
-    password_work::verify(current_password, old_hash).await
-}
-
 async fn require_live_session(
     tx: &tokio_postgres::Transaction<'_>,
     owner: &SessionPrincipal,
