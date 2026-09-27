@@ -51,6 +51,7 @@ use zrotext_server::{
     },
     http_enrollment::{self, EnrollmentHttpState},
     http_messages::{self, MessagesHttpState},
+    http_owner_events::{self, OwnerEventsState, OwnerStreamLimits},
     http_owner_export::{self, OwnerExportState},
     http_owner_messages::{self, OwnerMessagesState},
     http_owner_review::{self, OwnerReviewState},
@@ -566,6 +567,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             auth_hasher: auth_state.hasher.clone(),
             canonical_origin: auth_state.canonical_origin.clone(),
         };
+        let owner_events_state = OwnerEventsState {
+            database_url: config.database_url.clone(),
+            auth_hasher: auth_state.hasher.clone(),
+            canonical_origin: auth_state.canonical_origin.clone(),
+            stream_limits: Arc::new(OwnerStreamLimits::default()),
+        };
         let owner_review_state = OwnerReviewState {
             database_url: config.database_url.clone(),
             auth_hasher: auth_state.hasher.clone(),
@@ -576,6 +583,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .nest("/v1/enrollment", http_enrollment::router(enrollment_state))
             .merge(http_owner_export::router(owner_export_state))
             .merge(http_owner_messages::router(owner_messages_state))
+            .merge(http_owner_events::router(owner_events_state))
             .merge(http_owner_review::router(owner_review_state))
             .merge(owner_ui::router())
             .merge(device_socket::router_with_account_share(

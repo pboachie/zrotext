@@ -115,7 +115,7 @@ class InboundJournalTest {
                 SmsJournalDatabase.MIGRATION_6_7,
                 SmsJournalDatabase.MIGRATION_7_8,
                 SmsJournalDatabase.MIGRATION_8_9, SmsJournalDatabase.MIGRATION_9_10,
-                SmsJournalDatabase.MIGRATION_10_11).build()
+                SmsJournalDatabase.MIGRATION_10_11, SmsJournalDatabase.MIGRATION_11_12).build()
         try {
             val a = first.attempts()
             val id = "e6f78854-8cdc-4788-b56c-350d5902a673"
@@ -135,7 +135,7 @@ class InboundJournalTest {
                 SmsJournalDatabase.MIGRATION_6_7,
                 SmsJournalDatabase.MIGRATION_7_8,
                 SmsJournalDatabase.MIGRATION_8_9, SmsJournalDatabase.MIGRATION_9_10,
-                SmsJournalDatabase.MIGRATION_10_11).build()
+                SmsJournalDatabase.MIGRATION_10_11, SmsJournalDatabase.MIGRATION_11_12).build()
         try {
             val persisted = reopened.attempts().inboundByDedupe("d".repeat(64))!!
             assertEquals(InboundClassification.CAPTURED_LOCAL, persisted.classification)

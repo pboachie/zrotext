@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Explicit opt-in for the generated cross-client corpus; ordinary JVM tests omit this source.
+gradle.projectsEvaluated {
+    def app = gradle.rootProject.project(':app')
+    app.android.sourceSets.getByName('test').java.srcDir(new File(app.projectDir.parentFile, 'interop-test'))
+    app.tasks.withType(org.gradle.api.tasks.testing.Test).configureEach {
+        filter {
+            includeTestsMatching 'org.zrotext.gateway.SealedSdkPostgresInteropTest'
+            failOnNoMatchingTests = true
+        }
+        outputs.upToDateWhen { false }
+    }
+}
