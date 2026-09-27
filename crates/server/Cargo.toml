@@ -10,6 +10,7 @@ sealed-interop-tests = []
 
 [dependencies]
 zrotext-domain = { path = "../domain" }
+zrotext-root-material = { path = "../root-material" }
 zrotext-delivery-store = { path = "../delivery-store" }
 zrotext-postgres-connection = { path = "../postgres-connection" }
 zrotext-failover-quorum = { path = "../failover-quorum" }
@@ -38,7 +39,6 @@ aes-gcm = { version = "0.11.1", features = ["zeroize"] }
 zeroize = "1.9.0"
 # Already locked transitively; verify Telnyx Ed25519 callbacks without custom crypto.
 ring = "0.17.14"
-hkdf = "0.13.0"
 # Already in the lockfile through axum; the owner event stream uses its
 # `unfold` combinator, so it moves from dev- to regular dependency.
 futures-util = { version = "0.3.31", default-features = false, features = ["std", "sink"] }
