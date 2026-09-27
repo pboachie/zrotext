@@ -161,11 +161,14 @@ async fn all_admitted_sessions_renew_while_proofs_wait_without_pinning_database_
     expect_refused(address).await;
 
     // Send a synchronized heartbeat burst, then read every acknowledgement.
-    // Repeat past the periodic session check to exercise reacquisition there.
+    // The second round waits past both the periodic session check and the
+    // renewal interval, so every socket reacquires a client to renew again.
+    // A sentinel lease proves each round actually wrote every session.
     for round in 0..2 {
         if round != 0 {
-            tokio::time::sleep(Duration::from_secs(11)).await;
+            tokio::time::sleep(HEARTBEAT_RENEW_INTERVAL + Duration::from_secs(1)).await;
         }
+        set_sentinel_leases(&fixture).await;
         for (socket, _) in &mut phones {
             send_json(socket, json!({"v":1,"type":"heartbeat"})).await;
         }
@@ -175,6 +178,11 @@ async fn all_admitted_sessions_renew_while_proofs_wait_without_pinning_database_
                 json!({"v":1,"type":"heartbeat_ack","connection_epoch":epoch})
             );
         }
+        assert_eq!(
+            sentinel_leases(&fixture).await,
+            0,
+            "round {round} acknowledged a heartbeat without renewing its lease"
+        );
     }
     assert_eq!(admission.established.available_permits(), 0);
 
@@ -223,13 +231,30 @@ async fn expect_close_after_acks(socket: &mut TestSocket) -> Option<u16> {
     .expect("hub should close the socket")
 }
 
-async fn lease_until_micros(fixture: &Fixture, device_id: Uuid) -> i64 {
+/// A far-future lease no renewal can produce (renewal writes now() + 90 s),
+/// so "renewed" and "not renewed" do not depend on the database clock
+/// advancing between transactions.
+const SENTINEL_LEASE: &str = "2999-01-01 00:00:00+00";
+
+async fn set_sentinel_leases(fixture: &Fixture) {
+    fixture
+        .db
+        .execute(
+            "UPDATE device_sessions SET lease_until=$1::text::timestamptz WHERE account_id=$2",
+            &[&SENTINEL_LEASE, &fixture.account_id],
+        )
+        .await
+        .unwrap();
+}
+
+/// Sessions of the fixture account still holding the sentinel lease.
+async fn sentinel_leases(fixture: &Fixture) -> i64 {
     fixture
         .db
         .query_one(
-            "SELECT (extract(epoch FROM lease_until) * 1000000)::bigint \
-             FROM device_sessions WHERE device_id=$1",
-            &[&device_id],
+            "SELECT count(*) FROM device_sessions \
+             WHERE account_id=$2 AND lease_until=$1::text::timestamptz",
+            &[&SENTINEL_LEASE, &fixture.account_id],
         )
         .await
         .unwrap()
@@ -249,21 +274,19 @@ async fn heartbeat_flood_renews_once_per_interval_and_closes_past_the_cap() {
     let (device_id, signing) = fixture.device().await;
     let (mut socket, frame) = challenge(address, device_id).await;
     let epoch = prove(&mut socket, frame, &signing).await;
-    let claimed = lease_until_micros(&fixture, device_id).await;
 
-    // The first heartbeat renews the lease in storage.
-    tokio::time::sleep(Duration::from_millis(20)).await;
+    // The first heartbeat renews the lease in storage, replacing the sentinel.
+    set_sentinel_leases(&fixture).await;
     send_json(&mut socket, json!({"v":1,"type":"heartbeat"})).await;
     assert_eq!(
         receive_json(&mut socket).await,
         json!({"v":1,"type":"heartbeat_ack","connection_epoch":epoch})
     );
-    let renewed = lease_until_micros(&fixture, device_id).await;
-    assert!(renewed > claimed);
+    assert_eq!(sentinel_leases(&fixture).await, 0);
 
     // Every heartbeat up to the cap is acknowledged, but none of them
-    // checks out a device client: the stored lease does not move.
-    tokio::time::sleep(Duration::from_millis(20)).await;
+    // renews: a freshly written sentinel lease stays untouched.
+    set_sentinel_leases(&fixture).await;
     for _ in 1..MAX_HEARTBEATS_PER_WINDOW {
         send_json(&mut socket, json!({"v":1,"type":"heartbeat"})).await;
         assert_eq!(
@@ -271,7 +294,7 @@ async fn heartbeat_flood_renews_once_per_interval_and_closes_past_the_cap() {
             json!({"v":1,"type":"heartbeat_ack","connection_epoch":epoch})
         );
     }
-    assert_eq!(lease_until_micros(&fixture, device_id).await, renewed);
+    assert_eq!(sentinel_leases(&fixture).await, 1);
 
     // One more inside the window is abuse: the hub closes with a policy code.
     send_json(&mut socket, json!({"v":1,"type":"heartbeat"})).await;
