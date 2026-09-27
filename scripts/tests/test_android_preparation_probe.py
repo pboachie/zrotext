@@ -20,7 +20,57 @@ def manifest(test=False):
             f'android:testOnly="true" />{instrumentation}</manifest>')
 
 
+def fake_sdk(root):
+    for directory, name in probe.TOOLS.values():
+        tool = Path(root) / directory / name
+        tool.parent.mkdir(parents=True, exist_ok=True)
+        tool.write_bytes(b'')
+
+
 class PreparationProbeTest(unittest.TestCase):
+    def test_serial_must_be_a_plain_adb_identifier(self):
+        for good in ['emulator-5562', 'synthetic-device', 'ABCDEF0123456789', 'localhost:5555', 'adb-X1.local']:
+            self.assertEqual(good, probe.validate_serial(good))
+        for bad in ['', '-s', '--install', 'emulator-5562 extra', 'a;reboot', 'a&&reboot', '$(reboot)',
+                    'a|b', 'serial\n', 'a/b', 'a\\b', '"quoted"', 'x' * 65, None, 5562]:
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                probe.validate_serial(bad)
+
+    def test_sdk_must_be_absolute_existing_and_contain_every_fixed_tool(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            for bad in [None, '', 'relative/sdk', str(Path(temporary) / 'absent')]:
+                with self.subTest(bad=bad), self.assertRaises(ValueError):
+                    probe.tool_environment(bad, base={})
+            with self.assertRaises(ValueError):
+                probe.tool_environment(temporary, base={})
+            fake_sdk(temporary)
+            for directory, name in probe.TOOLS.values():
+                missing = Path(temporary) / directory / name
+                missing.unlink()
+                with self.subTest(missing=name), self.assertRaises(ValueError):
+                    probe.tool_environment(temporary, base={})
+                missing.write_bytes(b'')
+            environment = probe.tool_environment(temporary, 'emulator-5562',
+                                                 base={'PATH': 'inherited', 'ANDROID_SERIAL': 'stale'})
+            self.assertEqual('emulator-5562', environment['ANDROID_SERIAL'])
+            path = environment['PATH'].split(probe.os.pathsep)
+            self.assertEqual([str(Path(temporary) / d) for d, _ in probe.TOOLS.values()] + ['inherited'], path)
+            self.assertNotIn('ANDROID_SERIAL', probe.tool_environment(temporary, base={'ANDROID_SERIAL': 'stale'}))
+            with self.assertRaises(ValueError):
+                probe.tool_environment(temporary, 'bad serial', base={})
+
+    def test_unsafe_serial_or_sdk_stops_before_any_subprocess(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            fake_sdk(temporary)
+            for serial, sdk in [('a;reboot', temporary), ('-s', temporary), ('emulator-5562', 'relative')]:
+                with self.subTest(serial=serial, sdk=sdk), \
+                        mock.patch.dict(probe.os.environ, {'ANDROID_HOME': sdk}), \
+                        mock.patch.object(sys, 'argv', ['probe', '--serial', serial]), \
+                        mock.patch.object(probe.subprocess, 'run') as command, mock.patch('sys.stderr'):
+                    with self.assertRaises(SystemExit):
+                        probe.main()
+                    command.assert_not_called()
+
     def test_physical_execution_requires_reviewed_hashes_before_any_subprocess(self):
         with mock.patch.object(sys, 'argv', ['probe', '--serial', 'synthetic-device', '--allow-physical']), \
                 mock.patch.object(probe.subprocess, 'run') as command, mock.patch('sys.stderr'):
@@ -36,10 +86,17 @@ class PreparationProbeTest(unittest.TestCase):
                     apk = root / 'android/app/build/outputs/apk' / relative
                     apk.parent.mkdir(parents=True, exist_ok=True)
                     apk.write_bytes(b'synthetic APK for host control-flow test')
+                fake_sdk(temporary)
                 calls = []
 
-                def command(args, **_):
+                def command(args, **options):
                     calls.append(args)
+                    # Constant program names; the serial travels only in the child environment.
+                    self.assertIn(args[0], {name for _, name in probe.TOOLS.values()})
+                    self.assertNotIn('synthetic-device', args)
+                    self.assertNotIn('-s', args)
+                    self.assertFalse(any(temporary in str(a) for a in args[:1]))
+                    self.assertEqual('synthetic-device', options['env']['ANDROID_SERIAL'])
                     if 'manifest' in args:
                         result = manifest(str(args[-1]).endswith('.test.apk'))
                     elif 'verify' in args:

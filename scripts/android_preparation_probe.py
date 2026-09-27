@@ -21,6 +21,43 @@ TEST_APP = APP + ".test"
 RUNNER = "org.zrotext.gateway.PreparationProbeRunner"
 TEST = "org.zrotext.gateway.PreparationProbeDeviceTest"
 ANDROID = "{http://schemas.android.com/apk/res/android}"
+# adb serials are device IDs, emulator-NNNN or host:port transports; never options or shell syntax.
+SERIAL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,63}")
+WINDOWS = os.name == "nt"
+# Fixed program names only; each must exist in its expected SDK directory before use.
+TOOLS = {
+    "adb": ("platform-tools", "adb.exe" if WINDOWS else "adb"),
+    "apkanalyzer": ("cmdline-tools/latest/bin", "apkanalyzer.bat" if WINDOWS else "apkanalyzer"),
+    "apksigner": ("build-tools/37.0.0", "apksigner.bat" if WINDOWS else "apksigner"),
+}
+
+
+def validate_serial(serial):
+    if not isinstance(serial, str) or not SERIAL.fullmatch(serial):
+        raise ValueError("Device serial must be a plain adb identifier")
+    return serial
+
+
+def tool_environment(sdk_home, serial=None, base=None):
+    """Return an environment whose PATH resolves the fixed tool names to the verified SDK copies.
+
+    Commands never carry a path or serial from the caller: programs are constant names and the
+    validated serial reaches adb only through ANDROID_SERIAL.
+    """
+    sdk = Path(sdk_home or "")
+    if not sdk_home or not sdk.is_absolute() or not sdk.is_dir():
+        raise ValueError("ANDROID_HOME must be an existing absolute SDK directory")
+    directories = []
+    for directory, name in TOOLS.values():
+        if not (sdk / directory / name).is_file():
+            raise ValueError("Required Android SDK tool is missing")
+        directories.append(str(sdk / directory))
+    environment = dict(os.environ if base is None else base)
+    environment["PATH"] = os.pathsep.join(directories + [environment.get("PATH", "")])
+    environment.pop("ANDROID_SERIAL", None)
+    if serial is not None:
+        environment["ANDROID_SERIAL"] = validate_serial(serial)
+    return environment
 
 
 def validate_manifest(xml, package, test=False):
@@ -76,17 +113,6 @@ def validate_rejection(output):
         raise ValueError("Runner did not reject an unsafe selector before discovery")
 
 
-SERIAL_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]*")
-
-
-def validated_serial(serial):
-    """Return the serial only when it cannot smuggle argument or shell separators."""
-    match = SERIAL_PATTERN.fullmatch(serial) if serial is not None else None
-    if serial is not None and match is None:
-        raise ValueError("Device serial may contain only letters, digits, dots, dashes, underscores and colons")
-    return match.group(0) if match else serial
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--serial", help="Explicit target; omit for build-only APK validation")
@@ -99,23 +125,22 @@ def main():
     if args.expected_sha256 and any(not re.fullmatch(r"[0-9a-f]{64}", h) for h in args.expected_sha256):
         parser.error("Expected hashes must be lowercase SHA-256 hex")
     try:
-        args.serial = validated_serial(args.serial)
+        environment = tool_environment(os.environ.get("ANDROID_HOME"), args.serial)
     except ValueError as error:
         parser.error(str(error))
-    sdk = Path(os.environ["ANDROID_HOME"])
-    suffix = ".bat" if os.name == "nt" else ""
-    analyzer = sdk / "cmdline-tools/latest/bin" / ("apkanalyzer" + suffix)
-    signer = sdk / "build-tools/37.0.0" / ("apksigner" + suffix)
-    adb = str(sdk / "platform-tools" / ("adb.exe" if os.name == "nt" else "adb"))
+    # Windows CreateProcess resolves program names through this process's PATH, not the child's.
+    os.environ["PATH"] = environment["PATH"]
 
-    def run(*command, timeout=90):
-        result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+    def run(tool, *arguments, timeout=90):
+        program = TOOLS[tool][1]
+        result = subprocess.run([program, *arguments], capture_output=True, text=True, timeout=timeout,
+                                env=environment)
         if result.returncode:
             raise RuntimeError("Probe command failed; no raw device output published")
         return result.stdout
 
     def device(*command, timeout=90):
-        return run(adb, "-s", args.serial, *command, timeout=timeout)
+        return run("adb", *command, timeout=timeout)
 
     with tempfile.TemporaryDirectory(prefix="zrotext-isolated-probe-") as temporary:
         directory = Path(temporary)
@@ -128,9 +153,9 @@ def main():
             shutil.copyfile(source, artifact)
             if args.expected_sha256 and digest(artifact) != args.expected_sha256[int(package == TEST_APP)]:
                 raise ValueError("Artifact differs from reviewed hash; refusing device access")
-            validate_manifest(run(str(analyzer), "manifest", "print", str(artifact)), package, package == TEST_APP)
+            validate_manifest(run("apkanalyzer", "manifest", "print", str(artifact)), package, package == TEST_APP)
             certs = set(re.findall(r"^(?:V[234](?:\.1)? Signer:|Signer #\d+) certificate SHA-256 digest: ([0-9a-f]{64})$",
-                                  run(str(signer), "verify", "--print-certs", str(artifact)), re.MULTILINE))
+                                  run("apksigner", "verify", "--print-certs", str(artifact)), re.MULTILINE))
             if len(certs) != 1:
                 raise ValueError("One verified signing identity required")
             certificates.update(certs)
