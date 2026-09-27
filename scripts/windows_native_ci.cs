@@ -290,6 +290,22 @@ public static class Native {
         }
         return "none";
     }
+    [DllImport("kernel32.dll",SetLastError=true)] static extern bool IsProcessInJob(IntPtr process,IntPtr job,out bool result);
+    [DllImport("kernel32.dll",SetLastError=true,EntryPoint="QueryInformationJobObject")] static extern bool QueryJobUint(IntPtr job,int kind,out uint value,int length,IntPtr needed);
+    [DllImport("kernel32.dll",SetLastError=true,EntryPoint="QueryInformationJobObject")] static extern bool QueryJobBasic(IntPtr job,int kind,out BasicLimit value,int length,IntPtr needed);
+    public static string ParentJobState = "not-observed";
+    static uint ParentJobFlags=0,ParentJobUi=0;
+    // Fixed numeric job flags of the runner's own job, if any.
+    static void ObserveParentJob() {
+        bool inJob;
+        if(!IsProcessInJob(GetCurrentProcess(),IntPtr.Zero,out inJob)){ParentJobState="query-failed";return;}
+        if(!inJob){ParentJobState="none";return;}
+        BasicLimit basic;uint ui;
+        bool b=QueryJobBasic(IntPtr.Zero,2,out basic,Marshal.SizeOf(typeof(BasicLimit)),IntPtr.Zero);
+        bool u=QueryJobUint(IntPtr.Zero,4,out ui,4,IntPtr.Zero);
+        ParentJobFlags=b?basic.flags:0;ParentJobUi=u?ui:0;
+        ParentJobState="flags="+(b?"0x"+basic.flags.ToString("x"):"unreadable")+" ui="+(u?"0x"+ui.ToString("x"):"unreadable");
+    }
     static string TokenLabel(IntPtr token) {return Token(token,25,(p,n)=>{Check(n>=IntPtr.Size,"token-label-size");return new SecurityIdentifier(Marshal.ReadIntPtr(p)).Value;});}
     static void CleanDesktop(IntPtr handle,RawSecurityDescriptor before,HashSet<string> fixture) {
         var current=Descriptor(handle);
@@ -429,6 +445,11 @@ public static class Native {
             desktop=OpenDesktopW(desktopName,0,false,0x60000);Check(desktop!=IntPtr.Zero,"desktop-open-dacl");
             {IntPtr own;string parentLabel="unreadable";if(OpenProcessToken(GetCurrentProcess(),8,out own)){try{parentLabel=TokenLabel(own);}finally{CloseHandle(own);}}
              LabelState="station="+ObjectLabel(station)+" desktop="+ObjectLabel(desktop)+" fixture="+TokenLabel(tokenHandle)+" parent="+parentLabel;}
+            ObserveParentJob();
+            // Secondary-logon children join the caller's job. If the runner's
+            // job restricts USER access, leave it when it permits breakaway.
+            int launchFlags=CreateFlags|((ParentJobUi!=0&&(ParentJobFlags&0x800)!=0)?0x01000000:0);
+            ParentJobState+=(launchFlags!=CreateFlags?" breakaway":" no-breakaway");
             stationBefore=Descriptor(station);desktopBefore=Descriptor(desktop);
             foreach(GenericAce ace in stationBefore.DiscretionaryAcl) Check(!FixtureAce(ace,fixtureSids),"station-no-preexisting-fixture-ace");
             foreach(GenericAce ace in desktopBefore.DiscretionaryAcl) Check(!FixtureAce(ace,fixtureSids),"desktop-no-preexisting-fixture-ace");
@@ -463,7 +484,7 @@ public static class Native {
             // non-elevated primary identity before any launch.
             bool created;
             passwordBuffer=Marshal.SecureStringToGlobalAllocUnicode(password);
-            try{created=CreateProcessWithLogonW(user,".",passwordBuffer,LogonWithProfile,observedApp,new StringBuilder(probing?probeCommand:commands[phase-1]),CreateFlags,env,cwd,ref startup,out process);}
+            try{created=CreateProcessWithLogonW(user,".",passwordBuffer,LogonWithProfile,observedApp,new StringBuilder(probing?probeCommand:commands[phase-1]),launchFlags,env,cwd,ref startup,out process);}
             finally{Marshal.ZeroFreeGlobalAllocUnicode(passwordBuffer);passwordBuffer=IntPtr.Zero;}
             Check(created,probing?"probe-create-suspended":"step-create-suspended");
             LaunchState="created-suspended";
