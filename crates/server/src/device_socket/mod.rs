@@ -155,6 +155,15 @@ enum ClientFrame {
         sms_permission: preconditions::SmsPermission,
         airplane_mode: preconditions::AirplaneMode,
     },
+    #[serde(rename = "device_status_v2")]
+    DeviceStatusV2 {
+        v: u8,
+        connection_epoch: i64,
+        selected_sim: preconditions::SelectedSim,
+        sms_permission: preconditions::SmsPermission,
+        airplane_mode: preconditions::AirplaneMode,
+        network_service: preconditions::NetworkService,
+    },
     #[serde(rename = "alpha_ready")]
     AlphaReady {
         v: u8,
@@ -410,7 +419,7 @@ async fn upgrade(
     };
     let deadline = tokio::time::Instant::now() + admission.handshake_deadline;
     websocket
-        .protocols([preconditions::PROTOCOL])
+        .protocols([preconditions::PROTOCOL_V2, preconditions::PROTOCOL])
         .max_message_size(MAX_FRAME_BYTES)
         .max_frame_size(MAX_FRAME_BYTES)
         .on_upgrade(move |socket| run_socket(socket, state, admission, handshake_slot, deadline))
@@ -654,9 +663,9 @@ async fn run_socket(
     handshake_slot: OwnedSemaphorePermit,
     deadline: tokio::time::Instant,
 ) {
-    let status_negotiated = socket
+    let status_protocol = socket
         .protocol()
-        .is_some_and(|value| value == preconditions::PROTOCOL);
+        .map(|value| value.to_str().unwrap_or_default().to_owned());
     let mut status_budget = preconditions::ReportBudget::default();
     let mut frame_budget = FrameBudget::new(Instant::now());
     let authenticated = timeout_at(
@@ -751,8 +760,17 @@ async fn run_socket(
         tokio::select! {
             message = receive_frame(&mut socket, &mut frame_budget) => {
                 match message {
-                    Some(ClientFrame::DeviceStatus { v: 1, connection_epoch, selected_sim, sms_permission, airplane_mode }) => {
-                        if !status_negotiated || connection_epoch != session.connection_epoch {
+                    Some(frame @ (ClientFrame::DeviceStatus { v: 1, .. } | ClientFrame::DeviceStatusV2 { v: 1, .. })) => {
+                        let (protocol, connection_epoch, report) = match frame {
+                            ClientFrame::DeviceStatus { connection_epoch, selected_sim, sms_permission, airplane_mode, .. } =>
+                                (preconditions::PROTOCOL, connection_epoch, preconditions::Report {
+                                    selected_sim, sms_permission, airplane_mode, network_service: None }),
+                            ClientFrame::DeviceStatusV2 { connection_epoch, selected_sim, sms_permission, airplane_mode, network_service, .. } =>
+                                (preconditions::PROTOCOL_V2, connection_epoch, preconditions::Report {
+                                    selected_sim, sms_permission, airplane_mode, network_service: Some(network_service) }),
+                            _ => unreachable!("status variants matched above"),
+                        };
+                        if status_protocol.as_deref() != Some(protocol) || connection_epoch != session.connection_epoch {
                             close_with_code = Some(close_code::POLICY);
                             break;
                         }
@@ -761,7 +779,6 @@ async fn run_socket(
                             close_with_code = Some(RETRY_LATER);
                             break;
                         };
-                        let report = preconditions::Report { selected_sim, sms_permission, airplane_mode };
                         let accepted = preconditions::record(&mut client, session, &state, report).await;
                         drop(client);
                         match accepted {

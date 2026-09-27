@@ -30,6 +30,12 @@ internal data class DevicePreconditions(
         return """{"v":1,"type":"device_status","connection_epoch":$epoch,"selected_sim":"${selectedSim.wire}","sms_permission":"${smsPermission.wire}","airplane_mode":"${airplaneMode.wire}"}"""
     }
 
+    fun frameV2(epoch: Long, network: NetworkService): String {
+        require(epoch > 0)
+        val currentNetwork = if (selectedSim == SelectedSim.ACTIVE) network else NetworkService.UNAVAILABLE
+        return """{"v":1,"type":"device_status_v2","connection_epoch":$epoch,"selected_sim":"${selectedSim.wire}","sms_permission":"${smsPermission.wire}","airplane_mode":"${airplaneMode.wire}","network_service":"${currentNetwork.wire}"}"""
+    }
+
     companion object {
         fun selectedSim(selected: Int, activeIds: List<Int>?): SelectedSim = when {
             selected < 0 -> SelectedSim.NOT_SELECTED
@@ -68,24 +74,39 @@ internal data class DevicePreconditions(
 
 /** New peers opt in at upgrade time; old peers receive only their existing frames. */
 internal class DeviceStatusPublisher {
-    private var negotiated = false
+    private var negotiated: Version? = null
     private var lastReportElapsedMs: Long? = null
 
     fun selectProtocol(selected: String?) {
-        negotiated = selected == PROTOCOL
+        negotiated = when (selected) {
+            PROTOCOL -> Version.V1
+            PROTOCOL_V2 -> Version.V2
+            else -> null
+        }
     }
 
-    fun nextFrame(epoch: Long, elapsedMs: Long, sample: () -> DevicePreconditions): String? {
-        if (!negotiated || epoch <= 0 || elapsedMs < 0) return null
+    enum class Version { V1, V2 }
+
+    @Synchronized fun nextVersion(epoch: Long, elapsedMs: Long): Version? {
+        val version = negotiated ?: return null
+        if (epoch <= 0 || elapsedMs < 0) return null
         val previous = lastReportElapsedMs
         if (previous != null && (elapsedMs < previous || elapsedMs - previous < REPORT_INTERVAL_MS)) return null
-        val report = sample().frame(epoch)
         lastReportElapsedMs = elapsedMs
-        return report
+        return version
     }
+
+    fun nextFrame(epoch: Long, elapsedMs: Long, sample: () -> DevicePreconditions): String? =
+        when (nextVersion(epoch, elapsedMs)) {
+            Version.V1 -> sample().frame(epoch)
+            Version.V2 -> sample().frameV2(epoch, NetworkService.UNAVAILABLE)
+            null -> null
+        }
 
     companion object {
         const val PROTOCOL = "zrotext-device-status-v1"
+        const val PROTOCOL_V2 = "zrotext-device-status-v2"
+        const val OFFER = "$PROTOCOL_V2, $PROTOCOL"
         const val REPORT_INTERVAL_MS = 30_000L
     }
 }

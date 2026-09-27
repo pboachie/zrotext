@@ -1088,3 +1088,39 @@ test("older device pages age independently and suspended wall time consumes fres
   assert.equal(element("device-list").children[0], rows[0]);
   assert.equal(element("device-list").children.length, 2);
 });
+
+
+test("network service is bounded metadata, never SMS readiness", async () => {
+  const { element, state } = await ownerPage();
+  const report = { selected_sim: "active", sms_permission: "granted", airplane_mode: "disabled", received_at_ms: 1000, fresh: true };
+  for (const [value, expected] of [["in_service", "in service"], ["out_of_service", "out of service"],
+      ["emergency_only", "emergency only"], ["power_off", "radio powered off"], ["unavailable", "unavailable"],
+      [undefined, "unavailable"], [null, "unavailable"], ["<b>ready</b>", "unavailable"], ["__proto__", "unavailable"]]) {
+    state.devices = [{ device_id: endpointId, active_socket_lease: true, status_observed_at_ms: 2000,
+      reported_preconditions: { ...report, network_service: value } }];
+    await element("refresh-devices").listeners.click();
+    const text = visibleText(element("device-list"));
+    assert.ok(text.includes(`Android-reported network service ${expected}`));
+    assert.match(text, /Carrier readiness unknown/);
+    assert.doesNotMatch(text, /SMS ready|<b>ready|__proto__/);
+  }
+});
+
+test("network observation expires in place without revival after clock rollback", async (t) => {
+  let monotonic=0, wall=10000;
+  t.mock.method(performance,"now",()=>monotonic);
+  t.mock.method(Date,"now",()=>wall);
+  const {element,state,timers}=await ownerPage();
+  state.devices=[{device_id:endpointId,active_socket_lease:true,status_observed_at_ms:90000,
+    reported_preconditions:{selected_sim:"active",sms_permission:"granted",airplane_mode:"disabled",network_service:"out_of_service",received_at_ms:1000,fresh:true}}];
+  await element("refresh-devices").listeners.click();
+  element("auto-refresh").checked=false; element("auto-refresh").listeners.change();
+  const row=element("device-list").children[0], button=row.children[1];
+  document.activeElement=button;
+  const [id,timer]=[...timers][0];timers.delete(id);monotonic=1001;wall=1;timer.callback();
+  assert.equal(document.activeElement,button);assert.equal(element("device-list").children[0],row);
+  const text=visibleText(row);
+  assert.match(text,/stale report.*network service out of service.*Historical observations/);
+  assert.doesNotMatch(text,/Network service limited:|fresh at snapshot time/);
+  await element("logout").listeners.click();assert.equal(timers.size,0);
+});
