@@ -79,9 +79,9 @@ pub async fn revoke_other_sessions(
     require_live_session(&tx, owner).await?;
     if row.get::<_, bool>(1) {
         let code = code.ok_or(AuthError::InvalidCredentials)?;
-        mfa::ensure_factor_budget(&tx, account_id, owner.user_id).await?;
+        mfa::ensure_step_up_budget(&tx, hasher, account_id, owner.user_id).await?;
         if !mfa::use_factor(&tx, cipher, hasher, account_id, owner.user_id, code).await? {
-            mfa::record_failed_factor(&tx, account_id, owner.user_id).await?;
+            mfa::record_failed_step_up(&tx, hasher, owner.user_id).await?;
             tx.commit().await?;
             return Err(AuthError::InvalidCredentials);
         }
@@ -152,11 +152,11 @@ pub async fn change_password(
     require_live_session(&tx, owner).await?;
     if row.get::<_, bool>(1) {
         let code = code.ok_or(AuthError::InvalidCredentials)?;
-        mfa::ensure_factor_budget(&tx, account_id, owner.user_id).await?;
+        mfa::ensure_step_up_budget(&tx, hasher, account_id, owner.user_id).await?;
         let accepted =
             mfa::use_factor(&tx, cipher, hasher, account_id, owner.user_id, code).await?;
         if !accepted {
-            mfa::record_failed_factor(&tx, account_id, owner.user_id).await?;
+            mfa::record_failed_step_up(&tx, hasher, owner.user_id).await?;
             tx.commit().await?;
             return Err(AuthError::InvalidCredentials);
         }
