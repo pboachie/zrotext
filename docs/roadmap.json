@@ -143,6 +143,7 @@
           "name": "Compose deployment and upgrade guides",
           "short": "Compose deployment",
           "stage": "build",
+          "release_gate_note": "The listed deployment and upgrade work is complete for restricted development and pilot use. General production support and deployment acceptance are not established.",
           "evidence": [
             ["#35", "https://github.com/pboachie/zrotext/pull/35"],
             ["#105", "https://github.com/pboachie/zrotext/pull/105"],
@@ -157,11 +158,10 @@
             "Verified PostgreSQL TLS and an optional HTTPS edge",
             "Scripted fresh-install and database restore rehearsals",
             "Upgrade guide for moving between source snapshots ([guide](../deploy/compose/UPGRADE.md))",
-            "Production hardening checklist ([checklist](../deploy/compose/README.md#production-hardening-checklist))"
+            "Production hardening checklist ([checklist](../deploy/compose/README.md#production-hardening-checklist))",
+            "Upgrade notes for each tagged release ([v0.1.6-rc.1](https://github.com/pboachie/zrotext/releases/tag/v0.1.6-rc.1), [tagged upgrade guide](https://github.com/pboachie/zrotext/blob/v0.1.6-rc.1/deploy/compose/UPGRADE.md))"
           ],
-          "todo": [
-            "Upgrade notes for each tagged release"
-          ]
+          "todo": []
         },
         {
           "id": "releases",
@@ -172,15 +172,16 @@
             ["#86", "https://github.com/pboachie/zrotext/pull/86"],
             ["#135", "https://github.com/pboachie/zrotext/pull/135"],
             ["#169", "https://github.com/pboachie/zrotext/pull/169"],
-            ["#197", "https://github.com/pboachie/zrotext/pull/197"]
+            ["#197", "https://github.com/pboachie/zrotext/pull/197"],
+            ["v0.1.6-rc.1", "https://github.com/pboachie/zrotext/releases/tag/v0.1.6-rc.1"]
           ],
           "done": [
-            "Server image built from one source bundle, pinned and scanned",
+            "Source and verified server release candidate published; image pinned, scanned and attested ([v0.1.6-rc.1](https://github.com/pboachie/zrotext/releases/tag/v0.1.6-rc.1))",
             "Release receipts gated on approved identity and SBOMs",
             "Android release candidate with signing-key custody checks"
           ],
           "todo": [
-            "First tagged public release ([process](RELEASING.md))"
+            "First tagged public release with verified signed Android custody and artifacts; source/server candidate published ([process](RELEASING.md))"
           ]
         },
         {
