@@ -206,6 +206,16 @@ impl Owner {
             .get(0);
         assert!(!used);
     }
+    async fn step_up_failures(&self) -> i32 {
+        abuse_limits::failures_in_window(
+            &self.f.db,
+            &self.hasher,
+            abuse_limits::Limit::MfaStepUp,
+            &self.principal.user_id.to_string(),
+        )
+        .await
+        .unwrap()
+    }
 }
 
 #[tokio::test]
@@ -339,17 +349,7 @@ async fn ceremony_invalid_factor_persists_only_budget_and_totp_is_consumed_once(
         Err(CeremonyError::Authentication(AuthError::InvalidCredentials))
     ));
     o.empty_authority().await;
-    assert_eq!(
-        o.f.db
-            .query_one(
-                "SELECT failed_attempts FROM owner_mfa WHERE account_id=$1",
-                &[&o.principal.tenant.account_id()]
-            )
-            .await
-            .unwrap()
-            .get::<_, i32>(0),
-        1
-    );
+    assert_eq!(o.step_up_failures().await, 1);
     let now: i64 =
         o.f.db
             .query_one(
@@ -735,16 +735,17 @@ async fn final_fence_after_receipt_wait(expiry: FinalFenceExpiry) {
             .unwrap()
             .get::<_, bool>(0)
     );
-    let factor_state =
+    let last_step: i64 =
         o.f.db
             .query_one(
-                "SELECT last_accepted_step,failed_attempts FROM owner_mfa WHERE account_id=$1",
+                "SELECT last_accepted_step FROM owner_mfa WHERE account_id=$1",
                 &[&o.principal.tenant.account_id()],
             )
             .await
-            .unwrap();
-    assert_eq!(factor_state.get::<_, i64>(0), -1);
-    assert_eq!(factor_state.get::<_, i32>(1), 0);
+            .unwrap()
+            .get(0);
+    assert_eq!(last_step, -1);
+    assert_eq!(o.step_up_failures().await, 0);
     o.f.cleanup().await;
 }
 
