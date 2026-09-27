@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use tokio_postgres::Client;
 
 pub(super) const PROTOCOL: &str = "zrotext-device-status-v1";
+pub(super) const PROTOCOL_V2: &str = "zrotext-device-status-v2";
 
 macro_rules! wire_enum {
     ($name:ident { $($variant:ident => $wire:literal),+ $(,)? }) => {
@@ -22,10 +23,13 @@ wire_enum!(SelectedSim { NotSelected => "not_selected", Active => "active", Inac
 wire_enum!(SmsPermission { Granted => "granted", Denied => "denied", Unavailable => "unavailable" });
 wire_enum!(AirplaneMode { Enabled => "enabled", Disabled => "disabled", Unavailable => "unavailable" });
 
+wire_enum!(NetworkService { InService => "in_service", OutOfService => "out_of_service", EmergencyOnly => "emergency_only", PowerOff => "power_off", Unavailable => "unavailable" });
+
 pub(super) struct Report {
     pub selected_sim: SelectedSim,
     pub sms_permission: SmsPermission,
     pub airplane_mode: AirplaneMode,
+    pub network_service: Option<NetworkService>,
 }
 
 #[derive(Default)]
@@ -81,14 +85,14 @@ pub(super) async fn record(
         return Ok(false);
     }
     tx.execute(
-        "INSERT INTO device_preconditions(device_id,account_id,connection_epoch,deployment_epoch,received_at,selected_sim,sms_permission,airplane_mode) \
-         VALUES($1,$2,$3,$4,statement_timestamp(),$5,$6,$7) \
+        "INSERT INTO device_preconditions(device_id,account_id,connection_epoch,deployment_epoch,received_at,selected_sim,sms_permission,airplane_mode,network_service) \
+         VALUES($1,$2,$3,$4,statement_timestamp(),$5,$6,$7,$8) \
          ON CONFLICT(device_id) DO UPDATE SET account_id=EXCLUDED.account_id, \
          connection_epoch=EXCLUDED.connection_epoch,deployment_epoch=EXCLUDED.deployment_epoch, \
          received_at=EXCLUDED.received_at,selected_sim=EXCLUDED.selected_sim, \
-         sms_permission=EXCLUDED.sms_permission,airplane_mode=EXCLUDED.airplane_mode",
+         sms_permission=EXCLUDED.sms_permission,airplane_mode=EXCLUDED.airplane_mode,network_service=EXCLUDED.network_service",
         &[&session.device_id,&session.account_id,&session.connection_epoch,&state.deployment_epoch,
-          &report.selected_sim.wire(),&report.sms_permission.wire(),&report.airplane_mode.wire()],
+          &report.selected_sim.wire(),&report.sms_permission.wire(),&report.airplane_mode.wire(),&report.network_service.map(|value| value.wire())],
     ).await?;
     // Both the authority lock and the snapshot UPSERT can wait beyond the lease.
     // Recheck the current clock only after all mutation locks are held. A failed

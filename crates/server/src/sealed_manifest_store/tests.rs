@@ -108,6 +108,7 @@ impl Fixture {
             ),
             include_str!("../../../../deploy/compose/migrations/045_sealed_outbound_queue.sql"),
             include_str!("../../../../deploy/compose/migrations/046_sealed_root_ceremonies.sql"),
+            include_str!("../../../../deploy/compose/migrations/047_device_network_service.sql"),
         ] {
             if !role_reservations
                 && (sql

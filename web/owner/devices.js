@@ -717,13 +717,19 @@ function devicePreconditionsText(device, expired = false) {
   const freshness = device.active_socket_lease === false ? "disconnected; last report" :
     device.active_socket_lease !== true ? "connection status unavailable; last report" :
       fresh ? "fresh at snapshot time" : "stale report";
-  const observations = `Android (${freshness}): selected SIM ${report.selected_sim.replaceAll("_", " ")}; SMS permission ${report.sms_permission}; airplane mode ${report.airplane_mode}. Received ${dateText(report.received_at_ms)}.`;
+  const networkNames = { in_service: "in service", out_of_service: "out of service",
+    emergency_only: "emergency only", power_off: "radio powered off", unavailable: "unavailable" };
+  const network = typeof report.network_service === "string" && Object.hasOwn(networkNames, report.network_service)
+    ? networkNames[report.network_service] : "unavailable";
+  const observations = `Android (${freshness}): selected SIM ${report.selected_sim.replaceAll("_", " ")}; SMS permission ${report.sms_permission}; airplane mode ${report.airplane_mode}; Android-reported network service ${network}. Received ${dateText(report.received_at_ms)}.`;
   if (!fresh) return `${observations} Historical observations; refresh to check for a newer report. Carrier readiness unknown.`;
   const blockers = [];
   if (report.selected_sim === "not_selected") blockers.push("No SIM selected: select a SIM in the gateway app");
   if (report.selected_sim === "inactive") blockers.push("Selected SIM inactive: check the selected SIM on the phone");
   if (report.sms_permission === "denied") blockers.push("SMS permission denied: check the gateway app permissions on the phone");
   if (report.airplane_mode === "enabled") blockers.push("Airplane mode enabled: check the phone settings");
+  if (["out_of_service", "emergency_only", "power_off"].includes(report.network_service))
+    blockers.push("Network service limited: check the selected SIM's network service on the phone");
   const unknown = [report.selected_sim, report.sms_permission, report.airplane_mode].includes("unavailable");
   const explanation = blockers.length ? `Reported local blockers: ${blockers.join(". ")}.` :
     unknown ? "Local preconditions are incomplete; check the gateway app on the phone." : "No reported local blockers at snapshot time.";
