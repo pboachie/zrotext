@@ -13,6 +13,13 @@ async fn status_rolls_back_when_lease_or_drain_changes_during_authority_or_snaps
         ))
         .await
         .unwrap();
+    fixture
+        .db
+        .batch_execute(include_str!(
+            "../../../../deploy/compose/migrations/047_device_network_service.sql"
+        ))
+        .await
+        .unwrap();
     let (device, _) = fixture.device().await;
     let state = socket_state(fixture.url.clone(), "capacity-test");
     let session = DeviceSession {
@@ -72,6 +79,7 @@ async fn status_rolls_back_when_lease_or_drain_changes_during_authority_or_snaps
                         selected_sim: preconditions::SelectedSim::Active,
                         sms_permission: preconditions::SmsPermission::Granted,
                         airplane_mode: preconditions::AirplaneMode::Disabled,
+                        network_service: None,
                     },
                 )
                 .await
