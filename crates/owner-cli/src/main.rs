@@ -2,6 +2,10 @@
 #[cfg(windows)]
 mod windows;
 
+#[cfg(all(windows, test))]
+#[path = "../../root-terminal/test-support/native_process.rs"]
+mod native_process;
+
 fn main() -> std::process::ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args == ["--help"] {

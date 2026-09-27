@@ -66,15 +66,10 @@ fn isolated(name: &str, run: fn()) {
         startup.wShowWindow = 0;
         let mut process = zeroed();
         assert_ne!(
-            CreateProcessW(
+            crate::native_process::create(
                 application.as_ptr(),
                 command.as_mut_ptr(),
-                null(),
-                null(),
-                0,
-                CREATE_NEW_CONSOLE | CREATE_UNICODE_ENVIRONMENT,
                 environment.as_ptr().cast(),
-                null(),
                 &startup,
                 &mut process
             ),

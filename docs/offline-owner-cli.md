@@ -79,4 +79,8 @@ directories and deterministic synthetic root/recovery fixtures supplied through
 test-only dependencies. Creation and restore run in distinct processes. No secret
 argument/environment interface or production seed/path override exists. Eligibility
 checks remain active in tests; an ineligible runner fails rather than skipping.
+An elevated test parent must obtain its existing, genuinely non-elevated linked
+token and launch the hidden child with that token. Missing token or launch
+privileges fail the test; there is no credential, privilege-enabling or policy
+bypass fallback. This launcher is compiled only for tests.
 The production `init` command is not executed with real owner material by tests.
