@@ -30,9 +30,11 @@ const PRUNE_SLACK_SECONDS: i32 = 60;
 const DEFAULT_RETENTION_SECONDS: i32 = 120;
 
 /// Scopes charged through `auth_abuse_consume` outside `Limit`, with their
-/// longest window in seconds. `inbound_daily` is charged by
-/// `inbound::consume_storage_budget` with fixed 24-hour windows.
-const OTHER_SCOPES: &[(&str, i32)] = &[("inbound_daily", 86_400)];
+/// longest window in seconds. `inbound_daily` and `inbound_consent_daily` are
+/// charged by `inbound::consume_storage_budget` and
+/// `inbound::consume_consent_budget` with fixed 24-hour windows.
+const OTHER_SCOPES: &[(&str, i32)] =
+    &[("inbound_daily", 86_400), ("inbound_consent_daily", 86_400)];
 
 /// Declares `Limit` and `Limit::ALL` from one list so a new variant cannot be
 /// left out of prune retention.

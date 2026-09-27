@@ -471,4 +471,14 @@ counter scopes after two minutes and can erase the pilot's 24-hour budget while
 newer processes are accepting inbound events. Keep `INBOUND_PILOT_ENABLED=false`
 through the mixed-version rollout, verify the old workers have stopped, then
 enable the pilot in a separate step. The application check alone cannot enforce
-this ordering against an older process sharing the database.
+this ordering against an older process sharing the database. The same applies
+to the `inbound_consent_daily` scope that opt-out and opt-in events spend
+instead of `inbound_daily`: workers built before it existed prune it after two
+minutes, which resets that per-device allowance early but never blocks an
+opt-out.
+
+Inbound budgets are fixed in code: 200 events per device and 1,000 per account
+in 24 hours for ordinary inbound events, and a separate 10,000 per device for
+opt-out, review and opt-in events, with no account-wide ceiling. When a budget
+is spent the hub closes the device socket with `1013` and the phone retries
+later. See [inbound-pilot-budgets.md](../protocol/v1/inbound-pilot-budgets.md).

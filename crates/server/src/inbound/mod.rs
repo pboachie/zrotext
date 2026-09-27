@@ -60,6 +60,12 @@ impl Classification {
             Self::OptIn => "opt_in",
         }
     }
+
+    /// STOP, review and START change whether a recipient may be messaged.
+    /// They spend the per-device consent budget, never the shared storage one.
+    fn changes_consent(self) -> bool {
+        matches!(self, Self::OptOut | Self::OptOutReview | Self::OptIn)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -351,7 +357,14 @@ pub async fn ingest_with_clock(
     // Charge before attempting the event INSERT. At a saturated budget,
     // fresh signed IDs cannot create rolled-back inbound rows and indexes.
     // The charge and INSERT still commit or roll back as one transaction.
-    if !consume_storage_budget(&tx, session.account_id, session.device_id).await? {
+    // A consent change never spends the shared budget, so a busy account or
+    // another device's junk events cannot defer a STOP or START.
+    let charged = if event.classification.changes_consent() {
+        consume_consent_budget(&tx, session.device_id).await?
+    } else {
+        consume_storage_budget(&tx, session.account_id, session.device_id).await?
+    };
+    if !charged {
         return Err(InboundError::BudgetExhausted);
     }
     let observed_seconds = event.observed_at_ms as f64 / 1000.0;
@@ -566,7 +579,7 @@ fn budget_key(kind: &str, id: Uuid) -> Vec<u8> {
     Sha256::digest(format!("zrotext-inbound-budget-v1:{kind}:{id}").as_bytes()).to_vec()
 }
 
-async fn consume_storage_budget<C: tokio_postgres::GenericClient>(
+pub(crate) async fn consume_storage_budget<C: tokio_postgres::GenericClient>(
     client: &C,
     account_id: Uuid,
     device_id: Uuid,
@@ -581,6 +594,24 @@ async fn consume_storage_budget<C: tokio_postgres::GenericClient>(
                 &budget_key("account", account_id),
                 &budget_key("device", device_id),
             ],
+        )
+        .await?
+        .get(0))
+}
+
+/// Opt-out, review and opt-in events: 10,000 per device in a fixed 24-hour
+/// window, with no account-wide ceiling. That is far more replies than one
+/// phone receives, so it should not defer a real consent change, yet it still
+/// bounds the rows a misbehaving device key can write. Another device's
+/// traffic, or the shared `inbound_daily` budget, cannot spend it.
+pub(crate) async fn consume_consent_budget<C: tokio_postgres::GenericClient>(
+    client: &C,
+    device_id: Uuid,
+) -> Result<bool, tokio_postgres::Error> {
+    Ok(client
+        .query_one(
+            "SELECT auth_abuse_consume('inbound_consent_daily',$1,NULL::bytea,10000,86400,1,86400)",
+            &[&budget_key("device", device_id)],
         )
         .await?
         .get(0))

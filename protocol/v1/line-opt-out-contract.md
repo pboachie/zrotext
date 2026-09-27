@@ -49,7 +49,9 @@ sequence. A source event must be at most seven days old and at most five
 minutes ahead of server time, and its timestamp must be after activation of
 that line generation. The writer checks the line, device and deployment
 session again before committing. A changed event under an existing ID or a
-reused device sequence fails. An exact replay does not spend another storage
+reused device sequence fails. A new event spends one unit of the device's
+consent budget in [inbound-pilot-budgets.md](inbound-pilot-budgets.md), never
+the shared inbound storage budget. An exact replay does not spend another
 budget unit or change suppression.
 
 The transaction locks the account row used by message acceptance, then
