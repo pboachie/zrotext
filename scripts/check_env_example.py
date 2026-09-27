@@ -18,6 +18,7 @@ DOCUMENTED = re.compile(r'^\s*#?\s*([A-Z][A-Z0-9_]*)=', re.MULTILINE)
 TEST_ONLY = {
     # Compiled only in the isolated native-console test harness, not runtime code.
     "ZT_TERMINAL_NATIVE_CASE",
+    "ZT_OWNER_NATIVE_CASE",
     "ZT_AUTH_TEST_DATABASE_URL",
     "ZT_DELIVERY_TEST_DATABASE_URL",
     "ZT_INBOUND_TEST_DATABASE_URL",

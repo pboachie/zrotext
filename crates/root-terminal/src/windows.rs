@@ -12,6 +12,7 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::*,
+    Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation},
     Storage::FileSystem::{FILE_TYPE_CHAR, GetFileType},
     System::{Console::*, LibraryLoader::*, RemoteDesktop::*, Threading::*},
 };
@@ -21,6 +22,42 @@ static EXCLUSIVE: Mutex<()> = Mutex::new(());
 static CANCELLED: AtomicBool = AtomicBool::new(false);
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 static POISONED: AtomicBool = AtomicBool::new(false);
+
+/// Require a non-elevated process with no thread impersonation token.
+pub fn verify_process_eligibility() -> Result<()> {
+    // SAFETY: pseudohandles are current process/thread; token handles are owned
+    // immediately on success. Fixed TOKEN_ELEVATION storage has exact native size.
+    unsafe {
+        let mut token = null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return Err(Error::Rejected);
+        }
+        let token = OwnedHandle::from_raw_handle(token);
+        let mut elevation: TOKEN_ELEVATION = zeroed();
+        let mut size = 0;
+        if GetTokenInformation(
+            token.as_raw_handle(),
+            TokenElevation,
+            (&mut elevation as *mut TOKEN_ELEVATION).cast(),
+            size_of::<TOKEN_ELEVATION>() as u32,
+            &mut size,
+        ) == 0
+            || size != size_of::<TOKEN_ELEVATION>() as u32
+            || elevation.TokenIsElevated != 0
+        {
+            return Err(Error::Rejected);
+        }
+        let mut thread = null_mut();
+        if OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, 1, &mut thread) != 0 {
+            drop(OwnedHandle::from_raw_handle(thread));
+            return Err(Error::Rejected);
+        }
+        if GetLastError() != ERROR_NO_TOKEN {
+            return Err(Error::Rejected);
+        }
+    }
+    Ok(())
+}
 const STANDARD: [u32; 3] = [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE];
 type ReadInput = unsafe extern "system" fn(HANDLE, *mut INPUT_RECORD, u32, *mut u32, u16) -> i32;
 
@@ -106,6 +143,7 @@ enum Fault {
     Read,
     Write,
     ShortWrite,
+    RevealAfterPrefix,
     Restore,
     Unregister,
 }
@@ -316,6 +354,100 @@ impl Session {
     /// before any result is returned. Queued tail input is discarded on cleanup.
     pub fn read(mut self, limit: usize, timeout: Duration) -> Result<SensitiveLine> {
         let result = self.read_inner(limit, timeout);
+        self.cleanup()?;
+        if CANCELLED.load(Ordering::SeqCst) {
+            return Err(Error::Cancelled);
+        }
+        result
+    }
+
+    /// Finish a public-output-only session, reporting restoration failures.
+    pub fn finish(mut self) -> Result<()> {
+        self.check()?;
+        self.cleanup()?;
+        if CANCELLED.load(Ordering::SeqCst) {
+            return Err(Error::Cancelled);
+        }
+        Ok(())
+    }
+
+    /// Reveal only the reviewed token type, after exact consent in this session.
+    /// Output can remain visible in terminal history. Errors never trigger a retry.
+    pub fn confirm_and_reveal(
+        mut self,
+        token: &zrotext_root_material::recovery_kit::RecoveryToken,
+        timeout: Duration,
+    ) -> Result<()> {
+        let result = (|| {
+            verify_process_eligibility()?;
+            let mut queued = 0;
+            // SAFETY: retained input handle; no pre-prompt input authorizes reveal.
+            if unsafe { GetNumberOfConsoleInputEvents(self.input(), &mut queued) } == 0
+                || queued != 0
+            {
+                return Err(Error::Busy);
+            }
+            self.write_public_prompt(
+                "Token will be visible in this terminal. Type REVEAL to display it once: ",
+            )?;
+            let consent = self.read_inner(6, timeout)?;
+            if consent.expose_ascii() != b"REVEAL" {
+                return Err(Error::Rejected);
+            }
+            drop(consent);
+            verify_process_eligibility()?;
+            active_session()?;
+            self.check()?;
+            let mut output = Zeroizing::new([0_u16; 83]);
+            output[0] = 13;
+            output[1] = 10;
+            for (index, byte) in token.expose_ascii().iter().enumerate() {
+                output[index + 2] = u16::from(*byte);
+            }
+            output[81] = 13;
+            output[82] = 10;
+            let mut offset = 0;
+            while offset < output.len() {
+                verify_process_eligibility()?;
+                active_session()?;
+                self.check()?;
+                if CANCELLED.load(Ordering::SeqCst) {
+                    return Err(Error::Cancelled);
+                }
+                if self.fault == Some(Fault::Write)
+                    || (self.fault == Some(Fault::RevealAfterPrefix) && offset > 0)
+                {
+                    return Err(Error::Io);
+                }
+                let requested = if matches!(
+                    self.fault,
+                    Some(Fault::ShortWrite | Fault::RevealAfterPrefix)
+                ) {
+                    (output.len() - offset).min(3)
+                } else {
+                    output.len() - offset
+                };
+                let mut written = 0;
+                // SAFETY: bounded UTF-16 zeroizing storage lives through this call.
+                if unsafe {
+                    WriteConsoleW(
+                        self.handles[1].as_raw_handle(),
+                        output[offset..].as_ptr().cast(),
+                        requested as u32,
+                        &mut written,
+                        null(),
+                    )
+                } == 0
+                    || written == 0
+                    || written as usize > requested
+                {
+                    return Err(Error::Io);
+                }
+                offset += written as usize;
+            }
+            self.check()?;
+            Ok(())
+        })();
         self.cleanup()?;
         if CANCELLED.load(Ordering::SeqCst) {
             return Err(Error::Cancelled);

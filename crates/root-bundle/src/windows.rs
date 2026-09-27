@@ -353,6 +353,15 @@ pub struct Store {
 
 impl Store {
     pub fn open(parent: &Path) -> Result<Self> {
+        Self::open_inner(parent, true)
+    }
+
+    /// Open an existing store without creating any directories.
+    pub fn open_existing(parent: &Path) -> Result<Self> {
+        Self::open_inner(parent, false)
+    }
+
+    fn open_inner(parent: &Path, create: bool) -> Result<Self> {
         let (anchor, parts) = path_parts(parent)?;
         let security = Security::current()?;
         let root = relative(None, &anchor, true, false, 3, None, false)?;
@@ -373,9 +382,9 @@ impl Store {
             Some(parent),
             "zrotext-root-bundles",
             true,
-            true,
+            create,
             3,
-            Some(&security),
+            if create { Some(&security) } else { None },
             false,
         ) {
             Err(Error::Collision) => relative(
@@ -512,6 +521,80 @@ impl Store {
     /// successful restore, anti-rollback, or durability after power loss.
     pub fn reconcile(&self, bundle: &EncryptedBundle) -> Result<()> {
         self.verify(bundle, None)
+    }
+
+    /// Read one immutable bundle using an independently supplied identity.
+    /// Framing and digest checks do not authenticate the encrypted root.
+    pub fn read_bundle(
+        &self,
+        backup_id: &[u8; 16],
+        expected: &zrotext_root_material::root_backup::ExpectedIdentity,
+    ) -> Result<EncryptedBundle> {
+        self.check()?;
+        if *backup_id == [0; 16] {
+            return Err(Error::InvalidInput);
+        }
+        let name = format!(
+            "bundle-{}",
+            backup_id
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        );
+        let directory = relative(Some(&self.directory), &name, true, false, 3, None, false)?;
+        let id = inspect(&directory, true, 0)?;
+        self.check_directory(&directory, id)?;
+        // Retain both child handles, denying writes and deletion throughout validation.
+        let mut backup = relative(
+            Some(&directory),
+            "backup.ztrb",
+            false,
+            false,
+            1,
+            None,
+            false,
+        )?;
+        let mut card = relative(
+            Some(&directory),
+            "public.ztrc",
+            false,
+            false,
+            1,
+            None,
+            false,
+        )?;
+        let backup_identity = inspect(&backup, false, 748)?;
+        let card_identity = inspect(&card, false, 645)?;
+        for file in [&backup, &card] {
+            self.security.check(file)?;
+        }
+        if backup_identity.volume != self.identity.volume
+            || card_identity.volume != self.identity.volume
+        {
+            return Err(Error::UnsafeStore);
+        }
+        let mut backup_bytes = Vec::new();
+        let mut card_bytes = Vec::new();
+        (&mut backup)
+            .take(749)
+            .read_to_end(&mut backup_bytes)
+            .map_err(|_| Error::Storage)?;
+        (&mut card)
+            .take(646)
+            .read_to_end(&mut card_bytes)
+            .map_err(|_| Error::Storage)?;
+        let bundle = EncryptedBundle::new(&backup_bytes, &card_bytes, expected)?;
+        if bundle.id != *backup_id
+            || inspect(&backup, false, 748)? != backup_identity
+            || inspect(&card, false, 645)? != card_identity
+        {
+            return Err(Error::UnsafeStore);
+        }
+        self.security.check(&backup)?;
+        self.security.check(&card)?;
+        self.check_directory(&directory, id)?;
+        self.check()?;
+        Ok(bundle)
     }
 
     fn verify(
