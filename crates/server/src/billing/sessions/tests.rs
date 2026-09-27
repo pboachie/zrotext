@@ -2,9 +2,10 @@ use super::*;
 use crate::{auth, http_auth::DisabledVerificationDispatcher};
 use axum::{
     body::{Body, Bytes, to_bytes},
+    extract::{Form, Path, Query},
     http::{Request, StatusCode},
 };
-use std::sync::Mutex;
+use std::{collections::HashMap, sync::Mutex};
 use tower::ServiceExt;
 
 struct MockStripe {
@@ -47,6 +48,10 @@ async fn mock_checkout(
             "mode":"subscription","customer":"cus_fixture1","client_reference_id":state.account_id.to_string(),
             "url":"https://checkout.stripe.com/c/pay/cs_test_fixture1#stripe-fragment"}),
     )
+}
+
+async fn mock_no_open_checkouts() -> Json<Value> {
+    Json(serde_json::json!({"object":"list","data":[],"has_more":false}))
 }
 
 async fn mock_portal(
@@ -102,37 +107,342 @@ fn exact_hosted_url_and_retry_key_are_required() {
         assert!(hosted_url(&Value::String(url.into()), "checkout.stripe.com").is_err());
     }
     let mut headers = HeaderMap::new();
-    let account_id = Uuid::new_v4();
-    let key = |headers: &HeaderMap, price: &str| {
-        checkout_retry_key(
-            headers,
-            account_id,
-            price,
-            "https://zrotext.example/billing/success",
-            "https://zrotext.example/billing/cancel",
-        )
-    };
-    assert!(key(&headers, "price_fixture1").is_err());
+    assert!(require_checkout_request_key(&headers).is_err());
     headers.insert("idempotency-key", "123".parse().unwrap());
-    assert!(key(&headers, "price_fixture1").is_err());
+    assert!(require_checkout_request_key(&headers).is_err());
+    headers.insert(
+        "idempotency-key",
+        Uuid::new_v4().simple().to_string().parse().unwrap(),
+    );
+    assert!(require_checkout_request_key(&headers).is_err());
     headers.insert(
         "idempotency-key",
         Uuid::new_v4().to_string().parse().unwrap(),
     );
-    let first = key(&headers, "price_fixture1").unwrap();
-    assert_eq!(first, key(&headers, "price_fixture1").unwrap());
-    assert_ne!(first, key(&headers, "price_fixture2").unwrap());
+    assert!(require_checkout_request_key(&headers).is_ok());
+    let profile = |price: &str, success: &str| {
+        checkout_profile(price, success, "https://zrotext.example/billing/cancel")
+    };
+    let first = profile("price_fixture1", "https://zrotext.example/billing/success");
+    assert_eq!(first.len(), 32);
+    assert_eq!(
+        first,
+        profile("price_fixture1", "https://zrotext.example/billing/success")
+    );
     assert_ne!(
         first,
-        checkout_retry_key(
-            &headers,
-            account_id,
-            "price_fixture1",
-            "https://zrotext.example/new-success",
-            "https://zrotext.example/billing/cancel",
-        )
-        .unwrap()
+        profile("price_fixture2", "https://zrotext.example/billing/success")
     );
+    assert_ne!(
+        first,
+        profile("price_fixture1", "https://zrotext.example/new-success")
+    );
+}
+
+#[test]
+fn checkout_window_fixes_key_and_expiry_for_every_request_in_it() {
+    let account_id = Uuid::new_v4();
+    let profile = "0123456789abcdef0123456789abcdef";
+    let start = 1_900_000_000 - 1_900_000_000 % CHECKOUT_WINDOW_SECS;
+    let (window, expires_at) = checkout_window(start);
+    let key = checkout_retry_key(account_id, profile, window);
+    assert!(
+        key.len() <= 255,
+        "Stripe idempotency keys are at most 255 characters"
+    );
+    assert_eq!(
+        key,
+        format!("zt-checkout-v3-{account_id}-{profile}-{window}")
+    );
+    // Every instant in the window replays one key with identical parameters,
+    // and Stripe's 30-minute minimum lifetime holds with margin to spare.
+    for now in [
+        start,
+        start + 1,
+        start + 900,
+        start + CHECKOUT_WINDOW_SECS - 1,
+    ] {
+        assert_eq!(checkout_window(now), (window, expires_at));
+        let lifetime = expires_at - now;
+        assert!(lifetime > 30 * 60 + CHECKOUT_EXPIRY_MARGIN_SECS);
+        assert!(lifetime <= 2 * CHECKOUT_WINDOW_SECS + CHECKOUT_EXPIRY_MARGIN_SECS);
+    }
+    // The next window uses a new key, so a completed or expired session is
+    // not replayed indefinitely.
+    let (next, next_expiry) = checkout_window(start + CHECKOUT_WINDOW_SECS);
+    assert_eq!(next, window + 1);
+    assert_eq!(next_expiry, expires_at + CHECKOUT_WINDOW_SECS);
+    assert_ne!(checkout_retry_key(account_id, profile, next), key);
+    // A session can still be open early in the next window, never after it.
+    assert!(expires_at > start + CHECKOUT_WINDOW_SECS);
+    assert!(expires_at < start + 3 * CHECKOUT_WINDOW_SECS);
+}
+
+/// One recorded Checkout creation: its form fields and idempotency key.
+type CreateCall = (HashMap<String, String>, Option<String>);
+
+/// A stateful Checkout provider for one customer: it lists, creates and
+/// expires sessions and replays idempotency keys the way Stripe does.
+#[derive(Default)]
+struct FakeCheckouts {
+    sessions: Mutex<Vec<Value>>,
+    replays: Mutex<HashMap<String, Value>>,
+    creates: Mutex<Vec<CreateCall>>,
+    expired: Mutex<Vec<String>>,
+}
+
+impl FakeCheckouts {
+    fn seed(&self, id: &str, created: i64, account_id: Uuid, profile: Option<&str>) {
+        let mut metadata = serde_json::Map::new();
+        if let Some(profile) = profile {
+            metadata.insert("zt_checkout_profile".into(), profile.into());
+        }
+        self.sessions.lock().unwrap().push(serde_json::json!({
+            "id": id, "object": "checkout.session", "livemode": false,
+            "mode": "subscription", "status": "open", "customer": "cus_fixture1",
+            "client_reference_id": account_id.to_string(), "created": created,
+            "metadata": metadata, "url": format!("https://checkout.stripe.com/c/pay/{id}"),
+        }));
+    }
+
+    fn complete(&self, id: &str) {
+        for session in self.sessions.lock().unwrap().iter_mut() {
+            if session["id"] == id {
+                session["status"] = "complete".into();
+            }
+        }
+    }
+
+    fn open_count(&self) -> usize {
+        self.sessions
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| s["status"] == "open")
+            .count()
+    }
+}
+
+async fn fake_list(
+    State(fake): State<Arc<FakeCheckouts>>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Json<Value> {
+    assert_eq!(query["status"], "open");
+    let data: Vec<Value> = fake
+        .sessions
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|s| s["status"] == "open" && s["customer"] == query["customer"].as_str())
+        .cloned()
+        .collect();
+    Json(serde_json::json!({"object":"list","data":data,"has_more":false}))
+}
+
+async fn fake_create(
+    State(fake): State<Arc<FakeCheckouts>>,
+    headers: HeaderMap,
+    Form(form): Form<HashMap<String, String>>,
+) -> Json<Value> {
+    let key = headers
+        .get("idempotency-key")
+        .map(|v| v.to_str().unwrap().to_owned());
+    fake.creates
+        .lock()
+        .unwrap()
+        .push((form.clone(), key.clone()));
+    let key = key.expect("Checkout creation must carry an idempotency key");
+    if let Some(replayed) = fake.replays.lock().unwrap().get(&key) {
+        return Json(replayed.clone());
+    }
+    let mut sessions = fake.sessions.lock().unwrap();
+    let id = format!("cs_test_fake{}", sessions.len() + 1);
+    let session = serde_json::json!({
+        "id": id, "object": "checkout.session", "livemode": false,
+        "mode": form["mode"], "status": "open", "customer": form["customer"],
+        "client_reference_id": form["client_reference_id"],
+        "created": 1_000 + sessions.len() as i64,
+        "expires_at": form["expires_at"].parse::<i64>().unwrap(),
+        "metadata": {"zt_checkout_profile": form["metadata[zt_checkout_profile]"]},
+        "url": format!("https://checkout.stripe.com/c/pay/{id}"),
+    });
+    sessions.push(session.clone());
+    fake.replays.lock().unwrap().insert(key, session.clone());
+    Json(session)
+}
+
+async fn fake_expire(
+    State(fake): State<Arc<FakeCheckouts>>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, StatusCode> {
+    let mut sessions = fake.sessions.lock().unwrap();
+    let session = sessions
+        .iter_mut()
+        .find(|s| s["id"] == id.as_str() && s["status"] == "open")
+        .ok_or(StatusCode::BAD_REQUEST)?;
+    session["status"] = "expired".into();
+    fake.expired.lock().unwrap().push(id);
+    Ok(Json(session.clone()))
+}
+
+async fn fake_stripe() -> (
+    Arc<FakeCheckouts>,
+    StripeClient,
+    tokio::task::JoinHandle<()>,
+) {
+    let fake = Arc::new(FakeCheckouts::default());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let app = Router::new()
+        .route("/v1/checkout/sessions", get(fake_list).post(fake_create))
+        .route("/v1/checkout/sessions/{id}/expire", post(fake_expire))
+        .with_state(fake.clone());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let client = StripeClient {
+        http: HttpClient::builder()
+            .no_proxy()
+            .redirect(redirect::Policy::none())
+            .retry(retry::never())
+            .timeout(Duration::from_secs(3))
+            .build()
+            .unwrap(),
+        secret_key: "rk_test_fixture123456".into(),
+        api_base: format!("http://{address}"),
+    };
+    (fake, client, server)
+}
+
+fn fixture_profile() -> String {
+    checkout_profile(
+        "price_fixture1",
+        "https://zrotext.example/billing/success",
+        "https://zrotext.example/billing/cancel",
+    )
+}
+
+fn fixture_params(account_id: Uuid, profile: &str) -> CheckoutParams<'_> {
+    CheckoutParams {
+        customer_id: "cus_fixture1",
+        price_id: "price_fixture1",
+        success_url: "https://zrotext.example/billing/success",
+        cancel_url: "https://zrotext.example/billing/cancel",
+        account_id,
+        profile,
+    }
+}
+
+#[tokio::test]
+async fn repeated_checkout_reuses_the_one_open_session() {
+    let (fake, stripe, server) = fake_stripe().await;
+    let account_id = Uuid::new_v4();
+    let profile = fixture_profile();
+    let params = fixture_params(account_id, &profile);
+    let start = 1_900_000_000 - 1_900_000_000 % CHECKOUT_WINDOW_SECS;
+    let (window, expires_at) = checkout_window(start);
+
+    let first = stripe
+        .single_open_checkout(&params, start + 60)
+        .await
+        .unwrap();
+    {
+        let creates = fake.creates.lock().unwrap();
+        assert_eq!(creates.len(), 1);
+        let (form, key) = &creates[0];
+        assert_eq!(
+            key.as_deref(),
+            Some(checkout_retry_key(account_id, &profile, window).as_str())
+        );
+        assert_eq!(form["expires_at"], expires_at.to_string());
+        assert_eq!(form["metadata[zt_checkout_profile]"], profile);
+        assert_eq!(form["client_reference_id"], account_id.to_string());
+    }
+
+    // A reload, a second tab or a return through the cancel page later in
+    // the window, and a request in the next window while the session is
+    // still open, all reach the same session without creating another.
+    for now in [
+        start + 61,
+        start + CHECKOUT_WINDOW_SECS - 1,
+        start + CHECKOUT_WINDOW_SECS + 600,
+    ] {
+        assert_eq!(
+            stripe.single_open_checkout(&params, now).await.unwrap(),
+            first
+        );
+    }
+    assert_eq!(fake.creates.lock().unwrap().len(), 1);
+    assert!(fake.expired.lock().unwrap().is_empty());
+    assert_eq!(fake.open_count(), 1);
+
+    // Once that session is no longer open, a later window opens a new one
+    // under a new idempotency key.
+    fake.complete(first.rsplit('/').next().unwrap());
+    let later = start + 2 * CHECKOUT_WINDOW_SECS + 60;
+    let second = stripe.single_open_checkout(&params, later).await.unwrap();
+    assert_ne!(second, first);
+    {
+        let creates = fake.creates.lock().unwrap();
+        assert_eq!(creates.len(), 2);
+        assert_eq!(
+            creates[1].1.as_deref(),
+            Some(checkout_retry_key(account_id, &profile, window + 2).as_str())
+        );
+        assert_eq!(
+            creates[1].0["expires_at"],
+            checkout_window(later).1.to_string()
+        );
+    }
+    assert_eq!(fake.open_count(), 1);
+    server.abort();
+}
+
+#[tokio::test]
+async fn checkout_expires_every_other_open_session_before_returning_one() {
+    let (fake, stripe, server) = fake_stripe().await;
+    let account_id = Uuid::new_v4();
+    let profile = fixture_profile();
+    let params = fixture_params(account_id, &profile);
+    let now = 1_900_000_000;
+
+    // A session opened before this guard existed (no profile), one opened
+    // under another price configuration, and two matching sessions left by
+    // a window-boundary race: only the oldest matching session survives.
+    fake.seed("cs_test_legacy1", 10, account_id, None);
+    fake.seed(
+        "cs_test_otherprice1",
+        20,
+        account_id,
+        Some("ffffffffffffffffffffffffffffffff"),
+    );
+    fake.seed("cs_test_newer1", 40, account_id, Some(&profile));
+    fake.seed("cs_test_older1", 30, account_id, Some(&profile));
+    let url = stripe.single_open_checkout(&params, now).await.unwrap();
+    assert_eq!(url, "https://checkout.stripe.com/c/pay/cs_test_older1");
+    let mut expired = fake.expired.lock().unwrap().clone();
+    expired.sort();
+    assert_eq!(
+        expired,
+        ["cs_test_legacy1", "cs_test_newer1", "cs_test_otherprice1"]
+    );
+    assert!(fake.creates.lock().unwrap().is_empty());
+    assert_eq!(fake.open_count(), 1);
+
+    // With only a foreign session open, it is expired and one new session is
+    // created, so the account still ends with exactly one open session.
+    fake.complete("cs_test_older1");
+    fake.seed("cs_test_legacy2", 50, account_id, None);
+    stripe.single_open_checkout(&params, now).await.unwrap();
+    assert!(
+        fake.expired
+            .lock()
+            .unwrap()
+            .contains(&"cs_test_legacy2".to_owned())
+    );
+    assert_eq!(fake.creates.lock().unwrap().len(), 1);
+    assert_eq!(fake.open_count(), 1);
+    server.abort();
 }
 
 #[tokio::test]
@@ -222,7 +532,10 @@ async fn owner_checkout_portal_bind_customer_and_reject_cross_tenant() {
     let address = listener.local_addr().unwrap();
     let mock_router = Router::new()
         .route("/v1/customers", post(mock_customer))
-        .route("/v1/checkout/sessions", post(mock_checkout))
+        .route(
+            "/v1/checkout/sessions",
+            get(mock_no_open_checkouts).post(mock_checkout),
+        )
         .route("/v1/billing_portal/sessions", post(mock_portal))
         .with_state(mock.clone());
     let server = tokio::spawn(async move {
@@ -376,7 +689,7 @@ async fn owner_checkout_portal_bind_customer_and_reject_cross_tenant() {
             .2
             .as_deref()
             .unwrap()
-            .starts_with(&format!("zt-checkout-v2-{}-", signup.account_id))
+            .starts_with(&format!("zt-checkout-v3-{}-", signup.account_id))
     );
     assert_eq!(calls[2].0, "portal");
     assert!(
@@ -479,7 +792,10 @@ async fn owner_checkout_refused_while_subscription_live_or_pending() {
     let address = listener.local_addr().unwrap();
     let mock_router = Router::new()
         .route("/v1/customers", post(mock_customer))
-        .route("/v1/checkout/sessions", post(mock_checkout))
+        .route(
+            "/v1/checkout/sessions",
+            get(mock_no_open_checkouts).post(mock_checkout),
+        )
         .route("/v1/billing_portal/sessions", post(mock_portal))
         .with_state(mock.clone());
     let server = tokio::spawn(async move {
