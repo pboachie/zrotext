@@ -1,0 +1,76 @@
+name: Sealed cross-client tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  sealed-interop:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:18.6-bookworm
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    env:
+      ZT_AUTH_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/postgres
+      ZT_DELIVERY_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/postgres
+      ZT_INBOUND_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/postgres
+      DATABASE_ALLOW_PLAINTEXT: 'true'
+    steps:
+      - name: Select temporary fixture paths
+        run: |
+          # The Rust test writes to this fixed, Git-ignored directory in the checkout.
+          dir="$GITHUB_WORKSPACE/target/zrotext-sealed-interop"
+          echo "ZT_INTEROP_TEST_FIXTURE=$dir/persisted-fixture.json" >> "$GITHUB_ENV"
+          echo "ZT_INTEROP_TEST_CONTEXT=$dir/expected-context.json" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate Gradle wrapper JAR
+        uses: gradle/actions/wrapper-validation@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
+      - name: Install existing toolchain versions
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal --component clippy --component rustfmt
+          sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0'
+      - name: Build and test the SDK
+        working-directory: sdk/typescript
+        run: npm ci --ignore-scripts && npm test
+      - name: Check the explicit cross-client Rust test
+        run: |
+          cargo fmt --all --check
+          cargo clippy --locked -p zrotext-server --all-targets --features sealed-interop-tests -- -D warnings
+      - name: Generate ciphertext and exercise PostgreSQL admission
+        run: |
+          cargo test --locked -p zrotext-server --lib --features sealed-interop-tests cross_client_interop:: -- --ignored --nocapture
+      - name: Verify and decrypt the database-returned ciphertext
+        working-directory: android
+        run: ./gradlew --init-script sealed-interop.init.gradle :app:testDebugUnitTest --tests org.zrotext.gateway.SealedSdkPostgresInteropTest --no-configuration-cache --no-daemon --max-workers=2
+      - name: Require all six Android cases without skips
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          import xml.etree.ElementTree as ET
+          path = pathlib.Path('android/app/build/test-results/testDebugUnitTest/TEST-org.zrotext.gateway.SealedSdkPostgresInteropTest.xml')
+          result = ET.parse(path).getroot()
+          expected = {'tests': '6', 'failures': '0', 'errors': '0', 'skipped': '0'}
+          for key, value in expected.items():
+              if result.get(key) != value:
+                  raise SystemExit(f'Unexpected {key}: {result.get(key)}')
+          print('All six cross-client Android cases passed without skips')
+          PY

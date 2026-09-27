@@ -10,12 +10,26 @@ import java.security.Signature
  * Dormant exact-byte outbound proof, not a durable admission, decryption or radio capability.
  * Reverify against current durable trust, trusted time and live grants before any later effect.
  */
-internal class Draft02OutboundEnvelope private constructor(bytes: ByteArray, digest: ByteArray) {
+internal class Draft02OutboundEnvelope private constructor(bytes: ByteArray, digest: ByteArray,
+    private val protectedEnd: Int, private val bodyEnd: Int, private val deviceAt: Int,
+    private val revalidate: (Draft02ManifestAuthority, Draft02ManifestAuthority.Request, Long) -> Unit) {
     private val received = bytes.copyOf()
     private val unsignedIdentity = digest.copyOf()
     val envelope: ByteArray get() = received.copyOf()
     val unsignedDigest: ByteArray get() = unsignedIdentity.copyOf()
     override fun toString() = "Draft02OutboundEnvelope(verified-ciphertext)"
+
+    /** Slices retained by the existing verified parser; never reparses caller bytes. */
+    internal class Parts(val header: ByteArray, val protected: ByteArray, val nonce: ByteArray,
+                         val body: ByteArray, val keyId: ByteArray, val enc: ByteArray, val wrap: ByteArray) {
+        override fun toString() = "VerifiedOutboundParts(redacted)"
+    }
+    internal fun checkContext(authority: Draft02ManifestAuthority, request: Draft02ManifestAuthority.Request, now: Long) =
+        revalidate(authority, request, now)
+    internal fun parts() = Parts(received.copyOfRange(0, 10), received.copyOfRange(10, protectedEnd),
+        received.copyOfRange(protectedEnd, protectedEnd + 12), received.copyOfRange(protectedEnd + 16, bodyEnd),
+        received.copyOfRange(deviceAt + 1, deviceAt + 33), received.copyOfRange(deviceAt + 33, deviceAt + 98),
+        received.copyOfRange(deviceAt + 98, deviceAt + 146))
 
     companion object {
         private const val WRAP_SIZE = 146
@@ -38,7 +52,10 @@ internal class Draft02OutboundEnvelope private constructor(bytes: ByteArray, dig
             match(parsed, authority.context(request, finalNow))
             fresh(parsed, finalNow)
             return Draft02OutboundEnvelope(parsed.bytes,
-                MessageDigest.getInstance("SHA-256").digest(parsed.bytes.copyOfRange(0, parsed.unsignedEnd)))
+                MessageDigest.getInstance("SHA-256").digest(parsed.bytes.copyOfRange(0, parsed.unsignedEnd)),
+                10 + parsed.protected.size, parsed.bodyEnd, parsed.deviceAt) { nextAuthority, nextRequest, time ->
+                    match(parsed, nextAuthority.context(nextRequest, time)); fresh(parsed, time)
+                }
         }
 
         /** Low-level signature corpus entry point; this returns no trusted-envelope result. */
@@ -50,7 +67,8 @@ internal class Draft02OutboundEnvelope private constructor(bytes: ByteArray, dig
 
         private class Wrap(val role: Int, val id: ByteArray)
         private class Parsed(val bytes: ByteArray, val unsignedEnd: Int, val protected: ByteArray,
-                             val wraps: List<Wrap>, val observed: Long, val expires: Long)
+                             val wraps: List<Wrap>, val observed: Long, val expires: Long,
+                             val bodyEnd: Int, val deviceAt: Int)
 
         private fun parse(input: ByteArray): Parsed {
             require(input.size in 557..34_213) { "Envelope size" }
@@ -83,6 +101,7 @@ internal class Draft02OutboundEnvelope private constructor(bytes: ByteArray, dig
             val count = bytes[bodyEnd].toInt() and 255
             require(count in 2..8 && bodyEnd + 1 + count * WRAP_SIZE + 64 == bytes.size) { "Wrap count/EOF" }
             val wraps = ArrayList<Wrap>(count)
+            var deviceAt = 0
             var deviceCount = 0
             var archiveCount = 0
             for (index in 0 until count) {
@@ -94,7 +113,7 @@ internal class Draft02OutboundEnvelope private constructor(bytes: ByteArray, dig
                 wraps.lastOrNull()?.let { previous ->
                     require(role > previous.role || role == previous.role && compare(id, previous.id) > 0) { "Wrap order/duplicate" }
                 }
-                if (role == 1) deviceCount++
+                if (role == 1) { deviceCount++; deviceAt = start }
                 if (role == 2) archiveCount++
                 wraps.add(Wrap(role, id))
             }
@@ -103,7 +122,7 @@ internal class Draft02OutboundEnvelope private constructor(bytes: ByteArray, dig
             val r = BigInteger(1, bytes.copyOfRange(unsignedEnd, unsignedEnd + 32))
             val s = BigInteger(1, bytes.copyOfRange(unsignedEnd + 32, bytes.size))
             require(r.signum() > 0 && r < ORDER && s.signum() > 0 && s <= ORDER.shiftRight(1)) { "Canonical signature scalars" }
-            return Parsed(bytes, unsignedEnd, protected, wraps, observed, expires)
+            return Parsed(bytes, unsignedEnd, protected, wraps, observed, expires, bodyEnd, deviceAt)
         }
 
         private fun match(parsed: Parsed, context: Draft02ManifestAuthority.Context) {
