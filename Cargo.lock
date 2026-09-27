@@ -2938,6 +2938,8 @@ dependencies = [
  "rand 0.10.3",
  "reqwest",
  "ring",
+ "rustls",
+ "rustls-platform-verifier",
  "serde",
  "serde_json",
  "sha2",

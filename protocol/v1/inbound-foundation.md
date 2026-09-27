@@ -124,7 +124,10 @@ a short clock window and deduplicate `event_id`.
 Before each HTTPS POST, the sender rejects local names/IP literals and
 nonstandard ports, resolves DNS, rejects any unsafe address, pins the accepted
 answer for that single request, disables redirects/proxies/automatic retries,
-and bounds connection and request time. It does not read the response body.
+and bounds connection and request time. Each request gets its own HTTP client
+with no connection pooling or TLS session resumption; only the certificate
+verifier and system trust store are loaded once per process, so a changed CA
+bundle takes effect after a restart. It does not read the response body.
 Only HTTP 2xx is an acknowledgement. URL or unsafe-address failures dead
 letter; unavailable DNS/transport and other HTTP statuses follow the bounded
 retry schedule. The sender needs an independent network egress firewall in a
