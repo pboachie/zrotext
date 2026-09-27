@@ -273,6 +273,24 @@ public static class Native {
         foreach(GenericAce ace in current){var known=ace as KnownAce;if(known!=null&&known.SecurityIdentifier.Value.StartsWith("S-1-5-5-",StringComparison.Ordinal)&&!existing.Contains(known.SecurityIdentifier.Value))added.Add(known.SecurityIdentifier.Value);}
         return added;
     }
+    public static string LabelState = "not-observed";
+    // Mandatory integrity label SID of a user object, or "none"; the fixed
+    // S-1-16-N integrity SIDs carry no user data.
+    static string ObjectLabel(IntPtr handle) {
+        uint info=0x10,needed;
+        GetUserObjectSecurity(handle,ref info,null,0,out needed);
+        if(needed==0||needed>65536)return "unreadable";
+        byte[] bytes=new byte[needed];
+        if(!GetUserObjectSecurity(handle,ref info,bytes,needed,out needed))return "unreadable";
+        var descriptor=new RawSecurityDescriptor(bytes,0);
+        if(descriptor.SystemAcl==null)return "none";
+        foreach(GenericAce ace in descriptor.SystemAcl) {
+            var custom=ace as CustomAce;
+            if(custom!=null&&(int)custom.AceType==0x11){byte[] opaque=custom.GetOpaque();if(opaque!=null&&opaque.Length>=12)return new SecurityIdentifier(opaque,4).Value;}
+        }
+        return "none";
+    }
+    static string TokenLabel(IntPtr token) {return Token(token,25,(p,n)=>{Check(n>=IntPtr.Size,"token-label-size");return new SecurityIdentifier(Marshal.ReadIntPtr(p)).Value;});}
     static void CleanDesktop(IntPtr handle,RawSecurityDescriptor before,HashSet<string> fixture) {
         var current=Descriptor(handle);
         var sids=new HashSet<string>(fixture,StringComparer.Ordinal);
@@ -409,6 +427,8 @@ public static class Native {
             // for a grant scoped to the fixture logon SID; cleanup removes it.
             station=OpenWindowStationW(stationName,false,0x60000);Check(station!=IntPtr.Zero,"station-open-dacl");
             desktop=OpenDesktopW(desktopName,0,false,0x60000);Check(desktop!=IntPtr.Zero,"desktop-open-dacl");
+            {IntPtr own;string parentLabel="unreadable";if(OpenProcessToken(GetCurrentProcess(),8,out own)){try{parentLabel=TokenLabel(own);}finally{CloseHandle(own);}}
+             LabelState="station="+ObjectLabel(station)+" desktop="+ObjectLabel(desktop)+" fixture="+TokenLabel(tokenHandle)+" parent="+parentLabel;}
             stationBefore=Descriptor(station);desktopBefore=Descriptor(desktop);
             foreach(GenericAce ace in stationBefore.DiscretionaryAcl) Check(!FixtureAce(ace,fixtureSids),"station-no-preexisting-fixture-ace");
             foreach(GenericAce ace in desktopBefore.DiscretionaryAcl) Check(!FixtureAce(ace,fixtureSids),"desktop-no-preexisting-fixture-ace");
