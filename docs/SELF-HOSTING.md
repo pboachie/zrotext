@@ -103,10 +103,14 @@ DATABASE_TLS_CA_PEM_B64='<base64-encoded-PEM-CA-bundle>'
 
 Do not put a real credential in the repository. A connection with
 `sslmode=prefer` or `disable` can carry credentials and metadata without TLS.
-Such modes are allowed for loopback, a Unix socket, and the local Compose `db`
-service. To use them with another host, an operator must set
+Such modes are allowed without an opt-in only for `localhost`, a loopback IP
+address, or a Unix socket. To use them with any other host, an operator must set
 `DATABASE_ALLOW_PLAINTEXT=true`; the process warns on startup. A private IP
-address alone does not bypass the TLS requirement. The CA bundle is public trust
+address or a service name alone does not bypass the TLS requirement: a name such
+as `db` is ordinary DNS and can resolve to another node in Kubernetes, Swarm,
+Nomad, or a multi-host Compose network. The bundled Compose `db` has no TLS, so
+the Compose file sets `DATABASE_ALLOW_PLAINTEXT` to `true` unless `.env`
+overrides it, and its processes log the plaintext warning. The CA bundle is public trust
 material, but verify its source before encoding it. The same settings apply to
 migration and webhook key rewrap jobs, not just the server. Test CA trust and
 hostname verification before directing production traffic to a new writer.
