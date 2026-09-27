@@ -133,6 +133,15 @@ the budget; key revocation does not refund it. Exhaustion returns 429, and budge
 storage failure returns 503 without creating a key. This bounds issuance rate,
 not the lifetime retention of audit metadata for previously created keys.
 
+Pairing creation (`POST /v1/enrollment/pairings`) consumes an atomic PostgreSQL
+budget of 10 attempts per account per 15-minute window and 120 globally per
+minute, charged after the owner session and CSRF checks and before the pairing
+row is written. Cancelling or finishing a pairing does not refund it. Exhaustion
+returns 429 and budget storage failure returns 503, both without creating a
+pairing. This keeps one owner from inserting pairing requests faster than
+enrollment maintenance removes them. Open pairings are not capped: an owner can
+still hold several unclaimed pairings at once until they expire.
+
 ### Owner session and API key lifetime
 
 An owner session expires 14 days after sign-in, and earlier if it goes unused
