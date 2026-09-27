@@ -249,7 +249,7 @@ async fn check_owner_password(
     password: &str,
 ) -> Result<(), AuthError> {
     let row = client.query_opt(
-        "SELECT u.password_hash FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id JOIN sessions s ON s.account_id=m.account_id AND s.user_id=u.id WHERE m.account_id=$1 AND u.id=$2 AND s.id=$3 AND s.revoked_at IS NULL AND s.expires_at>now() AND a.disabled_at IS NULL",
+        "SELECT u.password_hash FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id JOIN sessions s ON s.account_id=m.account_id AND s.user_id=u.id WHERE m.role='owner' AND m.account_id=$1 AND u.id=$2 AND s.id=$3 AND s.revoked_at IS NULL AND s.expires_at>now() AND a.disabled_at IS NULL",
         &[&principal.tenant.account_id(), &principal.user_id, &principal.session_id],
     ).await?.ok_or(AuthError::Unauthorized)?;
     let stored: String = row.get(0);
@@ -260,6 +260,7 @@ async fn require_live_session(
     tx: &Transaction<'_>,
     principal: &SessionPrincipal,
 ) -> Result<(), AuthError> {
+    super::require_current_owner(tx, principal).await?;
     tx.query_opt(
         "SELECT id FROM sessions WHERE id=$1 AND account_id=$2 AND user_id=$3 AND revoked_at IS NULL AND expires_at>now() FOR UPDATE",
         &[&principal.session_id, &principal.tenant.account_id(), &principal.user_id],
@@ -268,6 +269,7 @@ async fn require_live_session(
 }
 
 pub async fn status(client: &Client, principal: &SessionPrincipal) -> Result<Status, AuthError> {
+    super::require_current_owner(client, principal).await?;
     let row = client.query_opt(
         "SELECT enabled_at IS NOT NULL, COALESCE(pending_expires_at>now(),false) FROM owner_mfa WHERE account_id=$1 AND user_id=$2",
         &[&principal.tenant.account_id(), &principal.user_id],
@@ -295,7 +297,7 @@ pub async fn begin_enrollment(
     check_owner_password(client, principal, password).await?;
     let tx = client.transaction().await?;
     let user = tx.query_one(
-        "SELECT u.email,u.mfa_enabled FROM users u JOIN memberships m ON m.user_id=u.id WHERE u.id=$1 AND m.account_id=$2 FOR UPDATE OF u",
+        "SELECT u.email,u.mfa_enabled FROM users u JOIN memberships m ON m.user_id=u.id WHERE m.role='owner' AND u.id=$1 AND m.account_id=$2 FOR UPDATE OF u",
         &[&principal.user_id, &principal.tenant.account_id()],
     ).await?;
     if user.get::<_, bool>(1) {
@@ -402,7 +404,7 @@ pub async fn begin_login_challenge(
 ) -> Result<String, AuthError> {
     let row = client
         .query_opt(
-            "SELECT u.password_hash FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE u.id=$1 AND m.account_id=$2 AND u.mfa_enabled AND a.disabled_at IS NULL",
+            "SELECT u.password_hash FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE m.role='owner' AND u.id=$1 AND m.account_id=$2 AND u.mfa_enabled AND a.disabled_at IS NULL",
             &[&user_id, &account_id],
         )
         .await?
@@ -412,7 +414,7 @@ pub async fn begin_login_challenge(
     let token = super::random_token("ztm_");
     let hash = hasher.digest(b"mfa-login-challenge-v1", &token);
     let inserted = client.execute(
-        "INSERT INTO owner_mfa_login_challenges(id,account_id,user_id,token_hash,expires_at) SELECT $1,$2,$3,$4,now()+($5::integer * interval '1 minute') FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE u.id=$3 AND m.account_id=$2 AND u.password_hash=$6 AND u.mfa_enabled AND a.disabled_at IS NULL FOR UPDATE OF u",
+        "INSERT INTO owner_mfa_login_challenges(id,account_id,user_id,token_hash,expires_at) SELECT $1,$2,$3,$4,now()+($5::integer * interval '1 minute') FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE m.role='owner' AND u.id=$3 AND m.account_id=$2 AND u.password_hash=$6 AND u.mfa_enabled AND a.disabled_at IS NULL FOR UPDATE OF u",
         &[&Uuid::new_v4(), &account_id, &user_id, &&hash[..], &CHALLENGE_MINUTES, &stored],
     ).await?;
     if inserted != 1 {
@@ -607,7 +609,7 @@ pub async fn complete_login(
     let user_id: Uuid = identity.get(1);
     let tx = client.transaction().await?;
     let user = tx.query_opt(
-        "SELECT u.mfa_enabled FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE u.id=$1 AND m.account_id=$2 AND a.disabled_at IS NULL FOR UPDATE OF u",
+        "SELECT u.mfa_enabled FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE m.role='owner' AND u.id=$1 AND m.account_id=$2 AND a.disabled_at IS NULL FOR UPDATE OF u",
         &[&user_id, &account_id],
     ).await?.ok_or(AuthError::Unauthorized)?;
     if !user.get::<_, bool>(0) {

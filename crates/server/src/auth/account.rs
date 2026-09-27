@@ -24,6 +24,7 @@ pub async fn list_sessions(
     client: &Client,
     owner: &SessionPrincipal,
 ) -> Result<Vec<SessionInfo>, AuthError> {
+    super::require_current_owner(client, owner).await?;
     let rows = client
         .query(
             "SELECT id,(extract(epoch FROM created_at)*1000)::bigint,(extract(epoch FROM expires_at)*1000)::bigint,(extract(epoch FROM last_used_at)*1000)::bigint FROM sessions WHERE account_id=$1 AND user_id=$2 AND revoked_at IS NULL AND expires_at>now() ORDER BY (id=$3) DESC,created_at DESC,id DESC LIMIT $4",
@@ -55,7 +56,7 @@ pub async fn revoke_other_sessions(
 ) -> Result<u64, AuthError> {
     let account_id = owner.tenant.account_id();
     let old_hash: String = client.query_opt(
-        "SELECT u.password_hash FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id JOIN sessions s ON s.account_id=m.account_id AND s.user_id=u.id WHERE u.id=$1 AND m.account_id=$2 AND s.id=$3 AND s.revoked_at IS NULL AND s.expires_at>now() AND a.disabled_at IS NULL",
+        "SELECT u.password_hash FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id JOIN sessions s ON s.account_id=m.account_id AND s.user_id=u.id WHERE m.role='owner' AND u.id=$1 AND m.account_id=$2 AND s.id=$3 AND s.revoked_at IS NULL AND s.expires_at>now() AND a.disabled_at IS NULL",
         &[&owner.user_id, &account_id, &owner.session_id],
     )
     .await?
@@ -102,6 +103,7 @@ async fn require_live_session(
     tx: &tokio_postgres::Transaction<'_>,
     owner: &SessionPrincipal,
 ) -> Result<(), AuthError> {
+    super::require_current_owner(tx, owner).await?;
     tx.query_opt(
         "SELECT id FROM sessions WHERE id=$1 AND account_id=$2 AND user_id=$3 AND revoked_at IS NULL AND expires_at>now() FOR UPDATE",
         &[&owner.session_id, &owner.tenant.account_id(), &owner.user_id],
@@ -126,7 +128,7 @@ pub async fn change_password(
     let account_id = owner.tenant.account_id();
     let row = client
         .query_opt(
-            "SELECT u.password_hash FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id JOIN sessions s ON s.account_id=m.account_id AND s.user_id=u.id WHERE u.id=$1 AND m.account_id=$2 AND s.id=$3 AND s.revoked_at IS NULL AND s.expires_at>now() AND a.disabled_at IS NULL",
+            "SELECT u.password_hash FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id JOIN sessions s ON s.account_id=m.account_id AND s.user_id=u.id WHERE m.role='owner' AND u.id=$1 AND m.account_id=$2 AND s.id=$3 AND s.revoked_at IS NULL AND s.expires_at>now() AND a.disabled_at IS NULL",
             &[&owner.user_id, &account_id, &owner.session_id],
         )
         .await?
@@ -218,7 +220,7 @@ pub async fn request_password_reset(
     let tx = client.transaction().await?;
     let Some(row) = tx
         .query_opt(
-            "SELECT u.id,m.account_id FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE u.email=$1 AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL FOR UPDATE OF u",
+            "SELECT u.id,m.account_id FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE m.role='owner' AND u.email=$1 AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL FOR UPDATE OF u",
             &[&email],
         )
         .await?
@@ -289,7 +291,7 @@ pub async fn claim_reset_mail(
     let tx = client.transaction().await?;
     let row = tx
         .query_opt(
-            "SELECT o.reset_id,u.email,r.token_hash FROM password_reset_mail_outbox o JOIN password_resets r ON r.id=o.reset_id JOIN users u ON u.id=r.user_id JOIN accounts a ON a.id=r.account_id WHERE o.delivered_at IS NULL AND o.canceled_at IS NULL AND o.dead_at IS NULL AND o.attempt_count<6 AND o.next_attempt_at<=now() AND (o.leased_until IS NULL OR o.leased_until<=now()) AND r.used_at IS NULL AND r.expires_at>now() AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL ORDER BY o.next_attempt_at,o.reset_id LIMIT 1 FOR UPDATE OF o SKIP LOCKED",
+            "SELECT o.reset_id,u.email,r.token_hash FROM password_reset_mail_outbox o JOIN password_resets r ON r.id=o.reset_id JOIN users u ON u.id=r.user_id JOIN memberships m ON (m.account_id,m.user_id)=(r.account_id,r.user_id) JOIN accounts a ON a.id=r.account_id WHERE m.role='owner' AND o.delivered_at IS NULL AND o.canceled_at IS NULL AND o.dead_at IS NULL AND o.attempt_count<6 AND o.next_attempt_at<=now() AND (o.leased_until IS NULL OR o.leased_until<=now()) AND r.used_at IS NULL AND r.expires_at>now() AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL ORDER BY o.next_attempt_at,o.reset_id LIMIT 1 FOR UPDATE OF o SKIP LOCKED",
             &[],
         )
         .await?;
@@ -416,7 +418,7 @@ pub async fn reset_token_is_live(
     let hash = hasher.digest(b"password-reset-v1", token);
     Ok(client
         .query_one(
-            "SELECT EXISTS(SELECT 1 FROM password_resets r JOIN users u ON u.id=r.user_id JOIN accounts a ON a.id=r.account_id WHERE r.token_hash=$1 AND r.used_at IS NULL AND r.expires_at>now() AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL)",
+            "SELECT EXISTS(SELECT 1 FROM password_resets r JOIN users u ON u.id=r.user_id JOIN memberships m ON (m.account_id,m.user_id)=(r.account_id,r.user_id) JOIN accounts a ON a.id=r.account_id WHERE m.role='owner' AND r.token_hash=$1 AND r.used_at IS NULL AND r.expires_at>now() AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL)",
             &[&&hash[..]],
         )
         .await?
@@ -447,7 +449,7 @@ pub async fn confirm_password_reset(
     let new_hash = password_work::hash(new_password).await?;
     let tx = client.transaction().await?;
     tx.query_opt(
-        "SELECT u.id FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE u.id=$1 AND m.account_id=$2 AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL FOR UPDATE OF u",
+        "SELECT u.id FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE m.role='owner' AND u.id=$1 AND m.account_id=$2 AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL FOR UPDATE OF u",
         &[&user_id, &account_id],
     )
     .await?
@@ -485,7 +487,7 @@ pub async fn operator_reset_password(
     let tx = client.transaction().await?;
     let Some(row) = tx
         .query_opt(
-            "SELECT u.id,m.account_id FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE u.email=$1 AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL FOR UPDATE OF u",
+            "SELECT u.id,m.account_id FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE m.role='owner' AND u.email=$1 AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL FOR UPDATE OF u",
             &[&email],
         )
         .await?

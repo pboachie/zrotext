@@ -165,6 +165,16 @@ requires an address-bound token derived from a private operator key. Closing
 registration does not disable existing owner login. Device proof establishes an enrolled
 identity for the authenticated device stream.
 
+Membership storage permits one immutable owner and additional observer rows per
+account, while retaining one account per user. This is an authorization
+prerequisite: observer invitation, sign-in and dashboard routes are not enabled.
+All current authentication, API-key admission, enrollment and owner account
+operations explicitly require the owner role. Observer rows cannot be promoted,
+moved between accounts or restored after revocation. Owner registration/pruning
+does not reclaim observer identities, and export selects the owner's profile
+even when an account has additional memberships. Observer self-service requires
+separate member authorization and per-user MFA storage before it can be enabled.
+
 | Method/path | Current contract |
 |---|---|
 | POST /v1/auth/register; POST /v1/auth/verify-email; POST /v1/auth/resend-verification | Exact HTTPS Origin; registration policy admits new accounts and otherwise returns a generic acceptance without mail; verification code is queued in a durable outbox, never returned by HTTP; resend requires the password and uses a generic response; an unverified sign-up expires 24 hours after registration and a later registration replaces it |
