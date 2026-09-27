@@ -136,6 +136,7 @@ public static class Native {
         public uint faults,totalProcesses,activeProcesses,terminatedProcesses;
     }
     [DllImport("advapi32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool LogonUserW(string user,string domain,IntPtr password,int type,int provider,out IntPtr token);
+    [DllImport("advapi32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool CreateProcessWithLogonW(string user,string domain,IntPtr password,int logon,string app,StringBuilder command,int flags,IntPtr environment,string cwd,ref Startup startup,out Process process);
     [DllImport("advapi32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool CreateProcessWithTokenW(IntPtr token,int logon,string app,StringBuilder command,int flags,IntPtr environment,string cwd,ref Startup startup,out Process process);
     [DllImport("advapi32.dll",SetLastError=true)] static extern bool GetTokenInformation(IntPtr token,int kind,IntPtr buffer,int length,out int needed);
     [DllImport("advapi32.dll",SetLastError=true)] static extern bool OpenProcessToken(IntPtr process,uint access,out IntPtr token);
@@ -240,6 +241,12 @@ public static class Native {
         Check(restored.Count==filtered.Count,"pure-acl-grant-removed-count");
         for(int i=0;i<filtered.Count;i++) Check(AceKey(restored[i])==AceKey(filtered[i]),"pure-acl-grant-removed-exactly");
         Check(filtered.Count==2,"pure-acl-grant-source-unchanged");
+        // Only logon SIDs that were absent before count as new fixture state.
+        var existingLogon=new RawSecurityDescriptor("D:P(A;;GA;;;SY)(A;;GR;;;S-1-5-5-0-1)").DiscretionaryAcl;
+        var withSecondary=new RawSecurityDescriptor("D:P(A;;GA;;;SY)(A;;GR;;;S-1-5-5-0-1)(A;;GA;;;S-1-5-5-0-9)(A;;GA;;;BU)").DiscretionaryAcl;
+        var added=NewLogonSids(existingLogon,withSecondary);
+        Check(added.Count==1 && added.Contains("S-1-5-5-0-9"),"pure-new-logon-sid-only");
+        Check(NewLogonSids(withSecondary,withSecondary).Count==0,"pure-new-logon-sid-none");
     }
     static string ObjectName(IntPtr handle) {
         int needed;
@@ -257,8 +264,19 @@ public static class Native {
         byte[] bytes=new byte[current.BinaryLength];current.GetBinaryForm(bytes,0);
         uint info=4;Check(SetUserObjectSecurity(handle,ref info,bytes),stage);
     }
-    static void CleanDesktop(IntPtr handle,RawSecurityDescriptor before,HashSet<string> sids) {
+    // Secondary logon grants its own new logon SID; those ACEs are fixture
+    // state too when that logon SID was absent before the run.
+    static HashSet<string> NewLogonSids(RawAcl before,RawAcl current) {
+        var existing=new HashSet<string>(StringComparer.Ordinal);
+        foreach(GenericAce ace in before){var known=ace as KnownAce;if(known!=null)existing.Add(known.SecurityIdentifier.Value);}
+        var added=new HashSet<string>(StringComparer.Ordinal);
+        foreach(GenericAce ace in current){var known=ace as KnownAce;if(known!=null&&known.SecurityIdentifier.Value.StartsWith("S-1-5-5-",StringComparison.Ordinal)&&!existing.Contains(known.SecurityIdentifier.Value))added.Add(known.SecurityIdentifier.Value);}
+        return added;
+    }
+    static void CleanDesktop(IntPtr handle,RawSecurityDescriptor before,HashSet<string> fixture) {
         var current=Descriptor(handle);
+        var sids=new HashSet<string>(fixture,StringComparer.Ordinal);
+        sids.UnionWith(NewLogonSids(before.DiscretionaryAcl,current.DiscretionaryAcl));
         var acl=WithoutFixture(current.DiscretionaryAcl,sids);
         bool changed=acl.Count!=current.DiscretionaryAcl.Count;
         var unrelated=new Dictionary<string,int>();
@@ -417,7 +435,17 @@ public static class Native {
             var limits=new ExtendedLimit();limits.basic.flags=0x2000;
             Check(SetInformationJobObject(job,9,ref limits,Marshal.SizeOf(typeof(ExtendedLimit))),"job-kill-on-close");
             var startup=new Startup{cb=Marshal.SizeOf(typeof(Startup)),desktop=desktopPath,flags=1,show=0};
-            Check(CreateProcessWithTokenW(tokenHandle,LogonWithProfile,observedApp,new StringBuilder(probing?probeCommand:commands[phase-1]),CreateFlags,env,cwd,ref startup,out process),probing?"probe-create-suspended":"step-create-suspended");
+            // CreateProcessWithTokenW children failed user32 initialization
+            // (STATUS_DLL_INIT_FAILED) on the runner desktop even with explicit
+            // grants. The documented run-as path, CreateProcessWithLogonW, sets
+            // up window station and desktop access for its own logon; the token
+            // from LogonUser above still proves the account is a standard,
+            // non-elevated primary identity before any launch.
+            bool created;
+            passwordBuffer=Marshal.SecureStringToGlobalAllocUnicode(password);
+            try{created=CreateProcessWithLogonW(user,".",passwordBuffer,LogonWithProfile,observedApp,new StringBuilder(probing?probeCommand:commands[phase-1]),CreateFlags,env,cwd,ref startup,out process);}
+            finally{Marshal.ZeroFreeGlobalAllocUnicode(passwordBuffer);passwordBuffer=IntPtr.Zero;}
+            Check(created,probing?"probe-create-suspended":"step-create-suspended");
             LaunchState="created-suspended";
             Check(AssignProcessToJobObject(job,process.process),probing?"probe-job-assign":"step-job-assign");assigned=true;
             LaunchState="job-assigned";
