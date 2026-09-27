@@ -48,6 +48,49 @@ resolve the candidate inbound segment-count contract, journal phone events,
 insert ciphertext or mount a route. Candidate-02 remains a proposal, and no
 sealed release gate is closed by this persistence prerequisite.
 
+## Dormant candidate-02 ingest transaction
+
+`sealed_inbound::ingest::ingest_candidate02` composes that authority admission
+with exact candidate-02 envelope verification and durable insertion. It owns
+its transaction through commit; an error rolls back a staged manifest advance
+as well as any event insertion. No HTTP/WSS route calls it, and it performs no
+webhook, outbound dispatch, grant or SMS operation.
+
+The bounded parser supplies untrusted event, peer and reader selectors. The
+authenticated session and current database binding supply account, device and
+line authority; the independently pinned manifest authorizes the signer and
+readers, and exact signature verification binds the selectors to the received
+bytes. Only then can the transaction store the original envelope and its
+unsigned semantic digest. Observed time must be positive, at most seven days
+old and no more than five minutes ahead of database wall time. There is no
+device-clock-offset rewriting. It accepts out-of-order sequences within that
+window, but never reuses an accepted device sequence for a different event.
+
+Every replay passes these same current authority, signature, session and age
+checks. An expired or superseded original manifest, revoked signer or session,
+or event older than the window is rejected even if its tombstone exists. A
+fresh manifest cannot authorize an envelope naming an old version/digest. A
+valid identical unsigned replay returns `created=false`, preserving the first
+signature, original binding generation and timestamps. It never restores
+ciphertext removed by retention. Conflicting event IDs, profile changes and
+reused sequences fail; no foreign account's content is read. The transaction
+rechecks event age and manifest/session authority after insertion or replay-row
+lock waits, immediately before commit.
+
+Migration 043 retains an immutable `envelope_profile` beside each tombstone.
+Existing profile-01 constraints remain unchanged. Candidate-02 rows use
+`part_count=NULL`, explicitly unknown: the signed format has no segment-count
+field, and the relay cannot infer it from ciphertext. The existing purge-only
+update guard still permits only removal of the envelope, preserving all replay
+identity and profile metadata. Content pruning does not delete tombstones.
+
+Production use still requires independently authenticated root provisioning,
+an explicit device-authenticated transport adapter, bounded ingress/storage
+budgets, and Android production manifest trust, event/sequence journaling,
+multipart and ambiguous-SIM handling, signing and upload. Existing Android
+test-only vectors and dormant recipient primitives do not establish those
+properties or physical-phone interoperability. No sealed runtime gate is enabled.
+
 ## Distinct source identity
 
 The current [M1 inbound pilot](inbound-foundation.md) signs an outbound
