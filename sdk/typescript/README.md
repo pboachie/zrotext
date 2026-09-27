@@ -15,6 +15,10 @@ and AAD, and AES-256-GCM body AAD before returning strict UTF-8. It does not
 authorize a signer or line, validate manifest history, decide accepted clock
 skew, check replay/expiry against wall time, or count SMS segments. A caller
 must not treat a successful open as permission to send SMS.
+`openDraftEnvelope`, `wrapInfo` and the draft-02 `enrollRootPin02`,
+`verifyManifest02` and `verifyRootTransition02` copy their byte and context
+inputs when called; changing those buffers while a call is pending does not
+affect it.
 
 From this directory run `npm ci --ignore-scripts` then `npm test`. The locked
 dependency graph pins `@hpke/core` 1.7.5, above the nonce-reuse advisory's
