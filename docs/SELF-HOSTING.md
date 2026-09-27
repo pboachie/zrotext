@@ -169,9 +169,14 @@ For later invited owners, allowlist mode requires a **separate** 32-byte random
 base64 `REGISTRATION_ENROLLMENT_KEY_B64` (for example, generated privately with
 `openssl rand -base64 32`). Keep this master key in private operator settings.
 The CLI derives a distinct invite token for each normalized email address;
-the raw master key is never sent in the HTTP request. After setting
-`REGISTRATION_MODE=allowlist` and the intended address/domain, issue one token
-for that exact address:
+the raw master key is never sent in the HTTP request. Every token carries a
+signed expiry that is checked against the server clock: seven days after
+issuance by default, or sooner with `--lifetime-hours` (1 to 168). The
+server also refuses any correctly signed token whose expiry is more than
+seven days away, so the bound holds even if the master key is misused to
+mint a longer-lived token. After setting
+`REGISTRATION_MODE=allowlist` and the intended address/domain, issue
+one token for that exact address:
 
 ```sh
 docker compose --env-file .env -f deploy/compose/compose.yaml run --rm \
@@ -182,11 +187,14 @@ docker compose --env-file .env -f deploy/compose/compose.yaml run --rm \
 The command prints an address-bound token. Share it only with that registrant
 through a private channel; they send it in the
 `x-zrotext-registration-token` header. It cannot authorize a different
-address, even one on the same allowed domain. A missing or invalid token
-returns generic `202 Accepted` without a database lookup, password hash,
-account, or mail. Missing or malformed tokens return before email parsing.
-The token remains usable for its one address until registration closes or the
-master key rotates; close registration or rotate the key after enrollment.
+address, even one on the same allowed domain. A missing, invalid, or expired
+token returns generic `202 Accepted` without a database lookup, password
+hash, account, or mail. Missing or malformed tokens return before email
+parsing. The token stops admitting its one address at its signed expiry;
+close registration or rotate the master key after enrollment to end access
+sooner still. Invite tokens issued before this expiry format carried no
+timestamp and stop working when every API instance runs the newer server;
+re-issue any invite that is still outstanding.
 
 In allowlist mode, `REGISTRATION_ALLOWED_EMAILS` and
 `REGISTRATION_ALLOWED_DOMAINS` are comma-separated. Address and domain matching
