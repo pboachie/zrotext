@@ -12,6 +12,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
+import org.junit.AssumptionViolatedException
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.security.KeyPairGenerator
@@ -30,8 +31,9 @@ import java.util.UUID
  * The reboot, absence and swap checks each make one unambiguous claim and only run when the
  * telephony read positively confirms the exact state that claim needs; anything else skips via
  * [assumeTrue] rather than passing on a different, weaker basis. Pass `-e expected_sub N
- * -e expected_card M` (from an earlier run's local logcat) to exercise them; without both they
- * skip.
+ * -e expected_card M`, copied from the `reference` line this class logs locally while the
+ * original card is inserted, to exercise them. With neither they skip; a partial, malformed or
+ * negative baseline fails (see [PhysicalSimBaseline]) instead of passing vacuously.
  */
 @RunWith(AndroidJUnit4::class)
 class SmsLineActivationPhysicalSimDeviceTest {
@@ -54,11 +56,25 @@ class SmsLineActivationPhysicalSimDeviceTest {
         return observed!! to candidate!!
     }
 
-    private fun baselineArgs(): Pair<Int, Int> {
-        val sub = args.getString("expected_sub")?.toIntOrNull()
-        val card = args.getString("expected_card")?.toIntOrNull()
-        assumeTrue("pass expected_sub and expected_card from an earlier run", sub != null && card != null)
-        return sub!! to card!!
+    /**
+     * Skips only when no baseline was supplied. A partial, malformed, negative or otherwise
+     * non-activatable baseline fails the test: it would let a refusal check pass without the
+     * card difference it claims to exercise.
+     */
+    private fun baselineArgs(): ActivatedSimCard {
+        return when (val parsed = PhysicalSimBaseline.parse(
+            args.getString("expected_sub"), args.getString("expected_card"))) {
+            PhysicalSimBaseline.Absent -> throw AssumptionViolatedException(
+                "pass expected_sub and expected_card logged by the activation test on the original card")
+            is PhysicalSimBaseline.Invalid -> throw AssertionError("invalid baseline: ${parsed.reason}")
+            is PhysicalSimBaseline.Valid -> parsed.card
+        }
+    }
+
+    /** Control: the baseline itself is matchable, so a refusal below is due to the observed card. */
+    private fun assertBaselineMatchesItself(baseline: ActivatedSimCard) {
+        assertTrue(SimCardContinuity.matches(baseline,
+            listOf(ActiveSimCard(baseline.subscriptionId, baseline.cardId))))
     }
 
     private fun sha256(bytes: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(bytes)
@@ -130,23 +146,28 @@ class SmsLineActivationPhysicalSimDeviceTest {
      * changed subscription/card - skips or fails rather than being reported as "still matches".
      */
     @Test fun installedBindingMatchesAfterReboot() {
-        val (sub, card) = baselineArgs()
+        val baseline = baselineArgs()
         val (_, candidate) = readSinglePhysicalLine()
         Log.i("ZTSimCheck", "reboot candidate_sub=${candidate.subscriptionId} candidate_card=${candidate.cardId}")
-        assertEquals(ActivatedSimCard(sub, card), candidate)
+        assertEquals(baseline, candidate)
     }
 
     /**
      * Requires a positively different, readable physical card in the slot - not merely an
      * unreadable, absent, ambiguous or eSIM reading - before asserting the old binding is refused.
+     * A different physical card has a different ICCID, so Android gives it both a different
+     * subscription ID and a different card ID; a reading where only one differs is not a clean
+     * swap and skips. The baseline must be the one logged on the original card.
      */
     @Test fun bindingRefusedForADifferentPhysicalCard() {
-        val (sub, card) = baselineArgs()
+        val baseline = baselineArgs()
         val (observed, candidate) = readSinglePhysicalLine()
         assumeTrue("needs a different physical card in the slot than the recorded baseline",
-            candidate.cardId != card)
-        Log.i("ZTSimCheck", "swap candidate_card=${candidate.cardId} baseline_card=$card")
-        assertFalse(SimCardContinuity.matches(ActivatedSimCard(sub, card), observed))
+            candidate.cardId != baseline.cardId &&
+                candidate.subscriptionId != baseline.subscriptionId)
+        Log.i("ZTSimCheck", "swap candidate_card=${candidate.cardId} baseline_card=${baseline.cardId}")
+        assertBaselineMatchesItself(baseline)
+        assertFalse(SimCardContinuity.matches(baseline, observed))
     }
 
     /**
@@ -154,11 +175,12 @@ class SmsLineActivationPhysicalSimDeviceTest {
      * unreadable or ambiguous state - before asserting the old binding is refused.
      */
     @Test fun bindingRefusedWhenSimIsAbsent() {
-        val (sub, card) = baselineArgs()
+        val baseline = baselineArgs()
         val observed = SimCardContinuity.observe(context)
         Log.i("ZTSimCheck", "absent observed=${observed?.size}")
         assumeTrue("needs a confirmed-empty SIM reading (telephony readable, zero active lines)",
             observed != null && observed.isEmpty())
-        assertFalse(SimCardContinuity.matches(ActivatedSimCard(sub, card), observed))
+        assertBaselineMatchesItself(baseline)
+        assertFalse(SimCardContinuity.matches(baseline, observed))
     }
 }
