@@ -14,7 +14,7 @@
 
 use super::TokenHasher;
 use std::future::Future;
-use tokio_postgres::Client;
+use tokio_postgres::{Client, GenericClient, Transaction};
 
 /// Verified subjects share a route ceiling this many times the anonymous one.
 /// It is a backstop against many real subjects, not the per-subject limit.
@@ -134,8 +134,21 @@ pub async fn consume_or_verify<E: From<tokio_postgres::Error>>(
     Ok(consume_verified(client, hasher, limit, subject).await?)
 }
 
+/// Charge the existing owner-management policy inside an owned transaction.
+/// The caller must lock and authenticate its owner before spending this budget.
+pub(crate) async fn consume_owner_management(
+    tx: &Transaction<'_>,
+    hasher: &TokenHasher,
+    subject: &str,
+) -> Result<bool, tokio_postgres::Error> {
+    let limit = Limit::MfaManage;
+    let (scope, maximum, seconds, _) = limit.policy();
+    let global = hasher.digest(b"abuse-global-v1", scope);
+    charge(tx, hasher, limit, Some(subject), &global, maximum, seconds).await
+}
+
 async fn charge(
-    client: &Client,
+    client: &impl GenericClient,
     hasher: &TokenHasher,
     limit: Limit,
     subject: Option<&str>,
