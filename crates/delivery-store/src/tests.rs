@@ -199,7 +199,9 @@ const TEST_MIGRATIONS: [(&str, &str); 48] = [
     ),
 ];
 
-async fn apply_test_migrations(client: &Client) {
+/// Applies every numbered migration in order. Shared by the PostgreSQL-backed
+/// test modules so each one runs against the complete reviewed schema.
+pub(crate) async fn apply_test_migrations(client: &Client) {
     for (name, migration) in TEST_MIGRATIONS {
         if name == "034_delivery_sweep_index.sql" {
             // Mirror the migrator's autocommit preparation before the

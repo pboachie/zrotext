@@ -26,7 +26,7 @@ use tokio::sync::Notify;
 use tokio_postgres::NoTls;
 use uuid::Uuid;
 use zeroize::Zeroizing;
-use zrotext_delivery_store::DeliveryStore;
+use zrotext_delivery_store::{DeliveryStore, RECOVERY_BATCH, RECOVERY_BATCHES_PER_TICK};
 use zrotext_server::{
     alpha_policy::AlphaPolicy,
     auth::{
@@ -63,6 +63,8 @@ use zrotext_server::{
 const WEBHOOK_DELIVERIES_PER_TICK: usize = 16;
 /// Upper bound on retention batches per table per fifteen-second tick.
 const RETENTION_BATCHES_PER_TICK: usize = 10;
+/// Largest row count the delivery recovery backlog signal reports per kind.
+const RECOVERY_BACKLOG_CAP: i64 = 10_000;
 /// Upper bound on each kind of account mail sent per five-second tick.
 const MAIL_DELIVERIES_PER_TICK: usize = 16;
 
@@ -464,10 +466,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut checks = tokio::time::interval(Duration::from_secs(15));
             checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut unavailable_logged = false;
+            let mut ticks = 0_u32;
             loop {
                 tokio::select! {
                     _ = checks.tick() => {
                         if recovery_draining.load(Ordering::Acquire) { break; }
+                        ticks = ticks.wrapping_add(1);
                         let result = async {
                             let mut client =
                                 zrotext_server::runtime_db::connect_worker(&recovery_database).await?;
@@ -482,9 +486,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 .into());
                             }
                             let mut store = DeliveryStore::new(&mut client);
-                            store.expire_due(100).await?;
-                            store.reconcile_silent_attempts(100).await?;
-                            store.reconcile_delivery_timeouts(100).await?;
+                            // Drain a bounded backlog per tick, as retention does,
+                            // so an outage does not leave rows for many ticks.
+                            let pass = store.recover_bounded(
+                                RECOVERY_BATCH,
+                                RECOVERY_BATCHES_PER_TICK,
+                                || recovery_draining.load(Ordering::Acquire),
+                            ).await?;
+                            if ticks % 4 == 1 || pass.bound_reached {
+                                let backlog = store.recovery_backlog(RECOVERY_BACKLOG_CAP).await?;
+                                eprintln!("delivery_recovery expired_pending={} oldest_expired_age_seconds={} silent_attempts={} delivery_timeouts={} tick_bound_reached={}",
+                                    backlog.expired_pending, backlog.oldest_expired_age_seconds.unwrap_or(0),
+                                    backlog.silent_attempts, backlog.delivery_timeouts, pass.bound_reached);
+                            }
                             Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
                         }.await;
                         match result {

@@ -8,6 +8,8 @@ use tokio_postgres::{Client, Row, Transaction, error::SqlState};
 use uuid::Uuid;
 use zrotext_domain::{Evidence, MessageState};
 
+mod recovery;
+pub use recovery::{RECOVERY_BATCH, RECOVERY_BATCHES_PER_TICK, RecoveryBacklog, RecoveryPass};
 pub mod sealed;
 
 #[derive(Debug, thiserror::Error)]
@@ -1568,3 +1570,6 @@ mod metering_tests;
 
 #[cfg(test)]
 mod hold_tests;
+
+#[cfg(test)]
+mod recovery_tests;
