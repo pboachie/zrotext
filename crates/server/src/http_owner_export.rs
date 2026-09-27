@@ -145,7 +145,7 @@ async fn export_account(
             "SELECT a.id,u.email,(u.email_verified_at IS NOT NULL), \
              (extract(epoch FROM a.created_at)*1000)::bigint \
              FROM accounts a JOIN memberships m ON m.account_id=a.id \
-             JOIN users u ON u.id=m.user_id WHERE a.id=$1",
+             JOIN users u ON u.id=m.user_id WHERE a.id=$1 AND m.role='owner'",
             &[&account_id],
         )
         .await
@@ -331,6 +331,7 @@ mod tests {
             include_str!("../../../deploy/compose/migrations/005_verification_outbox.sql"),
             include_str!("../../../deploy/compose/migrations/013_owner_mfa.sql"),
             include_str!("../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
+            include_str!("../../../deploy/compose/migrations/048_observer_memberships.sql"),
         ] {
             db.batch_execute(migration).await.unwrap();
         }
@@ -373,6 +374,16 @@ mod tests {
         )
         .await
         .unwrap();
+        for index in 0..2 {
+            let observer = Uuid::new_v4();
+            db.execute("INSERT INTO users(id,email,password_hash,email_verified_at) SELECT $1,$2,password_hash,now() FROM users WHERE id=$3", &[&observer, &format!("export-observer-{index}@example.test"), &a.user_id]).await.unwrap();
+            db.execute(
+                "INSERT INTO memberships(account_id,user_id,role) VALUES($1,$2,'observer')",
+                &[&a.account_id, &observer],
+            )
+            .await
+            .unwrap();
+        }
         let device_a = Uuid::new_v4();
         let device_b = Uuid::new_v4();
         db.execute(

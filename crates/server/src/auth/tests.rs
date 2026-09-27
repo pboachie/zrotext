@@ -304,7 +304,21 @@ async fn postgres_tenant_revocation_and_scope_contract() {
         create_api_key(&mut client, &hasher, &pa, &[Scope::BillingRead], None, None).await,
         Err(AuthError::Unauthorized)
     ));
-    assert!(revoke_api_key(&client, &pa, key.id).await.unwrap());
+    assert!(matches!(
+        revoke_api_key(&client, &pa, key.id).await,
+        Err(AuthError::Unauthorized)
+    ));
+    let renewed = login(&client, &hasher, "a@example.test", &a_password)
+        .await
+        .unwrap();
+    let current_owner = authenticate_session(&client, &hasher, &renewed.token)
+        .await
+        .unwrap();
+    assert!(
+        revoke_api_key(&client, &current_owner, key.id)
+            .await
+            .unwrap()
+    );
     assert!(matches!(
         authenticate_api_key(&client, &hasher, &key.token).await,
         Err(AuthError::Unauthorized)
