@@ -102,10 +102,12 @@ async function keyId(role: number, point: Uint8Array): Promise<Uint8Array> {
   return digest(concat(enc.encode("ZTSE/key/v1\0"), algorithm, point));
 }
 
-/** The fingerprint must have arrived by an independently authenticated owner channel. */
+/** The fingerprint must have arrived by an independently authenticated owner channel.
+ * Both caller buffers are captured before asynchronous validation. */
 export async function enrollRootPin02(input: Uint8Array, comparedFingerprint: Uint8Array): Promise<ManifestTrust02> {
   if (input.length !== 94 || comparedFingerprint.length !== 32) fail("root pin size");
   const bytes = Uint8Array.from(input);
+  const compared = Uint8Array.from(comparedFingerprint);
   if (!same(bytes.subarray(0, 5), Uint8Array.of(0x5a, 0x54, 0x52, 0x50, 2))) fail("root pin magic/profile");
   const accountId = bytes.subarray(5, 21);
   const generation = u64(new DataView(bytes.buffer), 21);
@@ -113,7 +115,7 @@ export async function enrollRootPin02(input: Uint8Array, comparedFingerprint: Ui
   if (same(accountId, zero16) || generation !== 1n) fail("root pin identity/generation");
   await pointKey(rootPoint);
   const fingerprint = await digest(concat(enc.encode("ZTSE/root-pin/v2\0"), bytes));
-  if (!same(fingerprint, comparedFingerprint)) fail("root pin comparison");
+  if (!same(fingerprint, compared)) fail("root pin comparison");
   return { accountId: Uint8Array.from(accountId), generation, rootPoint: Uint8Array.from(rootPoint),
     version: 0n, digest: Uint8Array.from(zero32), anchorDigest: Uint8Array.from(zero32) };
 }
