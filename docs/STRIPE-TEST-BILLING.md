@@ -2,7 +2,7 @@
 
 The server has an opt-in Stripe test-mode event route at `POST /v1/billing/stripe-events`. Set `STRIPE_BILLING_TEST_ENABLED=true` with `STRIPE_TEST_WEBHOOK_SECRET`, a test API key, and an allowlist of `STRIPE_TEST_PRICE_IDS` to enable it. It accepts test-mode events only. Production billing is disabled.
 
-The test billing worker uses `STRIPE_TEST_RECONCILE_SECRET_KEY` for `GET /v1/subscriptions/{id}`, `GET /v1/charges/{id}`, `GET /v1/invoice_payments` and `GET /v1/invoices/{id}`. When hosted sessions are enabled, `STRIPE_TEST_SESSION_SECRET_KEY` is used for `POST /v1/customers`, `POST /v1/checkout/sessions` and `POST /v1/billing_portal/sessions`. The opt-in real-provider hosted-session smoke also performs `GET /v1/customers/{id}` with its separate `ZT_STRIPE_TEST_SECRET_KEY` test credential; Customer Read is needed for that smoke, but the deployed hosted-session route does not perform this read. No runtime Events Read permission is required by these paths. Each runtime key can be a separately scoped Stripe TEST restricted key. For existing installations, `STRIPE_TEST_SECRET_KEY` remains a fallback for either missing scoped key. A present but empty or live-mode scoped key fails startup; the signing secret is separate from both API keys. Review the exact Stripe permission grants and repeat the full TEST lifecycle before replacing an existing key.
+The test billing worker uses `STRIPE_TEST_RECONCILE_SECRET_KEY` for `GET /v1/subscriptions/{id}`, `GET /v1/charges/{id}`, `GET /v1/invoice_payments` and `GET /v1/invoices/{id}`. When hosted sessions are enabled, `STRIPE_TEST_SESSION_SECRET_KEY` is used for `POST /v1/customers`, `GET /v1/checkout/sessions` (open sessions of the bound customer), `POST /v1/checkout/sessions`, `POST /v1/checkout/sessions/{id}/expire` and `POST /v1/billing_portal/sessions`; Checkout Sessions Write covers the list and expire calls. The opt-in real-provider hosted-session smoke also performs `GET /v1/customers/{id}` with its separate `ZT_STRIPE_TEST_SECRET_KEY` test credential; Customer Read is needed for that smoke, but the deployed hosted-session route does not perform this read. No runtime Events Read permission is required by these paths. Each runtime key can be a separately scoped Stripe TEST restricted key. For existing installations, `STRIPE_TEST_SECRET_KEY` remains a fallback for either missing scoped key. A present but empty or live-mode scoped key fails startup; the signing secret is separate from both API keys. Review the exact Stripe permission grants and repeat the full TEST lifecycle before replacing an existing key.
 
 The route bounds the raw request body, verifies Stripe's signature before parsing JSON, and rejects stale or live-mode events. It stores each event ID once and rejects a repeated ID with different content. A worker retrieves current subscription state from Stripe's fixed API host, avoiding reliance on delivery order. Customer IDs are tenant-bound; unbound or conflicting events cannot grant access.
 
@@ -79,6 +79,30 @@ customer Portal instead. Terminal historical subscriptions do not block a new
 Checkout once their reconciliation has caught up. Running the check under the
 reconciliation lock also means concurrent Checkout attempts serialize with an
 in-flight projection and cannot both observe a pre-commit state.
+
+An account also has at most one open Checkout session. After the budget check,
+Checkout lists the bound customer's open Stripe sessions. It returns the URL of
+the oldest open session that this server created for the account under the
+current price and return URLs (recorded in the session's
+`metadata[zt_checkout_profile]`), and expires every other open session with
+`POST /v1/checkout/sessions/{id}/expire`: sessions from another price or return
+URL configuration, sessions created before this guard, and the newer of two
+sessions left by a race. It creates a session only when none remains open. A
+reload, a second tab, or a return through `/billing/cancel` therefore reaches
+the same session instead of opening a second subscription path.
+
+New sessions carry `expires_at` and a server-derived Stripe idempotency key
+built from the account, a digest of the price and return URLs, and a fixed
+30-minute window. Concurrent requests in one window replay one key and so one
+session. Both values depend only on the window, so replays send identical
+parameters; a session expires 35 to 65 minutes after creation (Stripe's minimum
+is 30 minutes, plus a 5-minute clock-skew margin) and cannot be completed later.
+The browser's `idempotency-key` header must still be a canonical v4 UUID but no
+longer selects the Stripe session. A provider error, a malformed list, or more
+than ten open sessions fails closed with HTTP 503; any stale sessions already
+expired stay expired, so a retry makes progress. The one remaining gap is two
+concurrent first requests that straddle a window boundary; both sessions are
+then open, and the next Checkout request expires the newer one.
 
 `GET /v1/billing/status` reports the projected entitlement that
 reconciliation currently applies: the audited `reason` (`active`, `grace`,
