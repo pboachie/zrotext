@@ -179,7 +179,9 @@ async fn all_admitted_sessions_renew_while_proofs_wait_without_pinning_database_
     assert_eq!(admission.established.available_permits(), 0);
 
     // Reacquired clients still enforce key revocation rather than treating an
-    // established socket as permanently authenticated.
+    // established socket as permanently authenticated. A heartbeat inside the
+    // renewal interval is acknowledged from memory, so revocation is observed
+    // by the next renewal or the periodic session check, at most 10 s later.
     fixture
         .db
         .execute(
@@ -192,15 +194,91 @@ async fn all_admitted_sessions_renew_while_proofs_wait_without_pinning_database_
         send_json(socket, json!({"v":1,"type":"heartbeat"})).await;
     }
     for (socket, _) in &mut phones {
-        let frame = timeout(Duration::from_secs(5), socket.next())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        assert!(matches!(frame, WsMessage::Close(_)));
+        expect_close_after_acks(socket).await;
     }
     drop(phones);
     drop(pending);
+    server.abort();
+    fixture.finish().await;
+}
+
+/// Reads past heartbeat acknowledgements until the hub closes the socket.
+async fn expect_close_after_acks(socket: &mut TestSocket) -> Option<u16> {
+    timeout(Duration::from_secs(15), async {
+        loop {
+            match socket.next().await {
+                Some(Ok(WsMessage::Text(text))) => {
+                    let frame: Value = serde_json::from_str(text.as_str()).unwrap();
+                    assert_eq!(frame["type"], "heartbeat_ack");
+                }
+                Some(Ok(WsMessage::Close(frame))) => {
+                    return frame.map(|frame| u16::from(frame.code));
+                }
+                Some(Ok(_)) => {}
+                Some(Err(_)) | None => return None,
+            }
+        }
+    })
+    .await
+    .expect("hub should close the socket")
+}
+
+async fn lease_until_micros(fixture: &Fixture, device_id: Uuid) -> i64 {
+    fixture
+        .db
+        .query_one(
+            "SELECT (extract(epoch FROM lease_until) * 1000000)::bigint \
+             FROM device_sessions WHERE device_id=$1",
+            &[&device_id],
+        )
+        .await
+        .unwrap()
+        .get(0)
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn heartbeat_flood_renews_once_per_interval_and_closes_past_the_cap() {
+    let fixture = Fixture::new().await;
+    let state = socket_state(fixture.url.clone(), "capacity-test");
+    let (address, server) = serve(
+        state,
+        SocketAdmission::new(4, 4, AUTH_TIMEOUT, HANDSHAKE_DEADLINE),
+    )
+    .await;
+    let (device_id, signing) = fixture.device().await;
+    let (mut socket, frame) = challenge(address, device_id).await;
+    let epoch = prove(&mut socket, frame, &signing).await;
+    let claimed = lease_until_micros(&fixture, device_id).await;
+
+    // The first heartbeat renews the lease in storage.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    send_json(&mut socket, json!({"v":1,"type":"heartbeat"})).await;
+    assert_eq!(
+        receive_json(&mut socket).await,
+        json!({"v":1,"type":"heartbeat_ack","connection_epoch":epoch})
+    );
+    let renewed = lease_until_micros(&fixture, device_id).await;
+    assert!(renewed > claimed);
+
+    // Every heartbeat up to the cap is acknowledged, but none of them
+    // checks out a device client: the stored lease does not move.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    for _ in 1..MAX_HEARTBEATS_PER_WINDOW {
+        send_json(&mut socket, json!({"v":1,"type":"heartbeat"})).await;
+        assert_eq!(
+            receive_json(&mut socket).await,
+            json!({"v":1,"type":"heartbeat_ack","connection_epoch":epoch})
+        );
+    }
+    assert_eq!(lease_until_micros(&fixture, device_id).await, renewed);
+
+    // One more inside the window is abuse: the hub closes with a policy code.
+    send_json(&mut socket, json!({"v":1,"type":"heartbeat"})).await;
+    assert_eq!(
+        expect_close_after_acks(&mut socket).await,
+        Some(close_code::POLICY)
+    );
     server.abort();
     fixture.finish().await;
 }
