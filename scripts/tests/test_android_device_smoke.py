@@ -69,3 +69,17 @@ class DeviceSmokeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             smoke.verify_results(result(smoke.MANIFEST_AUTHORITY) + "INSTRUMENTATION_CODE: -1\n",
                                  {smoke.PRECONDITIONS: 1})
+
+    def test_network_service_requires_one_actual_completed_test(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "android/app/src/androidTest/java/org/zrotext/gateway/NetworkServiceDeviceTest.kt"
+            source.parent.mkdir(parents=True)
+            source.touch()
+            expected = {smoke.PRECONDITIONS: 1, smoke.NETWORK_SERVICE: 1}
+            self.assertEqual(smoke.selected_tests(root), expected)
+            complete = result(smoke.PRECONDITIONS) + result(smoke.NETWORK_SERVICE)
+            smoke.verify_results(complete + "INSTRUMENTATION_CODE: -1\n", expected)
+            for incomplete in (result(smoke.PRECONDITIONS), result(smoke.PRECONDITIONS) + result(smoke.NETWORK_SERVICE, code=-3)):
+                with self.assertRaises(ValueError):
+                    smoke.verify_results(incomplete + "INSTRUMENTATION_CODE: -1\n", expected)

@@ -172,6 +172,7 @@ fn stream_schema_examples_match_serde_frames() {
             ClientFrame::Proof { .. } => "proof",
             ClientFrame::Heartbeat { .. } => "heartbeat",
             ClientFrame::DeviceStatus { .. } => "device_status",
+            ClientFrame::DeviceStatusV2 { .. } => "device_status_v2",
             ClientFrame::AlphaReady { .. } => "alpha_ready",
             ClientFrame::RadioEvent { .. } => "radio_event",
             ClientFrame::InboundEvent { .. } => "inbound_event",

@@ -58,6 +58,7 @@ class AuthenticatedGatewayService : Service() {
     private var retry: ScheduledFuture<*>? = null
     private val reconnect = DeviceReconnectPolicy { Random.nextDouble() }
     private val timingTrace = HeartbeatTimingTrace()
+    private val networkServiceSampler by lazy { NetworkServiceSampler(applicationContext) }
     private val traceEpoch = AtomicLong(-1L)
     private var endpoint: String? = null
     private var approvedDevice: UUID? = null
@@ -254,7 +255,7 @@ class AuthenticatedGatewayService : Service() {
         var grantSeen = false
         val statusPublisher = DeviceStatusPublisher()
         socket = client.newWebSocket(Request.Builder().url(url)
-            .header("Sec-WebSocket-Protocol", DeviceStatusPublisher.PROTOCOL).build(), object : WebSocketListener() {
+            .header("Sec-WebSocket-Protocol", DeviceStatusPublisher.OFFER).build(), object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 if (generation != currentGeneration) return
                 statusPublisher.selectProtocol(response.header("Sec-WebSocket-Protocol"))
@@ -343,11 +344,19 @@ class AuthenticatedGatewayService : Service() {
                                         if (!queued) {
                                             disconnect(currentGeneration, DeviceReconnectPolicy.Loss.TRANSPORT)
                                         } else {
-                                            val status = statusPublisher.nextFrame(heartbeatEpoch, SystemClock.elapsedRealtime()) {
-                                                DevicePreconditions.observe(applicationContext)
+                                            val version = statusPublisher.nextVersion(heartbeatEpoch, SystemClock.elapsedRealtime())
+                                            fun sendStatus(network: NetworkService) {
+                                                if (generation != currentGeneration) return
+                                                val observed = DevicePreconditions.observe(applicationContext)
+                                                val status = if (version == DeviceStatusPublisher.Version.V2)
+                                                    observed.frameV2(heartbeatEpoch, network) else observed.frame(heartbeatEpoch)
+                                                if (!webSocket.send(status)) disconnect(currentGeneration, DeviceReconnectPolicy.Loss.TRANSPORT)
                                             }
-                                            if (status != null && !webSocket.send(status)) {
-                                                disconnect(currentGeneration, DeviceReconnectPolicy.Loss.TRANSPORT)
+                                            when (version) {
+                                                DeviceStatusPublisher.Version.V1 -> sendStatus(NetworkService.UNAVAILABLE)
+                                                DeviceStatusPublisher.Version.V2 -> networkServiceSampler.sample(
+                                                    { generation == currentGeneration }, ::sendStatus)
+                                                null -> Unit
                                             }
                                         }
                                     } catch (_: IllegalStateException) {
@@ -1019,6 +1028,7 @@ class AuthenticatedGatewayService : Service() {
     }
 
     private fun cancelTimers() {
+        networkServiceSampler.cancel()
         heartbeat?.cancel(false)
         watchdog?.cancel(false)
         handshakeDeadline?.cancel(false)

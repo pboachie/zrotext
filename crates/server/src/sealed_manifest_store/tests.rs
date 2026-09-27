@@ -92,6 +92,7 @@ impl Fixture {
             ),
             include_str!("../../../../deploy/compose/migrations/040_radio_evidence_index.sql"),
             include_str!("../../../../deploy/compose/migrations/041_device_preconditions.sql"),
+            include_str!("../../../../deploy/compose/migrations/047_device_network_service.sql"),
             include_str!("../../../../deploy/compose/migrations/042_sealed_manifest_authority.sql"),
             include_str!("../../../../deploy/compose/migrations/043_sealed_candidate_inbound.sql"),
         ] {
