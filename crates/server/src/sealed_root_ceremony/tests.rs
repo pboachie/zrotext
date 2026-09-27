@@ -589,6 +589,157 @@ async fn ceremony_expiry_after_receipt_insert_wait_rolls_back_every_staged_effec
     o.f.cleanup().await;
 }
 
+async fn final_fence_after_receipt_wait(totp: bool) {
+    let o = Owner::new().await;
+    let c = o.challenge().await;
+    let signature = o.sign(&c);
+    let gate = (rand::random::<u64>() & i64::MAX as u64) as i64;
+    o.f.db.batch_execute(&format!("CREATE FUNCTION wait_before_receipt() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN \
+        PERFORM pg_advisory_xact_lock({gate}); RETURN NEW; END$$; \
+        CREATE TRIGGER receipt_wait BEFORE INSERT ON sealed_root_receipts FOR EACH ROW EXECUTE FUNCTION wait_before_receipt()" )).await.unwrap();
+    let mut blocker = o.f.connect().await;
+    let tx = blocker.transaction().await.unwrap();
+    tx.query_one("SELECT pg_advisory_xact_lock($1)", &[&gate])
+        .await
+        .unwrap();
+    let mut connection = o.f.connect().await;
+    let pid: i32 = connection
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await
+        .unwrap()
+        .get(0);
+    let mut factor = o.recovery.clone();
+    let mut totp_deadline_ms = 0i64;
+    if totp {
+        let generator = totp_rs::Builder::new()
+            .with_secret(totp_rs::Secret::new_stack(o.secret))
+            .build()
+            .unwrap();
+        // Accept the preceding step shortly before the database crosses into
+        // the next step. This makes only the accepted-factor final fence expire;
+        // the challenge and session still have their ordinary long lifetimes.
+        let limit = tokio::time::Instant::now() + Duration::from_secs(35);
+        loop {
+            let observed: i64 =
+                o.f.db
+                    .query_one(
+                        "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint",
+                        &[],
+                    )
+                    .await
+                    .unwrap()
+                    .get(0);
+            let step = observed / 30_000;
+            let previous = generator.generate(((step - 1) * 30) as u64).to_string();
+            let distinct = (step..=step + 2)
+                .all(|other| generator.generate((other * 30) as u64).to_string() != previous);
+            if (28_500..29_000).contains(&(observed % 30_000)) && distinct {
+                factor = previous;
+                totp_deadline_ms = (step + 1) * 30_000;
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < limit,
+                "TOTP database boundary not reached: observed={observed}"
+            );
+            tokio::time::sleep(Duration::from_millis(15)).await;
+        }
+    } else {
+        o.f.db.execute(
+            "UPDATE sessions SET expires_at=clock_timestamp()+interval '1500 milliseconds' WHERE id=$1",
+            &[&o.principal.session_id],
+        ).await.unwrap();
+    }
+    {
+        let pending = complete_genesis(
+            &mut connection,
+            &o.hasher,
+            &o.cipher,
+            &o.principal,
+            ORIGIN,
+            Completion {
+                unsigned: &c.unsigned,
+                signature: &signature,
+                factor: &factor,
+            },
+        );
+        tokio::pin!(pending);
+        // Reaching this exact wait proves the earlier live/factor checks passed
+        // and that authority, marker, factor and challenge effects are staged.
+        wait_for_advisory_lock(&o.f.db, pid, pending.as_mut()).await;
+        let limit = tokio::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            let expired: bool =
+                if totp {
+                    o.f.db.query_one(
+                    "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint >= $1",
+                    &[&totp_deadline_ms],
+                ).await.unwrap().get(0)
+                } else {
+                    o.f.db
+                        .query_one(
+                            "SELECT clock_timestamp() >= expires_at FROM sessions WHERE id=$1",
+                            &[&o.principal.session_id],
+                        )
+                        .await
+                        .unwrap()
+                        .get(0)
+                };
+            if expired {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < limit,
+                "post-receipt database expiry premise not reached: totp={totp}"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        tx.commit().await.unwrap();
+        let expected = if totp {
+            "factor expired after wait"
+        } else {
+            "owner/session/MFA fence"
+        };
+        assert!(
+            matches!(pending.await, Err(CeremonyError::Rejected(reason)) if reason == expected)
+        );
+    }
+    o.empty_authority().await;
+    assert!(
+        !o.f.db
+            .query_one(
+                "SELECT consumed_ms IS NOT NULL FROM sealed_root_challenges",
+                &[]
+            )
+            .await
+            .unwrap()
+            .get::<_, bool>(0)
+    );
+    let factor_state =
+        o.f.db
+            .query_one(
+                "SELECT last_accepted_step,failed_attempts FROM owner_mfa WHERE account_id=$1",
+                &[&o.principal.tenant.account_id()],
+            )
+            .await
+            .unwrap();
+    assert_eq!(factor_state.get::<_, i64>(0), -1);
+    assert_eq!(factor_state.get::<_, i32>(1), 0);
+    o.f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn ceremony_session_expiry_after_receipt_wait_rolls_back_every_staged_effect() {
+    final_fence_after_receipt_wait(false).await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn ceremony_totp_window_expiry_after_receipt_wait_rolls_back_every_staged_effect() {
+    final_fence_after_receipt_wait(true).await;
+}
+
 async fn register_role(
     db: &impl GenericClient,
     o: &Owner,
