@@ -2441,17 +2441,19 @@ async fn postgres_http_mfa_never_sets_session_before_factor_and_limits_replay() 
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    // Exhausted sign-in factors do not spend the signed-in owner's step-up
+    // budget: a wrong code is checked (401), not refused (429).
     let response = app
         .clone()
         .oneshot(owner_post(
             "/mfa/disable",
-            serde_json::json!({"password":password.as_str(),"code":recovery_disable}),
+            serde_json::json!({"password":password.as_str(),"code":"zrc_AAAAAAAAAAAAAAAAAAAAAA"}),
             &cookie_header,
             csrf,
         ))
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     client
             .execute(
                 "UPDATE owner_mfa SET failed_window_started_at=now()-interval '16 minutes' WHERE account_id=$1",
@@ -2462,7 +2464,7 @@ async fn postgres_http_mfa_never_sets_session_before_factor_and_limits_replay() 
     let no_key_app = router(
         AuthHttpState::new(
             url,
-            hasher,
+            hasher.clone(),
             "https://zrotext.example".to_owned(),
             Arc::new(DisabledVerificationDispatcher),
         )
@@ -2515,15 +2517,15 @@ async fn postgres_http_mfa_never_sets_session_before_factor_and_limits_replay() 
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    let failures: i32 = client
-        .query_one(
-            "SELECT failed_attempts FROM owner_mfa WHERE account_id=$1",
-            &[&signup.account_id],
-        )
-        .await
-        .unwrap()
-        .get(0);
-    assert_eq!(failures, 1);
+    let failures = abuse_limits::failures_in_window(
+        &client,
+        &hasher,
+        Limit::MfaStepUp,
+        &signup.user_id.to_string(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(failures, 2);
     let response = no_key_app
         .clone()
         .oneshot(owner_post(
