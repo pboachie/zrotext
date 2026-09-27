@@ -89,6 +89,19 @@ readiness is unknown. Turning off automatic refresh or viewing an old page does
 not transform the saved report into a current observation. Missing or malformed
 reports never become affirmative readiness or an empty/absent-SIM claim.
 
+Fresh observations explain reported local blockers: an unselected or inactive
+selected SIM, denied SMS permission, or enabled airplane mode. Unavailable fields
+remain unknown. All-positive observations say only that there were no reported
+local blockers at snapshot time; carrier readiness remains unknown.
+
+The browser subtracts the report's age at the server snapshot from the 90-second
+window, then includes request latency and elapsed time while displaying it.
+Reports become historical even when polling is paused or the owner is viewing
+older pages. Resuming a hidden page updates the labels before scheduling polling.
+Expired reports cannot become fresh through a local clock adjustment. These local
+label updates make no requests, move no focus and use no live announcements.
+They do not change dispatch rules, Android permissions, protocol fields or queries.
+
 ## Automated platform smoke test
 
 The read-only Android device-smoke workflow builds the debug APKs and starts a
