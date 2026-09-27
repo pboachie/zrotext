@@ -48,6 +48,40 @@ resolve the candidate inbound segment-count contract, journal phone events,
 insert ciphertext or mount a route. Candidate-02 remains a proposal, and no
 sealed release gate is closed by this persistence prerequisite.
 
+## Dormant root enrollment history
+
+Migration 044 adds database-known trust history before any enrollment API is
+mounted. Inserting an authority atomically records a per-account root marker
+and reserves its public point. The marker survives authority deletion, so a
+later insertion cannot silently reset the account's trust or manifest history.
+Ordinary updates, deletion and truncation of this history are rejected; parent
+account erasure cascades. This does not implement complete account erasure for
+the application's other records.
+
+Known signing-role claims include current and revoked SMS approval, line
+approval and device-authentication keys, plus provisioned roots. Future device
+identity changes reserve the new point while retaining the previous reservation.
+Root points cannot be reused for these other roles in either registration order;
+the existing SMS-versus-line/device exclusions remain. The registry is scoped
+to each account and compares public-point bytes, not differently domain-separated
+fingerprints. It does not recover keys deleted before migration, classify
+unregistered payload keys, or establish a global cross-account key policy.
+
+The migration fences source-table writes across backfill and trigger installation
+and rejects preexisting incompatible aliases. Each account/point has one immutable
+compatibility-family reservation; generated claim families and a foreign key
+allow line/device sharing while excluding root and SMS aliases. Unique constraints
+also fence writers whose repeatable-read or serializable snapshot predates another
+reservation. Such transactions can abort with a serialization error and must be
+retried as a whole; the registration never silently changes an existing family.
+Account-row locks serialize absent genesis and role reservation. Checks of existing
+authority use ordinary reads,
+never account-then-authority row locking; manifest admission still locks authority
+before its account/session fences. Existing authority updates take no new lock.
+These records prove neither independent human comparison nor root possession.
+The trusted initial-pin ceremony, client custody and runtime prerequisites remain
+open, and direct database provisioning remains outside any public application API.
+
 ## Dormant candidate-02 ingest transaction
 
 `sealed_inbound::ingest::ingest_candidate02` composes that authority admission
