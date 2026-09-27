@@ -16,6 +16,7 @@ pub mod ingress;
 pub mod owner_ui;
 pub mod provider_sms;
 pub mod retention;
+pub mod root_backup;
 pub mod runtime_db;
 pub mod sealed_envelope;
 pub mod sealed_inbound;
