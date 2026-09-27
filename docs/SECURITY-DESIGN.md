@@ -153,3 +153,12 @@ Browsers without the cookie receive the same 429 whether or not the address
 exists. While the route-wide budgets are exhausted, sign-in from a new browser,
 registration and verification resend still wait for the window to reset, and
 the process-wide password worker gate still applies.
+
+Argon2id uses 64 MiB per operation, so each process runs at most two password
+operations at once (sign-in, registration, verification resend, password change
+and reset, revoking other sessions, and authenticator enrollment or removal).
+A request reaches this gate only after spending its abuse budget. It then waits
+up to two seconds for a free slot; if none frees, it gets 503 `unavailable`
+with `Retry-After: 1` rather than 429, so a busy server is not mistaken for a
+throttle. The 64-handler admission cap and 30-second deadline above bound how
+many requests can wait and for how long.

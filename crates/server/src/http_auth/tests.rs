@@ -2285,3 +2285,164 @@ async fn postgres_http_mfa_never_sets_session_before_factor_and_limits_replay() 
         .await
         .unwrap();
 }
+
+fn hash_permit_state() -> AuthHttpState {
+    AuthHttpState::new(
+        "postgresql://127.0.0.1:1/unused".into(),
+        Arc::new(TokenHasher::new(vec![42; 32]).unwrap()),
+        "https://zrotext.example".into(),
+        Arc::new(DisabledVerificationDispatcher),
+    )
+    .unwrap()
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn concurrent_password_work_waits_for_a_permit_instead_of_refusing() {
+    let state = Arc::new(hash_permit_state());
+    let running = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let peak = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    // Three sign-ins arrive together; each stubbed hash takes 300 ms and the
+    // process runs two at a time. The third must queue, not get a 429.
+    let mut tasks = Vec::new();
+    for _ in 0..3 {
+        let (state, running, peak) = (state.clone(), running.clone(), peak.clone());
+        tasks.push(tokio::spawn(async move {
+            let _permit = state.hash_permit().await?;
+            let now = running.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            peak.fetch_max(now, std::sync::atomic::Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            running.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            Ok::<_, AuthHttpError>(())
+        }));
+    }
+    for task in tasks {
+        assert!(task.await.unwrap().is_ok());
+    }
+    assert_eq!(peak.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(state.hash_limit.available_permits(), 2);
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn saturated_password_work_returns_503_with_retry_after() {
+    let state = hash_permit_state();
+    let held = state
+        .hash_limit
+        .clone()
+        .acquire_many_owned(2)
+        .await
+        .unwrap();
+    let started = tokio::time::Instant::now();
+    let error = state.hash_permit().await.unwrap_err();
+    assert!(matches!(error, AuthHttpError::Busy));
+    assert!(started.elapsed() >= HASH_PERMIT_WAIT);
+    let response = error.into_response();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.headers()[header::RETRY_AFTER], "1");
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    let body = axum::body::to_bytes(response.into_body(), 1024)
+        .await
+        .unwrap();
+    assert_eq!(&body[..], br#"{"code":"unavailable"}"#);
+    // A permit released within the wait is taken rather than refused.
+    let waiter = tokio::spawn({
+        let state = state.clone();
+        async move { state.hash_permit().await.map(drop) }
+    });
+    tokio::time::sleep(HASH_PERMIT_WAIT / 2).await;
+    drop(held);
+    assert!(waiter.await.unwrap().is_ok());
+    // Real throttles and other 503s keep their existing responses.
+    let throttled = AuthHttpError::TooManyRequests.into_response();
+    assert_eq!(throttled.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(throttled.headers().get(header::RETRY_AFTER).is_none());
+    let unavailable = AuthHttpError::Unavailable.into_response();
+    assert!(unavailable.headers().get(header::RETRY_AFTER).is_none());
+    // A closed gate fails closed as busy.
+    state.hash_limit.close();
+    assert!(matches!(
+        state.hash_permit().await,
+        Err(AuthHttpError::Busy)
+    ));
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn concurrent_logins_queue_for_password_work_and_saturation_is_503() {
+    let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+        .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let schema = format!("http_login_permit_{}", Uuid::new_v4().simple());
+    setup
+        .batch_execute(&format!("CREATE SCHEMA {schema}"))
+        .await
+        .unwrap();
+    let separator = if base_url.contains('?') { '&' } else { '?' };
+    let url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
+    let (mut client, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    for migration in [
+        include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+        include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+        include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
+        include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
+        include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
+        include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+    ] {
+        client.batch_execute(migration).await.unwrap();
+    }
+    let hasher = Arc::new(TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
+    let password = Uuid::new_v4().to_string();
+    let owners = ["one@example.test", "two@example.test", "three@example.test"];
+    for email in owners {
+        let signup = auth::register(&mut client, &hasher, email, &password)
+            .await
+            .unwrap();
+        assert!(
+            auth::verify_email(&mut client, &hasher, &signup.verification_token)
+                .await
+                .unwrap()
+        );
+    }
+    let mut state = AuthHttpState::new(
+        url,
+        hasher.clone(),
+        "https://zrotext.example".to_owned(),
+        Arc::new(DisabledVerificationDispatcher),
+    )
+    .unwrap();
+    // Unoptimized test builds hash slowly; this test is about queueing, not
+    // about how long a hash takes.
+    state.hash_permit_wait = Duration::from_secs(120);
+    let gate = state.hash_limit.clone();
+    let app = router(state.clone());
+    let login = |email: &str| {
+        json_post(
+            "/login",
+            serde_json::json!({"email":email,"password":password.as_str()}),
+        )
+    };
+    let mut tasks = Vec::new();
+    for email in owners {
+        tasks.push(tokio::spawn(app.clone().oneshot(login(email))));
+    }
+    for task in tasks {
+        assert_eq!(
+            task.await.unwrap().unwrap().status(),
+            StatusCode::NO_CONTENT
+        );
+    }
+    // With every permit held past the wait, the owner is told the server is
+    // busy, not that their budget is spent.
+    state.hash_permit_wait = Duration::from_millis(50);
+    let busy_app = router(state);
+    let held = gate.acquire_many_owned(2).await.unwrap();
+    let response = busy_app.oneshot(login(owners[0])).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.headers()[header::RETRY_AFTER], "1");
+    drop(held);
+    setup
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
