@@ -34,6 +34,23 @@ public static class Native {
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
     // Counts visible standard dialog windows (for example a loader hard-error
     // box) on the caller's desktop; only the number is reported.
+    [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr parent,WindowVisitor visit,IntPtr state);
+    [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern int GetWindowTextW(IntPtr window,StringBuilder text,int length);
+    public static string DialogSummary = "not-observed";
+    // Reports only NTSTATUS-shaped codes and system DLL file names found in
+    // visible dialog text, never the rest of the text or any path.
+    static string DialogCodes() {
+        var found=new SortedSet<string>(StringComparer.Ordinal);
+        EnumWindows((window,state)=>{
+            var name=new StringBuilder(16);
+            if(!IsWindowVisible(window)||GetClassNameW(window,name,name.Capacity)<=0||name.ToString()!="#32770")return true;
+            var text=new StringBuilder();
+            EnumChildWindows(window,(child,s)=>{var part=new StringBuilder(512);if(GetWindowTextW(child,part,part.Capacity)>0)text.Append(part).Append(' ');return true;},IntPtr.Zero);
+            foreach(System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(text.ToString(),@"0x[0-9A-Fa-f]{8}|\b[A-Za-z0-9_-]{1,40}\.dll\b"))found.Add(m.Value.ToLowerInvariant());
+            return true;
+        },IntPtr.Zero);
+        return found.Count==0?"none":String.Join(",",found);
+    }
     static int DialogCount() {
         int count=0;
         EnumWindows((window,state)=>{var name=new StringBuilder(16);if(IsWindowVisible(window)&&GetClassNameW(window,name,name.Capacity)>0&&name.ToString()=="#32770")count++;return true;},IntPtr.Zero);
@@ -440,7 +457,7 @@ public static class Native {
             if(passwordBuffer!=IntPtr.Zero) Marshal.ZeroFreeGlobalAllocUnicode(passwordBuffer);
             string cleanupTarget=CleanupTarget(job!=IntPtr.Zero,assigned,process.process!=IntPtr.Zero);
             if(cleanupTarget=="job") {
-                if(WaitState=="timeout"){JobState=JobImages(job,observedApp);DialogsAtTimeout=DialogCount();}
+                if(WaitState=="timeout"){JobState=JobImages(job,observedApp);DialogsAtTimeout=DialogCount();DialogSummary=DialogCodes();}
                 cleanup &= TerminateJobObject(job,99);
                 bool empty=false;
                 for(int i=0;i<100;i++){Accounting value;if(QueryInformationJobObject(job,1,out value,Marshal.SizeOf(typeof(Accounting)),IntPtr.Zero)&&value.activeProcesses==0){empty=true;break;}Thread.Sleep(100);}

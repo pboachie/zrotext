@@ -270,7 +270,7 @@ try {
     if('ZrotextCi.Native' -as [type]){Write-Output ('Native stage: '+[ZrotextCi.Native]::Stage+'; OS code: '+[ZrotextCi.Native]::ErrorCode)}
     if('ZrotextCi.Native' -as [type]){Write-Output ('Native CI process classes: '+[ZrotextCi.Native]::LaunchState+'; resume='+[ZrotextCi.Native]::ResumeState+'; wait='+[ZrotextCi.Native]::WaitState+'; exit='+[ZrotextCi.Native]::ExitState)}
     if('ZrotextCi.Native' -as [type]){Write-Output ('Native CI startup probe: '+[ZrotextCi.Native]::ProbeState+'; native cleanup='+[ZrotextCi.Native]::CleanupState)}
-    if('ZrotextCi.Native' -as [type]){Write-Output ('Native CI job images at timeout: '+[ZrotextCi.Native]::JobState+'; station='+[ZrotextCi.Native]::StationClass+'; dialogs before='+[ZrotextCi.Native]::DialogsBefore+' at-timeout='+[ZrotextCi.Native]::DialogsAtTimeout)}
+    if('ZrotextCi.Native' -as [type]){Write-Output ('Native CI job images at timeout: '+[ZrotextCi.Native]::JobState+'; station='+[ZrotextCi.Native]::StationClass+'; dialogs before='+[ZrotextCi.Native]::DialogsBefore+' at-timeout='+[ZrotextCi.Native]::DialogsAtTimeout+' codes='+[ZrotextCi.Native]::DialogSummary)}
     if($fixture) {
         foreach($name in @('zrotext_root_bundle','zrotext_root_terminal','zrotext-owner')) {
             $log=Join-Path $fixture ('results/'+$name+'.log')
