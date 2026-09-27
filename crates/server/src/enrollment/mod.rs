@@ -122,8 +122,8 @@ pub struct OwnerDevicePage {
     pub next_cursor: Option<Uuid>,
 }
 
-const OWNER_DEVICE_PAGE_SIZE: usize = 50;
-const OWNER_DEVICE_QUEUE_LIMIT: i64 = 1_000;
+pub(crate) const OWNER_DEVICE_PAGE_SIZE: usize = 50;
+pub(crate) const OWNER_DEVICE_QUEUE_LIMIT: i64 = 1_000;
 // Materialize the bounded tenant page before probing each device/state index.
 pub(crate) const OWNER_DEVICE_STATUS_QUERY: &str = "WITH page AS MATERIALIZED ( \
              SELECT d.id,d.display_name,(d.revoked_at IS NOT NULL OR k.revoked_at IS NOT NULL) AS revoked, \
