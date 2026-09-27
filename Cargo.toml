@@ -11,3 +11,15 @@ license = "AGPL-3.0-only"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 uuid = { version = "1.18.1", features = ["serde", "v4"] }
+
+# The dev profile compiles dependency crates at opt-level 0 by default, which
+# makes the argon2 and p256 primitives many times slower than their optimized
+# builds and dominates the runtime of the auth-heavy PostgreSQL test suites.
+# Overriding only opt-level for these two packages leaves every other dev
+# profile setting — including debug assertions and overflow checks — inherited
+# and unchanged, and has no effect on release builds.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.p256]
+opt-level = 3
