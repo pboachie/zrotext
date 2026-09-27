@@ -105,7 +105,13 @@ PostgreSQL sockets within fixed per-class budgets (16 request, 16 device,
 4 worker); idle database sockets count against those budgets. Device clients
 are checked out per operation and released before peer reads/writes, including
 the pre-authentication proof wait. Up to 32 established device streams share the
-16-client device reserve; request and device checkouts wait at most two seconds
+16-client device reserve. After its proof verifies, a stream takes its device's
+single session slot; one account holds at most `DEVICE_SOCKETS_PER_ACCOUNT`
+(default 8) of the 32, independent of billing device caps, so one tenant with
+many enrolled keys cannot refuse every other tenant's phones. A reconnect of the
+same device takes over the older stream's slot and signals that stream to close
+at once; the storage epoch fence still rejects any work the older stream
+attempts before it exits. Request and device checkouts wait at most two seconds
 for pool admission, while workers fail fast. A released socket is reset
 with `DISCARD ALL` before reuse and is closed instead when the reset does not
 finish within two seconds (for example a canceled query still running or an
