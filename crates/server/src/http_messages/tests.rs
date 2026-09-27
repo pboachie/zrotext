@@ -218,7 +218,7 @@ async fn postgres_alpha_http_accept_status_cancel_are_tenant_and_device_scoped()
     let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(51)).unwrap());
     let (account_a, device_a, send_a, read_a, unbound_send_a) =
         owner(&mut client, &hasher, "owner-a@example.test").await;
-    let (_, device_b, _send_b, read_b, _) =
+    let (account_b, device_b, send_b, read_b, _) =
         owner(&mut client, &hasher, "owner-b@example.test").await;
     let policy = Arc::new(
         AlphaPolicy::parse(
@@ -229,9 +229,9 @@ async fn postgres_alpha_http_accept_status_cancel_are_tenant_and_device_scoped()
         .unwrap(),
     );
     let app = router(MessagesHttpState::new(url.clone(), hasher.clone(), policy, false).unwrap());
-    let message_id = Uuid::new_v4();
+    let client_message_id = Uuid::new_v4();
     let input = serde_json::json!({
-        "client_message_id":message_id,
+        "client_message_id":client_message_id,
         "device_id":device_a,
         "recipient_e164":"+15555550101",
         "test_case_id":"case_1",
@@ -257,7 +257,11 @@ async fn postgres_alpha_http_accept_status_cancel_are_tenant_and_device_scoped()
     assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
     let data = to_bytes(response.into_body(), 2048).await.unwrap();
     let accepted: serde_json::Value = serde_json::from_slice(&data).unwrap();
+    // The server assigns the message ID; the caller's ID is only its
+    // account-scoped idempotency identity.
+    let message_id = zrotext_delivery_store::alpha_message_id(account_a, client_message_id);
     assert_eq!(accepted["message_id"], message_id.to_string());
+    assert_ne!(message_id, client_message_id);
     assert_eq!(accepted["created"], true);
     assert!(!String::from_utf8_lossy(&data).contains("+15555550101"));
     assert!(!String::from_utf8_lossy(&data).contains("synthetic test"));
@@ -279,6 +283,49 @@ async fn postgres_alpha_http_accept_status_cancel_are_tenant_and_device_scoped()
     let data = to_bytes(response.into_body(), 2048).await.unwrap();
     let replay: serde_json::Value = serde_json::from_slice(&data).unwrap();
     assert_eq!(replay["created"], false);
+    assert_eq!(replay["message_id"], message_id.to_string());
+    // Another allowlisted account can reuse the same client ID, or submit
+    // account A's server ID, and gets ordinary new work either way: nothing
+    // confirms that account A's message exists.
+    let both_policy = Arc::new(
+        AlphaPolicy::parse(
+            Some("true"),
+            Some(&format!("{account_a},{account_b}")),
+            Some("+15555550101"),
+        )
+        .unwrap(),
+    );
+    let both =
+        router(MessagesHttpState::new(url.clone(), hasher.clone(), both_policy, false).unwrap());
+    let mut reused = input.clone();
+    reused["device_id"] = device_b.to_string().into();
+    let mut probe = reused.clone();
+    probe["client_message_id"] = message_id.to_string().into();
+    let mut account_b_ids = Vec::new();
+    for (key, body) in [("case-1", reused), ("probe", probe)] {
+        let response = both
+            .clone()
+            .oneshot(post("/messages", &send_b, key, body))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let data = to_bytes(response.into_body(), 2048).await.unwrap();
+        let accepted: serde_json::Value = serde_json::from_slice(&data).unwrap();
+        assert_eq!(accepted["created"], true);
+        let id: Uuid = accepted["message_id"].as_str().unwrap().parse().unwrap();
+        assert_ne!(id, message_id);
+        assert_ne!(id, client_message_id);
+        account_b_ids.push(id);
+    }
+    assert_ne!(account_b_ids[0], account_b_ids[1]);
+    assert_eq!(
+        both.clone()
+            .oneshot(get(&format!("/messages/{}", account_b_ids[0]), &read_b))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
     let expiring = serde_json::json!({
         "client_message_id":Uuid::new_v4(),
         "device_id":device_a,
@@ -310,7 +357,15 @@ async fn postgres_alpha_http_accept_status_cancel_are_tenant_and_device_scoped()
     assert_eq!(response.status(), StatusCode::ACCEPTED);
     let data = to_bytes(response.into_body(), 2048).await.unwrap();
     let expired_replay: serde_json::Value = serde_json::from_slice(&data).unwrap();
-    assert_eq!(expired_replay["message_id"], expiring["client_message_id"]);
+    let expiring_id: Uuid = expiring["client_message_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_eq!(
+        expired_replay["message_id"],
+        zrotext_delivery_store::alpha_message_id(account_a, expiring_id).to_string()
+    );
     assert_eq!(expired_replay["created"], false);
     let mut changed_expired = expiring.clone();
     changed_expired["test_case_id"] = "changed".into();
@@ -542,8 +597,9 @@ async fn postgres_alpha_http_accept_status_cancel_are_tenant_and_device_scoped()
         .unwrap();
     for index in 0..60 {
         let mut churn = input.clone();
-        let id = Uuid::new_v4();
-        churn["client_message_id"] = id.to_string().into();
+        let client_id = Uuid::new_v4();
+        churn["client_message_id"] = client_id.to_string().into();
+        let id = zrotext_delivery_store::alpha_message_id(account_a, client_id);
         let token = if index % 2 == 0 {
             &send_a
         } else {

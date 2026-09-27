@@ -66,6 +66,7 @@ limits! {
     DeviceAuthenticate,
     MfaChallenge,
     MfaManage,
+    MfaStepUp,
     BillingSession,
     ApiKeyCreate,
     SmsLineActivation,
@@ -100,6 +101,8 @@ impl Limit {
             Self::DeviceAuthenticate => ("device_authenticate", 300, 60, Some((30, 60))),
             Self::MfaChallenge => ("mfa_challenge", 300, 60, Some((5, 300))),
             Self::MfaManage => ("mfa_manage", 120, 60, Some((8, 900))),
+            // Spent through `record_failure` only; its route pair is unused.
+            Self::MfaStepUp => ("mfa_step_up", 120, 60, Some((5, 900))),
             Self::BillingSession => ("billing_session", 120, 60, Some((8, 60))),
             Self::SmsLineActivation => ("sms_line_activation", 120, 60, Some((30, 900))),
         }
@@ -183,6 +186,78 @@ pub(crate) async fn consume_owner_management(
     let (scope, maximum, seconds, _) = limit.policy();
     let global = hasher.digest(b"abuse-global-v1", scope);
     charge(tx, hasher, limit, Some(subject), &global, maximum, seconds).await
+}
+
+/// Failures `subject` has spent in the current window of a failure-only
+/// budget such as `Limit::MfaStepUp`. Such a budget is spent only by a
+/// rejected factor, so the caller checks it before verifying and calls
+/// `record_failure` after a rejection. Both must run in one transaction that
+/// already holds a row lock serializing the subject.
+pub(crate) async fn failures_in_window(
+    client: &impl GenericClient,
+    hasher: &TokenHasher,
+    limit: Limit,
+    subject: &str,
+) -> Result<i32, tokio_postgres::Error> {
+    let (scope, _, seconds, hash) = failure_subject(hasher, limit, subject);
+    let row = client
+        .query_opt(
+            "SELECT attempts FROM auth_abuse_counters WHERE scope=$1 AND subject_hash=$2
+             AND window_started_at > clock_timestamp() - make_interval(secs => $3::int4)",
+            &[&scope, &&hash[..], &seconds],
+        )
+        .await?;
+    Ok(row.map_or(0, |row| row.get(0)))
+}
+
+/// Whether `subject` may try another factor under a failure-only budget.
+pub(crate) async fn failure_budget_open(
+    client: &impl GenericClient,
+    hasher: &TokenHasher,
+    limit: Limit,
+    subject: &str,
+) -> Result<bool, tokio_postgres::Error> {
+    let (_, maximum, _, _) = failure_subject(hasher, limit, subject);
+    Ok(failures_in_window(client, hasher, limit, subject).await? < maximum)
+}
+
+/// Record one rejected factor, opening a new window once the previous one has
+/// lapsed. No route ceiling applies, so a busy route can never leave a
+/// rejected factor unrecorded.
+pub(crate) async fn record_failure(
+    client: &impl GenericClient,
+    hasher: &TokenHasher,
+    limit: Limit,
+    subject: &str,
+) -> Result<(), tokio_postgres::Error> {
+    let (scope, _, seconds, hash) = failure_subject(hasher, limit, subject);
+    client
+        .execute(
+            "INSERT INTO auth_abuse_counters(scope,subject_hash,window_started_at,attempts,updated_at)
+             VALUES ($1,$2,clock_timestamp(),1,clock_timestamp())
+             ON CONFLICT(scope,subject_hash) DO UPDATE SET
+                window_started_at = CASE WHEN auth_abuse_counters.window_started_at <= clock_timestamp() - make_interval(secs => $3::int4)
+                    THEN clock_timestamp() ELSE auth_abuse_counters.window_started_at END,
+                attempts = CASE WHEN auth_abuse_counters.window_started_at <= clock_timestamp() - make_interval(secs => $3::int4)
+                    THEN 1 ELSE auth_abuse_counters.attempts + 1 END,
+                updated_at = clock_timestamp()",
+            &[&scope, &&hash[..], &seconds],
+        )
+        .await?;
+    Ok(())
+}
+
+/// Scope, per-subject maximum and window, and the subject digest `charge`
+/// would store for this limit. A limit without a subject policy has no room.
+fn failure_subject(
+    hasher: &TokenHasher,
+    limit: Limit,
+    subject: &str,
+) -> (&'static str, i32, i32, [u8; 32]) {
+    let (scope, _, _, subject_policy) = limit.policy();
+    let (maximum, seconds) = subject_policy.unwrap_or((0, 0));
+    let hash = hasher.digest(format!("abuse-subject-{scope}-v1").as_bytes(), subject);
+    (scope, maximum, seconds, hash)
 }
 
 async fn charge(

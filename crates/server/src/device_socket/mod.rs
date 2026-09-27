@@ -53,6 +53,13 @@ const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(15);
 const HANDSHAKE_CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
 const HEARTBEAT_SECONDS: u64 = 30;
 const HEARTBEAT_DEADLINE: Duration = Duration::from_secs(45);
+// Storage renews a session lease at most this often; earlier heartbeats are
+// acknowledged from memory. With the 45 s deadline and the 10 s check cadence,
+// renewals stay less than 70 s apart, inside the 90 s lease.
+const HEARTBEAT_RENEW_INTERVAL: Duration = Duration::from_secs(HEARTBEAT_SECONDS / 2);
+// A phone sends two heartbeats a minute; more than 60 is a client bug or abuse.
+const HEARTBEAT_ABUSE_WINDOW: Duration = Duration::from_secs(60);
+const MAX_HEARTBEATS_PER_WINDOW: u32 = 60;
 const SESSION_LEASE_SECONDS: i32 = 90;
 const MAX_FRAME_BYTES: usize = 4096;
 /// Authenticated device sockets per process, across all accounts.
@@ -554,6 +561,52 @@ impl FrameBudget {
     }
 }
 
+#[derive(Debug, Eq, PartialEq)]
+enum HeartbeatAction {
+    /// Check out a device database client and renew the lease.
+    Renew,
+    /// Acknowledge without storage; the lease was renewed recently.
+    AckFromMemory,
+    /// Close the socket: the peer exceeded the per-window heartbeat cap.
+    Abuse,
+}
+
+/// Per-socket heartbeat budget, enforced before any database checkout. The
+/// first heartbeat renews; later ones renew at most once per
+/// `HEARTBEAT_RENEW_INTERVAL`, so a flood cannot multiply lease writes.
+/// Revocation and fencing are still observed by the periodic session check.
+struct HeartbeatBudget {
+    last_renewal: Option<Instant>,
+    window_start: Instant,
+    in_window: u32,
+}
+impl HeartbeatBudget {
+    fn new(now: Instant) -> Self {
+        Self {
+            last_renewal: None,
+            window_start: now,
+            in_window: 0,
+        }
+    }
+    fn admit(&mut self, now: Instant) -> HeartbeatAction {
+        if now.saturating_duration_since(self.window_start) >= HEARTBEAT_ABUSE_WINDOW {
+            self.window_start = now;
+            self.in_window = 0;
+        }
+        self.in_window = self.in_window.saturating_add(1);
+        if self.in_window > MAX_HEARTBEATS_PER_WINDOW {
+            return HeartbeatAction::Abuse;
+        }
+        if self.last_renewal.is_some_and(|previous| {
+            now.saturating_duration_since(previous) < HEARTBEAT_RENEW_INTERVAL
+        }) {
+            return HeartbeatAction::AckFromMemory;
+        }
+        self.last_renewal = Some(now);
+        HeartbeatAction::Renew
+    }
+}
+
 async fn receive_frame(socket: &mut WebSocket, budget: &mut FrameBudget) -> Option<ClientFrame> {
     loop {
         let message = socket.recv().await?.ok()?;
@@ -841,6 +894,7 @@ async fn run_socket(
         return;
     }
     let mut last_heartbeat = Instant::now();
+    let mut heartbeat_budget = HeartbeatBudget::new(last_heartbeat);
     let mut checks = interval(Duration::from_secs(10));
     checks.tick().await;
     let mut dispatch_checks = interval(Duration::from_secs(DISPATCH_POLL_SECONDS));
@@ -893,15 +947,25 @@ async fn run_socket(
                     Some(ClientFrame::Heartbeat { v: 1 }) => {
                         let received_at = Instant::now();
                         let since_prior_accepted_ms = received_at.duration_since(last_heartbeat).as_millis();
-                        let Ok(client) = runtime_db::connect_device(&state.database_url).await else {
-                            close_with_code = Some(RETRY_LATER);
-                            break;
-                        };
-                        if !renew_session(&client, session, &state).await.unwrap_or(false) {
-                            close_reason = "heartbeat_renew_failed_or_fenced";
-                            break;
+                        match heartbeat_budget.admit(received_at) {
+                            HeartbeatAction::Abuse => {
+                                close_reason = "heartbeat_flood";
+                                close_with_code = Some(close_code::POLICY);
+                                break;
+                            }
+                            HeartbeatAction::AckFromMemory => {}
+                            HeartbeatAction::Renew => {
+                                let Ok(client) = runtime_db::connect_device(&state.database_url).await else {
+                                    close_with_code = Some(RETRY_LATER);
+                                    break;
+                                };
+                                if !renew_session(&client, session, &state).await.unwrap_or(false) {
+                                    close_reason = "heartbeat_renew_failed_or_fenced";
+                                    break;
+                                }
+                                drop(client);
+                            }
                         }
-                        drop(client);
                         last_heartbeat = Instant::now();
                         if !send_frame(&mut socket, ServerFrame::HeartbeatAck {
                             v: 1, connection_epoch: session.connection_epoch,
