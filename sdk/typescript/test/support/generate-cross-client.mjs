@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Generate synthetic encrypted test inputs from independently pinned SQL setup.
-// Keys are ephemeral test material; write output only to a temporary directory.
+// Keys are ephemeral test material. Setup JSON arrives on stdin and the fixture leaves on
+// stdout, so this helper never opens a caller-chosen path.
 import assert from 'node:assert/strict';
 import { createECDH, createHash, randomBytes, webcrypto } from 'node:crypto';
-import { readFileSync, statSync, writeFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 
 globalThis.crypto ??= webcrypto;
-const [inputPath, outputPath] = process.argv.slice(2);
-assert.ok(inputPath && outputPath, 'Provide the setup JSON and output JSON paths');
 const { prepareOutboundEnvelope02, prepareInboundEnvelope02 } = await import('../../dist/draft02-envelope-prep.js');
 const { verifyManifest02, canonicalSignature02 } = await import('../../dist/draft02-manifest.js');
-assert.ok(statSync(inputPath).size <= 8192, 'Setup fixture exceeds its size bound');
-const input = JSON.parse(readFileSync(inputPath, 'utf8'));
+const setup = readFileSync(0);
+assert.ok(setup.length > 0 && setup.length <= 8192, 'Setup fixture must be nonempty and within its size bound');
+const input = JSON.parse(setup.toString('utf8'));
 const fromHex = (s) => {
   assert.equal(typeof s, 'string');
   assert.ok(s.length <= 188, 'Setup byte field exceeds its size bound');
@@ -103,7 +103,7 @@ wrongNonceUnsigned[10 + new DataView(wrongNonceUnsigned.buffer).getUint16(8)] ^=
 const wrongNonce = concat(wrongNonceUnsigned, await sign(outboundSigner.privateKey,
   concat(ascii('ZTSE/sign/v2\0'), u32(wrongNonceUnsigned.length), wrongNonceUnsigned)));
 const wrongSignature = Uint8Array.from(outbound.envelope); wrongSignature[wrongSignature.length - 1] ^= 1;
-writeFileSync(outputPath, JSON.stringify({
+process.stdout.write(JSON.stringify({
   fixtureVersion: 1,
   now: Number(now), account: hex(account), device: hex(device), line: hex(line),
   message: hex(message), event: hex(event), peer: '+12', expectedText,

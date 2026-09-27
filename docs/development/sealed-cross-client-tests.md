@@ -27,9 +27,12 @@ PostgreSQL database. Set the three `ZT_*_TEST_DATABASE_URL` variables as for the
 normal database tests. Set `DATABASE_ALLOW_PLAINTEXT=true` only when the disposable
 database uses plaintext connections.
 
-Set `ZT_INTEROP_TEST_DIR` to a fresh, empty absolute temporary directory outside
-the checkout. The test refuses a nonempty directory to prevent stale fixture
-reuse. Build the SDK, then run:
+The Rust test passes setup data to the SDK helper on stdin and reads the
+generated fixture from its stdout. It writes the Android inputs to a new
+`target/zrotext-sealed-interop` directory at the repository root, which Git
+ignores. It takes no path from the environment. It refuses to run if that
+directory already exists, so a stale fixture cannot be reused. Delete the
+directory after the Android step. Build the SDK, then run:
 
 ```sh
 cd sdk/typescript
@@ -38,7 +41,7 @@ cd ../..
 cargo test --locked -p zrotext-server --lib --features sealed-interop-tests cross_client_interop:: -- --ignored --nocapture
 ```
 
-Set `ZT_INTEROP_TEST_FIXTURE` to `persisted-fixture.json` in that directory and
+Set `ZT_INTEROP_TEST_FIXTURE` to `persisted-fixture.json` in that directory, and set
 `ZT_INTEROP_TEST_CONTEXT` to `expected-context.json`. Then run:
 
 ```sh

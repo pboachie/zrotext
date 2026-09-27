@@ -2,7 +2,15 @@
 // Explicit cross-client CI lane; no production entry point or radio effect.
 use super::*;
 use serde_json::{Value, json};
-use std::{fs, path::PathBuf, process::Command};
+use std::{
+    fs,
+    io::Write,
+    path::PathBuf,
+    process::{Command, Stdio},
+};
+
+/// Directory under the Git-ignored repository `target/` that receives the Android inputs.
+const OUTPUT_DIR: &str = "zrotext-sealed-interop";
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -18,26 +26,20 @@ fn bytes(value: &Value, name: &str) -> Vec<u8> {
 }
 
 #[tokio::test]
-#[ignore = "requires PostgreSQL, built TypeScript SDK and ZT_INTEROP_TEST_DIR; run the cross-client CI command"]
+#[ignore = "requires PostgreSQL, built TypeScript SDK and no stale target/zrotext-sealed-interop directory; run the cross-client CI command"]
 async fn actual_sdk_ciphertext_verifies_persists_and_replays_without_extra_effects() {
     let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .canonicalize()
         .unwrap();
-    let out = PathBuf::from(
-        std::env::var("ZT_INTEROP_TEST_DIR").expect("set a fresh temporary output directory"),
-    );
-    assert!(out.is_absolute(), "output directory must be absolute");
-    fs::create_dir_all(&out).unwrap();
-    let out = out.canonicalize().unwrap();
-    assert!(
-        !out.starts_with(&repo),
-        "synthetic keys must stay outside the source tree"
-    );
-    assert!(
-        fs::read_dir(&out).unwrap().next().is_none(),
-        "output directory must be empty"
-    );
+    // A fixed location derived only from the compile-time manifest directory, never from an
+    // environment variable or argument. `/target/` is ignored by Git, so the synthetic keys
+    // cannot be committed. Exclusive creation refuses a directory left by an earlier run, so
+    // a stale fixture can never be handed to the Android step.
+    let build = repo.join("target");
+    fs::create_dir_all(&build).unwrap();
+    let out = build.join(OUTPUT_DIR);
+    fs::create_dir(&out).expect("remove the previous target/zrotext-sealed-interop directory");
     let f = TestCase::new().await;
     let message = Uuid::new_v4();
     let event = Uuid::new_v4();
@@ -52,25 +54,31 @@ async fn actual_sdk_ciphertext_verifies_persists_and_replays_without_extra_effec
         "outboundSignerScalar": hex(&f.event_signer.to_bytes()),
         "previousVersion": 1, "previousDigest": hex(&previous_digest),
     });
-    let input = out.join("rust-setup.json");
-    let generated = out.join("sdk-generated.json");
-    fs::write(&input, serde_json::to_vec_pretty(&setup).unwrap()).unwrap();
-    let result = Command::new("node")
+    // Setup goes to the generator on stdin and the fixture returns on stdout.
+    let mut child = Command::new("node")
         .arg(repo.join("sdk/typescript/test/support/generate-cross-client.mjs"))
-        .arg(&input)
-        .arg(&generated)
-        .output()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&serde_json::to_vec_pretty(&setup).unwrap())
+        .unwrap();
+    let result = child.wait_with_output().unwrap();
     assert!(
         result.status.success(),
         "generator: {}",
         String::from_utf8_lossy(&result.stderr)
     );
     assert!(
-        fs::metadata(&generated).unwrap().len() <= 256 * 1024,
+        result.stdout.len() <= 256 * 1024,
         "generated fixture exceeds size bound"
     );
-    let mut fixture: Value = serde_json::from_slice(&fs::read(&generated).unwrap()).unwrap();
+    let mut fixture: Value = serde_json::from_slice(&result.stdout).unwrap();
     assert_eq!(fixture["fixtureVersion"], 1);
     let manifest = bytes(&fixture, "manifest");
     let inbound = bytes(&fixture, "inboundEnvelope");

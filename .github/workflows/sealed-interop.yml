@@ -32,9 +32,10 @@ jobs:
     steps:
       - name: Select temporary fixture paths
         run: |
-          echo "ZT_INTEROP_TEST_DIR=$RUNNER_TEMP/sealed-cross-client" >> "$GITHUB_ENV"
-          echo "ZT_INTEROP_TEST_FIXTURE=$RUNNER_TEMP/sealed-cross-client/persisted-fixture.json" >> "$GITHUB_ENV"
-          echo "ZT_INTEROP_TEST_CONTEXT=$RUNNER_TEMP/sealed-cross-client/expected-context.json" >> "$GITHUB_ENV"
+          # The Rust test writes to this fixed, Git-ignored directory in the checkout.
+          dir="$GITHUB_WORKSPACE/target/zrotext-sealed-interop"
+          echo "ZT_INTEROP_TEST_FIXTURE=$dir/persisted-fixture.json" >> "$GITHUB_ENV"
+          echo "ZT_INTEROP_TEST_CONTEXT=$dir/expected-context.json" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Validate Gradle wrapper JAR
         uses: gradle/actions/wrapper-validation@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
