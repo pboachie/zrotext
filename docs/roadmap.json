@@ -291,15 +291,16 @@
           "evidence": [
             ["Data retention", "SELF-HOSTING.md#data-retention"],
             ["#267", "https://github.com/pboachie/zrotext/pull/267"],
-            ["#271", "https://github.com/pboachie/zrotext/pull/271"]
+            ["#271", "https://github.com/pboachie/zrotext/pull/271"],
+            ["#320", "https://github.com/pboachie/zrotext/pull/320"]
           ],
           "evidence_note": "retention evidence covers history pruning only",
           "done": [
             "Owner takeout of messages with events, devices and the account profile (`GET /v1/owner/export`, no-store)",
-            "Cursor-paginated full-history takeout via `?before=` with tenant-safe 404s"
+            "Cursor-paginated full-history takeout via `?before=` with tenant-safe 404s",
+            "Owner account erasure in one password-proven transaction, covering metering and billing rows and reporting retained sets (`POST /v1/owner/erasure`, fail-closed on schema-protected consent rows)"
           ],
           "todo": [
-            "Account erasure that covers metering and billing records where allowed",
             "Extend export and erasure to future contacts, templates, workflow state and assistant access records"
           ]
         }
