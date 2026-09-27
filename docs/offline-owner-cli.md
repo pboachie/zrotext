@@ -83,4 +83,17 @@ An elevated test parent must obtain its existing, genuinely non-elevated linked
 token and launch the hidden child with that token. Missing token or launch
 privileges fail the test; there is no credential, privilege-enabling or policy
 bypass fallback. This launcher is compiled only for tests.
+
+The GitHub-hosted Windows job uses a separate, explicitly provisioned disposable
+standard-user fixture because its elevated runner has no usable limited linked
+token. It compiles the three test executables first, supplies only immutable
+copies and a private temporary directory to the worker, checks actual token and
+session eligibility, and requires exact suite counts with zero ignored tests.
+Its fixture script refuses workstation and self-hosted environments. Passwords
+stay in secure/unmanaged buffers, never arguments, files or environment values.
+Only the new user and logon SIDs' temporary desktop permissions are removed;
+unrelated permissions are preserved. Process-tree, account, optional profile and
+owned-directory cleanup must succeed. Forced VM termination may prevent cleanup;
+the disposable VM is the final containment boundary. The fixture does not change
+UAC, machine policy, repository permissions or production eligibility checks.
 The production `init` command is not executed with real owner material by tests.
