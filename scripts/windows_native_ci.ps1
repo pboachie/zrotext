@@ -87,6 +87,9 @@ function Assert-NoReparseDescendants([string]$Root) {
     }
 }
 function Test-PureGuards {
+    $parseTokens=$null;$parseErrors=$null
+    [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'windows_native_ci_bootstrap.ps1'),[ref]$parseTokens,[ref]$parseErrors) | Out-Null
+    if($parseErrors.Count){throw 'Bootstrap syntax regression.'}
     $good=@{GITHUB_ACTIONS='true';RUNNER_ENVIRONMENT='github-hosted';RUNNER_OS='Windows';ImageOS='win25'}
     Assert-CiHost $good
     $variant=$good.Clone();$variant.ImageOS='win25-vs2026';Assert-CiHost $variant
@@ -105,6 +108,7 @@ function Test-PureGuards {
     if($IsWindows) {
         Add-Type -Path (Join-Path $PSScriptRoot 'windows_native_ci.cs')
         [ZrotextCi.Native]::TestAclFilter()
+        [ZrotextCi.Native]::TestDiagnostics()
         $temp=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
         $root=Join-Path $temp ('zrotext-ci-guards-'+[Guid]::NewGuid().ToString('N'))
         $created=@();$junction=$null
@@ -303,6 +307,7 @@ try {
     }
     Copy-Item -LiteralPath $PSCommandPath -Destination (Join-Path $fixture 'bin/windows_native_ci.ps1')
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows_native_ci.cs') -Destination (Join-Path $fixture 'bin/windows_native_ci.cs')
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows_native_ci_bootstrap.ps1') -Destination (Join-Path $fixture 'bin/windows_native_ci_bootstrap.ps1')
     $tests=@()
     foreach($artifact in $artifacts) {
         $destination=Join-Path $fixture ('bin/'+$artifact.Name+'.exe')
@@ -312,8 +317,12 @@ try {
     $manifest=Join-Path $fixture 'manifest.json'
     @{Sid=$sid.Value;Tests=$tests} | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifest
     $stage='standard-user-run'
-    $pwsh=(Get-Process -Id $PID).Path
-    $arguments=@($pwsh,'-NoLogo','-NoProfile','-NonInteractive','-File',(Join-Path $fixture 'bin/windows_native_ci.ps1'),'-WorkerManifest',$manifest)
+    $pwsh=Assert-PlainPath (Get-Process -Id $PID).Path
+    if([IO.Path]::GetFileName($pwsh) -ine 'pwsh.exe' -or -not (Test-Path -LiteralPath $pwsh -PathType Leaf)){throw 'Unexpected fixture executable.'}
+    $fixture=Assert-PlainPath $fixture
+    if(-not (Test-Path -LiteralPath $fixture -PathType Container)){throw 'Fixture working directory unavailable.'}
+    Write-Output 'Native CI executable and working directory: verified'
+    $arguments=@($pwsh,'-NoLogo','-NoProfile','-NonInteractive','-File',(Join-Path $fixture 'bin/windows_native_ci_bootstrap.ps1'),'-WorkerManifest',$manifest)
     $command=($arguments | ForEach-Object {Quote-FixedArgument $_}) -join ' '
     $environment='GITHUB_ACTIONS=true'+[char]0+"ImageOS=$env:ImageOS"+[char]0+'RUNNER_ENVIRONMENT=github-hosted'+[char]0+'RUNNER_OS=Windows'+[char]0+"SystemRoot=$env:SystemRoot"+[char]0+"TEMP=$(Join-Path $fixture 'temp')"+[char]0+"TMP=$(Join-Path $fixture 'temp')"+[char]0+[char]0
     $code=[ZrotextCi.Native]::Run($username,$sid.Value,$password,$pwsh,$command,$environment,$fixture)
@@ -329,7 +338,15 @@ try {
     $failed=$true
     Write-Output "Native CI fixture failed at $stage."
     if('ZrotextCi.Native' -as [type]){Write-Output ('Native stage: '+[ZrotextCi.Native]::Stage+'; OS code: '+[ZrotextCi.Native]::ErrorCode)}
+    if('ZrotextCi.Native' -as [type]){Write-Output ('Native CI process classes: '+[ZrotextCi.Native]::LaunchState+'; resume='+[ZrotextCi.Native]::ResumeState+'; wait='+[ZrotextCi.Native]::WaitState+'; exit='+[ZrotextCi.Native]::ExitState)}
     if($fixture) {
+        try {
+            $bootstrap=Assert-ChildPath (Join-Path $fixture 'results/bootstrap-stage.txt') $fixture
+            if(Test-Path -LiteralPath $bootstrap -PathType Leaf) {
+                if((Get-Item -LiteralPath $bootstrap).Length -gt 64 -or [IO.File]::ReadAllText($bootstrap) -cne 'bootstrap-entered'){throw 'Invalid bootstrap marker.'}
+                Write-Output 'Native CI bootstrap: entered'
+            } else {Write-Output 'Native CI bootstrap: unavailable'}
+        } catch {Write-Output 'Native CI bootstrap marker refused.'}
         try {
             $checkpoint=Assert-ChildPath (Join-Path $fixture 'results/worker-stage.txt') $fixture
             if(Test-Path -LiteralPath $checkpoint -PathType Leaf) {

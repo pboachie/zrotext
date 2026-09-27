@@ -14,6 +14,15 @@ namespace ZrotextCi {
 public static class Native {
     public static string Stage = "not-started";
     public static int ErrorCode;
+    public static string LaunchState = "not-started", ResumeState = "not-attempted", WaitState = "not-attempted", ExitState = "not-queried";
+    static string ResumeClass(uint value) {return value==0xffffffff?"failed":value==0?"zero":value==1?"one":"greater-than-one";}
+    static string WaitClass(uint value) {return value==0?"signaled":value==258?"timeout":"failed";}
+    static string ExitClass(bool queried,uint value) {return !queried?"query-failed":value==0?"zero":value==259?"still-active-code":"other";}
+    public static void TestDiagnostics() {
+        Check(ResumeClass(0)=="zero" && ResumeClass(1)=="one" && ResumeClass(2)=="greater-than-one" && ResumeClass(0xffffffff)=="failed","pure-resume-classes");
+        Check(WaitClass(0)=="signaled" && WaitClass(258)=="timeout" && WaitClass(0xffffffff)=="failed","pure-wait-classes");
+        Check(ExitClass(false,0)=="query-failed" && ExitClass(true,0)=="zero" && ExitClass(true,259)=="still-active-code" && ExitClass(true,1)=="other","pure-exit-classes");
+    }
     static void Check(bool ok, string stage) {
         if (!ok) { Stage = stage; ErrorCode = Marshal.GetLastWin32Error(); throw new InvalidOperationException("native fixture refused"); }
     }
@@ -162,6 +171,7 @@ public static class Native {
     public static void DeleteProfile(string sid) {Check(DeleteProfileW(sid,null,null),"profile-cleanup");}
 
     public static int Run(string user,string expectedSid,SecureString password,string executable,string command,string environment,string cwd) {
+        LaunchState="not-started";ResumeState="not-attempted";WaitState="not-attempted";ExitState="not-queried";
         Check(command.Length<1024 && command.IndexOf('\0')<0,"command-bound");
         IntPtr passwordBuffer=IntPtr.Zero,tokenHandle=IntPtr.Zero,env=IntPtr.Zero,job=IntPtr.Zero;
         Process process=new Process(); bool assigned=false; bool cleanup=true; bool desktopAccessMayChange=false;
@@ -186,12 +196,19 @@ public static class Native {
             var startup=new Startup{cb=Marshal.SizeOf(typeof(Startup)),flags=1,show=0};
             desktopAccessMayChange=true;
             Check(CreateProcessWithTokenW(tokenHandle,0,executable,new StringBuilder(command),0x414,env,cwd,ref startup,out process),"worker-create-suspended");
+            LaunchState="created-suspended";
             Check(AssignProcessToJobObject(job,process.process),"worker-job-assign");assigned=true;
-            Check(ResumeThread(process.thread)!=0xffffffff,"worker-resume");
-            Check(WaitForSingleObject(process.process,300000)==0,"worker-timeout");
+            LaunchState="job-assigned";
+            uint resumed=ResumeThread(process.thread);ResumeState=ResumeClass(resumed);
+            Check(resumed!=0xffffffff,"worker-resume");
+            uint waited=WaitForSingleObject(process.process,300000);WaitState=WaitClass(waited);
+            Check(waited==0,"worker-timeout");
             uint code;Check(GetExitCodeProcess(process.process,out code),"worker-exit-query");
             Check(code<=int.MaxValue,"worker-exit-bound");return (int)code;
         } finally {
+            // Observe before terminating the owned job. Code 259 alone does not
+            // establish liveness; interpret it alongside the wait result.
+            if(process.process!=IntPtr.Zero) {uint observed;bool queried=GetExitCodeProcess(process.process,out observed);ExitState=ExitClass(queried,observed);}
             if(passwordBuffer!=IntPtr.Zero) Marshal.ZeroFreeGlobalAllocUnicode(passwordBuffer);
             if(job!=IntPtr.Zero && assigned) {
                 cleanup &= TerminateJobObject(job,99);
