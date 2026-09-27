@@ -101,6 +101,16 @@ DATABASE_URL='postgres://zrotext_runtime:<secret>@writer.example.com:5432/zrotex
 DATABASE_TLS_CA_PEM_B64='<base64-encoded-PEM-CA-bundle>'
 ```
 
+Accepted `sslmode` values are `require`, `prefer`, and `disable`. In a
+`postgres://` or `postgresql://` URL, libpq's `verify-full` and `verify-ca` are
+also accepted and behave exactly like `require`: every TLS connection verifies
+the certificate chain and hostname, so `verify-ca` is stricter here than in
+libpq and a certificate must match the URL host. Key=value connection strings
+accept only the first three. libpq file options such as `sslrootcert` are not
+read; use `DATABASE_TLS_CA_PEM_B64`. The server checks `DATABASE_URL` at startup
+and exits with a message naming the problem (without the URL or credentials) if
+its `sslmode`, syntax, plaintext policy, or CA trust cannot be used.
+
 Do not put a real credential in the repository. A connection with
 `sslmode=prefer` or `disable` can carry credentials and metadata without TLS.
 Such modes are allowed without an opt-in only for `localhost`, a loopback IP
