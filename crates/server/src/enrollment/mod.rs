@@ -248,7 +248,7 @@ async fn owner_session_active(
 ) -> Result<bool, EnrollmentError> {
     Ok(client
         .query_opt(
-            "SELECT 1 FROM sessions s JOIN users u ON u.id=s.user_id JOIN accounts a ON a.id=s.account_id WHERE s.id=$1 AND s.account_id=$2 AND s.user_id=$3 AND s.revoked_at IS NULL AND s.expires_at>now() AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL",
+            "SELECT 1 FROM sessions s JOIN users u ON u.id=s.user_id JOIN memberships m ON (m.account_id,m.user_id)=(s.account_id,s.user_id) JOIN accounts a ON a.id=s.account_id WHERE m.role='owner' AND s.id=$1 AND s.account_id=$2 AND s.user_id=$3 AND s.revoked_at IS NULL AND s.expires_at>now() AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL",
             &[&principal.session_id, &principal.tenant.account_id(), &principal.user_id],
         )
         .await?
@@ -277,7 +277,7 @@ pub async fn create_pairing(
     let digest = hasher.digest(b"pairing-token-v1", token.as_bytes());
     let id = Uuid::new_v4();
     let inserted = client.execute(
-        "INSERT INTO pairing_requests(id,account_id,created_by_user_id,token_digest,display_name,expires_at) SELECT $1,$2,$3,$4,$5,now()+($6::integer * interval '1 second') FROM sessions s WHERE s.id=$7 AND s.account_id=$2 AND s.user_id=$3 AND s.revoked_at IS NULL AND s.expires_at>now()",
+        "INSERT INTO pairing_requests(id,account_id,created_by_user_id,token_digest,display_name,expires_at) SELECT $1,$2,$3,$4,$5,now()+($6::integer * interval '1 second') FROM sessions s JOIN memberships m ON (m.account_id,m.user_id)=(s.account_id,s.user_id) WHERE m.role='owner' AND s.id=$7 AND s.account_id=$2 AND s.user_id=$3 AND s.revoked_at IS NULL AND s.expires_at>now()",
         &[&id, &principal.tenant.account_id(), &principal.user_id, &&digest[..], &display_name, &PAIRING_LIFETIME_SECS, &principal.session_id],
     ).await?;
     if inserted != 1 {
