@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Bounded Stripe TEST reconciliation work per scheduler tick.
 
+#[cfg(test)]
+mod failure_diagnostics;
+
 use super::{BillingError, worker::StripeTestWorker};
 use std::{
     future::Future,
@@ -136,6 +139,10 @@ async fn drain_jobs<T: BillingJobs>(
     let mut failed = false;
     let mut empty = false;
     while let Some(result) = jobs.join_next().await {
+        #[cfg(test)]
+        if let Some(diagnostic) = failure_diagnostics::classify(&result) {
+            eprintln!("billing drain test failure: {diagnostic}");
+        }
         match result {
             Ok(Ok(true)) => {}
             Ok(Ok(false)) => empty = true,
