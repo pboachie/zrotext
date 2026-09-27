@@ -106,6 +106,7 @@ impl Fixture {
             include_str!(
                 "../../../../deploy/compose/migrations/044_sealed_root_role_reservations.sql"
             ),
+            include_str!("../../../../deploy/compose/migrations/045_sealed_outbound_queue.sql"),
         ] {
             if !role_reservations
                 && sql

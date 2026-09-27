@@ -88,6 +88,30 @@ account, pending reconciliation or a missing test quota returns 503
 503 `unavailable`. An identical idempotent replay reuses the original result
 without reserving another unit.
 
+The dormant candidate-02 outbound admission function composes current pinned
+manifest verification, API authorization, active sealed line binding, request
+budget, queue limits and billing reservation in one owned READ COMMITTED
+transaction. It locks authority before billing and account rows, and rechecks
+current credentials, line generation, writer state and wall-clock freshness
+after queue writes. It accepts offline queueing without inventing a device
+session. The account/message ID and verified unsigned envelope digest form the
+persistent retry identity: a matching retry spends request-budget attempts but
+never inserts another job, replaces ciphertext or reserves another unit. Current
+authority, expiry and opt-out checks still apply to retries, including after
+retention has redacted content. An owner hold or signed suppression blocks
+admission under the existing shared account lock.
+
+These records use `sealed_candidate02` transport and carry immutable manifest,
+signer and line-generation metadata. Migration 045 restricts them to queued,
+cancelled or expired states, and rejects alpha attempts and dispatch fences.
+Every existing alpha claim and grant path also excludes this transport. Existing
+pre-grant cancellation, expiry refunds and terminal-content retention apply;
+retained digests and identity prevent rehydration. No HTTP route or device
+service calls this function. Queue acceptance does not authorize decryption,
+a sealed grant, a radio effect or delivery. A reviewed grant protocol, runtime
+integration, independently provisioned owner authority and device freshness
+remain prerequisites; this storage slice does not complete the sealed-send API.
+
 Index queue due times and `(account_id, created_at DESC, id)`. Cursor pagination only. The retention worker redacts terminal message recipients and synthetic payloads after 30 days by default, counted from the last state update. It preserves recipient and request digests, message identity, state and attempts. It removes eligible message events after 90 days and only after their parent content is redacted, terminal webhook delivery/attempt/replay history after 30 days, and inbound ciphertext after 30 days once related webhook history is gone. M1 inbound event IDs, device sequences, digests and signatures remain as replay tombstones. Sealed inbound envelopes are redacted after 30 days while ID, device sequence and unsigned digest remain. Unknown messages and unresolved grant/submission fences defer related content and history; completed submitted/failed fence records do not. Late radio receipts for redacted messages are stale and must be quarantined by the device protocol. New M1 inbound events for a redacted message are rejected as unknown sources; exact replays of stored events are still acknowledged. See [self-hosting retention settings](SELF-HOSTING.md#data-retention). Default API body limit 32 KiB; one-recipient SMS; payload cannot exceed six radio segments after decryption. Keep ingress limits before expensive crypto/parsing.
 
 ## Message semantics and the duplicate-send problem
