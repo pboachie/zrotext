@@ -21,8 +21,8 @@ Startup does not open every stored endpoint secret, so one damaged or
 foreign row cannot stop the whole server. After startup, each site runs a
 read-only background sweep that opens every stored endpoint secret and logs
 the endpoint ID of each one it cannot open (at most 100) as
-`webhook_endpoint_secret_unreadable endpoint_id=...`, followed by a
-`webhook_endpoint_secret_audit checked=... unreadable=... listed=...` summary.
+`webhook_endpoint_key_unreadable endpoint_id=...`, followed by a
+`webhook_endpoint_key_audit checked=... unreadable=... listed=...` summary.
 The lines contain no ciphertext, secret, or key material; a clean sweep logs
 nothing. The sweep changes no rows. Deliveries for an unreadable endpoint are
 deferred as described below and are not lost; the endpoint cannot be enabled
