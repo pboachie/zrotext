@@ -11,9 +11,12 @@ $ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
 
 function Assert-CiHost([hashtable]$Values) {
-    foreach($pair in @(@('GITHUB_ACTIONS','true'),@('RUNNER_ENVIRONMENT','github-hosted'),@('RUNNER_OS','Windows'),@('ImageOS','win25'))) {
+    foreach($pair in @(@('GITHUB_ACTIONS','true'),@('RUNNER_ENVIRONMENT','github-hosted'),@('RUNNER_OS','Windows'))) {
+        $script:stage='host-field-'+$pair[0]
         if($Values[$pair[0]] -cne $pair[1]) {throw 'Disposable hosted Windows fixture required.'}
     }
+    $script:stage='host-field-ImageOS'
+    if($Values['ImageOS'] -cnotin @('win25','win25-vs2026')) {throw 'Unsupported hosted Windows image.'}
 }
 function Quote-FixedArgument([string]$Value) {
     if([string]::IsNullOrEmpty($Value) -or $Value.IndexOfAny([char[]]@([char]0,[char]10,[char]13,[char]34)) -ge 0 -or $Value.EndsWith('\')) {throw 'Unsupported fixed argument.'}
@@ -79,6 +82,7 @@ function Assert-NoReparseDescendants([string]$Root) {
 function Test-PureGuards {
     $good=@{GITHUB_ACTIONS='true';RUNNER_ENVIRONMENT='github-hosted';RUNNER_OS='Windows';ImageOS='win25'}
     Assert-CiHost $good
+    $variant=$good.Clone();$variant.ImageOS='win25-vs2026';Assert-CiHost $variant
     foreach($key in @($good.Keys)) {
         $bad=$good.Clone();$bad[$key]='unsupported';$rejected=$false
         try{Assert-CiHost $bad}catch{$rejected=$true}
@@ -207,9 +211,12 @@ $cleanupFailures=[Collections.Generic.List[string]]::new()
 $failed=$false
 try {
     Assert-CiHost @{GITHUB_ACTIONS=$env:GITHUB_ACTIONS;RUNNER_ENVIRONMENT=$env:RUNNER_ENVIRONMENT;RUNNER_OS=$env:RUNNER_OS;ImageOS=$env:ImageOS}
+    $stage='runner-temp-path'
     $runnerTemp=Assert-PlainPath $env:RUNNER_TEMP
+    $stage='workspace-path'
     $workspace=Assert-PlainPath $env:GITHUB_WORKSPACE
     if(-not (Test-Path -LiteralPath $runnerTemp -PathType Container) -or -not (Test-Path -LiteralPath $workspace -PathType Container)){throw 'Runner directories unavailable.'}
+    $stage='native-helper-compile'
     Add-Type -Path (Join-Path $PSScriptRoot 'windows_native_ci.cs')
     if(-not [ZrotextCi.Native]::ParentElevated()){throw 'Provisioning requires the disposable runner administrator.'}
     [ZrotextCi.Native]::CheckSession()
@@ -274,7 +281,7 @@ try {
     $pwsh=(Get-Process -Id $PID).Path
     $arguments=@($pwsh,'-NoLogo','-NoProfile','-NonInteractive','-File',(Join-Path $fixture 'bin/windows_native_ci.ps1'),'-WorkerManifest',$manifest)
     $command=($arguments | ForEach-Object {Quote-FixedArgument $_}) -join ' '
-    $environment='GITHUB_ACTIONS=true'+[char]0+'ImageOS=win25'+[char]0+'RUNNER_ENVIRONMENT=github-hosted'+[char]0+'RUNNER_OS=Windows'+[char]0+"SystemRoot=$env:SystemRoot"+[char]0+"TEMP=$(Join-Path $fixture 'temp')"+[char]0+"TMP=$(Join-Path $fixture 'temp')"+[char]0+[char]0
+    $environment='GITHUB_ACTIONS=true'+[char]0+"ImageOS=$env:ImageOS"+[char]0+'RUNNER_ENVIRONMENT=github-hosted'+[char]0+'RUNNER_OS=Windows'+[char]0+"SystemRoot=$env:SystemRoot"+[char]0+"TEMP=$(Join-Path $fixture 'temp')"+[char]0+"TMP=$(Join-Path $fixture 'temp')"+[char]0+[char]0
     $code=[ZrotextCi.Native]::Run($username,$sid.Value,$password,$pwsh,$command,$environment,$fixture)
     if($code -ne 0){throw 'Standard-user native worker failed.'}
     $result=Get-Content -LiteralPath (Join-Path $fixture 'results/result.json') -Raw | ConvertFrom-Json
