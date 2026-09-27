@@ -55,6 +55,7 @@ use zrotext_server::{
     http_owner_review::{self, OwnerReviewState},
     http_webhooks::{self, WebhookHttpState},
     maintenance, owner_ui,
+    readiness::ReadinessCache,
     retention::{self, RetentionPolicy},
     webhook_worker::{self, WebhookSecretVault},
 };
@@ -84,6 +85,7 @@ struct Config {
     draining: Arc<AtomicBool>,
     drain_notify: Arc<Notify>,
     billing_provider_authorized: Option<(Arc<AtomicBool>, Arc<AtomicBool>)>,
+    readiness: Arc<ReadinessCache>,
 }
 
 #[derive(Serialize)]
@@ -241,6 +243,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),
         billing_provider_authorized,
+        readiness: Arc::new(ReadinessCache::new()),
     });
     let bind: SocketAddr = env::var("BIND_ADDR")
         .unwrap_or_else(|_| "0.0.0.0:8080".to_owned())
@@ -989,10 +992,31 @@ async fn ready(
             }),
         );
     }
-    // A frontend is write-ready only while it can reach the configured single
-    // writer, observe the expected deployment epoch, and, when billing is
-    // enabled, has no unresolved provider authorization failure.
-    let status = match zrotext_server::runtime_db::connect(&config.database_url).await {
+    // The database half is cached briefly and single-flight: `/readyz` is
+    // unauthenticated and must not compete with API traffic for request
+    // connections. The in-memory checks above stay live.
+    let probe_config = config.clone();
+    let status = config
+        .readiness
+        .get_or_refresh(move || database_ready(probe_config))
+        .await;
+    if status {
+        (StatusCode::OK, Json(Health { status: "ready" }))
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(Health {
+                status: "unavailable",
+            }),
+        )
+    }
+}
+
+/// A frontend is write-ready only while it can reach the configured single
+/// writer, observe the expected deployment epoch, and, when billing is
+/// enabled, has no unresolved provider authorization failure.
+async fn database_ready(config: Arc<Config>) -> bool {
+    match zrotext_server::runtime_db::connect(&config.database_url).await {
         Ok(client) => {
             let authority_ready = client
                 .query_one(
@@ -1033,16 +1057,6 @@ async fn ready(
             }
         }
         Err(_) => false,
-    };
-    if status {
-        (StatusCode::OK, Json(Health { status: "ready" }))
-    } else {
-        (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(Health {
-                status: "unavailable",
-            }),
-        )
     }
 }
 
@@ -1158,6 +1172,65 @@ mod tests {
         assert!(!message.contains("secret-canary"));
     }
 
+    /// Each call sees current database state rather than a cached result.
+    fn uncached(config: &Config) -> State<Arc<Config>> {
+        let mut config = config.clone();
+        config.readiness = Arc::new(ReadinessCache::new());
+        State(Arc::new(config))
+    }
+
+    fn unreachable_config() -> Config {
+        Config {
+            // Any probe of this URL fails, so an OK result proves the cache
+            // answered without touching the pool.
+            database_url: "not a database url".into(),
+            site_id: "local-test".into(),
+            instance_id: "test-hub".into(),
+            deployment_epoch: 1,
+            m0_test_token: None,
+            alpha_policy: Arc::new(AlphaPolicy::parse(None, None, None).unwrap()),
+            dispatch_runtime_enabled: false,
+            mfa_recovery_only: false,
+            mfa_enrollment_enabled: false,
+            sms_line_activation_enabled: false,
+            retention: RetentionPolicy::default(),
+            draining: Arc::new(AtomicBool::new(false)),
+            drain_notify: Arc::new(Notify::new()),
+            billing_provider_authorized: None,
+            readiness: Arc::new(ReadinessCache::new()),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn readiness_reuses_database_result_but_keeps_memory_checks_live() {
+        let subscription = Arc::new(AtomicBool::new(true));
+        let mut config = unreachable_config();
+        config.billing_provider_authorized =
+            Some((subscription.clone(), Arc::new(AtomicBool::new(true))));
+        // Without a cached result the unreachable database is probed and fails.
+        assert_eq!(
+            ready(uncached(&config)).await.0,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        // Seed a fresh positive database result.
+        assert!(config.readiness.get_or_refresh(|| async { true }).await);
+        let seeded = Arc::new(config);
+        for _ in 0..16 {
+            assert_eq!(ready(State(seeded.clone())).await.0, StatusCode::OK);
+        }
+        subscription.store(false, Ordering::Release);
+        assert_eq!(
+            ready(State(seeded.clone())).await.0,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        subscription.store(true, Ordering::Release);
+        seeded.draining.store(true, Ordering::Release);
+        assert_eq!(
+            ready(State(seeded)).await.0,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+
     #[tokio::test]
     #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn account_startup_requires_matching_mfa_key_or_explicit_recovery_mode() {
@@ -1265,17 +1338,15 @@ mod tests {
             draining: Arc::new(AtomicBool::new(false)),
             drain_notify: Arc::new(Notify::new()),
             billing_provider_authorized: None,
+            readiness: Arc::new(ReadinessCache::new()),
         };
         ensure_local_site(&config).await.unwrap();
         ensure_local_site(&config).await.unwrap();
-        assert_eq!(
-            ready(State(Arc::new(config.clone()))).await.0,
-            StatusCode::OK
-        );
+        assert_eq!(ready(uncached(&config)).await.0, StatusCode::OK);
         let mut dispatch_config = config.clone();
         dispatch_config.dispatch_runtime_enabled = true;
         assert_eq!(
-            ready(State(Arc::new(dispatch_config))).await.0,
+            ready(uncached(&dispatch_config)).await.0,
             StatusCode::SERVICE_UNAVAILABLE
         );
         client.batch_execute("CREATE TABLE billing_reconciliations(dirty_generation bigint,processed_generation bigint,last_failure_class text); CREATE TABLE billing_risk_events(state text,last_failure_class text)").await.unwrap();
@@ -1284,14 +1355,11 @@ mod tests {
         provider_config.billing_provider_authorized =
             Some((provider_authorized.clone(), Arc::new(AtomicBool::new(true))));
         assert_eq!(
-            ready(State(Arc::new(provider_config.clone()))).await.0,
+            ready(uncached(&provider_config)).await.0,
             StatusCode::SERVICE_UNAVAILABLE
         );
         provider_authorized.store(true, Ordering::Release);
-        assert_eq!(
-            ready(State(Arc::new(provider_config.clone()))).await.0,
-            StatusCode::OK
-        );
+        assert_eq!(ready(uncached(&provider_config)).await.0, StatusCode::OK);
         client
             .execute(
                 "INSERT INTO billing_reconciliations VALUES(2,1,'authorization')",
@@ -1300,7 +1368,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            ready(State(Arc::new(provider_config.clone()))).await.0,
+            ready(uncached(&provider_config)).await.0,
             StatusCode::SERVICE_UNAVAILABLE
         );
         client
@@ -1315,17 +1383,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            ready(State(Arc::new(provider_config.clone()))).await.0,
+            ready(uncached(&provider_config)).await.0,
             StatusCode::SERVICE_UNAVAILABLE
         );
         client
             .execute("DELETE FROM billing_risk_events", &[])
             .await
             .unwrap();
-        assert_eq!(
-            ready(State(Arc::new(provider_config))).await.0,
-            StatusCode::OK
-        );
+        assert_eq!(ready(uncached(&provider_config)).await.0, StatusCode::OK);
         client
             .execute(
                 "UPDATE sites SET enabled=FALSE WHERE site_id='local-test'",
@@ -1335,7 +1400,7 @@ mod tests {
             .unwrap();
         assert!(ensure_local_site(&config).await.is_err());
         assert_eq!(
-            ready(State(Arc::new(config))).await.0,
+            ready(uncached(&config)).await.0,
             StatusCode::SERVICE_UNAVAILABLE
         );
         setup

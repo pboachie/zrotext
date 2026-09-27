@@ -149,6 +149,7 @@ pub(super) async fn open(
 ) -> Result<(StatusCode, Json<OpenResponse>), AuthHttpError> {
     require_enabled(&state)?;
     require_ids(&[line_id, body.device_id])?;
+    crate::http_auth::require_session_cookie(&headers)?;
     let mut client = connect(&state.database_url).await?;
     let owner = require_owner(
         &client,
@@ -180,6 +181,7 @@ pub(super) async fn list(
     headers: HeaderMap,
 ) -> Result<Json<LinePage>, AuthHttpError> {
     require_enabled(&state)?;
+    crate::http_auth::require_session_cookie(&headers)?;
     let client = connect(&state.database_url).await?;
     let owner = require_owner(
         &client,
@@ -261,6 +263,7 @@ pub(super) async fn view(
 ) -> Result<Json<ViewResponse>, AuthHttpError> {
     require_enabled(&state)?;
     require_ids(&[line_id, challenge_id])?;
+    crate::http_auth::require_session_cookie(&headers)?;
     let client = connect(&state.database_url).await?;
     let owner = require_owner(
         &client,
@@ -317,6 +320,7 @@ pub(super) async fn approve(
     {
         return Err(AuthHttpError::BadRequest);
     }
+    crate::http_auth::require_session_cookie(&headers)?;
     let mut client = connect(&state.database_url).await?;
     let owner = require_owner(
         &client,

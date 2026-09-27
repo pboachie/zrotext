@@ -103,6 +103,44 @@ fn bearer_and_case_id_inputs_are_strict() {
 }
 
 #[tokio::test]
+async fn status_and_cancel_reject_missing_bearer_before_database() {
+    // An unparsable URL fails any connection attempt with 503, so a 401 here
+    // proves the handler never asked the pool for a connection.
+    let app = router(
+        MessagesHttpState::new(
+            "not a database url".into(),
+            Arc::new(TokenHasher::new(crate::test_keys::key(52)).unwrap()),
+            Arc::new(AlphaPolicy::parse(None, None, None).unwrap()),
+            false,
+        )
+        .unwrap(),
+    );
+    let path = format!("/messages/{}", Uuid::new_v4());
+    let cancel = format!("{path}/cancel");
+    for authorization in [None, Some("Basic abc"), Some("Bearer "), Some("Bearer a b")] {
+        for (method, uri) in [("GET", &path), ("POST", &cancel)] {
+            let mut request = Request::builder().method(method).uri(uri.as_str());
+            if let Some(value) = authorization {
+                request = request.header(header::AUTHORIZATION, value);
+            }
+            let response = app
+                .clone()
+                .oneshot(request.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::UNAUTHORIZED,
+                "{method} {uri} with {authorization:?}"
+            );
+        }
+    }
+    // A well-formed bearer does need the database, which is unavailable here.
+    let response = app.oneshot(get(&path, "ztk_fixture")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
 async fn billing_denials_have_distinct_http_codes() {
     for (error, status, code, retry_after) in [
         (

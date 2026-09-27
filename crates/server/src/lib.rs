@@ -17,6 +17,7 @@ pub mod ingress;
 pub mod maintenance;
 pub mod owner_ui;
 pub mod provider_sms;
+pub mod readiness;
 pub mod retention;
 pub mod root_backup;
 pub mod runtime_db;

@@ -339,8 +339,10 @@ async fn status(
     Path(message_id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Result<Json<StatusBody>, MessageHttpError> {
+    // A missing or malformed header is rejected before taking a pooled slot.
+    let token = bearer(&headers)?;
     let mut client = connect(&state.database_url).await?;
-    let principal = auth::authenticate_api_key(&client, &state.hasher, bearer(&headers)?)
+    let principal = auth::authenticate_api_key(&client, &state.hasher, token)
         .await
         .map_err(map_auth)?;
     let snapshot = DeliveryStore::new(&mut client)
@@ -366,8 +368,9 @@ async fn cancel(
     Path(message_id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Result<StatusCode, MessageHttpError> {
+    let token = bearer(&headers)?;
     let mut client = connect(&state.database_url).await?;
-    let principal = auth::authenticate_api_key(&client, &state.hasher, bearer(&headers)?)
+    let principal = auth::authenticate_api_key(&client, &state.hasher, token)
         .await
         .map_err(map_auth)?;
     let snapshot = DeliveryStore::new(&mut client)

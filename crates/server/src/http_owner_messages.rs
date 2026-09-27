@@ -80,6 +80,9 @@ async fn list_messages(
     Query(query): Query<ListQuery>,
     headers: HeaderMap,
 ) -> Response {
+    if let Err(error) = crate::http_auth::require_session_cookie(&headers) {
+        return error.into_response();
+    }
     let Ok(client) = crate::runtime_db::connect(&state.database_url).await else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };

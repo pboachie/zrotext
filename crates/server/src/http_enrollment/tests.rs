@@ -897,3 +897,34 @@ async fn phones_pair_and_reconnect_after_anonymous_budgets_are_spent() {
         .await
         .unwrap();
 }
+
+#[tokio::test]
+async fn owner_routes_reject_missing_session_cookie_before_database() {
+    // An unparsable URL fails any connection attempt with 503, so a 401 here
+    // proves the handler never asked the pool for a connection.
+    let app = router(EnrollmentHttpState::new(
+        "not a database url".into(),
+        Arc::new(TokenHasher::new(crate::test_keys::key(9)).unwrap()),
+        Arc::new(EnrollmentHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap()),
+        "https://test.example".into(),
+    ));
+    let id = Uuid::new_v4();
+    for (method, uri) in [
+        (Method::GET, "/devices".to_owned()),
+        (Method::GET, format!("/pairings/{id}")),
+        (Method::POST, format!("/pairings/{id}/cancel")),
+        (Method::DELETE, format!("/devices/{id}")),
+    ] {
+        let request = Request::builder()
+            .method(method.clone())
+            .uri(&uri)
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "{method} {uri}"
+        );
+    }
+}

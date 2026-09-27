@@ -176,6 +176,7 @@ async fn checkout(
     if !body.is_empty() {
         return Err(AuthHttpError::BadRequest);
     }
+    crate::http_auth::require_session_cookie(&headers)?;
     let mut db = connect(&state.auth.database_url).await?;
     let owner = http_auth::require_owner(
         &db,
@@ -269,6 +270,7 @@ async fn portal(
     if !body.is_empty() {
         return Err(AuthHttpError::BadRequest);
     }
+    crate::http_auth::require_session_cookie(&headers)?;
     let db = connect(&state.auth.database_url).await?;
     let owner = http_auth::require_owner(
         &db,
