@@ -243,7 +243,7 @@ The following routes remain design targets, not current server behavior.
 | GET /v1/devices | Health, SIM, queue, last event, supported capabilities |
 | POST /v1/webhooks | Strict HTTPS URL and egress validation; scoped admin action |
 | GET /v1/usage | Quotas, reservations, refunds, reset times, clear units |
-| POST /v1/billing/checkout | Server chooses price; owner-only; idempotent |
+| POST /v1/billing/checkout | Server chooses price; owner-only; returns the one open session per account |
 | POST /v1/billing/portal | Returns Stripe-hosted portal session URL; no arbitrary iframe |
 | POST /v1/billing/stripe-events | Raw-body signature validation; dedupe; fast durable acknowledgment |
 | GET /healthz; GET /readyz | Minimal public liveness; private detailed readiness |
