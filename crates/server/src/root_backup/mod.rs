@@ -8,7 +8,10 @@ use aes_gcm::{
     aead::{AeadInOut, KeyInit},
 };
 use hkdf::Hkdf;
-use p256::{SecretKey, elliptic_curve::sec1::ToSec1Point};
+use p256::{
+    SecretKey,
+    elliptic_curve::{Generate, sec1::ToSec1Point},
+};
 use rand::{TryCryptoRng, rngs::SysRng};
 use sha2::Sha256;
 use zeroize::Zeroizing;
@@ -203,19 +206,13 @@ fn seal_with_rng<R: TryCryptoRng>(
     check_root(root, expected)?;
     let mut backup_id = [0; 16];
     let mut vault_key = Zeroizing::new([0; 32]);
-    let mut salt = [0; 32];
-    let mut wrap_nonce = [0; 12];
-    let mut body_nonce = [0; 12];
     rng.try_fill_bytes(&mut backup_id)
         .map_err(|_| BackupError::Randomness)?;
     rng.try_fill_bytes(vault_key.as_mut_slice())
         .map_err(|_| BackupError::Randomness)?;
-    rng.try_fill_bytes(&mut salt)
-        .map_err(|_| BackupError::Randomness)?;
-    rng.try_fill_bytes(&mut wrap_nonce)
-        .map_err(|_| BackupError::Randomness)?;
-    rng.try_fill_bytes(&mut body_nonce)
-        .map_err(|_| BackupError::Randomness)?;
+    let salt = <[u8; 32]>::try_generate_from_rng(rng).map_err(|_| BackupError::Randomness)?;
+    let wrap_nonce = <[u8; 12]>::try_generate_from_rng(rng).map_err(|_| BackupError::Randomness)?;
+    let body_nonce = <[u8; 12]>::try_generate_from_rng(rng).map_err(|_| BackupError::Randomness)?;
     if backup_id == [0; 16] {
         return Err(BackupError::Randomness);
     }
