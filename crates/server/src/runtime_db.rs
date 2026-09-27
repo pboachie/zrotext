@@ -541,6 +541,27 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("sslmode"), "{message}");
         assert!(!message.contains("<secret>"));
+
+        // Parse errors that would echo input text reach callers only as
+        // fixed diagnostics.
+        for url in [
+            "host=writer.example password='zt-leak-marker dbname=zrotext",
+            "postgres://u@writer.example/zrotext?%0Azt-leak-marker%0A=1",
+        ] {
+            let Err(error) = acquire(&pool, url).await else {
+                panic!("{url:?} must not connect");
+            };
+            assert!(matches!(
+                error,
+                ConnectError::Transport(zrotext_postgres_connection::ConnectError::Configuration(
+                    _
+                ))
+            ));
+            for text in [error.to_string(), format!("{error:?}")] {
+                assert!(!text.contains("zt-leak-marker"), "{url:?} leaked: {text:?}");
+                assert!(!text.contains('\n'), "{url:?} injected a newline: {text:?}");
+            }
+        }
     }
 
     #[tokio::test]

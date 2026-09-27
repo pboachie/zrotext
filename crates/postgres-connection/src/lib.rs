@@ -94,17 +94,46 @@ fn normalize_verified_sslmode(url: &str) -> Cow<'_, str> {
     }
 }
 
+/// Options whose invalid values tokio-postgres reports under a fixed label.
+const KNOWN_OPTIONS: &[&str] = &[
+    "channel_binding",
+    "connect_timeout",
+    "host",
+    "hostaddr",
+    "keepalives",
+    "keepalives_idle",
+    "keepalives_interval",
+    "keepalives_retries",
+    "load_balance_hosts",
+    "port",
+    "sslnegotiation",
+    "target_session_attrs",
+    "tcp_user_timeout",
+];
+
+/// Map a parse failure to a fixed diagnostic. Cause text is only compared
+/// against fixed strings and never copied, because some causes carry parts of
+/// the connection string (an unknown option name, or text around a misquoted
+/// value), which can include credentials.
 fn describe_parse_error(error: &tokio_postgres::Error) -> String {
-    // The causes tokio-postgres reports name an option, never its value.
     let detail = std::error::Error::source(error).map(ToString::to_string);
-    match detail {
-        Some(detail) if detail.contains("`sslmode`") => "unsupported sslmode; use sslmode=require \
-             (certificate chain and hostname are always verified), prefer, or disable; \
-             postgres:// URLs also accept verify-full and verify-ca as require"
-            .into(),
-        Some(detail) => format!("cannot parse PostgreSQL connection string: {detail}"),
-        None => "cannot parse PostgreSQL connection string".into(),
+    let detail = detail.as_deref().unwrap_or_default();
+    if detail == "invalid value for option `sslmode`" {
+        return "unsupported sslmode; use sslmode=require (certificate chain and hostname are \
+                always verified), prefer, or disable; postgres:// URLs also accept verify-full \
+                and verify-ca as require"
+            .into();
     }
+    if let Some(option) = KNOWN_OPTIONS
+        .iter()
+        .find(|option| detail == format!("invalid value for option `{option}`"))
+    {
+        return format!("invalid value for PostgreSQL connection option {option}");
+    }
+    if detail.starts_with("unknown option `") {
+        return "PostgreSQL connection string contains an unsupported option".into();
+    }
+    "cannot parse PostgreSQL connection string".into()
 }
 
 fn allow_plaintext() -> Result<bool, ConnectError> {
@@ -306,12 +335,73 @@ mod tests {
         else {
             panic!("expected a configuration error");
         };
-        assert!(message.contains("sslrootcert"), "{message}");
+        assert!(message.contains("unsupported option"), "{message}");
         assert!(!message.contains("<secret>") && !message.contains("ca.pem"));
+        let Err(ConnectError::Configuration(message)) =
+            parse_config("postgres://u@writer.example/zrotext?connect_timeout=soon")
+        else {
+            panic!("expected a configuration error");
+        };
+        assert_eq!(
+            message,
+            "invalid value for PostgreSQL connection option connect_timeout"
+        );
         assert!(matches!(
             check_url("postgres://u@writer.example/zrotext?sslmode=verify-any"),
             Err(ConnectError::Configuration(_))
         ));
+    }
+
+    const UNPARSEABLE: &str = "cannot parse PostgreSQL connection string";
+    const UNSUPPORTED_OPTION: &str = "PostgreSQL connection string contains an unsupported option";
+
+    /// Inputs whose tokio-postgres parse errors echo caller-supplied text,
+    /// with the fixed diagnostic each must produce instead.
+    const LEAKY_CONNECTION_STRINGS: &[(&str, &str)] = &[
+        // A misquoted password: causes quote or point into the input.
+        (
+            "host=writer.example password='zt-leak-marker dbname=zrotext",
+            UNPARSEABLE,
+        ),
+        (
+            "host=writer.example password='zt' zt-leak-marker dbname=zrotext",
+            UNPARSEABLE,
+        ),
+        (
+            "host=writer.example password = 'zt-leak-marker\\",
+            UNPARSEABLE,
+        ),
+        ("host=writer.example password=''zt-leak-marker", UNPARSEABLE),
+        // An unknown option name is copied into the cause verbatim.
+        (
+            "postgres://u@writer.example/zrotext?zt-leak-marker=1",
+            UNSUPPORTED_OPTION,
+        ),
+        ("host=writer.example zt-leak-marker=1", UNSUPPORTED_OPTION),
+        // A percent-decoded newline in an option name.
+        (
+            "postgres://u@writer.example/zrotext?%0Azt-leak-marker%0A=1",
+            UNSUPPORTED_OPTION,
+        ),
+    ];
+
+    #[test]
+    fn parse_errors_are_fixed_diagnostics_that_never_echo_input() {
+        for (url, expected) in LEAKY_CONNECTION_STRINGS {
+            let error = match parse_config(url) {
+                Err(error @ ConnectError::Configuration(_)) => error,
+                Err(error) => panic!("expected a configuration error, got {error:?}"),
+                Ok(_) => panic!("expected {url:?} to be rejected"),
+            };
+            let ConnectError::Configuration(message) = &error else {
+                unreachable!()
+            };
+            assert_eq!(message, expected, "{url:?}");
+            for text in [error.to_string(), format!("{error:?}")] {
+                assert!(!text.contains("zt-leak-marker"), "{url:?} leaked: {text:?}");
+                assert!(!text.contains('\n'), "{url:?} injected a newline: {text:?}");
+            }
+        }
     }
 
     #[tokio::test]
