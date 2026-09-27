@@ -20,6 +20,10 @@ class DeviceSmokeTests(unittest.TestCase):
         for index in range(5):
             output += result(smoke.ACCESSIBILITY, f"example{index}")
         smoke.verify_results(output + "INSTRUMENTATION_CODE: -1\n", {smoke.PRECONDITIONS: 1, smoke.ACCESSIBILITY: 5})
+        for index in range(12):
+            output += result(smoke.MANIFEST_AUTHORITY, f"example{index}")
+        smoke.verify_results(output + "INSTRUMENTATION_CODE: -1\n",
+                             {smoke.PRECONDITIONS: 1, smoke.ACCESSIBILITY: 5, smoke.MANIFEST_AUTHORITY: 12})
 
     def test_failure_skips_and_incomplete_runs_fail(self):
         for code in [-1, -2, -3, -4]:
@@ -44,3 +48,24 @@ class DeviceSmokeTests(unittest.TestCase):
             source.parent.mkdir(parents=True)
             source.touch()
             self.assertEqual(smoke.selected_tests(root), {smoke.PRECONDITIONS: 1, smoke.ACCESSIBILITY: 5})
+
+    def test_manifest_authority_is_selected_only_when_source_exists(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "android/app/src/androidTest/java/org/zrotext/gateway/ManifestAuthorityDeviceTest.kt"
+            source.parent.mkdir(parents=True)
+            source.touch()
+            self.assertEqual(smoke.selected_tests(root), {smoke.PRECONDITIONS: 1, smoke.MANIFEST_AUTHORITY: 12})
+
+    def test_missing_skipped_or_unselected_manifest_corpus_fails(self):
+        expected = {smoke.PRECONDITIONS: 1, smoke.MANIFEST_AUTHORITY: 12}
+        partial = result(smoke.PRECONDITIONS)
+        for index in range(11):
+            partial += result(smoke.MANIFEST_AUTHORITY, f"example{index}")
+        for output in [partial, partial + result(smoke.MANIFEST_AUTHORITY, "last", -3),
+                       partial + result(smoke.MANIFEST_AUTHORITY, "example0")]:
+            with self.subTest(output=output), self.assertRaises(ValueError):
+                smoke.verify_results(output + "INSTRUMENTATION_CODE: -1\n", expected)
+        with self.assertRaises(ValueError):
+            smoke.verify_results(result(smoke.MANIFEST_AUTHORITY) + "INSTRUMENTATION_CODE: -1\n",
+                                 {smoke.PRECONDITIONS: 1})
