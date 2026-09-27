@@ -43,8 +43,6 @@ fn token_digest(pepper: &[u8], domain: &[u8], token: &str) -> [u8; 32] {
 }
 
 const ORIGIN: &str = "https://owner.example.test";
-const SQL: &str =
-    include_str!("../../../../deploy/compose/migrations/046_sealed_root_ceremonies.sql");
 
 struct Owner {
     f: Fixture,
@@ -59,7 +57,6 @@ struct Owner {
 impl Owner {
     async fn new() -> Self {
         let f = Fixture::without_authority().await;
-        f.db.batch_execute(SQL).await.unwrap();
         // Separate account without protected phone tombstones permits an exact
         // account-erasure cascade exercise alongside the complete parent schema.
         let account = Uuid::new_v4();
