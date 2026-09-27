@@ -889,7 +889,9 @@ async fn phones_pair_and_reconnect_after_anonymous_budgets_are_spent() {
         .get(0);
     // Per route: the anonymous budget row and 300 admitted junk subjects,
     // plus a verified ceiling and the one real pairing or device subject.
-    assert_eq!(rows, 4 * (1 + 300) + 4 * 2);
+    // Creating the real pairing above also spends the owner's `pair_create`
+    // budget once, adding its own global and per-account subject row.
+    assert_eq!(rows, 4 * (1 + 300) + 4 * 2 + 2);
     admin
         .batch_execute(&format!(
             "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
