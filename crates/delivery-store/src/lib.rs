@@ -8,6 +8,8 @@ use tokio_postgres::{Client, Row, Transaction, error::SqlState};
 use uuid::Uuid;
 use zrotext_domain::{Evidence, MessageState};
 
+pub mod sealed;
+
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
     #[error("database operation failed")]
@@ -249,45 +251,7 @@ impl<'a> DeliveryStore<'a> {
         let expiry = input.expires_at_ms as f64;
         let tx = self.client.transaction().await?;
         let require_reservation = if let MeteringTime::Alpha { billing_enabled } = metering {
-            // Billing ingress locks an existing customer row before taking
-            // account-related FK locks. Follow that order for a bound tenant.
-            let bound = tx
-                .query_opt(
-                    "SELECT 1 FROM billing_customers WHERE account_id=$1 FOR SHARE",
-                    &[&input.account_id],
-                )
-                .await?
-                .is_some();
-            if bound {
-                tx.query_one(
-                    "SELECT id FROM accounts WHERE id=$1 FOR NO KEY UPDATE",
-                    &[&input.account_id],
-                )
-                .await?;
-                true
-            } else {
-                // The stronger lock conflicts with a concurrent new binding's
-                // FK KEY SHARE. Recheck after acquiring it; if the binding won
-                // the race, abort and let a later request use child-first order.
-                // This recheck must not lock the customer: risk ingress may
-                // already hold it and need an account FK KEY SHARE lock.
-                tx.query_one(
-                    "SELECT id FROM accounts WHERE id=$1 FOR UPDATE",
-                    &[&input.account_id],
-                )
-                .await?;
-                if tx
-                    .query_opt(
-                        "SELECT 1 FROM billing_customers WHERE account_id=$1",
-                        &[&input.account_id],
-                    )
-                    .await?
-                    .is_some()
-                {
-                    return Err(StoreError::QuotaNotConfigured);
-                }
-                billing_enabled
-            }
+            lock_billing_account(&tx, input.account_id, billing_enabled).await?
         } else {
             !matches!(metering, MeteringTime::Unmetered)
         };
@@ -579,6 +543,7 @@ impl<'a> DeliveryStore<'a> {
                    WHERE j.next_attempt_at<=now() AND (j.lease_until IS NULL OR j.lease_until<now()) \
                      AND j.grant_issued_at IS NULL AND j.finished_at IS NULL \
                      AND m.state IN ('queued','claimed') AND m.expires_at>now() \
+                     AND m.transport_mode='synthetic_alpha' \
                      AND d.revoked_at IS NULL \
                      AND ($2::uuid IS NULL OR j.account_id=$2) \
                      AND ($3::uuid IS NULL OR j.device_id=$3) \
@@ -872,7 +837,8 @@ impl<'a> DeliveryStore<'a> {
                 "SELECT j.generation,j.lease_owner,j.lease_until>clock_timestamp(),j.grant_issued_at IS NULL, \
                         m.state,m.expires_at>clock_timestamp(),m.recipient_digest,m.recipient_e164 \
                  FROM dispatch_jobs j JOIN messages m ON m.id=j.message_id \
-                 WHERE j.account_id=$1 AND j.message_id=$2 AND j.device_id=$3 FOR UPDATE OF j,m",
+                 WHERE j.account_id=$1 AND j.message_id=$2 AND j.device_id=$3 \
+                   AND m.transport_mode='synthetic_alpha' FOR UPDATE OF j,m",
                 &[&claim.account_id, &claim.message_id, &claim.device_id],
             )
             .await?
@@ -1223,6 +1189,53 @@ async fn reservation_exists(
         )
         .await?
         .is_some())
+}
+
+// Shared with dormant sealed admission; preserve billing-customer/account lock order.
+async fn lock_billing_account(
+    tx: &Transaction<'_>,
+    account_id: Uuid,
+    billing_enabled: bool,
+) -> Result<bool, StoreError> {
+    // Billing ingress locks an existing customer row before taking
+    // account-related FK locks. Follow that order for a bound tenant.
+    let bound = tx
+        .query_opt(
+            "SELECT 1 FROM billing_customers WHERE account_id=$1 FOR SHARE",
+            &[&account_id],
+        )
+        .await?
+        .is_some();
+    if bound {
+        tx.query_one(
+            "SELECT id FROM accounts WHERE id=$1 FOR NO KEY UPDATE",
+            &[&account_id],
+        )
+        .await?;
+        Ok(true)
+    } else {
+        // The stronger lock conflicts with a concurrent new binding's
+        // FK KEY SHARE. Recheck after acquiring it; if the binding won
+        // the race, abort and let a later request use child-first order.
+        // This recheck must not lock the customer: risk ingress may
+        // already hold it and need an account FK KEY SHARE lock.
+        tx.query_one(
+            "SELECT id FROM accounts WHERE id=$1 FOR UPDATE",
+            &[&account_id],
+        )
+        .await?;
+        if tx
+            .query_opt(
+                "SELECT 1 FROM billing_customers WHERE account_id=$1",
+                &[&account_id],
+            )
+            .await?
+            .is_some()
+        {
+            return Err(StoreError::QuotaNotConfigured);
+        }
+        Ok(billing_enabled)
+    }
 }
 
 async fn reserve_outbound(

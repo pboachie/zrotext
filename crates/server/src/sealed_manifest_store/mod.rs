@@ -20,6 +20,8 @@ use crate::{
 use tokio_postgres::Transaction;
 use uuid::Uuid;
 
+pub(crate) mod outbound;
+
 #[derive(Debug, thiserror::Error)]
 pub enum AdmissionError {
     #[error("sealed authority rejected: {0}")]
