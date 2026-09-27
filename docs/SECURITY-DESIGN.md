@@ -122,6 +122,15 @@ the budget; key revocation does not refund it. Exhaustion returns 429, and budge
 storage failure returns 503 without creating a key. This bounds issuance rate,
 not the lifetime retention of audit metadata for previously created keys.
 
+Pairing creation (`POST /v1/enrollment/pairings`) consumes an atomic PostgreSQL
+budget of 10 attempts per account per 15-minute window and 120 globally per
+minute, charged after the owner session and CSRF checks and before the pairing
+row is written. Cancelling or finishing a pairing does not refund it. Exhaustion
+returns 429 and budget storage failure returns 503, both without creating a
+pairing. This keeps one owner from inserting pairing requests faster than
+enrollment maintenance removes them. Open pairings are not capped: an owner can
+still hold several unclaimed pairings at once until they expire.
+
 ### Owner session and API key lifetime
 
 An owner session expires 14 days after sign-in, and earlier if it goes unused
@@ -164,6 +173,14 @@ A background worker deletes idle counter rows only after the longest window of
 their budget, plus one minute, has passed, so pruning never resets a budget
 that is still in force. Retention is derived from the same policy table the
 budgets use; scopes it does not know are kept for two minutes.
+
+Owner second factors have two separate failure budgets of five rejected codes
+per 15 minutes. Sign-in completion spends one, stored on the owner's MFA row
+and cleared by a successful sign-in factor. Factors presented from a live owner
+session (password change, revoking other sessions, MFA confirmation and
+removal, and owner step-ups) spend the other, kept in the abuse counters and
+keyed by the owner. Someone who knows only the password can delay sign-in but
+cannot lock a signed-in owner out of those recovery actions.
 
 The login-client cookie (`__Host-zrotext_login_client`; HttpOnly,
 SameSite=Strict, 180 days) is set after a full sign-in from a browser that lacks

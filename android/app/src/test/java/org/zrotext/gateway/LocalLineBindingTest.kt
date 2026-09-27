@@ -210,13 +210,14 @@ class LocalLineBindingTest {
         old.execSQL("INSERT INTO local_line_binding_v10 SELECT slot,accountId,deviceId,lineId,generation,subscriptionId,installedAtMs FROM local_line_binding")
         old.execSQL("DROP TABLE local_line_binding")
         old.execSQL("ALTER TABLE local_line_binding_v10 RENAME TO local_line_binding")
+        old.execSQL("DROP TABLE sealed_preparations") // Absent from the reconstructed v10 schema.
         old.version = 10
         old.close()
         val upgraded = Room.databaseBuilder(context, SmsJournalDatabase::class.java, name)
-            .allowMainThreadQueries().addMigrations(SmsJournalDatabase.MIGRATION_10_11).build()
+            .allowMainThreadQueries().addMigrations(SmsJournalDatabase.MIGRATION_10_11, SmsJournalDatabase.MIGRATION_11_12).build()
         try {
             val dao = upgraded.attempts()
-            assertEquals(11, upgraded.openHelper.readableDatabase.version)
+            assertEquals(12, upgraded.openHelper.readableDatabase.version)
             val legacy = dao.currentLineBinding()!!
             assertNull(legacy.cardId)
             assertFalse(dao.installVerifiedLineBinding(legacy.copy(generation = 4,
@@ -277,15 +278,16 @@ class LocalLineBindingTest {
         old.execSQL("INSERT INTO local_line_binding_v8 SELECT slot,accountId,deviceId,lineId,generation,subscriptionId,installedAtMs FROM local_line_binding")
         old.execSQL("DROP TABLE local_line_binding")
         old.execSQL("ALTER TABLE local_line_binding_v8 RENAME TO local_line_binding")
+        old.execSQL("DROP TABLE sealed_preparations") // Absent from the reconstructed v8 schema.
         old.version = 8
         old.close()
         val upgraded = Room.databaseBuilder(context, SmsJournalDatabase::class.java, name)
             .allowMainThreadQueries().addMigrations(SmsJournalDatabase.MIGRATION_8_9,
                 SmsJournalDatabase.MIGRATION_9_10,
-                SmsJournalDatabase.MIGRATION_10_11).build()
+                SmsJournalDatabase.MIGRATION_10_11, SmsJournalDatabase.MIGRATION_11_12).build()
         try {
             val dao = upgraded.attempts()
-            assertEquals(11, upgraded.openHelper.readableDatabase.version)
+            assertEquals(12, upgraded.openHelper.readableDatabase.version)
             assertTrue(dao.isRecipientSuppressed(sender))
             val oldWithdrawal = dao.localWithdrawal(firstPdu)!!
             assertNull(oldWithdrawal.eventId)

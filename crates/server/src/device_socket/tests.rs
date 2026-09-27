@@ -1240,3 +1240,59 @@ async fn writer_claim_replay_epoch_and_revocation() {
         .await
         .unwrap();
 }
+
+#[test]
+fn heartbeat_flood_renews_at_most_once_per_window_and_acks_from_memory() {
+    let start = Instant::now();
+    let mut budget = HeartbeatBudget::new(start);
+    let mut renewals = 0;
+    let mut memory_acks = 0;
+    // One heartbeat per second for a minute: every frame is answered, but
+    // storage sees only one renewal per half heartbeat interval.
+    for second in 0..60 {
+        match budget.admit(start + Duration::from_secs(second)) {
+            HeartbeatAction::Renew => renewals += 1,
+            HeartbeatAction::AckFromMemory => memory_acks += 1,
+            HeartbeatAction::Abuse => panic!("60 heartbeats in a minute are within the cap"),
+        }
+    }
+    assert_eq!(renewals, 60 / (HEARTBEAT_SECONDS / 2));
+    assert_eq!(renewals + memory_acks, 60);
+}
+
+#[test]
+fn regular_heartbeats_always_renew_the_lease() {
+    let start = Instant::now();
+    let mut budget = HeartbeatBudget::new(start);
+    for beat in 0..10 {
+        assert_eq!(
+            budget.admit(start + Duration::from_secs(beat * HEARTBEAT_SECONDS)),
+            HeartbeatAction::Renew
+        );
+    }
+    // A client that answers at exactly the renewal interval still renews.
+    let later = start + Duration::from_secs(10 * HEARTBEAT_SECONDS);
+    assert_eq!(budget.admit(later), HeartbeatAction::Renew);
+    assert_eq!(
+        budget.admit(later + HEARTBEAT_RENEW_INTERVAL - Duration::from_millis(1)),
+        HeartbeatAction::AckFromMemory
+    );
+    assert_eq!(
+        budget.admit(later + HEARTBEAT_RENEW_INTERVAL),
+        HeartbeatAction::Renew
+    );
+}
+
+#[test]
+fn heartbeat_burst_beyond_the_cap_is_abuse() {
+    let now = Instant::now();
+    let mut budget = HeartbeatBudget::new(now);
+    assert_eq!(budget.admit(now), HeartbeatAction::Renew);
+    for _ in 1..MAX_HEARTBEATS_PER_WINDOW {
+        assert_eq!(budget.admit(now), HeartbeatAction::AckFromMemory);
+    }
+    assert_eq!(budget.admit(now), HeartbeatAction::Abuse);
+    // The cap is per window; a new window starts from zero.
+    let next = now + HEARTBEAT_ABUSE_WINDOW;
+    assert_eq!(budget.admit(next), HeartbeatAction::Renew);
+}

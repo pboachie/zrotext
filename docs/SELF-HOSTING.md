@@ -319,6 +319,12 @@ reserve is full. Device sockets release their database clients between handshake
 steps and after each database operation, before waiting for or writing frames.
 The separate stream limits remain 32 authenticated sessions and 32 handshakes
 per process; idle phones and pending proofs do not reserve database clients.
+Heartbeats cannot multiply database work: each session renews its lease at most
+once every 15 seconds (four renewals a minute) and answers faster heartbeats
+from memory, plus one session check every 10 seconds, so heartbeats and those
+checks together cost a socket at most 10 device database operations a minute.
+A session that sends more than 60 heartbeats in a minute is closed with policy
+code 1008.
 Database saturation can still close a stream with retry-later code 1013, so
 these socket limits are admission ceilings, not a throughput guarantee. Count every hub
 and other database client when sizing PostgreSQL: two hubs can use 72 runtime
@@ -425,6 +431,14 @@ redaction; the worker never prunes them. Owner off-channel holds, review decisio
 and their append-only audit (`owner_recipient_holds`, `owner_opt_out_review_decisions`,
 `owner_opt_out_audit`) are kept the same way; they hold codes and IDs, never notes or SMS content. Backups, WAL, replicas, and PostgreSQL dead tuples need their own lifecycle
 policy. A database row update or deletion does not immediately erase old pages.
+
+The owner takeout (`GET /v1/owner/export`) still lists a message after its
+content has been redacted: `recipient_e164`, `transport_payload` and
+`payload_encoding` are `null` and `content_scrubbed` is `true`, while the
+message ID, state, timestamps and any remaining events are exported as usual.
+A message that still carries content reports `content_scrubbed: false` and a
+`payload_encoding` of `utf8` for a `synthetic_alpha` text body, or `base64`
+for a `sealed_candidate02` envelope or any body that is not valid UTF-8.
 
 Message events are deleted only after their parent message content has been
 redacted. If the event window is shorter than the content window, or an old

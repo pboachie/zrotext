@@ -148,4 +148,6 @@ jobs:
         run: sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0'
       - name: Lint, test and build debug APK
         working-directory: android
-        run: ./gradlew :app:lintDebug :app:testDebugUnitTest :app:assembleDebug --no-daemon
+        # assembleDebugAndroidTest compiles src/androidTest against the debug APK. It does not
+        # run those tests (no device in CI) but it does catch a broken instrumented test file.
+        run: ./gradlew :app:lintDebug :app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon

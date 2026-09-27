@@ -14,6 +14,9 @@ use sha2::{Digest, Sha256};
 use std::{ops::Deref, time::Duration};
 use zrotext_delivery_store::{Claim, DeliveryStore, NewMessage, SessionRecord};
 
+#[cfg(feature = "sealed-interop-tests")]
+mod cross_client_interop;
+
 struct TestCase {
     fixture: Fixture,
     principal: ApiPrincipal,

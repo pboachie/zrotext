@@ -135,7 +135,7 @@
       <section id="approved-devices" aria-labelledby="devices-title">
         <div class="section-head"><h2 id="devices-title">Approved devices</h2><button id="refresh-devices" type="button" class="quiet">Refresh</button></div>
         <label class="check"><input id="auto-refresh" type="checkbox" checked> Refresh devices and recent messages automatically</label>
-        <p>Updates run every 15 seconds while this tab is visible. A list pauses while you browse older entries, focus a row, or open message events. Use Refresh to return to its latest entries.</p>
+        <p>While this tab is visible, device and message updates arrive over a live same-origin event stream and lists refresh within a few seconds of a server-side change. If that stream cannot connect, updates fall back to a 15-second snapshot refresh. A list pauses while you browse older entries, focus a row, or open message events. Use Refresh to return to its latest entries.</p>
         <p>Approval permits a phone to connect. A displayed authenticated socket lease is a server observation that can lag a dropped connection by up to 90 seconds. It does not prove SMS permission, SIM service, or dispatch readiness. Check the gateway app on the phone before a controlled test.</p>
         <p>Pending counts accepted, queued and claimed messages; in flight counts submitting and submitted messages. These server states can include work awaiting expiry reconciliation. Counts stop at 1,000+ per category. Check the snapshot time and message timeline for unknown or final outcomes.</p>
         <p id="device-cap-prompt" role="status" aria-live="polite" hidden></p>
