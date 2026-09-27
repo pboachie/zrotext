@@ -328,7 +328,7 @@ Keep message content out of reach of the server, and give owners control of thei
 
 | Capability | Stage | Evidence |
 |---|---|---|
-| Owner accounts, MFA and scoped API keys | Build | [#43](https://github.com/pboachie/zrotext/pull/43), [#172](https://github.com/pboachie/zrotext/pull/172), [#175](https://github.com/pboachie/zrotext/pull/175), [MFA operations](MFA-OPERATIONS.md), [#240](https://github.com/pboachie/zrotext/pull/240) |
+| Owner accounts, MFA and scoped API keys | Build | [#43](https://github.com/pboachie/zrotext/pull/43), [#172](https://github.com/pboachie/zrotext/pull/172), [#175](https://github.com/pboachie/zrotext/pull/175), [MFA operations](MFA-OPERATIONS.md), [#240](https://github.com/pboachie/zrotext/pull/240), [#207](https://github.com/pboachie/zrotext/pull/207), [#217](https://github.com/pboachie/zrotext/pull/217), [Recovery tests](../crates/server/src/auth/account/tests.rs) |
 | Sealed-content protocol (client-side keys) | Design | [Draft 01](../protocol/drafts/zt-sealed-draft-01.md), [draft 02 proposal](../protocol/drafts/zt-sealed-draft-02-proposal.md), [#159](https://github.com/pboachie/zrotext/pull/159), [#162](https://github.com/pboachie/zrotext/pull/162), [#260](https://github.com/pboachie/zrotext/pull/260) |
 | Data export and account deletion | Build | [Data retention](SELF-HOSTING.md#data-retention), [#267](https://github.com/pboachie/zrotext/pull/267), [#271](https://github.com/pboachie/zrotext/pull/271) retention evidence covers history pruning only |
 
@@ -340,8 +340,8 @@ Keep message content out of reach of the server, and give owners control of thei
 - [x] MFA, session revocation and CSRF protection
 - [x] API keys with scopes, shown once at creation
 - [x] MFA-bound SMS approval public-key registration and revocation; line activation remains an internal prerequisite ([contract](../protocol/v1/sms-line-activation-contract.md))
+- [x] Verified-email and private-operator password recovery revokes sessions, API keys and pending MFA challenges while preserving MFA; authentication only, with production vault/content recovery still pending
 - [ ] Team seats beyond one owner
-- [ ] Account recovery flows separate from content recovery
 
 </details>
 

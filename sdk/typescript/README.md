@@ -71,6 +71,47 @@ carrying a path, query or credentials are refused at construction. Tests use
 the pinned draft-01 vectors against a recording transport and no network.
 
 
+## Test-only profile-02 envelope preparation (task 113)
+
+`src/draft02-envelope-prep.ts` composes complete candidate-02 sealed envelopes
+for tests. It is **not a production SDK path** and is connected to no send,
+inbound, webhook, or radio route. `prepareOutboundEnvelope02` and
+`prepareInboundEnvelope02` require the exact `Manifest02` object returned by
+`verifyManifest02` and call `authorizeOutbound02` / `authorizeInbound02` with
+claims derived from that manifest before any body encryption, HPKE wrap, or
+signature is produced: a revoked signer, wrong role/scope, stale manifest,
+copied manifest object, or unauthorized reader set refuses fail-closed.
+Authorization is reused from `draft02-manifest.ts`, never re-implemented here;
+key IDs are reused from the draft-01 `keyId` helper (`ZTSE/key/v1\0`,
+`0x0010` for KEM recipients, `0x0101` for signers).
+
+The bytes follow the dormant profile-02 rules exactly: wire `profile:u8 = 02`,
+HPKE `info = "ZTSE/wrap/v2\0" || header || protected || role || key_id` with an
+**empty** AAD (draft-01's nonempty wrap AAD is intentionally not used),
+`body_aad = "ZTSE/body/v2\0" || header || protected`, AES-256-GCM body over
+strict UTF-8 (1-32768 bytes, no BOM, no NUL), and a canonical low-`s` ECDSA
+P-256 origin signature over `"ZTSE/sign/v2\0" || u32(len(unsigned)) ||
+unsigned`. Outbound expiry (`observed < expires <= observed + 900000`) and
+inbound event identity (`messageId == eventId`, `localSequence` 1..2^63-1)
+mirror the reader. The content key, body nonce, and each wrap's HPKE ephemeral
+IKM are caller-supplied deterministic test inputs, so all unsigned bytes are
+reproducible; Web Crypto ECDSA signatures vary per run, and the module returns
+the unsigned transcript and its SHA-256 alongside the envelope. Recipient wraps
+are emitted in strict `(role, key_id)` wire order and each wrap's `key_id` must
+match its own point, so the emitted wrap set is exactly the manifest-authorized
+set. Every caller-held input (byte arrays, recipient entries, scalars, and the
+manifest field values used for composition) is deep-copied into an owned
+snapshot synchronously before the first `await`; the order from there is
+public identity hashing, then `authorizeOutbound02` / `authorizeInbound02`
+against the exact verified manifest object, then encryption, wrapping, and
+signing. Mutating
+the input objects after the call therefore cannot redirect an envelope that
+authorization already approved. Tests pin the full outbound and inbound unsigned
+transcripts, reopen a wrap and the body as an independent consumer, verify the
+signature and its low-`s` form, and exercise the denial corpus, including
+post-call input mutation. No Rust cross-verification or
+Android run is part of this slice; those remain separate gates.
+
 This is one slice of ZT-010 evidence. Independent Rust cross-open, full manifest
 chain/rollback vectors, production key lifecycle, and the Q1–Q11 decisions
 remain separate gates. The candidate profile says vectors must be regenerated
