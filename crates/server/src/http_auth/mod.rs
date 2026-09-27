@@ -726,6 +726,15 @@ fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
         .find_map(|(key, value)| (key == name).then_some(value))
 }
 
+/// The database-free first step of [`require_owner`]. Owner handlers call it
+/// before taking a pooled connection, so a request without a session cookie is
+/// rejected with the same 401 without competing for request capacity.
+pub fn require_session_cookie(headers: &HeaderMap) -> Result<(), AuthHttpError> {
+    cookie(headers, SESSION_COOKIE)
+        .map(|_| ())
+        .ok_or(AuthHttpError::Unauthorized)
+}
+
 /// Shared by account and enrollment HTTP handlers. `mutation=true` enforces
 /// the exact Origin and CSRF header/cookie, in addition to the session cookie.
 pub async fn require_owner(
@@ -1149,6 +1158,7 @@ async fn session(
     State(state): State<Arc<AuthHttpState>>,
     headers: HeaderMap,
 ) -> Result<Response, AuthHttpError> {
+    require_session_cookie(&headers)?;
     let client = connect(&state.database_url).await?;
     let owner = require_owner(
         &client,
@@ -1186,6 +1196,7 @@ async fn list_sessions(
     State(state): State<Arc<AuthHttpState>>,
     headers: HeaderMap,
 ) -> Result<Json<SessionsBody>, AuthHttpError> {
+    require_session_cookie(&headers)?;
     let client = connect(&state.database_url).await?;
     let owner = require_owner(
         &client,
@@ -1221,6 +1232,7 @@ async fn revoke_other_sessions(
     headers: HeaderMap,
     ApiJson(body): ApiJson<RevokeOtherSessionsBody>,
 ) -> Result<StatusCode, AuthHttpError> {
+    require_session_cookie(&headers)?;
     let mut client = connect(&state.database_url).await?;
     let owner = require_owner(
         &client,
@@ -1271,6 +1283,7 @@ async fn change_password(
     headers: HeaderMap,
     ApiJson(body): ApiJson<ChangePasswordBody>,
 ) -> Result<Response, AuthHttpError> {
+    require_session_cookie(&headers)?;
     let mut client = connect(&state.database_url).await?;
     let owner = require_owner(
         &client,
@@ -1419,6 +1432,7 @@ async fn mfa_status(
     State(state): State<Arc<AuthHttpState>>,
     headers: HeaderMap,
 ) -> Result<Response, AuthHttpError> {
+    require_session_cookie(&headers)?;
     let client = connect(&state.database_url).await?;
     let owner = require_owner(
         &client,
@@ -1477,6 +1491,7 @@ async fn begin_mfa_enrollment(
         .mfa_cipher
         .as_ref()
         .ok_or(AuthHttpError::Unavailable)?;
+    require_session_cookie(&headers)?;
     let mut client = connect(&state.database_url).await?;
     let owner = require_owner(
         &client,
@@ -1522,6 +1537,7 @@ async fn confirm_mfa_enrollment(
         .mfa_cipher
         .as_ref()
         .ok_or(AuthHttpError::Unavailable)?;
+    require_session_cookie(&headers)?;
     let mut client = connect(&state.database_url).await?;
     let owner = require_owner(
         &client,
@@ -1554,6 +1570,7 @@ async fn disable_mfa(
     headers: HeaderMap,
     ApiJson(body): ApiJson<MfaDisableBody>,
 ) -> Result<StatusCode, AuthHttpError> {
+    require_session_cookie(&headers)?;
     let mut client = connect(&state.database_url).await?;
     let owner = require_owner(
         &client,
@@ -1582,6 +1599,7 @@ async fn logout(
     State(state): State<Arc<AuthHttpState>>,
     headers: HeaderMap,
 ) -> Result<Response, AuthHttpError> {
+    require_session_cookie(&headers)?;
     let client = connect(&state.database_url).await?;
     let owner = require_owner(
         &client,
@@ -1640,6 +1658,7 @@ async fn list_api_keys(
     headers: HeaderMap,
     Query(query): Query<KeyListQuery>,
 ) -> Result<Json<KeyListBody>, AuthHttpError> {
+    require_session_cookie(&headers)?;
     let client = connect(&state.database_url).await?;
     let owner = require_owner(
         &client,
@@ -1716,6 +1735,7 @@ async fn create_api_key(
         .iter()
         .map(|name| parse_scope(name).ok_or(AuthHttpError::BadRequest))
         .collect::<Result<Vec<_>, _>>()?;
+    require_session_cookie(&headers)?;
     let mut client = connect(&state.database_url).await?;
     let owner = require_owner(
         &client,
@@ -1766,6 +1786,7 @@ async fn revoke_api_key(
     Path(key_id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Result<StatusCode, AuthHttpError> {
+    require_session_cookie(&headers)?;
     let client = connect(&state.database_url).await?;
     let owner = require_owner(
         &client,

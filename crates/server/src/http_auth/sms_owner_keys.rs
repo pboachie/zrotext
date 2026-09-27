@@ -163,6 +163,7 @@ pub(super) async fn challenge(
 ) -> Result<Json<ChallengeResponse>, AuthHttpError> {
     let sec1 = key_bytes(&body.signing_key_sec1_b64)?;
     let fingerprint = sha256(&sec1);
+    crate::http_auth::require_session_cookie(&headers)?;
     let mut client = connect(&state.database_url).await?;
     let owner = require_owner(
         &client,
@@ -235,6 +236,7 @@ pub(super) async fn register(
     {
         return Err(AuthHttpError::BadRequest);
     }
+    crate::http_auth::require_session_cookie(&headers)?;
     let mut client = connect(&state.database_url).await?;
     let owner = require_owner(
         &client,
@@ -337,6 +339,7 @@ pub(super) async fn list(
     State(state): State<Arc<AuthHttpState>>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<KeyView>>, AuthHttpError> {
+    crate::http_auth::require_session_cookie(&headers)?;
     let client = connect(&state.database_url).await?;
     let owner = require_owner(
         &client,
@@ -378,6 +381,7 @@ pub(super) async fn revoke(
     if body.mfa_code.len() > 30 {
         return Err(AuthHttpError::BadRequest);
     }
+    crate::http_auth::require_session_cookie(&headers)?;
     let mut client = connect(&state.database_url).await?;
     let owner = require_owner(
         &client,
