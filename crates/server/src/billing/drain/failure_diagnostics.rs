@@ -177,6 +177,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn synthetic_capacity_batch_has_safe_output() {
+        use super::super::{BillingJobs, drain_jobs};
+        use std::sync::{Arc, atomic::AtomicBool};
+        use tokio::sync::Semaphore;
+
+        struct CapacityJobs;
+        impl BillingJobs for CapacityJobs {
+            async fn reconcile(&self, _url: String, _risk: bool) -> Result<bool, BillingError> {
+                Err(BillingError::RuntimeDatabase(ConnectError::Capacity))
+            }
+        }
+        assert!(
+            drain_jobs(
+                &Arc::new(CapacityJobs),
+                SENTINEL,
+                1,
+                1,
+                false,
+                &Arc::new(AtomicBool::new(false)),
+                &Arc::new(Semaphore::new(1)),
+            )
+            .await
+        );
+    }
+
+    #[test]
+    fn failed_batch_emits_safe_diagnostic_in_test_output() {
+        use std::{
+            process::{Command, Stdio},
+            time::{Duration, Instant},
+        };
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact", "billing::drain::failure_diagnostics::tests::synthetic_capacity_batch_has_safe_output",
+                "--nocapture", "--test-threads=1",
+            ])
+            .stdout(Stdio::piped()).stderr(Stdio::piped())
+            .spawn().expect("synthetic diagnostic child could not start");
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(10))
+                }
+                _ => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!(
+                        "synthetic diagnostic child exceeded its deadline or could not be observed"
+                    );
+                }
+            }
+        }
+        // Only the one fixed synthetic test runs; its output fits within the pipe buffers.
+        let output = child
+            .wait_with_output()
+            .expect("read synthetic diagnostic output");
+        assert!(
+            output.status.success(),
+            "synthetic diagnostic child must pass"
+        );
+        let combined = [output.stdout, output.stderr].concat();
+        let output = String::from_utf8(combined).expect("synthetic child uses UTF-8 output");
+        assert!(
+            output.contains("billing drain test failure: runtime_capacity"),
+            "failed drain must emit the fixed typed diagnostic"
+        );
+        assert!(
+            !output.contains(SENTINEL),
+            "diagnostic must omit synthetic input"
+        );
+    }
+
+    #[tokio::test]
     #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn postgres_sqlstate_excludes_message_and_detail() {
         let url = std::env::var("ZT_AUTH_TEST_DATABASE_URL").expect("set disposable database URL");
