@@ -17,6 +17,21 @@ async fn now(f: &Fixture) -> i64 {
     .get(0)
 }
 
+async fn wait_for_database_deadline(f: &Fixture, deadline_ms: i64, phase: &str) {
+    let started = std::time::Instant::now();
+    loop {
+        let observed_ms = now(f).await;
+        if observed_ms >= deadline_ms {
+            return;
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "{phase}: database deadline not reached: observed={observed_ms}, deadline={deadline_ms}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
 // SQL composition fixtures sign exact candidate bytes with an ephemeral device
 // event key. The opaque test body is not an HPKE/decryption interoperability proof.
 fn envelope(f: &Fixture, event: Uuid, sequence: u64, observed: i64, body_length: usize) -> Vec<u8> {
@@ -330,6 +345,25 @@ async fn candidate_ingest_rechecks_lease_after_insert_wait_and_rolls_back_staged
             .await
             .is_err()
     );
+    // Host elapsed time proves the insert remains blocked, but only the
+    // database clock can establish expiry of the actual stored lease.
+    let started = std::time::Instant::now();
+    loop {
+        let row = lock.query_one(
+            "WITH observed AS MATERIALIZED (SELECT clock_timestamp() AS at) SELECT at >= lease_until, at::text, lease_until::text FROM device_sessions CROSS JOIN observed WHERE device_id=$1",
+            &[&f.device],
+        ).await.unwrap();
+        if row.get::<_, bool>(0) {
+            break;
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "insert-wait lease: database deadline not reached: observed={}, deadline={}",
+            row.get::<_, String>(1),
+            row.get::<_, String>(2)
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
     lock.commit().await.unwrap();
     assert!(future.await.is_err());
     assert_eq!(count(&f).await, 1);
@@ -421,7 +455,14 @@ async fn candidate_ingest_does_not_acknowledge_existing_identity_with_expired_au
         };
         let bytes = envelope(&f, Uuid::new_v4(), 1, observed, 17);
         ingest(&f, &bytes).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(650)).await;
+        let (deadline, phase) = if expire_manifest {
+            (time + 500, "manifest replay expiry")
+        } else {
+            // Event age rejects strictly older timestamps, so observe the
+            // first database millisecond beyond the inclusive age bound.
+            (observed + MAX_AGE_MS + 1, "event replay age")
+        };
+        wait_for_database_deadline(&f, deadline, phase).await;
         assert!(ingest(&f, &bytes).await.is_err());
         assert_eq!(count(&f).await, 1);
         f.cleanup().await;

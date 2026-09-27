@@ -17,6 +17,7 @@ const HALF_ORDER: [u8; 32] = [
     0xde, 0x73, 0x7d, 0x56, 0xd3, 0x8b, 0xcf, 0x42, 0x79, 0xdc, 0xe5, 0x61, 0x7e, 0x31, 0x92, 0xa8,
 ];
 const DAY_MS: u64 = 86_400_000;
+const MAX_ROLES: usize = 64;
 
 fn u64_be(data: &[u8]) -> Result<u64, &'static str> {
     let value = u64::from_be_bytes(data.try_into().map_err(|_| "u64 width")?);
@@ -157,7 +158,7 @@ pub fn verify(
         return Err("manifest shape");
     }
     let count = usize::from(manifest[150]);
-    if !(1..=64).contains(&count) || manifest.len() != 215 + 149 * count {
+    if !(1..=MAX_ROLES).contains(&count) || manifest.len() != 215 + 149 * count {
         return Err("manifest size/count");
     }
     if manifest[5..21] != account || manifest[85..150] != pin[29..94] {
@@ -172,7 +173,7 @@ pub fn verify(
     }
     freshness(issued, expires, now)?;
 
-    let mut roles: Vec<RoleRecord> = Vec::with_capacity(count);
+    let mut roles: Vec<RoleRecord> = Vec::with_capacity(MAX_ROLES);
     let mut seen_points = HashSet::new();
     let mut owner_count = 0;
     let mut archive_count = 0;

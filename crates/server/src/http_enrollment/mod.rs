@@ -602,6 +602,9 @@ struct OwnerDeviceResponse {
     display_name: String,
     revoked: bool,
     active_socket_lease: bool,
+    pending_messages: i64,
+    in_flight_messages: i64,
+    status_observed_at_ms: i64,
     reported_preconditions: Option<enrollment::ReportedPreconditions>,
 }
 
@@ -646,6 +649,9 @@ async fn list_devices(
                     display_name: device.display_name,
                     revoked: device.revoked,
                     active_socket_lease: device.active_socket_lease,
+                    pending_messages: device.pending_messages,
+                    in_flight_messages: device.in_flight_messages,
+                    status_observed_at_ms: device.status_observed_at_ms,
                     reported_preconditions: device.reported_preconditions,
                 })
                 .collect::<Vec<_>>(),
@@ -658,5 +664,7 @@ async fn list_devices(
 
 #[cfg(test)]
 use tokio_postgres::NoTls;
+#[cfg(test)]
+mod queue_tests;
 #[cfg(test)]
 mod tests;
