@@ -174,12 +174,17 @@ async fn body(response: Response) -> Value {
 }
 
 fn get(path: &str, owner: &SessionCredentials) -> Request<Body> {
+    // Content-bearing owner reads need the CSRF header, not Origin.
     Request::builder()
         .uri(path)
         .header(
             header::COOKIE,
-            format!("__Host-zrotext_session={}", owner.token),
+            format!(
+                "__Host-zrotext_session={}; __Host-zrotext_csrf={}",
+                owner.token, owner.csrf_token
+            ),
         )
+        .header("x-zrotext-csrf", &owner.csrf_token)
         .body(Body::empty())
         .unwrap()
 }

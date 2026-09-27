@@ -5,7 +5,7 @@
 use crate::api_json::ApiJson;
 use crate::{
     auth::{SessionPrincipal, TokenHasher},
-    http_auth::require_owner,
+    http_auth::{require_owner, require_owner_read},
     webhook_egress,
     webhook_worker::WebhookSecretVault,
 };
@@ -117,6 +117,18 @@ async fn owner(
     .map_err(IntoResponse::into_response)
 }
 
+/// Reads that return callback URLs or delivery history also need the CSRF
+/// header, not only the session cookie.
+async fn owner_read(
+    client: &Client,
+    state: &WebhookHttpState,
+    headers: &HeaderMap,
+) -> Result<SessionPrincipal, Response> {
+    require_owner_read(client, &state.auth_hasher, headers)
+        .await
+        .map_err(IntoResponse::into_response)
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CreateBody {
@@ -150,13 +162,13 @@ async fn list_endpoints(
     State(state): State<Arc<WebhookHttpState>>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(error) = crate::http_auth::require_session_cookie(&headers) {
+    if let Err(error) = crate::http_auth::require_owner_read_headers(&headers) {
         return error.into_response();
     }
     let Ok(client) = connect(&state).await else {
         return EndpointError::Unavailable.into_response();
     };
-    let principal = match owner(&client, &state, &headers, false).await {
+    let principal = match owner_read(&client, &state, &headers).await {
         Ok(principal) => principal,
         Err(response) => return response,
     };
@@ -250,13 +262,13 @@ async fn list_inbound_events(
     Query(query): Query<HistoryQuery>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(error) = crate::http_auth::require_session_cookie(&headers) {
+    if let Err(error) = crate::http_auth::require_owner_read_headers(&headers) {
         return error.into_response();
     }
     let Ok(client) = connect(&state).await else {
         return EndpointError::Unavailable.into_response();
     };
-    let principal = match owner(&client, &state, &headers, false).await {
+    let principal = match owner_read(&client, &state, &headers).await {
         Ok(principal) => principal,
         Err(response) => return response,
     };
@@ -348,13 +360,13 @@ async fn list_deliveries(
     Query(query): Query<HistoryQuery>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(error) = crate::http_auth::require_session_cookie(&headers) {
+    if let Err(error) = crate::http_auth::require_owner_read_headers(&headers) {
         return error.into_response();
     }
     let Ok(client) = connect(&state).await else {
         return EndpointError::Unavailable.into_response();
     };
-    let principal = match owner(&client, &state, &headers, false).await {
+    let principal = match owner_read(&client, &state, &headers).await {
         Ok(principal) => principal,
         Err(response) => return response,
     };

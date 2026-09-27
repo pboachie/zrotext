@@ -860,6 +860,55 @@ pub async fn require_owner(
     Ok(principal)
 }
 
+/// The CSRF cookie and `x-zrotext-csrf` header, present and equal. The hash
+/// binding to the session is checked later by
+/// [`SessionPrincipal::require_csrf_token`].
+fn csrf_double_submit(headers: &HeaderMap) -> Result<(&str, &str), AuthHttpError> {
+    let csrf_cookie = cookie(headers, CSRF_COOKIE).ok_or(AuthHttpError::Forbidden)?;
+    let csrf_header = headers
+        .get(CSRF_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .ok_or(AuthHttpError::Forbidden)?;
+    if csrf_cookie.len() != csrf_header.len()
+        || !bool::from(csrf_cookie.as_bytes().ct_eq(csrf_header.as_bytes()))
+    {
+        return Err(AuthHttpError::Forbidden);
+    }
+    Ok((csrf_cookie, csrf_header))
+}
+
+/// The database-free first step of [`require_owner_read`]. Content-bearing
+/// owner GETs call it in place of [`require_session_cookie`], so a request
+/// without a session cookie gets 401, and a cookie-only request without the
+/// matching CSRF header gets 403, before either takes a pooled connection.
+pub fn require_owner_read_headers(headers: &HeaderMap) -> Result<(), AuthHttpError> {
+    require_session_cookie(headers)?;
+    csrf_double_submit(headers).map(|_| ())
+}
+
+/// Owner session plus CSRF header proof for GETs that return account content
+/// (messages, export, webhooks, review queues, devices). Browsers omit Origin
+/// on same-origin GETs, so unlike a mutation this does not require it. The
+/// custom header keeps these reads from relying only on same-origin response
+/// isolation: a cross-origin page cannot set it without a CORS preflight, and
+/// cannot learn the CSRF cookie value. Session metadata the page needs before
+/// it reads the CSRF cookie (`/v1/auth/session`) stays cookie-only.
+pub async fn require_owner_read(
+    client: &Client,
+    hasher: &TokenHasher,
+    headers: &HeaderMap,
+) -> Result<SessionPrincipal, AuthHttpError> {
+    let token = cookie(headers, SESSION_COOKIE).ok_or(AuthHttpError::Unauthorized)?;
+    let (csrf_cookie, csrf_header) = csrf_double_submit(headers)?;
+    let principal = auth::authenticate_session(client, hasher, token)
+        .await
+        .map_err(map_auth)?;
+    principal
+        .require_csrf_token(hasher, csrf_cookie, csrf_header)
+        .map_err(map_auth)?;
+    Ok(principal)
+}
+
 #[derive(Deserialize)]
 struct RegisterBody {
     email: String,
