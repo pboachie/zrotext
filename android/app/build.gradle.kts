@@ -67,6 +67,10 @@ android {
     buildFeatures {
         compose = true
     }
+    testOptions {
+        // Render the real Material fields and semantics in JVM accessibility tests.
+        unitTests.isIncludeAndroidResources = true
+    }
     // The same signature corpus runs in CI's JVM suite and on an Android device.
     for (testSource in listOf("test", "androidTest")) {
         sourceSets.getByName(testSource) {

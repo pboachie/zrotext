@@ -90,8 +90,12 @@ def validate(data: dict) -> None:
                 raise ValueError(f"{cid}: link at least one piece of evidence")
             if cap["stage"] != "planned" and not cap["done"]:
                 raise ValueError(f"{cid}: a started capability needs at least one done item")
-            if cap["stage"] != "released" and not cap["todo"]:
-                raise ValueError(f"{cid}: an unreleased capability needs at least one open item")
+            if "release_gate_note" in cap and (
+                not isinstance(cap["release_gate_note"], str) or not cap["release_gate_note"].strip()
+            ):
+                raise ValueError(f"{cid}: release_gate_note must be non-empty text")
+            if cap["stage"] != "released" and not cap["todo"] and not cap.get("release_gate_note"):
+                raise ValueError(f"{cid}: an unreleased capability needs an open item or release gate note")
     for source, target in data["dependencies"]:
         if source not in seen or target not in seen or source == target:
             raise ValueError(f"dependency {source} -> {target} is invalid")
@@ -405,6 +409,8 @@ def tracks(data: dict) -> str:
             evidence = ", ".join(link(label, target) for label, target in cap["evidence"])
             if cap.get("evidence_note"):
                 evidence += f" {cap['evidence_note']}"
+            if cap.get("release_gate_note"):
+                evidence += f"<br/>**Release gate:** {cap['release_gate_note']}"
             out.append(f"| {cap['name']} | {stage_text(cap)} | {evidence} |")
         for cap in track["capabilities"]:
             detail = STAGE_NAME[cap["stage"]].lower()

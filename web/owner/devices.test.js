@@ -849,3 +849,92 @@ test("signing out stops automatic refresh until a new sign-in completes", async 
   await element("login-form").listeners.submit({ preventDefault() {} });
   assert.equal(timers.size, 1);
 });
+
+
+test("device queues distinguish zero, bounded counts and unavailable telemetry", async () => {
+  const { element, state } = await ownerPage();
+  state.devices = [
+    { device_id: endpointId, display_name: "Empty", revoked: false, pending_messages: 0, in_flight_messages: 0, status_observed_at_ms: 1000 },
+    { device_id: otherEndpointId, display_name: "Busy", revoked: true, pending_messages: 3, in_flight_messages: 1000, status_observed_at_ms: 2000 },
+    { device_id: deliveryId, display_name: "Unavailable", revoked: false },
+  ];
+  await element("refresh-devices").listeners.click();
+  const rows = element("device-list").children.map(visibleText);
+  assert.match(rows[0], /Pending: 0 · In flight: 0 · Snapshot/);
+  assert.match(rows[1], /Revoked/);
+  assert.match(rows[1], /Pending: 3 · In flight: 1,000\+ · Snapshot/);
+  assert.match(rows[2], /Queue status unavailable/);
+  assert.doesNotMatch(rows[2], /Pending: 0/);
+});
+
+test("invalid queue values fail closed instead of claiming fresh empty queues", async () => {
+  const { element, state } = await ownerPage();
+  for (const invalid of [
+    { pending_messages: -1 }, { pending_messages: 1001 }, { in_flight_messages: "0" },
+    { in_flight_messages: 1.5 }, { status_observed_at_ms: 0 }, { status_observed_at_ms: 9e15 },
+  ]) {
+    state.devices = [{ device_id: endpointId, display_name: "Gateway", pending_messages: 0, in_flight_messages: 0, status_observed_at_ms: 1000, ...invalid }];
+    await element("refresh-devices").listeners.click();
+    assert.match(visibleText(element("device-list")), /Queue status unavailable/);
+  }
+});
+
+test("failed automatic queue refresh labels the retained snapshot stale and clears it on sign-out", async () => {
+  const { element, state, tick } = await ownerPage();
+  state.devices = [{ device_id: endpointId, display_name: "Gateway", pending_messages: 2, in_flight_messages: 1, status_observed_at_ms: 1000 }];
+  await element("refresh-devices").listeners.click();
+  const original = globalThis.fetch;
+  globalThis.fetch = () => Promise.reject(new TypeError("offline"));
+  await tick();
+  assert.match(visibleText(element("device-list")), /Pending: 2 · In flight: 1 · Snapshot/);
+  assert.match(element("device-status").textContent, /previous snapshot; counts may be stale/);
+  globalThis.fetch = original;
+  await element("logout").listeners.click();
+  assert.equal(element("device-list").children.length, 0);
+});
+
+test("Android preconditions distinguish fresh, stale, disconnected and unavailable reports", async () => {
+  const { element, state } = await ownerPage();
+  const report = { selected_sim: "active", sms_permission: "granted", airplane_mode: "disabled", received_at_ms: 1000, fresh: true };
+  state.devices = [
+    { device_id: endpointId, active_socket_lease: true, reported_preconditions: report },
+    { device_id: otherEndpointId, active_socket_lease: true, reported_preconditions: { ...report, fresh: false } },
+    { device_id: deliveryId, active_socket_lease: false, reported_preconditions: report },
+    { device_id: endpointId, active_socket_lease: true, reported_preconditions: null },
+  ];
+  await element("refresh-devices").listeners.click();
+  const rows = element("device-list").children.map(visibleText);
+  assert.match(rows[0], /fresh at snapshot time.*selected SIM active.*SMS permission granted.*airplane mode disabled/);
+  assert.match(rows[1], /stale report/);
+  assert.match(rows[2], /disconnected; last report/);
+  assert.match(rows[3], /preconditions unavailable/);
+  for (const row of rows) assert.match(row, /carrier readiness unknown/i);
+});
+
+test("invalid Android report values fail closed and reports clear on sign-out", async () => {
+  const { element, state } = await ownerPage();
+  const report = { selected_sim: "unavailable", sms_permission: "denied", airplane_mode: "enabled", received_at_ms: 1000, fresh: true };
+  for (const invalid of [{ selected_sim: "ready" }, { sms_permission: "<script>" }, { airplane_mode: false }, { received_at_ms: 0 }, { fresh: "true" }]) {
+    state.devices = [{ device_id: endpointId, active_socket_lease: true, reported_preconditions: { ...report, ...invalid } }];
+    await element("refresh-devices").listeners.click();
+    assert.match(visibleText(element("device-list")), /preconditions unavailable/);
+  }
+  state.devices = [{ device_id: endpointId, active_socket_lease: true, reported_preconditions: report }];
+  await element("refresh-devices").listeners.click();
+  assert.match(visibleText(element("device-list")), /selected SIM unavailable.*permission denied.*mode enabled/);
+  await element("logout").listeners.click();
+  assert.equal(element("device-list").children.length, 0);
+});
+
+
+test("one device preserves queue counts alongside its reported Android preconditions", async () => {
+  const { element, state } = await ownerPage();
+  state.devices = [{ device_id: endpointId, active_socket_lease: true,
+    pending_messages: 7, in_flight_messages: 2, status_observed_at_ms: 2000,
+    reported_preconditions: { selected_sim: "active", sms_permission: "denied", airplane_mode: "disabled", received_at_ms: 1000, fresh: true } }];
+  await element("refresh-devices").listeners.click();
+  const text = visibleText(element("device-list"));
+  assert.match(text, /Pending: 7.*In flight: 2/);
+  assert.match(text, /fresh at snapshot time.*selected SIM active.*SMS permission denied/);
+  assert.match(text, /Carrier readiness unknown/);
+});

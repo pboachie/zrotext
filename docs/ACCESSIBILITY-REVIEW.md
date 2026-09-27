@@ -1,6 +1,12 @@
 # Owner web pages accessibility review
 
-This is the first slice of the roadmap item "Accessibility review of owner pages and the Android app" (see `docs/ROADMAP.md`). It covers the owner web pages only; the Android app review remains open.
+The separate [Android gateway review](ANDROID-ACCESSIBILITY.md) covers the app's
+Compose screen and records the limits of its automated and emulator checks.
+
+This document covers the owner web pages. The separate Android review covers the
+current gateway screen, its remediation and automated/emulator verification.
+Neither review establishes accessibility conformance or replaces interactive
+assistive-technology validation.
 
 ## Scope and method
 
@@ -130,4 +136,4 @@ These were verified and should be preserved in future changes:
 4. Tighten validation messaging and link it to fields with `aria-describedby` (A5).
 5. Give `.check` rows a ~44-pixel target and darken the light-theme input border below 3:1 margin territory (A6, A7); reconsider `opacity`/`cursor: wait` on disabled buttons (A3).
 
-A follow-up pass with a real screen reader and keyboard-only session over the sign-in, pairing, MFA and line-activation flows would confirm the announcement and focus behavior that a static review can only infer, and the Android app half of the roadmap item is still to be scheduled.
+A follow-up pass with a real screen reader and keyboard-only session over the sign-in, pairing, MFA and line-activation flows would confirm the announcement and focus behavior that a static review can only infer. The [Android review](ANDROID-ACCESSIBILITY.md#remaining-interactive-review) separately lists its remaining TalkBack, Switch Access and supported-phone checks.

@@ -17,7 +17,12 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tower::ServiceExt;
 
-fn request(method: Method, uri: &str, body: Value, session: Option<(&str, &str)>) -> Request<Body> {
+pub(super) fn request(
+    method: Method,
+    uri: &str,
+    body: Value,
+    session: Option<(&str, &str)>,
+) -> Request<Body> {
     let mut builder = Request::builder()
         .method(method)
         .uri(uri)
@@ -34,7 +39,7 @@ fn request(method: Method, uri: &str, body: Value, session: Option<(&str, &str)>
     builder.body(Body::from(body.to_string())).unwrap()
 }
 
-async fn json_response(response: Response) -> Value {
+pub(super) async fn json_response(response: Response) -> Value {
     let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
     serde_json::from_slice(&body).unwrap()
 }
@@ -58,6 +63,7 @@ async fn apply_migrations(admin: &Client) {
         include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
         include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
         include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+        include_str!("../../../../deploy/compose/migrations/041_device_preconditions.sql"),
     ] {
         admin.batch_execute(sql).await.unwrap();
     }
@@ -291,6 +297,7 @@ async fn http_pairing_requires_csrf_proves_key_and_revokes_device() {
             "INSERT INTO device_sessions(device_id,account_id,site_id,instance_id,connection_epoch,lease_until,deployment_epoch) VALUES($1,$2,'hub-a','instance-a',1,now()+interval '90 seconds',1)",
             &[&device_id, &a.account_id],
         ).await.unwrap();
+    admin.execute("INSERT INTO device_preconditions(device_id,account_id,connection_epoch,deployment_epoch,selected_sim,sms_permission,airplane_mode) VALUES($1,$2,1,1,'active','granted','disabled')", &[&device_id,&a.account_id]).await.unwrap();
     let status =
         |token: &str, csrf: &str| request(Method::GET, "/devices", json!({}), Some((token, csrf)));
     let active = json_response(
@@ -301,6 +308,47 @@ async fn http_pairing_requires_csrf_proves_key_and_revokes_device() {
     )
     .await;
     assert_eq!(active["devices"][0]["active_socket_lease"], true);
+    assert_eq!(active["devices"][0]["pending_messages"], 0);
+    assert_eq!(active["devices"][0]["in_flight_messages"], 0);
+    assert!(
+        active["devices"][0]["status_observed_at_ms"]
+            .as_i64()
+            .unwrap()
+            > 0
+    );
+    assert_eq!(
+        active["devices"][0]["reported_preconditions"]["selected_sim"],
+        "active"
+    );
+    assert_eq!(
+        active["devices"][0]["reported_preconditions"]["fresh"],
+        true
+    );
+    assert!(
+        active["devices"][0]["reported_preconditions"]["received_at_ms"]
+            .as_i64()
+            .unwrap()
+            > 0
+    );
+    admin.execute("UPDATE device_preconditions SET received_at=now()-interval '91 seconds' WHERE device_id=$1", &[&device_id]).await.unwrap();
+    let stale_report = json_response(
+        app.clone()
+            .oneshot(status(&sa.token, &sa.csrf_token))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        stale_report["devices"][0]["reported_preconditions"]["fresh"],
+        false
+    );
+    admin
+        .execute(
+            "UPDATE device_preconditions SET received_at=now() WHERE device_id=$1",
+            &[&device_id],
+        )
+        .await
+        .unwrap();
     for readiness in ["sms_ready", "sim_ready", "radio_ready"] {
         assert!(active["devices"][0].get(readiness).is_none());
     }
@@ -330,6 +378,10 @@ async fn http_pairing_requires_csrf_proves_key_and_revokes_device() {
     )
     .await;
     assert_eq!(expired["devices"][0]["active_socket_lease"], false);
+    assert_eq!(
+        expired["devices"][0]["reported_preconditions"]["fresh"],
+        false
+    );
     admin.execute("UPDATE device_sessions SET site_id='hub-b',instance_id='instance-b',connection_epoch=2,lease_until=now()+interval '90 seconds' WHERE device_id=$1", &[&device_id]).await.unwrap();
     let reconnected = json_response(
         app.clone()
@@ -339,6 +391,7 @@ async fn http_pairing_requires_csrf_proves_key_and_revokes_device() {
     )
     .await;
     assert_eq!(reconnected["devices"][0]["active_socket_lease"], true);
+    assert!(reconnected["devices"][0]["reported_preconditions"].is_null());
     admin
         .batch_execute("UPDATE deployment_authority SET epoch=2")
         .await
@@ -495,6 +548,11 @@ async fn http_pairing_requires_csrf_proves_key_and_revokes_device() {
         .unwrap();
     let first_page = json_response(first_page).await;
     assert_eq!(first_page["devices"].as_array().unwrap().len(), 50);
+    for device in first_page["devices"].as_array().unwrap() {
+        assert_eq!(device["pending_messages"], 0);
+        assert_eq!(device["in_flight_messages"], 0);
+        assert!(device["status_observed_at_ms"].as_i64().unwrap() > 0);
+    }
     let cursor = first_page["next_cursor"].as_str().unwrap();
     let second_page = app
         .clone()
