@@ -188,6 +188,20 @@ async fn create_pairing(
         Ok(principal) => principal,
         Err(error) => return error.into_response(),
     };
+    // Charged per account before the insert so one owner cannot grow
+    // `pairing_requests` faster than maintenance prunes it.
+    match abuse_limits::consume(
+        &client,
+        &state.auth_hasher,
+        Limit::PairCreate,
+        Some(&principal.tenant.account_id().to_string()),
+    )
+    .await
+    {
+        Ok(true) => {}
+        Ok(false) => return StatusCode::TOO_MANY_REQUESTS.into_response(),
+        Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    }
     match enrollment::create_pairing(
         &client,
         &state.enrollment_hasher,
