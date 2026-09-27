@@ -112,6 +112,17 @@ async fn owner_queue_counts_are_bounded_tenant_scoped_and_preserve_writer_states
     db.batch_execute("ANALYZE messages; ANALYZE devices")
         .await
         .unwrap();
+    // The sparse partial-index plan may filter other active entries, but its
+    // entire index contains only six. Keep that fixture-specific budget honest.
+    let active: i64 = db
+        .query_one(
+            "SELECT count(*) FROM messages WHERE state IN ('claimed','submitting','submitted')",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(active, 6);
     let plan = explain_queue(&db, *account).await;
     validate_sparse_history_plan(&plan).unwrap_or_else(|reason| panic!("{reason}: {plan}"));
     // The two categories are capped independently; final/uncertain states do
@@ -172,7 +183,7 @@ macro_rules! queue_schema {
         [$(($name, include_str!(concat!("../../../../deploy/compose/migrations/", $name)))),+]
     };
 }
-const QUEUE_SCHEMA: [(&str, &str); 41] = queue_schema!(
+const QUEUE_SCHEMA: [(&str, &str); 42] = queue_schema!(
     "001_foundation.sql",
     "002_auth.sql",
     "003_delivery.sql",
@@ -214,6 +225,7 @@ const QUEUE_SCHEMA: [(&str, &str); 41] = queue_schema!(
     "039_inbound_device_clock_offset.sql",
     "040_radio_evidence_index.sql",
     "041_device_preconditions.sql",
+    "042_sealed_manifest_authority.sql",
 );
 
 #[test]
