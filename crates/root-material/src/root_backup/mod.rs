@@ -142,6 +142,17 @@ fn parse_header(bytes: &[u8], expected: &ExpectedIdentity) -> Result<usize, Back
     Ok(h)
 }
 
+/// Check bounded public framing and identity, returning the public backup ID.
+/// This does not authenticate ciphertext or establish that a root can be restored.
+/// Call `open` with independently supplied recovery material for authentication.
+pub fn validate_public_header(
+    bytes: &[u8],
+    expected: &ExpectedIdentity,
+) -> Result<[u8; 16], BackupError> {
+    parse_header(bytes, expected)?;
+    Ok(bytes[6..22].try_into().unwrap())
+}
+
 fn wrapping_key(
     recovery: &RecoverySecret,
     salt: &[u8],

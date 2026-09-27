@@ -1,0 +1,25 @@
+name: Root bundle Windows
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  native-bundle:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check formatting
+        run: cargo fmt --all --check
+      - name: Lint native bundle adapter
+        run: cargo clippy --locked -p zrotext-root-bundle --all-targets -- -D warnings
+      - name: Exercise native NTFS permissions, races and failures
+        run: cargo test --locked -p zrotext-root-bundle
+      - name: Lint bounded console transport
+        run: cargo clippy --locked -p zrotext-root-terminal --all-targets -- -D warnings
+      - name: Exercise isolated hidden native console contracts
+        run: cargo test --locked -p zrotext-root-terminal
