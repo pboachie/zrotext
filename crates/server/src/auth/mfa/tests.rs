@@ -54,6 +54,7 @@ async fn postgres_enrollment_challenge_replay_recovery_and_disable() {
     for migration in [
         include_str!("../../../../../deploy/compose/migrations/002_auth.sql"),
         include_str!("../../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+        include_str!("../../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
     ] {
         client.batch_execute(migration).await.unwrap();
     }
@@ -227,6 +228,7 @@ async fn postgres_enrollment_challenge_replay_recovery_and_disable() {
             .await
             .is_ok()
     );
+    assert_eq!(login_failures(&client, a.account_id).await, 0);
     assert!(matches!(
         complete_login(
             &mut client,
@@ -324,7 +326,9 @@ async fn postgres_enrollment_challenge_replay_recovery_and_disable() {
         .await,
         Err(AuthError::InvalidCredentials)
     ));
-    for _ in 0..3 {
+    // The successful recovery sign-in reset the window; four more failures
+    // on this challenge spend the rest of the sign-in budget.
+    for _ in 0..4 {
         let _ = complete_login(
             &mut client,
             Some(&cipher),
@@ -364,25 +368,8 @@ async fn postgres_enrollment_challenge_replay_recovery_and_disable() {
         .await,
         Err(AuthError::InvalidCredentials)
     ));
-    assert!(matches!(
-        disable(
-            &mut client,
-            None,
-            &hasher,
-            &recovered_principal,
-            &password_a,
-            &recovery.codes[1]
-        )
-        .await,
-        Err(AuthError::RateLimited)
-    ));
-    client
-            .execute(
-                "UPDATE owner_mfa SET failed_window_started_at=now()-interval '16 minutes' WHERE account_id=$1",
-                &[&a.account_id],
-            )
-            .await
-            .unwrap();
+    // Sign-in failures leave the signed-in owner's step-up budget untouched,
+    // and step-up failures spend only that budget.
     for _ in 0..5 {
         assert!(matches!(
             disable(
@@ -398,23 +385,55 @@ async fn postgres_enrollment_challenge_replay_recovery_and_disable() {
         ));
     }
     assert!(matches!(
-        complete_login(
+        disable(
             &mut client,
             None,
             &hasher,
-            &fresh_challenge,
+            &recovered_principal,
+            &password_a,
+            &recovery.codes[1]
+        )
+        .await,
+        Err(AuthError::RateLimited)
+    ));
+    assert_eq!(login_failures(&client, a.account_id).await, 5);
+    assert_eq!(
+        abuse_limits::failures_in_window(
+            &client,
+            &hasher,
+            Limit::MfaStepUp,
+            &a.user_id.to_string()
+        )
+        .await
+        .unwrap(),
+        5
+    );
+    client
+        .execute(
+            "UPDATE owner_mfa SET failed_window_started_at=now()-interval '16 minutes' WHERE account_id=$1",
+            &[&a.account_id],
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        disable(
+            &mut client,
+            None,
+            &hasher,
+            &recovered_principal,
+            &password_a,
             &recovery.codes[1]
         )
         .await,
         Err(AuthError::RateLimited)
     ));
     client
-            .execute(
-                "UPDATE owner_mfa SET failed_window_started_at=now()-interval '16 minutes' WHERE account_id=$1",
-                &[&a.account_id],
-            )
-            .await
-            .unwrap();
+        .execute(
+            "UPDATE auth_abuse_counters SET window_started_at=now()-interval '16 minutes' WHERE scope='mfa_step_up'",
+            &[],
+        )
+        .await
+        .unwrap();
     disable(
         &mut client,
         None,
@@ -453,4 +472,15 @@ async fn postgres_enrollment_challenge_replay_recovery_and_disable() {
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
         .await
         .unwrap();
+}
+
+async fn login_failures(client: &Client, account_id: Uuid) -> i32 {
+    client
+        .query_one(
+            "SELECT failed_attempts FROM owner_mfa WHERE account_id=$1",
+            &[&account_id],
+        )
+        .await
+        .unwrap()
+        .get(0)
 }

@@ -50,6 +50,7 @@ async fn assert_reset_preserves_mfa(path: ResetPath) {
     for migration in [
         include_str!("../../../../../deploy/compose/migrations/002_auth.sql"),
         include_str!("../../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+        include_str!("../../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
         include_str!("../../../../../deploy/compose/migrations/013_owner_mfa.sql"),
         include_str!("../../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
         include_str!("../../../../../deploy/compose/migrations/025_account_recovery.sql"),
@@ -416,6 +417,7 @@ async fn postgres_password_session_and_reset_lifecycle() {
     for migration in [
         include_str!("../../../../../deploy/compose/migrations/002_auth.sql"),
         include_str!("../../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+        include_str!("../../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
         include_str!("../../../../../deploy/compose/migrations/013_owner_mfa.sql"),
         include_str!("../../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
         include_str!("../../../../../deploy/compose/migrations/025_account_recovery.sql"),
@@ -838,4 +840,222 @@ async fn postgres_operator_reset_revokes_all_owner_credentials() {
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
         .await
         .unwrap();
+}
+
+/// An owner with confirmed MFA and one live session in a private schema.
+struct MfaOwner {
+    setup: Client,
+    db: Client,
+    schema: String,
+    hasher: TokenHasher,
+    cipher: mfa::MfaCipher,
+    account_id: Uuid,
+    user_id: Uuid,
+    password: String,
+    principal: SessionPrincipal,
+    recovery: Vec<String>,
+}
+
+impl MfaOwner {
+    async fn new(prefix: &str) -> Self {
+        let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
+        let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let schema = format!("{prefix}_{}", Uuid::new_v4().simple());
+        setup
+            .batch_execute(&format!("CREATE SCHEMA {schema}"))
+            .await
+            .unwrap();
+        let separator = if base_url.contains('?') { '&' } else { '?' };
+        let url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
+        let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        for migration in [
+            include_str!("../../../../../deploy/compose/migrations/002_auth.sql"),
+            include_str!("../../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+            include_str!("../../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
+            include_str!("../../../../../deploy/compose/migrations/013_owner_mfa.sql"),
+            include_str!(
+                "../../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"
+            ),
+            include_str!("../../../../../deploy/compose/migrations/025_account_recovery.sql"),
+        ] {
+            db.batch_execute(migration).await.unwrap();
+        }
+        let hasher = TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap();
+        let cipher = mfa::MfaCipher::new(rand::random::<[u8; 32]>().to_vec()).unwrap();
+        let password = Uuid::new_v4().to_string();
+        let owner = auth::register(&mut db, &hasher, "owner@example.test", &password)
+            .await
+            .unwrap();
+        assert!(
+            auth::verify_email(&mut db, &hasher, &owner.verification_token)
+                .await
+                .unwrap()
+        );
+        let session = auth::login(&db, &hasher, "owner@example.test", &password)
+            .await
+            .unwrap();
+        let principal = auth::authenticate_session(&db, &hasher, &session.token)
+            .await
+            .unwrap();
+        let pending = mfa::begin_enrollment(&mut db, &cipher, &principal, &password)
+            .await
+            .unwrap();
+        let code = Builder::new()
+            .with_secret(Secret::try_from_base32(&pending.secret_base32).unwrap())
+            .build()
+            .unwrap()
+            .generate_current()
+            .to_string();
+        let recovery = mfa::confirm_enrollment(&mut db, &cipher, &hasher, &principal, &code)
+            .await
+            .unwrap()
+            .codes;
+        Self {
+            setup,
+            db,
+            schema,
+            hasher,
+            cipher,
+            account_id: owner.account_id,
+            user_id: owner.user_id,
+            password,
+            principal,
+            recovery,
+        }
+    }
+
+    async fn challenge(&self) -> String {
+        mfa::begin_login_challenge(
+            &self.db,
+            &self.hasher,
+            self.account_id,
+            self.user_id,
+            &self.password,
+        )
+        .await
+        .unwrap()
+    }
+
+    async fn complete_login(
+        &mut self,
+        challenge: &str,
+        code: &str,
+    ) -> Result<auth::SessionCredentials, AuthError> {
+        mfa::complete_login(
+            &mut self.db,
+            Some(&self.cipher),
+            &self.hasher,
+            challenge,
+            code,
+        )
+        .await
+    }
+
+    async fn finish(self) {
+        self.setup
+            .batch_execute(&format!("DROP SCHEMA {} CASCADE", self.schema))
+            .await
+            .unwrap();
+    }
+}
+
+/// Never a valid recovery code for any owner, and never a TOTP code.
+const WRONG_FACTOR: &str = "zrc_AAAAAAAAAAAAAAAAAAAAAA";
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn failed_sign_in_factors_do_not_block_a_signed_in_owner_step_up() {
+    let mut owner = MfaOwner::new("step_up_budget").await;
+    // Someone holding only the password spends the whole sign-in budget.
+    let stranger = owner.challenge().await;
+    for _ in 0..5 {
+        assert!(matches!(
+            owner.complete_login(&stranger, WRONG_FACTOR).await,
+            Err(AuthError::InvalidCredentials)
+        ));
+    }
+    let fresh = owner.challenge().await;
+    let code = owner.recovery[2].clone();
+    assert!(matches!(
+        owner.complete_login(&fresh, &code).await,
+        Err(AuthError::RateLimited)
+    ));
+
+    // The signed-in owner can still present a correct factor.
+    assert_eq!(
+        revoke_other_sessions(
+            &mut owner.db,
+            Some(&owner.cipher),
+            &owner.hasher,
+            &owner.principal,
+            &owner.password,
+            Some(&owner.recovery[1]),
+        )
+        .await
+        .unwrap(),
+        0
+    );
+    let new_password = Uuid::new_v4().to_string();
+    change_password(
+        &mut owner.db,
+        Some(&owner.cipher),
+        &owner.hasher,
+        &owner.principal,
+        &owner.password,
+        &new_password,
+        Some(&owner.recovery[0]),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        auth::login(
+            &owner.db,
+            &owner.hasher,
+            "owner@example.test",
+            &new_password
+        )
+        .await,
+        Err(AuthError::MfaRequired { .. })
+    ));
+    owner.finish().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn successful_sign_in_factor_resets_the_sign_in_failure_window() {
+    let mut owner = MfaOwner::new("login_budget_reset").await;
+    let first = owner.challenge().await;
+    for _ in 0..4 {
+        assert!(matches!(
+            owner.complete_login(&first, WRONG_FACTOR).await,
+            Err(AuthError::InvalidCredentials)
+        ));
+    }
+    let code = owner.recovery[0].clone();
+    owner.complete_login(&first, &code).await.unwrap();
+    let failures: i32 = owner
+        .db
+        .query_one(
+            "SELECT failed_attempts FROM owner_mfa WHERE account_id=$1",
+            &[&owner.account_id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(failures, 0);
+
+    // Without the reset these would be failures five through eight.
+    let second = owner.challenge().await;
+    for _ in 0..4 {
+        assert!(matches!(
+            owner.complete_login(&second, WRONG_FACTOR).await,
+            Err(AuthError::InvalidCredentials)
+        ));
+    }
+    let code = owner.recovery[1].clone();
+    owner.complete_login(&second, &code).await.unwrap();
+    owner.finish().await;
 }
