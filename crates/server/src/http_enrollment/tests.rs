@@ -899,6 +899,108 @@ async fn phones_pair_and_reconnect_after_anonymous_budgets_are_spent() {
 }
 
 #[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn pairing_creation_is_budgeted_per_owner_account() {
+    let root_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+        .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let (mut admin, connection) = tokio_postgres::connect(&root_url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let schema = format!("http_enroll_create_{}", Uuid::new_v4().simple());
+    admin
+        .batch_execute(&format!(
+            "CREATE SCHEMA {schema}; SET search_path TO {schema}"
+        ))
+        .await
+        .unwrap();
+    apply_migrations(&admin).await;
+    let auth_hasher = Arc::new(TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
+    let enrollment_hasher =
+        Arc::new(EnrollmentHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
+    let mut sessions = Vec::new();
+    for email in ["create-a@example.test", "create-b@example.test"] {
+        let password = Uuid::new_v4().to_string();
+        let owner = register(&mut admin, &auth_hasher, email, &password)
+            .await
+            .unwrap();
+        verify_email(&mut admin, &auth_hasher, &owner.verification_token)
+            .await
+            .unwrap();
+        let session = login(&admin, &auth_hasher, email, &password).await.unwrap();
+        sessions.push((owner.account_id, session));
+    }
+    let separator = if root_url.contains('?') { '&' } else { '?' };
+    let app = router(EnrollmentHttpState::new(
+        format!("{root_url}{separator}options=-csearch_path%3D{schema}"),
+        auth_hasher,
+        enrollment_hasher,
+        "https://test.example".into(),
+    ));
+    let create = |session: Option<(&str, &str)>| {
+        request(
+            Method::POST,
+            "/pairings",
+            json!({"display_name":"Phone"}),
+            session,
+        )
+    };
+    let pairings = |account_id: Uuid| {
+        let admin = &admin;
+        async move {
+            admin
+                .query_one(
+                    "SELECT count(*) FROM pairing_requests WHERE account_id=$1",
+                    &[&account_id],
+                )
+                .await
+                .unwrap()
+                .get::<_, i64>(0)
+        }
+    };
+    let (account_a, session_a) = &sessions[0];
+    let owner_a = Some((session_a.token.as_str(), session_a.csrf_token.as_str()));
+    // Requests that fail owner authentication spend nothing.
+    for _ in 0..12 {
+        let forged = create(Some((session_a.token.as_str(), "wrong-csrf")));
+        let response = app.clone().oneshot(forged).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+    for _ in 0..10 {
+        let response = app.clone().oneshot(create(owner_a)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+    }
+    let response = app.clone().oneshot(create(owner_a)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    assert_eq!(pairings(*account_a).await, 10);
+
+    // The budget is per account; another owner still creates pairings.
+    let (account_b, session_b) = &sessions[1];
+    let owner_b = Some((session_b.token.as_str(), session_b.csrf_token.as_str()));
+    let response = app.clone().oneshot(create(owner_b)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    assert_eq!(pairings(*account_b).await, 1);
+
+    // Once the subject window has passed the owner may pair again.
+    admin
+        .execute(
+            "UPDATE auth_abuse_counters SET window_started_at=now()-interval '16 minutes'
+                 WHERE scope='pair_create'",
+            &[],
+        )
+        .await
+        .unwrap();
+    let response = app.oneshot(create(owner_a)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    assert_eq!(pairings(*account_a).await, 11);
+    admin
+        .batch_execute(&format!(
+            "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
+        ))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn owner_routes_reject_missing_session_cookie_before_database() {
     // An unparsable URL fails any connection attempt with 503, so a 401 here
     // proves the handler never asked the pool for a connection.
