@@ -1625,6 +1625,7 @@ struct KeyMetadataBody {
     created_at_ms: i64,
     expires_at_ms: Option<i64>,
     revoked_at_ms: Option<i64>,
+    last_used_at_ms: Option<i64>,
     status: &'static str,
 }
 
@@ -1683,6 +1684,7 @@ async fn list_api_keys(
                     created_at_ms: key.created_at_ms,
                     expires_at_ms: key.expires_at_ms,
                     revoked_at_ms: key.revoked_at_ms,
+                    last_used_at_ms: key.last_used_at_ms,
                     status,
                 }
             })

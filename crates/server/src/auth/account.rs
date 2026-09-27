@@ -25,10 +25,12 @@ pub async fn list_sessions(
     owner: &SessionPrincipal,
 ) -> Result<Vec<SessionInfo>, AuthError> {
     super::require_current_owner(client, owner).await?;
+    // Idle-expired sessions can no longer authenticate, so they are omitted,
+    // and `expires_at_ms` is the earlier of the absolute and idle deadlines.
     let rows = client
         .query(
-            "SELECT id,(extract(epoch FROM created_at)*1000)::bigint,(extract(epoch FROM expires_at)*1000)::bigint,(extract(epoch FROM last_used_at)*1000)::bigint FROM sessions WHERE account_id=$1 AND user_id=$2 AND revoked_at IS NULL AND expires_at>now() ORDER BY (id=$3) DESC,created_at DESC,id DESC LIMIT $4",
-            &[&owner.tenant.account_id(), &owner.user_id, &owner.session_id, &SESSION_PAGE_SIZE],
+            "SELECT id,(extract(epoch FROM created_at)*1000)::bigint,(extract(epoch FROM LEAST(expires_at,COALESCE(last_used_at,created_at)+($5::integer * interval '1 hour')))*1000)::bigint,(extract(epoch FROM last_used_at)*1000)::bigint FROM sessions WHERE account_id=$1 AND user_id=$2 AND revoked_at IS NULL AND expires_at>now() AND COALESCE(last_used_at,created_at)>now()-($5::integer * interval '1 hour') ORDER BY (id=$3) DESC,created_at DESC,id DESC LIMIT $4",
+            &[&owner.tenant.account_id(), &owner.user_id, &owner.session_id, &SESSION_PAGE_SIZE, &super::SESSION_IDLE_HOURS],
         )
         .await?;
     Ok(rows
