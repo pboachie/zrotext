@@ -18,12 +18,27 @@ use reqwest::{Client as HttpClient, redirect, retry};
 use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 use tokio_postgres::Client;
 use uuid::Uuid;
 
 const STRIPE_API: &str = "https://api.stripe.com";
 const MAX_RESPONSE_BYTES: usize = 32 * 1024;
+const MAX_LIST_RESPONSE_BYTES: usize = 256 * 1024;
+/// Width of one Checkout window. Every Checkout request an account makes in
+/// one window replays the same Stripe idempotency key, so a reload, a second
+/// tab or a return through `/billing/cancel` reaches the same hosted session.
+const CHECKOUT_WINDOW_SECS: i64 = 30 * 60;
+/// Stripe requires `expires_at` to be at least 30 minutes after creation. The
+/// margin absorbs clock skew between this server and Stripe.
+const CHECKOUT_EXPIRY_MARGIN_SECS: i64 = 5 * 60;
+/// Open sessions inspected per request. With one open session per account
+/// this is far above the steady state; a longer backlog fails closed after
+/// expiring the page it saw, so a retry makes progress.
+const MAX_OPEN_CHECKOUTS_LISTED: usize = 10;
 
 #[derive(Clone)]
 pub struct SessionState {
@@ -187,13 +202,12 @@ async fn checkout(
     )
     .await?;
     let account_id = owner.tenant.account_id();
-    let retry_key = checkout_retry_key(
-        &headers,
-        account_id,
+    require_checkout_request_key(&headers)?;
+    let profile = checkout_profile(
         &state.checkout_price_id,
         &state.success_url,
         &state.cancel_url,
-    )?;
+    );
     // One nonterminal subscription per account: a second live subscription
     // projects an ambiguous entitlement of zero outbound quota and a zero
     // device cap. Refuse before any Stripe work and before spending the
@@ -221,15 +235,23 @@ async fn checkout(
                 .ok_or(AuthHttpError::Unavailable)?
         }
     };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|elapsed| i64::try_from(elapsed.as_secs()).ok())
+        .ok_or(AuthHttpError::Unavailable)?;
     let url = state
         .stripe
-        .create_checkout(
-            &customer_id,
-            &state.checkout_price_id,
-            &state.success_url,
-            &state.cancel_url,
-            account_id,
-            &retry_key,
+        .single_open_checkout(
+            &CheckoutParams {
+                customer_id: &customer_id,
+                price_id: &state.checkout_price_id,
+                success_url: &state.success_url,
+                cancel_url: &state.cancel_url,
+                account_id,
+                profile: &profile,
+            },
+            now,
         )
         .await?;
     Ok(Json(SessionUrl { url }).into_response())
@@ -313,13 +335,10 @@ async fn consume_session_budget(
     }
 }
 
-fn checkout_retry_key(
-    headers: &HeaderMap,
-    account_id: Uuid,
-    price_id: &str,
-    success_url: &str,
-    cancel_url: &str,
-) -> Result<String, AuthHttpError> {
+/// The browser still sends a v4 UUID `idempotency-key` so the API contract
+/// holds, but it no longer selects the Stripe session: a fresh UUID per page
+/// load used to open a new Checkout session on every reload or second tab.
+fn require_checkout_request_key(headers: &HeaderMap) -> Result<(), AuthHttpError> {
     let value = headers
         .get("idempotency-key")
         .and_then(|v| v.to_str().ok())
@@ -328,17 +347,47 @@ fn checkout_retry_key(
     if uuid.get_version_num() != 4 || uuid.to_string() != value {
         return Err(AuthHttpError::BadRequest);
     }
+    Ok(())
+}
+
+/// A short digest of the server-selected Checkout configuration. A changed
+/// price or return URL gets new idempotency keys and never reuses a session
+/// opened under the old configuration.
+fn checkout_profile(price_id: &str, success_url: &str, cancel_url: &str) -> String {
     let mut digest = Sha256::new();
     digest.update(b"zt-checkout-profile-v1\0");
     for value in [price_id, success_url, cancel_url] {
         digest.update(value.as_bytes());
         digest.update(b"\0");
     }
-    let profile = digest.finalize()[..16]
+    digest.finalize()[..16]
         .iter()
         .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    Ok(format!("zt-checkout-v2-{account_id}-{profile}-{uuid}"))
+        .collect::<String>()
+}
+
+/// The Checkout window containing `now` (Unix seconds) and the `expires_at`
+/// every session created in that window carries. Both are pure functions of
+/// the window, so a replayed idempotency key always sends identical
+/// parameters. A session lives 35 to 65 minutes and so stays open at most
+/// into the following window, where it is found and reused.
+fn checkout_window(now: i64) -> (i64, i64) {
+    let window = now.div_euclid(CHECKOUT_WINDOW_SECS);
+    let expires_at = (window + 2) * CHECKOUT_WINDOW_SECS + CHECKOUT_EXPIRY_MARGIN_SECS;
+    (window, expires_at)
+}
+
+fn checkout_retry_key(account_id: Uuid, profile: &str, window: i64) -> String {
+    format!("zt-checkout-v3-{account_id}-{profile}-{window}")
+}
+
+struct CheckoutParams<'a> {
+    customer_id: &'a str,
+    price_id: &'a str,
+    success_url: &'a str,
+    cancel_url: &'a str,
+    account_id: Uuid,
+    profile: &'a str,
 }
 
 async fn connect(database_url: &str) -> Result<crate::runtime_db::PooledClient, AuthHttpError> {
@@ -364,14 +413,30 @@ impl StripeClient {
         form: &[(&str, String)],
         key: Option<&str>,
     ) -> Result<Value, AuthHttpError> {
+        self.post_path(endpoint.path(), form, key).await
+    }
+
+    async fn post_path(
+        &self,
+        path: &str,
+        form: &[(&str, String)],
+        key: Option<&str>,
+    ) -> Result<Value, AuthHttpError> {
         let mut request = self
             .http
-            .post(format!("{}{}", self.api_base, endpoint.path()))
+            .post(format!("{}{path}", self.api_base))
             .bearer_auth(&self.secret_key)
             .form(form);
         if let Some(key) = key {
             request = request.header("Idempotency-Key", key);
         }
+        Self::read_json(request, MAX_RESPONSE_BYTES).await
+    }
+
+    async fn read_json(
+        request: reqwest::RequestBuilder,
+        limit: usize,
+    ) -> Result<Value, AuthHttpError> {
         let mut response = request
             .send()
             .await
@@ -385,7 +450,7 @@ impl StripeClient {
             .await
             .map_err(|_| AuthHttpError::Unavailable)?
         {
-            if bytes.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
+            if bytes.len().saturating_add(chunk.len()) > limit {
                 return Err(AuthHttpError::Unavailable);
             }
             bytes.extend_from_slice(&chunk);
@@ -415,32 +480,138 @@ impl StripeClient {
         .map_err(|_| AuthHttpError::Unavailable)
     }
 
-    async fn create_checkout(
+    /// Returns the account's single open Checkout session, creating one only
+    /// when none is open. Open sessions that this configuration did not
+    /// create (another price or return URL, or sessions from before this
+    /// guard existed) are expired first, and when a window boundary race left
+    /// two matching sessions the oldest is kept and the other expired, so at
+    /// most one session can still be completed.
+    async fn single_open_checkout(
+        &self,
+        params: &CheckoutParams<'_>,
+        now: i64,
+    ) -> Result<String, AuthHttpError> {
+        let (open, has_more) = self.list_open_checkouts(params.customer_id).await?;
+        let mut keep: Option<(i64, &str, &Value)> = None;
+        let mut stale = Vec::new();
+        for session in &open {
+            let id = valid_id(
+                session["id"].as_str().ok_or(AuthHttpError::Unavailable)?,
+                "cs_test_",
+            )
+            .map_err(|_| AuthHttpError::Unavailable)?;
+            if session["object"] != "checkout.session"
+                || session["livemode"] != false
+                || session["status"] != "open"
+                || session["customer"] != params.customer_id
+            {
+                return Err(AuthHttpError::Unavailable);
+            }
+            let reusable = session["mode"] == "subscription"
+                && session["client_reference_id"] == params.account_id.to_string()
+                && session["metadata"]["zt_checkout_profile"] == params.profile
+                && hosted_url(&session["url"], "checkout.stripe.com").is_ok();
+            if !reusable {
+                stale.push(id);
+                continue;
+            }
+            let created = session["created"]
+                .as_i64()
+                .ok_or(AuthHttpError::Unavailable)?;
+            match keep {
+                Some((kept_created, kept_id, _)) if (kept_created, kept_id) <= (created, id) => {
+                    stale.push(id);
+                }
+                _ => {
+                    if let Some((_, kept_id, _)) = keep {
+                        stale.push(kept_id);
+                    }
+                    keep = Some((created, id, session));
+                }
+            }
+        }
+        for id in stale {
+            self.expire_checkout(id).await?;
+        }
+        if has_more {
+            return Err(AuthHttpError::Unavailable);
+        }
+        match keep {
+            Some((_, _, session)) => hosted_url(&session["url"], "checkout.stripe.com"),
+            None => self.create_checkout(params, now).await,
+        }
+    }
+
+    async fn list_open_checkouts(
         &self,
         customer_id: &str,
-        price_id: &str,
-        success_url: &str,
-        cancel_url: &str,
-        account_id: Uuid,
-        retry_key: &str,
+    ) -> Result<(Vec<Value>, bool), AuthHttpError> {
+        let customer_id = valid_id(customer_id, "cus_").map_err(|_| AuthHttpError::Unavailable)?;
+        let request = self
+            .http
+            .get(format!(
+                "{}{}?customer={customer_id}&status=open&limit={MAX_OPEN_CHECKOUTS_LISTED}",
+                self.api_base,
+                StripeEndpoint::Checkout.path()
+            ))
+            .bearer_auth(&self.secret_key);
+        let mut result = Self::read_json(request, MAX_LIST_RESPONSE_BYTES).await?;
+        let has_more = result["has_more"]
+            .as_bool()
+            .ok_or(AuthHttpError::Unavailable)?;
+        if result["object"] != "list" {
+            return Err(AuthHttpError::Unavailable);
+        }
+        match result["data"].take() {
+            Value::Array(data) if data.len() <= MAX_OPEN_CHECKOUTS_LISTED => Ok((data, has_more)),
+            _ => Err(AuthHttpError::Unavailable),
+        }
+    }
+
+    async fn expire_checkout(&self, session_id: &str) -> Result<(), AuthHttpError> {
+        let result = self
+            .post_path(
+                &format!("{}/{session_id}/expire", StripeEndpoint::Checkout.path()),
+                &[],
+                None,
+            )
+            .await?;
+        if result["object"] != "checkout.session"
+            || result["id"] != session_id
+            || result["status"] != "expired"
+        {
+            return Err(AuthHttpError::Unavailable);
+        }
+        Ok(())
+    }
+
+    async fn create_checkout(
+        &self,
+        params: &CheckoutParams<'_>,
+        now: i64,
     ) -> Result<String, AuthHttpError> {
+        let (window, expires_at) = checkout_window(now);
+        let account_id = params.account_id;
+        let customer_id = params.customer_id;
         let result = self
             .post(
                 StripeEndpoint::Checkout,
                 &[
                     ("mode", "subscription".into()),
                     ("customer", customer_id.into()),
-                    ("line_items[0][price]", price_id.into()),
+                    ("line_items[0][price]", params.price_id.into()),
                     ("line_items[0][quantity]", "1".into()),
-                    ("success_url", success_url.into()),
-                    ("cancel_url", cancel_url.into()),
+                    ("success_url", params.success_url.into()),
+                    ("cancel_url", params.cancel_url.into()),
                     ("client_reference_id", account_id.to_string()),
+                    ("expires_at", expires_at.to_string()),
+                    ("metadata[zt_checkout_profile]", params.profile.into()),
                     (
                         "subscription_data[metadata][account_id]",
                         account_id.to_string(),
                     ),
                 ],
-                Some(retry_key),
+                Some(&checkout_retry_key(account_id, params.profile, window)),
             )
             .await?;
         if result["object"] != "checkout.session"
