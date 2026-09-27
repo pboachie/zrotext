@@ -69,6 +69,8 @@ const RADIO_CLOCK_SKEW_MS: i64 = 5 * 60 * 1000;
 
 pub struct NewMessage<'a> {
     pub account_id: Uuid,
+    /// Caller-chosen message identity. `accept` and `accept_metered` store it
+    /// as `messages.id`; `accept_alpha` stores [`alpha_message_id`] instead.
     pub client_message_id: Uuid,
     pub device_id: Uuid,
     pub idempotency_key: &'a str,
@@ -206,7 +208,9 @@ impl<'a> DeliveryStore<'a> {
     /// Inserts idempotency identity, message and job in one writer transaction.
     /// No HTTP 202 should be returned until this transaction commits.
     pub async fn accept(&mut self, input: NewMessage<'_>) -> Result<AcceptOutcome, StoreError> {
-        self.accept_inner(input, MeteringTime::Unmetered).await
+        let message_id = input.client_message_id;
+        self.accept_inner(input, message_id, MeteringTime::Unmetered)
+            .await
     }
 
     /// Use for a quota-governed send. The reservation, idempotency record,
@@ -216,19 +220,25 @@ impl<'a> DeliveryStore<'a> {
         &mut self,
         input: NewMessage<'_>,
     ) -> Result<AcceptOutcome, StoreError> {
-        self.accept_inner(input, MeteringTime::Database).await
+        let message_id = input.client_message_id;
+        self.accept_inner(input, message_id, MeteringTime::Database)
+            .await
     }
 
     /// Private alpha admission follows the runtime billing gate and any
     /// customer binding already persisted by an earlier billing run. The
     /// Binding lookup and acceptance share one transaction. Bound tenants lock
     /// the customer row before the account row to match billing ingress.
+    /// The stored message ID is [`alpha_message_id`], never the caller's
+    /// `client_message_id`, so one account cannot collide with or probe for
+    /// another account's messages.
     pub async fn accept_alpha(
         &mut self,
         input: NewMessage<'_>,
         billing_enabled: bool,
     ) -> Result<AcceptOutcome, StoreError> {
-        self.accept_inner(input, MeteringTime::Alpha { billing_enabled })
+        let message_id = alpha_message_id(input.account_id, input.client_message_id);
+        self.accept_inner(input, message_id, MeteringTime::Alpha { billing_enabled })
             .await
     }
 
@@ -238,13 +248,18 @@ impl<'a> DeliveryStore<'a> {
         input: NewMessage<'_>,
         unix_ms: i64,
     ) -> Result<AcceptOutcome, StoreError> {
-        self.accept_inner(input, MeteringTime::UnixMillis(unix_ms))
+        let message_id = input.client_message_id;
+        self.accept_inner(input, message_id, MeteringTime::UnixMillis(unix_ms))
             .await
     }
 
+    /// `message_id` is the stored `messages.id`. The request digest still
+    /// covers the caller's `client_message_id`, so an exact replay of a key
+    /// recorded before alpha IDs were account-scoped keeps its original result.
     async fn accept_inner(
         &mut self,
         input: NewMessage<'_>,
+        message_id: Uuid,
         metering: MeteringTime,
     ) -> Result<AcceptOutcome, StoreError> {
         validate_message(&input)?;
@@ -286,7 +301,7 @@ impl<'a> DeliveryStore<'a> {
                    request_digest=EXCLUDED.request_digest,message_id=EXCLUDED.message_id, \
                    expires_at=EXCLUDED.expires_at \
                  WHERE idempotency_keys.expires_at<=now() RETURNING message_id",
-                &[&input.account_id, &input.idempotency_key, &digest, &input.client_message_id,
+                &[&input.account_id, &input.idempotency_key, &digest, &message_id,
                   &self.idempotency_days],
             )
             .await;
@@ -368,7 +383,7 @@ impl<'a> DeliveryStore<'a> {
                 "INSERT INTO messages (id,account_id,device_id,recipient_e164,recipient_digest,transport_mode,transport_payload,request_digest,state,expires_at) \
                  VALUES ($1,$2,$3,$4,$5,'synthetic_alpha',$6,$7,'queued',to_timestamp($8::double precision / 1000)) \
                  ON CONFLICT (id) DO NOTHING RETURNING id",
-                &[&input.client_message_id, &input.account_id, &input.device_id, &input.recipient_e164,
+                &[&message_id, &input.account_id, &input.device_id, &input.recipient_e164,
                   &recipient_digest, &input.synthetic_payload, &digest, &expiry],
             )
             .await?;
@@ -376,7 +391,7 @@ impl<'a> DeliveryStore<'a> {
             let row = tx
                 .query_one(
                     "SELECT account_id,request_digest FROM messages WHERE id=$1",
-                    &[&input.client_message_id],
+                    &[&message_id],
                 )
                 .await?;
             let owner: Uuid = row.get(0);
@@ -384,49 +399,38 @@ impl<'a> DeliveryStore<'a> {
             if owner != input.account_id || saved_digest != digest {
                 return Err(StoreError::MessageIdConflict);
             }
-            if require_reservation
-                && !reservation_exists(&tx, input.account_id, input.client_message_id).await?
+            if require_reservation && !reservation_exists(&tx, input.account_id, message_id).await?
             {
                 return Err(StoreError::IdempotencyConflict);
             }
             tx.commit().await?;
             return Ok(AcceptOutcome {
-                message_id: input.client_message_id,
+                message_id,
                 created: false,
             });
         }
         match metering {
             MeteringTime::Unmetered => {}
             MeteringTime::Database => {
-                reserve_outbound(&tx, input.account_id, input.client_message_id, None).await?
+                reserve_outbound(&tx, input.account_id, message_id, None).await?
             }
             MeteringTime::Alpha { .. } if require_reservation => {
-                reserve_outbound(&tx, input.account_id, input.client_message_id, None).await?
+                reserve_outbound(&tx, input.account_id, message_id, None).await?
             }
             MeteringTime::Alpha { .. } => {}
             #[cfg(test)]
             MeteringTime::UnixMillis(unix_ms) => {
-                reserve_outbound(
-                    &tx,
-                    input.account_id,
-                    input.client_message_id,
-                    Some(unix_ms),
-                )
-                .await?
+                reserve_outbound(&tx, input.account_id, message_id, Some(unix_ms)).await?
             }
         }
         tx.execute(
             "INSERT INTO dispatch_jobs (message_id,account_id,device_id) VALUES ($1,$2,$3)",
-            &[
-                &input.client_message_id,
-                &input.account_id,
-                &input.device_id,
-            ],
+            &[&message_id, &input.account_id, &input.device_id],
         )
         .await?;
         tx.commit().await?;
         Ok(AcceptOutcome {
-            message_id: input.client_message_id,
+            message_id,
             created: true,
         })
     }
@@ -1458,6 +1462,22 @@ fn now_ms() -> i64 {
         .unwrap_or(i64::MAX)
 }
 
+/// Server-side `messages.id` for a private-alpha request. It is derived from
+/// the authenticated account and the caller's `client_message_id`, so a retry
+/// from the same account maps to the same message while another account using
+/// the same client ID (or a known foreign message ID) gets an unrelated one.
+/// The result is an RFC 9562 version 8 UUID.
+pub fn alpha_message_id(account_id: Uuid, client_message_id: Uuid) -> Uuid {
+    let mut hash = Sha256::new();
+    hash.update(b"zrotext.alpha-message-id.v1");
+    hash.update(account_id.as_bytes());
+    hash.update(client_message_id.as_bytes());
+    let digest = hash.finalize();
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    uuid::Builder::from_custom_bytes(bytes).into_uuid()
+}
+
 fn request_digest(input: &NewMessage<'_>) -> Vec<u8> {
     let mut hash = Sha256::new();
     hash.update(input.account_id.as_bytes());
@@ -1573,3 +1593,6 @@ mod hold_tests;
 
 #[cfg(test)]
 mod recovery_tests;
+
+#[cfg(test)]
+mod alpha_id_tests;
