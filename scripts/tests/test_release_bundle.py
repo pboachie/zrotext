@@ -3,6 +3,7 @@
 
 import json
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import unittest
@@ -17,6 +18,37 @@ ROOT = Path(__file__).resolve().parents[2]
 TAG = "v0.1.6-rc.1"
 COMMIT = "a" * 40
 HEX = "b" * 64
+
+
+def embedded_web_files(root: Path) -> set[str]:
+    """Bounded source inventory, not a Rust parser; reject unclassified embeds."""
+    literal = re.compile(r'\s*\(\s*"([^"\\]+)"\s*,?\s*\)')
+    migration = re.compile(
+        r'\s*\(\s*concat!\s*\(\s*(?:env!\("CARGO_MANIFEST_DIR"\),\s*)?'
+        r'"/?(?:\.\./)+deploy/compose/migrations/",\s*\$name\s*\)\s*\)')
+    paths = set()
+    for source in (root / "crates/server/src").rglob("*.rs"):
+        text = source.read_text(encoding="utf-8")
+        for token in re.finditer(r'\binclude_(?:str|bytes)\s*!', text):
+            argument = text[token.end():]
+            match = literal.match(argument)
+            if match is None:
+                # Existing test macros interpolate migration filenames only.
+                if (source.name == "tests.rs" or source.name.endswith("_tests.rs")) \
+                        and migration.match(argument):
+                    continue
+                raise ValueError(f"Unclassified embedded source in {source.name}")
+            path = (source.parent / match[1]).resolve().relative_to(root.resolve())
+            if path.as_posix().startswith(("web/owner/", "crates/server/static/")):
+                paths.add(path.as_posix())
+    return paths
+
+
+def check_web_inventory(root: Path, declared: tuple[str, ...]) -> set[str]:
+    embedded = embedded_web_files(root)
+    if not embedded or len(declared) != len(set(declared)) or set(declared) != embedded:
+        raise ValueError("Release web inventory does not match embedded assets")
+    return embedded
 
 
 def candidate(commit=COMMIT):
@@ -97,6 +129,78 @@ class ReleaseBundleTest(unittest.TestCase):
             (root / WEB_FILES[0]).write_bytes(b"changed")
             self.assertNotEqual(first, file_set_digest(root, WEB_FILES))
             self.assertNotEqual(first, file_set_digest(root, tuple(reversed(WEB_FILES))))
+
+    def test_web_inventory_covers_every_literal_embedded_asset(self):
+        check_web_inventory(ROOT, WEB_FILES)
+
+    def test_inventory_includes_byte_assets_trailing_commas_and_deduplicates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "crates/server/src/owner_ui.rs"
+            source.parent.mkdir(parents=True)
+            source.write_text('''
+include_str!("../../../web/owner/app.js",);
+include_str! ("../../../web/owner/app.js");
+include_bytes!("../../../web/owner/icon.svg",);
+include_str!("../static/billing.html");
+include_str!("../../../protocol/v1/schema.json");
+''', encoding="utf-8")
+            declared = ("web/owner/app.js", "web/owner/icon.svg",
+                        "crates/server/static/billing.html")
+            self.assertEqual(check_web_inventory(root, declared), set(declared))
+            with self.assertRaisesRegex(ValueError, "inventory does not match"):
+                check_web_inventory(root, (declared[0], declared[2]))
+            with self.assertRaisesRegex(ValueError, "inventory does not match"):
+                check_web_inventory(root, declared + (declared[0],))
+
+    def test_inventory_rejects_unknown_or_dynamic_macro_arguments(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "crates/server/src/owner_ui.rs"
+            source.parent.mkdir(parents=True)
+            for expression in (
+                'include_str!(concat!("../../../web/owner/", "app.js"))',
+                'include_bytes!(asset_path)',
+                'include_str!(r"../../../web/owner/app.js")',
+                'include_str!["../../../web/owner/app.js"]',
+                'include_str!("../../../web/owner/app.js", unexpected)',
+            ):
+                with self.subTest(expression=expression):
+                    source.write_text(expression, encoding="utf-8")
+                    with self.assertRaisesRegex(ValueError, "Unclassified embedded"):
+                        embedded_web_files(root)
+
+    def test_inventory_classifies_only_known_migration_test_macros(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "crates/server/src/queue_tests.rs"
+            source.parent.mkdir(parents=True)
+            for prefix in ('"../../../../deploy/compose/migrations/"',
+                           'env!("CARGO_MANIFEST_DIR"), "/../../deploy/compose/migrations/"'):
+                source.write_text(f'include_str!(concat!({prefix}, $name))', encoding="utf-8")
+                self.assertEqual(embedded_web_files(root), set())
+            source.write_text('include_str!(concat!("../../../web/owner/", $name))',
+                              encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "Unclassified embedded"):
+                embedded_web_files(root)
+
+    def test_each_embedded_asset_changes_the_release_web_digest(self):
+        embedded = embedded_web_files(ROOT)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for relative in embedded:
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"original")
+            original = file_set_digest(root, WEB_FILES)
+            for relative in sorted(embedded):
+                with self.subTest(asset=relative):
+                    path = root / relative
+                    path.write_bytes(b"changed")
+                    try:
+                        self.assertNotEqual(original, file_set_digest(root, WEB_FILES))
+                    finally:
+                        path.write_bytes(b"original")
 
     def test_duplicate_json_fields_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

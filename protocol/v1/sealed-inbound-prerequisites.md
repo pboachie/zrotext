@@ -6,6 +6,125 @@ webhook delivery. They accept no HTTP or WebSocket body. The `ZTSE` profile-01
 kind-02 byte prefix and length constraint is a storage guard, not a parser or
 cryptographic verification. No production sealed-content claim follows.
 
+## Dormant candidate-02 manifest persistence
+
+Migration 042 adds an initially empty `sealed_manifest_authorities` table and
+`sealed_manifest_store::admit` composes the candidate-02 manifest verifier with
+the existing sealed line/session preflight. Neither has a production caller.
+There is no root provisioning, reset, rotation or content-ingest API. A future
+independently authenticated owner ceremony must establish the exact RootPin02,
+fingerprint, generation and transition anchor; request bytes and the separate
+SMS/line-approval keys are not a trust source. An absent or revoked authority
+fails closed. This assumes trusted database storage and administrative access;
+the verifier cannot authenticate an administrator's choice of initial pin.
+
+The caller supplies a database transaction. Admission locks its account's
+authority row first, then retains the preflight's account, device, enrolled key,
+site, deployment authority, session, line and binding locks through transaction
+completion. Revocation and rebinding writers serialize against those locks.
+Database wall time is sampled after lock waits. A transaction may advance only
+one linked version or replay the same current unsigned semantic digest; a fork,
+gap, rollback, expired manifest, wrong tenant or regressing database time fails.
+Replay preserves the originally stored signed bytes and original acceptance
+time. A fresh next version may follow an expired predecessor, whose signature
+is reverified at its recorded acceptance time. The monotonic database-time
+high-water is retained through restarts. It detects clock rollback, not a
+malicious or incorrectly advanced database clock.
+
+The returned non-cloneable `Admission` borrows the transaction. Its `context`
+method requires inbound kind and the same account/device/line, checks the live
+session, current authority and manifest/key freshness again, and constructs the
+exact expected envelope context. It exposes no unfenced manifest getter. A
+future caller must verify the exact signed envelope, enforce event/sequence
+identity and perform all effects in this transaction, calling `context`
+immediately before those effects and commit. The caller must roll back on any
+error. This does not guarantee a lease remains valid through arbitrary caller
+delays; it is not a substitute for future ingest's final atomic acceptance
+contract. The table permits account-erasure cascades and has no delete trigger;
+deleting authority cannot bootstrap replacement trust through this API.
+
+This layer does not change the existing profile-01 sealed-event storage guard,
+resolve the candidate inbound segment-count contract, journal phone events,
+insert ciphertext or mount a route. Candidate-02 remains a proposal, and no
+sealed release gate is closed by this persistence prerequisite.
+
+## Dormant root enrollment history
+
+Migration 044 adds database-known trust history before any enrollment API is
+mounted. Inserting an authority atomically records a per-account root marker
+and reserves its public point. The marker survives authority deletion, so a
+later insertion cannot silently reset the account's trust or manifest history.
+Ordinary updates, deletion and truncation of this history are rejected; parent
+account erasure cascades. This does not implement complete account erasure for
+the application's other records.
+
+Known signing-role claims include current and revoked SMS approval, line
+approval and device-authentication keys, plus provisioned roots. Future device
+identity changes reserve the new point while retaining the previous reservation.
+Root points cannot be reused for these other roles in either registration order;
+the existing SMS-versus-line/device exclusions remain. The registry is scoped
+to each account and compares public-point bytes, not differently domain-separated
+fingerprints. It does not recover keys deleted before migration, classify
+unregistered payload keys, or establish a global cross-account key policy.
+
+The migration fences source-table writes across backfill and trigger installation
+and rejects preexisting incompatible aliases. Each account/point has one immutable
+compatibility-family reservation; generated claim families and a foreign key
+allow line/device sharing while excluding root and SMS aliases. Unique constraints
+also fence writers whose repeatable-read or serializable snapshot predates another
+reservation. Such transactions can abort with a serialization error and must be
+retried as a whole; the registration never silently changes an existing family.
+Account-row locks serialize absent genesis and role reservation. Checks of existing
+authority use ordinary reads,
+never account-then-authority row locking; manifest admission still locks authority
+before its account/session fences. Existing authority updates take no new lock.
+These records prove neither independent human comparison nor root possession.
+The trusted initial-pin ceremony, client custody and runtime prerequisites remain
+open, and direct database provisioning remains outside any public application API.
+
+## Dormant candidate-02 ingest transaction
+
+`sealed_inbound::ingest::ingest_candidate02` composes that authority admission
+with exact candidate-02 envelope verification and durable insertion. It owns
+its transaction through commit; an error rolls back a staged manifest advance
+as well as any event insertion. No HTTP/WSS route calls it, and it performs no
+webhook, outbound dispatch, grant or SMS operation.
+
+The bounded parser supplies untrusted event, peer and reader selectors. The
+authenticated session and current database binding supply account, device and
+line authority; the independently pinned manifest authorizes the signer and
+readers, and exact signature verification binds the selectors to the received
+bytes. Only then can the transaction store the original envelope and its
+unsigned semantic digest. Observed time must be positive, at most seven days
+old and no more than five minutes ahead of database wall time. There is no
+device-clock-offset rewriting. It accepts out-of-order sequences within that
+window, but never reuses an accepted device sequence for a different event.
+
+Every replay passes these same current authority, signature, session and age
+checks. An expired or superseded original manifest, revoked signer or session,
+or event older than the window is rejected even if its tombstone exists. A
+fresh manifest cannot authorize an envelope naming an old version/digest. A
+valid identical unsigned replay returns `created=false`, preserving the first
+signature, original binding generation and timestamps. It never restores
+ciphertext removed by retention. Conflicting event IDs, profile changes and
+reused sequences fail; no foreign account's content is read. The transaction
+rechecks event age and manifest/session authority after insertion or replay-row
+lock waits, immediately before commit.
+
+Migration 043 retains an immutable `envelope_profile` beside each tombstone.
+Existing profile-01 constraints remain unchanged. Candidate-02 rows use
+`part_count=NULL`, explicitly unknown: the signed format has no segment-count
+field, and the relay cannot infer it from ciphertext. The existing purge-only
+update guard still permits only removal of the envelope, preserving all replay
+identity and profile metadata. Content pruning does not delete tombstones.
+
+Production use still requires independently authenticated root provisioning,
+an explicit device-authenticated transport adapter, bounded ingress/storage
+budgets, and Android production manifest trust, event/sequence journaling,
+multipart and ambiguous-SIM handling, signing and upload. Existing Android
+test-only vectors and dormant recipient primitives do not establish those
+properties or physical-phone interoperability. No sealed runtime gate is enabled.
+
 ## Distinct source identity
 
 The current [M1 inbound pilot](inbound-foundation.md) signs an outbound
@@ -98,6 +217,35 @@ untrusted relay directory. A successful signature does not prove manifest
 freshness, active line generation, session/grant validity, replay safety, HPKE
 or body authentication, or permission to store, decrypt or send. The live
 transactional checks and the remaining Q1-Q11 evidence are still required.
+
+## Dormant manifest authority prerequisite
+
+The Rust [`sealed_manifest`](../../crates/server/src/sealed_manifest/mod.rs)
+module verifies bounded, exact RootPin02 and Manifest02 bytes against an
+independently authenticated account/root fingerprint and explicit chain position.
+It checks the owner signature, low-`s` canonicality, complete role/scope/subject
+matrix, key IDs and unique points, root/archive cardinality, and signed freshness
+window. The immutable result can derive a candidate-02 envelope context for an
+active line-bound outbound signer or device-and-line-bound inbound signer, plus
+exactly the selected authorized readers. No reader is added implicitly. Key
+validity and manifest freshness are checked again at context construction.
+
+The caller must supply trusted time and a chain position derived from durable
+owner-authenticated state: initial generation genesis requires a zero anchor;
+later generations require a nonzero, independently verified transition anchor.
+Advancement requires the next version and previous semantic digest, and reuse requires the
+exact current semantic digest. This API does not bootstrap trust, accept root
+transitions, persist a high-water mark, detect clock rollback, or perform an
+atomic compare-and-set. Persisting trust advances and rechecking current authority
+before effects remain mandatory. Constructing a context is not live admission;
+callers must immediately verify the exact envelope signature and enforce the
+transactional checks below. No HTTP/WSS route uses this module.
+
+Existing independent Python-generated genesis/rotation manifest vectors exercise
+the reusable verifier; rotation-signature verification remains a test-only proof.
+Signed authority tests cover both envelope kinds, revoked/expired/future keys,
+wrong subjects and scopes, missing/duplicate/unapproved readers, changed bytes,
+wrong pins, stale manifests, rollback, chain gaps and same-version forks.
 
 ## Required next ingest gate
 
