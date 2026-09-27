@@ -618,7 +618,7 @@ async function loadKeys(reset = true) {
       const prefix = document.createElement("strong");
       const metadata = document.createElement("span");
       prefix.textContent = `ztk_${key.public_prefix}…`;
-      metadata.textContent = ` ${key.status} · ${key.scopes.join(", ")} · created ${dateText(key.created_at_ms)} · expires ${dateText(key.expires_at_ms)}`;
+      metadata.textContent = ` ${key.status} · ${key.scopes.join(", ")} · created ${dateText(key.created_at_ms)} · expires ${dateText(key.expires_at_ms)} · last used ${dateText(key.last_used_at_ms)}`;
       detail.append(prefix, metadata);
       if (key.bound_device_id) {
         const device = document.createElement("code");

@@ -103,10 +103,14 @@ DATABASE_TLS_CA_PEM_B64='<base64-encoded-PEM-CA-bundle>'
 
 Do not put a real credential in the repository. A connection with
 `sslmode=prefer` or `disable` can carry credentials and metadata without TLS.
-Such modes are allowed for loopback, a Unix socket, and the local Compose `db`
-service. To use them with another host, an operator must set
+Such modes are allowed without an opt-in only for `localhost`, a loopback IP
+address, or a Unix socket. To use them with any other host, an operator must set
 `DATABASE_ALLOW_PLAINTEXT=true`; the process warns on startup. A private IP
-address alone does not bypass the TLS requirement. The CA bundle is public trust
+address or a service name alone does not bypass the TLS requirement: a name such
+as `db` is ordinary DNS and can resolve to another node in Kubernetes, Swarm,
+Nomad, or a multi-host Compose network. The bundled Compose `db` has no TLS, so
+the Compose file sets `DATABASE_ALLOW_PLAINTEXT` to `true` unless `.env`
+overrides it, and its processes log the plaintext warning. The CA bundle is public trust
 material, but verify its source before encoding it. The same settings apply to
 migration and webhook key rewrap jobs, not just the server. Test CA trust and
 hostname verification before directing production traffic to a new writer.
@@ -234,6 +238,15 @@ SMTP worker rather than repeating registrations blindly. After verification,
 remove the allowlists and enrollment key, set `REGISTRATION_MODE=closed`, and
 restart every API instance. Closing registration does not revoke owner sessions.
 
+### Owner sessions and API keys
+
+Owner sessions last at most 14 days and end after 72 hours without use; sign in
+again after either. The API key list on `/owner/devices` shows when each key
+was last used, recorded at most once per 15 minutes per key. Revoke keys that
+show no recent use. Keys created without a lifetime never expire, so prefer a
+lifetime for new keys. See
+[SECURITY-DESIGN.md](SECURITY-DESIGN.md#owner-session-and-api-key-lifetime).
+
 ### Owner password recovery
 
 With SMTP configured, a signed-out owner can request a one-hour, one-use reset
@@ -302,6 +315,19 @@ between accounts and endpoints with due work across all hubs; only one leased
 attempt per endpoint can exist. Private process logs emit `webhook_queue` with
 pending count, oldest pending age in seconds, and in-flight count about once a
 minute. Monitor these alongside the owner-visible pause state.
+
+The delivery recovery worker runs every 15 seconds. It expires pre-grant
+messages past their expiry and refunds their quota, marks silent granted or
+submitting attempts `unknown`, and closes submitted messages with no delivery
+receipt after 24 hours. Each sweep handles 100 rows per transaction and repeats
+while batches come back full, for at most 10 batches per sweep per tick. It
+stops early when the process begins draining. About once a minute, and on every
+tick that reaches the batch bound, private process logs emit
+`delivery_recovery` with the number of expired pending messages, the oldest
+expiry age in seconds, silent attempts, and overdue delivery receipts waiting
+(each count capped at 10,000), plus whether the tick reached its bound. The line
+contains no IDs, phone numbers, or content. A count that stays high or keeps
+growing means recovery is falling behind.
 
 Migration 029 (`029_webhook_dispatch_fairness.sql`; its error text still says "027") requires a webhook maintenance window. Stop webhook delivery on
 **every** old dispatch node (`WEBHOOK_DELIVERY_ENABLED=false`) before migrating.
@@ -394,6 +420,17 @@ local block still applies.
 When changing these settings across multiple hubs, deploy the same values to
 every hub. A shorter value can make data eligible immediately, while a longer
 value cannot restore content already redacted or history already deleted.
+
+A separate maintenance task runs every 60 seconds and removes expired auth
+abuse counters, MFA login challenges, device authentication challenges, pairing
+requests, unverified pending owners, and password resets. Each task repeats
+while its batch comes back full, for at most 10 batches per pass. When a task or
+its database connection fails, the process log shows one
+`maintenance prune unavailable (task=NAME)` line per failure streak, where
+`NAME` is `connect`, `abuse_limits`, `mfa_challenges`, `enrollment`,
+`pending_owners`, or `password_resets`. The line has no SQL error text or row
+data, and a later success re-arms it. Investigate the failure before these
+tables grow.
 
 ## Source for modified deployments
 

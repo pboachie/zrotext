@@ -20,7 +20,7 @@ Protected against in sealed mode: passive database/backup theft of bodies, accid
 
 Visible metadata includes account/device IDs, recipient and sender numbers, direction, time, size, segment information, network connection metadata, status, usage and billing. Minimize retention and log exposure. Plaintext phone numbers are a **chosen v1 routing/abuse design**, not an inherent requirement of end-to-end payload encryption or billing.
 
-Enrollment maintenance runs every 60 seconds and deletes at most 500 rows per table per pass. Device authentication challenges are removed one hour after expiry, including used challenges. Pairing requests, including approved requests, are removed 24 hours after expiry, or 24 hours after cancellation if later. Active device identity and signing keys live in the separate `devices` and `device_keys` tables. Backlogs may require multiple passes; database backups follow their own retention policy.
+Enrollment maintenance runs every 60 seconds and deletes up to 500 rows per table per batch, repeating while a batch comes back full, for at most 10 batches per pass. Device authentication challenges are removed one hour after expiry, including used challenges. Pairing requests, including approved requests, are removed 24 hours after expiry, or 24 hours after cancellation if later. Active device identity and signing keys live in the separate `devices` and `device_keys` tables. Larger backlogs take multiple passes. A failed prune logs `maintenance prune unavailable (task=...)` once per failure streak, without SQL error text or row data; database backups follow their own retention policy.
 
 ## Key separation
 
@@ -122,6 +122,25 @@ the budget; key revocation does not refund it. Exhaustion returns 429, and budge
 storage failure returns 503 without creating a key. This bounds issuance rate,
 not the lifetime retention of audit metadata for previously created keys.
 
+### Owner session and API key lifetime
+
+An owner session expires 14 days after sign-in, and earlier if it goes unused
+for 72 hours. A session never used after sign-in is measured from its creation.
+Both limits are fixed in the server (`SESSION_DAYS`, `SESSION_IDLE_HOURS`); the
+idle limit bounds how long a cookie left on an unattended or shared machine
+stays useful. Rejected idle sessions return 401 and are not revived, and the
+session inventory omits them and reports the earlier of the two deadlines.
+
+Sessions and API keys record `last_used_at` after the credential verifies, at
+most once per 15 minutes per credential. A wrong secret behind a known public
+key prefix never moves it. Because of that write window, the recorded time can
+trail the true last use by up to 15 minutes, and a session can lapse up to 15
+minutes before 72 hours after its true last request. The owner key list
+(`GET /v1/auth/api-keys`) returns `last_used_at_ms` (`null` if never used) so
+owners can find and revoke keys no integration uses. API keys keep their
+optional lifetime (1 to 365 days); omitting `lifetime_days` still creates a key
+without an expiry, which the owner dashboard shows as "expires Never".
+
 ### Public sign-in and enrollment budgets
 
 Password sign-in, second-factor completion, pairing claim and proof, and device
@@ -141,6 +160,10 @@ login-client cookie issued for that address. Each check is a single indexed read
 with no password or signature work. Admitted requests spend the same per-subject
 budget plus a separate verified-route ceiling ten times the anonymous one, which
 made-up subjects cannot reach. Refused requests leave no counter rows.
+A background worker deletes idle counter rows only after the longest window of
+their budget, plus one minute, has passed, so pruning never resets a budget
+that is still in force. Retention is derived from the same policy table the
+budgets use; scopes it does not know are kept for two minutes.
 
 The login-client cookie (`__Host-zrotext_login_client`; HttpOnly,
 SameSite=Strict, 180 days) is set after a full sign-in from a browser that lacks
@@ -153,3 +176,12 @@ Browsers without the cookie receive the same 429 whether or not the address
 exists. While the route-wide budgets are exhausted, sign-in from a new browser,
 registration and verification resend still wait for the window to reset, and
 the process-wide password worker gate still applies.
+
+Argon2id uses 64 MiB per operation, so each process runs at most two password
+operations at once (sign-in, registration, verification resend, password change
+and reset, revoking other sessions, and authenticator enrollment or removal).
+A request reaches this gate only after spending its abuse budget. It then waits
+up to two seconds for a free slot; if none frees, it gets 503 `unavailable`
+with `Retry-After: 1` rather than 429, so a busy server is not mistaken for a
+throttle. The 64-handler admission cap and 30-second deadline above bound how
+many requests can wait and for how long.

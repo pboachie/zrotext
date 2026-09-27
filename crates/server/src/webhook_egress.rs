@@ -7,6 +7,7 @@ use reqwest::{Url, redirect, retry};
 use sha2::Sha256;
 use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -166,6 +167,64 @@ pub fn signature_header(
     Ok(signature)
 }
 
+/// Immutable TLS state shared by every delivery attempt in this process.
+static TLS_CONFIG: tokio::sync::OnceCell<rustls::ClientConfig> = tokio::sync::OnceCell::const_new();
+
+#[cfg(test)]
+static TLS_CONFIG_BUILDS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Load the platform trust store and build the verifier once per process.
+/// A failed build is not cached, so a later attempt retries it. Session
+/// resumption is disabled so that, as with the former per-attempt config, no
+/// TLS session state is carried from one attempt (or tenant) to the next.
+async fn shared_tls_config() -> Result<&'static rustls::ClientConfig, EgressError> {
+    TLS_CONFIG
+        .get_or_try_init(|| async {
+            #[cfg(test)]
+            TLS_CONFIG_BUILDS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let provider = rustls::crypto::CryptoProvider::get_default()
+                .cloned()
+                .unwrap_or_else(|| Arc::new(rustls::crypto::aws_lc_rs::default_provider()));
+            let verifier = rustls_platform_verifier::Verifier::new(provider.clone())
+                .map_err(|_| EgressError::Transport)?;
+            let mut config = rustls::ClientConfig::builder_with_provider(provider)
+                .with_safe_default_protocol_versions()
+                .map_err(|_| EgressError::Transport)?
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(verifier))
+                .with_no_client_auth();
+            // reqwest does not set ALPN on a preconfigured config; match http1_only.
+            config.alpn_protocols = vec![b"http/1.1".to_vec()];
+            config.resumption = rustls::client::Resumption::disabled();
+            Ok(config)
+        })
+        .await
+}
+
+/// Build per attempt: no pooled connection or DNS lookup can outlive the
+/// validated answer. The URL hostname remains the TLS SNI/certificate name.
+/// Only the immutable TLS verifier and trust store are shared.
+fn attempt_client(
+    tls: &rustls::ClientConfig,
+    host: &str,
+    addrs: &[SocketAddr],
+) -> Result<reqwest::Client, EgressError> {
+    reqwest::Client::builder()
+        .tls_backend_preconfigured(tls.clone())
+        .no_proxy()
+        .redirect(redirect::Policy::none())
+        .retry(retry::never())
+        .https_only(true)
+        .http1_only()
+        .http1_max_headers(32)
+        .connect_timeout(Duration::from_secs(3))
+        .timeout(Duration::from_secs(10))
+        .pool_max_idle_per_host(0)
+        .resolve_to_addrs(host, addrs)
+        .build()
+        .map_err(|_| EgressError::Transport)
+}
+
 /// This call performs one network attempt. Outbox retry, tenant isolation,
 /// secret decryption and event-body construction are separate responsibilities.
 pub async fn post_signed(
@@ -193,21 +252,7 @@ pub async fn post_signed(
         .map_err(|_| EgressError::Transport)?
         .as_secs();
     let signature = signature_header(secret, timestamp_secs, body)?;
-    // Build per attempt: no pooled connection or DNS lookup can outlive the
-    // validated answer. The URL hostname remains the TLS SNI/certificate name.
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .redirect(redirect::Policy::none())
-        .retry(retry::never())
-        .https_only(true)
-        .http1_only()
-        .http1_max_headers(32)
-        .connect_timeout(Duration::from_secs(3))
-        .timeout(Duration::from_secs(10))
-        .pool_max_idle_per_host(0)
-        .resolve_to_addrs(host, &addrs)
-        .build()
-        .map_err(|_| EgressError::Transport)?;
+    let client = attempt_client(shared_tls_config().await?, host, &addrs)?;
     let response = client
         .post(url)
         .header("content-type", "application/json")
@@ -281,6 +326,26 @@ mod tests {
             .is_ok()
         );
         assert!(validate_resolved_addresses(&[SocketAddr::from(([8, 8, 8, 8], 80))]).is_err());
+    }
+
+    #[tokio::test]
+    async fn tls_config_is_built_once_and_shared_by_attempt_clients() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let first = shared_tls_config().await.unwrap();
+        let second = shared_tls_config().await.unwrap();
+        assert!(std::ptr::eq(first, second));
+        assert_eq!(first.alpn_protocols, vec![b"http/1.1".to_vec()]);
+        assert!(first.enable_sni);
+        let addrs = [SocketAddr::from(([8, 8, 8, 8], 443))];
+        for _ in 0..3 {
+            attempt_client(
+                shared_tls_config().await.unwrap(),
+                "hooks.example.org",
+                &addrs,
+            )
+            .unwrap();
+        }
+        assert_eq!(TLS_CONFIG_BUILDS.load(SeqCst), 1);
     }
 
     #[test]

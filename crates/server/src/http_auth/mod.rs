@@ -33,7 +33,7 @@ use std::{
     time::{Duration, Instant},
 };
 use subtle::ConstantTimeEq;
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_postgres::Client;
 use uuid::Uuid;
 use zeroize::Zeroizing;
@@ -44,6 +44,10 @@ mod sms_owner_keys;
 const SESSION_COOKIE: &str = "__Host-zrotext_session";
 const CSRF_COOKIE: &str = "__Host-zrotext_csrf";
 const CSRF_HEADER: &str = "x-zrotext-csrf";
+/// Two queued 64 MiB Argon2id operations normally finish well inside this.
+/// The ingress layer's in-flight cap and 30-second deadline bound how many
+/// requests can wait at once and for how long.
+const HASH_PERMIT_WAIT: Duration = Duration::from_secs(2);
 
 /// A deployment supplies a reviewed mail transport here. The default server
 /// deliberately keeps registration closed until that transport and an explicit
@@ -488,6 +492,9 @@ pub struct AuthHttpState {
     pub dispatcher: Arc<dyn VerificationDispatcher>,
     pub registration_policy: RegistrationPolicy,
     pub hash_limit: Arc<Semaphore>,
+    /// How long a request that has already spent its abuse budget waits for a
+    /// `hash_limit` permit before the server answers 503 `unavailable`.
+    pub hash_permit_wait: Duration,
     pub mfa_cipher: Option<Arc<MfaCipher>>,
     pub mfa_enrollment_enabled: bool,
     /// Dormant owner routes for SMS line activation; off by default.
@@ -516,6 +523,7 @@ impl AuthHttpState {
             registration_policy: RegistrationPolicy::Closed,
             // Argon2id uses 64 MiB per operation. Limit concurrent hashes.
             hash_limit: Arc::new(Semaphore::new(2)),
+            hash_permit_wait: HASH_PERMIT_WAIT,
             mfa_cipher: None,
             mfa_enrollment_enabled: false,
             sms_line_activation_enabled: false,
@@ -605,11 +613,15 @@ pub enum AuthHttpError {
     NotFound,
     TooManyRequests,
     Unavailable,
+    /// Every password-hash permit stayed busy for the whole wait. This is
+    /// server load, not a spent abuse budget, so it is 503 with Retry-After.
+    Busy,
     Internal,
 }
 
 impl IntoResponse for AuthHttpError {
     fn into_response(self) -> Response {
+        let retry_after = matches!(self, Self::Busy);
         let (status, code) = match self {
             Self::BadRequest => (StatusCode::BAD_REQUEST, "invalid_request"),
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized"),
@@ -617,15 +629,34 @@ impl IntoResponse for AuthHttpError {
             Self::SmsOwnerKeyActive => (StatusCode::CONFLICT, "revoke_sms_owner_key_first"),
             Self::NotFound => (StatusCode::NOT_FOUND, "not_found"),
             Self::TooManyRequests => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
-            Self::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+            Self::Unavailable | Self::Busy => (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
             Self::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "internal_error"),
         };
-        (
+        let mut response = (
             status,
             [(header::CACHE_CONTROL, "no-store")],
             Json(ErrorBody { code }),
         )
-            .into_response()
+            .into_response();
+        if retry_after {
+            response
+                .headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+        }
+        response
+    }
+}
+
+impl AuthHttpState {
+    /// Wait up to `hash_permit_wait` for one of the process's password-hash
+    /// permits. Callers must spend their abuse budget first, so only admitted
+    /// requests queue here.
+    async fn hash_permit(&self) -> Result<OwnedSemaphorePermit, AuthHttpError> {
+        let acquire = self.hash_limit.clone().acquire_owned();
+        match tokio::time::timeout(self.hash_permit_wait, acquire).await {
+            Ok(Ok(permit)) => Ok(permit),
+            Ok(Err(_)) | Err(_) => Err(AuthHttpError::Busy),
+        }
     }
 }
 
@@ -757,11 +788,7 @@ async fn register(
     {
         return Err(AuthHttpError::TooManyRequests);
     }
-    let _permit = state
-        .hash_limit
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| AuthHttpError::TooManyRequests)?;
+    let _permit = state.hash_permit().await?;
     match auth::register(&mut client, &state.hasher, &body.email, &body.password).await {
         Ok(_) => {}
         // Avoid leaking whether this address is already registered.
@@ -798,11 +825,7 @@ async fn resend_verification(
     {
         return Err(AuthHttpError::TooManyRequests);
     }
-    let _permit = state
-        .hash_limit
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| AuthHttpError::TooManyRequests)?;
+    let _permit = state.hash_permit().await?;
     // Valid, unknown, verified and throttled accounts all have the same
     // outward result. No code or account-existence signal enters the body.
     let _ =
@@ -996,11 +1019,7 @@ async fn login(
     if !admitted.map_err(|_| AuthHttpError::Unavailable)? {
         return Err(AuthHttpError::TooManyRequests);
     }
-    let _permit = state
-        .hash_limit
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| AuthHttpError::TooManyRequests)?;
+    let _permit = state.hash_permit().await?;
     let credentials = match auth::login(&client, &state.hasher, &body.email, &body.password).await {
         Ok(credentials) => credentials,
         Err(AuthError::MfaRequired {
@@ -1222,11 +1241,7 @@ async fn revoke_other_sessions(
     {
         return Err(AuthHttpError::TooManyRequests);
     }
-    let _permit = state
-        .hash_limit
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| AuthHttpError::TooManyRequests)?;
+    let _permit = state.hash_permit().await?;
     match account::revoke_other_sessions(
         &mut client,
         state.mfa_cipher.as_deref(),
@@ -1277,11 +1292,7 @@ async fn change_password(
     {
         return Err(AuthHttpError::TooManyRequests);
     }
-    let _permit = state
-        .hash_limit
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| AuthHttpError::TooManyRequests)?;
+    let _permit = state.hash_permit().await?;
     match account::change_password(
         &mut client,
         state.mfa_cipher.as_deref(),
@@ -1387,11 +1398,7 @@ async fn confirm_password_reset(
         // A missing, expired, or rate-limited code has one outward result.
         return Err(AuthHttpError::BadRequest);
     }
-    let _permit = state
-        .hash_limit
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| AuthHttpError::TooManyRequests)?;
+    let _permit = state.hash_permit().await?;
     if account::confirm_password_reset(&mut client, &state.hasher, &body.token, &body.new_password)
         .await
         .map_err(map_auth)?
@@ -1480,11 +1487,7 @@ async fn begin_mfa_enrollment(
     )
     .await?;
     mfa_manage_budget(&client, &state, &owner).await?;
-    let _permit = state
-        .hash_limit
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| AuthHttpError::TooManyRequests)?;
+    let _permit = state.hash_permit().await?;
     let enrollment = mfa::begin_enrollment(&mut client, cipher, &owner, &body.password)
         .await
         .map_err(map_auth)?;
@@ -1561,11 +1564,7 @@ async fn disable_mfa(
     )
     .await?;
     mfa_manage_budget(&client, &state, &owner).await?;
-    let _permit = state
-        .hash_limit
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| AuthHttpError::TooManyRequests)?;
+    let _permit = state.hash_permit().await?;
     mfa::disable(
         &mut client,
         state.mfa_cipher.as_deref(),
@@ -1626,6 +1625,7 @@ struct KeyMetadataBody {
     created_at_ms: i64,
     expires_at_ms: Option<i64>,
     revoked_at_ms: Option<i64>,
+    last_used_at_ms: Option<i64>,
     status: &'static str,
 }
 
@@ -1684,6 +1684,7 @@ async fn list_api_keys(
                     created_at_ms: key.created_at_ms,
                     expires_at_ms: key.expires_at_ms,
                     revoked_at_ms: key.revoked_at_ms,
+                    last_used_at_ms: key.last_used_at_ms,
                     status,
                 }
             })

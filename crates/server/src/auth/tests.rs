@@ -665,3 +665,230 @@ async fn postgres_prune_removes_only_expired_unverified_owners() {
         .await
         .unwrap();
 }
+
+async fn api_key_last_used_ms(client: &Client, key_id: Uuid) -> Option<i64> {
+    client
+        .query_one(
+            "SELECT (extract(epoch FROM last_used_at)*1000)::bigint FROM api_keys WHERE id=$1",
+            &[&key_id],
+        )
+        .await
+        .unwrap()
+        .get(0)
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn postgres_api_key_records_throttled_last_use() {
+    let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+        .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let schema = format!("key_last_use_test_{}", Uuid::new_v4().simple());
+    let (setup, mut client, _) = pending_signup_schema(&base_url, &schema).await;
+    let hasher = TokenHasher::new(crate::test_keys::key(23)).unwrap();
+    let password = Uuid::new_v4().to_string();
+    let owner = register(&mut client, &hasher, "keys@example.test", &password)
+        .await
+        .unwrap();
+    assert!(
+        verify_email(&mut client, &hasher, &owner.verification_token)
+            .await
+            .unwrap()
+    );
+    let session = login(&client, &hasher, "keys@example.test", &password)
+        .await
+        .unwrap();
+    let principal = authenticate_session(&client, &hasher, &session.token)
+        .await
+        .unwrap();
+    let key = create_api_key(
+        &mut client,
+        &hasher,
+        &principal,
+        &[Scope::MessagesSend],
+        None,
+        Some(30),
+    )
+    .await
+    .unwrap();
+    let listed = list_api_keys(&client, &principal, None).await.unwrap();
+    assert_eq!(listed.keys[0].last_used_at_ms, None);
+
+    // A request with the right public prefix but a wrong secret is not use.
+    let replacement = if &key.token[20..21] == "A" { "B" } else { "A" };
+    let forged = format!("{}{replacement}{}", &key.token[..20], &key.token[21..]);
+    assert_ne!(forged, key.token);
+    assert_eq!(forged[4..16], key.token[4..16]);
+    assert!(
+        authenticate_api_key(&client, &hasher, &forged)
+            .await
+            .is_err()
+    );
+    assert_eq!(api_key_last_used_ms(&client, key.id).await, None);
+
+    authenticate_api_key(&client, &hasher, &key.token)
+        .await
+        .unwrap();
+    let first = api_key_last_used_ms(&client, key.id)
+        .await
+        .expect("first use is recorded");
+    let listed = list_api_keys(&client, &principal, None).await.unwrap();
+    assert_eq!(listed.keys[0].last_used_at_ms, Some(first));
+
+    // Inside the write window a later use does not rewrite the row.
+    client
+        .execute(
+            "UPDATE api_keys SET last_used_at=last_used_at-interval '10 minutes' WHERE id=$1",
+            &[&key.id],
+        )
+        .await
+        .unwrap();
+    let within = api_key_last_used_ms(&client, key.id).await.unwrap();
+    authenticate_api_key(&client, &hasher, &key.token)
+        .await
+        .unwrap();
+    assert_eq!(api_key_last_used_ms(&client, key.id).await, Some(within));
+
+    // Past the window, the next use advances it.
+    client
+        .execute(
+            "UPDATE api_keys SET last_used_at=last_used_at-interval '10 minutes' WHERE id=$1",
+            &[&key.id],
+        )
+        .await
+        .unwrap();
+    let stale = api_key_last_used_ms(&client, key.id).await.unwrap();
+    authenticate_api_key(&client, &hasher, &key.token)
+        .await
+        .unwrap();
+    assert!(api_key_last_used_ms(&client, key.id).await.unwrap() > stale);
+
+    // A revoked key neither authenticates nor records use.
+    assert!(revoke_api_key(&client, &principal, key.id).await.unwrap());
+    client
+        .execute(
+            "UPDATE api_keys SET last_used_at=now()-interval '1 day' WHERE id=$1",
+            &[&key.id],
+        )
+        .await
+        .unwrap();
+    let revoked = api_key_last_used_ms(&client, key.id).await;
+    assert!(
+        authenticate_api_key(&client, &hasher, &key.token)
+            .await
+            .is_err()
+    );
+    assert_eq!(api_key_last_used_ms(&client, key.id).await, revoked);
+    setup
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn postgres_idle_session_is_rejected_before_absolute_expiry() {
+    let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+        .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let schema = format!("session_idle_test_{}", Uuid::new_v4().simple());
+    let (setup, mut client, _) = pending_signup_schema(&base_url, &schema).await;
+    let hasher = TokenHasher::new(crate::test_keys::key(29)).unwrap();
+    let password = Uuid::new_v4().to_string();
+    let owner = register(&mut client, &hasher, "idle@example.test", &password)
+        .await
+        .unwrap();
+    assert!(
+        verify_email(&mut client, &hasher, &owner.verification_token)
+            .await
+            .unwrap()
+    );
+    let active = login(&client, &hasher, "idle@example.test", &password)
+        .await
+        .unwrap();
+    let idle = login(&client, &hasher, "idle@example.test", &password)
+        .await
+        .unwrap();
+    let never_used = login(&client, &hasher, "idle@example.test", &password)
+        .await
+        .unwrap();
+    let principal = authenticate_session(&client, &hasher, &active.token)
+        .await
+        .unwrap();
+    authenticate_session(&client, &hasher, &idle.token)
+        .await
+        .unwrap();
+    let listed = account::list_sessions(&client, &principal).await.unwrap();
+    assert_eq!(listed.len(), 3);
+
+    // Just inside the idle window: still accepted, and use refreshes it.
+    client
+        .execute(
+            "UPDATE sessions SET last_used_at=now()-($2::integer * interval '1 hour')+interval '5 minutes' WHERE id=$1",
+            &[&idle.id, &SESSION_IDLE_HOURS],
+        )
+        .await
+        .unwrap();
+    authenticate_session(&client, &hasher, &idle.token)
+        .await
+        .unwrap();
+    let refreshed: bool = client
+        .query_one(
+            "SELECT last_used_at>now()-interval '1 minute' FROM sessions WHERE id=$1",
+            &[&idle.id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert!(refreshed);
+
+    // Idle past the window, though far from the absolute expiry: rejected.
+    client
+        .execute(
+            "UPDATE sessions SET last_used_at=now()-($2::integer * interval '1 hour')-interval '1 minute' WHERE id=$1",
+            &[&idle.id, &SESSION_IDLE_HOURS],
+        )
+        .await
+        .unwrap();
+    // A session never used after login is measured from its creation.
+    client
+        .execute(
+            "UPDATE sessions SET created_at=now()-($2::integer * interval '1 hour')-interval '1 minute' WHERE id=$1",
+            &[&never_used.id, &SESSION_IDLE_HOURS],
+        )
+        .await
+        .unwrap();
+    let absolute_live: i64 = client
+        .query_one(
+            "SELECT count(*) FROM sessions WHERE id=ANY($1) AND expires_at>now()+interval '7 days'",
+            &[&vec![idle.id, never_used.id]],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(absolute_live, 2);
+    for token in [&idle.token, &never_used.token] {
+        assert!(matches!(
+            authenticate_session(&client, &hasher, token).await,
+            Err(AuthError::Unauthorized)
+        ));
+    }
+    // Rejection does not revive the session.
+    let revived: i64 = client
+        .query_one(
+            "SELECT count(*) FROM sessions WHERE id=$1 AND last_used_at>now()-interval '1 hour'",
+            &[&idle.id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(revived, 0);
+    let listed = account::list_sessions(&client, &principal).await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert!(listed[0].current);
+    authenticate_session(&client, &hasher, &active.token)
+        .await
+        .unwrap();
+    setup
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}

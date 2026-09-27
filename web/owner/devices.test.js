@@ -39,7 +39,7 @@ async function ownerPage() {
     reviewPages: [], reviewRequests: [], pendingReview: null,
     holdPages: [], holdRequests: [], pendingHold: null, decisionRequests: [], pendingDecision: null,
     devices: [], deletedDevices: [], billingCapacity: null, approveResponse: response(409),
-    authRequests: [], sessions: [{ id: "11111111-1111-4111-8111-111111111111", current: true,
+    keys: [], authRequests: [], sessions: [{ id: "11111111-1111-4111-8111-111111111111", current: true,
       created_at_ms: 1000, expires_at_ms: 100000, last_used_at_ms: 2000 }],
   };
   const fetch = async (url, options) => {
@@ -93,7 +93,7 @@ async function ownerPage() {
         : response(200, state.reviewPages.shift() || { holds: [], next_cursor: null });
     }
     if (url === "/v1/auth/api-keys" && options.method === "GET") {
-      return response(200, { keys: [], next_cursor: null });
+      return response(200, { keys: state.keys, next_cursor: null });
     }
     if (url === "/v1/auth/api-keys" && options.method === "POST") {
       if (state.nextCreateResponse) return state.nextCreateResponse;
@@ -228,6 +228,20 @@ test("password reset keeps the token out of URLs and clears entered passwords", 
   assert.equal(element("reset-token").value, "");
   assert.equal(element("reset-new-password").value, "");
   assert.equal(element("reset-confirm-password").value, "");
+});
+
+test("API key list shows when each key was last used", async () => {
+  const { element, state } = await ownerPage();
+  const key = { id: "33333333-3333-4333-8333-333333333333", scopes: ["messages:send"],
+    bound_device_id: null, created_at_ms: 1000, expires_at_ms: null, revoked_at_ms: null, status: "active" };
+  state.keys = [{ ...key, public_prefix: "usedprefix00", last_used_at_ms: 5000 },
+    { ...key, id: "44444444-4444-4444-8444-444444444444", public_prefix: "idleprefix00", last_used_at_ms: null }];
+  await element("refresh-keys").listeners.click();
+  const [used, idle] = element("key-list").children.map(visibleText);
+  assert.match(used, /last used/);
+  assert.doesNotMatch(used, /last used Never/);
+  assert.doesNotMatch(used, /Time unavailable/);
+  assert.match(idle, /last used Never/);
 });
 
 test("password change uses CSRF and sessions can be reviewed and revoked", async () => {
