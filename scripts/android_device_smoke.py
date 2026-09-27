@@ -16,6 +16,7 @@ ACCESSIBILITY = PACKAGE + "GatewayAccessibilityDeviceTest"
 MANIFEST_AUTHORITY = PACKAGE + "ManifestAuthorityDeviceTest"
 NETWORK_SERVICE = PACKAGE + "NetworkServiceDeviceTest"
 OUTBOUND_ENVELOPE = PACKAGE + "OutboundEnvelopeDeviceTest"
+ROOT_STORAGE = PACKAGE + "Draft02RootStorageDeviceTest"
 SERIAL = "emulator-5562"
 
 
@@ -33,6 +34,9 @@ def selected_tests(root=ROOT):
     source = root / "android/app/src/androidTest/java/org/zrotext/gateway/OutboundEnvelopeDeviceTest.kt"
     if source.is_file():
         expected[OUTBOUND_ENVELOPE] = 10
+    source = root / "android/app/src/androidTest/java/org/zrotext/gateway/Draft02RootStorageDeviceTest.kt"
+    if source.is_file():
+        expected[ROOT_STORAGE] = 3
     return expected
 
 
@@ -64,6 +68,12 @@ def verify_results(output, expected):
         raise ValueError("Instrumentation did not complete the exact expected test counts")
     if "INSTRUMENTATION_FAILED" in output or "FAILURES!!!" in output:
         raise ValueError("Instrumentation failed")
+    if ROOT_STORAGE in expected:
+        custody = re.findall(r"^INSTRUMENTATION_RESULT: rootStorageCustody=([^\r\n]+)", output, re.MULTILINE)
+        if len(custody) != 1 or custody[0] not in {"unsupported", "platform-reported-hardware"}:
+            raise ValueError("Root storage did not report its exercised custody branch")
+        return custody[0]
+    return None
 
 
 def main():
@@ -92,8 +102,10 @@ def main():
     # Raw platform output stays temporary, never in a public artifact or repository.
     with tempfile.TemporaryDirectory(prefix="zrotext-device-smoke-") as temporary:
         Path(temporary, "instrumentation.txt").write_text(output, encoding="utf-8")
-        verify_results(output, expected)
+        custody = verify_results(output, expected)
     print(f"Selected no-radio device tests passed: {sum(expected.values())}; zero failures or skips")
+    if custody:
+        print(f"Root storage custody branch exercised: {custody}")
 
 
 if __name__ == "__main__":
