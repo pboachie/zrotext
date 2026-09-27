@@ -186,6 +186,7 @@ separate member authorization and per-user MFA storage before it can be enabled.
 | POST /v1/enrollment/devices/{device_id}/challenge; POST /v1/enrollment/devices/authenticate | One-use device-key proof; no socket credential is issued |
 | DELETE /v1/enrollment/devices/{device_id} | Owner revokes a device with CSRF proof |
 | GET /v1/enrollment/devices?before={device_id} | Owner-only cursor page of enrolled device UUIDs, names, revocation status, and `active_socket_lease`; tenant scoped and no-store |
+| GET /owner/events | Owner-only same-origin server-sent-events stream for the dashboard. Requires the session cookie like the snapshot endpoints (no CSRF proof; read-only). Every two seconds it re-authenticates the session and compares a tenant-scoped fingerprint of the same bounded first pages the snapshots render (the first device page, with queue counts capped at 1,000 as in the device list, and the first message timeline page), so each poll does bounded, index-backed work however large the tenant is; a change emits one `changed` event naming the affected sections (`devices`, `messages`). Streams are admitted per process: one open stream per session (a second is refused with 409), at most three per account (429) and at most 32 per server process (503); refusals carry `Retry-After: 60` and `no-store`, and the dashboard keeps its snapshot refresh. A stream releases its slot when it ends for any reason, including a client disconnect, which the server notices when its next per-poll frame fails to write. Comment keepalives run every 15 seconds and each stream ends cleanly after ten minutes or as soon as the session, database, or pool admission fails. The stream signals that a snapshot changed; it never carries message content, phone numbers, or per-device detail, and the snapshot endpoints stay authoritative. |
 | GET /owner/devices | Same-origin owner sign-in and enrollment page; manual code and fingerprint comparison, CSRF-protected writes, no pairing token in a URL |
 | GET /v1/device-stream | Native WebSocket challenge-response with the enrolled P-256 key and writer-owned session epoch. An opt-in controlled-test extension requires a one-shot phone readiness frame and an allowlisted recipient digest. |
 | POST /v1/alpha/messages; GET /v1/alpha/messages/{id}; POST /v1/alpha/messages/{id}/cancel | Mounted only with explicit synthetic-alpha account and recipient allowlists. Bearer API key, tenant/device scope and idempotency are required. The server builds a fixed test body from a short case ID; no caller-supplied arbitrary plaintext or recipient appears in the response. The server assigns the returned `message_id`, derived from the authenticated account and the caller's `client_message_id`; status and cancellation use that `message_id`. A `client_message_id` names one message only within its account, so another account reusing it, or submitting a known message ID, is accepted as unrelated work and never confirms that another account's message exists. Authenticated acceptance attempts are limited to 60 per account and 600 globally per 60 seconds across API keys, devices and API sites. Valid retries also spend attempts; cancellation does not refund them. Exhaustion returns 429 with Retry-After: 60, while budget storage failure returns 503 before message storage. Status and cancellation remain available. This is separate from the planned sealed-content API. |
@@ -195,15 +196,26 @@ authenticated device session. It is true only while the lease is unexpired,
 the session deployment epoch is current, the hosting site is enabled and not
 draining, and the device, key, and account remain active. Reconnection replaces
 the device's prior session with a higher connection epoch. A dropped socket can
-remain represented until its 90-second lease expires. The owner dashboard polls
-device leases and recent message states every 15 seconds after the previous
-refresh finishes, only while signed in with a visible page. Owners can turn off
-automatic refresh; browsing older entries, focusing a list row, or opening
-message events pauses that list until the owner returns to the latest entries
-with Refresh or finishes the interaction. Hidden tabs and page navigation stop
-the timer; returning resumes it. A failed automatic refresh retains the previous
-rows with a visible error, and session expiry clears owner data and stops polling.
-These periodic observations are not a continuous connection monitor.
+remain represented until its 90-second lease expires. The owner dashboard holds one
+same-origin `GET /owner/events` stream per visible, signed-in tab and refreshes
+the device and message lists within a few seconds of a server-side change,
+while the same pause rules apply: automatic refresh can be turned off, browsing
+older entries, focusing a list row, or opening message events pauses that list
+until the owner returns to the latest entries with Refresh or finishes the
+interaction. Hidden tabs and page navigation close the stream; returning
+reopens it. Because a session may hold only one stream, a second tab signed in
+with the same browser session is refused and uses the snapshot refresh below
+until the first tab's stream closes. If the stream cannot connect, is refused,
+or drops, the dashboard falls back to
+refreshing device leases and recent message states every 15 seconds after the
+previous refresh finishes, and retries the stream with backoff capped at one
+attempt per minute; the backoff restarts only after a stream has stayed
+connected for at least 30 seconds, so a connect-drop loop cannot spin. A
+failed automatic refresh retains the previous rows with a visible error, and
+session expiry closes the stream, clears owner data and stops polling. These
+periodic observations are not a continuous connection monitor, and the event
+stream is a change signal over the same stored state, not a second data
+source.
 Approval/revocation and this lease are
 separate fields. Neither field establishes Android SMS permission, SIM state,
 carrier service, or radio send readiness. The owner API returns 503 rather than

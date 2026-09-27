@@ -1,0 +1,9 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+fieldset { min-width: 0; border: 0; margin: 0; padding: 0; display: grid; gap: .7rem; }
+legend { margin-bottom: .75rem; }
+textarea { box-sizing: border-box; width: 100%; padding: .65rem; border: 1px solid #8198a2; border-radius: .3rem; font: inherit; resize: vertical; }
+textarea:focus-visible { outline: 3px solid #b56516; outline-offset: 2px; }
+#output { white-space: pre-wrap; overflow-wrap: anywhere; min-height: 3rem; font: inherit; user-select: text; }
+@media (prefers-color-scheme: dark) { textarea { background: #14232c; color: #e7f0f2; border-color: #879ea7; } }
+
+[hidden] { display: none !important; }
