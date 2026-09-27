@@ -175,7 +175,7 @@ pub struct SmtpVerificationDispatcher {
 
 fn verification_email_body(token: &str) -> String {
     format!(
-        "Your ZROtext email verification code is:\n\n{token}\n\nOpen /owner/account#verify on your ZROtext server and enter this code. It expires in 24 hours.\n"
+        "Your ZROtext email verification code is:\n\n{token}\n\nOpen /owner/account#verify on your ZROtext server and enter this code together with the password you chose at sign-up. It expires in 24 hours. If you did not sign up for ZROtext, ignore this message.\n"
     )
 }
 
@@ -895,10 +895,18 @@ async fn register(
     let _permit = state.hash_permit().await?;
     match auth::register(&mut client, &state.hasher, &body.email, &body.password).await {
         Ok(_) => {}
-        // Avoid leaking whether this address is already registered.
+        // Avoid leaking whether this address is already registered. A pending
+        // owner that still holds the address keeps its record, but its mailed
+        // code stops working: that code was issued for the earlier
+        // registrant's password, and this later registrant (or the recipient
+        // of the mail) must not be able to verify the address with it.
         Err(AuthError::Database(ref error))
             if error.code() == Some(&tokio_postgres::error::SqlState::UNIQUE_VIOLATION) =>
         {
+            drop(_permit);
+            auth::cancel_pending_verification(&mut client, &body.email)
+                .await
+                .map_err(map_auth)?;
             return Ok(StatusCode::ACCEPTED);
         }
         Err(error) => return Err(map_auth(error)),
@@ -1059,8 +1067,15 @@ pub async fn dispatch_one_password_reset_notice(
 #[derive(Deserialize)]
 struct VerifyBody {
     token: String,
+    password: String,
 }
 
+/// A code verifies an address only together with the password that
+/// registered it. Without that binding, a third party could register the
+/// address with its own password and the recipient of the mail would
+/// activate the foreign account by pasting the code. A missing password is a
+/// malformed body and fails at the JSON extractor before any database work;
+/// a wrong password, an unknown code and a consumed code share one response.
 async fn verify_email(
     State(state): State<Arc<AuthHttpState>>,
     headers: HeaderMap,
@@ -1078,7 +1093,8 @@ async fn verify_email(
     {
         return Err(AuthHttpError::TooManyRequests);
     }
-    if auth::verify_email(&mut client, &state.hasher, &body.token)
+    let _permit = state.hash_permit().await?;
+    if auth::verify_email_with_password(&mut client, &state.hasher, &body.token, &body.password)
         .await
         .map_err(map_auth)?
     {
