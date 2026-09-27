@@ -76,6 +76,17 @@ def validate_rejection(output):
         raise ValueError("Runner did not reject an unsafe selector before discovery")
 
 
+SERIAL_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]*")
+
+
+def validated_serial(serial):
+    """Return the serial only when it cannot smuggle argument or shell separators."""
+    match = SERIAL_PATTERN.fullmatch(serial) if serial is not None else None
+    if serial is not None and match is None:
+        raise ValueError("Device serial may contain only letters, digits, dots, dashes, underscores and colons")
+    return match.group(0) if match else serial
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--serial", help="Explicit target; omit for build-only APK validation")
@@ -87,6 +98,10 @@ def main():
         parser.error("Physical execution requires a target and both reviewed artifact hashes")
     if args.expected_sha256 and any(not re.fullmatch(r"[0-9a-f]{64}", h) for h in args.expected_sha256):
         parser.error("Expected hashes must be lowercase SHA-256 hex")
+    try:
+        args.serial = validated_serial(args.serial)
+    except ValueError as error:
+        parser.error(str(error))
     sdk = Path(os.environ["ANDROID_HOME"])
     suffix = ".bat" if os.name == "nt" else ""
     analyzer = sdk / "cmdline-tools/latest/bin" / ("apkanalyzer" + suffix)
