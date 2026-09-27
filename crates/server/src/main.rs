@@ -30,7 +30,7 @@ use zrotext_delivery_store::DeliveryStore;
 use zrotext_server::{
     alpha_policy::AlphaPolicy,
     auth::{
-        self, TokenHasher, abuse_limits,
+        TokenHasher,
         mfa::{self, MfaCipher},
     },
     billing::{
@@ -42,7 +42,7 @@ use zrotext_server::{
         worker::StripeTestWorker,
     },
     device_socket::{self, DeviceSocketState},
-    enrollment::{self, EnrollmentHasher},
+    enrollment::EnrollmentHasher,
     http_auth::{
         self, AuthHttpState, DisabledVerificationDispatcher, RegistrationPolicy,
         SmtpVerificationDispatcher, VerificationDispatchOutcome, VerificationDispatcher,
@@ -54,7 +54,7 @@ use zrotext_server::{
     http_owner_messages::{self, OwnerMessagesState},
     http_owner_review::{self, OwnerReviewState},
     http_webhooks::{self, WebhookHttpState},
-    owner_ui,
+    maintenance, owner_ui,
     retention::{self, RetentionPolicy},
     webhook_worker::{self, WebhookSecretVault},
 };
@@ -391,17 +391,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tokio::spawn(async move {
             let mut checks = tokio::time::interval(Duration::from_secs(60));
             checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut failures = maintenance::FailureLog::default();
             loop {
                 tokio::select! {
                     _ = checks.tick() => {
                         if abuse_draining.load(Ordering::Acquire) { break; }
-                        if let Ok(mut client) = zrotext_server::runtime_db::connect_worker(&abuse_database).await {
-                            let _ = abuse_limits::prune(&client).await;
-                            let _ = mfa::prune_expired_challenges(&client).await;
-                            let _ = enrollment::prune_expired(&client).await;
-                            let _ = auth::prune_expired_pending_owners(&mut client).await;
-                            let _ = auth::account::prune_expired_password_resets(&client).await;
-                        }
+                        maintenance::run_tick(&abuse_database, &abuse_draining, &mut failures, |line| eprintln!("{line}")).await;
                     }
                     _ = abuse_drain_notify.notified() => break,
                 }
