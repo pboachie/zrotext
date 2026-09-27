@@ -174,20 +174,33 @@ async fn stream_requires_a_session_and_signals_only_tenant_changes_until_it_ends
     verify_email(&mut db, &hasher, &b.verification_token)
         .await
         .unwrap();
-    async fn sign_in(
-        db: &tokio_postgres::Client,
-        hasher: &TokenHasher,
-        email: &str,
-        password: u8,
-    ) -> String {
-        login(db, hasher, email, &crate::test_keys::password(password))
-            .await
-            .unwrap()
-            .token
-    }
-    let session_a = sign_in(&db, &hasher, "events-a@example.test", 1).await;
-    let session_a2 = sign_in(&db, &hasher, "events-a@example.test", 1).await;
-    let session_b = sign_in(&db, &hasher, "events-b@example.test", 2).await;
+    let session_a = login(
+        &db,
+        &hasher,
+        "events-a@example.test",
+        &crate::test_keys::password(1),
+    )
+    .await
+    .unwrap()
+    .token;
+    let session_a2 = login(
+        &db,
+        &hasher,
+        "events-a@example.test",
+        &crate::test_keys::password(1),
+    )
+    .await
+    .unwrap()
+    .token;
+    let session_b = login(
+        &db,
+        &hasher,
+        "events-b@example.test",
+        &crate::test_keys::password(2),
+    )
+    .await
+    .unwrap()
+    .token;
     let device_a = Uuid::new_v4();
     let device_b = Uuid::new_v4();
     db.execute(
