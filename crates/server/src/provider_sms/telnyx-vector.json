@@ -1,0 +1,7 @@
+{
+  "provenance": "Synthetic fixture signed independently with Node.js node:crypto Ed25519; no private key retained.",
+  "public_key": "A+XMV3FEwNpObmViFQrnlMNnZW+aODuHcs5zTOcbz+o=",
+  "timestamp": "1000",
+  "signature": "2DLb/mr6EWEAXxZ4krwnOPiLfY1HwMoVjcJHc0KcRdFnmORA7XVT85NhQ3vCos4bJM2qX9C+CMbzTMt/zg1YAA==",
+  "body": "{\n  \"data\": {\n    \"id\": \"00000000-0000-0000-0000-00000000000a\",\n    \"event_type\": \"message.finalized\",\n    \"record_type\": \"event\",\n    \"payload\": {\n      \"id\": \"00000000-0000-0000-0000-000000000004\",\n      \"organization_id\": \"00000000-0000-0000-0000-000000000002\",\n      \"messaging_profile_id\": \"00000000-0000-0000-0000-000000000003\",\n      \"direction\": \"outbound\",\n      \"type\": \"SMS\",\n      \"from\": {\n        \"phone_number\": \"+15551234567\"\n      },\n      \"to\": [\n        {\n          \"phone_number\": \"+15557654321\",\n          \"status\": \"delivered\"\n        }\n      ],\n      \"text\": \"synthetic fixture\"\n    }\n  },\n  \"meta\": {\n    \"attempt\": 1\n  }\n}"
+}
