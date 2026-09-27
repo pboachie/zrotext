@@ -219,8 +219,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let billing_provider_authorized = billing_test
         .as_ref()
         .map(|(_, worker, ..)| worker.authorization_state());
+    let database_url = required("DATABASE_URL")?;
+    // Reject an unusable URL here with its reason; a later connect failure
+    // would only report the database as unavailable.
+    zrotext_postgres_connection::check_url(&database_url)
+        .map_err(|error| format!("DATABASE_URL: {error}"))?;
     let config = Arc::new(Config {
-        database_url: required("DATABASE_URL")?,
+        database_url,
         site_id: required("SITE_ID")?,
         instance_id: required("INSTANCE_ID")?,
         deployment_epoch: required("DEPLOYMENT_EPOCH")?.parse()?,

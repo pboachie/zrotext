@@ -335,7 +335,7 @@ async fn open(
     url: Arc<str>,
     permit: OwnedSemaphorePermit,
 ) -> Result<PooledClient, ConnectError> {
-    let mut config: tokio_postgres::Config = url.parse()?;
+    let mut config = zrotext_postgres_connection::parse_config(&url)?;
     // Preserve operator search_path options, but enforce deadlines last. These
     // start with the session and also apply after an HTTP future is cancelled.
     config.options(format!("{} -c statement_timeout=10000 -c lock_timeout=3000 -c idle_in_transaction_session_timeout=15000", config.get_options().unwrap_or_default()));
@@ -514,13 +514,54 @@ mod tests {
         ));
         assert!(matches!(
             acquire(&pools.requests, "invalid").await,
-            Err(ConnectError::Database(_))
+            Err(ConnectError::Transport(_))
         ));
         assert!(matches!(
             acquire(&pools.workers, "invalid").await,
-            Err(ConnectError::Database(_))
+            Err(ConnectError::Transport(_))
         ));
         drop(devices);
+    }
+
+    #[tokio::test]
+    async fn unusable_url_is_a_configuration_error_not_an_outage() {
+        let pool = ClassPool::new(1, false);
+        let Err(error) = acquire(
+            &pool,
+            "postgres://u:<secret>@writer.example/zrotext?sslmode=verify-any",
+        )
+        .await
+        else {
+            panic!("an unsupported sslmode must not connect");
+        };
+        assert!(matches!(
+            error,
+            ConnectError::Transport(zrotext_postgres_connection::ConnectError::Configuration(_))
+        ));
+        let message = error.to_string();
+        assert!(message.contains("sslmode"), "{message}");
+        assert!(!message.contains("<secret>"));
+
+        // Parse errors that would echo input text reach callers only as
+        // fixed diagnostics.
+        for url in [
+            "host=writer.example password='zt-leak-marker dbname=zrotext",
+            "postgres://u@writer.example/zrotext?%0Azt-leak-marker%0A=1",
+        ] {
+            let Err(error) = acquire(&pool, url).await else {
+                panic!("{url:?} must not connect");
+            };
+            assert!(matches!(
+                error,
+                ConnectError::Transport(zrotext_postgres_connection::ConnectError::Configuration(
+                    _
+                ))
+            ));
+            for text in [error.to_string(), format!("{error:?}")] {
+                assert!(!text.contains("zt-leak-marker"), "{url:?} leaked: {text:?}");
+                assert!(!text.contains('\n'), "{url:?} injected a newline: {text:?}");
+            }
+        }
     }
 
     #[tokio::test]
