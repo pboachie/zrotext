@@ -497,6 +497,7 @@ fn inbound_evidence_close_code(error: &InboundError) -> u16 {
         | InboundError::SequenceConflict => EVIDENCE_REJECTED,
         InboundError::Unauthorized => close_code::POLICY,
         InboundError::SourcePending
+        | InboundError::SourceRetired
         | InboundError::StaleLease
         | InboundError::BudgetExhausted
         | InboundError::Database(_) => RETRY_LATER,

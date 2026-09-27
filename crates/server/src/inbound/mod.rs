@@ -117,6 +117,8 @@ pub enum InboundError {
     UnknownSource,
     #[error("outbound attempt has not yet produced positive sent evidence")]
     SourcePending,
+    #[error("outbound message content was retired before this opt-out transition")]
+    SourceRetired,
     #[error("event ID was reused with different content")]
     EventConflict,
     #[error("device sequence was reused by another event")]
@@ -344,9 +346,24 @@ pub async fn ingest_with_clock(
         return Err(InboundError::SequenceConflict);
     }
     // Content retention has retired this source. Without the recipient, no
-    // suppression can be recorded; reject permanently before any budget charge.
+    // suppression can be recorded or cleared; refuse before any budget charge.
+    // Retention keeps the recipient while sent evidence is inside the event
+    // window, so a compliance transition lands here only on rows retired
+    // under the earlier rule or in the batch between the two cutoffs. It is
+    // deferred rather than quarantined; other classifications stay permanent.
     let Some(recipient_e164) = recipient_e164 else {
-        return Err(InboundError::UnknownSource);
+        let error = retired_source_error(event.classification);
+        if matches!(error, InboundError::SourceRetired) {
+            eprintln!(
+                "inbound opt-out transition deferred: source message content retired by retention \
+                 classification={} account_id={} device_id={} attempt_id={}",
+                event.classification.as_str(),
+                session.account_id,
+                session.device_id,
+                event.attempt_id
+            );
+        }
+        return Err(error);
     };
     // Charge before attempting the event INSERT. At a saturated budget,
     // fresh signed IDs cannot create rolled-back inbound rows and indexes.
@@ -516,6 +533,21 @@ pub async fn ingest_with_clock(
         queued_deliveries: queued,
         suppression_cleared: cleared,
     })
+}
+
+/// A source whose recipient was nulled by content retention cannot carry a
+/// suppression transition. STOP, review-STOP and START are compliance signals
+/// the phone must keep and retry; every other classification is stale.
+fn retired_source_error(classification: Classification) -> InboundError {
+    match classification {
+        Classification::OptOut | Classification::OptOutReview | Classification::OptIn => {
+            InboundError::SourceRetired
+        }
+        Classification::CapturedLocal
+        | Classification::SimUnverified
+        | Classification::SendUnverified
+        | Classification::EncryptionUnverified => InboundError::UnknownSource,
+    }
 }
 
 fn source_readiness(

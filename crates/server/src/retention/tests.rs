@@ -163,6 +163,15 @@ async fn retention_respects_each_cutoff_and_replay_fences() {
         &[&fenced_attempt,&account,&fenced,&device]).await.unwrap();
     db.execute("INSERT INTO dispatch_fences(message_id,account_id,device_id,attempt_id,generation,session_epoch,deployment_epoch,grant_expires_at,outcome) VALUES($1,$2,$3,$4,1,1,1,now()-interval '1 day','unknown')",
         &[&fenced,&account,&device,&fenced_attempt]).await.unwrap();
+    // Past the content window, but its positive sent callback is inside the
+    // event window: the signed STOP/START reply target must outlive content.
+    let replyable = message(&db, account, device, "delivered", 31).await;
+    let replyable_attempt = Uuid::new_v4();
+    db.execute("INSERT INTO message_attempts(id,account_id,message_id,device_id,generation,session_epoch,deployment_epoch,status) VALUES($1,$2,$3,$4,1,1,1,'submitted')",
+        &[&replyable_attempt,&account,&replyable,&device]).await.unwrap();
+    let replyable_callback = Uuid::new_v4();
+    db.execute("INSERT INTO message_events(id,account_id,message_id,attempt_id,evidence_code,event_digest,observed_at,received_at,resulting_state,segment_index,segment_count) VALUES($1,$2,$3,$4,'sent_callback_ok',$5,now(),now(),'submitted',0,1)",
+        &[&replyable_callback,&account,&replyable,&replyable_attempt,&vec![7_u8; 32]]).await.unwrap();
 
     for (key, mid, age) in [("expired", old, -1), ("live", recent, 1)] {
         db.execute("INSERT INTO idempotency_keys(account_id,key,request_digest,message_id,expires_at) VALUES($1,$2,$3,$4,now()+$5::int * interval '1 day')",
@@ -492,7 +501,7 @@ async fn retention_respects_each_cutoff_and_replay_fences() {
         "redacted"
     );
     assert!(present(&db, "message_events", events[4]).await);
-    for id in [unknown, fenced, recently_terminal] {
+    for id in [unknown, fenced, recently_terminal, replyable] {
         assert_eq!(
             db.query_one("SELECT recipient_e164 FROM messages WHERE id=$1", &[&id])
                 .await
@@ -501,6 +510,35 @@ async fn retention_respects_each_cutoff_and_replay_fences() {
             "+15551234567"
         );
     }
+    // Once the sent callback leaves the event window, the recipient is
+    // retired first and the event row is deleted in the same pass.
+    db.execute(
+        "UPDATE message_events SET received_at=now()-interval '91 days' WHERE id=$1",
+        &[&replyable_callback],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        prune(&mut db, RetentionPolicy::default(), BATCH_SIZE)
+            .await
+            .unwrap(),
+        RetentionCounts {
+            messages: 1,
+            message_events: 1,
+            ..RetentionCounts::default()
+        }
+    );
+    assert!(
+        db.query_one(
+            "SELECT recipient_e164 FROM messages WHERE id=$1",
+            &[&replyable]
+        )
+        .await
+        .unwrap()
+        .get::<_, Option<String>>(0)
+        .is_none()
+    );
+    assert!(!present(&db, "message_events", replyable_callback).await);
     db.batch_execute(&format!(
         "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
     ))

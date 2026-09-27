@@ -404,7 +404,7 @@ from 1 through 3650. An invalid value prevents server startup.
 | Setting | Default | Action and cutoff |
 |---|---:|---|
 | `ZT_IDEMPOTENCY_RETENTION_DAYS` | 7 | New keys expire after this many days; expired keys are ignored for replay and removed. Changing the setting does not rewrite existing expiry timestamps. |
-| `ZT_MESSAGE_CONTENT_RETENTION_DAYS` | 30 | Null the E.164 recipient and synthetic payload on delivered, failed, cancelled, or expired messages after this many days since their last state update. |
+| `ZT_MESSAGE_CONTENT_RETENTION_DAYS` | 30 | Null the E.164 recipient and synthetic payload on delivered, failed, cancelled, or expired messages after this many days since their last state update, once no `sent_callback_ok` event for the message is younger than `ZT_MESSAGE_EVENTS_RETENTION_DAYS`. |
 | `ZT_MESSAGE_EVENTS_RETENTION_DAYS` | 90 | Delete message event rows after this many days since receipt when their message is eligible for terminal retention. |
 | `ZT_WEBHOOK_HISTORY_RETENTION_DAYS` | 30 | Delete succeeded/dead deliveries and their attempts and manual replay requests after this many days since the delivery's last update. |
 | `ZT_INBOUND_CONTENT_RETENTION_DAYS` | 30 | Redact M1 opaque pilot ciphertext after this many days since receipt, once every related webhook delivery has been removed. |
@@ -430,7 +430,14 @@ Message events are deleted only after their parent message content has been
 redacted. If the event window is shorter than the content window, or an old
 unknown message becomes terminal recently, the content cutoff is the effective
 earliest event-deletion time. This preserves exact radio-event replay until the
-store starts rejecting all late receipts for that redacted message.
+store starts rejecting all late receipts for that redacted message. In the
+other direction, a message whose positive sent callback is still inside the
+event window keeps its recipient past the content cutoff, because a signed
+STOP or START reply binds to that attempt and needs the recipient to record or
+clear a suppression. The recipient is therefore retired, and the callback row
+deleted in the same pass, once both windows have passed. The reply target of a
+sent message lasts for the longer of the two windows (90 days by default);
+`ZT_MESSAGE_CONTENT_RETENTION_DAYS` alone does not shorten it.
 
 After content redaction, late radio receipts are rejected as stale even when
 their event ID used to exist in the audit timeline. Device clients must
@@ -438,10 +445,14 @@ quarantine that terminal rejection rather than reconnecting with the same
 frame. The [stale-event protocol fix](https://github.com/pboachie/zrotext/issues/147)
 is a rollout dependency for this retention worker. An M1 inbound event whose
 source message content has been redacted is rejected as an unknown source, so
-no reply content or suppression is recorded for it; an exact replay of an
-event stored before redaction is still acknowledged. New inbound events have a
-seven-day upload-age limit and the phone's reply window is 24 hours, so a
-content window of 8 days or less can reject a delayed STOP upload. The phone's
+no reply content is recorded for it; an exact replay of an event stored before
+redaction is still acknowledged. A signed STOP, review STOP or START for such a
+source is instead deferred with the retryable close code (1013) and one
+operator log line without a recipient, so the phone keeps the event and retries
+it; with the rule above this happens only for rows redacted by an earlier
+release or in the pass between the two cutoffs. New inbound events have a
+seven-day upload-age limit and the phone's reply window is 24 hours, so an
+event window of 8 days or less can reject a delayed STOP upload. The phone's
 local block still applies.
 
 When changing these settings across multiple hubs, deploy the same values to
