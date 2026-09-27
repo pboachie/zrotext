@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -14,6 +15,14 @@ FIXTURE = json.loads(
 
 
 class DraftVectorTests(unittest.TestCase):
+    def test_root_enrollment_vector_with_independent_node_crypto(self):
+        subprocess.run(
+            ["node", str(Path(__file__).with_name("root-enrollment-vector.cjs"))],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
     def test_exact_fixture_offsets_and_unsigned_digest(self):
         self.assertEqual(FIXTURE["status"], "UNAPPROVED_DRAFT_01")
         for name, kind in (("outbound", 1), ("inbound", 2)):
