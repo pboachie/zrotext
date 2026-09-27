@@ -3,6 +3,8 @@ on:
   pull_request:
     paths:
       - 'android/**'
+      - 'protocol/v1/vectors/**'
+      - 'sdk/typescript/test/vectors/**'
       - 'scripts/android_device_smoke.py'
       - 'scripts/tests/test_android_device_smoke.py'
       - '.github/workflows/android-device-smoke.yml'
@@ -10,6 +12,8 @@ on:
     branches: [main]
     paths:
       - 'android/**'
+      - 'protocol/v1/vectors/**'
+      - 'sdk/typescript/test/vectors/**'
       - 'scripts/android_device_smoke.py'
       - 'scripts/tests/test_android_device_smoke.py'
       - '.github/workflows/android-device-smoke.yml'
