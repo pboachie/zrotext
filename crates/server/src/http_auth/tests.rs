@@ -934,7 +934,7 @@ async fn postgres_http_account_lifecycle_enforces_csrf_and_revocation() {
             .await
             .unwrap()
             .status(),
-        StatusCode::UNPROCESSABLE_ENTITY
+        StatusCode::BAD_REQUEST
     );
     let wrong_password = Uuid::new_v4().to_string();
     let stolen_request = owner_post(

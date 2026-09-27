@@ -8,6 +8,7 @@
 //! suppression or a hold. Only a later signed START releases a hold.
 
 use super::{OwnerReviewState, PAGE_SIZE};
+use crate::api_json::ApiJson;
 use crate::http_auth::require_owner;
 use axum::{
     Json,
@@ -191,7 +192,7 @@ async fn lock_account(tx: &Transaction<'_>, account_id: Uuid) -> Result<bool, Re
 pub(super) async fn create_hold(
     State(state): State<Arc<OwnerReviewState>>,
     headers: HeaderMap,
-    Json(body): Json<HoldBody>,
+    ApiJson(body): ApiJson<HoldBody>,
 ) -> Response {
     let Some(now) = now_ms() else {
         return unavailable();
@@ -352,7 +353,7 @@ pub(super) async fn list_holds(
 pub(super) async fn decide_review(
     State(state): State<Arc<OwnerReviewState>>,
     headers: HeaderMap,
-    Json(body): Json<DecisionBody>,
+    ApiJson(body): ApiJson<DecisionBody>,
 ) -> Response {
     let Ok(mut client) = crate::runtime_db::connect(&state.database_url).await else {
         return unavailable();

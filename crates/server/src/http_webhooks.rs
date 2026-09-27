@@ -2,6 +2,7 @@
 //! Owner-only webhook endpoint lifecycle. Plaintext signing secrets leave this
 //! module only in the create and rotate responses, once per generated secret.
 
+use crate::api_json::ApiJson;
 use crate::{
     auth::{SessionPrincipal, TokenHasher},
     http_auth::require_owner,
@@ -630,7 +631,7 @@ async fn replay(
 async fn create_endpoint(
     State(state): State<Arc<WebhookHttpState>>,
     headers: HeaderMap,
-    Json(body): Json<CreateBody>,
+    ApiJson(body): ApiJson<CreateBody>,
 ) -> Response {
     let Ok(mut client) = connect(&state).await else {
         return EndpointError::Unavailable.into_response();

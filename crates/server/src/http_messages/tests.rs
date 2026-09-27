@@ -473,7 +473,7 @@ async fn postgres_alpha_http_accept_status_cancel_are_tenant_and_device_scoped()
             .await
             .unwrap()
             .status(),
-        StatusCode::UNPROCESSABLE_ENTITY
+        StatusCode::BAD_REQUEST
     );
     let mut oversized = input.clone();
     oversized["test_case_id"] = "a".repeat(2048).into();
