@@ -325,7 +325,11 @@ try {
     $arguments=@($pwsh,'-NoLogo','-NoProfile','-NonInteractive','-File',(Join-Path $fixture 'bin/windows_native_ci_bootstrap.ps1'),'-WorkerManifest',$manifest)
     $command=($arguments | ForEach-Object {Quote-FixedArgument $_}) -join ' '
     $environment='GITHUB_ACTIONS=true'+[char]0+"ImageOS=$env:ImageOS"+[char]0+'RUNNER_ENVIRONMENT=github-hosted'+[char]0+'RUNNER_OS=Windows'+[char]0+"SystemRoot=$env:SystemRoot"+[char]0+"TEMP=$(Join-Path $fixture 'temp')"+[char]0+"TMP=$(Join-Path $fixture 'temp')"+[char]0+[char]0
-    $code=[ZrotextCi.Native]::Run($username,$sid.Value,$password,$pwsh,$command,$environment,$fixture)
+    $probe=@($tests | Where-Object Name -CEQ 'zrotext_root_bundle')
+    if($probe.Count -ne 1){throw 'Ambiguous native startup probe.'}
+    $probeExe=Assert-ChildPath $probe[0].Executable (Join-Path $fixture 'bin')
+    if((Get-FileHash -LiteralPath $probeExe -Algorithm SHA256).Hash -cne $probe[0].Hash){throw 'Native startup probe changed.'}
+    $code=[ZrotextCi.Native]::Run($username,$sid.Value,$password,$pwsh,$command,$environment,$fixture,$probeExe)
     if($code -ne 0){throw 'Standard-user native worker failed.'}
     $result=Get-Content -LiteralPath (Join-Path $fixture 'results/result.json') -Raw | ConvertFrom-Json
     if($result.Count -ne 3){throw 'Incomplete native suite results.'}
@@ -339,6 +343,7 @@ try {
     Write-Output "Native CI fixture failed at $stage."
     if('ZrotextCi.Native' -as [type]){Write-Output ('Native stage: '+[ZrotextCi.Native]::Stage+'; OS code: '+[ZrotextCi.Native]::ErrorCode)}
     if('ZrotextCi.Native' -as [type]){Write-Output ('Native CI process classes: '+[ZrotextCi.Native]::LaunchState+'; resume='+[ZrotextCi.Native]::ResumeState+'; wait='+[ZrotextCi.Native]::WaitState+'; exit='+[ZrotextCi.Native]::ExitState)}
+    if('ZrotextCi.Native' -as [type]){Write-Output ('Native CI startup probe: '+[ZrotextCi.Native]::ProbeState+'; native cleanup='+[ZrotextCi.Native]::CleanupState)}
     if($fixture) {
         try {
             $bootstrap=Assert-ChildPath (Join-Path $fixture 'results/bootstrap-stage.txt') $fixture

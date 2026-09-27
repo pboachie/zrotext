@@ -15,6 +15,14 @@ public static class Native {
     public static string Stage = "not-started";
     public static int ErrorCode;
     public static string LaunchState = "not-started", ResumeState = "not-attempted", WaitState = "not-attempted", ExitState = "not-queried";
+    public static string ProbeState = "not-started", CleanupState = "not-started";
+    static uint PhaseTimeout(int phase) {if(phase==0)return 30000;if(phase==1)return 300000;throw new ArgumentOutOfRangeException();}
+    static bool ProbeComplete(uint code,uint active) {return code==0 && active==0;}
+    static string CleanupTarget(bool job,bool assigned,bool process) {return job&&assigned?"job":process?"process":"none";}
+    static string ProbeCommand(string executable) {
+        if(String.IsNullOrEmpty(executable) || executable.IndexOfAny(new[]{'\0','\r','\n','"'})>=0 || executable.EndsWith("\\") || executable.Length>=1000)throw new ArgumentException("Invalid probe executable.");
+        return "\""+executable+"\" --list";
+    }
     static string ResumeClass(uint value) {return value==0xffffffff?"failed":value==0?"zero":value==1?"one":"greater-than-one";}
     static string WaitClass(uint value) {return value==0?"signaled":value==258?"timeout":"failed";}
     static string ExitClass(bool queried,uint value) {return !queried?"query-failed":value==0?"zero":value==259?"still-active-code":"other";}
@@ -22,9 +30,21 @@ public static class Native {
         Check(ResumeClass(0)=="zero" && ResumeClass(1)=="one" && ResumeClass(2)=="greater-than-one" && ResumeClass(0xffffffff)=="failed","pure-resume-classes");
         Check(WaitClass(0)=="signaled" && WaitClass(258)=="timeout" && WaitClass(0xffffffff)=="failed","pure-wait-classes");
         Check(ExitClass(false,0)=="query-failed" && ExitClass(true,0)=="zero" && ExitClass(true,259)=="still-active-code" && ExitClass(true,1)=="other","pure-exit-classes");
+        Check(PhaseTimeout(0)==30000 && PhaseTimeout(1)==300000,"pure-phase-bounds");
+        bool invalidPhase=false;try{PhaseTimeout(2);}catch(ArgumentOutOfRangeException){invalidPhase=true;}Check(invalidPhase,"pure-phase-refusal");
+        Check(ProbeComplete(0,0) && !ProbeComplete(1,0) && !ProbeComplete(0,1),"pure-probe-gate");
+        Check(CleanupTarget(true,true,true)=="job" && CleanupTarget(true,true,false)=="job" && CleanupTarget(true,false,true)=="process" && CleanupTarget(false,false,true)=="process" && CleanupTarget(true,false,false)=="none","pure-owned-cleanup-selection");
+        Check(ProbeCommand("fixture suite.exe")=="\"fixture suite.exe\" --list","pure-probe-command");
+        foreach(string value in new[]{"","bad\"arg","bad\narg","bad\0arg","trailing\\",new string('x',1000)}) {
+            bool rejected=false;try{ProbeCommand(value);}catch(ArgumentException){rejected=true;}Check(rejected,"pure-probe-argument-refusal");
+        }
+        // A cleanup failure must not erase the first failing operation.
+        try {try{Check(false,"pure-first-failure");}finally{Check(false,"pure-cleanup-failure");}}catch(InvalidOperationException){}
+        bool firstPreserved=Stage=="pure-first-failure";Stage="not-started";ErrorCode=0;
+        Check(firstPreserved,"pure-first-failure-preserved");
     }
     static void Check(bool ok, string stage) {
-        if (!ok) { Stage = stage; ErrorCode = Marshal.GetLastWin32Error(); throw new InvalidOperationException("native fixture refused"); }
+        if (!ok) { if(Stage=="not-started"){Stage = stage; ErrorCode = Marshal.GetLastWin32Error();} throw new InvalidOperationException("native fixture refused"); }
     }
     [StructLayout(LayoutKind.Sequential)] struct Startup {
         public int cb; public IntPtr reserved, desktop, title;
@@ -170,9 +190,11 @@ public static class Native {
     }
     public static void DeleteProfile(string sid) {Check(DeleteProfileW(sid,null,null),"profile-cleanup");}
 
-    public static int Run(string user,string expectedSid,SecureString password,string executable,string command,string environment,string cwd) {
+    public static int Run(string user,string expectedSid,SecureString password,string executable,string command,string environment,string cwd,string probeExecutable) {
+        Stage="not-started";ErrorCode=0;ProbeState="not-started";CleanupState="not-started";
         LaunchState="not-started";ResumeState="not-attempted";WaitState="not-attempted";ExitState="not-queried";
         Check(command.Length<1024 && command.IndexOf('\0')<0,"command-bound");
+        string probeCommand=ProbeCommand(probeExecutable);
         IntPtr passwordBuffer=IntPtr.Zero,tokenHandle=IntPtr.Zero,env=IntPtr.Zero,job=IntPtr.Zero;
         Process process=new Process(); bool assigned=false; bool cleanup=true; bool desktopAccessMayChange=false;
         IntPtr station=IntPtr.Zero,desktop=IntPtr.Zero;
@@ -193,29 +215,46 @@ public static class Native {
             var limits=new ExtendedLimit();limits.basic.flags=0x2000;
             Check(SetInformationJobObject(job,9,ref limits,Marshal.SizeOf(typeof(ExtendedLimit))),"job-kill-on-close");
             env=Marshal.StringToHGlobalUni(environment);
+            for(int phase=0;phase<2;phase++) {
+            bool probing=phase==0;
+            if(probing)ProbeState="running";
             var startup=new Startup{cb=Marshal.SizeOf(typeof(Startup)),flags=1,show=0};
             desktopAccessMayChange=true;
-            Check(CreateProcessWithTokenW(tokenHandle,0,executable,new StringBuilder(command),0x414,env,cwd,ref startup,out process),"worker-create-suspended");
+            Check(CreateProcessWithTokenW(tokenHandle,0,probing?probeExecutable:executable,new StringBuilder(probing?probeCommand:command),0x414,env,cwd,ref startup,out process),probing?"probe-create-suspended":"worker-create-suspended");
             LaunchState="created-suspended";
             Check(AssignProcessToJobObject(job,process.process),"worker-job-assign");assigned=true;
             LaunchState="job-assigned";
             uint resumed=ResumeThread(process.thread);ResumeState=ResumeClass(resumed);
             Check(resumed!=0xffffffff,"worker-resume");
-            uint waited=WaitForSingleObject(process.process,300000);WaitState=WaitClass(waited);
-            Check(waited==0,"worker-timeout");
+            uint waited=WaitForSingleObject(process.process,PhaseTimeout(phase));WaitState=WaitClass(waited);
+            Check(waited==0,probing?"probe-timeout":"worker-timeout");
             uint code;Check(GetExitCodeProcess(process.process,out code),"worker-exit-query");
-            Check(code<=int.MaxValue,"worker-exit-bound");return (int)code;
+            if(!probing){Check(code<=int.MaxValue,"worker-exit-bound");return (int)code;}
+            ExitState=ExitClass(true,code);
+            Accounting probeAccounting;
+            Check(QueryInformationJobObject(job,1,out probeAccounting,Marshal.SizeOf(typeof(Accounting)),IntPtr.Zero),"probe-job-query");
+            // An attached conhost still alive is a probe/cleanup failure, not
+            // evidence about PowerShell. Do not start phase two in that case.
+            Check(ProbeComplete(code,probeAccounting.activeProcesses),"probe-exit-or-job-not-empty");
+            Check(CloseHandle(process.thread),"probe-thread-close");process.thread=IntPtr.Zero;
+            Check(CloseHandle(process.process),"probe-process-close");process.process=IntPtr.Zero;
+            process=new Process();assigned=false;ProbeState="passed";
+            LaunchState="not-started";ResumeState="not-attempted";WaitState="not-attempted";ExitState="not-queried";
+            }
+            throw new InvalidOperationException("Invalid native phase.");
         } finally {
+            if(ProbeState=="running")ProbeState="failed";
             // Observe before terminating the owned job. Code 259 alone does not
             // establish liveness; interpret it alongside the wait result.
             if(process.process!=IntPtr.Zero) {uint observed;bool queried=GetExitCodeProcess(process.process,out observed);ExitState=ExitClass(queried,observed);}
             if(passwordBuffer!=IntPtr.Zero) Marshal.ZeroFreeGlobalAllocUnicode(passwordBuffer);
-            if(job!=IntPtr.Zero && assigned) {
+            string cleanupTarget=CleanupTarget(job!=IntPtr.Zero,assigned,process.process!=IntPtr.Zero);
+            if(cleanupTarget=="job") {
                 cleanup &= TerminateJobObject(job,99);
                 bool empty=false;
                 for(int i=0;i<100;i++){Accounting value;if(QueryInformationJobObject(job,1,out value,Marshal.SizeOf(typeof(Accounting)),IntPtr.Zero)&&value.activeProcesses==0){empty=true;break;}Thread.Sleep(100);}
                 cleanup &= empty;
-            } else if(process.process!=IntPtr.Zero) {cleanup &= TerminateProcess(process.process,99);cleanup &= WaitForSingleObject(process.process,10000)==0;}
+            } else if(cleanupTarget=="process") {cleanup &= TerminateProcess(process.process,99);cleanup &= WaitForSingleObject(process.process,10000)==0;}
             if(process.thread!=IntPtr.Zero) cleanup &= CloseHandle(process.thread);
             if(process.process!=IntPtr.Zero) cleanup &= CloseHandle(process.process);
             if(job!=IntPtr.Zero) cleanup &= CloseHandle(job);
@@ -223,6 +262,7 @@ public static class Native {
             if(desktopAccessMayChange && desktopBefore!=null) {try{CleanDesktop(desktop,desktopBefore,fixtureSids);}catch{cleanup=false;}}
             if(desktopAccessMayChange && stationBefore!=null) {try{CleanDesktop(station,stationBefore,fixtureSids);}catch{cleanup=false;}}
             if(tokenHandle!=IntPtr.Zero) cleanup &= CloseHandle(tokenHandle);
+            CleanupState=cleanup?"passed":"failed";
             Check(cleanup,"native-cleanup");
         }
     }
