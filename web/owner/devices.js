@@ -37,6 +37,21 @@ let dashboardTimer = null;
 let dashboardRefreshing = false;
 let dashboardSignedIn = false;
 let dashboardPageActive = true;
+// Live updates: one same-origin event stream signals device and message
+// changes. While it is connected the periodic snapshot refresh pauses; on any
+// failure the stream closes, snapshot refresh resumes, and the stream is
+// retried with capped backoff so a dead endpoint cannot spin the tab.
+const liveRetryBaseMs = 1_000;
+const liveRetryMaxMs = 60_000;
+// A stream that stayed connected this long counts as healthy, so the next
+// failure restarts from the base retry delay. Without this, a stream that
+// connects and immediately drops would retry at the base delay forever.
+const liveHealthyMs = 30_000;
+let liveEvents = null;
+let liveRetryTimer = null;
+let liveConnected = false;
+let liveFailures = 0;
+let liveOpenedAt = 0;
 let deviceLoads = 0;
 let messageLoads = 0;
 let browsingOlderDevices = false;
@@ -78,13 +93,76 @@ function stopDashboardRefresh() {
   dashboardTimer = null;
 }
 
+function stopLiveUpdates() {
+  if (liveRetryTimer !== null) window.clearTimeout(liveRetryTimer);
+  liveRetryTimer = null;
+  if (liveEvents) liveEvents.close();
+  liveEvents = null;
+  liveConnected = false;
+  liveFailures = 0;
+}
+
+function liveUpdatesAllowed() {
+  return dashboardSignedIn && dashboardPageActive && !document.hidden && byId("auto-refresh").checked;
+}
+
+function startLiveUpdates() {
+  if (liveEvents || !liveUpdatesAllowed()) return;
+  // Without EventSource the dashboard keeps its periodic snapshot refresh.
+  if (typeof window.EventSource !== "function") return;
+  const source = new window.EventSource("/owner/events");
+  liveEvents = source;
+  source.addEventListener("open", () => {
+    if (liveEvents !== source) return;
+    liveConnected = true;
+    liveOpenedAt = Date.now();
+    stopDashboardRefresh();
+  });
+  source.addEventListener("changed", (event) => {
+    if (liveEvents !== source || !canRefreshDashboard()) return;
+    let sections;
+    try {
+      sections = JSON.parse(event.data).changed;
+    } catch (_error) {
+      return;
+    }
+    if (!Array.isArray(sections)) return;
+    if (sections.includes("devices") && !deviceLoads && !browsingOlderDevices && !viewingList("device-list")) loadDevices(true, true);
+    if (sections.includes("messages") && !messageLoads && !browsingOlderMessages && !viewingList("message-list")) loadMessages(true, true);
+  });
+  source.addEventListener("error", () => {
+    if (liveEvents !== source) return;
+    source.close();
+    liveEvents = null;
+    liveConnected = false;
+    if (Date.now() - liveOpenedAt >= liveHealthyMs) liveFailures = 0;
+    scheduleDashboardRefresh();
+    scheduleLiveRetry();
+  });
+}
+
+function scheduleLiveRetry() {
+  if (liveRetryTimer !== null || !dashboardSignedIn || !dashboardPageActive) return;
+  const delay = Math.min(liveRetryMaxMs, liveRetryBaseMs * 2 ** Math.min(liveFailures, 6));
+  liveFailures += 1;
+  liveRetryTimer = window.setTimeout(() => {
+    liveRetryTimer = null;
+    startLiveUpdates();
+  }, delay);
+}
+
+function syncLiveUpdates() {
+  if (liveUpdatesAllowed()) startLiveUpdates();
+  else stopLiveUpdates();
+}
+
 function canRefreshDashboard() {
   return dashboardSignedIn && dashboardPageActive && !document.hidden && byId("auto-refresh").checked;
 }
 
 function scheduleDashboardRefresh() {
   stopDashboardRefresh();
-  if (canRefreshDashboard() && !dashboardRefreshing) {
+  if (canRefreshDashboard() && !liveConnected && !dashboardRefreshing) {
     dashboardTimer = window.setTimeout(refreshDashboard, dashboardRefreshMs);
   }
 }
@@ -226,6 +304,7 @@ function showSignedIn(signedIn) {
   dashboardSignedIn = signedIn;
   if (!signedIn) {
     stopDashboardRefresh();
+    stopLiveUpdates();
     clearPreconditionRows();
   }
   byId("sign-in").hidden = signedIn;
@@ -250,6 +329,7 @@ async function completeSignIn() {
   message("global-status", "Signed in.");
   await loadOwnerData();
   scheduleDashboardRefresh();
+  startLiveUpdates();
 }
 
 function loadOwnerData() {
@@ -1389,14 +1469,19 @@ byId("owner-hold-form").addEventListener("submit", exclusive(createOwnerHold));
 byId("refresh-keys").addEventListener("click", () => loadKeys());
 byId("more-keys").addEventListener("click", () => loadKeys(false));
 byId("dismiss-key-secret").addEventListener("click", clearKeySecret);
-byId("auto-refresh").addEventListener("change", scheduleDashboardRefresh);
+byId("auto-refresh").addEventListener("change", () => {
+  syncLiveUpdates();
+  scheduleDashboardRefresh();
+});
 document.addEventListener("visibilitychange", () => {
+  syncLiveUpdates();
   scheduleDashboardRefresh();
   agePreconditions();
 });
 window.addEventListener("pagehide", () => {
   dashboardPageActive = false;
   stopDashboardRefresh();
+  stopLiveUpdates();
   stopPreconditionAging();
   clearKeySecret(); clearPasswordFields(); clearResetFields();
 });
@@ -1404,6 +1489,7 @@ window.addEventListener("pageshow", () => {
   dashboardPageActive = true;
   agePreconditions();
   scheduleDashboardRefresh();
+  startLiveUpdates();
 });
 byId("inbound-history-form").addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -1466,6 +1552,7 @@ byId("key-create-form").addEventListener("submit", exclusive(async (event) => {
     showSignedIn(true);
     await loadOwnerData();
     scheduleDashboardRefresh();
+    startLiveUpdates();
   } catch (error) {
     showSignedIn(false);
     message("global-status", error.message.startsWith("Your sign-in") ? "Sign in to manage devices." : `Could not verify session. ${error.message}`);
