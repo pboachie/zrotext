@@ -705,9 +705,10 @@ private const val INBOUND_PILOT_WINDOW_MS = 24L * 60 * 60 * 1000
 @Database(entities = [SmsAttempt::class, SmsSegment::class, AlphaRadioEvent::class,
     InboundWindow::class, InboundEvent::class, InboundUpload::class,
     LocalRecipientSuppression::class, LocalLineBinding::class,
-    LocalInboundWithdrawal::class, LocalWithdrawalSequence::class], version = 11, exportSchema = false)
+    LocalInboundWithdrawal::class, LocalWithdrawalSequence::class, SealedPreparationRecord::class], version = 12, exportSchema = false)
 abstract class SmsJournalDatabase : RoomDatabase() {
     abstract fun attempts(): SmsAttemptDao
+    abstract fun sealedPreparations(): SealedPreparationDao
 
     companion object {
         @Volatile private var instance: SmsJournalDatabase? = null
@@ -717,7 +718,7 @@ abstract class SmsJournalDatabase : RoomDatabase() {
                 context.applicationContext, SmsJournalDatabase::class.java, "sms_attempts.db"
             ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
                 MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10,
-                MIGRATION_10_11)
+                MIGRATION_10_11, MIGRATION_11_12)
                 .build().also { instance = it }
         }
 
@@ -804,6 +805,14 @@ abstract class SmsJournalDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE local_inbound_withdrawals ADD COLUMN acknowledgedAtMs INTEGER DEFAULT NULL")
                 db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_local_inbound_withdrawals_eventId ON local_inbound_withdrawals(eventId)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_local_inbound_withdrawals_acknowledgedAtMs_deviceSequence ON local_inbound_withdrawals(acknowledgedAtMs, deviceSequence)")
+            }
+        }
+
+        /** Candidate preparation is isolated from existing alpha attempts and radio events. */
+        internal val MIGRATION_11_12 = object : Migration(11, 12) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE sealed_preparations (accountId TEXT NOT NULL, messageId TEXT NOT NULL, attemptId TEXT NOT NULL, unsignedDigest TEXT NOT NULL, grantDigest TEXT NOT NULL, state TEXT NOT NULL, segmentCount INTEGER, PRIMARY KEY(accountId, messageId))")
+                db.execSQL("CREATE UNIQUE INDEX index_sealed_preparations_attemptId ON sealed_preparations(attemptId)")
             }
         }
 
