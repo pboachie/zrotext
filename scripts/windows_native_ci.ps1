@@ -3,19 +3,11 @@
 param(
     [Parameter(ParameterSetName='SelfTest',Mandatory)][switch]$SelfTest,
     [Parameter(ParameterSetName='Compile',Mandatory)][switch]$CompileOnly,
-    [Parameter(ParameterSetName='Provision',Mandatory)][switch]$ProvisionEphemeralGithubHostedAccount,
-    [Parameter(ParameterSetName='Worker',Mandatory)][string]$WorkerManifest
+    [Parameter(ParameterSetName='Provision',Mandatory)][switch]$ProvisionEphemeralGithubHostedAccount
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
-$workerStages=@('worker-start','worker-manifest','worker-ownership','worker-helper-compile','worker-eligibility','worker-test-prepare','worker-test-launch','worker-test-wait','worker-test-output','worker-test-result','worker-results','worker-cleanup','worker-complete','worker-failed')
-
-function Write-WorkerCheckpoint([string]$Value) {
-    if($Value -cnotin $workerStages){throw 'Unknown worker checkpoint.'}
-    $script:workerStage=$Value
-    [IO.File]::WriteAllText($script:checkpointPath,$Value)
-}
 
 function Assert-CiHost([hashtable]$Values) {
     foreach($pair in @(@('GITHUB_ACTIONS','true'),@('RUNNER_ENVIRONMENT','github-hosted'),@('RUNNER_OS','Windows'))) {
@@ -86,10 +78,10 @@ function Assert-NoReparseDescendants([string]$Root) {
         }
     }
 }
+function Test-SuiteSummary([string]$Text,[int]$Passed) {
+    return $Text.Contains('test result: ok. '+$Passed+' passed; 0 failed; 0 ignored;')
+}
 function Test-PureGuards {
-    $parseTokens=$null;$parseErrors=$null
-    [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'windows_native_ci_bootstrap.ps1'),[ref]$parseTokens,[ref]$parseErrors) | Out-Null
-    if($parseErrors.Count){throw 'Bootstrap syntax regression.'}
     $good=@{GITHUB_ACTIONS='true';RUNNER_ENVIRONMENT='github-hosted';RUNNER_OS='Windows';ImageOS='win25'}
     Assert-CiHost $good
     $variant=$good.Clone();$variant.ImageOS='win25-vs2026';Assert-CiHost $variant
@@ -103,6 +95,10 @@ function Test-PureGuards {
         $rejected=$false;try{Quote-FixedArgument $value | Out-Null}catch{$rejected=$true}
         if(-not $rejected){throw 'Argument refusal regression.'}
     }
+    if(-not (Test-SuiteSummary "x`ntest result: ok. 20 passed; 0 failed; 0 ignored; 0 measured" 20)){throw 'Summary acceptance regression.'}
+    foreach($text in @('test result: ok. 19 passed; 0 failed; 0 ignored;','test result: ok. 20 passed; 0 failed; 1 ignored;','test result: FAILED. 20 passed; 1 failed; 0 ignored;','')) {
+        if(Test-SuiteSummary $text 20){throw 'Summary refusal regression.'}
+    }
     # Validation fixtures only: empty temporary files, never executable launch,
     # local accounts, credentials, ACL changes or native helper invocation.
     if($IsWindows) {
@@ -114,13 +110,6 @@ function Test-PureGuards {
         $created=@();$junction=$null
         [IO.Directory]::CreateDirectory($root) | Out-Null
         try {
-            $script:checkpointPath=Join-Path $root 'worker-stage.txt';$created+=$script:checkpointPath
-            foreach($value in $workerStages) {
-                Write-WorkerCheckpoint $value
-                if([IO.File]::ReadAllText($script:checkpointPath) -cne $value -or (Get-Item -LiteralPath $script:checkpointPath).Length -gt 64){throw 'Checkpoint regression.'}
-            }
-            $rejected=$false;try{Write-WorkerCheckpoint 'unapproved-stage'}catch{$rejected=$true}
-            if(-not $rejected -or [IO.File]::ReadAllText($script:checkpointPath) -cne $workerStages[-1]){throw 'Checkpoint refusal regression.'}
             $ids=@{'zrotext_root_bundle'='bundle-fixture';'zrotext_root_terminal'='terminal-fixture';'zrotext-owner'='owner-fixture'}
             $records=@()
             foreach($name in $ids.Keys) {
@@ -158,85 +147,6 @@ if($SelfTest){Test-PureGuards;exit 0}
 if($PSCmdlet.ParameterSetName -eq 'Inspect'){throw 'Choose SelfTest, CompileOnly, or explicit disposable CI provisioning.'}
 if(-not $IsWindows){throw 'Windows is required.'}
 if($CompileOnly){Add-Type -Path (Join-Path $PSScriptRoot 'windows_native_ci.cs');Write-Output 'Native CI helper compilation: PASS';exit 0}
-
-if($WorkerManifest) {
-    $workerStage='worker-manifest'
-    $workerFailed=$false;$privateTemp=$null
-    try {
-        $checkpointRoot=Assert-PlainPath ([IO.Path]::GetDirectoryName($WorkerManifest))
-        if([IO.Path]::GetFileName($checkpointRoot) -notmatch '^zrotext-native-[a-f0-9]{32}$'){throw 'Worker checkpoint boundary failed.'}
-        $script:checkpointPath=Assert-ChildPath (Join-Path $checkpointRoot 'results/worker-stage.txt') $checkpointRoot
-        Write-WorkerCheckpoint 'worker-start'
-        Assert-CiHost @{GITHUB_ACTIONS=$env:GITHUB_ACTIONS;RUNNER_ENVIRONMENT=$env:RUNNER_ENVIRONMENT;RUNNER_OS=$env:RUNNER_OS;ImageOS=$env:ImageOS}
-        $root=Assert-PlainPath ([IO.Path]::GetDirectoryName($WorkerManifest))
-        if([IO.Path]::GetFileName($root) -notmatch '^zrotext-native-[a-f0-9]{32}$' -or (Assert-PlainPath $env:TEMP) -cne (Join-Path $root 'temp')){throw 'Worker fixture boundary failed.'}
-        Write-WorkerCheckpoint 'worker-manifest'
-        $manifest=Get-Content -LiteralPath (Assert-ChildPath $WorkerManifest $root) -Raw | ConvertFrom-Json
-        $identity=[Security.Principal.WindowsIdentity]::GetCurrent().User
-        if($identity.Value -cne $manifest.Sid){throw 'Wrong worker identity.'}
-        Write-WorkerCheckpoint 'worker-ownership'
-        foreach($part in @('temp','results')) {
-            $directory=Assert-ChildPath (Join-Path $root $part) $root
-            $acl=Get-Acl -LiteralPath $directory
-            $acl.SetOwner($identity)
-            Set-Acl -LiteralPath $directory -AclObject $acl
-            if((Get-Acl -LiteralPath $directory).GetOwner([Security.Principal.SecurityIdentifier]).Value -cne $manifest.Sid){throw 'Worker directory ownership failed.'}
-        }
-        Write-WorkerCheckpoint 'worker-helper-compile'
-        Add-Type -Path (Assert-ChildPath (Join-Path $root 'bin/windows_native_ci.cs') $root)
-        Write-WorkerCheckpoint 'worker-eligibility'
-        [ZrotextCi.Native]::CheckWorker([string]$manifest.Sid)
-        $privateTemp=Assert-ChildPath (Join-Path $root 'temp') $root
-        $results=@()
-        foreach($test in $manifest.Tests) {
-            Write-WorkerCheckpoint 'worker-test-prepare'
-            $exe=Assert-ChildPath ([string]$test.Executable) (Join-Path $root 'bin')
-            if((Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash -cne $test.Hash){throw 'Fixture executable changed.'}
-            $log=Assert-ChildPath (Join-Path $root ('results/'+$test.Name+'.log')) $root
-            $start=[Diagnostics.ProcessStartInfo]::new()
-            $start.FileName=$exe;$start.ArgumentList.Add('--test-threads=1')
-            $start.WorkingDirectory=$root;$start.UseShellExecute=$false;$start.CreateNoWindow=$true
-            $start.RedirectStandardOutput=$true;$start.RedirectStandardError=$true
-            $process=[Diagnostics.Process]::new();$process.StartInfo=$start
-            try {
-                Write-WorkerCheckpoint 'worker-test-launch'
-                if(-not $process.Start()){throw 'Native suite launch failed.'}
-                $stdout=$process.StandardOutput.ReadToEndAsync();$stderr=$process.StandardError.ReadToEndAsync()
-                Write-WorkerCheckpoint 'worker-test-wait'
-                if(-not $process.WaitForExit(90000)){$process.Kill($true);$process.WaitForExit();throw 'Native suite timed out.'}
-                $code=$process.ExitCode
-                Write-WorkerCheckpoint 'worker-test-output'
-                $text=$stdout.GetAwaiter().GetResult()+$stderr.GetAwaiter().GetResult()
-                if($text.Length -gt 1048576){throw 'Native suite output exceeded fixture bound.'}
-                Set-Content -LiteralPath $log -Value $text
-            } finally {$process.Dispose()}
-            Write-WorkerCheckpoint 'worker-test-result'
-            $summary='test result: ok. '+$test.Passed+' passed; 0 failed; 0 ignored;'
-            if($code -ne 0 -or -not $text.Contains($summary)){throw 'Native suite failed or expected count changed.'}
-            $results+=@{Name=$test.Name;Passed=$test.Passed;ExitCode=$code}
-        }
-        Write-WorkerCheckpoint 'worker-results'
-        $results | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $root 'results/result.json')
-    } catch {
-        # Never render exception objects or bound arguments.
-        Write-Output "Native CI worker failed at $workerStage."
-        $workerFailed=$true
-    } finally {
-        if($privateTemp) {
-            try {
-                Write-WorkerCheckpoint 'worker-cleanup'
-                $checked=Assert-ChildPath $privateTemp $root
-                if([IO.Path]::GetFileName($checked) -cne 'temp'){throw 'Worker cleanup boundary failed.'}
-                Assert-NoReparseDescendants $checked
-                foreach($item in Get-ChildItem -LiteralPath $checked -Force) {Remove-Item -LiteralPath $item.FullName -Recurse -Force}
-                if(@(Get-ChildItem -LiteralPath $checked -Force).Count){throw 'Worker temporary data remains.'}
-            } catch {$workerFailed=$true;Write-Output 'Native CI worker temporary cleanup failed.'}
-        }
-    }
-    if($workerFailed){exit 1}
-    Write-WorkerCheckpoint 'worker-complete'
-    exit 0
-}
 
 $stage='host-guard'
 $fixture=$null;$account=$null;$password=$null;$username=$null;$sid=$null
@@ -305,37 +215,52 @@ try {
         # administrator does not enable privileges to assign another owner.
         Set-FixtureAcl $directory $admin $sid ($part -ne 'bin')
     }
-    Copy-Item -LiteralPath $PSCommandPath -Destination (Join-Path $fixture 'bin/windows_native_ci.ps1')
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows_native_ci.cs') -Destination (Join-Path $fixture 'bin/windows_native_ci.cs')
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows_native_ci_bootstrap.ps1') -Destination (Join-Path $fixture 'bin/windows_native_ci_bootstrap.ps1')
     $tests=@()
     foreach($artifact in $artifacts) {
-        $destination=Join-Path $fixture ('bin/'+$artifact.Name+'.exe')
+        $destination=Join-Path $fixture ('bin\'+$artifact.Name+'.exe')
         Copy-Item -LiteralPath $artifact.Source -Destination $destination
-        $tests+=@{Name=$artifact.Name;Executable=$destination;Hash=(Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash;Passed=$artifact.Passed}
+        $tests+=@{Name=$artifact.Name;Executable=$destination;Hash=(Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash;Passed=$artifact.Passed;Log=(Join-Path $fixture ('results\'+$artifact.Name+'.log'))}
     }
-    $manifest=Join-Path $fixture 'manifest.json'
-    @{Sid=$sid.Value;Tests=$tests} | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifest
     $stage='standard-user-run'
-    $pwsh=Assert-PlainPath (Get-Process -Id $PID).Path
-    if([IO.Path]::GetFileName($pwsh) -ne 'pwsh.exe' -or -not (Test-Path -LiteralPath $pwsh -PathType Leaf)){throw 'Unexpected fixture executable.'}
     $fixture=Assert-PlainPath $fixture
     if(-not (Test-Path -LiteralPath $fixture -PathType Container)){throw 'Fixture working directory unavailable.'}
-    Write-Output 'Native CI executable and working directory: verified'
-    $arguments=@($pwsh,'-NoLogo','-NoProfile','-NonInteractive','-File',(Join-Path $fixture 'bin/windows_native_ci_bootstrap.ps1'),'-WorkerManifest',$manifest)
-    $command=($arguments | ForEach-Object {Quote-FixedArgument $_}) -join ' '
+    # Steps run directly as the fixture user: PowerShell hosts never reached
+    # their first line under the secondary-logon token, while cmd.exe and the
+    # native suites did. The fixture user takes ownership of its writable
+    # directories itself; the administrator enables no privilege to assign it.
+    $system=Assert-PlainPath ([Environment]::SystemDirectory)
+    $icacls=Assert-ChildPath (Join-Path $system 'icacls.exe') $system
+    $cmd=Assert-ChildPath (Join-Path $system 'cmd.exe') $system
+    $apps=[Collections.Generic.List[string]]::new();$commands=[Collections.Generic.List[string]]::new();$timeouts=[Collections.Generic.List[int]]::new()
+    foreach($part in @('temp','results')) {
+        $apps.Add($icacls);$timeouts.Add(30000)
+        $commands.Add('icacls.exe '+(Quote-FixedArgument (Join-Path $fixture $part))+' /setowner *'+$sid.Value+' /q')
+    }
+    foreach($test in $tests) {
+        $exe=Assert-ChildPath $test.Executable (Join-Path $fixture 'bin')
+        if((Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash -cne $test.Hash){throw 'Fixture executable changed.'}
+        $log=Assert-ChildPath $test.Log (Join-Path $fixture 'results')
+        $apps.Add($cmd);$timeouts.Add(90000)
+        $commands.Add('cmd.exe /d /s /c "'+(Quote-FixedArgument $exe)+' --test-threads=1 >'+(Quote-FixedArgument $log)+' 2>&1"')
+    }
+    Write-Output 'Native CI executables and working directory: verified'
     $environment='GITHUB_ACTIONS=true'+[char]0+"ImageOS=$env:ImageOS"+[char]0+'RUNNER_ENVIRONMENT=github-hosted'+[char]0+'RUNNER_OS=Windows'+[char]0+"SystemRoot=$env:SystemRoot"+[char]0+"TEMP=$(Join-Path $fixture 'temp')"+[char]0+"TMP=$(Join-Path $fixture 'temp')"+[char]0+[char]0
     $probe=@($tests | Where-Object Name -CEQ 'zrotext_root_bundle')
     if($probe.Count -ne 1){throw 'Ambiguous native startup probe.'}
     $probeExe=Assert-ChildPath $probe[0].Executable (Join-Path $fixture 'bin')
-    if((Get-FileHash -LiteralPath $probeExe -Algorithm SHA256).Hash -cne $probe[0].Hash){throw 'Native startup probe changed.'}
-    $code=[ZrotextCi.Native]::Run($username,$sid.Value,$password,$pwsh,$command,$environment,$fixture,$probeExe)
-    if($code -ne 0){throw 'Standard-user native worker failed.'}
-    $result=Get-Content -LiteralPath (Join-Path $fixture 'results/result.json') -Raw | ConvertFrom-Json
-    if($result.Count -ne 3){throw 'Incomplete native suite results.'}
-    foreach($test in $tests) {
-        $matching=@($result | Where-Object Name -eq $test.Name)
-        if($matching.Count -ne 1 -or $matching[0].ExitCode -ne 0 -or $matching[0].Passed -ne $test.Passed){throw 'Unexpected native suite result.'}
+    $codes=@([ZrotextCi.Native]::Run($username,$sid.Value,$password,$apps.ToArray(),$commands.ToArray(),$timeouts.ToArray(),$environment,$fixture,$probeExe))
+    $stage='ownership-verify'
+    if($codes.Count -lt 2 -or $codes[0] -ne 0 -or $codes[1] -ne 0){throw 'Fixture ownership step failed.'}
+    foreach($part in @('temp','results')) {
+        if((Get-Acl -LiteralPath (Join-Path $fixture $part)).GetOwner([Security.Principal.SecurityIdentifier]).Value -cne $sid.Value){throw 'Fixture directory ownership failed.'}
+    }
+    $stage='suite-results'
+    for($i=0;$i -lt $tests.Count;$i++) {
+        $test=$tests[$i]
+        if($codes.Count -le $i+2){throw 'Native suite did not run.'}
+        $log=Assert-ChildPath $test.Log (Join-Path $fixture 'results')
+        if((Get-Item -LiteralPath $log).Length -gt 1048576){throw 'Native suite output exceeded fixture bound.'}
+        if($codes[$i+2] -ne 0 -or -not (Test-SuiteSummary ([IO.File]::ReadAllText($log)) $test.Passed)){throw 'Native suite failed or expected count changed.'}
         Write-Output ('Native CI '+$test.Name+': '+$test.Passed+' passed, zero failed/ignored; actual standard user.')
     }
 } catch {
@@ -344,28 +269,12 @@ try {
     if('ZrotextCi.Native' -as [type]){Write-Output ('Native stage: '+[ZrotextCi.Native]::Stage+'; OS code: '+[ZrotextCi.Native]::ErrorCode)}
     if('ZrotextCi.Native' -as [type]){Write-Output ('Native CI process classes: '+[ZrotextCi.Native]::LaunchState+'; resume='+[ZrotextCi.Native]::ResumeState+'; wait='+[ZrotextCi.Native]::WaitState+'; exit='+[ZrotextCi.Native]::ExitState)}
     if('ZrotextCi.Native' -as [type]){Write-Output ('Native CI startup probe: '+[ZrotextCi.Native]::ProbeState+'; native cleanup='+[ZrotextCi.Native]::CleanupState)}
-    if('ZrotextCi.Native' -as [type]){Write-Output ('Native CI job images at timeout: '+[ZrotextCi.Native]::JobState+'; diagnostic launches: '+[ZrotextCi.Native]::DiagnosticState)}
+    if('ZrotextCi.Native' -as [type]){Write-Output ('Native CI job images at timeout: '+[ZrotextCi.Native]::JobState)}
     if($fixture) {
-        try {
-            $bootstrap=Assert-ChildPath (Join-Path $fixture 'results/bootstrap-stage.txt') $fixture
-            if(Test-Path -LiteralPath $bootstrap -PathType Leaf) {
-                if((Get-Item -LiteralPath $bootstrap).Length -gt 64 -or [IO.File]::ReadAllText($bootstrap) -cne 'bootstrap-entered'){throw 'Invalid bootstrap marker.'}
-                Write-Output 'Native CI bootstrap: entered'
-            } else {Write-Output 'Native CI bootstrap: unavailable'}
-        } catch {Write-Output 'Native CI bootstrap marker refused.'}
-        try {
-            $checkpoint=Assert-ChildPath (Join-Path $fixture 'results/worker-stage.txt') $fixture
-            if(Test-Path -LiteralPath $checkpoint -PathType Leaf) {
-                if((Get-Item -LiteralPath $checkpoint).Length -gt 64){throw 'Checkpoint exceeds bound.'}
-                $lastStage=[IO.File]::ReadAllText($checkpoint)
-                if($lastStage -cnotin $workerStages){throw 'Unknown worker checkpoint.'}
-                Write-Output ('Native CI worker checkpoint: '+$lastStage)
-            } else {Write-Output 'Native CI worker checkpoint: unavailable'}
-        } catch {Write-Output 'Native CI worker checkpoint refused.'}
         foreach($name in @('zrotext_root_bundle','zrotext_root_terminal','zrotext-owner')) {
             $log=Join-Path $fixture ('results/'+$name+'.log')
             if(Test-Path -LiteralPath $log -PathType Leaf) {
-                # Only synthetic test output; credentials never enter the worker.
+                # Only synthetic test output; credentials never reach the fixture user.
                 try {
                     $checkedLog=Assert-ChildPath $log $fixture
                     Get-Content -LiteralPath $checkedLog -Tail 30 | ForEach-Object {Write-Output $_}

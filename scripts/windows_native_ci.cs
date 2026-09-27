@@ -17,7 +17,6 @@ public static class Native {
     public static int ErrorCode;
     public static string LaunchState = "not-started", ResumeState = "not-attempted", WaitState = "not-attempted", ExitState = "not-queried";
     public static string ProbeState = "not-started", CleanupState = "not-started";
-    static uint PhaseTimeout(int phase) {if(phase==0)return 30000;if(phase==1)return 300000;throw new ArgumentOutOfRangeException();}
     static bool ProbeComplete(uint code,uint active) {return code==0 && active==0;}
     static string CleanupTarget(bool job,bool assigned,bool process) {return job&&assigned?"job":process?"process":"none";}
     static string ProbeCommand(string executable) {
@@ -47,8 +46,6 @@ public static class Native {
         Check(ResumeClass(0)=="zero" && ResumeClass(1)=="one" && ResumeClass(2)=="greater-than-one" && ResumeClass(0xffffffff)=="failed","pure-resume-classes");
         Check(WaitClass(0)=="signaled" && WaitClass(258)=="timeout" && WaitClass(0xffffffff)=="failed","pure-wait-classes");
         Check(ExitClass(false,0)=="query-failed" && ExitClass(true,0)=="zero" && ExitClass(true,259)=="still-active-code" && ExitClass(true,1)=="other","pure-exit-classes");
-        Check(PhaseTimeout(0)==30000 && PhaseTimeout(1)==300000,"pure-phase-bounds");
-        bool invalidPhase=false;try{PhaseTimeout(2);}catch(ArgumentOutOfRangeException){invalidPhase=true;}Check(invalidPhase,"pure-phase-refusal");
         Check(ProbeComplete(0,0) && !ProbeComplete(1,0) && !ProbeComplete(0,1),"pure-probe-gate");
         Check(CleanupTarget(true,true,true)=="job" && CleanupTarget(true,true,false)=="job" && CleanupTarget(true,false,true)=="process" && CleanupTarget(false,false,true)=="process" && CleanupTarget(true,false,false)=="none","pure-owned-cleanup-selection");
         Check(ProbeCommand("fixture suite.exe")=="\"fixture suite.exe\" --list","pure-probe-command");
@@ -68,6 +65,21 @@ public static class Native {
         bool badEntry=false;try{MergeBlocks("novalue\0\0","A=b\0\0");}catch(InvalidOperationException){badEntry=true;}
         Stage="not-started";ErrorCode=0;
         Check(badEntry,"pure-environment-entry-refusal");
+        ValidateSteps(new[]{"icacls.exe","cmd.exe"},new[]{"icacls.exe \"x\" /setowner *S-1-5-21-1 /q","cmd.exe /d /s /c \"\"suite.exe\" >\"log\" 2>&1\""},new[]{30000,90000});
+        var badSteps=new List<Action>{
+            ()=>ValidateSteps(new string[0],new string[0],new int[0]),
+            ()=>ValidateSteps(new[]{"a.exe"},new[]{"a","b"},new[]{1}),
+            ()=>ValidateSteps(new[]{"a\".exe"},new[]{"a"},new[]{1}),
+            ()=>ValidateSteps(new[]{"a.exe"},new[]{"a\nb"},new[]{1}),
+            ()=>ValidateSteps(new[]{"a.exe"},new[]{new string('x',1024)},new[]{1}),
+            ()=>ValidateSteps(new[]{"a.exe"},new[]{"a"},new[]{0}),
+            ()=>ValidateSteps(new[]{"a.exe"},new[]{"a"},new[]{300001}),
+            ()=>ValidateSteps(new string[9],new string[9],new int[9])};
+        foreach(var bad in badSteps) {
+            bool refused=false;try{bad();}catch(InvalidOperationException){refused=true;}
+            Stage="not-started";ErrorCode=0;
+            Check(refused,"pure-step-refusal");
+        }
     }
     static void Check(bool ok, string stage) {
         if (!ok) { if(Stage=="not-started"){Stage = stage; ErrorCode = Marshal.GetLastWin32Error();} throw new InvalidOperationException("native fixture refused"); }
@@ -250,17 +262,6 @@ public static class Native {
             finally{if(memory!=IntPtr.Zero)WTSFreeMemory(memory);}
         }
     }
-    public static void CheckWorker(string expectedSid) {
-        IntPtr token;Check(OpenProcessToken(GetCurrentProcess(),8,out token),"worker-token");
-        try {Check(Scalar(token,20)==0 && Scalar(token,8)==1 && User(token)==expectedSid,"worker-standard-primary-identity");}
-        finally {CloseHandle(token);}
-        IntPtr thread;
-        bool impersonating=OpenThreadToken(GetCurrentThread(),8,true,out thread);
-        int error=Marshal.GetLastWin32Error();
-        if(impersonating)CloseHandle(thread);
-        Check(!impersonating && error==1008,"worker-no-impersonation");
-        CheckSession();
-    }
     static string JobImages(IntPtr job,string probe) {
         const int max=32;
         int length=8+max*IntPtr.Size;
@@ -320,37 +321,32 @@ public static class Native {
         } finally {DestroyEnvironmentBlock(block);}
     }
 
-    public static string DiagnosticState = "not-started";
-    // Diagnostic only, never gating: start a fixed trivial command as the
-    // fixture user in its own kill-on-close job and report a fixed class.
-    static string DiagnosticLaunch(IntPtr token,string app,string command,IntPtr env,string cwd,IntPtr desktopPath) {
-        IntPtr job=CreateJobObjectW(IntPtr.Zero,null);
-        if(job==IntPtr.Zero)return "job-failed";
-        try {
-            var limits=new ExtendedLimit();limits.basic.flags=0x2000;
-            if(!SetInformationJobObject(job,9,ref limits,Marshal.SizeOf(typeof(ExtendedLimit))))return "job-limit-failed";
-            var startup=new Startup{cb=Marshal.SizeOf(typeof(Startup)),desktop=desktopPath};
-            Process p;
-            if(!CreateProcessWithTokenW(token,LogonWithProfile,app,new StringBuilder(command),CreateFlags,env,cwd,ref startup,out p))return "create-failed-"+Marshal.GetLastWin32Error();
-            try {
-                if(!AssignProcessToJobObject(job,p.process)){TerminateProcess(p.process,99);WaitForSingleObject(p.process,10000);return "assign-failed";}
-                if(ResumeThread(p.thread)==0xffffffff)return "resume-failed";
-                if(WaitForSingleObject(p.process,30000)!=0)return "timeout["+JobImages(job,app)+"]";
-                uint code;return GetExitCodeProcess(p.process,out code)?"exit-"+ExitCodeClass(code):"exit-query-failed";
-            } finally {CloseHandle(p.thread);CloseHandle(p.process);}
-        } finally {TerminateJobObject(job,99);Thread.Sleep(500);CloseHandle(job);}
+    // Steps run directly as the fixture user. PowerShell hosts never reached
+    // their first line under a secondary-logon token on the hosted runner,
+    // while cmd.exe and native executables did, so no PowerShell worker runs
+    // as the fixture user.
+    static void ValidateSteps(string[] apps,string[] commands,int[] timeouts) {
+        Check(apps!=null && commands!=null && timeouts!=null,"steps-present");
+        Check(apps.Length==commands.Length && apps.Length==timeouts.Length && apps.Length>0 && apps.Length<=8,"steps-shape");
+        for(int i=0;i<apps.Length;i++) {
+            Check(!String.IsNullOrEmpty(apps[i]) && apps[i].Length<1000 && apps[i].IndexOfAny(new[]{'\0','"','\r','\n'})<0,"step-app");
+            Check(!String.IsNullOrEmpty(commands[i]) && commands[i].Length<1024 && commands[i].IndexOfAny(new[]{'\0','\r','\n'})<0,"step-command");
+            Check(timeouts[i]>0 && timeouts[i]<=300000,"step-timeout");
+        }
     }
-    public static int Run(string user,string expectedSid,SecureString password,string executable,string command,string environment,string cwd,string probeExecutable) {
+    public static int[] Run(string user,string expectedSid,SecureString password,string[] apps,string[] commands,int[] timeouts,string environment,string cwd,string probeExecutable) {
         Stage="not-started";ErrorCode=0;ProbeState="not-started";CleanupState="not-started";
         LaunchState="not-started";ResumeState="not-attempted";WaitState="not-attempted";ExitState="not-queried";
         JobState="not-observed";
-        Check(command.Length<1024 && command.IndexOf('\0')<0,"command-bound");
+        ValidateSteps(apps,commands,timeouts);
         string probeCommand=ProbeCommand(probeExecutable);
+        var codes=new List<int>();
         IntPtr passwordBuffer=IntPtr.Zero,tokenHandle=IntPtr.Zero,env=IntPtr.Zero,job=IntPtr.Zero;
         Process process=new Process(); bool assigned=false; bool cleanup=true; bool desktopAccessMayChange=false;
         IntPtr station=IntPtr.Zero,desktop=IntPtr.Zero,desktopPath=IntPtr.Zero;
         RawSecurityDescriptor stationBefore=null,desktopBefore=null;
         HashSet<string> fixtureSids=null;
+        string observedApp=probeExecutable;
         try {
             passwordBuffer=Marshal.SecureStringToGlobalAllocUnicode(password);
             try{Check(LogonUserW(user,".",passwordBuffer,2,0,out tokenHandle),"fixture-logon");}
@@ -362,8 +358,8 @@ public static class Native {
             Check(currentStation!=IntPtr.Zero && currentDesktop!=IntPtr.Zero,"desktop-handles");
             string stationName=ObjectName(currentStation),desktopName=ObjectName(currentDesktop);
             // CreateProcessWithTokenW does not grant the new logon access to the
-            // caller's window station and desktop; without it the child's console
-            // cannot start. Open writable handles by name for a scoped grant.
+            // caller's window station and desktop. Open writable handles by name
+            // for a grant scoped to the fixture logon SID; cleanup removes it.
             station=OpenWindowStationW(stationName,false,0x60000);Check(station!=IntPtr.Zero,"station-open-dacl");
             desktop=OpenDesktopW(desktopName,0,false,0x60000);Check(desktop!=IntPtr.Zero,"desktop-open-dacl");
             stationBefore=Descriptor(station);desktopBefore=Descriptor(desktop);
@@ -373,52 +369,53 @@ public static class Native {
             Grant(station,logonSid,StationGrant,"station-grant");
             Grant(desktop,logonSid,DesktopGrant,"desktop-grant");
             desktopPath=Marshal.StringToHGlobalUni(stationName+"\\"+desktopName);
-            // PowerShell never reached its first script line with only the fixed
-            // variables; give the child the standard user's own default block.
+            // The fixture user's own default environment, with the fixed
+            // fixture variables overriding it; the runner's is never inherited.
             env=Marshal.StringToHGlobalUni(UserEnvironment(tokenHandle,environment));
-            string system=Environment.GetFolderPath(Environment.SpecialFolder.System);
-            DiagnosticState="cmd="+DiagnosticLaunch(tokenHandle,System.IO.Path.Combine(system,"cmd.exe"),"cmd.exe /d /c exit 0",env,cwd,desktopPath)
-                +"; powershell="+DiagnosticLaunch(tokenHandle,System.IO.Path.Combine(system,@"WindowsPowerShell\v1.0\powershell.exe"),"powershell.exe -NoLogo -NoProfile -NonInteractive -Command exit 0",env,cwd,desktopPath)
-                +"; pwsh="+DiagnosticLaunch(tokenHandle,executable,"pwsh.exe -NoLogo -NoProfile -NonInteractive -Command exit 0",env,cwd,desktopPath);
-            for(int phase=0;phase<2;phase++) {
+            for(int phase=0;phase<=apps.Length;phase++) {
             bool probing=phase==0;
             if(probing)ProbeState="running";
-            // A fresh kill-on-close job per launch; the probe job was verified
-            // empty before it is closed. Reusing it for a second secondary-logon
-            // child was refused with access denied on the hosted runner.
-            if(job!=IntPtr.Zero){Check(CloseHandle(job),"probe-job-close");job=IntPtr.Zero;}
+            observedApp=probing?probeExecutable:apps[phase-1];
+            // A fresh kill-on-close job per launch; the previous job was verified
+            // empty before it is closed. Reusing one job for a second
+            // secondary-logon child was refused with access denied.
+            if(job!=IntPtr.Zero){Check(CloseHandle(job),"step-job-close");job=IntPtr.Zero;}
             job=CreateJobObjectW(IntPtr.Zero,null);Check(job!=IntPtr.Zero,"job-create");
             var limits=new ExtendedLimit();limits.basic.flags=0x2000;
             Check(SetInformationJobObject(job,9,ref limits,Marshal.SizeOf(typeof(ExtendedLimit))),"job-kill-on-close");
             var startup=new Startup{cb=Marshal.SizeOf(typeof(Startup)),desktop=desktopPath,flags=1,show=0};
-            Check(CreateProcessWithTokenW(tokenHandle,LogonWithProfile,probing?probeExecutable:executable,new StringBuilder(probing?probeCommand:command),CreateFlags,env,cwd,ref startup,out process),probing?"probe-create-suspended":"worker-create-suspended");
+            Check(CreateProcessWithTokenW(tokenHandle,LogonWithProfile,observedApp,new StringBuilder(probing?probeCommand:commands[phase-1]),CreateFlags,env,cwd,ref startup,out process),probing?"probe-create-suspended":"step-create-suspended");
             LaunchState="created-suspended";
-            Check(AssignProcessToJobObject(job,process.process),"worker-job-assign");assigned=true;
+            Check(AssignProcessToJobObject(job,process.process),probing?"probe-job-assign":"step-job-assign");assigned=true;
             LaunchState="job-assigned";
             uint resumed=ResumeThread(process.thread);ResumeState=ResumeClass(resumed);
-            Check(resumed!=0xffffffff,"worker-resume");
-            uint waited=WaitForSingleObject(process.process,PhaseTimeout(phase));WaitState=WaitClass(waited);
-            Check(waited==0,probing?"probe-timeout":"worker-timeout");
-            uint code;Check(GetExitCodeProcess(process.process,out code),"worker-exit-query");
-            if(!probing){Check(code<=int.MaxValue,"worker-exit-bound");return (int)code;}
+            Check(resumed!=0xffffffff,"step-resume");
+            uint waited=WaitForSingleObject(process.process,probing?30000u:(uint)timeouts[phase-1]);WaitState=WaitClass(waited);
+            Check(waited==0,probing?"probe-timeout":"step-timeout");
+            uint code;Check(GetExitCodeProcess(process.process,out code),"step-exit-query");
             ExitState=ExitClass(true,code);
-            Accounting probeAccounting;
-            // The headless conhost attached to the probe exits just after it;
+            Accounting accounting;
+            // A headless conhost attached to the child exits just after it;
             // allow a bounded 5 s for the job to drain before judging it.
             for(int drain=0;;drain++) {
-                Check(QueryInformationJobObject(job,1,out probeAccounting,Marshal.SizeOf(typeof(Accounting)),IntPtr.Zero),"probe-job-query");
-                if(probeAccounting.activeProcesses==0 || drain>=50)break;
+                Check(QueryInformationJobObject(job,1,out accounting,Marshal.SizeOf(typeof(Accounting)),IntPtr.Zero),"step-job-query");
+                if(accounting.activeProcesses==0 || drain>=50)break;
                 Thread.Sleep(100);
             }
-            // An attached conhost still alive is a probe/cleanup failure, not
-            // evidence about PowerShell. Do not start phase two in that case.
-            Check(ProbeComplete(code,probeAccounting.activeProcesses),"probe-exit-or-job-not-empty");
-            Check(CloseHandle(process.thread),"probe-thread-close");process.thread=IntPtr.Zero;
-            Check(CloseHandle(process.process),"probe-process-close");process.process=IntPtr.Zero;
-            process=new Process();assigned=false;ProbeState="passed";
+            Check(accounting.activeProcesses==0,probing?"probe-exit-or-job-not-empty":"step-job-not-empty");
+            if(probing)Check(ProbeComplete(code,accounting.activeProcesses),"probe-exit-or-job-not-empty");
+            Check(CloseHandle(process.thread),"step-thread-close");process.thread=IntPtr.Zero;
+            Check(CloseHandle(process.process),"step-process-close");process.process=IntPtr.Zero;
+            process=new Process();assigned=false;
+            if(probing){ProbeState="passed";}
+            else {
+                Check(code<=int.MaxValue,"step-exit-bound");codes.Add((int)code);
+                // Fail fast: later steps depend on earlier ones.
+                if(code!=0)break;
+            }
             LaunchState="not-started";ResumeState="not-attempted";WaitState="not-attempted";ExitState="not-queried";
             }
-            throw new InvalidOperationException("Invalid native phase.");
+            return codes.ToArray();
         } finally {
             if(ProbeState=="running")ProbeState="failed";
             // Observe before terminating the owned job. Code 259 alone does not
@@ -427,7 +424,7 @@ public static class Native {
             if(passwordBuffer!=IntPtr.Zero) Marshal.ZeroFreeGlobalAllocUnicode(passwordBuffer);
             string cleanupTarget=CleanupTarget(job!=IntPtr.Zero,assigned,process.process!=IntPtr.Zero);
             if(cleanupTarget=="job") {
-                if(WaitState=="timeout")JobState=JobImages(job,probeExecutable);
+                if(WaitState=="timeout")JobState=JobImages(job,observedApp);
                 cleanup &= TerminateJobObject(job,99);
                 bool empty=false;
                 for(int i=0;i<100;i++){Accounting value;if(QueryInformationJobObject(job,1,out value,Marshal.SizeOf(typeof(Accounting)),IntPtr.Zero)&&value.activeProcesses==0){empty=true;break;}Thread.Sleep(100);}
