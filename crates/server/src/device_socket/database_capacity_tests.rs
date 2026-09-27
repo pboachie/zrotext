@@ -161,11 +161,14 @@ async fn all_admitted_sessions_renew_while_proofs_wait_without_pinning_database_
     expect_refused(address).await;
 
     // Send a synchronized heartbeat burst, then read every acknowledgement.
-    // Repeat past the periodic session check to exercise reacquisition there.
+    // The second round waits past both the periodic session check and the
+    // renewal interval, so every socket reacquires a client to renew again.
+    // A sentinel lease proves each round actually wrote every session.
     for round in 0..2 {
         if round != 0 {
-            tokio::time::sleep(Duration::from_secs(11)).await;
+            tokio::time::sleep(HEARTBEAT_RENEW_INTERVAL + Duration::from_secs(1)).await;
         }
+        set_sentinel_leases(&fixture).await;
         for (socket, _) in &mut phones {
             send_json(socket, json!({"v":1,"type":"heartbeat"})).await;
         }
@@ -175,11 +178,18 @@ async fn all_admitted_sessions_renew_while_proofs_wait_without_pinning_database_
                 json!({"v":1,"type":"heartbeat_ack","connection_epoch":epoch})
             );
         }
+        assert_eq!(
+            sentinel_leases(&fixture).await,
+            0,
+            "round {round} acknowledged a heartbeat without renewing its lease"
+        );
     }
     assert_eq!(admission.established.available_permits(), 0);
 
     // Reacquired clients still enforce key revocation rather than treating an
-    // established socket as permanently authenticated.
+    // established socket as permanently authenticated. A heartbeat inside the
+    // renewal interval is acknowledged from memory, so revocation is observed
+    // by the next renewal or the periodic session check, at most 10 s later.
     fixture
         .db
         .execute(
@@ -192,15 +202,106 @@ async fn all_admitted_sessions_renew_while_proofs_wait_without_pinning_database_
         send_json(socket, json!({"v":1,"type":"heartbeat"})).await;
     }
     for (socket, _) in &mut phones {
-        let frame = timeout(Duration::from_secs(5), socket.next())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        assert!(matches!(frame, WsMessage::Close(_)));
+        expect_close_after_acks(socket).await;
     }
     drop(phones);
     drop(pending);
+    server.abort();
+    fixture.finish().await;
+}
+
+/// Reads past heartbeat acknowledgements until the hub closes the socket.
+async fn expect_close_after_acks(socket: &mut TestSocket) -> Option<u16> {
+    timeout(Duration::from_secs(15), async {
+        loop {
+            match socket.next().await {
+                Some(Ok(WsMessage::Text(text))) => {
+                    let frame: Value = serde_json::from_str(text.as_str()).unwrap();
+                    assert_eq!(frame["type"], "heartbeat_ack");
+                }
+                Some(Ok(WsMessage::Close(frame))) => {
+                    return frame.map(|frame| u16::from(frame.code));
+                }
+                Some(Ok(_)) => {}
+                Some(Err(_)) | None => return None,
+            }
+        }
+    })
+    .await
+    .expect("hub should close the socket")
+}
+
+/// A far-future lease no renewal can produce (renewal writes now() + 90 s),
+/// so "renewed" and "not renewed" do not depend on the database clock
+/// advancing between transactions.
+const SENTINEL_LEASE: &str = "2999-01-01 00:00:00+00";
+
+async fn set_sentinel_leases(fixture: &Fixture) {
+    fixture
+        .db
+        .execute(
+            "UPDATE device_sessions SET lease_until=$1::text::timestamptz WHERE account_id=$2",
+            &[&SENTINEL_LEASE, &fixture.account_id],
+        )
+        .await
+        .unwrap();
+}
+
+/// Sessions of the fixture account still holding the sentinel lease.
+async fn sentinel_leases(fixture: &Fixture) -> i64 {
+    fixture
+        .db
+        .query_one(
+            "SELECT count(*) FROM device_sessions \
+             WHERE account_id=$2 AND lease_until=$1::text::timestamptz",
+            &[&SENTINEL_LEASE, &fixture.account_id],
+        )
+        .await
+        .unwrap()
+        .get(0)
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn heartbeat_flood_renews_once_per_interval_and_closes_past_the_cap() {
+    let fixture = Fixture::new().await;
+    let state = socket_state(fixture.url.clone(), "capacity-test");
+    let (address, server) = serve(
+        state,
+        SocketAdmission::new(4, 4, AUTH_TIMEOUT, HANDSHAKE_DEADLINE),
+    )
+    .await;
+    let (device_id, signing) = fixture.device().await;
+    let (mut socket, frame) = challenge(address, device_id).await;
+    let epoch = prove(&mut socket, frame, &signing).await;
+
+    // The first heartbeat renews the lease in storage, replacing the sentinel.
+    set_sentinel_leases(&fixture).await;
+    send_json(&mut socket, json!({"v":1,"type":"heartbeat"})).await;
+    assert_eq!(
+        receive_json(&mut socket).await,
+        json!({"v":1,"type":"heartbeat_ack","connection_epoch":epoch})
+    );
+    assert_eq!(sentinel_leases(&fixture).await, 0);
+
+    // Every heartbeat up to the cap is acknowledged, but none of them
+    // renews: a freshly written sentinel lease stays untouched.
+    set_sentinel_leases(&fixture).await;
+    for _ in 1..MAX_HEARTBEATS_PER_WINDOW {
+        send_json(&mut socket, json!({"v":1,"type":"heartbeat"})).await;
+        assert_eq!(
+            receive_json(&mut socket).await,
+            json!({"v":1,"type":"heartbeat_ack","connection_epoch":epoch})
+        );
+    }
+    assert_eq!(sentinel_leases(&fixture).await, 1);
+
+    // One more inside the window is abuse: the hub closes with a policy code.
+    send_json(&mut socket, json!({"v":1,"type":"heartbeat"})).await;
+    assert_eq!(
+        expect_close_after_acks(&mut socket).await,
+        Some(close_code::POLICY)
+    );
     server.abort();
     fixture.finish().await;
 }

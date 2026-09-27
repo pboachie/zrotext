@@ -42,9 +42,15 @@ exhausted or its storage is unavailable.
 Reconnecting or switching transports does not reset a budget. Established
 session heartbeats do not consume these handshake budgets.
 
-The hub checks session status against PostgreSQL on every heartbeat and at
-most 10 seconds between heartbeats. A new valid connection fences the older
-epoch; release of an old socket cannot clear the newer lease. A drained,
+The hub renews the lease in PostgreSQL on the first heartbeat of a session
+and then at most once every 15 seconds (half of `heartbeat_seconds`); a
+heartbeat that arrives sooner is acknowledged with the same
+`heartbeat_ack` frame without a storage round trip. Independently, the hub
+checks session status against PostgreSQL at most 10 seconds apart, so a
+revoked or fenced session closes within that check even when its latest
+heartbeat was acknowledged from memory. More than 60 heartbeats within one
+minute close the session with `1008` (Policy Violation). A new valid
+connection fences the older epoch; release of an old socket cannot clear the newer lease. A drained,
 disabled, revoked, or writer-isolated hub closes its session. The phone stops
 its foreground heartbeat on authentication, trust, or protocol rejection.
 Before a session is established, the hub closes with `1008` (Policy Violation)
