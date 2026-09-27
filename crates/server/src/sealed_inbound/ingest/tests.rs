@@ -32,6 +32,36 @@ async fn wait_for_database_deadline(f: &Fixture, deadline_ms: i64, phase: &str) 
     }
 }
 
+// Keep the operation polled while observing its exact backend's lock wait.
+// Elapsed time alone cannot establish that cryptographic preparation finished
+// or that the intended SQL lock was reached on a loaded test runner.
+async fn wait_for_blocker<T>(
+    observer: &tokio_postgres::Client,
+    mut pending: std::pin::Pin<&mut impl std::future::Future<Output = T>>,
+    waiter: i32,
+    blocker: i32,
+) {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        tokio::select! {
+            _ = &mut pending => panic!("operation completed before the expected lock wait"),
+            _ = async {
+                loop {
+                    let blocked: bool = observer.query_one(
+                        "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE pid=$1 AND wait_event_type='Lock' AND $2=ANY(pg_blocking_pids(pid)))",
+                        &[&waiter, &blocker],
+                    ).await.unwrap().get(0);
+                    if blocked {
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            } => {}
+        }
+    })
+    .await
+    .expect("expected PostgreSQL lock wait was not observed");
+}
+
 // SQL composition fixtures sign exact candidate bytes with an ephemeral device
 // event key. The opaque test body is not an HPKE/decryption interoperability proof.
 fn envelope(f: &Fixture, event: Uuid, sequence: u64, observed: i64, body_length: usize) -> Vec<u8> {
@@ -475,42 +505,64 @@ async fn candidate_ingest_revocation_serializes_before_admission_or_after_its_ow
     for revoke_first in [false, true] {
         let f = Fixture::new().await;
         let bytes = envelope(&f, Uuid::new_v4(), 1, now(&f).await, 17);
+        let mut admission = f.connect().await;
+        let admission_pid: i32 = admission
+            .query_one("SELECT pg_backend_pid()", &[])
+            .await
+            .unwrap()
+            .get(0);
         let mut blocker = f.connect().await;
+        let blocker_pid: i32 = blocker
+            .query_one("SELECT pg_backend_pid()", &[])
+            .await
+            .unwrap()
+            .get(0);
         let tx = blocker.transaction().await.unwrap();
+        // Model preparation that takes longer than the former 100ms polling
+        // window. The barrier must establish the SQL wait, not assume it.
+        let mut pending = Box::pin(async {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            ingest_candidate02(&mut admission, f.session(), f.line, 1, &f.bytes, &bytes).await
+        });
         if revoke_first {
             tx.execute("UPDATE device_keys SET revoked_at=clock_timestamp()", &[])
                 .await
                 .unwrap();
-            let mut pending = Box::pin(ingest(&f, &bytes));
+            wait_for_blocker(&f.db, pending.as_mut(), admission_pid, blocker_pid).await;
+            tx.commit().await.unwrap();
             assert!(
-                tokio::time::timeout(std::time::Duration::from_millis(50), &mut pending)
+                tokio::time::timeout(std::time::Duration::from_secs(10), pending)
                     .await
+                    .unwrap()
                     .is_err()
             );
-            tx.commit().await.unwrap();
-            assert!(pending.await.is_err());
             assert_eq!(count(&f).await, 0);
         } else {
             tx.batch_execute("LOCK TABLE sealed_inbound_events IN ACCESS EXCLUSIVE MODE")
                 .await
                 .unwrap();
-            let mut pending = Box::pin(ingest(&f, &bytes));
-            assert!(
-                tokio::time::timeout(std::time::Duration::from_millis(100), &mut pending)
-                    .await
-                    .is_err()
-            );
+            wait_for_blocker(&f.db, pending.as_mut(), admission_pid, blocker_pid).await;
             let other = f.connect().await;
+            let revocation_pid: i32 = other
+                .query_one("SELECT pg_backend_pid()", &[])
+                .await
+                .unwrap()
+                .get(0);
             let mut revocation =
                 Box::pin(other.execute("UPDATE device_keys SET revoked_at=clock_timestamp()", &[]));
-            assert!(
-                tokio::time::timeout(std::time::Duration::from_millis(50), &mut revocation)
-                    .await
-                    .is_err()
-            );
+            wait_for_blocker(&f.db, revocation.as_mut(), revocation_pid, admission_pid).await;
             tx.commit().await.unwrap();
-            assert!(pending.await.unwrap().created);
-            revocation.await.unwrap();
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_secs(10), pending)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .created
+            );
+            tokio::time::timeout(std::time::Duration::from_secs(10), revocation)
+                .await
+                .unwrap()
+                .unwrap();
             assert!(ingest(&f, &bytes).await.is_err());
             assert_eq!(count(&f).await, 1);
         }
