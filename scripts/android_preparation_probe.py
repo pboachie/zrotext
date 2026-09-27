@@ -21,8 +21,6 @@ TEST_APP = APP + ".test"
 RUNNER = "org.zrotext.gateway.PreparationProbeRunner"
 TEST = "org.zrotext.gateway.PreparationProbeDeviceTest"
 ANDROID = "{http://schemas.android.com/apk/res/android}"
-# adb serials are device IDs, emulator-NNNN or host:port transports; never options or shell syntax.
-SERIAL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,63}")
 WINDOWS = os.name == "nt"
 # Fixed program names only; each must exist in its expected SDK directory before use.
 TOOLS = {
@@ -32,10 +30,16 @@ TOOLS = {
 }
 
 
-def validate_serial(serial):
-    if not isinstance(serial, str) or not SERIAL.fullmatch(serial):
-        raise ValueError("Device serial must be a plain adb identifier")
-    return serial
+# adb serials are device IDs, emulator-NNNN or host:port transports; never options or shell syntax.
+SERIAL_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,63}")
+
+
+def validated_serial(serial):
+    """Return the serial only when it cannot smuggle argument or shell separators."""
+    match = SERIAL_PATTERN.fullmatch(serial) if isinstance(serial, str) else None
+    if serial is not None and match is None:
+        raise ValueError("Device serial may contain only letters, digits, dots, dashes, underscores and colons")
+    return match.group(0) if match else serial
 
 
 def tool_environment(sdk_home, serial=None, base=None):
@@ -44,19 +48,23 @@ def tool_environment(sdk_home, serial=None, base=None):
     Commands never carry a path or serial from the caller: programs are constant names and the
     validated serial reaches adb only through ANDROID_SERIAL.
     """
-    sdk = Path(sdk_home or "")
-    if not sdk_home or not sdk.is_absolute() or not sdk.is_dir():
-        raise ValueError("ANDROID_HOME must be an existing absolute SDK directory")
+    if not isinstance(sdk_home, str) or not os.path.isabs(sdk_home):
+        raise ValueError("ANDROID_HOME must be an absolute SDK directory")
+    sdk = os.path.normpath(sdk_home)
     directories = []
     for directory, name in TOOLS.values():
-        if not (sdk / directory / name).is_file():
+        # Normalize, then confirm the fixed relative tool path stays inside the SDK before any access.
+        tool = os.path.normpath(os.path.join(sdk, directory, name))
+        if not tool.startswith(os.path.join(sdk, "")):
+            raise ValueError("Android SDK tool path escapes ANDROID_HOME")
+        if not os.path.isfile(tool):
             raise ValueError("Required Android SDK tool is missing")
-        directories.append(str(sdk / directory))
+        directories.append(os.path.dirname(tool))
     environment = dict(os.environ if base is None else base)
     environment["PATH"] = os.pathsep.join(directories + [environment.get("PATH", "")])
     environment.pop("ANDROID_SERIAL", None)
     if serial is not None:
-        environment["ANDROID_SERIAL"] = validate_serial(serial)
+        environment["ANDROID_SERIAL"] = validated_serial(serial)
     return environment
 
 

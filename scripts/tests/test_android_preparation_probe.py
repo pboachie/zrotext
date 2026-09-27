@@ -30,11 +30,11 @@ def fake_sdk(root):
 class PreparationProbeTest(unittest.TestCase):
     def test_serial_must_be_a_plain_adb_identifier(self):
         for good in ['emulator-5562', 'synthetic-device', 'ABCDEF0123456789', 'localhost:5555', 'adb-X1.local']:
-            self.assertEqual(good, probe.validate_serial(good))
+            self.assertEqual(good, probe.validated_serial(good))
         for bad in ['', '-s', '--install', 'emulator-5562 extra', 'a;reboot', 'a&&reboot', '$(reboot)',
-                    'a|b', 'serial\n', 'a/b', 'a\\b', '"quoted"', 'x' * 65, None, 5562]:
+                    'a|b', 'serial\n', 'a/b', 'a\\b', '"quoted"', 'x' * 65, 5562]:
             with self.subTest(bad=bad), self.assertRaises(ValueError):
-                probe.validate_serial(bad)
+                probe.validated_serial(bad)
 
     def test_sdk_must_be_absolute_existing_and_contain_every_fixed_tool(self):
         with tempfile.TemporaryDirectory() as temporary:
