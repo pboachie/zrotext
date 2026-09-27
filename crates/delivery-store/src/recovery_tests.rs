@@ -30,28 +30,7 @@ impl TestDb {
             "{root_url}{separator}options=-csearch_path%3D{schema}"
         ))
         .await;
-        for migration in [
-            include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
-            include_str!("../../../deploy/compose/migrations/002_auth.sql"),
-            include_str!("../../../deploy/compose/migrations/003_delivery.sql"),
-            include_str!("../../../deploy/compose/migrations/004_enrollment.sql"),
-            include_str!("../../../deploy/compose/migrations/005_verification_outbox.sql"),
-            include_str!("../../../deploy/compose/migrations/006_usage_metering.sql"),
-            include_str!("../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"),
-            include_str!("../../../deploy/compose/migrations/008_stripe_billing_foundation.sql"),
-            include_str!("../../../deploy/compose/migrations/009_webhook_manual_replay.sql"),
-            include_str!("../../../deploy/compose/migrations/010_billing_test_entitlement.sql"),
-            include_str!("../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
-            include_str!("../../../deploy/compose/migrations/017_billing_device_caps.sql"),
-            include_str!("../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
-            include_str!("../../../deploy/compose/migrations/030_terminal_dispatch_jobs.sql"),
-            include_str!("../../../deploy/compose/migrations/031_recipient_suppression.sql"),
-            include_str!("../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
-            include_str!("../../../deploy/compose/migrations/038_owner_opt_out_hold_guards.sql"),
-            include_str!("../../../deploy/compose/migrations/039_inbound_device_clock_offset.sql"),
-        ] {
-            client.batch_execute(migration).await.unwrap();
-        }
+        crate::tests::apply_test_migrations(&client).await;
         Self {
             admin,
             client,
