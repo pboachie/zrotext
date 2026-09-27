@@ -76,7 +76,9 @@ fn e164(peer: &[u8]) -> bool {
 }
 
 /// The caller must choose the profile; this reader never downgrades or retries.
-fn parse(input: &[u8], expected: Profile) -> Result<Envelope<'_>, &'static str> {
+// Crate callers may inspect bounded claims to select authority. Nothing returned
+// by this parser is authenticated until verify() accepts the exact input bytes.
+pub(crate) fn parse(input: &[u8], expected: Profile) -> Result<Envelope<'_>, &'static str> {
     if !(426..=36_864).contains(&input.len()) {
         return Err("envelope size");
     }
@@ -229,8 +231,10 @@ pub struct ExpectedRecipient {
     pub key_id: [u8; 32],
 }
 
-/// Trusted routing and authority supplied by the caller, never inferred from
-/// the received envelope. In particular, a relay directory is not a trust root.
+/// Expected routing and authority supplied by the caller. Account/device/line
+/// and signer authority must come from authenticated state. Request-selected
+/// message, peer and reader claims become trusted only after exact signature
+/// verification and manifest authorization. A relay directory is not a trust root.
 #[derive(Clone)]
 pub struct ExpectedContext<'a> {
     pub profile: Profile,
