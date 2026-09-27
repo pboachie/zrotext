@@ -156,8 +156,10 @@ export async function keyId(algorithm: 0x0010 | 0x0101, point: Uint8Array): Prom
     Uint8Array.of(algorithm >> 8, algorithm & 255), point))));
 }
 export async function wrapInfo(parsed: DraftEnvelope, wrap: DraftWrap): Promise<Uint8Array> {
+  const role = wrap.role;
+  const recipientId = Uint8Array.from(wrap.keyId);
   const hash = new Uint8Array(await crypto.subtle.digest("SHA-256", buffer(parsed.protected)));
-  return concat(label("ZTSE/wrap/v1"), hash, Uint8Array.of(wrap.role), wrap.keyId);
+  return concat(label("ZTSE/wrap/v1"), hash, Uint8Array.of(role), recipientId);
 }
 export function wrapAad(parsed: DraftEnvelope, wrap: DraftWrap): Uint8Array {
   return concat(label("ZTSE/wrap-aad/v1"), parsed.protected, Uint8Array.of(wrap.role), wrap.keyId);
@@ -169,8 +171,14 @@ export type DraftOpenContext = Readonly<{
   recipientRole: 1 | 2 | 3; recipientKeyId: Uint8Array; recipientPrivateKey: CryptoKey;
 }>;
 
-/** Caller supplies independently trusted IDs and keys. Does not validate manifest authorization or replay state. */
+/** Caller supplies independently trusted IDs and keys, captured before the first await.
+ * Does not validate manifest authorization or replay state. */
 export async function openDraftEnvelope(input: Uint8Array, expected: DraftOpenContext): Promise<string> {
+  expected = { ...expected, accountId: Uint8Array.from(expected.accountId),
+    deviceId: Uint8Array.from(expected.deviceId), lineId: Uint8Array.from(expected.lineId),
+    manifestDigest: Uint8Array.from(expected.manifestDigest),
+    signerPublicPoint: Uint8Array.from(expected.signerPublicPoint),
+    recipientKeyId: Uint8Array.from(expected.recipientKeyId) };
   const parsed = parseDraftEnvelope(input);
   if (!equal(parsed.accountId, expected.accountId) || !equal(parsed.deviceId, expected.deviceId) ||
       !equal(parsed.lineId, expected.lineId) || parsed.peer !== expected.peer ||
