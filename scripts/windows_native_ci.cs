@@ -27,7 +27,7 @@ public static class Native {
     static string ResumeClass(uint value) {return value==0xffffffff?"failed":value==0?"zero":value==1?"one":"greater-than-one";}
     static string WaitClass(uint value) {return value==0?"signaled":value==258?"timeout":"failed";}
     static string ExitClass(bool queried,uint value) {return !queried?"query-failed":value==0?"zero":value==259?"still-active-code":"other";}
-    public static string JobState = "not-observed", NoWindowProbeState = "not-started";
+    public static string JobState = "not-observed";
     // Fixed classes only: never report arbitrary process names or paths.
     static readonly string[] KnownImages = {"conhost.exe","openconsole.exe","werfault.exe","wermgr.exe","csrss.exe","consent.exe"};
     static string ImageClass(string image,string probe) {
@@ -37,6 +37,10 @@ public static class Native {
         return Array.IndexOf(KnownImages,name)>=0?name:"other";
     }
     // NTSTATUS/exit codes are fixed numeric classes, not user data.
+    // CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW. A new
+    // console for a secondary-logon child never finished starting on the
+    // hosted runner, while the same child without a console exited normally.
+    const int CreateFlags = 0x08000404;
     static string ExitCodeClass(uint code) {return code==0?"zero":code==259?"still-active-code":"0x"+code.ToString("x8");}
     public static void TestDiagnostics() {
         Check(LogonWithProfile==1,"pure-fixture-profile-policy");
@@ -271,31 +275,12 @@ public static class Native {
             return listed==0?"empty":String.Join(",",classes);
         } finally {Marshal.FreeHGlobal(buffer);}
     }
-    static bool EmptyJob(IntPtr job) {
-        for(int i=0;i<100;i++){Accounting value;if(QueryInformationJobObject(job,1,out value,Marshal.SizeOf(typeof(Accounting)),IntPtr.Zero)&&value.activeProcesses==0)return true;Thread.Sleep(100);}
-        return false;
-    }
-    // Diagnostic only: the same probe without a console. Its result never
-    // gates the run; it tells console startup failures apart from others.
-    static string NoWindowProbe(IntPtr token,string probe,string command,IntPtr env,string cwd,IntPtr desktopPath,IntPtr job) {
-        var startup=new Startup{cb=Marshal.SizeOf(typeof(Startup)),desktop=desktopPath};
-        Process p;
-        if(!CreateProcessWithTokenW(token,LogonWithProfile,probe,new StringBuilder(command),0x08000404,env,cwd,ref startup,out p))return "create-failed-"+Marshal.GetLastWin32Error();
-        try {
-            if(!AssignProcessToJobObject(job,p.process)){TerminateProcess(p.process,99);WaitForSingleObject(p.process,10000);return "assign-failed";}
-            if(ResumeThread(p.thread)==0xffffffff){TerminateJobObject(job,99);EmptyJob(job);return "resume-failed";}
-            if(WaitForSingleObject(p.process,30000)!=0){string images=JobImages(job,probe);TerminateJobObject(job,99);return "timeout["+images+"]"+(EmptyJob(job)?"":"-not-emptied");}
-            uint code;if(!GetExitCodeProcess(p.process,out code))return "exit-query-failed";
-            if(!EmptyJob(job)){TerminateJobObject(job,99);EmptyJob(job);return "exit-"+ExitCodeClass(code)+"-job-not-empty";}
-            return "exit-"+ExitCodeClass(code);
-        } finally {CloseHandle(p.thread);CloseHandle(p.process);}
-    }
     public static void DeleteProfile(string sid) {Check(DeleteProfileW(sid,null,null),"profile-cleanup");}
 
     public static int Run(string user,string expectedSid,SecureString password,string executable,string command,string environment,string cwd,string probeExecutable) {
         Stage="not-started";ErrorCode=0;ProbeState="not-started";CleanupState="not-started";
         LaunchState="not-started";ResumeState="not-attempted";WaitState="not-attempted";ExitState="not-queried";
-        JobState="not-observed";NoWindowProbeState="not-started";
+        JobState="not-observed";
         Check(command.Length<1024 && command.IndexOf('\0')<0,"command-bound");
         string probeCommand=ProbeCommand(probeExecutable);
         IntPtr passwordBuffer=IntPtr.Zero,tokenHandle=IntPtr.Zero,env=IntPtr.Zero,job=IntPtr.Zero;
@@ -325,16 +310,19 @@ public static class Native {
             Grant(station,logonSid,StationGrant,"station-grant");
             Grant(desktop,logonSid,DesktopGrant,"desktop-grant");
             desktopPath=Marshal.StringToHGlobalUni(stationName+"\\"+desktopName);
-            job=CreateJobObjectW(IntPtr.Zero,null);Check(job!=IntPtr.Zero,"job-create");
-            var limits=new ExtendedLimit();limits.basic.flags=0x2000;
-            Check(SetInformationJobObject(job,9,ref limits,Marshal.SizeOf(typeof(ExtendedLimit))),"job-kill-on-close");
             env=Marshal.StringToHGlobalUni(environment);
-            NoWindowProbeState=NoWindowProbe(tokenHandle,probeExecutable,probeCommand,env,cwd,desktopPath,job);
             for(int phase=0;phase<2;phase++) {
             bool probing=phase==0;
             if(probing)ProbeState="running";
+            // A fresh kill-on-close job per launch; the probe job was verified
+            // empty before it is closed. Reusing it for a second secondary-logon
+            // child was refused with access denied on the hosted runner.
+            if(job!=IntPtr.Zero){Check(CloseHandle(job),"probe-job-close");job=IntPtr.Zero;}
+            job=CreateJobObjectW(IntPtr.Zero,null);Check(job!=IntPtr.Zero,"job-create");
+            var limits=new ExtendedLimit();limits.basic.flags=0x2000;
+            Check(SetInformationJobObject(job,9,ref limits,Marshal.SizeOf(typeof(ExtendedLimit))),"job-kill-on-close");
             var startup=new Startup{cb=Marshal.SizeOf(typeof(Startup)),desktop=desktopPath,flags=1,show=0};
-            Check(CreateProcessWithTokenW(tokenHandle,LogonWithProfile,probing?probeExecutable:executable,new StringBuilder(probing?probeCommand:command),0x414,env,cwd,ref startup,out process),probing?"probe-create-suspended":"worker-create-suspended");
+            Check(CreateProcessWithTokenW(tokenHandle,LogonWithProfile,probing?probeExecutable:executable,new StringBuilder(probing?probeCommand:command),CreateFlags,env,cwd,ref startup,out process),probing?"probe-create-suspended":"worker-create-suspended");
             LaunchState="created-suspended";
             Check(AssignProcessToJobObject(job,process.process),"worker-job-assign");assigned=true;
             LaunchState="job-assigned";

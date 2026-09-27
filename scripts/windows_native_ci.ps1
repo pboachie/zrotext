@@ -344,7 +344,7 @@ try {
     if('ZrotextCi.Native' -as [type]){Write-Output ('Native stage: '+[ZrotextCi.Native]::Stage+'; OS code: '+[ZrotextCi.Native]::ErrorCode)}
     if('ZrotextCi.Native' -as [type]){Write-Output ('Native CI process classes: '+[ZrotextCi.Native]::LaunchState+'; resume='+[ZrotextCi.Native]::ResumeState+'; wait='+[ZrotextCi.Native]::WaitState+'; exit='+[ZrotextCi.Native]::ExitState)}
     if('ZrotextCi.Native' -as [type]){Write-Output ('Native CI startup probe: '+[ZrotextCi.Native]::ProbeState+'; native cleanup='+[ZrotextCi.Native]::CleanupState)}
-    if('ZrotextCi.Native' -as [type]){Write-Output ('Native CI job images at timeout: '+[ZrotextCi.Native]::JobState+'; no-window probe: '+[ZrotextCi.Native]::NoWindowProbeState)}
+    if('ZrotextCi.Native' -as [type]){Write-Output ('Native CI job images at timeout: '+[ZrotextCi.Native]::JobState)}
     if($fixture) {
         try {
             $bootstrap=Assert-ChildPath (Join-Path $fixture 'results/bootstrap-stage.txt') $fixture
