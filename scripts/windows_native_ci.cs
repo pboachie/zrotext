@@ -379,7 +379,13 @@ public static class Native {
             if(!probing){Check(code<=int.MaxValue,"worker-exit-bound");return (int)code;}
             ExitState=ExitClass(true,code);
             Accounting probeAccounting;
-            Check(QueryInformationJobObject(job,1,out probeAccounting,Marshal.SizeOf(typeof(Accounting)),IntPtr.Zero),"probe-job-query");
+            // The headless conhost attached to the probe exits just after it;
+            // allow a bounded 5 s for the job to drain before judging it.
+            for(int drain=0;;drain++) {
+                Check(QueryInformationJobObject(job,1,out probeAccounting,Marshal.SizeOf(typeof(Accounting)),IntPtr.Zero),"probe-job-query");
+                if(probeAccounting.activeProcesses==0 || drain>=50)break;
+                Thread.Sleep(100);
+            }
             // An attached conhost still alive is a probe/cleanup failure, not
             // evidence about PowerShell. Do not start phase two in that case.
             Check(ProbeComplete(code,probeAccounting.activeProcesses),"probe-exit-or-job-not-empty");
