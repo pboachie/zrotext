@@ -14,10 +14,12 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
+use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc, time::SystemTime};
 #[cfg(test)]
 use tokio_postgres::NoTls;
+use tokio_postgres::Row;
 use uuid::Uuid;
 
 // One takeout page stays bounded; full-history exports walk the same
@@ -78,18 +80,71 @@ struct MessageEventView {
     segment_count: Option<i32>,
 }
 
+// Content columns are nullable since migration 026: the retention worker
+// scrubs the recipient and payload of old terminal messages while the
+// message identity, state and events remain exportable.
 #[derive(Serialize)]
 struct MessageView {
     message_id: Uuid,
     device_id: Uuid,
-    recipient_e164: String,
+    recipient_e164: Option<String>,
     transport_mode: String,
-    transport_payload: String,
+    transport_payload: Option<String>,
+    payload_encoding: Option<PayloadEncoding>,
+    content_scrubbed: bool,
     state: String,
     created_at_ms: i64,
     updated_at_ms: i64,
     expires_at_ms: i64,
     events: Vec<MessageEventView>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum PayloadEncoding {
+    Utf8,
+    Base64,
+}
+
+// Only the synthetic alpha transport carries text. A sealed envelope is a
+// binary structure whose bytes may happen to decode as UTF-8, so it is
+// always base64 to keep the representation independent of its content.
+fn encode_payload(transport_mode: &str, payload: Vec<u8>) -> (String, PayloadEncoding) {
+    if transport_mode == "synthetic_alpha" {
+        match String::from_utf8(payload) {
+            Ok(text) => return (text, PayloadEncoding::Utf8),
+            Err(error) => return (STANDARD.encode(error.into_bytes()), PayloadEncoding::Base64),
+        }
+    }
+    (STANDARD.encode(payload), PayloadEncoding::Base64)
+}
+
+fn message_view(row: &Row) -> Result<MessageView, tokio_postgres::Error> {
+    let transport_mode: String = row.try_get(3)?;
+    let recipient_e164: Option<String> = row.try_get(2)?;
+    let payload: Option<Vec<u8>> = row.try_get(4)?;
+    let content_scrubbed = recipient_e164.is_none() && payload.is_none();
+    let (transport_payload, payload_encoding) = match payload {
+        Some(bytes) => {
+            let (text, encoding) = encode_payload(&transport_mode, bytes);
+            (Some(text), Some(encoding))
+        }
+        None => (None, None),
+    };
+    Ok(MessageView {
+        message_id: row.try_get(0)?,
+        device_id: row.try_get(1)?,
+        recipient_e164,
+        transport_mode,
+        transport_payload,
+        payload_encoding,
+        content_scrubbed,
+        state: row.try_get(5)?,
+        created_at_ms: row.try_get(6)?,
+        updated_at_ms: row.try_get(7)?,
+        expires_at_ms: row.try_get(8)?,
+        events: Vec::new(),
+    })
 }
 
 #[derive(Serialize)]
@@ -185,7 +240,7 @@ async fn export_account(
     let message_rows = match client
         .query(
             "SELECT id,device_id,recipient_e164,transport_mode, \
-             convert_from(transport_payload,'UTF8'),state, \
+             transport_payload,state, \
              (extract(epoch FROM created_at)*1000)::bigint, \
              (extract(epoch FROM updated_at)*1000)::bigint, \
              (extract(epoch FROM expires_at)*1000)::bigint \
@@ -205,22 +260,15 @@ async fn export_account(
         Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
     };
     let messages_truncated = message_rows.len() > EXPORT_MESSAGE_LIMIT;
-    let mut messages = message_rows
-        .into_iter()
+    let mut messages = match message_rows
+        .iter()
         .take(EXPORT_MESSAGE_LIMIT)
-        .map(|row| MessageView {
-            message_id: row.get(0),
-            device_id: row.get(1),
-            recipient_e164: row.get(2),
-            transport_mode: row.get(3),
-            transport_payload: row.get(4),
-            state: row.get(5),
-            created_at_ms: row.get(6),
-            updated_at_ms: row.get(7),
-            expires_at_ms: row.get(8),
-            events: Vec::new(),
-        })
-        .collect::<Vec<_>>();
+        .map(message_view)
+        .collect::<Result<Vec<_>, _>>()
+    {
+        Ok(messages) => messages,
+        Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    };
     let ids: Vec<Uuid> = messages.iter().map(|message| message.message_id).collect();
     if !ids.is_empty() {
         let events = match client
@@ -300,6 +348,106 @@ mod tests {
         serde_json::from_slice(&to_bytes(response.into_body(), 1024 * 1024).await.unwrap()).unwrap()
     }
 
+    // The takeout must survive every schema change that affects message
+    // content: nullable content columns (026) and binary sealed payloads
+    // (045). Applying the full ordered chain keeps their dependencies intact.
+    macro_rules! export_schema {
+        ($($name:literal),+ $(,)?) => {
+            [$(include_str!(concat!("../../../deploy/compose/migrations/", $name))),+]
+        };
+    }
+    const EXPORT_SCHEMA: [&str; 48] = export_schema!(
+        "001_foundation.sql",
+        "002_auth.sql",
+        "003_delivery.sql",
+        "004_enrollment.sql",
+        "005_verification_outbox.sql",
+        "006_usage_metering.sql",
+        "007_inbound_webhook_foundation.sql",
+        "008_stripe_billing_foundation.sql",
+        "009_webhook_manual_replay.sql",
+        "010_billing_test_entitlement.sql",
+        "011_billing_payment_holds.sql",
+        "012_auth_abuse_limits.sql",
+        "013_owner_mfa.sql",
+        "014_owner_mfa_failure_budget.sql",
+        "015_webhook_kek_commitments.sql",
+        "016_auth_abuse_atomic.sql",
+        "017_billing_device_caps.sql",
+        "018_sealed_inbound_identity.sql",
+        "019_line_activation_contract.sql",
+        "020_enrollment_retention_indexes.sql",
+        "021_billing_payment_grace.sql",
+        "022_pending_owner_expiry.sql",
+        "023_billing_py_charge_and_unsupported.sql",
+        "024_billing_risk_operator_review.sql",
+        "025_account_recovery.sql",
+        "026_data_retention.sql",
+        "027_billing_test_config.sql",
+        "028_billing_provider_failures.sql",
+        "029_webhook_dispatch_fairness.sql",
+        "030_terminal_dispatch_jobs.sql",
+        "031_recipient_suppression.sql",
+        "032_line_opt_out_events.sql",
+        "033_sms_line_binding_scope.sql",
+        "034_delivery_sweep_index.sql",
+        "035_sms_owner_key_ceremony.sql",
+        "036_owner_opt_out_holds.sql",
+        "037_sms_line_activation_exchange.sql",
+        "038_owner_opt_out_hold_guards.sql",
+        "039_inbound_device_clock_offset.sql",
+        "040_radio_evidence_index.sql",
+        "041_device_preconditions.sql",
+        "042_sealed_manifest_authority.sql",
+        "043_sealed_candidate_inbound.sql",
+        "044_sealed_root_role_reservations.sql",
+        "045_sealed_outbound_queue.sql",
+        "046_sealed_root_ceremonies.sql",
+        "047_device_network_service.sql",
+        "048_observer_memberships.sql",
+    );
+
+    #[test]
+    fn export_schema_includes_every_checked_in_migration() {
+        let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../deploy/compose/migrations");
+        let count = std::fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "sql"))
+            .count();
+        assert_eq!(
+            count,
+            EXPORT_SCHEMA.len(),
+            "add the new migration to EXPORT_SCHEMA so the export test covers it"
+        );
+    }
+
+    #[test]
+    fn text_payloads_export_as_utf8_and_binary_payloads_as_base64() {
+        assert_eq!(
+            encode_payload("synthetic_alpha", b"hello export".to_vec()),
+            ("hello export".to_owned(), PayloadEncoding::Utf8)
+        );
+        assert_eq!(
+            encode_payload("synthetic_alpha", vec![0xff, 0xfe, 0x00, 0x80]),
+            ("//4AgA==".to_owned(), PayloadEncoding::Base64)
+        );
+        // Sealed envelopes are binary even when every byte happens to be ASCII.
+        assert_eq!(
+            encode_payload("sealed_candidate02", b"ZTSE".to_vec()),
+            ("WlRTRQ==".to_owned(), PayloadEncoding::Base64)
+        );
+        assert_eq!(
+            serde_json::to_string(&PayloadEncoding::Utf8).unwrap(),
+            "\"utf8\""
+        );
+        assert_eq!(
+            serde_json::to_string(&PayloadEncoding::Base64).unwrap(),
+            "\"base64\""
+        );
+    }
+
     fn page_payload_index(item: &Value) -> usize {
         item["transport_payload"]
             .as_str()
@@ -326,16 +474,7 @@ mod tests {
         let database_url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
         let (mut db, connection) = tokio_postgres::connect(&database_url, NoTls).await.unwrap();
         tokio::spawn(async move { connection.await.unwrap() });
-        for migration in [
-            include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
-            include_str!("../../../deploy/compose/migrations/002_auth.sql"),
-            include_str!("../../../deploy/compose/migrations/003_delivery.sql"),
-            include_str!("../../../deploy/compose/migrations/004_enrollment.sql"),
-            include_str!("../../../deploy/compose/migrations/005_verification_outbox.sql"),
-            include_str!("../../../deploy/compose/migrations/013_owner_mfa.sql"),
-            include_str!("../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
-            include_str!("../../../deploy/compose/migrations/048_observer_memberships.sql"),
-        ] {
+        for migration in EXPORT_SCHEMA {
             db.batch_execute(migration).await.unwrap();
         }
         let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(19)).unwrap());
@@ -418,6 +557,43 @@ mod tests {
         )
         .await
         .unwrap();
+        // A terminal message whose content the retention worker already
+        // nulled (migration 026 semantics) must not break the takeout.
+        let scrubbed_id = Uuid::new_v4();
+        db.execute(
+            "INSERT INTO messages(id,account_id,device_id,recipient_e164,recipient_digest,transport_mode,transport_payload,request_digest,state,expires_at) \
+             VALUES($1,$2,$3,NULL,$4,'synthetic_alpha',NULL,$5,'delivered',now()+interval '1 hour')",
+            &[&scrubbed_id, &a.account_id, &device_a, &vec![6_u8; 32], &vec![7_u8; 32]],
+        )
+        .await
+        .unwrap();
+        // A queued sealed candidate carries a binary envelope that is not
+        // valid UTF-8 (migration 045 semantics).
+        let line = Uuid::new_v4();
+        db.execute(
+            "INSERT INTO phone_lines(id,account_id) VALUES($1,$2)",
+            &[&line, &a.account_id],
+        )
+        .await
+        .unwrap();
+        db.execute(
+            "INSERT INTO device_line_bindings(account_id,line_id,device_id,generation) VALUES($1,$2,$3,1)",
+            &[&a.account_id, &line, &device_a],
+        )
+        .await
+        .unwrap();
+        let mut sealed_envelope = b"ZTSE\x02\x01".to_vec();
+        sealed_envelope.resize(426, 0xff);
+        let sealed_id = Uuid::new_v4();
+        db.execute(
+            "INSERT INTO messages(id,account_id,device_id,recipient_e164,recipient_digest,transport_mode,transport_payload,request_digest,state,expires_at, \
+             sealed_line_id,sealed_binding_generation,sealed_manifest_generation,sealed_manifest_version,sealed_manifest_digest,sealed_signer_key_id) \
+             VALUES($1,$2,$3,'+15551234567',$4,'sealed_candidate02',$5,$6,'queued',now()+interval '1 hour',$7,1,1,1,$8,$9)",
+            &[&sealed_id, &a.account_id, &device_a, &vec![8_u8; 32], &sealed_envelope,
+                &vec![9_u8; 32], &line, &vec![10_u8; 32], &vec![11_u8; 32]],
+        )
+        .await
+        .unwrap();
         let attempt = Uuid::new_v4();
         db.execute(
             "INSERT INTO message_attempts(id,account_id,message_id,device_id,generation,session_epoch,deployment_epoch,status) \
@@ -467,7 +643,7 @@ mod tests {
         assert_eq!(takeout["devices"][0]["display_name"], "Exporter");
         assert_eq!(takeout["messages_truncated"], false);
         let messages = takeout["messages"].as_array().unwrap();
-        assert_eq!(messages.len(), 2);
+        assert_eq!(messages.len(), 4);
         assert!(String::from_utf8_lossy(&raw).contains("EXPORT_BODY_A_0"));
         assert!(String::from_utf8_lossy(&raw).contains("EXPORT_BODY_A_1"));
         assert!(!String::from_utf8_lossy(&raw).contains("EXPORT_BODY_B_NEVER_LEAK"));
@@ -480,6 +656,8 @@ mod tests {
         assert_eq!(delivered["recipient_e164"], "+15551234567");
         assert_eq!(delivered["transport_mode"], "synthetic_alpha");
         assert_eq!(delivered["transport_payload"], "EXPORT_BODY_A_0");
+        assert_eq!(delivered["payload_encoding"], "utf8");
+        assert_eq!(delivered["content_scrubbed"], false);
         let events = delivered["events"].as_array().unwrap();
         assert_eq!(events.len(), 2);
         assert_eq!(events[0]["evidence_code"], "sent_callback_ok");
@@ -496,6 +674,28 @@ mod tests {
             queued["events"].as_array().unwrap().len(),
             0,
             "message without events exports an empty event list"
+        );
+        let scrubbed = messages
+            .iter()
+            .find(|item| item["message_id"] == scrubbed_id.to_string())
+            .unwrap();
+        assert_eq!(scrubbed["state"], "delivered");
+        assert_eq!(scrubbed["recipient_e164"], Value::Null);
+        assert_eq!(scrubbed["transport_payload"], Value::Null);
+        assert_eq!(scrubbed["payload_encoding"], Value::Null);
+        assert_eq!(scrubbed["content_scrubbed"], true);
+        let sealed = messages
+            .iter()
+            .find(|item| item["message_id"] == sealed_id.to_string())
+            .unwrap();
+        assert_eq!(sealed["transport_mode"], "sealed_candidate02");
+        assert_eq!(sealed["content_scrubbed"], false);
+        assert_eq!(sealed["payload_encoding"], "base64");
+        assert_eq!(
+            STANDARD
+                .decode(sealed["transport_payload"].as_str().unwrap())
+                .unwrap(),
+            sealed_envelope
         );
         let foreign = app
             .clone()
