@@ -2,7 +2,10 @@
 //! Owner TOTP and one-use recovery codes. Database row locks serialize factor
 //! use across API hubs. The TOTP encryption key is independent of auth tokens.
 
-use super::{AuthError, SESSION_DAYS, SessionCredentials, SessionPrincipal, TokenHasher};
+use super::{
+    AuthError, SESSION_DAYS, SessionCredentials, SessionPrincipal, TokenHasher,
+    abuse_limits::{self, Limit},
+};
 use aes_gcm::{
     Aes256Gcm, Nonce,
     aead::{Aead, KeyInit, Payload},
@@ -210,9 +213,10 @@ fn new_recovery_code() -> String {
     )
 }
 
-/// The owner row is locked before checking or spending this budget. It is
-/// shared by every challenge and management flow on every API site.
-pub(super) async fn ensure_factor_budget(
+/// Sign-in completion budget. The owner row is locked before checking or
+/// spending it. Anyone holding the password can spend it, so it guards only
+/// `complete_login`; session-authenticated step-ups use `ensure_step_up_budget`.
+async fn ensure_login_factor_budget(
     tx: &Transaction<'_>,
     account_id: Uuid,
     user_id: Uuid,
@@ -230,7 +234,7 @@ pub(super) async fn ensure_factor_budget(
     Ok(())
 }
 
-pub(super) async fn record_failed_factor(
+async fn record_failed_login_factor(
     tx: &Transaction<'_>,
     account_id: Uuid,
     user_id: Uuid,
@@ -240,6 +244,54 @@ pub(super) async fn record_failed_factor(
         &[&account_id, &user_id],
     )
     .await?;
+    Ok(())
+}
+
+/// A completed sign-in proves the factor, so earlier failures stop counting.
+async fn reset_login_factor_budget(
+    tx: &Transaction<'_>,
+    account_id: Uuid,
+    user_id: Uuid,
+) -> Result<(), AuthError> {
+    tx.execute(
+        "UPDATE owner_mfa SET failed_attempts=0, failed_window_started_at=clock_timestamp() WHERE account_id=$1 AND user_id=$2",
+        &[&account_id, &user_id],
+    )
+    .await?;
+    Ok(())
+}
+
+/// Budget for factors presented from a live owner session: password change,
+/// revoking other sessions, MFA confirmation and removal, and owner step-ups.
+/// It is separate from the sign-in budget, so failed sign-in factors cannot
+/// lock a signed-in owner out. The owner MFA row lock serializes the check here
+/// with `record_failed_step_up` on every API site.
+pub(super) async fn ensure_step_up_budget(
+    tx: &Transaction<'_>,
+    hasher: &TokenHasher,
+    account_id: Uuid,
+    user_id: Uuid,
+) -> Result<(), AuthError> {
+    tx.query_opt(
+        "SELECT 1 FROM owner_mfa WHERE account_id=$1 AND user_id=$2 FOR UPDATE",
+        &[&account_id, &user_id],
+    )
+    .await?
+    .ok_or(AuthError::Unauthorized)?;
+    if !abuse_limits::failure_budget_open(tx, hasher, Limit::MfaStepUp, &user_id.to_string())
+        .await?
+    {
+        return Err(AuthError::RateLimited);
+    }
+    Ok(())
+}
+
+pub(super) async fn record_failed_step_up(
+    tx: &Transaction<'_>,
+    hasher: &TokenHasher,
+    user_id: Uuid,
+) -> Result<(), AuthError> {
+    abuse_limits::record_failure(tx, hasher, Limit::MfaStepUp, &user_id.to_string()).await?;
     Ok(())
 }
 
@@ -355,7 +407,7 @@ pub async fn confirm_enrollment(
         "SELECT secret_nonce,secret_ciphertext,last_accepted_step FROM owner_mfa WHERE account_id=$1 AND user_id=$2 AND pending_session_id=$3 AND enabled_at IS NULL AND pending_expires_at>now() FOR UPDATE",
         &[&account_id, &principal.user_id, &principal.session_id],
     ).await?.ok_or(AuthError::Forbidden)?;
-    ensure_factor_budget(&tx, account_id, principal.user_id).await?;
+    ensure_step_up_budget(&tx, hasher, account_id, principal.user_id).await?;
     let secret = cipher.open(
         account_id,
         principal.user_id,
@@ -363,7 +415,7 @@ pub async fn confirm_enrollment(
         &row.get::<_, Vec<u8>>(1),
     )?;
     let Some(step) = accepted_step(secret, code, row.get(2), unix_seconds()?)? else {
-        record_failed_factor(&tx, account_id, principal.user_id).await?;
+        record_failed_step_up(&tx, hasher, principal.user_id).await?;
         tx.commit().await?;
         return Err(AuthError::InvalidCredentials);
     };
@@ -522,7 +574,7 @@ async fn use_factor_at(
 }
 
 /// Dormant ceremony caller already holds account, user, membership, session and
-/// owner MFA locks. A rejected factor changes only the existing failure budget;
+/// owner MFA locks. A rejected factor changes only the step-up failure budget;
 /// commit that budget before reporting rejection. All other errors roll back.
 pub(crate) async fn consume_ceremony_factor(
     tx: &Transaction<'_>,
@@ -533,7 +585,7 @@ pub(crate) async fn consume_ceremony_factor(
     now_ms: u64,
 ) -> Result<Option<ConsumedFactor>, AuthError> {
     let account = principal.tenant.account_id();
-    ensure_factor_budget(tx, account, principal.user_id).await?;
+    ensure_step_up_budget(tx, hasher, account, principal.user_id).await?;
     let factor = use_factor_at(
         tx,
         Some(cipher),
@@ -545,13 +597,13 @@ pub(crate) async fn consume_ceremony_factor(
     )
     .await?;
     if factor.is_none() {
-        record_failed_factor(tx, account, principal.user_id).await?;
+        record_failed_step_up(tx, hasher, principal.user_id).await?;
     }
     Ok(factor)
 }
 
 /// Verify a fresh factor for a high-trust owner mutation inside the caller's
-/// transaction. A false result records the shared failure budget; the caller
+/// transaction. A false result records the step-up failure budget; the caller
 /// must commit that transaction before returning an authentication failure.
 pub(crate) async fn verify_owner_step_up(
     tx: &Transaction<'_>,
@@ -571,7 +623,7 @@ pub(crate) async fn verify_owner_step_up(
         return Err(AuthError::Forbidden);
     }
     require_live_session(tx, principal).await?;
-    ensure_factor_budget(tx, account_id, principal.user_id).await?;
+    ensure_step_up_budget(tx, hasher, account_id, principal.user_id).await?;
     let valid = use_factor(
         tx,
         Some(cipher),
@@ -582,7 +634,7 @@ pub(crate) async fn verify_owner_step_up(
     )
     .await?;
     if !valid {
-        record_failed_factor(tx, account_id, principal.user_id).await?;
+        record_failed_step_up(tx, hasher, principal.user_id).await?;
     }
     Ok(valid)
 }
@@ -622,10 +674,10 @@ pub async fn complete_login(
     if challenge.get::<_, i32>(0) >= 5 {
         return Err(AuthError::Unauthorized);
     }
-    ensure_factor_budget(&tx, account_id, user_id).await?;
+    ensure_login_factor_budget(&tx, account_id, user_id).await?;
     let valid = use_factor(&tx, cipher, hasher, account_id, user_id, code).await?;
     if !valid {
-        record_failed_factor(&tx, account_id, user_id).await?;
+        record_failed_login_factor(&tx, account_id, user_id).await?;
         tx.execute(
             "UPDATE owner_mfa_login_challenges SET attempts=attempts+1 WHERE token_hash=$1",
             &[&&hash[..]],
@@ -634,6 +686,7 @@ pub async fn complete_login(
         tx.commit().await?;
         return Err(AuthError::InvalidCredentials);
     }
+    reset_login_factor_budget(&tx, account_id, user_id).await?;
     let token = super::random_token("zts_");
     let csrf_token = super::random_token("ztc_");
     let token_hash = hasher.digest(b"session-v1", &token);
@@ -708,9 +761,9 @@ pub async fn disable(
         return Err(AuthError::Forbidden);
     }
     require_live_session(&tx, principal).await?;
-    ensure_factor_budget(&tx, account_id, principal.user_id).await?;
+    ensure_step_up_budget(&tx, hasher, account_id, principal.user_id).await?;
     if !use_factor(&tx, cipher, hasher, account_id, principal.user_id, code).await? {
-        record_failed_factor(&tx, account_id, principal.user_id).await?;
+        record_failed_step_up(&tx, hasher, principal.user_id).await?;
         tx.commit().await?;
         return Err(AuthError::InvalidCredentials);
     }

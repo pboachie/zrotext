@@ -185,6 +185,14 @@ their budget, plus one minute, has passed, so pruning never resets a budget
 that is still in force. Retention is derived from the same policy table the
 budgets use; scopes it does not know are kept for two minutes.
 
+Owner second factors have two separate failure budgets of five rejected codes
+per 15 minutes. Sign-in completion spends one, stored on the owner's MFA row
+and cleared by a successful sign-in factor. Factors presented from a live owner
+session (password change, revoking other sessions, MFA confirmation and
+removal, and owner step-ups) spend the other, kept in the abuse counters and
+keyed by the owner. Someone who knows only the password can delay sign-in but
+cannot lock a signed-in owner out of those recovery actions.
+
 The login-client cookie (`__Host-zrotext_login_client`; HttpOnly,
 SameSite=Strict, 180 days) is set after a full sign-in from a browser that lacks
 one for that address, and is kept across logout. Its value is a random ID and an

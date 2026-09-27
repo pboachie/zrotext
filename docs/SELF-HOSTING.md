@@ -319,6 +319,12 @@ reserve is full. Device sockets release their database clients between handshake
 steps and after each database operation, before waiting for or writing frames.
 The separate stream limits remain 32 authenticated sessions and 32 handshakes
 per process; idle phones and pending proofs do not reserve database clients.
+Heartbeats cannot multiply database work: each session renews its lease at most
+once every 15 seconds (four renewals a minute) and answers faster heartbeats
+from memory, plus one session check every 10 seconds, so heartbeats and those
+checks together cost a socket at most 10 device database operations a minute.
+A session that sends more than 60 heartbeats in a minute is closed with policy
+code 1008.
 Database saturation can still close a stream with retry-later code 1013, so
 these socket limits are admission ceilings, not a throughput guarantee. Count every hub
 and other database client when sizing PostgreSQL: two hubs can use 72 runtime
