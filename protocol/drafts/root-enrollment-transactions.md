@@ -11,6 +11,12 @@ does not prove those properties. The transaction independently rechecks the
 current verified owner, live session and enabled MFA rather than accepting a
 cached step-up flag.
 
+These enrollment operations require a session used within the preceding 72
+hours, falling back to its creation time when it has never been used. The
+boundary is strict and uses database wall time, including the final check after
+receipt-write waits. These operations do not refresh session timestamps or
+change the application's general session-authentication policy.
+
 Challenge issuance replaces one bounded row per account, invalidating the older
 nonce and challenge ID. It charges the existing owner-management budget and
 stores only a random nonce's digest. The returned candidate bytes bind the

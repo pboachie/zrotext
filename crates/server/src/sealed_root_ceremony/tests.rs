@@ -586,7 +586,16 @@ async fn ceremony_expiry_after_receipt_insert_wait_rolls_back_every_staged_effec
     o.f.cleanup().await;
 }
 
-async fn final_fence_after_receipt_wait(totp: bool) {
+#[derive(Debug, Clone, Copy)]
+enum FinalFenceExpiry {
+    Session,
+    Totp,
+    Idle,
+}
+
+async fn final_fence_after_receipt_wait(expiry: FinalFenceExpiry) {
+    let totp = matches!(expiry, FinalFenceExpiry::Totp);
+    let idle = matches!(expiry, FinalFenceExpiry::Idle);
     let o = Owner::new().await;
     let c = o.challenge().await;
     let signature = o.sign(&c);
@@ -641,6 +650,12 @@ async fn final_fence_after_receipt_wait(totp: bool) {
             );
             tokio::time::sleep(Duration::from_millis(15)).await;
         }
+    } else if idle {
+        o.f.db.execute(
+            "UPDATE sessions SET created_at=clock_timestamp()-interval '73 hours', \
+             last_used_at=clock_timestamp()-interval '72 hours'+interval '1500 milliseconds' WHERE id=$1",
+            &[&o.principal.session_id],
+        ).await.unwrap();
     } else {
         o.f.db.execute(
             "UPDATE sessions SET expires_at=clock_timestamp()+interval '1500 milliseconds' WHERE id=$1",
@@ -666,28 +681,36 @@ async fn final_fence_after_receipt_wait(totp: bool) {
         wait_for_advisory_lock(&o.f.db, pid, pending.as_mut()).await;
         let limit = tokio::time::Instant::now() + Duration::from_secs(3);
         loop {
-            let expired: bool =
-                if totp {
-                    o.f.db.query_one(
-                    "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint >= $1",
-                    &[&totp_deadline_ms],
-                ).await.unwrap().get(0)
-                } else {
-                    o.f.db
-                        .query_one(
-                            "SELECT clock_timestamp() >= expires_at FROM sessions WHERE id=$1",
-                            &[&o.principal.session_id],
-                        )
-                        .await
-                        .unwrap()
-                        .get(0)
-                };
+            let expired: bool = if totp {
+                o.f.db
+                    .query_one(
+                        "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint >= $1",
+                        &[&totp_deadline_ms],
+                    )
+                    .await
+                    .unwrap()
+                    .get(0)
+            } else if idle {
+                o.f.db.query_one(
+                        "SELECT clock_timestamp() >= COALESCE(last_used_at,created_at)+interval '72 hours' FROM sessions WHERE id=$1",
+                        &[&o.principal.session_id],
+                    ).await.unwrap().get(0)
+            } else {
+                o.f.db
+                    .query_one(
+                        "SELECT clock_timestamp() >= expires_at FROM sessions WHERE id=$1",
+                        &[&o.principal.session_id],
+                    )
+                    .await
+                    .unwrap()
+                    .get(0)
+            };
             if expired {
                 break;
             }
             assert!(
                 tokio::time::Instant::now() < limit,
-                "post-receipt database expiry premise not reached: totp={totp}"
+                "post-receipt database expiry premise not reached: {expiry:?}"
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -728,13 +751,13 @@ async fn final_fence_after_receipt_wait(totp: bool) {
 #[tokio::test]
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn ceremony_session_expiry_after_receipt_wait_rolls_back_every_staged_effect() {
-    final_fence_after_receipt_wait(false).await;
+    final_fence_after_receipt_wait(FinalFenceExpiry::Session).await;
 }
 
 #[tokio::test]
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn ceremony_totp_window_expiry_after_receipt_wait_rolls_back_every_staged_effect() {
-    final_fence_after_receipt_wait(true).await;
+    final_fence_after_receipt_wait(FinalFenceExpiry::Totp).await;
 }
 
 async fn register_role(
@@ -905,5 +928,65 @@ async fn ceremony_owner_identity_and_genesis_generation_cannot_be_rebound() {
     );
     o.empty_authority().await;
     o.complete(&c).await.unwrap();
+    o.f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn ceremony_idle_expiry_after_receipt_wait_rolls_back_every_staged_effect() {
+    final_fence_after_receipt_wait(FinalFenceExpiry::Idle).await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn ceremony_idle_policy_uses_creation_fallback_and_recent_use_without_refreshing_it() {
+    let o = Owner::new().await;
+    let c = o.challenge().await;
+    o.f.db.execute(
+        "UPDATE sessions SET created_at=clock_timestamp()-interval '73 hours',last_used_at=NULL WHERE id=$1",
+        &[&o.principal.session_id],
+    ).await.unwrap();
+    assert!(matches!(
+        issue_challenge(
+            &mut o.f.connect().await,
+            &o.hasher,
+            &o.principal,
+            ORIGIN,
+            o.pin
+        )
+        .await,
+        Err(CeremonyError::Rejected("owner/session/MFA fence"))
+    ));
+    assert!(matches!(
+        o.complete(&c).await,
+        Err(CeremonyError::Rejected("owner/session/MFA fence"))
+    ));
+    assert!(matches!(
+        read_receipt(&mut o.f.connect().await, &o.principal).await,
+        Err(CeremonyError::Rejected("owner/session/MFA fence"))
+    ));
+    o.empty_authority().await;
+    let before: String = o.f.db.query_one(
+        "UPDATE sessions SET last_used_at=clock_timestamp()-interval '1 hour' WHERE id=$1 RETURNING last_used_at::text",
+        &[&o.principal.session_id],
+    ).await.unwrap().get(0);
+    let fresh = o.challenge().await;
+    let receipt = o.complete(&fresh).await.unwrap();
+    assert_eq!(
+        read_receipt(&mut o.f.connect().await, &o.principal)
+            .await
+            .unwrap(),
+        Some(receipt)
+    );
+    let after: String =
+        o.f.db
+            .query_one(
+                "SELECT last_used_at::text FROM sessions WHERE id=$1",
+                &[&o.principal.session_id],
+            )
+            .await
+            .unwrap()
+            .get(0);
+    assert_eq!(before, after);
     o.f.cleanup().await;
 }

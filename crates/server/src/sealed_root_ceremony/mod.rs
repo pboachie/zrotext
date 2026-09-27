@@ -17,6 +17,9 @@ use subtle::ConstantTimeEq;
 use tokio_postgres::{Client, IsolationLevel, Transaction};
 use uuid::Uuid;
 
+// Local enrollment policy; this does not change general session authentication.
+const ROOT_ENROLLMENT_IDLE_HOURS: i32 = 72;
+
 #[derive(Debug, thiserror::Error)]
 pub enum CeremonyError {
     #[error("root ceremony rejected: {0}")]
@@ -123,8 +126,14 @@ async fn live(tx: &Transaction<'_>, p: &SessionPrincipal) -> Result<(), Ceremony
          JOIN owner_mfa f ON f.account_id=a.id AND f.user_id=u.id \
          WHERE a.id=$1 AND u.id=$2 AND s.id=$3 AND a.disabled_at IS NULL AND m.role='owner' \
          AND u.email_verified_at IS NOT NULL AND u.mfa_enabled AND f.enabled_at IS NOT NULL \
-         AND s.revoked_at IS NULL AND s.expires_at>clock_timestamp())",
-            &[&p.tenant.account_id(), &p.user_id, &p.session_id],
+         AND s.revoked_at IS NULL AND s.expires_at>clock_timestamp() \
+         AND COALESCE(s.last_used_at,s.created_at)>clock_timestamp()-make_interval(hours=>$4))",
+            &[
+                &p.tenant.account_id(),
+                &p.user_id,
+                &p.session_id,
+                &ROOT_ENROLLMENT_IDLE_HOURS,
+            ],
         )
         .await?
         .get::<_, bool>(0)
