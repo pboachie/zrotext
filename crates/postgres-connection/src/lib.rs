@@ -352,7 +352,7 @@ mod tests {
         ));
     }
 
-    const UNPARSEABLE: &str = "cannot parse PostgreSQL connection string";
+    const NOT_PARSED: &str = "cannot parse PostgreSQL connection string";
     const UNSUPPORTED_OPTION: &str = "PostgreSQL connection string contains an unsupported option";
 
     /// Inputs whose tokio-postgres parse errors echo caller-supplied text,
@@ -361,17 +361,17 @@ mod tests {
         // A misquoted password: causes quote or point into the input.
         (
             "host=writer.example password='zt-leak-marker dbname=zrotext",
-            UNPARSEABLE,
+            NOT_PARSED,
         ),
         (
             "host=writer.example password='zt' zt-leak-marker dbname=zrotext",
-            UNPARSEABLE,
+            NOT_PARSED,
         ),
         (
             "host=writer.example password = 'zt-leak-marker\\",
-            UNPARSEABLE,
+            NOT_PARSED,
         ),
-        ("host=writer.example password=''zt-leak-marker", UNPARSEABLE),
+        ("host=writer.example password=''zt-leak-marker", NOT_PARSED),
         // An unknown option name is copied into the cause verbatim.
         (
             "postgres://u@writer.example/zrotext?zt-leak-marker=1",
