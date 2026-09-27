@@ -269,10 +269,10 @@ Make ZROtext practical to run, upgrade and build against.
 
 | Capability | Stage | Evidence |
 |---|---|---|
-| Compose deployment and upgrade guides | Build | [#35](https://github.com/pboachie/zrotext/pull/35), [#105](https://github.com/pboachie/zrotext/pull/105), [#173](https://github.com/pboachie/zrotext/pull/173), [#183](https://github.com/pboachie/zrotext/pull/183), [#259](https://github.com/pboachie/zrotext/pull/259), [#275](https://github.com/pboachie/zrotext/pull/275) |
-| Signed release artifacts and SBOMs | Build | [#86](https://github.com/pboachie/zrotext/pull/86), [#135](https://github.com/pboachie/zrotext/pull/135), [#169](https://github.com/pboachie/zrotext/pull/169), [#197](https://github.com/pboachie/zrotext/pull/197) |
+| Compose deployment and upgrade guides | Build | [#35](https://github.com/pboachie/zrotext/pull/35), [#105](https://github.com/pboachie/zrotext/pull/105), [#173](https://github.com/pboachie/zrotext/pull/173), [#183](https://github.com/pboachie/zrotext/pull/183), [#259](https://github.com/pboachie/zrotext/pull/259), [#275](https://github.com/pboachie/zrotext/pull/275)<br/>**Release gate:** The listed deployment and upgrade work is complete for restricted development and pilot use. General production support and deployment acceptance are not established. |
+| Signed release artifacts and SBOMs | Build | [#86](https://github.com/pboachie/zrotext/pull/86), [#135](https://github.com/pboachie/zrotext/pull/135), [#169](https://github.com/pboachie/zrotext/pull/169), [#197](https://github.com/pboachie/zrotext/pull/197), [v0.1.6-rc.1](https://github.com/pboachie/zrotext/releases/tag/v0.1.6-rc.1) |
 | Stable public API v1 and client SDK | Design | [API outline](ARCHITECTURE.md#planned-api-v1-outline), [test-only sealed reader](../sdk/typescript/README.md) |
-| Setup diagnostics and device guidance | Build | [#81](https://github.com/pboachie/zrotext/pull/81), [#189](https://github.com/pboachie/zrotext/pull/189), [#268](https://github.com/pboachie/zrotext/pull/268) |
+| Setup diagnostics and device guidance | Build | [#81](https://github.com/pboachie/zrotext/pull/81), [#189](https://github.com/pboachie/zrotext/pull/189), [#268](https://github.com/pboachie/zrotext/pull/268), [#313](https://github.com/pboachie/zrotext/pull/313), [Android review](ANDROID-ACCESSIBILITY.md) Android review covers the current Compose screen and automated/emulator checks; interactive assistive-technology validation remains open |
 
 <a id="cap-compose"></a>
 <details>
@@ -284,7 +284,7 @@ Make ZROtext practical to run, upgrade and build against.
 - [x] Scripted fresh-install and database restore rehearsals
 - [x] Upgrade guide for moving between source snapshots ([guide](../deploy/compose/UPGRADE.md))
 - [x] Production hardening checklist ([checklist](../deploy/compose/README.md#production-hardening-checklist))
-- [ ] Upgrade notes for each tagged release
+- [x] Upgrade notes for each tagged release ([v0.1.6-rc.1](https://github.com/pboachie/zrotext/releases/tag/v0.1.6-rc.1), [tagged upgrade guide](https://github.com/pboachie/zrotext/blob/v0.1.6-rc.1/deploy/compose/UPGRADE.md))
 
 </details>
 
@@ -292,10 +292,10 @@ Make ZROtext practical to run, upgrade and build against.
 <details>
 <summary><b>Signed release artifacts and SBOMs</b> · build</summary>
 
-- [x] Server image built from one source bundle, pinned and scanned
+- [x] Source and verified server release candidate published; image pinned, scanned and attested ([v0.1.6-rc.1](https://github.com/pboachie/zrotext/releases/tag/v0.1.6-rc.1))
 - [x] Release receipts gated on approved identity and SBOMs
 - [x] Android release candidate with signing-key custody checks
-- [ ] First tagged public release ([process](RELEASING.md))
+- [ ] First tagged public release with verified signed Android custody and artifacts; source/server candidate published ([process](RELEASING.md))
 
 </details>
 
@@ -317,7 +317,7 @@ Make ZROtext practical to run, upgrade and build against.
 - [x] Owner enrollment, account setup and mail diagnostics
 - [x] SMS and RCS readiness guidance for the gateway phone
 - [x] Accessibility review of the owner web pages ([review](ACCESSIBILITY-REVIEW.md))
-- [ ] Accessibility review of the Android app
+- [x] Accessibility review of the Android app ([review](ANDROID-ACCESSIBILITY.md))
 - [ ] Supported-device list backed by repeatable tests
 
 </details>

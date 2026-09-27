@@ -31,9 +31,14 @@ actual activity through Robolectric on API 34, inspect its Compose semantics and
 exported platform accessibility nodes, and measure action bounds. Native graphics
 enable the region calculations used to expose unobscured accessibility nodes.
 Android resources are included so the real Material fields
-are rendered. The shared checks are also available through the opt-in
-`GatewayAccessibilityDeviceTest` instrumentation wrapper; that wrapper is a local
-emulator check, not a hosted instrumentation CI job.
+are rendered. The shared checks also run through the opt-in
+`GatewayAccessibilityDeviceTest` instrumentation wrapper in the
+[no-radio device smoke workflow](../.github/workflows/android-device-smoke.yml).
+That workflow selects its five accessibility checks alongside one device
+preconditions check on a disposable emulator. The
+[merged accessibility change](https://github.com/pboachie/zrotext/pull/313) passed
+the [hosted selection](https://github.com/pboachie/zrotext/actions/runs/36269589242)
+with six actual tests and zero failures or skips.
 
 The five shared checks also pass on a disposable API 36 emulator with a 360 by
 640 dp portrait viewport at normal and 2× font scale. This validates platform
