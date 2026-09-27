@@ -228,6 +228,7 @@ const QUEUE_SCHEMA: [(&str, &str); 44] = queue_schema!(
     "042_sealed_manifest_authority.sql",
     "043_sealed_candidate_inbound.sql",
     "044_sealed_root_role_reservations.sql",
+    "045_sealed_outbound_queue.sql",
 );
 
 #[test]
