@@ -703,6 +703,24 @@ fn freshness_is_checked_at_verification_and_every_authority_use() {
 }
 
 #[test]
+fn manifest_role_count_rejects_zero_and_above_protocol_bound() {
+    let mut fixture = SignedFixture::new();
+    for count in [0, 65] {
+        fixture.manifest[150] = count;
+        assert_eq!(
+            verify(
+                &fixture.pin,
+                &fixture.manifest,
+                &fixture.trust(),
+                fixture.now
+            )
+            .err(),
+            Some("manifest size/count")
+        );
+    }
+}
+
+#[test]
 fn selected_device_reader_cannot_borrow_another_subject_binding() {
     for offset in [98, 114] {
         let mut fixture = SignedFixture::new();

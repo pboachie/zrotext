@@ -8,7 +8,13 @@ digest and final migration number. `GET /about/version` reports the server's
 nonsecret build metadata. The owner pages link to that endpoint.
 
 The web UI is embedded in the server binary, so its artifact is the deterministic
-digest of the five shipped HTML, JavaScript and CSS files. There is no separate
+digest of every embedded asset under `web/owner/` and `crates/server/static/`,
+listed in `scripts/release_bundle.py`. CI uses a bounded source inventory check
+for literal `include_str!` and `include_bytes!` paths, including trailing commas,
+and checks that changing each embedded asset changes the digest. This is not a
+general Rust parser: it recognizes the existing migration test macros separately
+and rejects other unclassified embedding syntax for review. Keep the inventory
+and coverage check current when adding or changing asset embedding. There is no separate
 web image in this repository. The server image uses an immutable digest
 reference; its human-readable run tag is only a locator.
 

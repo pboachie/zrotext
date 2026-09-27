@@ -30,6 +30,11 @@ WEB_FILES = (
     "web/owner/devices.html",
     "web/owner/devices.js",
     "web/owner/devices.css",
+    "web/owner/account.html",
+    "web/owner/account.js",
+    "web/owner/sms-lines.html",
+    "web/owner/sms-lines.js",
+    "web/owner/sms-line-signing.js",
     "crates/server/static/billing-dashboard.html",
     "crates/server/static/billing-dashboard.js",
 )

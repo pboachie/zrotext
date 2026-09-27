@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Fail-closed identity prerequisite for a future sealed inbound route.
-//! This module cannot ingest content. A valid line binding does not verify a
-//! sealed envelope, prove which SIM received an SMS, or authorize a webhook.
+//! Sealed line-binding checks and a dormant candidate inbound transaction.
+//! The binding predicate alone does not verify an envelope or prove which SIM
+//! received an SMS. `ingest` owns authority admission, signature verification and
+//! opaque storage in one transaction. No route calls it or authorizes a webhook.
 
 use crate::inbound::InboundSession;
 use tokio_postgres::GenericClient;
 use uuid::Uuid;
 
+pub mod ingest;
 pub mod line_activation;
 
 /// Checks the current writer session and a line binding marked active with

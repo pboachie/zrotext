@@ -183,7 +183,7 @@ macro_rules! queue_schema {
         [$(($name, include_str!(concat!("../../../../deploy/compose/migrations/", $name)))),+]
     };
 }
-const QUEUE_SCHEMA: [(&str, &str); 41] = queue_schema!(
+const QUEUE_SCHEMA: [(&str, &str); 43] = queue_schema!(
     "001_foundation.sql",
     "002_auth.sql",
     "003_delivery.sql",
@@ -225,6 +225,8 @@ const QUEUE_SCHEMA: [(&str, &str); 41] = queue_schema!(
     "039_inbound_device_clock_offset.sql",
     "040_radio_evidence_index.sql",
     "041_device_preconditions.sql",
+    "042_sealed_manifest_authority.sql",
+    "043_sealed_candidate_inbound.sql",
 );
 
 #[test]
