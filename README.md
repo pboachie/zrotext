@@ -114,6 +114,7 @@ To create the first owner, follow the [local bootstrap steps](docs/SELF-HOSTING.
 - [Two-location routing and failover design](docs/MULTI-LOCATION.md)
 - [Security design](docs/SECURITY-DESIGN.md)
 - [SMS compliance and current limits](docs/SMS-COMPLIANCE.md)
+- [Provider route research](docs/PROVIDER-ROUTES.md)
 - [Roadmap](docs/ROADMAP.md)
 - [Proposed use cases](docs/USE-CASES.md)
 - [Product implementation plan](docs/PRODUCT-PLAN.md)
