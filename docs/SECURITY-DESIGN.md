@@ -189,16 +189,29 @@ budget (address, challenge token, pairing or device) and a route-wide budget
 shared by all API instances. Budgets are not keyed by client IP address: behind
 the TLS edge the server has no trustworthy client address.
 
-Anyone can spend a route-wide budget with made-up subjects, so it only decides
-admission for anonymous requests. When it refuses a request, the request is
-still admitted if the caller shows it is not anonymous: an enrolled, unrevoked
-device ID for a device challenge; the unused challenge ID and nonce for a device
-proof; the one-use QR token for a pairing claim and the claim nonce for its
-proof; a live second-factor challenge token; or, for password sign-in, a
-login-client cookie issued for that address. Each check is a single indexed read
-with no password or signature work. Admitted requests spend the same per-subject
-budget plus a separate verified-route ceiling ten times the anonymous one, which
-made-up subjects cannot reach. Refused requests leave no counter rows.
+Anyone can spend a route-wide budget with made-up subjects, and anyone who
+knows a public identifier such as a device or pairing ID can spend that
+subject's anonymous budget, so the anonymous lane only decides admission for
+anonymous requests. When it refuses a request, the request is still admitted if
+the caller shows it is not anonymous: an enrolled, unrevoked device ID for a
+device challenge; the unused challenge ID and nonce for a device proof; the
+one-use QR token for a pairing claim and the claim nonce for its proof; a live
+second-factor challenge token; or, for password sign-in, a login-client cookie
+issued for that address. Each check is a single indexed read with no password
+or signature work. Admitted requests spend a second, verified per-subject
+counter with the same size as the anonymous one, keyed separately, plus a
+verified-route ceiling ten times the anonymous one. Neither is reachable
+without a live subject, so unauthenticated requests that name a real pairing
+ID cannot use up the budget the pairing's holder needs. Refused requests leave
+no counter rows.
+
+The device liveness check itself needs only the device ID, and the socket
+`hello` carries no secret, so a caller who knows an enrolled device's ID can
+still spend that device's verified counter after its anonymous one; the split
+doubles the cost of taking a phone offline rather than removing the vector.
+Closing it needs a per-device reconnect secret in the device stream, akin to
+the login-client cookie, which is a protocol change this design does not yet
+include.
 A background worker deletes idle counter rows only after the longest window of
 their budget, plus one minute, has passed, so pruning never resets a budget
 that is still in force. Retention is derived from the same policy table the

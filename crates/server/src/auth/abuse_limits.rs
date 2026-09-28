@@ -8,9 +8,10 @@
 //! cheap indexed probe proves its subject is live (a device, a pairing and its
 //! one-use secret, a login challenge). Login instead accepts a login-client
 //! token and charges that browser's own subject. Either way the request spends
-//! a per-subject budget plus a separate, larger verified-route ceiling that
-//! made-up subjects never reach. Email verification probes live one-use codes
-//! the same way.
+//! a verified per-subject budget, distinct from the anonymous per-subject
+//! counter that anyone naming a public identifier can exhaust, plus a
+//! separate, larger verified-route ceiling that made-up subjects never reach.
+//! Email verification probes live one-use codes the same way.
 
 use super::TokenHasher;
 use std::future::Future;
@@ -127,41 +128,20 @@ pub async fn consume(
     limit: Limit,
     subject: Option<&str>,
 ) -> Result<bool, tokio_postgres::Error> {
-    let (scope, global_max, global_seconds, _) = limit.policy();
-    let global_hash = hasher.digest(b"abuse-global-v1", scope);
-    charge(
-        client,
-        hasher,
-        limit,
-        subject,
-        &global_hash,
-        global_max,
-        global_seconds,
-    )
-    .await
+    charge(client, hasher, limit, subject, Lane::Anonymous).await
 }
 
-/// Admit a subject the caller has verified is real after the anonymous route
-/// budget refused it. The per-subject budget is the same one `consume` spends;
-/// only the route ceiling differs.
+/// Admit a subject the caller has verified is real after the anonymous lane
+/// refused it. The subject counter and the route ceiling are both distinct
+/// from the ones `consume` spends, so anonymous callers who name a live
+/// device or pairing ID cannot use up the budget its real holder needs.
 pub async fn consume_verified(
     client: &Client,
     hasher: &TokenHasher,
     limit: Limit,
     subject: &str,
 ) -> Result<bool, tokio_postgres::Error> {
-    let (scope, global_max, global_seconds, _) = limit.policy();
-    let ceiling_hash = hasher.digest(b"abuse-verified-v1", scope);
-    charge(
-        client,
-        hasher,
-        limit,
-        Some(subject),
-        &ceiling_hash,
-        global_max * VERIFIED_CEILING_FACTOR,
-        global_seconds,
-    )
-    .await
+    charge(client, hasher, limit, Some(subject), Lane::Verified).await
 }
 
 /// Spend the anonymous budget first. Only when it refuses does `live` run;
@@ -190,10 +170,34 @@ pub(crate) async fn consume_owner_management(
     hasher: &TokenHasher,
     subject: &str,
 ) -> Result<bool, tokio_postgres::Error> {
-    let limit = Limit::MfaManage;
-    let (scope, maximum, seconds, _) = limit.policy();
-    let global = hasher.digest(b"abuse-global-v1", scope);
-    charge(tx, hasher, limit, Some(subject), &global, maximum, seconds).await
+    charge(tx, hasher, Limit::MfaManage, Some(subject), Lane::Anonymous).await
+}
+
+/// Which counters a charge spends. The anonymous lane is open to anyone who
+/// names a subject. The verified lane is reached only by a caller who has
+/// shown the subject is live, so it keeps a per-subject counter of its own
+/// and a route ceiling `VERIFIED_CEILING_FACTOR` times the anonymous one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Lane {
+    Anonymous,
+    Verified,
+}
+
+/// The HMAC key of `subject`'s counter row in `lane`, or `None` for a limit
+/// without a per-subject policy. Tests use it to seed counters.
+pub(crate) fn subject_hash(
+    hasher: &TokenHasher,
+    limit: Limit,
+    subject: &str,
+    lane: Lane,
+) -> Option<[u8; 32]> {
+    let (scope, _, _, subject_policy) = limit.policy();
+    subject_policy?;
+    let domain = match lane {
+        Lane::Anonymous => format!("abuse-subject-{scope}-v1"),
+        Lane::Verified => format!("abuse-subject-{scope}-verified-v1"),
+    };
+    Some(hasher.digest(domain.as_bytes(), subject))
 }
 
 /// Failures `subject` has spent in the current window of a failure-only
@@ -285,14 +289,17 @@ async fn charge(
     hasher: &TokenHasher,
     limit: Limit,
     subject: Option<&str>,
-    route_hash: &[u8; 32],
-    route_max: i32,
-    route_seconds: i32,
+    lane: Lane,
 ) -> Result<bool, tokio_postgres::Error> {
-    let (scope, _, _, subject_policy) = limit.policy();
-    let subject_hash = subject
-        .zip(subject_policy)
-        .map(|(subject, _)| hasher.digest(format!("abuse-subject-{scope}-v1").as_bytes(), subject));
+    let (scope, global_max, global_seconds, subject_policy) = limit.policy();
+    let (route_hash, route_max) = match lane {
+        Lane::Anonymous => (hasher.digest(b"abuse-global-v1", scope), global_max),
+        Lane::Verified => (
+            hasher.digest(b"abuse-verified-v1", scope),
+            global_max * VERIFIED_CEILING_FACTOR,
+        ),
+    };
+    let subject_hash = subject.and_then(|subject| subject_hash(hasher, limit, subject, lane));
     let (subject_max, subject_seconds) = subject_policy.unwrap_or((0, 0));
     let subject_bytes: Option<&[u8]> = subject_hash.as_ref().map(|hash| &hash[..]);
     let row = client
@@ -303,7 +310,7 @@ async fn charge(
                 &&route_hash[..],
                 &subject_bytes,
                 &route_max,
-                &route_seconds,
+                &global_seconds,
                 &subject_max,
                 &subject_seconds,
             ],
