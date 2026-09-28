@@ -203,7 +203,11 @@ counter with the same size as the anonymous one, keyed separately, plus a
 verified-route ceiling ten times the anonymous one. Neither is reachable
 without a live subject, so unauthenticated requests that name a real pairing
 ID cannot use up the budget the pairing's holder needs. Refused requests leave
-no counter rows.
+no counter rows. The exception is a subject that is itself a secret, such as
+a sign-in second-factor challenge or a password reset link. Only its holder can
+spend its anonymous counter, so it keeps one per-subject counter across both
+lanes, and a challenge still allows five code attempts per five minutes in
+total rather than five per lane.
 
 The device liveness check itself needs only the device ID, and the socket
 `hello` carries no secret, so a caller who knows an enrolled device's ID can

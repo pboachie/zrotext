@@ -77,6 +77,17 @@ limits! {
 }
 
 impl Limit {
+    /// Whether this limit's subject is a secret only its holder can name (a
+    /// sign-in MFA challenge token or a password reset token). Nobody else
+    /// can spend such a subject's anonymous counter, so a separate verified
+    /// counter would protect nothing and would only double the attempts the
+    /// holder gets, such as MFA code guesses per challenge. These limits keep
+    /// one per-subject counter across both lanes; only the route ceiling
+    /// differs.
+    fn subject_is_secret(self) -> bool {
+        matches!(self, Self::MfaChallenge | Self::PasswordResetConfirm)
+    }
+
     /// The longest window, route or subject, that this limit's rows track.
     fn longest_window_seconds(self) -> i32 {
         let (_, _, global_seconds, subject) = self.policy();
@@ -194,8 +205,10 @@ pub(crate) fn subject_hash(
     let (scope, _, _, subject_policy) = limit.policy();
     subject_policy?;
     let domain = match lane {
-        Lane::Anonymous => format!("abuse-subject-{scope}-v1"),
-        Lane::Verified => format!("abuse-subject-{scope}-verified-v1"),
+        Lane::Verified if !limit.subject_is_secret() => {
+            format!("abuse-subject-{scope}-verified-v1")
+        }
+        Lane::Anonymous | Lane::Verified => format!("abuse-subject-{scope}-v1"),
     };
     Some(hasher.digest(domain.as_bytes(), subject))
 }
@@ -233,16 +246,28 @@ pub(crate) async fn failure_budget_open(
     Ok(failures_in_window(client, hasher, limit, subject).await? < maximum)
 }
 
-/// Whether `subject` still has room in `limit`'s per-subject window, without
-/// charging anything. Callers use it where a refused path must run the same
-/// number of statements as a charging one.
+/// Whether `subject` still has room in `limit`'s per-subject window in
+/// `lane`, without charging anything. Callers use it where a refused path
+/// must run the same number of statements as a charging one. A limit without
+/// a per-subject policy has no room.
 pub(crate) async fn subject_budget_open(
     client: &impl GenericClient,
     hasher: &TokenHasher,
     limit: Limit,
     subject: &str,
+    lane: Lane,
 ) -> Result<bool, tokio_postgres::Error> {
-    failure_budget_open(client, hasher, limit, subject).await
+    let (scope, _, _, subject_policy) = limit.policy();
+    let (maximum, seconds) = subject_policy.unwrap_or((0, 0));
+    let hash = subject_hash(hasher, limit, subject, lane).unwrap_or_default();
+    let row = client
+        .query_opt(
+            "SELECT attempts FROM auth_abuse_counters WHERE scope=$1 AND subject_hash=$2
+             AND window_started_at > clock_timestamp() - make_interval(secs => $3::int4)",
+            &[&scope, &&hash[..], &seconds],
+        )
+        .await?;
+    Ok(row.map_or(0, |row| row.get::<_, i32>(0)) < maximum)
 }
 
 /// Record one rejected factor, opening a new window once the previous one has

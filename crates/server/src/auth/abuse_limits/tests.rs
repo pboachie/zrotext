@@ -378,7 +378,7 @@ fn verified_lane_keys_its_own_subject_counter() {
         let verified = subject_hash(&hasher, *limit, "phone", Lane::Verified);
         assert_eq!(anonymous.is_some(), limit.policy().3.is_some());
         assert_eq!(verified.is_some(), limit.policy().3.is_some());
-        if anonymous.is_some() {
+        if anonymous.is_some() && !limit.subject_is_secret() {
             assert_ne!(
                 anonymous, verified,
                 "{:?} shares one subject counter",
@@ -391,6 +391,33 @@ fn verified_lane_keys_its_own_subject_counter() {
         subject_hash(&hasher, Limit::Login, "owner@example.test", Lane::Anonymous),
         Some(hasher.digest(b"abuse-subject-login-v1", "owner@example.test"))
     );
+}
+
+#[test]
+fn secret_subjects_keep_one_counter_across_lanes() {
+    // Only the holder of a sign-in challenge or reset token can spend its
+    // anonymous counter, so a second, verified counter would only double the
+    // holder's attempts (for example MFA code guesses per challenge).
+    let hasher = TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap();
+    for limit in [Limit::MfaChallenge, Limit::PasswordResetConfirm] {
+        assert!(limit.subject_is_secret());
+        assert_eq!(
+            subject_hash(&hasher, limit, "secret-token", Lane::Anonymous),
+            subject_hash(&hasher, limit, "secret-token", Lane::Verified),
+            "{limit:?}"
+        );
+    }
+    // Public identifiers anyone can name keep a verified counter of their own.
+    for limit in [
+        Limit::DeviceChallenge,
+        Limit::DeviceAuthenticate,
+        Limit::PairClaim,
+        Limit::PairProof,
+        Limit::Login,
+        Limit::PasswordResetRequest,
+    ] {
+        assert!(!limit.subject_is_secret(), "{limit:?}");
+    }
 }
 
 #[tokio::test]
