@@ -229,8 +229,8 @@ async fn junk_subjects_cannot_spend_the_budget_of_verified_subjects() {
             .unwrap()
         );
     }
-    // The real phone keeps its own per-device budget, and no more.
-    for _ in 1..30 {
+    // The real phone keeps its own verified per-device budget, and no more.
+    for _ in 0..30 {
         assert!(
             consume_or_verify(&db, &hasher, Limit::DeviceChallenge, "phone", live(true))
                 .await
@@ -249,13 +249,14 @@ async fn junk_subjects_cannot_spend_the_budget_of_verified_subjects() {
             .unwrap()
     );
     // Refused junk leaves no rows; only the two route rows, 300 admitted
-    // junk subjects, the phone and the other route's two rows remain.
+    // anonymous subjects (junk and the phone's first hello), the phone's
+    // verified counter and the other route's two rows remain.
     let rows: i64 = db
         .query_one("SELECT count(*) FROM auth_abuse_counters", &[])
         .await
         .unwrap()
         .get(0);
-    assert_eq!(rows, 2 + 299 + 1 + 2);
+    assert_eq!(rows, 2 + 299 + 1 + 1 + 2);
     // The verified ceiling is a backstop across many real subjects.
     let ceiling = hasher.digest(b"abuse-verified-v1", "device_challenge");
     db.execute(
@@ -363,6 +364,127 @@ async fn exhausted_route_does_not_store_rejected_unique_subjects() {
     .await
     .unwrap();
     assert_eq!(prune(&b).await.unwrap(), 2);
+    setup
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[test]
+fn verified_lane_keys_its_own_subject_counter() {
+    let hasher = TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap();
+    for limit in Limit::ALL {
+        let anonymous = subject_hash(&hasher, *limit, "phone", Lane::Anonymous);
+        let verified = subject_hash(&hasher, *limit, "phone", Lane::Verified);
+        assert_eq!(anonymous.is_some(), limit.policy().3.is_some());
+        assert_eq!(verified.is_some(), limit.policy().3.is_some());
+        if anonymous.is_some() && !limit.subject_is_secret() {
+            assert_ne!(
+                anonymous, verified,
+                "{:?} shares one subject counter",
+                limit
+            );
+        }
+    }
+    // The anonymous domain is unchanged, so existing counter rows still count.
+    assert_eq!(
+        subject_hash(&hasher, Limit::Login, "owner@example.test", Lane::Anonymous),
+        Some(hasher.digest(b"abuse-subject-login-v1", "owner@example.test"))
+    );
+}
+
+#[test]
+fn secret_subjects_keep_one_counter_across_lanes() {
+    // Only the holder of a sign-in challenge or reset token can spend its
+    // anonymous counter, so a second, verified counter would only double the
+    // holder's attempts (for example MFA code guesses per challenge).
+    let hasher = TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap();
+    for limit in [Limit::MfaChallenge, Limit::PasswordResetConfirm] {
+        assert!(limit.subject_is_secret());
+        assert_eq!(
+            subject_hash(&hasher, limit, "secret-token", Lane::Anonymous),
+            subject_hash(&hasher, limit, "secret-token", Lane::Verified),
+            "{limit:?}"
+        );
+    }
+    // Public identifiers anyone can name keep a verified counter of their own.
+    for limit in [
+        Limit::DeviceChallenge,
+        Limit::DeviceAuthenticate,
+        Limit::PairClaim,
+        Limit::PairProof,
+        Limit::Login,
+        Limit::PasswordResetRequest,
+    ] {
+        assert!(!limit.subject_is_secret(), "{limit:?}");
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn anonymous_callers_naming_a_live_subject_cannot_spend_its_verified_budget() {
+    let (setup, db, schema) = abuse_schema().await;
+    let hasher = TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap();
+    let live = |answer: bool| async move { Ok::<_, tokio_postgres::Error>(answer) };
+    // Anyone who knows the public device ID spends its anonymous budget
+    // while the route is still open; the probe never runs for them.
+    for _ in 0..30 {
+        assert!(
+            consume_or_verify(&db, &hasher, Limit::DeviceChallenge, "phone", live(false))
+                .await
+                .unwrap()
+        );
+    }
+    assert!(
+        !consume_or_verify(&db, &hasher, Limit::DeviceChallenge, "phone", live(false))
+            .await
+            .unwrap()
+    );
+    // The enrolled phone is still admitted through its own verified counter.
+    for _ in 0..30 {
+        assert!(
+            consume_or_verify(&db, &hasher, Limit::DeviceChallenge, "phone", live(true))
+                .await
+                .unwrap()
+        );
+    }
+    assert!(
+        !consume_or_verify(&db, &hasher, Limit::DeviceChallenge, "phone", live(true))
+            .await
+            .unwrap()
+    );
+    // Each lane holds one counter row for the subject at its own cap.
+    for (lane, attempts) in [(Lane::Anonymous, 30), (Lane::Verified, 30)] {
+        let hash = subject_hash(&hasher, Limit::DeviceChallenge, "phone", lane).unwrap();
+        let row = db
+            .query_one(
+                "SELECT attempts FROM auth_abuse_counters WHERE scope='device_challenge' AND subject_hash=$1",
+                &[&&hash[..]],
+            )
+            .await
+            .unwrap();
+        assert_eq!(row.get::<_, i32>(0), attempts, "{lane:?}");
+    }
+    // Once the anonymous window passes, anonymous callers cannot touch the
+    // still-exhausted verified counter, and the phone is refused only by it.
+    let anonymous =
+        subject_hash(&hasher, Limit::DeviceChallenge, "phone", Lane::Anonymous).unwrap();
+    db.execute(
+        "UPDATE auth_abuse_counters SET window_started_at=now()-interval '2 minutes' WHERE subject_hash=$1",
+        &[&&anonymous[..]],
+    )
+    .await
+    .unwrap();
+    assert!(
+        consume(&db, &hasher, Limit::DeviceChallenge, Some("phone"))
+            .await
+            .unwrap()
+    );
+    assert!(
+        !consume_verified(&db, &hasher, Limit::DeviceChallenge, "phone")
+            .await
+            .unwrap()
+    );
     setup
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
         .await

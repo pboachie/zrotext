@@ -1616,8 +1616,11 @@ impl ResetBudgets for ClientResetBudgets<'_> {
     }
 
     async fn read_daily(&self, subject: &str) -> Result<bool, tokio_postgres::Error> {
+        // The daily cap is only ever charged in the verified lane, so read
+        // that lane's counter row.
         let limit = Limit::PasswordResetVerifiedDaily;
-        abuse_limits::subject_budget_open(self.client, self.hasher, limit, subject).await
+        let lane = abuse_limits::Lane::Verified;
+        abuse_limits::subject_budget_open(self.client, self.hasher, limit, subject, lane).await
     }
 }
 
