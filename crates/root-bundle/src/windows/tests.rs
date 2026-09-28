@@ -5,6 +5,38 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+/// Fixed per-user root for test directories: the account's own
+/// `LocalAppData\Temp` known folder, resolved by the OS rather than from the
+/// TEMP/TMP environment, so every test path descends from a controlled root.
+fn test_root() -> PathBuf {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::{
+        System::Com::CoTaskMemFree,
+        UI::Shell::{FOLDERID_LocalAppData, KF_FLAG_DEFAULT, SHGetKnownFolderPath},
+    };
+    // SAFETY: the out-pointer is written by the API, which also allocates the
+    // NUL-terminated result; it is read once with a bounded length and freed.
+    let local = unsafe {
+        let mut raw = std::mem::MaybeUninit::uninit();
+        let result = SHGetKnownFolderPath(
+            &FOLDERID_LocalAppData,
+            KF_FLAG_DEFAULT as u32,
+            std::ptr::null_mut(),
+            raw.as_mut_ptr(),
+        );
+        let raw = raw.assume_init();
+        let path = (result == 0 && !raw.is_null()).then(|| {
+            let length = (0..32_768).take_while(|&i| *raw.add(i) != 0).count();
+            std::ffi::OsString::from_wide(std::slice::from_raw_parts(raw, length))
+        });
+        CoTaskMemFree(raw.cast());
+        PathBuf::from(path.expect("resolve the LocalAppData known folder"))
+    };
+    let root = local.join("Temp");
+    std::fs::create_dir_all(&root).unwrap();
+    root
+}
+
 struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
@@ -18,7 +50,7 @@ impl Temp {
                 .as_nanos(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         );
-        let path = std::env::temp_dir().join(name);
+        let path = test_root().join(name);
         std::fs::create_dir(&path).unwrap();
         Self(path)
     }
@@ -31,7 +63,7 @@ impl Temp {
 }
 impl Drop for Temp {
     fn drop(&mut self) {
-        assert!(self.0.starts_with(std::env::temp_dir()));
+        assert!(self.0.starts_with(test_root()));
         // Rust remove_dir_all removes links themselves, not their targets.
         let _ = std::fs::remove_dir_all(&self.0);
     }
@@ -445,4 +477,57 @@ fn native_rename_failure_with_open_child_is_indeterminate() {
     assert_eq!(result, Err(Error::Indeterminate));
     assert!(!temp.directory().join(bundle.name()).exists());
     drop(held);
+}
+
+#[test]
+fn owner_ace_check_rejects_malformed_or_mismatched_entries() {
+    // S-1-5-18 as the expected owner and S-1-5-19 as a different SID.
+    let owner: [u8; 12] = [1, 1, 0, 0, 0, 0, 0, 5, 18, 0, 0, 0];
+    let other: [u8; 12] = [1, 1, 0, 0, 0, 0, 0, 5, 19, 0, 0, 0];
+    let ace = |kind: u8, flags: u8, size: u16, mask: u32, sid: &[u8]| {
+        let mut bytes = vec![kind, flags];
+        bytes.extend_from_slice(&size.to_le_bytes());
+        bytes.extend_from_slice(&mask.to_le_bytes());
+        bytes.extend_from_slice(sid);
+        // Extra readable bytes: a lying size or sub-authority count must be
+        // refused by the size checks, not rescued by the buffer length.
+        bytes.extend_from_slice(&[0; 16]);
+        bytes
+    };
+    let check = |mut bytes: Vec<u8>| {
+        let mut expected = owner;
+        // SAFETY: the synthetic ACE buffer outlives the call and holds at
+        // least an ACE header; the expected SID is well formed.
+        unsafe {
+            allowed_owner_ace(
+                std::ptr::NonNull::new(bytes.as_mut_ptr()).unwrap(),
+                expected.as_mut_ptr().cast(),
+            )
+        }
+    };
+    assert!(check(ace(0, 0, 20, FILE_ALL_ACCESS, &owner)));
+    assert!(!check(ace(1, 0, 20, FILE_ALL_ACCESS, &owner)), "deny ACE");
+    assert!(
+        !check(ace(0, 3, 20, FILE_ALL_ACCESS, &owner)),
+        "inheritance flags"
+    );
+    assert!(
+        !check(ace(0, 0, 20, FILE_ALL_ACCESS & !1, &owner)),
+        "reduced mask"
+    );
+    assert!(!check(ace(0, 0, 20, FILE_ALL_ACCESS, &other)), "other SID");
+    assert!(
+        !check(ace(0, 0, 12, FILE_ALL_ACCESS, &owner)),
+        "size ends before SID header"
+    );
+    assert!(
+        !check(ace(0, 0, 16, FILE_ALL_ACCESS, &owner)),
+        "size ends inside SID"
+    );
+    let mut longer = owner;
+    longer[1] = 2;
+    assert!(
+        !check(ace(0, 0, 20, FILE_ALL_ACCESS, &longer)),
+        "sub-authorities past ACE size"
+    );
 }

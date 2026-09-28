@@ -123,6 +123,9 @@ impl Security {
             let mut revision = 0;
             let mut expected_owner = null_mut();
             let mut defaulted = 0;
+            // The ACE count comes from GetAclInformation rather than reading
+            // the ACL header through the returned pointer.
+            let mut sizes: ACL_SIZE_INFORMATION = zeroed();
             if GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) == 0
                 || control & SE_DACL_PROTECTED == 0
                 || control & SE_DACL_PRESENT == 0
@@ -130,28 +133,68 @@ impl Security {
                 || owner.is_null()
                 || EqualSid(owner, expected_owner) == 0
                 || acl.is_null()
-                || (*acl).AceCount != 1
-            {
-                return Err(Error::UnsafeStore);
-            }
-            let mut ace = null_mut();
-            if GetAce(acl, 0, &mut ace) == 0 || ace.is_null() {
-                return Err(Error::UnsafeStore);
-            }
-            let allowed = &*ace.cast::<ACCESS_ALLOWED_ACE>();
-            if allowed.Header.AceType != 0
-                || allowed.Header.AceFlags != 0
-                || allowed.Mask != FILE_ALL_ACCESS
-                || EqualSid(
-                    std::ptr::addr_of!(allowed.SidStart).cast_mut().cast(),
-                    expected_owner,
+                || IsValidAcl(acl) == 0
+                || GetAclInformation(
+                    acl,
+                    (&mut sizes as *mut ACL_SIZE_INFORMATION).cast(),
+                    size_of::<ACL_SIZE_INFORMATION>() as u32,
+                    AclSizeInformation,
                 ) == 0
+                || sizes.AceCount != 1
             {
+                return Err(Error::UnsafeStore);
+            }
+            let mut ace = std::mem::MaybeUninit::<*mut c_void>::uninit();
+            if GetAce(acl, 0, ace.as_mut_ptr()) == 0 {
+                return Err(Error::UnsafeStore);
+            }
+            let Some(ace) = std::ptr::NonNull::new(ace.assume_init().cast::<u8>()) else {
+                return Err(Error::UnsafeStore);
+            };
+            if !allowed_owner_ace(ace, expected_owner) {
                 return Err(Error::UnsafeStore);
             }
             drop(allocation);
             Ok(())
         }
+    }
+}
+
+/// Checks the single DACL entry: an inheritance-free ACCESS_ALLOWED ACE for
+/// exactly FILE_ALL_ACCESS whose SID, bounded by the ACE's own declared size,
+/// equals `owner`. Every read is an unaligned copy inside that size; nothing
+/// is read before the header shows the ACE is large enough.
+///
+/// Caller passes an ACE returned by GetAce for an ACL accepted by IsValidAcl,
+/// whose allocation stays live for this call, and a valid owner SID.
+unsafe fn allowed_owner_ace(ace: std::ptr::NonNull<u8>, owner: PSID) -> bool {
+    const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
+    const MASK: usize = std::mem::offset_of!(ACCESS_ALLOWED_ACE, Mask);
+    const SID: usize = std::mem::offset_of!(ACCESS_ALLOWED_ACE, SidStart);
+    /// Revision, sub-authority count and 6-byte identifier authority.
+    const SID_HEADER: usize = 8;
+    // SAFETY: the caller guarantees at least an ACE header is readable; each
+    // later read is checked against the ACE's declared size first.
+    unsafe {
+        let header = ace
+            .cast::<windows_sys::Win32::Security::ACE_HEADER>()
+            .as_ptr()
+            .read_unaligned();
+        let size = usize::from(header.AceSize);
+        if header.AceType != ACCESS_ALLOWED_ACE_TYPE
+            || header.AceFlags != 0
+            || size < SID + SID_HEADER
+        {
+            return false;
+        }
+        let mask = ace.add(MASK).cast::<u32>().as_ptr().read_unaligned();
+        let sid = ace.add(SID);
+        let sid_length = SID_HEADER + 4 * usize::from(sid.add(1).as_ptr().read());
+        mask == FILE_ALL_ACCESS
+            && SID + sid_length <= size
+            && IsValidSid(sid.as_ptr().cast()) != 0
+            && GetLengthSid(sid.as_ptr().cast()) as usize == sid_length
+            && EqualSid(sid.as_ptr().cast(), owner) != 0
     }
 }
 
