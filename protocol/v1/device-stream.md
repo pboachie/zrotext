@@ -11,12 +11,13 @@ callbacks. These bounded tests do not establish production TLS or general
 carrier reliability.
 
 1. Phone sends `{"v":1,"type":"hello","device_id":"UUID"}`.
-2. Hub returns `{"v":1,"type":"challenge","challenge_id":"UUID","account_id":"UUID","device_id":"UUID","nonce":"BASE64URL_NO_PAD"}`. The nonce is 32 random bytes.
+2. Hub returns `{"v":1,"type":"challenge","challenge_id":"UUID","account_id":"UUID","device_id":"UUID","nonce":"BASE64URL_NO_PAD"}`. The nonce is 32 opaque bytes derived from the hub's enrollment pepper, the account, the device, and the challenge UUID; the challenge UUID also carries the issuance time, so a challenge is verifiable for 60 seconds. No database row is written and no per-device budget is spent at this step.
 3. Phone signs the exact byte string below with its enrolled, non-exportable
    P-256 Android Keystore key using `SHA256withECDSA`. The signature is DER.
    It returns `{"v":1,"type":"proof","challenge_id":"UUID","account_id":"UUID","device_id":"UUID","nonce":"BASE64URL_NO_PAD","signature_der":"BASE64URL_NO_PAD"}`.
-4. The writer consumes the challenge once, checks the enrolled key, active
-   device/account, enabled site, and deployment epoch, and increments the
+4. The writer re-derives the nonce from the pepper, rejects challenges past
+   their window, checks the enrolled key, active device/account, enabled
+   site, and deployment epoch, and increments the
    device session epoch. Hub returns
    `{"v":1,"type":"session","connection_epoch":1,"heartbeat_seconds":30}`.
 5. Phone sends `{"v":1,"type":"heartbeat"}` every 30 seconds. The hub
@@ -34,12 +35,15 @@ the upgrade request until the proof is verified, is limited to 15 seconds.
 A hub answers the upgrade with HTTP 503 while its handshake or session
 capacity is full; unauthenticated sockets do not use session capacity.
 
-Challenge issuance and proof verification each share their PostgreSQL request
-budget with the corresponding HTTP enrollment route: 30 attempts per device
-and 300 attempts globally per 60 seconds, across all hub instances. The hub
-closes the socket with code `1013` (Try Again Later) when a budget is
-exhausted or its storage is unavailable.
-Reconnecting or switching transports does not reset a budget. Established
+Challenge issuance and proof verification each spend a PostgreSQL request
+budget of 300 attempts globally per 60 seconds, across all hub instances.
+There is deliberately no per-device budget: the device ID is public, so a
+counter keyed to it could be spent by anyone who knows it and would let an
+unauthenticated caller keep the enrolled phone's handshake refused. The hub
+closes the socket with code `1013` (Try Again Later) when a route budget is
+exhausted or its storage is unavailable; the phone retries with backoff and
+the window rolls over within a minute. Reconnecting or switching transports
+does not reset a budget. Established
 session heartbeats do not consume these handshake budgets.
 
 The hub renews the lease in PostgreSQL on the first heartbeat of a session

@@ -7,6 +7,68 @@ use p256::pkcs8::EncodePublicKey;
 use rand::rng;
 
 #[test]
+fn socket_challenge_binds_account_device_and_window() {
+    let hasher = EnrollmentHasher::new(crate::test_keys::key(29)).unwrap();
+    let account = Uuid::new_v4();
+    let device = Uuid::new_v4();
+    let now = 1_800_000_000_000_u64;
+    let challenge = issue_socket_challenge(&hasher, account, device, now);
+    assert_eq!(challenge.account_id, account);
+    assert_eq!(challenge.device_id, device);
+    // Round trip within the window, and every issuance is unique.
+    assert!(socket_challenge_is_current(&hasher, &challenge, now));
+    assert!(socket_challenge_is_current(
+        &hasher,
+        &challenge,
+        now + 60_000
+    ));
+    let fresh = issue_socket_challenge(&hasher, account, device, now);
+    assert_ne!(challenge.id, fresh.id);
+    assert_ne!(challenge.nonce, fresh.nonce);
+    // Outside the window the challenge is dead, including cross-instance
+    // skew tolerance at both ends.
+    assert!(!socket_challenge_is_current(
+        &hasher,
+        &challenge,
+        now + 60_000 + 10_000 + 1
+    ));
+    assert!(!socket_challenge_is_current(
+        &hasher,
+        &challenge,
+        now - 10_000 - 1
+    ));
+    // A different pepper cannot verify what this server issued.
+    let other_hasher = EnrollmentHasher::new(crate::test_keys::key(30)).unwrap();
+    assert!(!socket_challenge_is_current(&other_hasher, &challenge, now));
+}
+
+#[test]
+fn socket_challenge_rejects_rebound_and_mangled_frames() {
+    let hasher = EnrollmentHasher::new(crate::test_keys::key(31)).unwrap();
+    let challenge =
+        issue_socket_challenge(&hasher, Uuid::new_v4(), Uuid::new_v4(), 1_800_000_000_000);
+    let now = 1_800_000_000_000;
+    let rebound = |challenge: &DeviceChallenge| DeviceChallenge {
+        id: challenge.id,
+        account_id: challenge.account_id,
+        device_id: challenge.device_id,
+        nonce: challenge.nonce,
+    };
+    let mut rebound_account = rebound(&challenge);
+    rebound_account.account_id = Uuid::new_v4();
+    assert!(!socket_challenge_is_current(&hasher, &rebound_account, now));
+    let mut rebound_device = rebound(&challenge);
+    rebound_device.device_id = Uuid::new_v4();
+    assert!(!socket_challenge_is_current(&hasher, &rebound_device, now));
+    let mut rebound_id = rebound(&challenge);
+    rebound_id.id = Uuid::new_v4();
+    assert!(!socket_challenge_is_current(&hasher, &rebound_id, now));
+    let mut flipped_nonce = rebound(&challenge);
+    flipped_nonce.nonce[31] ^= 1;
+    assert!(!socket_challenge_is_current(&hasher, &flipped_nonce, now));
+}
+
+#[test]
 fn p256_android_spki_and_der_signature_round_trip() {
     let signing_key = SigningKey::generate_from_rng(&mut rng());
     let spki = signing_key.verifying_key().to_public_key_der().unwrap();
@@ -266,51 +328,97 @@ async fn postgres_one_use_tenant_replay_expiry_and_revocation() {
         Err(EnrollmentError::Unavailable)
     ));
 
-    let challenge = issue_device_challenge(&client, &hasher, device_id)
-        .await
-        .unwrap();
+    let challenge = issue_socket_challenge(&hasher, a.account_id, device_id, unix_now_ms());
     assert_eq!(challenge.account_id, a.account_id);
+    assert_eq!(
+        live_device_account(&client, device_id).await.unwrap(),
+        Some(a.account_id)
+    );
     let wrong_sig: Signature = other_signing.sign(&device_challenge_bytes(&challenge));
     assert!(matches!(
-        authenticate_device_challenge(
-            &mut client,
+        authenticate_socket_proof(
+            &client,
             &hasher,
             &challenge,
-            wrong_sig.to_der().as_bytes()
+            wrong_sig.to_der().as_bytes(),
+            unix_now_ms(),
         )
         .await,
         Err(EnrollmentError::Unauthorized)
     ));
     let good_sig: Signature = signing.sign(&device_challenge_bytes(&challenge));
-    assert!(matches!(
-        authenticate_device_challenge(
-            &mut client,
-            &hasher,
-            &challenge,
-            good_sig.to_der().as_bytes()
-        )
-        .await,
-        Err(EnrollmentError::Unauthorized)
-    ));
-    let challenge = issue_device_challenge(&client, &hasher, device_id)
-        .await
-        .unwrap();
-    let good_sig: Signature = signing.sign(&device_challenge_bytes(&challenge));
-    let identity = authenticate_device_challenge(
-        &mut client,
+    let identity = authenticate_socket_proof(
+        &client,
         &hasher,
         &challenge,
         good_sig.to_der().as_bytes(),
+        unix_now_ms(),
     )
     .await
     .unwrap();
     assert!(device_still_active(&client, identity).await.unwrap());
+    // Stateless challenges stay verifiable for their whole window; session
+    // fencing at claim time, not challenge consumption, keeps one live socket.
+    let replay = authenticate_socket_proof(
+        &client,
+        &hasher,
+        &challenge,
+        good_sig.to_der().as_bytes(),
+        unix_now_ms(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        (replay.account_id, replay.device_id),
+        (a.account_id, device_id)
+    );
+    // A challenge minted for another account never verifies, even for the
+    // right key: the nonce HMAC binds account, device, and challenge ID.
+    let cross_account = DeviceChallenge {
+        id: challenge.id,
+        account_id: b.account_id,
+        device_id,
+        nonce: challenge.nonce,
+    };
+    let cross_sig: Signature = signing.sign(&device_challenge_bytes(&cross_account));
+    assert!(!socket_challenge_is_current(
+        &hasher,
+        &cross_account,
+        unix_now_ms()
+    ));
     assert!(matches!(
-        authenticate_device_challenge(
-            &mut client,
+        authenticate_socket_proof(
+            &client,
             &hasher,
-            &challenge,
-            good_sig.to_der().as_bytes()
+            &cross_account,
+            cross_sig.to_der().as_bytes(),
+            unix_now_ms(),
+        )
+        .await,
+        Err(EnrollmentError::Unauthorized)
+    ));
+    let mut tampered = challenge;
+    tampered.nonce[0] ^= 1;
+    assert!(!socket_challenge_is_current(
+        &hasher,
+        &tampered,
+        unix_now_ms()
+    ));
+    // Outside the validity window the same proof no longer verifies.
+    let expired_challenge = issue_socket_challenge(
+        &hasher,
+        a.account_id,
+        device_id,
+        unix_now_ms() - 60_000 - 10_000 - 1_000,
+    );
+    let expired_signature: Signature = signing.sign(&device_challenge_bytes(&expired_challenge));
+    assert!(matches!(
+        authenticate_socket_proof(
+            &client,
+            &hasher,
+            &expired_challenge,
+            expired_signature.to_der().as_bytes(),
+            unix_now_ms(),
         )
         .await,
         Err(EnrollmentError::Unauthorized)
@@ -334,30 +442,19 @@ async fn postgres_one_use_tenant_replay_expiry_and_revocation() {
             "UPDATE pairing_requests SET created_at=now()-interval '26 hours',expires_at=now()-interval '25 hours' WHERE id=$1",
             &[&cancelled_pairing.id],
         ).await.unwrap();
-    let old_challenge = issue_device_challenge(&client, &hasher, device_id)
-        .await
-        .unwrap();
-    client.execute(
-            "UPDATE device_auth_challenges SET created_at=now()-interval '3 hours',expires_at=now()-interval '2 hours' WHERE id=$1",
-            &[&old_challenge.id],
-        ).await.unwrap();
-    let live_challenge = issue_device_challenge(&client, &hasher, device_id)
-        .await
-        .unwrap();
-    assert_eq!(prune_expired(&client).await.unwrap(), 2);
-    for (table, id, expected) in [
-        ("pairing_requests", stale_pairing.id, 0_i64),
-        ("pairing_requests", cancelled_pairing.id, 1),
-        ("pairing_requests", expired.id, 1),
-        ("device_auth_challenges", old_challenge.id, 0),
-        ("device_auth_challenges", live_challenge.id, 1),
+    // Socket challenges leave no rows, so pruning now covers pairings only.
+    assert_eq!(prune_expired(&client).await.unwrap(), 1);
+    for (id, expected) in [
+        (stale_pairing.id, 0_i64),
+        (cancelled_pairing.id, 1),
+        (expired.id, 1),
     ] {
         let count: i64 = client
-            .query_one(&format!("SELECT count(*) FROM {table} WHERE id=$1"), &[&id])
+            .query_one("SELECT count(*) FROM pairing_requests WHERE id=$1", &[&id])
             .await
             .unwrap()
             .get(0);
-        assert_eq!(count, expected, "{table} {id}");
+        assert_eq!(count, expected, "pairing {id}");
     }
     client
         .execute(
@@ -367,62 +464,40 @@ async fn postgres_one_use_tenant_replay_expiry_and_revocation() {
         .await
         .unwrap();
     assert_eq!(prune_expired(&client).await.unwrap(), 1);
+    let live_challenge = issue_socket_challenge(&hasher, a.account_id, device_id, unix_now_ms());
     let live_signature: Signature = signing.sign(&device_challenge_bytes(&live_challenge));
     assert_eq!(
-        authenticate_device_challenge(
-            &mut client,
+        authenticate_socket_proof(
+            &client,
             &hasher,
             &live_challenge,
-            live_signature.to_der().as_bytes()
+            live_signature.to_der().as_bytes(),
+            unix_now_ms(),
         )
         .await
         .unwrap()
         .device_id,
         device_id
     );
-    let expired_challenge = issue_device_challenge(&client, &hasher, device_id)
-        .await
-        .unwrap();
-    client
-            .execute(
-                "UPDATE device_auth_challenges SET created_at=now()-interval '2 minutes', expires_at=now()-interval '1 minute' WHERE id=$1",
-                &[&expired_challenge.id],
-            )
-            .await
-            .unwrap();
-    let expired_signature: Signature = signing.sign(&device_challenge_bytes(&expired_challenge));
-    assert!(matches!(
-        authenticate_device_challenge(
-            &mut client,
-            &hasher,
-            &expired_challenge,
-            expired_signature.to_der().as_bytes()
-        )
-        .await,
-        Err(EnrollmentError::Unauthorized)
-    ));
-    let outstanding_challenge = issue_device_challenge(&client, &hasher, device_id)
-        .await
-        .unwrap();
+    let outstanding_challenge =
+        issue_socket_challenge(&hasher, a.account_id, device_id, unix_now_ms());
     let outstanding_signature: Signature =
         signing.sign(&device_challenge_bytes(&outstanding_challenge));
     assert!(!revoke_device(&mut client, &pb, device_id).await.unwrap());
     assert!(revoke_device(&mut client, &pa, device_id).await.unwrap());
     assert!(!device_still_active(&client, identity).await.unwrap());
     assert!(matches!(
-        authenticate_device_challenge(
-            &mut client,
+        authenticate_socket_proof(
+            &client,
             &hasher,
             &outstanding_challenge,
-            outstanding_signature.to_der().as_bytes()
+            outstanding_signature.to_der().as_bytes(),
+            unix_now_ms(),
         )
         .await,
         Err(EnrollmentError::Unauthorized)
     ));
-    assert!(matches!(
-        issue_device_challenge(&client, &hasher, device_id).await,
-        Err(EnrollmentError::Unauthorized)
-    ));
+    assert_eq!(live_device_account(&client, device_id).await.unwrap(), None);
     client
         .batch_execute(&format!(
             "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
@@ -730,15 +805,15 @@ async fn postgres_device_cap_downgrade_grandfathers_and_serializes_approval() {
         (Some(2), 1, "active".into())
     );
     for (device, signing) in &enrolled {
-        let challenge = issue_device_challenge(&db, &enrollment_hasher, *device)
-            .await
-            .unwrap();
+        let challenge =
+            issue_socket_challenge(&enrollment_hasher, owner.account_id, *device, unix_now_ms());
         let signature: Signature = signing.sign(&device_challenge_bytes(&challenge));
-        let identity = authenticate_device_challenge(
-            &mut db,
+        let identity = authenticate_socket_proof(
+            &db,
             &enrollment_hasher,
             &challenge,
             signature.to_der().as_bytes(),
+            unix_now_ms(),
         )
         .await
         .unwrap();

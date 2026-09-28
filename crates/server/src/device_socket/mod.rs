@@ -757,27 +757,29 @@ async fn authenticate(
     let Ok(client) = runtime_db::connect_device(&state.database_url).await else {
         return Err(Some(RETRY_LATER));
     };
-    // Share the HTTP enrollment budgets across transports and server instances.
-    // A concurrent-socket cap alone cannot bound rapid hello/close cycles.
-    // Enrolled devices still reconnect after junk IDs exhaust the route budget
-    // or callers naming this device spend its anonymous per-device budget.
+    // The pre-proof step is stateless and budgeted only by the shared route
+    // ceiling and handshake slots. There is deliberately no per-device
+    // counter: the device ID is public, so anyone who knows it would be able
+    // to spend one and keep the enrolled phone's handshake refused. A
+    // concurrent-socket cap alone cannot bound rapid hello/close cycles, so
+    // the route ceiling still bounds issuance reads fleet-wide.
     if !matches!(
-        abuse_limits::consume_or_verify(
-            &client,
-            &state.auth_hasher,
-            Limit::DeviceChallenge,
-            &device_id.to_string(),
-            enrollment::device_is_live(&client, device_id),
-        )
-        .await,
+        abuse_limits::consume(&client, &state.auth_hasher, Limit::DeviceChallenge, None).await,
         Ok(true)
     ) {
         return Err(Some(RETRY_LATER));
     }
-    let challenge =
-        enrollment::issue_device_challenge(&client, &state.enrollment_hasher, device_id)
-            .await
-            .map_err(|error| Some(enrollment_close_code(&error)))?;
+    let account = match enrollment::live_device_account(&client, device_id).await {
+        Ok(Some(account_id)) => account_id,
+        Ok(None) => return Err(Some(close_code::POLICY)),
+        Err(error) => return Err(Some(enrollment_close_code(&error))),
+    };
+    let challenge = enrollment::issue_socket_challenge(
+        &state.enrollment_hasher,
+        account,
+        device_id,
+        enrollment::unix_now_ms(),
+    );
     drop(client);
     if !send_frame(
         socket,
@@ -821,27 +823,23 @@ async fn authenticate(
     {
         return Err(Some(close_code::POLICY));
     }
-    let Ok(mut client) = runtime_db::connect_device(&state.database_url).await else {
+    let Ok(client) = runtime_db::connect_device(&state.database_url).await else {
         return Err(Some(RETRY_LATER));
     };
+    // Route ceiling only, for the same reason as issuance: a per-device proof
+    // budget would be spendable by anyone naming the device ID.
     if !matches!(
-        abuse_limits::consume_or_verify(
-            &client,
-            &state.auth_hasher,
-            Limit::DeviceAuthenticate,
-            &device_id.to_string(),
-            enrollment::device_challenge_is_live(&client, &state.enrollment_hasher, &challenge),
-        )
-        .await,
+        abuse_limits::consume(&client, &state.auth_hasher, Limit::DeviceAuthenticate, None).await,
         Ok(true)
     ) {
         return Err(Some(RETRY_LATER));
     }
-    let identity = enrollment::authenticate_device_challenge(
-        &mut client,
+    let identity = enrollment::authenticate_socket_proof(
+        &client,
         &state.enrollment_hasher,
         &challenge,
         &signature,
+        enrollment::unix_now_ms(),
     )
     .await
     .map_err(|error| Some(enrollment_close_code(&error)))?;

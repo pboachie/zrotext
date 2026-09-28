@@ -382,14 +382,7 @@ async fn authenticated_inbound_replay_retries_one_webhook_delivery() {
 
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
-async fn socket_handshakes_share_http_enrollment_budgets() {
-    use crate::http_enrollment::{self, EnrollmentHttpState};
-    use axum::{
-        body::Body,
-        http::{Request, StatusCode},
-    };
-    use tower::ServiceExt;
-
+async fn knowing_the_device_id_cannot_refuse_the_enrolled_phone() {
     let url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
         .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
     let (admin, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
@@ -449,37 +442,44 @@ async fn socket_handshakes_share_http_enrollment_budgets() {
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),
     };
-    let http = http_enrollment::router(EnrollmentHttpState::new(
-        schema_url,
-        auth_hasher.clone(),
-        enrollment_hasher,
-        "https://zrotext.example".into(),
-    ));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
         axum::serve(listener, router(state)).await.unwrap();
     });
-    let path = format!("/devices/{device_id}/challenge");
-    let request = || {
-        Request::builder()
-            .method("POST")
-            .uri(&path)
-            .body(Body::empty())
-            .unwrap()
-    };
-    let hello = |address: std::net::SocketAddr| async move {
-        let (mut socket, _) = connect_async(format!("ws://{address}/v1/device-stream"))
+    // An unauthenticated attacker who knows only the public device ID asks
+    // for 60 challenges in a minute: twice the per-device budget this flow
+    // used to charge, and each request indistinguishable from the phone's.
+    for _ in 0..60 {
+        let (mut probe, _) = connect_async(format!("ws://{address}/v1/device-stream"))
             .await
             .unwrap();
         send_json(
-            &mut socket,
+            &mut probe,
             json!({"v":1,"type":"hello","device_id":device_id}),
         )
         .await;
-        socket
-    };
-    let typed_challenge = |challenge: &Value| DeviceChallenge {
+        let challenge = receive_json(&mut probe).await;
+        assert_eq!(challenge["type"], "challenge");
+        drop(probe);
+    }
+    // None of that spending can refuse the enrolled phone: with no
+    // per-device counter, only the shared route ceiling gates issuance, and
+    // it is far from full.
+    let (mut socket, _) = connect_async(format!("ws://{address}/v1/device-stream"))
+        .await
+        .unwrap();
+    send_json(
+        &mut socket,
+        json!({"v":1,"type":"hello","device_id":device_id}),
+    )
+    .await;
+    let challenge = receive_json(&mut socket).await;
+    assert_eq!(challenge["type"], "challenge");
+    assert_eq!(challenge["account_id"], json!(account_id));
+    // A garbage signature is a policy refusal, not a budget one, and leaves
+    // the phone free to reconnect at once.
+    let typed = DeviceChallenge {
         id: Uuid::parse_str(challenge["challenge_id"].as_str().unwrap()).unwrap(),
         account_id,
         device_id,
@@ -489,98 +489,70 @@ async fn socket_handshakes_share_http_enrollment_budgets() {
             .try_into()
             .unwrap(),
     };
-    // An anonymous caller who knows the public device ID spends the whole
-    // anonymous per-device challenge budget over HTTP.
-    for _ in 0..30 {
-        assert_eq!(
-            http.clone().oneshot(request()).await.unwrap().status(),
-            StatusCode::OK
-        );
-    }
-    // The enrolled phone is still answered: its verified counter is its own.
-    let mut socket = hello(address).await;
-    let challenge = receive_json(&mut socket).await;
-    assert_eq!(challenge["type"], "challenge");
-    // That verified counter is the same size and shared with HTTP, so the
-    // device holds at most 60 persistent challenges per window.
-    for _ in 0..28 {
-        assert_eq!(
-            http.clone().oneshot(request()).await.unwrap().status(),
-            StatusCode::OK
-        );
-    }
-    let mut second = hello(address).await;
-    let second_challenge = receive_json(&mut second).await;
-    assert_eq!(second_challenge["type"], "challenge");
-    assert_eq!(
-        http.clone().oneshot(request()).await.unwrap().status(),
-        StatusCode::TOO_MANY_REQUESTS
-    );
-    let mut denied = hello(address).await;
+    send_json(&mut socket, json!({"v":1,"type":"proof","challenge_id":typed.id,"account_id":account_id,"device_id":device_id,"nonce":challenge["nonce"],"signature_der":URL_SAFE_NO_PAD.encode([0u8;16])})).await;
     assert!(matches!(
-        timeout(Duration::from_secs(5), denied.next())
+        timeout(Duration::from_secs(5), socket.next())
             .await
             .unwrap(),
-        Some(Ok(Message::Close(Some(frame)))) if u16::from(frame.code) == RETRY_LATER
+        Some(Ok(Message::Close(Some(frame)))) if u16::from(frame.code) == close_code::POLICY
     ));
-    let count: i64 = db
-        .query_one("SELECT count(*) FROM device_auth_challenges", &[])
+    // The phone reconnects immediately and completes its handshake.
+    let (mut socket, _) = connect_async(format!("ws://{address}/v1/device-stream"))
         .await
-        .unwrap()
-        .get(0);
-    assert_eq!(count, 60);
-    // The anonymous per-device proof budget is spent the same way, and the
-    // phone's valid proof still completes through its verified counter.
-    for _ in 0..30 {
-        assert!(
-            abuse_limits::consume(
-                &db,
-                &auth_hasher,
-                Limit::DeviceAuthenticate,
-                Some(&device_id.to_string())
-            )
-            .await
+        .unwrap();
+    send_json(
+        &mut socket,
+        json!({"v":1,"type":"hello","device_id":device_id}),
+    )
+    .await;
+    let challenge = receive_json(&mut socket).await;
+    let typed = DeviceChallenge {
+        id: Uuid::parse_str(challenge["challenge_id"].as_str().unwrap()).unwrap(),
+        account_id,
+        device_id,
+        nonce: URL_SAFE_NO_PAD
+            .decode(challenge["nonce"].as_str().unwrap())
             .unwrap()
-        );
-    }
-    let typed = typed_challenge(&challenge);
+            .try_into()
+            .unwrap(),
+    };
     let signature: Signature = signing.sign(&device_challenge_bytes(&typed));
     send_json(&mut socket, json!({"v":1,"type":"proof","challenge_id":typed.id,"account_id":account_id,"device_id":device_id,"nonce":challenge["nonce"],"signature_der":URL_SAFE_NO_PAD.encode(signature.to_der().as_bytes())})).await;
-    assert_eq!(receive_json(&mut socket).await["type"], "session");
-    // A valid signature is still refused once the verified proof budget is spent.
-    for _ in 1..30 {
-        assert!(
-            abuse_limits::consume_verified(
-                &db,
-                &auth_hasher,
-                Limit::DeviceAuthenticate,
-                &device_id.to_string()
-            )
-            .await
+    let session = receive_json(&mut socket).await;
+    assert_eq!(session["type"], "session");
+    // The anonymous route ceilings still bound the work: once the proof
+    // budget is full, even a valid proof waits with a retryable close.
+    while abuse_limits::consume(&db, &auth_hasher, Limit::DeviceAuthenticate, None)
+        .await
+        .unwrap()
+    {}
+    let (mut socket, _) = connect_async(format!("ws://{address}/v1/device-stream"))
+        .await
+        .unwrap();
+    send_json(
+        &mut socket,
+        json!({"v":1,"type":"hello","device_id":device_id}),
+    )
+    .await;
+    let challenge = receive_json(&mut socket).await;
+    let typed = DeviceChallenge {
+        id: Uuid::parse_str(challenge["challenge_id"].as_str().unwrap()).unwrap(),
+        account_id,
+        device_id,
+        nonce: URL_SAFE_NO_PAD
+            .decode(challenge["nonce"].as_str().unwrap())
             .unwrap()
-        );
-    }
-    let typed = typed_challenge(&second_challenge);
+            .try_into()
+            .unwrap(),
+    };
     let signature: Signature = signing.sign(&device_challenge_bytes(&typed));
-    send_json(&mut second, json!({"v":1,"type":"proof","challenge_id":typed.id,"account_id":account_id,"device_id":device_id,"nonce":second_challenge["nonce"],"signature_der":URL_SAFE_NO_PAD.encode(signature.to_der().as_bytes())})).await;
+    send_json(&mut socket, json!({"v":1,"type":"proof","challenge_id":typed.id,"account_id":account_id,"device_id":device_id,"nonce":challenge["nonce"],"signature_der":URL_SAFE_NO_PAD.encode(signature.to_der().as_bytes())})).await;
     assert!(matches!(
-        timeout(Duration::from_secs(5), second.next())
+        timeout(Duration::from_secs(5), socket.next())
             .await
             .unwrap(),
         Some(Ok(Message::Close(Some(frame)))) if u16::from(frame.code) == RETRY_LATER
     ));
-    let used: bool = db
-        .query_one(
-            "SELECT used_at IS NOT NULL FROM device_auth_challenges WHERE id=$1",
-            &[&typed.id],
-        )
-        .await
-        .unwrap()
-        .get(0);
-    assert!(
-        !used,
-        "rate-limited proof must not reach signature verification"
-    );
     server.abort();
     admin
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
@@ -590,7 +562,7 @@ async fn socket_handshakes_share_http_enrollment_budgets() {
 
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
-async fn enrolled_phone_reconnects_after_junk_spends_handshake_budgets() {
+async fn route_ceiling_refusal_is_retryable_and_does_not_outlast_the_window() {
     let url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
         .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
     let (admin, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
@@ -654,17 +626,14 @@ async fn enrolled_phone_reconnects_after_junk_spends_handshake_budgets() {
     let server = tokio::spawn(async move {
         axum::serve(listener, router(state)).await.unwrap();
     });
-    // One anonymous source spends both shared handshake budgets with
-    // made-up device IDs, as rapid hello/close cycles would.
-    for limit in [Limit::DeviceChallenge, Limit::DeviceAuthenticate] {
-        for _ in 0..300 {
-            assert!(
-                abuse_limits::consume(&db, &auth_hasher, limit, Some(&Uuid::new_v4().to_string()))
-                    .await
-                    .unwrap()
-            );
-        }
-    }
+    // One anonymous source fills the shared handshake route ceiling with
+    // made-up device IDs, as rapid hello/close cycles would. The route
+    // ceiling is the deliberate anonymous backstop now that no per-device
+    // counter exists: while it is full, junk and the real phone alike wait.
+    while abuse_limits::consume(&db, &auth_hasher, Limit::DeviceChallenge, None)
+        .await
+        .unwrap()
+    {}
     let (mut junk, _) = connect_async(format!("ws://{address}/v1/device-stream"))
         .await
         .unwrap();
@@ -677,7 +646,26 @@ async fn enrolled_phone_reconnects_after_junk_spends_handshake_budgets() {
         timeout(Duration::from_secs(5), junk.next()).await.unwrap(),
         Some(Ok(Message::Close(Some(frame)))) if u16::from(frame.code) == RETRY_LATER
     ));
-    // The enrolled phone still completes its handshake.
+    let (mut waiting, _) = connect_async(format!("ws://{address}/v1/device-stream"))
+        .await
+        .unwrap();
+    send_json(
+        &mut waiting,
+        json!({"v":1,"type":"hello","device_id":device_id}),
+    )
+    .await;
+    assert!(matches!(
+        timeout(Duration::from_secs(5), waiting.next()).await.unwrap(),
+        Some(Ok(Message::Close(Some(frame)))) if u16::from(frame.code) == RETRY_LATER
+    ));
+    // The refusal is retryable and bounded: once the 60-second window rolls
+    // over, the enrolled phone completes its handshake again.
+    db.execute(
+        "UPDATE auth_abuse_counters SET window_started_at=clock_timestamp()-interval '61 seconds' WHERE scope='device_challenge'",
+        &[],
+    )
+    .await
+    .unwrap();
     let (mut socket, _) = connect_async(format!("ws://{address}/v1/device-stream"))
         .await
         .unwrap();

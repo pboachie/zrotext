@@ -5,13 +5,16 @@
 //! Each route has an anonymous budget that any caller can spend with made-up
 //! subjects. Exhausting it must not lock out real owners and phones, so a
 //! refused request may still be admitted through `consume_or_verify` once a
-//! cheap indexed probe proves its subject is live (a device, a pairing and its
-//! one-use secret, a login challenge). Login instead accepts a login-client
-//! token and charges that browser's own subject. Either way the request spends
-//! a verified per-subject budget, distinct from the anonymous per-subject
+//! cheap indexed probe proves its subject is live (a pairing and its one-use
+//! secret, a login challenge). Login instead accepts a login-client token and
+//! charges that browser's own subject. Either way the request spends a
+//! verified per-subject budget, distinct from the anonymous per-subject
 //! counter that anyone naming a public identifier can exhaust, plus a
 //! separate, larger verified-route ceiling that made-up subjects never reach.
-//! Email verification probes live one-use codes the same way.
+//! Email verification probes live one-use codes the same way. The device
+//! socket handshake deliberately keeps no per-subject budget at all: the
+//! device ID is public, so its pre-proof steps are bounded only by their route
+//! ceilings and handshake slots.
 //!
 //! Limits whose every spender is already authenticated (`subject_only`) charge
 //! only the caller's own per-subject row and skip the shared route counter
@@ -139,8 +142,12 @@ impl Limit {
             Self::PairCreate => ("pair_create", 120, 60, Some((10, 900))),
             Self::PairClaim => ("pair_claim", 300, 60, Some((20, 60))),
             Self::PairProof => ("pair_proof", 300, 60, Some((20, 60))),
-            Self::DeviceChallenge => ("device_challenge", 300, 60, Some((30, 60))),
-            Self::DeviceAuthenticate => ("device_authenticate", 300, 60, Some((30, 60))),
+            // Device socket handshake steps are subjectless by design: the
+            // device ID is public information, so a per-device counter would
+            // let anyone who knows it refuse the enrolled phone's handshake.
+            // Only the route-wide anonymous ceiling bounds these scopes.
+            Self::DeviceChallenge => ("device_challenge", 300, 60, None),
+            Self::DeviceAuthenticate => ("device_authenticate", 300, 60, None),
             Self::MfaChallenge => ("mfa_challenge", 300, 60, Some((5, 300))),
             Self::MfaManage => ("mfa_manage", 120, 60, Some((8, 900))),
             // Spent through `record_failure` only; its route pair is unused.

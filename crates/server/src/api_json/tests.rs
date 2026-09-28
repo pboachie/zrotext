@@ -210,7 +210,7 @@ async fn enrollment_router_rejects_malformed_json_with_its_envelope() {
         ORIGIN.into(),
     );
     let app = http_enrollment::router(state);
-    assert_router_envelope(app.clone(), "/devices/authenticate").await;
+    assert_router_envelope(app.clone(), &format!("/pairings/{}/claim", Uuid::new_v4())).await;
     assert_rejected_before_body(app, "/pairings", StatusCode::UNAUTHORIZED, "unauthorized").await;
 }
 
