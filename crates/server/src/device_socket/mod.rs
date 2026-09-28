@@ -725,7 +725,8 @@ async fn authenticate(
     };
     // Share the HTTP enrollment budgets across transports and server instances.
     // A concurrent-socket cap alone cannot bound rapid hello/close cycles.
-    // Enrolled devices still reconnect after junk IDs exhaust the route budget.
+    // Enrolled devices still reconnect after junk IDs exhaust the route budget
+    // or callers naming this device spend its anonymous per-device budget.
     if !matches!(
         abuse_limits::consume_or_verify(
             &client,

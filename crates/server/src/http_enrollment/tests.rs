@@ -824,6 +824,28 @@ async fn phones_pair_and_reconnect_after_anonymous_budgets_are_spent() {
         .parse()
         .unwrap();
 
+    // The device ID is public, so an anonymous caller has also spent the
+    // phone's anonymous per-device budget on both device routes.
+    for (limit, scope) in [
+        (Limit::DeviceChallenge, "device_challenge"),
+        (Limit::DeviceAuthenticate, "device_authenticate"),
+    ] {
+        let hash = abuse_limits::subject_hash(
+            &auth_hasher,
+            limit,
+            &device_id.to_string(),
+            abuse_limits::Lane::Anonymous,
+        )
+        .unwrap();
+        admin
+            .execute(
+                "INSERT INTO auth_abuse_counters(scope,subject_hash,window_started_at,attempts,updated_at)
+                     VALUES($1,$2,now(),30,now())",
+                &[&scope, &&hash[..]],
+            )
+            .await
+            .unwrap();
+    }
     // The enrolled phone still reconnects.
     let response = app
         .clone()
@@ -890,8 +912,9 @@ async fn phones_pair_and_reconnect_after_anonymous_budgets_are_spent() {
     // Per route: the anonymous budget row and 300 admitted junk subjects,
     // plus a verified ceiling and the one real pairing or device subject.
     // Creating the real pairing above also spends the owner's `pair_create`
-    // budget once, adding its own global and per-account subject row.
-    assert_eq!(rows, 4 * (1 + 300) + 4 * 2 + 2);
+    // budget once, adding its own global and per-account subject row, and
+    // the two anonymous per-device rows were seeded above.
+    assert_eq!(rows, 4 * (1 + 300) + 4 * 2 + 2 + 2);
     admin
         .batch_execute(&format!(
             "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
