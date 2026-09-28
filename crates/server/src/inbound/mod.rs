@@ -356,10 +356,8 @@ pub async fn ingest_with_clock(
         if matches!(error, InboundError::SourceRetired) {
             eprintln!(
                 "inbound opt-out transition deferred: source message content retired by retention \
-                 classification={} account_id={} device_id={} attempt_id={}",
+                 classification={} attempt_id={}",
                 event.classification.as_str(),
-                session.account_id,
-                session.device_id,
                 event.attempt_id
             );
         }
