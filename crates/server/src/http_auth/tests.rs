@@ -2072,20 +2072,25 @@ async fn api_key_issuance_budget_survives_concurrency_revocation_and_new_session
             &session.csrf_token,
         )
     };
-    let mut tasks = Vec::new();
-    for index in 0..32 {
-        let app = apps[index % 2].clone();
-        let request = request_for(&sessions[0]);
-        tasks.push(tokio::spawn(async move {
-            app.oneshot(request).await.unwrap().status()
-        }));
-    }
+    // Rounds of exactly the per-account in-flight cap: every request in a
+    // round is admitted by the cap, so each 429 here comes from the database
+    // budget racing across two router instances.
     let mut created = 0;
-    for task in tasks {
-        match task.await.unwrap() {
-            StatusCode::CREATED => created += 1,
-            StatusCode::TOO_MANY_REQUESTS => {}
-            status => panic!("unexpected status {status}"),
+    for round in 0..32 / crate::http_auth::preauth::ACCOUNT_IN_FLIGHT {
+        let mut tasks = Vec::new();
+        for index in 0..crate::http_auth::preauth::ACCOUNT_IN_FLIGHT {
+            let app = apps[(round + index) % 2].clone();
+            let request = request_for(&sessions[0]);
+            tasks.push(tokio::spawn(async move {
+                app.oneshot(request).await.unwrap().status()
+            }));
+        }
+        for task in tasks {
+            match task.await.unwrap() {
+                StatusCode::CREATED => created += 1,
+                StatusCode::TOO_MANY_REQUESTS => {}
+                status => panic!("unexpected status {status}"),
+            }
         }
     }
     assert_eq!(created, 20);

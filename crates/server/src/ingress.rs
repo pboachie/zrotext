@@ -2,7 +2,10 @@
 //! Fail-fast admission before request extraction, authentication, or PostgreSQL.
 //! Requests are split into route classes, each with its own permit pool, so a
 //! flood of one class (for example slow anonymous logins) cannot take permits
-//! from provider ingress, device reconnects, or owner/API routes. A request body
+//! from provider ingress, device reconnects, health probes, or owner/API routes.
+//! Owner and API-key body routes authenticate from headers before their body is
+//! read (see [crate::http_auth::preauth]), so requests without valid credentials
+//! release their owner/API permit immediately. A request body
 //! must finish arriving within a short deadline measured from admission, so a
 //! client that trickles its body releases its permit long before the handler
 //! deadline. This bounds application work per process; the edge still must
@@ -33,6 +36,8 @@ const OWNER_AND_API_PERMITS: usize = 64;
 const ANONYMOUS_PERMITS: usize = 32;
 const DEVICE_UPGRADE_PERMITS: usize = 16;
 const PROVIDER_PERMITS: usize = 16;
+/// Health, readiness and version probes: bodiless, and never starved by owner/API traffic.
+const PROBE_PERMITS: usize = 8;
 /// Time from admission until the request body must be fully received.
 const BODY_DEADLINE: Duration = Duration::from_secs(10);
 /// Time from admission until the handler must produce a response.
@@ -46,12 +51,17 @@ enum RouteClass {
     Device,
     /// Routes reachable without a session, API key, or device key.
     Anonymous,
-    /// Owner (cookie) and API-key routes, static pages, health, and unknown paths.
+    /// /healthz, /readyz and /about/version.
+    Probe,
+    /// Owner (cookie) and API-key routes, static pages, and unknown paths.
     Default,
 }
 
 /// Decides the route class from the path alone, before any extraction.
 fn classify(path: &str) -> RouteClass {
+    if matches!(path, "/healthz" | "/readyz" | "/about/version") {
+        return RouteClass::Probe;
+    }
     if path == "/v1/billing/stripe-events" {
         return RouteClass::Provider;
     }
@@ -87,6 +97,7 @@ struct Limits {
     provider: usize,
     device: usize,
     anonymous: usize,
+    probe: usize,
     default: usize,
     body_deadline: Duration,
     handler_deadline: Duration,
@@ -98,6 +109,7 @@ impl Default for Limits {
             provider: PROVIDER_PERMITS,
             device: DEVICE_UPGRADE_PERMITS,
             anonymous: ANONYMOUS_PERMITS,
+            probe: PROBE_PERMITS,
             default: OWNER_AND_API_PERMITS,
             body_deadline: BODY_DEADLINE,
             handler_deadline: HANDLER_DEADLINE,
@@ -109,6 +121,7 @@ struct Admission {
     provider: Arc<Semaphore>,
     device: Arc<Semaphore>,
     anonymous: Arc<Semaphore>,
+    probe: Arc<Semaphore>,
     default: Arc<Semaphore>,
     body_deadline: Duration,
     handler_deadline: Duration,
@@ -120,6 +133,7 @@ impl Admission {
             provider: Arc::new(Semaphore::new(limits.provider)),
             device: Arc::new(Semaphore::new(limits.device)),
             anonymous: Arc::new(Semaphore::new(limits.anonymous)),
+            probe: Arc::new(Semaphore::new(limits.probe)),
             default: Arc::new(Semaphore::new(limits.default)),
             body_deadline: limits.body_deadline,
             handler_deadline: limits.handler_deadline,
@@ -131,6 +145,7 @@ impl Admission {
             RouteClass::Provider => &self.provider,
             RouteClass::Device => &self.device,
             RouteClass::Anonymous => &self.anonymous,
+            RouteClass::Probe => &self.probe,
             RouteClass::Default => &self.default,
         }
     }
@@ -219,6 +234,9 @@ impl HttpBody for DeadlineBody {
 }
 
 #[cfg(test)]
+mod preauth_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use axum::routing::{get, post};
@@ -231,6 +249,7 @@ mod tests {
             provider: capacity,
             device: capacity,
             anonymous: capacity,
+            probe: capacity,
             default: capacity,
             body_deadline: BODY_DEADLINE,
             handler_deadline,
@@ -342,9 +361,13 @@ mod tests {
         }
         assert_eq!(classify("/v1/billing/stripe-events"), RouteClass::Provider);
         assert_eq!(classify("/v1/device-stream"), RouteClass::Device);
+        for path in ["/healthz", "/readyz", "/about/version"] {
+            assert_eq!(classify(path), RouteClass::Probe, "{path}");
+        }
         for path in [
             "/",
-            "/readyz",
+            "/readyz/extra",
+            "/healthz/",
             "/v1/auth/session",
             "/v1/auth/api-keys",
             "/v1/auth/password",

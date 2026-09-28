@@ -3,6 +3,7 @@
 //! `SMS_LINE_ACTIVATION_ENABLED=true`. The owner's SMS approval private key
 //! never reaches the server; the browser signs `owner_statement_b64`.
 
+use super::preauth::OwnerMutation;
 use super::{
     AuthHttpError, AuthHttpState, CSRF_COOKIE, CSRF_HEADER, connect, cookie, map_auth,
     require_owner,
@@ -102,6 +103,21 @@ fn map_exchange(error: ExchangeError) -> AuthHttpError {
     }
 }
 
+/// Keeps the dormant routes a 404 ahead of owner authentication.
+pub(super) struct SmsLinesGate;
+
+impl axum::extract::FromRequestParts<Arc<AuthHttpState>> for SmsLinesGate {
+    type Rejection = AuthHttpError;
+
+    async fn from_request_parts(
+        _parts: &mut axum::http::request::Parts,
+        state: &Arc<AuthHttpState>,
+    ) -> Result<Self, AuthHttpError> {
+        require_enabled(state)?;
+        Ok(Self)
+    }
+}
+
 fn require_enabled(state: &AuthHttpState) -> Result<(), AuthHttpError> {
     if state.sms_line_activation_enabled {
         Ok(())
@@ -143,22 +159,14 @@ async fn charge(
 /// stream receives it within a few seconds.
 pub(super) async fn open(
     State(state): State<Arc<AuthHttpState>>,
+    _gate: SmsLinesGate,
     Path(line_id): Path<Uuid>,
-    headers: HeaderMap,
+    OwnerMutation(owner, _slot): OwnerMutation,
     ApiJson(body): ApiJson<OpenBody>,
 ) -> Result<(StatusCode, Json<OpenResponse>), AuthHttpError> {
     require_enabled(&state)?;
     require_ids(&[line_id, body.device_id])?;
-    crate::http_auth::require_session_cookie(&headers)?;
     let mut client = connect(&state.database_url).await?;
-    let owner = require_owner(
-        &client,
-        &state.hasher,
-        &state.canonical_origin,
-        &headers,
-        true,
-    )
-    .await?;
     charge(&client, &state, &owner).await?;
     let (challenge, expires_at_ms) = exchange::open(&mut client, &owner, line_id, body.device_id)
         .await
@@ -303,8 +311,9 @@ pub(super) async fn view(
 /// signature over `owner_statement_b64`.
 pub(super) async fn approve(
     State(state): State<Arc<AuthHttpState>>,
+    _gate: SmsLinesGate,
     Path((line_id, challenge_id)): Path<(Uuid, Uuid)>,
-    headers: HeaderMap,
+    OwnerMutation(owner, _slot): OwnerMutation,
     ApiJson(body): ApiJson<ApproveBody>,
 ) -> Result<StatusCode, AuthHttpError> {
     require_enabled(&state)?;
@@ -320,16 +329,7 @@ pub(super) async fn approve(
     {
         return Err(AuthHttpError::BadRequest);
     }
-    crate::http_auth::require_session_cookie(&headers)?;
     let mut client = connect(&state.database_url).await?;
-    let owner = require_owner(
-        &client,
-        &state.hasher,
-        &state.canonical_origin,
-        &headers,
-        true,
-    )
-    .await?;
     charge(&client, &state, &owner).await?;
     exchange::approve(&mut client, &owner, line_id, challenge_id, &signature)
         .await

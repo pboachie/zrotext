@@ -129,6 +129,25 @@ fn hasher() -> Arc<TokenHasher> {
     Arc::new(TokenHasher::new(vec![7; 32]).unwrap())
 }
 
+/// Body-carrying owner and API routes authenticate from headers before the
+/// body extractor runs, so a request without credentials gets the route's
+/// JSON error envelope for `status`/`code` whatever its body, and malformed
+/// bodies are only parsed for callers that authenticated.
+async fn assert_rejected_before_body(app: Router, uri: &str, status: StatusCode, code: &str) {
+    for (content_type, body) in bad_bodies() {
+        let response = app
+            .clone()
+            .oneshot(request(uri, content_type, body))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status, "{uri} {content_type:?} {body}");
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        let bytes = to_bytes(response.into_body(), 4096).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value, serde_json::json!({ "code": code }), "{uri}");
+    }
+}
+
 #[tokio::test]
 async fn auth_router_rejects_malformed_json_with_its_envelope() {
     let mut state = AuthHttpState::new(
@@ -141,16 +160,45 @@ async fn auth_router_rejects_malformed_json_with_its_envelope() {
     state.sms_line_activation_enabled = true;
     let app = http_auth::router(state);
     assert_router_envelope(app.clone(), "/login").await;
-    assert_router_envelope(app.clone(), "/sms-line-owner-keys/challenge").await;
-    assert_router_envelope(app, &format!("/sms-lines/{}/activations", Uuid::new_v4())).await;
+    for uri in [
+        "/sms-line-owner-keys/challenge".to_owned(),
+        format!("/sms-lines/{}/activations", Uuid::new_v4()),
+        "/password".to_owned(),
+        "/api-keys".to_owned(),
+    ] {
+        assert_rejected_before_body(app.clone(), &uri, StatusCode::UNAUTHORIZED, "unauthorized")
+            .await;
+    }
 }
 
 #[tokio::test]
 async fn messages_router_rejects_malformed_json_with_its_envelope() {
-    let policy = AlphaPolicy::parse(None, None, None).unwrap();
+    // Disabled alpha stays a 404 before any credential or body check.
+    let disabled = AlphaPolicy::parse(None, None, None).unwrap();
+    let state = MessagesHttpState::new(UNUSED_DATABASE.into(), hasher(), Arc::new(disabled), false)
+        .unwrap();
+    assert_rejected_before_body(
+        http_messages::router(state),
+        "/messages",
+        StatusCode::NOT_FOUND,
+        "not_found",
+    )
+    .await;
+    let enabled = AlphaPolicy::parse(
+        Some("true"),
+        Some(&Uuid::new_v4().to_string()),
+        Some("+15555550101"),
+    )
+    .unwrap();
     let state =
-        MessagesHttpState::new(UNUSED_DATABASE.into(), hasher(), Arc::new(policy), false).unwrap();
-    assert_router_envelope(http_messages::router(state), "/messages").await;
+        MessagesHttpState::new(UNUSED_DATABASE.into(), hasher(), Arc::new(enabled), false).unwrap();
+    assert_rejected_before_body(
+        http_messages::router(state),
+        "/messages",
+        StatusCode::UNAUTHORIZED,
+        "unauthorized",
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -162,8 +210,8 @@ async fn enrollment_router_rejects_malformed_json_with_its_envelope() {
         ORIGIN.into(),
     );
     let app = http_enrollment::router(state);
-    assert_router_envelope(app.clone(), "/pairings").await;
-    assert_router_envelope(app, "/devices/authenticate").await;
+    assert_router_envelope(app.clone(), "/devices/authenticate").await;
+    assert_rejected_before_body(app, "/pairings", StatusCode::UNAUTHORIZED, "unauthorized").await;
 }
 
 #[tokio::test]
@@ -174,7 +222,13 @@ async fn webhook_router_rejects_malformed_json_with_its_envelope() {
         canonical_origin: ORIGIN.into(),
         vault: Arc::new(WebhookSecretVault::new(1, Zeroizing::new(vec![5; 32])).unwrap()),
     };
-    assert_router_envelope(http_webhooks::router(state), "/v1/webhooks").await;
+    assert_rejected_before_body(
+        http_webhooks::router(state),
+        "/v1/webhooks",
+        StatusCode::UNAUTHORIZED,
+        "unauthorized",
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -185,6 +239,11 @@ async fn owner_review_router_rejects_malformed_json_with_its_envelope() {
         canonical_origin: ORIGIN.into(),
     };
     let app = http_owner_review::router(state);
-    assert_router_envelope(app.clone(), "/v1/owner/opt-out-holds").await;
-    assert_router_envelope(app, "/v1/owner/opt-out-review/decisions").await;
+    for uri in [
+        "/v1/owner/opt-out-holds",
+        "/v1/owner/opt-out-review/decisions",
+    ] {
+        assert_rejected_before_body(app.clone(), uri, StatusCode::UNAUTHORIZED, "unauthorized")
+            .await;
+    }
 }

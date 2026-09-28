@@ -95,19 +95,36 @@ Seed synthetic canary message bodies, run a full send/reply/backup/error cycle, 
 
 ### HTTP resource admission and API key issuance
 
-The API admits HTTP handlers per process through four separate permit pools,
+The API admits HTTP handlers per process through five separate permit pools,
 chosen from the request path before authentication, body extraction, or database
 connection setup: 16 for provider callbacks (`/v1/billing/stripe-events`), 16
 for device WebSocket upgrades (`/v1/device-stream`), 32 for anonymous routes
 (login, MFA login, registration, verification, password reset, enrollment
-claim/prove, and device challenge/authenticate), and 64 for everything else,
+claim/prove, and device challenge/authenticate), 8 for the bodiless probes
+(`/healthz`, `/readyz`, `/about/version`), and 64 for everything else,
 including owner and API-key routes. A full pool rejects further requests of that
 class with 503 and Retry-After while the other classes keep admitting, so a
-slow-request flood on the anonymous routes cannot starve Stripe deliveries or
-device reconnects. The request body must be fully received within 10 seconds of
-admission, however steadily it trickles; a late body fails with 408 and releases
-its permit. A 30-second handler deadline bounds the rest of the request and also
-returns 408. This is per-process admission, not a fleet-wide database connection
+slow-request flood on the anonymous routes cannot starve Stripe deliveries,
+device reconnects, or health checks. The request body must be fully received
+within 10 seconds of admission, however steadily it trickles; a late body fails
+with 408 and releases its permit. A 30-second handler deadline bounds the rest
+of the request and also returns 408.
+
+Owner and API-key routes that take a request body authenticate from headers
+before the body is read. Owner routes check the session cookie, then borrow a
+pooled connection only to look up the session and verify the exact Origin and
+the CSRF cookie and header, and return that connection before reading the body;
+the alpha message route does the same with its bearer API key. A request without
+valid credentials therefore gets its 401 or 403 as soon as its headers are
+checked and releases its permit, however slowly it sends its body, so a
+credential-less or forged-session trickle cannot hold owner/API permits. A
+request that authenticates also takes one of its account's 4 in-flight slots per
+process for the rest of the request; a fifth concurrent body-carrying request
+from the same account gets 429 `rate_limited` before its body is read. An
+account with valid credentials can therefore hold at most 4 of the 64
+owner/API permits, and only until the 10-second body deadline. Several
+compromised or colluding accounts can still together fill the pool, and the
+anonymous pool is by design reachable without credentials. This is per-process admission, not a fleet-wide database connection
 pool. A canceled handler can leave a PostgreSQL query running until its
 connection driver receives the result, so this is not a hard bound on
 outstanding database queries or connections. Each process reuses PostgreSQL
@@ -122,8 +139,9 @@ within two seconds (for example a canceled query still running or an open
 transaction), after 60 idle seconds, or at 30 minutes old. A five-second timer
 closes expired idle sockets on quiet hubs and returns their connection permits
 after the PostgreSQL driver exits. Deployments must still bound incoming
-sockets, headers, and per-address connections at the edge, because the admission
-pools are not keyed by client address, and size PostgreSQL for HTTP, upgraded
+sockets, headers, and per-address connections at the edge; this is a hard
+deployment requirement, because the admission pools are not keyed by client
+address and the anonymous pool accepts requests without credentials, and size PostgreSQL for HTTP, upgraded
 WebSockets, and background workers across all API instances. A timed-out
 mutation may have committed; callers must reconcile state before retrying
 non-idempotent actions.

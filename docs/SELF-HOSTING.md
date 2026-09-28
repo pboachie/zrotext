@@ -362,8 +362,9 @@ growing means recovery is falling behind.
 HTTP admission is also per process and split by route class: 16 concurrent
 Stripe webhook deliveries, 16 device WebSocket upgrades, 32 anonymous requests
 (login, MFA login, registration, email verification, password reset, and the
-enrollment claim, prove, challenge, and authenticate steps), and 64 other
-requests such as owner and API-key routes. When a class is full, its requests get
+enrollment claim, prove, challenge, and authenticate steps), 8 health and version
+probes (`/healthz`, `/readyz`, `/about/version`), and 64 other requests such as
+owner and API-key routes. When a class is full, its requests get
 `503` with `Retry-After: 1`; other classes are unaffected. A request body must
 arrive in full within 10 seconds of admission or the request fails with `408`,
 and handlers have 30 seconds overall. None of these pools is keyed by client
@@ -376,7 +377,11 @@ Some requests are rejected before they take a request connection. The alpha
 message routes reject a missing or malformed `Authorization: Bearer` header, and
 owner routes reject a request with no session cookie. A request that carries a
 well-formed but invalid bearer or session cookie still needs the database to
-reject it. `/readyz` runs at most one readiness probe at a time per process,
+reject it. Owner and API-key routes that take a request body check these
+credentials before reading the body and return the database connection first,
+so a request with missing or invalid credentials is answered with `401` or `403`
+without waiting for its body. One account can have at most 4 such authenticated
+requests in flight per process; more get `429`. `/readyz` runs at most one readiness probe at a time per process,
 reuses its result for one second after the probe finishes, and shares that
 result across concurrent callers. A probe that times out can leave its
 connection busy for up to two more seconds while the pool resets it.
