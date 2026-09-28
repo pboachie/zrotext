@@ -3,7 +3,8 @@
 //! rotation or reset with login/session creation across API sites.
 
 use super::{
-    AuthError, SessionPrincipal, TokenHasher, mfa, normalize_email, password_work, valid_token,
+    ApiKeyCredentials, ApiKeyLifetime, AuthError, Scope, SessionPrincipal, TokenHasher, mfa,
+    normalize_email, password_work, valid_token,
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use tokio_postgres::Client;
@@ -55,6 +56,7 @@ pub async fn revoke_other_sessions(
     owner: &SessionPrincipal,
     current_password: &str,
     code: Option<&str>,
+    revoke_api_keys: bool,
 ) -> Result<u64, AuthError> {
     let account_id = owner.tenant.account_id();
     let old_hash: String = client.query_opt(
@@ -97,8 +99,85 @@ pub async fn revoke_other_sessions(
         &[&account_id, &owner.user_id],
     )
     .await?;
+    // Keys record their creator, not their creating session, so a key minted
+    // by a session this call revokes is indistinguishable from any other. They
+    // still keep working by default, because integrations depend on them
+    // independently of any session; only an explicit opt-in revokes them, and
+    // the user-row lock above serializes that with minting.
+    if revoke_api_keys {
+        tx.execute(
+            "UPDATE api_keys SET revoked_at=now() WHERE account_id=$1 AND created_by_user_id=$2 AND revoked_at IS NULL",
+            &[&account_id, &owner.user_id],
+        )
+        .await?;
+    }
     tx.commit().await?;
     Ok(revoked)
+}
+
+/// What an owner is asking to mint; the proof of presence travels separately.
+pub struct ApiKeyRequest<'a> {
+    pub scopes: &'a [Scope],
+    pub bound_device_id: Option<Uuid>,
+    pub lifetime: ApiKeyLifetime,
+}
+
+/// Mints an API key only after the same step-up that guards password change
+/// and revoke-others: the current password and, once MFA is enabled, a fresh
+/// authenticator or recovery code. A session cookie alone cannot mint.
+pub async fn create_api_key_with_proof(
+    client: &mut Client,
+    cipher: Option<&mfa::MfaCipher>,
+    hasher: &TokenHasher,
+    owner: &SessionPrincipal,
+    current_password: &str,
+    code: Option<&str>,
+    request: ApiKeyRequest<'_>,
+) -> Result<ApiKeyCredentials, AuthError> {
+    super::validate_api_key_request(request.scopes, request.lifetime)?;
+    let account_id = owner.tenant.account_id();
+    let old_hash: String = client.query_opt(
+        "SELECT u.password_hash FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id JOIN sessions s ON s.account_id=m.account_id AND s.user_id=u.id WHERE m.role='owner' AND u.id=$1 AND m.account_id=$2 AND s.id=$3 AND s.revoked_at IS NULL AND s.expires_at>now() AND a.disabled_at IS NULL",
+        &[&owner.user_id, &account_id, &owner.session_id],
+    )
+    .await?
+    .ok_or(AuthError::Unauthorized)?
+    .get(0);
+    password_work::verify(current_password, Some(old_hash.clone())).await?;
+    // The user-row lock is the one recovery and revoke-others take, so a key
+    // cannot be minted between their credential check and their revocations.
+    let tx = client.transaction().await?;
+    let row = tx
+        .query_opt(
+            "SELECT password_hash,mfa_enabled FROM users WHERE id=$1 FOR UPDATE",
+            &[&owner.user_id],
+        )
+        .await?
+        .ok_or(AuthError::Unauthorized)?;
+    if row.get::<_, String>(0) != old_hash {
+        return Err(AuthError::InvalidCredentials);
+    }
+    require_live_session(&tx, owner).await?;
+    if row.get::<_, bool>(1) {
+        let code = code.ok_or(AuthError::InvalidCredentials)?;
+        mfa::ensure_step_up_budget(&tx, hasher, account_id, owner.user_id).await?;
+        if !mfa::use_factor(&tx, cipher, hasher, account_id, owner.user_id, code).await? {
+            mfa::record_failed_step_up(&tx, hasher, owner.user_id).await?;
+            tx.commit().await?;
+            return Err(AuthError::InvalidCredentials);
+        }
+    }
+    let key = super::insert_api_key(
+        &tx,
+        hasher,
+        owner,
+        request.scopes,
+        request.bound_device_id,
+        request.lifetime,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(key)
 }
 
 async fn require_live_session(

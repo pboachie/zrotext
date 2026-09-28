@@ -26,6 +26,7 @@ async function ownerPage() {
     return elements.get(id);
   };
   element("key-lifetime").value = "30";
+  element("key-password").value = "synthetic-owner-password";
   element("auto-refresh").checked = true;
   const timers = new Map();
   const documentListeners = {};
@@ -39,7 +40,7 @@ async function ownerPage() {
     reviewPages: [], reviewRequests: [], pendingReview: null,
     holdPages: [], holdRequests: [], pendingHold: null, decisionRequests: [], pendingDecision: null,
     devices: [], deletedDevices: [], billingCapacity: null, approveResponse: response(409),
-    keys: [], authRequests: [], sessions: [{ id: "11111111-1111-4111-8111-111111111111", current: true,
+    keys: [], authRequests: [], keyRequests: [], sessions: [{ id: "11111111-1111-4111-8111-111111111111", current: true,
       created_at_ms: 1000, expires_at_ms: 100000, last_used_at_ms: 2000 }],
   };
   const fetch = async (url, options) => {
@@ -99,6 +100,7 @@ async function ownerPage() {
       return response(200, { keys: state.keys, next_cursor: null });
     }
     if (url === "/v1/auth/api-keys" && options.method === "POST") {
+      state.keyRequests.push({ url, options });
       if (state.nextCreateResponse) return state.nextCreateResponse;
       if (state.pendingCreate) return state.pendingCreate;
       return response(201, { id: "test-id", token: "ztk_synthetic-only", public_prefix: "synthetic" });
@@ -266,18 +268,62 @@ test("password reset keeps the token out of URLs and clears entered passwords", 
   assert.equal(element("reset-confirm-password").value, "");
 });
 
-test("API key list shows when each key was last used", async () => {
+test("API key list shows when each key was last used and flags keys without an expiry", async () => {
   const { element, state } = await ownerPage();
   const key = { id: "33333333-3333-4333-8333-333333333333", scopes: ["messages:send"],
     bound_device_id: null, created_at_ms: 1000, expires_at_ms: null, revoked_at_ms: null, status: "active" };
   state.keys = [{ ...key, public_prefix: "usedprefix00", last_used_at_ms: 5000 },
-    { ...key, id: "44444444-4444-4444-8444-444444444444", public_prefix: "idleprefix00", last_used_at_ms: null }];
+    { ...key, id: "44444444-4444-4444-8444-444444444444", public_prefix: "idleprefix00",
+      expires_at_ms: 100000, last_used_at_ms: null }];
   await element("refresh-keys").listeners.click();
   const [used, idle] = element("key-list").children.map(visibleText);
   assert.match(used, /last used/);
   assert.doesNotMatch(used, /last used Never/);
   assert.doesNotMatch(used, /Time unavailable/);
+  assert.match(used, /expires never(?! \()/);
+  assert.doesNotMatch(used, /older key/);
   assert.match(idle, /last used Never/);
+  assert.doesNotMatch(idle, /expires never/);
+});
+
+test("API key creation proves the password and optional code, then clears both", async () => {
+  const { element, state } = await ownerPage();
+  element("key-password").value = "";
+  await element("key-create-form").listeners.submit({ preventDefault() {} });
+  assert.equal(state.keyRequests.length, 0);
+  assert.match(element("key-create-status").textContent, /Enter your password/);
+
+  element("key-password").value = "synthetic-owner-password";
+  element("key-mfa-code").value = " 123456 ";
+  await element("key-create-form").listeners.submit({ preventDefault() {} });
+  assert.equal(state.keyRequests.length, 1);
+  assert.equal(state.keyRequests[0].options.headers["x-zrotext-csrf"], "ztc_synthetic");
+  assert.deepEqual(JSON.parse(state.keyRequests[0].options.body), {
+    scopes: ["messages:read"], lifetime_days: 30,
+    current_password: "synthetic-owner-password", code: "123456",
+  });
+  assert.equal(element("key-password").value, "");
+  assert.equal(element("key-mfa-code").value, "");
+  assert.equal(element("key-secret").textContent, "ztk_synthetic-only");
+
+  element("key-password").value = "synthetic-owner-password";
+  await element("key-create-form").listeners.submit({ preventDefault() {} });
+  assert.equal(state.keyRequests.length, 2);
+  assert.equal(JSON.parse(state.keyRequests[1].options.body).code, undefined);
+
+  // The discouraged never option sends an explicit null lifetime.
+  element("key-password").value = "synthetic-owner-password";
+  element("key-lifetime").value = "never";
+  await element("key-create-form").listeners.submit({ preventDefault() {} });
+  assert.equal(state.keyRequests.length, 3);
+  assert.strictEqual(JSON.parse(state.keyRequests[2].options.body).lifetime_days, null);
+
+  state.nextCreateResponse = response(400);
+  element("key-password").value = "wrong-password";
+  await element("key-create-form").listeners.submit({ preventDefault() {} });
+  assert.match(element("key-create-status").textContent, /Could not create key/);
+  assert.equal(element("key-password").value, "");
+  assert.equal(element("key-secret").textContent, "");
 });
 
 test("password change uses CSRF and sessions can be reviewed and revoked", async () => {
@@ -290,24 +336,38 @@ test("password change uses CSRF and sessions can be reviewed and revoked", async
   globalThis.window.confirm = () => true;
   element("revoke-sessions-password").value = "old-password";
   element("revoke-sessions-mfa-code").value = "123456";
+  const keyLoadsBefore = state.requests.filter((url) => url === "/v1/auth/api-keys").length;
   await element("revoke-other-sessions-form").listeners.submit({ preventDefault() {} });
   assert.equal(state.authRequests[0].url, "/v1/auth/sessions/revoke-others");
   assert.equal(state.authRequests[0].options.headers["x-zrotext-csrf"], "ztc_synthetic");
+  // The checkbox starts unticked, so the keys are explicitly kept.
   assert.deepEqual(JSON.parse(state.authRequests[0].options.body), {
-    current_password: "old-password", code: "123456",
+    current_password: "old-password", code: "123456", revoke_api_keys: false,
   });
+
+  // Ticking the separate, clearly labelled box opts the keys in.
+  element("revoke-sessions-password").value = "old-password";
+  element("revoke-sessions-mfa-code").value = "123456";
+  element("revoke-sessions-api-keys").checked = true;
+  await element("revoke-other-sessions-form").listeners.submit({ preventDefault() {} });
+  assert.deepEqual(JSON.parse(state.authRequests[1].options.body), {
+    current_password: "old-password", code: "123456", revoke_api_keys: true,
+  });
+  assert.equal(element("revoke-sessions-api-keys").checked, false);
   assert.equal(element("revoke-sessions-password").value, "");
   assert.equal(element("session-list").children.length, 1);
   assert.equal(element("revoke-other-sessions-form").hidden, true);
+  // Each revoke reloads the key list so the keys show their current state.
+  assert.equal(state.requests.filter((url) => url === "/v1/auth/api-keys").length, keyLoadsBefore + 2);
 
   element("current-password").value = "old-password";
   element("new-password").value = "new-long-password";
   element("confirm-new-password").value = "new-long-password";
   element("password-mfa-code").value = "123456";
   await element("change-password-form").listeners.submit({ preventDefault() {} });
-  assert.equal(state.authRequests[1].url, "/v1/auth/password");
-  assert.equal(state.authRequests[1].options.headers["x-zrotext-csrf"], "ztc_synthetic");
-  assert.deepEqual(JSON.parse(state.authRequests[1].options.body), {
+  assert.equal(state.authRequests[2].url, "/v1/auth/password");
+  assert.equal(state.authRequests[2].options.headers["x-zrotext-csrf"], "ztc_synthetic");
+  assert.deepEqual(JSON.parse(state.authRequests[2].options.body), {
     current_password: "old-password", new_password: "new-long-password", code: "123456",
   });
   assert.equal(element("current-password").value, "");
