@@ -76,16 +76,16 @@ jobs:
       - name: Verify and decrypt the database-returned ciphertext
         working-directory: android
         run: ./gradlew --init-script sealed-interop.init.gradle :app:testDebugUnitTest --tests org.zrotext.gateway.SealedSdkPostgresInteropTest --no-configuration-cache --no-daemon --max-workers=2
-      - name: Require all eighteen Android cases without skips
+      - name: Require all twenty Android cases without skips
         run: |
           python3 - <<'PY'
           import pathlib
           import xml.etree.ElementTree as ET
           path = pathlib.Path('android/app/build/test-results/testDebugUnitTest/TEST-org.zrotext.gateway.SealedSdkPostgresInteropTest.xml')
           result = ET.parse(path).getroot()
-          expected = {'tests': '18', 'failures': '0', 'errors': '0', 'skipped': '0'}
+          expected = {'tests': '20', 'failures': '0', 'errors': '0', 'skipped': '0'}
           for key, value in expected.items():
               if result.get(key) != value:
                   raise SystemExit(f'Unexpected {key}: {result.get(key)}')
-          print('All eighteen cross-client Android cases passed without skips')
+          print('All twenty cross-client Android cases passed without skips')
           PY

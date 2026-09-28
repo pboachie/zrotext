@@ -164,8 +164,20 @@ const outboundWrongRecipient = await mut(outbound, (u) => {
   for (let i = 0; i < 32; i += 1) u[wrapStart + 1 + i] = i; // Unknown key id, still signed.
 }, outboundSigner);
 const outboundWrongRole = await mut(outbound, (u) => {
-  u[outboundCountAt(u) + 1] = 3; // Parser-legal role that the manifest never granted.
+  // Sort-order attack: role 3 before the archive wrap breaks wrap ordering,
+  // so this vector pins the parser's ordering rejection, not grant checks.
+  u[outboundCountAt(u) + 1] = 3;
 }, outboundSigner);
+// A third wrap with a parser-legal role the manifest never grants. The wrap
+// order stays valid and recipient cardinality holds (one device, one archive),
+// so this reaches the manifest authority check instead of the parser.
+const ungrantedUnsigned = (() => {
+  const u = Uint8Array.from(outbound.unsigned);
+  const countAt = outboundCountAt(u);
+  u[countAt] = 3;
+  return concat(u, concat(Uint8Array.of(3), randomBytes(32), archiveKey.point, new Uint8Array(48)));
+})();
+const outboundUngrantedThirdWrap = await resign(ungrantedUnsigned, outboundSigner);
 const outboundWrongAccount = await mut(outbound, (u) => { u[protectedAt(u, 0)] ^= 1; }, outboundSigner);
 const outboundExpired = await mut(outbound, (u) => {
   new DataView(u.buffer).setBigUint64(protectedAt(u, 136), now - 600_000n);
@@ -207,6 +219,7 @@ process.stdout.write(JSON.stringify({
   inboundObservedStale: hex(inboundObservedStale), inboundObservedFuture: hex(inboundObservedFuture),
   inboundReplayedDifferentBytes: hex(inboundReplayedDifferentBytes),
   outboundDowngradeV1: hex(outboundDowngradeV1), outboundWrongRecipient: hex(outboundWrongRecipient),
-  outboundWrongRole: hex(outboundWrongRole), outboundWrongAccount: hex(outboundWrongAccount),
+  outboundMisorderedWrap: hex(outboundWrongRole), outboundUngrantedThirdWrap: hex(outboundUngrantedThirdWrap),
+  outboundWrongAccount: hex(outboundWrongAccount),
   outboundExpired: hex(outboundExpired), outboundFuture: hex(outboundFuture),
 }, null, 2));

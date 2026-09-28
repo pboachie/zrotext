@@ -134,16 +134,22 @@ class SealedSdkPostgresInteropTest {
 
     // Adversarial cross-client vectors: every tampered, truncated, oversized,
     // downgraded, misaddressed or clock-skewed input must fail closed here too.
+    // The verifiers reject through require(), so IllegalArgumentException is
+    // the stable rejection type; fixture reads happen before the throwing
+    // call so a missing field fails loudly instead of passing vacuously.
     private fun rejectEnvelope(bytes: ByteArray) {
         val fixture = Fixture()
-        assertThrows(Exception::class.java) {
-            Draft02OutboundEnvelope.verify(bytes, fixture.authority(), fixture.request()) { fixture.now }
+        val authority = fixture.authority()
+        val request = fixture.request()
+        assertThrows(IllegalArgumentException::class.java) {
+            Draft02OutboundEnvelope.verify(bytes, authority, request) { fixture.now }
         }
     }
 
     private fun rejectManifest(field: String) {
         val fixture = Fixture()
-        assertThrows(Exception::class.java) { fixture.authority(manifestField = field) }
+        val manifest = hex(fixture.input.getString(field)) // Missing fields fail here.
+        assertThrows(IllegalArgumentException::class.java) { fixture.authorityWithManifest(manifest) }
     }
 
     @Test fun truncatedEnvelopeTailIsRejected() {
@@ -180,9 +186,19 @@ class SealedSdkPostgresInteropTest {
         rejectEnvelope(hex(fixture.input.getString("outboundWrongRecipient")))
     }
 
-    @Test fun ungrantedWrapRoleIsRejected() {
+    @Test fun misorderedWrapRolesAreRejected() {
         val fixture = Fixture()
-        rejectEnvelope(hex(fixture.input.getString("outboundWrongRole")))
+        rejectEnvelope(hex(fixture.input.getString("outboundMisorderedWrap")))
+    }
+
+    @Test fun ungrantedThirdWrapRoleIsRejected() {
+        val fixture = Fixture()
+        rejectEnvelope(hex(fixture.input.getString("outboundUngrantedThirdWrap")))
+    }
+
+    @Test fun foreignAccountEnvelopeIsRejected() {
+        val fixture = Fixture()
+        rejectEnvelope(hex(fixture.input.getString("outboundWrongAccount")))
     }
 
     @Test fun expiredEnvelopeIntentIsRejected() {
@@ -194,7 +210,7 @@ class SealedSdkPostgresInteropTest {
         val fixture = Fixture()
         val manifest = hex(fixture.input.getString("manifest"))
         manifest[manifest.size - 1] = (manifest[manifest.size - 1].toInt() xor 1).toByte()
-        assertThrows(Exception::class.java) { fixture.authorityWithManifest(manifest) }
+        assertThrows(IllegalArgumentException::class.java) { fixture.authorityWithManifest(manifest) }
     }
 
     @Test fun expiredManifestIsRejected() = rejectManifest("manifestExpired")

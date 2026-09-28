@@ -4,7 +4,7 @@
 // must reject with a stable error instead of degrading to partial trust.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { canonicalSignature02, verifyManifest02 } from "../dist/draft02-manifest.js";
+import { authorizeOutbound02, canonicalSignature02, verifyManifest02 } from "../dist/draft02-manifest.js";
 
 const encoder = new TextEncoder();
 const now = BigInt(Date.now());
@@ -105,5 +105,29 @@ test("truncated and oversized manifests fail closed without partial trust", asyn
   await assert.rejects(() => verifyManifest02(good.slice(0, good.length - 1), pin(f.root), now), /ZTSE draft-02 manifest:/);
   await assert.rejects(() => verifyManifest02(good.slice(1), pin(f.root), now), /ZTSE draft-02 manifest:/);
   const oversized = join(good, new Uint8Array(4096));
-  await assert.rejects(() => verifyManifest02(oversized, pin(f.root), now));
+  await assert.rejects(() => verifyManifest02(oversized, pin(f.root), now), /ZTSE draft-02 manifest:/);
+});
+
+test("envelope authorization rejects misaddressed, misroled and mismatched claims", async () => {
+  const f = await fixture();
+  const first = await verifyManifest02(await manifest(f), pin(f.root), now);
+  const claims = {
+    accountId: account, deviceId: device, lineId: line,
+    manifestDigest: first.digest, keysetVersion: 1n,
+    signerKeyId: f.records[2].keyId,
+    wraps: [{ role: 1, keyId: f.records[0].keyId }, { role: 2, keyId: f.records[1].keyId }],
+  };
+  assert.doesNotThrow(() => authorizeOutbound02(first, claims, now));
+  const stranger = await sha(encoder.encode("stranger-recipient"));
+  for (const [why, changed] of [
+    ["unknown recipient key", { ...claims, wraps: [{ role: 1, keyId: stranger }, claims.wraps[1]] }],
+    ["ungranted extra role", { ...claims, wraps: [...claims.wraps, { role: 3, keyId: stranger }] }],
+    ["dropped reader", { ...claims, wraps: [claims.wraps[0]] }],
+    ["foreign account", { ...claims, accountId: Uint8Array.from({ length: 16 }, (_, i) => i + 90) }],
+    ["root as envelope signer", { ...claims, signerKeyId: f.records[3].keyId }],
+    ["wrong manifest digest", { ...claims, manifestDigest: stranger }],
+    ["wrong keyset version", { ...claims, keysetVersion: 2n }],
+  ]) {
+    assert.throws(() => authorizeOutbound02(first, changed, now), /ZTSE draft-02 manifest:/, why);
+  }
 });

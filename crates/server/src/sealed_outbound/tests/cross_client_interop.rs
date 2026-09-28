@@ -240,9 +240,14 @@ async fn actual_sdk_ciphertext_verifies_persists_and_replays_without_extra_effec
             rejects_parse,
         ),
         (
-            "ungranted wrap role",
-            bytes(&fixture, "outboundWrongRole"),
+            "misordered wrap roles",
+            bytes(&fixture, "outboundMisorderedWrap"),
             rejects_parse,
+        ),
+        (
+            "ungranted third wrap role",
+            bytes(&fixture, "outboundUngrantedThirdWrap"),
+            |e: &AdmitError| matches!(e, AdmitError::Authority(_)),
         ),
         (
             "unknown recipient key",
