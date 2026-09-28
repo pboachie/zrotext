@@ -200,6 +200,8 @@ const TEST_MIGRATIONS: [(&str, &str); 50] = [
     (
         "049_owner_queue_probe_indexes.sql",
         include_str!("../../../deploy/compose/migrations/049_owner_queue_probe_indexes.sql"),
+    ),
+    (
         "050_failover_controller_state.sql",
         include_str!("../../../deploy/compose/migrations/050_failover_controller_state.sql"),
     ),

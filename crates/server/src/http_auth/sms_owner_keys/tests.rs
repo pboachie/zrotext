@@ -199,6 +199,8 @@ const TEST_MIGRATIONS: [(&str, &str); 50] = [
     (
         "049_owner_queue_probe_indexes.sql",
         migration!("049_owner_queue_probe_indexes.sql"),
+    ),
+    (
         "050_failover_controller_state.sql",
         migration!("050_failover_controller_state.sql"),
     ),
