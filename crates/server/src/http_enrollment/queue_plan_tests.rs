@@ -20,6 +20,20 @@ impl<'a> FromSql<'a> for JsonPlan {
     }
 }
 
+// The exact-predicate partial indexes from migration 049 and the original
+// device/state index all constrain a queue probe to one device with the state
+// filter proven from the index definition itself.
+fn is_queue_probe_index(node: &Value) -> bool {
+    matches!(
+        node["Index Name"].as_str(),
+        Some(
+            "messages_device_state"
+                | "messages_owner_pending_state"
+                | "messages_owner_in_flight_state"
+        )
+    )
+}
+
 pub(super) async fn explain_queue(db: &Client, account: Uuid) -> Value {
     db.query_one(
         &format!(
@@ -89,7 +103,7 @@ pub(super) fn validate_sparse_history_plan(plan: &Value) -> Result<(), &'static 
         } else {
             return Err("unsupported node in sparse message-index subtree");
         }
-        if node["Index Name"] == "messages_device_state" {
+        if is_queue_probe_index(node) {
             *device_index = true;
         }
         if let Some(children) = node.get("Plans") {
@@ -107,7 +121,7 @@ pub(super) fn validate_sparse_history_plan(plan: &Value) -> Result<(), &'static 
             bounded_inputs(node, &mut work, &mut device_index)?;
             match node["Node Type"].as_str() {
                 Some("Index Scan" | "Index Only Scan")
-                    if node["Index Name"] == "messages_device_state"
+                    if is_queue_probe_index(node)
                         || (actual == 2.0
                             && node["Index Name"] == "messages_in_flight_updated") => {}
                 Some("Bitmap Heap Scan") if device_index => {}
@@ -147,9 +161,9 @@ pub(super) fn validate_queue_plan(plan: &Value, expected_rows: &[f64]) -> Result
             if !matches!(
                 node["Node Type"].as_str(),
                 Some("Index Scan" | "Index Only Scan")
-            ) || node["Index Name"] != "messages_device_state"
+            ) || !is_queue_probe_index(node)
             {
-                return Err("messages must use the device-state index, never a history scan");
+                return Err("messages must use a device-state queue index, never a history scan");
             }
             let rows = node["Actual Rows"]
                 .as_f64()
@@ -273,6 +287,39 @@ fn sparse_partial_plan() -> Value {
         {"Node Type":"Limit","Actual Rows":2,"Actual Loops":1,"Plans":[
             {"Node Type":"Sort","Actual Rows":2,"Actual Loops":1,"Plans":[in_flight]}]}
     ]}}])
+}
+
+// The migration 049 partial indexes prove the state filter from their
+// predicates, so their probes stay bounded without any filtered rows.
+#[test]
+fn owner_queue_partial_index_probes_satisfy_both_validators() {
+    for name in [
+        "messages_owner_pending_state",
+        "messages_owner_in_flight_state",
+    ] {
+        let mut capped = synthetic_plan(json!(1000), json!(1));
+        for probe in capped[0]["Plan"]["Plans"].as_array_mut().unwrap() {
+            probe["Plans"][0]["Index Name"] = json!(name);
+        }
+        assert_eq!(validate_queue_plan(&capped, &[1000.0, 1000.0]), Ok(()));
+
+        let mut sparse = sparse_partial_plan();
+        sparse[0]["Plan"]["Plans"][0]["Plans"][0]["Index Name"] =
+            json!("messages_owner_pending_state");
+        sparse[0]["Plan"]["Plans"][1]["Plans"][0]["Plans"][0]["Index Name"] = json!(name);
+        assert_eq!(validate_sparse_history_plan(&sparse), Ok(()));
+    }
+    // Indexes outside the queue-probe family are still rejected.
+    for name in ["messages_account_created", "messages_pkey"] {
+        let mut stranger = synthetic_plan(json!(1000), json!(1));
+        for probe in stranger[0]["Plan"]["Plans"].as_array_mut().unwrap() {
+            probe["Plans"][0]["Index Name"] = json!(name);
+        }
+        assert!(
+            validate_queue_plan(&stranger, &[1000.0, 1000.0]).is_err(),
+            "{name}"
+        );
+    }
 }
 
 #[test]

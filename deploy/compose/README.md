@@ -103,10 +103,20 @@ retried concurrently. After 040 is recorded, a missing or changed index stops
 subsequent migration runs. This index does not change radio evidence or message
 state semantics; API readiness continues to enforce the separate 034 index.
 
+Migration 049 uses the same online preparation and transactional validation for
+two partial btree indexes on `(device_id, state, created_at)`:
+`messages_owner_pending_state` over accepted/queued/claimed messages and
+`messages_owner_in_flight_state` over submitting/submitted messages. Their
+predicates exactly match the owner dashboard's capped queue-count probes, so the
+planner proves the state filter from the index predicate on every supported
+PostgreSQL release instead of scanning a device's terminal history. The same
+wrong-shape refusal, active-build protection, invalid-build retry, and
+post-recording verification rules as 034 and 040 apply to each index.
+
 A concurrent build permits message writes but may wait for older transactions;
 monitor `pg_stat_progress_create_index` and allow migration to finish before
 starting API workers. If application rollback is needed, the valid index can
-remain; keep the migration package containing the applied 034 and 040 files so a rolled-back
+remain; keep the migration package containing the applied 034, 040 and 049 files so a rolled-back
 API does not rerun an older migrator with a mismatched checksum. Removing the
 index later requires a separately planned
 `DROP INDEX CONCURRENTLY` outside a transaction, after workers that depend on
@@ -383,8 +393,8 @@ about one deployment; nothing here is enforced by the repository.
 - [ ] While webhook delivery is enabled, watch the `webhook_queue
   pending=... oldest_pending_age_seconds=... in_flight=...` line in container
   logs (about once a minute) alongside the owner-visible pause state.
-- [ ] During migration 034, monitor `pg_stat_progress_create_index` and let
-  the migration finish before starting API workers.
+- [ ] During migrations 034, 040 and 049, monitor `pg_stat_progress_create_index`
+  and let the migration finish before starting API workers.
 - [ ] Provide your own alerting. The stack has no metrics endpoint, dashboard,
   or notifier; wiring the endpoints and log lines above into monitoring is
   operator work the repository does not automate.

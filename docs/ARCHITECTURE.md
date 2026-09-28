@@ -225,8 +225,15 @@ Each owner device response also includes `pending_messages` (accepted, queued or
 claimed), `in_flight_messages` (submitting or submitted), and the database
 `status_observed_at_ms`. Each count is capped at 1,000 and rendered as `1,000+`
 at the cap. The query first materializes at most 51 tenant-owned devices for the
-50-device page and its next cursor, then runs capped probes ordered by state and creation time to match the existing
-`messages_device_state` index. It excludes terminal and uncertain states; these
+50-device page and its next cursor, then runs capped probes ordered by state and
+creation time. Each probe's state set exactly matches one migration 049 partial
+index (`messages_owner_pending_state`, `messages_owner_in_flight_state`) on
+`(device_id, state, created_at)`, so the index predicate proves the state filter
+and no supported PostgreSQL release filters the device's terminal history at
+probe time; PostgreSQL 16 and older cannot derive an ordered scan from an
+`IN`-list index condition on the `messages_device_state` index and would
+otherwise filter the device's delivered history.
+It excludes terminal and uncertain states; these
 remain in the message timeline. Counts describe stored writer states, including
 work waiting for expiry reconciliation, rather than permission to dispatch.
 Offline and revoked devices can still have recorded work. The dashboard shows

@@ -30,7 +30,7 @@ macro_rules! migration {
 
 // Holds are checked by admission and released by inbound, so these routes run
 // on the complete schema. SQL is embedded at build time.
-const TEST_MIGRATIONS: [(&str, &str); 48] = [
+const TEST_MIGRATIONS: [(&str, &str); 49] = [
     migration!("001_foundation.sql"),
     migration!("002_auth.sql"),
     migration!("003_delivery.sql"),
@@ -79,6 +79,7 @@ const TEST_MIGRATIONS: [(&str, &str); 48] = [
     migration!("046_sealed_root_ceremonies.sql"),
     migration!("047_device_network_service.sql"),
     migration!("048_observer_memberships.sql"),
+    migration!("049_owner_queue_probe_indexes.sql"),
 ];
 
 #[test]
@@ -297,6 +298,22 @@ async fn owner_holds_and_review_decisions_are_owner_bound_tenant_scoped_and_audi
             db.batch_execute(
                 "CREATE INDEX CONCURRENTLY message_events_attempt_evidence \
                  ON message_events(attempt_id,evidence_code)",
+            )
+            .await
+            .unwrap();
+        }
+        if name == "049_owner_queue_probe_indexes.sql" {
+            db.batch_execute(
+                "CREATE INDEX CONCURRENTLY messages_owner_pending_state \
+                 ON messages(device_id,state,created_at) \
+                 WHERE state IN ('accepted','queued','claimed')",
+            )
+            .await
+            .unwrap();
+            db.batch_execute(
+                "CREATE INDEX CONCURRENTLY messages_owner_in_flight_state \
+                 ON messages(device_id,state,created_at) \
+                 WHERE state IN ('submitting','submitted')",
             )
             .await
             .unwrap();
