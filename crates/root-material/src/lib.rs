@@ -6,4 +6,5 @@
 
 pub mod recovery_kit;
 pub mod root_backup;
+pub mod root_unlock;
 pub mod sealed_root_enrollment;

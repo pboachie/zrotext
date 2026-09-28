@@ -173,6 +173,40 @@ fn context() -> PublicContext {
     }
 }
 
+/// Synthetic unlock material matching the Synthetic generator and kit context.
+#[cfg(feature = "unlock")]
+fn unlock_material() -> (RootSecret, RecoverySecret, ExpectedIdentity) {
+    let (root, recovery) = Synthetic.generate().unwrap();
+    let pin = pin(&root, &context().account).unwrap();
+    let expected = ExpectedIdentity {
+        account_id: context().account,
+        origin: context().origin,
+        root_fingerprint: root_fingerprint(&pin, &context().account).unwrap(),
+    };
+    (root, recovery, expected)
+}
+
+/// Synthetic public challenge for the expected identity (or a different
+/// account when one is supplied), valid around the current local clock.
+#[cfg(feature = "unlock")]
+fn unlock_challenge(expected: &ExpectedIdentity, account: [u8; 16]) -> Vec<u8> {
+    let now = now_millis().unwrap();
+    zrotext_root_material::sealed_root_enrollment::encode(
+        &zrotext_root_material::sealed_root_enrollment::Challenge {
+            account_id: account,
+            user_id: [2; 16],
+            session_id: [3; 16],
+            challenge_id: [4; 16],
+            nonce: [5; 32],
+            root_fingerprint: expected.root_fingerprint,
+            issued_ms: now.saturating_sub(1).max(1),
+            expires_ms: now + 299_000,
+            origin: expected.origin.clone(),
+        },
+    )
+    .unwrap()
+}
+
 fn create_child() {
     phase(20);
     let injector = std::thread::spawn(|| {
@@ -236,6 +270,102 @@ fn restore_child(stage: &str) {
     assert!(!screen().contains("ZTRK1-"));
 }
 
+/// Fresh-process unlock ceremony against the bundle the create stage left.
+/// Only the public bundle ID comes from disk; identity, kit and challenge
+/// fixtures are independently known to this process.
+#[cfg(feature = "unlock")]
+fn unlock_child(stage: &str) {
+    let parent = std::env::temp_dir().components().collect::<PathBuf>();
+    let entries: Vec<_> = std::fs::read_dir(parent.join("zrotext-root-bundles"))
+        .unwrap()
+        .map(|e| e.unwrap())
+        .collect();
+    assert_eq!(entries.len(), 1);
+    let name = entries[0].file_name().into_string().unwrap();
+    let id = hex(name.strip_prefix("bundle-").unwrap().as_bytes()).unwrap();
+    let (root, recovery) = Synthetic.generate().unwrap();
+    let pin = pin(&root, &context().account).unwrap();
+    let expected = ExpectedIdentity {
+        account_id: context().account,
+        origin: context().origin,
+        root_fingerprint: root_fingerprint(&pin, &context().account).unwrap(),
+    };
+    let wrong_challenge = stage == "unlock-wrong-challenge";
+    let wrong_token = stage == "unlock-wrong-token";
+    let unsigned = unlock_challenge(
+        &expected,
+        if wrong_challenge {
+            [0xbb; 16]
+        } else {
+            expected.account_id
+        },
+    );
+    let challenge_path = std::env::temp_dir().join("zrotext-owner-unlock-challenge.ztre");
+    std::fs::write(&challenge_path, &unsigned).unwrap();
+    let token = recovery_kit::encode_token(
+        &recovery,
+        &KitContext::new(expected.clone(), &pin, id).unwrap(),
+    );
+    drop(root);
+    drop(recovery);
+    let fingerprint = display_hex(&expected.root_fingerprint);
+    let injector = std::thread::spawn(move || {
+        send_after("independent kit:", fingerprint.as_bytes());
+        if wrong_challenge {
+            return;
+        }
+        send_after("Type UNLOCK", b"UNLOCK");
+        if wrong_token {
+            send_after("Enter recovery token", b"INVALID");
+        } else {
+            send_after("Enter recovery token", token.expose_ascii());
+        }
+    });
+    let result = run_unlock(
+        context(),
+        id,
+        challenge_path.to_str().unwrap().to_string(),
+        parent,
+    );
+    injector.join().unwrap();
+    let screen = screen();
+    if stage == "unlock" {
+        assert!(result.is_ok());
+        assert!(screen.contains("No enrollment, unlock state or file was created."));
+        // Transcribe the public signature from the screen and verify it with
+        // the public enrollment codec, exactly like a receiving ceremony would.
+        let shown = screen.split("Signature: ").nth(1).expect("signature shown");
+        let hex: String = shown
+            .chars()
+            .take_while(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+            .collect();
+        assert_eq!(hex.len(), 128);
+        let mut signature = [0_u8; 64];
+        for (index, pair) in hex.as_bytes().chunks_exact(2).enumerate() {
+            signature[index] = u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap();
+        }
+        let parsed = zrotext_root_material::sealed_root_enrollment::parse(&unsigned).unwrap();
+        zrotext_root_material::sealed_root_enrollment::verify(
+            &pin,
+            &unsigned,
+            &signature,
+            &parsed,
+            now_millis().unwrap(),
+        )
+        .unwrap();
+    } else {
+        assert!(result.is_err());
+        assert!(!screen.contains("Signature: "));
+        if wrong_challenge {
+            // The unbound challenge is refused before any secret is requested.
+            assert!(!screen.contains("Type UNLOCK"));
+            assert!(!screen.contains("Enter recovery token"));
+        }
+    }
+    assert!(!screen.contains("ZTRK1-"));
+    std::fs::remove_file(&challenge_path).unwrap();
+}
+
 struct FailingMaterial {
     called: bool,
 }
@@ -293,6 +423,8 @@ fn native_create_then_fresh_restore() {
                 "create" => create_child(),
                 "restore" | "wrong-fingerprint" | "wrong-token" => restore_child(&stage),
                 "decline-create" | "rng-failure" => rejected_init(&stage),
+                #[cfg(feature = "unlock")]
+                "unlock" | "unlock-wrong-challenge" | "unlock-wrong-token" => unlock_child(&stage),
                 _ => panic!("unknown synthetic stage"),
             }
         });
@@ -324,6 +456,12 @@ fn native_create_then_fresh_restore() {
     launch("wrong-fingerprint", &parent);
     launch("wrong-token", &parent);
     launch("restore", &parent);
+    #[cfg(feature = "unlock")]
+    {
+        launch("unlock", &parent);
+        launch("unlock-wrong-challenge", &parent);
+        launch("unlock-wrong-token", &parent);
+    }
     let bundles: Vec<_> = std::fs::read_dir(parent.join("zrotext-root-bundles"))
         .unwrap()
         .map(|e| e.unwrap())
@@ -377,4 +515,95 @@ fn arguments_accept_only_the_two_bounded_commands() {
     invalid[0] = "restore-check".into();
     invalid.extend(["--bundle".into(), "01".repeat(16)]);
     assert!(matches!(parse(&invalid), Ok(Command::Restore(_, _))));
+    // Disabled-by-default proof: the default build refuses the unlock command
+    // word outright; only a deliberate --features unlock build accepts it.
+    #[cfg(not(feature = "unlock"))]
+    {
+        let mut refused = invalid.clone();
+        refused[0] = "unlock".into();
+        refused.extend(["--challenge".into(), "C:\\<challenge>".into()]);
+        assert!(parse(&refused).is_err());
+    }
+}
+
+#[cfg(feature = "unlock")]
+#[test]
+fn unlock_arguments_and_challenge_reads_stay_bounded() {
+    let account = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let bundle = "01".repeat(16);
+    let args: Vec<String> = [
+        "unlock",
+        "--account",
+        account,
+        "--origin",
+        "https://example.invalid",
+        "--bundle",
+        bundle.as_str(),
+        "--challenge",
+        "C:\\<challenge>",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
+    assert!(matches!(parse(&args), Ok(Command::Unlock(_, _, _))));
+    for refusal in [
+        // Missing or misplaced flags never parse.
+        {
+            let mut short = args.clone();
+            short.truncate(7);
+            short
+        },
+        {
+            let mut misplaced = args.clone();
+            misplaced[7] = "--seed".into();
+            misplaced
+        },
+        {
+            let mut extra = args.clone();
+            extra.push("--extra".into());
+            extra
+        },
+    ] {
+        assert!(parse(&refusal).is_err());
+    }
+    // Public challenge reads: bounded, exact-frame only, fail closed.
+    let (_root, _recovery, expected) = unlock_material();
+    let unsigned = unlock_challenge(&expected, expected.account_id);
+    let directory = std::env::temp_dir();
+    let challenge = directory.join(format!(
+        "zrotext-owner-unlock-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::write(&challenge, &unsigned).unwrap();
+    let path = challenge.to_str().unwrap().to_string();
+    assert_eq!(read_challenge(&path).unwrap(), unsigned);
+    // A trailing byte stays inside the read bound and is rejected by parsing.
+    let mut trailing = unsigned.clone();
+    trailing.push(0);
+    std::fs::write(&challenge, &trailing).unwrap();
+    assert_eq!(read_challenge(&path).unwrap(), trailing);
+    assert_eq!(
+        zrotext_root_material::root_unlock::inspect_challenge(
+            &trailing,
+            &expected,
+            now_millis().unwrap()
+        )
+        .unwrap_err(),
+        zrotext_root_material::root_unlock::UnlockError::InvalidInput
+    );
+    // Oversize and undersize files are rejected without trusting their length.
+    std::fs::write(&challenge, [0_u8; 664]).unwrap();
+    assert!(read_challenge(&path).is_err());
+    std::fs::write(&challenge, &unsigned[..151]).unwrap();
+    assert!(read_challenge(&path).is_err());
+    std::fs::remove_file(&challenge).unwrap();
+    // Relative, non-drive-letter and empty paths are all refused. UNC and
+    // network spellings take the same non-drive-letter branch.
+    for refused in ["challenge.ztre", "1:\\challenge.ztre", ""] {
+        assert!(read_challenge(refused).is_err());
+    }
 }

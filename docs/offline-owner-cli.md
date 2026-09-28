@@ -2,9 +2,12 @@
 
 `zrotext-owner` is a Windows-only, source-built candidate for creating an
 **unregistered generation-one** encrypted root backup and checking recovery in
-a new process. It does not enroll a root, sign requests, rotate an enrolled root,
-contact a server, install software or establish an authenticated distribution.
-Do not treat a passing recovery check as server or phone approval.
+a new process. The default build does not enroll a root, sign requests,
+rotate an enrolled root, contact a server, install software or establish an
+authenticated distribution. The only exception is the **disabled-by-default**
+`unlock` candidate below, which adds offline one-challenge possession signing
+and nothing else. Do not treat a passing recovery check as server or phone
+approval.
 
 ## Supported environment
 
@@ -72,6 +75,64 @@ backup copy. Secure erasure, malicious same-user software protection and
 authenticated release provenance are not claimed. Repeated creation does not
 rotate or replace an existing enrolled root.
 
+## Candidate unlock command (disabled by default)
+
+The `unlock` command is the first slice of owner recovery/unlock. It is **not
+in the default build**: `cargo build -p zrotext-owner` produces a binary
+without it, `--help` does not list it, and the default native suite asserts
+the command word is refused. A maintainer must deliberately build with
+`cargo build -p zrotext-owner --features unlock`. No released artifact,
+workflow or server route enables it, and the dormant server ceremony still has
+no HTTP route. The Windows CI lints and tests the feature build separately so
+the candidate cannot rot silently.
+
+```text
+zrotext-owner unlock --account UUID --origin HTTPS_ORIGIN --bundle PUBLIC_ID --challenge FILE
+```
+
+The `--challenge` file is public data: the exact `RootEnrollment01` bytes
+(152–663 bytes) a future server ceremony would display. Obtain it through a
+channel you independently trust; this tool cannot authenticate its origin.
+The path must be an ASCII absolute drive path of at most 260 bytes, and the
+read is size-bounded before parsing.
+
+`unlock` performs the same verified recovery as `restore-check` — fingerprint
+from your independent kit, stored bundle and public card, then the recovery
+token without echo, authenticated backup opening and public pin comparison —
+with one addition. **Before any secret is requested**, the challenge's
+account, origin and root fingerprint are bound to the independently supplied
+identity and to the local clock's validity window, and the challenge ID and
+expiry are displayed. After exact `UNLOCK` consent, the token is read, the
+backup is opened and compared, and the challenge transcript is signed once
+with the recovered root as canonical low-s `r || s` (64 bytes). The root and
+recovery secret are dropped before the fixed public `Signature:` line is
+displayed for transcription.
+
+Threat and failure cases considered:
+
+- **Confused deputy.** A challenge for any other account, origin or root is
+  refused before the recovery token is requested; the tool never signs an
+  identity it was not independently told to expect. User, session and
+  challenge identities are inside the signed transcript and remain
+  server-side obligations; a phished owner could still be social-engineered
+  into signing a challenge for their own genuine root, which enrolls nothing
+  the server does not independently authorize.
+- **Clock.** An incorrect local clock refuses to sign (fail closed), and
+  expiry is rechecked after interactive token entry.
+- **Custody.** The recovered root exists only in process memory on a
+  general-purpose Windows machine. No TPM, secure element or other
+  hardware-backed key custody is involved or claimed; memory hygiene is
+  best-effort zeroization. The bundle store's discretionary ACL boundary is
+  the only at-rest protection and excludes administrators, SYSTEM and other
+  same-user code only by policy, not by hardware isolation.
+- **No state.** No durable unlock marker, cached key or restored plaintext
+  file is written; every future use requires the full kit again. The
+  signature and challenge are public data; the token is never displayed,
+  logged or written.
+- **Failures.** Cancellation, wrong context, wrong fingerprint, wrong token,
+  malformed or expired challenges, oversized challenge files and unsupported
+  environments fail closed with a fixed diagnostic and no signature.
+
 ## Automated verification
 
 Native tests use hidden, exclusively owned child consoles, unique temporary
@@ -94,7 +155,13 @@ bypass fallback. This launcher is compiled only for tests.
 
 The GitHub-hosted Windows runner is elevated and has no linked token, so the
 terminal and owner suites run there through the reduced-rights launcher and
-must report exact counts with zero failed or ignored tests. The bundle suite
+must report exact counts with zero failed or ignored tests. A second,
+feature-enabled owner suite (`--features unlock`, five tests) runs the same
+way and exercises the unlock stages — successful signature display and
+codec-level verification of the transcribed public signature, an unbound
+challenge refused before the token prompt, and a wrong token producing no
+signature — while the default four-test suite keeps asserting the command
+word is refused. The bundle suite
 runs separately as an explicitly provisioned disposable standard user. That
 fixture compiles the bundle test executable first, gives the user only an
 immutable hash-checked copy and a private temporary directory, and requires the

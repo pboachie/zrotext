@@ -25,6 +25,8 @@ struct PublicContext {
 enum Command {
     Init(PublicContext),
     Restore(PublicContext, [u8; 16]),
+    #[cfg(feature = "unlock")]
+    Unlock(PublicContext, [u8; 16], String),
 }
 
 fn hex<const N: usize>(input: &[u8]) -> Result<[u8; N]> {
@@ -47,7 +49,11 @@ fn display_hex(bytes: &[u8]) -> String {
 }
 
 fn parse(args: &[String]) -> Result<Command> {
-    if !matches!(args.len(), 5 | 7) || args[1] != "--account" || args[3] != "--origin" {
+    #[cfg(feature = "unlock")]
+    let bounded = matches!(args.len(), 5 | 7 | 9);
+    #[cfg(not(feature = "unlock"))]
+    let bounded = matches!(args.len(), 5 | 7);
+    if !bounded || args[1] != "--account" || args[3] != "--origin" {
         return Err(());
     }
     let account = uuid::Uuid::parse_str(&args[2]).map_err(|_| ())?;
@@ -69,6 +75,14 @@ fn parse(args: &[String]) -> Result<Command> {
                 return Err(());
             }
             Ok(Command::Restore(context, id))
+        }
+        #[cfg(feature = "unlock")]
+        ("unlock", 9) if args[5] == "--bundle" && args[7] == "--challenge" => {
+            let id = hex(args[6].as_bytes())?;
+            if id == [0; 16] {
+                return Err(());
+            }
+            Ok(Command::Unlock(context, id, args[8].clone()))
         }
         _ => Err(()),
     }
@@ -252,6 +266,137 @@ fn run_restore_check(context: PublicContext, id: [u8; 16], parent: PathBuf) -> R
     session.finish().map_err(|_| ())
 }
 
+/// Bounded read of the public enrollment challenge file: an ASCII absolute
+/// drive path (at most 260 bytes) holding exactly the RootEnrollment01 bytes
+/// (152..=663). The challenge is public data; this tool never writes it.
+#[cfg(feature = "unlock")]
+fn read_challenge(path: &str) -> Result<Vec<u8>> {
+    use std::io::Read;
+    let bytes = path.as_bytes();
+    if bytes.len() > 260
+        || bytes.len() < 3
+        || !path.is_ascii()
+        || !bytes[0].is_ascii_alphabetic()
+        || bytes.get(1) != Some(&b':')
+        || bytes.contains(&0)
+    {
+        return Err(());
+    }
+    let mut file = std::fs::File::open(std::path::Path::new(path)).map_err(|_| ())?;
+    let mut buffer = [0_u8; 664];
+    let mut filled = 0;
+    loop {
+        let read = file.read(&mut buffer[filled..]).map_err(|_| ())?;
+        if read == 0 {
+            break;
+        }
+        filled += read;
+        if filled > 663 {
+            return Err(());
+        }
+    }
+    if filled < 152 {
+        return Err(());
+    }
+    Ok(buffer[..filled].to_vec())
+}
+
+#[cfg(feature = "unlock")]
+fn now_millis() -> Result<u64> {
+    u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| ())?
+            .as_millis(),
+    )
+    .map_err(|_| ())
+}
+
+/// Candidate unlock ceremony: verified recovery, then exactly one bound
+/// enrollment challenge signature. No state, file or network output exists.
+#[cfg(feature = "unlock")]
+fn run_unlock(
+    context: PublicContext,
+    id: [u8; 16],
+    challenge_path: String,
+    parent: PathBuf,
+) -> Result<()> {
+    verify_process_eligibility().map_err(|_| ())?;
+    let mut session = Session::acquire().map_err(|_| ())?;
+    show_context(&mut session, &context)?;
+    session
+        .write_public_prompt("Enter full lowercase fingerprint from your independent kit: ")
+        .map_err(|_| ())?;
+    let fingerprint = session.read(64, TIMEOUT).map_err(|_| ())?;
+    let expected = ExpectedIdentity {
+        account_id: context.account,
+        origin: context.origin,
+        root_fingerprint: hex(fingerprint.expose_ascii())?,
+    };
+    drop(fingerprint);
+    let store = Store::open_existing(&parent).map_err(|_| ())?;
+    let bundle = store.read_bundle(&id, &expected).map_err(|_| ())?;
+    let card = recovery_kit::decode_public_card(
+        bundle.public_card(),
+        &expected,
+        &Sha256::digest(bundle.encrypted_backup()).into(),
+    )
+    .map_err(|_| ())?;
+    // Bind the public challenge to the independent identity BEFORE any secret
+    // input, so a challenge for any other account, origin or root is refused
+    // before the recovery token is requested.
+    let unsigned = read_challenge(&challenge_path)?;
+    let challenge =
+        zrotext_root_material::root_unlock::inspect_challenge(&unsigned, &expected, now_millis()?)
+            .map_err(|_| ())?;
+    let mut session = Session::acquire().map_err(|_| ())?;
+    session
+        .write_public_prompt(&format!(
+            "Challenge: {}\r\nExpires at (epoch milliseconds): {}\r\n",
+            uuid::Uuid::from_bytes(challenge.challenge_id),
+            challenge.expires_ms
+        ))
+        .map_err(|_| ())?;
+    drop(session);
+    let consent = prompt(
+        "Type UNLOCK to recover the root once and sign this challenge: ",
+        6,
+    )?;
+    if consent.expose_ascii() != b"UNLOCK" {
+        return Err(());
+    }
+    drop(consent);
+    let kit = KitContext::new(expected.clone(), card.root_pin(), id).map_err(|_| ())?;
+    let token = prompt("Enter recovery token from your independent kit: ", 79)?;
+    let secret = recovery_kit::decode_token(token.expose_ascii(), &kit).map_err(|_| ())?;
+    drop(token);
+    verify_process_eligibility().map_err(|_| ())?;
+    let root = root_backup::open(bundle.encrypted_backup(), &secret, &expected).map_err(|_| ())?;
+    drop(secret);
+    if pin(&root, &expected.account_id)? != *card.root_pin() {
+        return Err(());
+    }
+    // Fresh signing time: expiry is rechecked after interactive token entry.
+    let signature = zrotext_root_material::root_unlock::sign_enrollment(
+        &root,
+        &unsigned,
+        &expected,
+        now_millis()?,
+    )
+    .map_err(|_| ())?;
+    drop(root);
+    let mut session = Session::acquire().map_err(|_| ())?;
+    session
+        .write_public_prompt(&format!("Signature: {}\r\n", display_hex(&signature)))
+        .map_err(|_| ())?;
+    session
+        .write_public_prompt(
+            "One challenge signed with the recovered root. No enrollment, unlock state or file was created.\r\n",
+        )
+        .map_err(|_| ())?;
+    session.finish().map_err(|_| ())
+}
+
 pub(super) fn run(args: &[String]) -> Result<()> {
     let command = parse(args)?;
     verify_process_eligibility().map_err(|_| ())?;
@@ -259,6 +404,8 @@ pub(super) fn run(args: &[String]) -> Result<()> {
     match command {
         Command::Init(context) => run_init(context, parent, &mut SystemMaterial),
         Command::Restore(context, id) => run_restore_check(context, id, parent),
+        #[cfg(feature = "unlock")]
+        Command::Unlock(context, id, path) => run_unlock(context, id, path, parent),
     }
 }
 
