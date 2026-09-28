@@ -57,7 +57,7 @@ async fn owner(
         &principal,
         &[Scope::MessagesSend],
         Some(device_id),
-        None,
+        auth::ApiKeyLifetime::Unspecified,
     )
     .await
     .unwrap();
@@ -67,7 +67,7 @@ async fn owner(
         &principal,
         &[Scope::MessagesRead],
         Some(device_id),
-        None,
+        auth::ApiKeyLifetime::Unspecified,
     )
     .await
     .unwrap();
@@ -77,7 +77,7 @@ async fn owner(
         &principal,
         &[Scope::MessagesSend],
         None,
-        None,
+        auth::ApiKeyLifetime::Unspecified,
     )
     .await
     .unwrap();

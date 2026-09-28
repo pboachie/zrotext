@@ -189,19 +189,23 @@ trail the true last use by up to 15 minutes, and a session can lapse up to 15
 minutes before 72 hours after its true last request. The owner key list
 (`GET /v1/auth/api-keys`) returns `last_used_at_ms` (`null` if never used) so
 owners can find and revoke keys no integration uses. An API key lives for its
-requested `lifetime_days` (1 to 365); omitting it applies the 365-day maximum
-rather than an unbounded lifetime, so no key issued now outlives one year
-without being reissued. Keys created before this default carry no expiry and
-the owner dashboard flags them ("expires never (older key; reissue to add an
-expiry)") so they can be replaced.
+requested `lifetime_days` (1 to 365); omitting it applies the 365-day default.
+`"lifetime_days": null` is the explicit never-expire opt-in: it leaves
+`expires_at` NULL, exactly as keys created before the default existed carry,
+and is discouraged — a stolen never-expiring key stays valid until an owner
+notices and revokes it. Existing non-expiring keys keep authenticating
+unchanged, and the owner dashboard flags them ("expires never (older key;
+reissue to add an expiry)") so they can be replaced.
 
 Keys record the user that issued them, not the session, so a key minted from
 a stolen session cannot be told apart from the owner's own. "Sign out other
-sessions" (`POST /v1/auth/sessions/revoke-others`) therefore also revokes every
-unrevoked key of that owner in the same transaction, matching password change
-and reset. API callers that only want the sessions gone can pass
-`"revoke_api_keys": false`; the owner dashboard always uses the default and
-says so before asking for the password.
+sessions" (`POST /v1/auth/sessions/revoke-others`) therefore revokes only the
+other sessions by default, because integrations use API keys independently of
+any session. A caller that suspects a stolen session can pass
+`"revoke_api_keys": true` to revoke every unrevoked key of that owner in the
+same transaction, matching password change and reset; the owner dashboard
+offers this as a separate, clearly labelled checkbox next to the password
+confirmation.
 
 ### Public sign-in and enrollment budgets
 

@@ -211,7 +211,7 @@ async fn observers_cannot_use_owner_sessions_keys_or_direct_helpers() {
         &f.owner,
         &[Scope::DevicesRead],
         None,
-        None,
+        ApiKeyLifetime::Unspecified,
     )
     .await
     .unwrap();
@@ -227,7 +227,7 @@ async fn observers_cannot_use_owner_sessions_keys_or_direct_helpers() {
             &f.observer,
             &[Scope::DevicesRead],
             None,
-            None
+            ApiKeyLifetime::Unspecified
         )
         .await
         .is_err()

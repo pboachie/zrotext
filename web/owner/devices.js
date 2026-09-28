@@ -1393,17 +1393,22 @@ byId("change-password-form").addEventListener("submit", async (event) => {
 byId("refresh-sessions").addEventListener("click", loadSessions);
 byId("revoke-other-sessions-form").addEventListener("submit", async (event) => {
   event.preventDefault();
-  if (!window.confirm("Sign out all other sessions and revoke every API key?")) return;
+  const revokeApiKeys = byId("revoke-sessions-api-keys").checked;
+  if (!window.confirm(revokeApiKeys
+    ? "Sign out all other sessions and revoke every API key?"
+    : "Sign out all other sessions?")) return;
   const currentPassword = byId("revoke-sessions-password").value;
   const code = byId("revoke-sessions-mfa-code").value.trim();
   byId("revoke-sessions-password").value = "";
   byId("revoke-sessions-mfa-code").value = "";
+  byId("revoke-sessions-api-keys").checked = false;
   byId("revoke-other-sessions").disabled = true;
   message("session-status", "Signing out other sessions…");
   try {
     await api("/v1/auth/sessions/revoke-others", "POST", {
       current_password: currentPassword,
       ...(code ? { code } : {}),
+      revoke_api_keys: revokeApiKeys,
     });
     clearKeySecret();
     await Promise.all([loadSessions(), loadKeys()]);
@@ -1554,7 +1559,8 @@ byId("key-create-form").addEventListener("submit", exclusive(async (event) => {
   message("key-create-status", "Creating key…");
   try {
     const created = await api("/v1/auth/api-keys", "POST", {
-      scopes, lifetime_days: Number(byId("key-lifetime").value),
+      scopes,
+      lifetime_days: byId("key-lifetime").value === "never" ? null : Number(byId("key-lifetime").value),
       current_password: currentPassword,
       ...(code ? { code } : {}),
     });

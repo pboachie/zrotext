@@ -280,7 +280,7 @@ async fn postgres_tenant_revocation_and_scope_contract() {
         &pa,
         &[Scope::MessagesSend],
         Some(bound_device),
-        Some(30),
+        ApiKeyLifetime::Days(30),
     )
     .await
     .unwrap();
@@ -301,7 +301,15 @@ async fn postgres_tenant_revocation_and_scope_contract() {
         Err(AuthError::Unauthorized)
     ));
     assert!(matches!(
-        create_api_key(&mut client, &hasher, &pa, &[Scope::BillingRead], None, None).await,
+        create_api_key(
+            &mut client,
+            &hasher,
+            &pa,
+            &[Scope::BillingRead],
+            None,
+            ApiKeyLifetime::Unspecified
+        )
+        .await,
         Err(AuthError::Unauthorized)
     ));
     assert!(matches!(
@@ -706,7 +714,7 @@ async fn postgres_api_key_records_throttled_last_use() {
         &principal,
         &[Scope::MessagesSend],
         None,
-        Some(30),
+        ApiKeyLifetime::Days(30),
     )
     .await
     .unwrap();

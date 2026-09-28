@@ -310,6 +310,13 @@ test("API key creation proves the password and optional code, then clears both",
   assert.equal(state.keyRequests.length, 2);
   assert.equal(JSON.parse(state.keyRequests[1].options.body).code, undefined);
 
+  // The discouraged never option sends an explicit null lifetime.
+  element("key-password").value = "synthetic-owner-password";
+  element("key-lifetime").value = "never";
+  await element("key-create-form").listeners.submit({ preventDefault() {} });
+  assert.equal(state.keyRequests.length, 3);
+  assert.strictEqual(JSON.parse(state.keyRequests[2].options.body).lifetime_days, null);
+
   state.nextCreateResponse = response(400);
   element("key-password").value = "wrong-password";
   await element("key-create-form").listeners.submit({ preventDefault() {} });
@@ -332,24 +339,34 @@ test("password change uses CSRF and sessions can be reviewed and revoked", async
   await element("revoke-other-sessions-form").listeners.submit({ preventDefault() {} });
   assert.equal(state.authRequests[0].url, "/v1/auth/sessions/revoke-others");
   assert.equal(state.authRequests[0].options.headers["x-zrotext-csrf"], "ztc_synthetic");
-  // No revoke_api_keys field: the server default revokes the keys too.
+  // The checkbox starts unticked, so the keys are explicitly kept.
   assert.deepEqual(JSON.parse(state.authRequests[0].options.body), {
-    current_password: "old-password", code: "123456",
+    current_password: "old-password", code: "123456", revoke_api_keys: false,
   });
+
+  // Ticking the separate, clearly labelled box opts the keys in.
+  element("revoke-sessions-password").value = "old-password";
+  element("revoke-sessions-mfa-code").value = "123456";
+  element("revoke-sessions-api-keys").checked = true;
+  await element("revoke-other-sessions-form").listeners.submit({ preventDefault() {} });
+  assert.deepEqual(JSON.parse(state.authRequests[1].options.body), {
+    current_password: "old-password", code: "123456", revoke_api_keys: true,
+  });
+  assert.equal(element("revoke-sessions-api-keys").checked, false);
   assert.equal(element("revoke-sessions-password").value, "");
   assert.equal(element("session-list").children.length, 1);
   assert.equal(element("revoke-other-sessions-form").hidden, true);
-  // The key list is reloaded so the revoked keys show as such.
-  assert.equal(state.requests.filter((url) => url === "/v1/auth/api-keys").length, keyLoadsBefore + 1);
+  // Each revoke reloads the key list so the keys show their current state.
+  assert.equal(state.requests.filter((url) => url === "/v1/auth/api-keys").length, keyLoadsBefore + 2);
 
   element("current-password").value = "old-password";
   element("new-password").value = "new-long-password";
   element("confirm-new-password").value = "new-long-password";
   element("password-mfa-code").value = "123456";
   await element("change-password-form").listeners.submit({ preventDefault() {} });
-  assert.equal(state.authRequests[1].url, "/v1/auth/password");
-  assert.equal(state.authRequests[1].options.headers["x-zrotext-csrf"], "ztc_synthetic");
-  assert.deepEqual(JSON.parse(state.authRequests[1].options.body), {
+  assert.equal(state.authRequests[2].url, "/v1/auth/password");
+  assert.equal(state.authRequests[2].options.headers["x-zrotext-csrf"], "ztc_synthetic");
+  assert.deepEqual(JSON.parse(state.authRequests[2].options.body), {
     current_password: "old-password", new_password: "new-long-password", code: "123456",
   });
   assert.equal(element("current-password").value, "");

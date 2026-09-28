@@ -150,21 +150,40 @@ async fn api_key_creation_requires_current_password_in_the_body() {
 }
 
 #[test]
-fn revoke_others_revokes_api_keys_unless_the_body_opts_out() {
+fn revoke_others_keeps_api_keys_unless_the_body_opts_in() {
     let body: RevokeOtherSessionsBody =
         serde_json::from_value(serde_json::json!({"current_password":"synthetic"})).unwrap();
-    assert!(body.revoke_api_keys);
+    assert!(!body.revoke_api_keys);
     let body: RevokeOtherSessionsBody = serde_json::from_value(serde_json::json!({
-        "current_password":"synthetic","revoke_api_keys":false,
+        "current_password":"synthetic","revoke_api_keys":true,
     }))
     .unwrap();
-    assert!(!body.revoke_api_keys);
+    assert!(body.revoke_api_keys);
     assert!(
         serde_json::from_value::<RevokeOtherSessionsBody>(serde_json::json!({
             "current_password":"synthetic","revoke_api_keys":"no",
         }))
         .is_err()
     );
+}
+
+#[test]
+fn api_key_lifetime_body_maps_omitted_null_and_days() {
+    let body: CreateKeyBody = serde_json::from_value(
+        serde_json::json!({"scopes":["messages:read"],"current_password":"x"}),
+    )
+    .unwrap();
+    assert_eq!(body.lifetime_days, crate::auth::ApiKeyLifetime::Unspecified);
+    let body: CreateKeyBody = serde_json::from_value(serde_json::json!({
+        "scopes":["messages:read"],"lifetime_days":null,"current_password":"x",
+    }))
+    .unwrap();
+    assert_eq!(body.lifetime_days, crate::auth::ApiKeyLifetime::Never);
+    let body: CreateKeyBody = serde_json::from_value(serde_json::json!({
+        "scopes":["messages:read"],"lifetime_days":30,"current_password":"x",
+    }))
+    .unwrap();
+    assert_eq!(body.lifetime_days, crate::auth::ApiKeyLifetime::Days(30));
 }
 
 #[test]
@@ -1919,7 +1938,7 @@ async fn postgres_http_account_lifecycle_enforces_csrf_and_revocation() {
         &foreign_owner,
         &[Scope::MessagesRead],
         None,
-        Some(30),
+        auth::ApiKeyLifetime::Days(30),
     )
     .await
     .unwrap();

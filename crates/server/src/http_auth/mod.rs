@@ -4,7 +4,7 @@
 
 use crate::api_json::ApiJson;
 use crate::auth::{
-    self, AuthError, Scope, SessionPrincipal, TokenHasher,
+    self, ApiKeyLifetime, AuthError, Scope, SessionPrincipal, TokenHasher,
     abuse_limits::{self, Limit},
     account,
     mfa::{self, MfaCipher},
@@ -1424,14 +1424,11 @@ async fn list_sessions(
 struct RevokeOtherSessionsBody {
     current_password: String,
     code: Option<String>,
-    /// Defaults to true: a key minted by a session being revoked is not
-    /// distinguishable from any other, so all of the owner's keys go too.
-    #[serde(default = "default_true")]
+    /// Defaults to false: signing out other sessions keeps the owner's API
+    /// keys working, because integrations use them independently of any
+    /// session. Pass `true` to revoke every unrevoked key as well.
+    #[serde(default)]
     revoke_api_keys: bool,
-}
-
-fn default_true() -> bool {
-    true
 }
 
 async fn revoke_other_sessions(
@@ -1915,7 +1912,10 @@ async fn logout(
 struct CreateKeyBody {
     scopes: Vec<String>,
     bound_device_id: Option<Uuid>,
-    lifetime_days: Option<i32>,
+    /// Omitted: the 365-day default. `null`: the discouraged never-expire
+    /// opt-in. Integer: that many days.
+    #[serde(default)]
+    lifetime_days: ApiKeyLifetime,
     current_password: String,
     code: Option<String>,
 }
@@ -2061,7 +2061,7 @@ async fn create_api_key(
         account::ApiKeyRequest {
             scopes: &scopes,
             bound_device_id: body.bound_device_id,
-            lifetime_days: body.lifetime_days,
+            lifetime: body.lifetime_days,
         },
     )
     .await

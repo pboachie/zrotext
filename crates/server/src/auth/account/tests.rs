@@ -109,7 +109,7 @@ async fn assert_reset_preserves_mfa(path: ResetPath) {
         &principal,
         &[Scope::MessagesRead],
         None,
-        None,
+        auth::ApiKeyLifetime::Unspecified,
     )
     .await
     .unwrap();
@@ -365,7 +365,7 @@ async fn api_key_mint_waits_for_recovery_lock_and_rechecks_session() {
             &principal,
             &[Scope::MessagesRead],
             None,
-            None,
+            auth::ApiKeyLifetime::Unspecified,
         )
         .await
     });
@@ -495,7 +495,7 @@ async fn postgres_password_session_and_reset_lifecycle() {
         &principal,
         &[Scope::MessagesRead],
         None,
-        None,
+        auth::ApiKeyLifetime::Unspecified,
     )
     .await
     .unwrap();
@@ -542,7 +542,7 @@ async fn postgres_password_session_and_reset_lifecycle() {
         &fourth_principal,
         &[Scope::MessagesRead],
         None,
-        None,
+        auth::ApiKeyLifetime::Unspecified,
     )
     .await
     .unwrap();
@@ -801,7 +801,7 @@ async fn postgres_operator_reset_revokes_all_owner_credentials() {
         &principal,
         &[Scope::MessagesRead],
         None,
-        None,
+        auth::ApiKeyLifetime::Unspecified,
     )
     .await
     .unwrap();
@@ -1055,7 +1055,7 @@ async fn failed_sign_in_factors_do_not_block_a_signed_in_owner_step_up() {
 
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
-async fn api_key_issuance_needs_step_up_expires_by_default_and_dies_with_other_sessions() {
+async fn api_key_issuance_needs_step_up_expires_by_default_and_revoke_others_needs_opt_in() {
     let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
         .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
     let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
@@ -1100,7 +1100,7 @@ async fn api_key_issuance_needs_step_up_expires_by_default_and_dies_with_other_s
     let request = || ApiKeyRequest {
         scopes: &[Scope::MessagesRead],
         bound_device_id: None,
-        lifetime_days: None,
+        lifetime: auth::ApiKeyLifetime::Unspecified,
     };
 
     // A session cookie alone (the stolen-cookie case) is not enough.
@@ -1158,7 +1158,7 @@ async fn api_key_issuance_needs_step_up_expires_by_default_and_dies_with_other_s
         ApiKeyRequest {
             scopes: &[Scope::MessagesRead],
             bound_device_id: None,
-            lifetime_days: Some(7),
+            lifetime: auth::ApiKeyLifetime::Days(7),
         },
     )
     .await
@@ -1172,6 +1172,37 @@ async fn api_key_issuance_needs_step_up_expires_by_default_and_dies_with_other_s
         .unwrap()
         .get(0);
     assert!((explicit_days - 7.0).abs() < 0.01);
+    // The explicit, discouraged null opt-in stores no expiry at all, exactly
+    // like the keys minted before the default existed.
+    let never_key = create_api_key_with_proof(
+        &mut db,
+        Some(&cipher),
+        &hasher,
+        &principal,
+        &password,
+        None,
+        ApiKeyRequest {
+            scopes: &[Scope::MessagesRead],
+            bound_device_id: None,
+            lifetime: auth::ApiKeyLifetime::Never,
+        },
+    )
+    .await
+    .unwrap();
+    let never_expires: Option<String> = db
+        .query_one(
+            "SELECT expires_at::text FROM api_keys WHERE id=$1",
+            &[&never_key.id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert!(never_expires.is_none());
+    assert!(
+        auth::authenticate_api_key(&db, &hasher, &never_key.token)
+            .await
+            .is_ok()
+    );
 
     // Once MFA is enabled the password alone stops working; a wrong code is
     // rejected and a recovery code is accepted.
@@ -1230,9 +1261,9 @@ async fn api_key_issuance_needs_step_up_expires_by_default_and_dies_with_other_s
             .await
             .is_ok()
     );
-    assert_eq!(live_key_count(&db).await, 3);
+    assert_eq!(live_key_count(&db).await, 4);
 
-    // Opting out keeps the keys; the default takes them with the sessions.
+    // By default the keys survive the sessions; only the explicit opt-in takes them.
     revoke_other_sessions(
         &mut db,
         Some(&cipher),
@@ -1244,7 +1275,7 @@ async fn api_key_issuance_needs_step_up_expires_by_default_and_dies_with_other_s
     )
     .await
     .unwrap();
-    assert_eq!(live_key_count(&db).await, 3);
+    assert_eq!(live_key_count(&db).await, 4);
     revoke_other_sessions(
         &mut db,
         Some(&cipher),
@@ -1257,7 +1288,7 @@ async fn api_key_issuance_needs_step_up_expires_by_default_and_dies_with_other_s
     .await
     .unwrap();
     assert_eq!(live_key_count(&db).await, 0);
-    for key in [&default_key, &explicit_key, &mfa_key] {
+    for key in [&default_key, &explicit_key, &never_key, &mfa_key] {
         assert!(
             auth::authenticate_api_key(&db, &hasher, &key.token)
                 .await

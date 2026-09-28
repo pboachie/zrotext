@@ -3,8 +3,8 @@
 //! rotation or reset with login/session creation across API sites.
 
 use super::{
-    ApiKeyCredentials, AuthError, Scope, SessionPrincipal, TokenHasher, mfa, normalize_email,
-    password_work, valid_token,
+    ApiKeyCredentials, ApiKeyLifetime, AuthError, Scope, SessionPrincipal, TokenHasher, mfa,
+    normalize_email, password_work, valid_token,
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use tokio_postgres::Client;
@@ -100,9 +100,10 @@ pub async fn revoke_other_sessions(
     )
     .await?;
     // Keys record their creator, not their creating session, so a key minted
-    // by a session this call revokes is indistinguishable from any other. All
-    // of this owner's live keys go with the sessions unless the caller opted
-    // to keep them; the user-row lock above serializes this with minting.
+    // by a session this call revokes is indistinguishable from any other. They
+    // still keep working by default, because integrations depend on them
+    // independently of any session; only an explicit opt-in revokes them, and
+    // the user-row lock above serializes that with minting.
     if revoke_api_keys {
         tx.execute(
             "UPDATE api_keys SET revoked_at=now() WHERE account_id=$1 AND created_by_user_id=$2 AND revoked_at IS NULL",
@@ -118,7 +119,7 @@ pub async fn revoke_other_sessions(
 pub struct ApiKeyRequest<'a> {
     pub scopes: &'a [Scope],
     pub bound_device_id: Option<Uuid>,
-    pub lifetime_days: Option<i32>,
+    pub lifetime: ApiKeyLifetime,
 }
 
 /// Mints an API key only after the same step-up that guards password change
@@ -133,7 +134,7 @@ pub async fn create_api_key_with_proof(
     code: Option<&str>,
     request: ApiKeyRequest<'_>,
 ) -> Result<ApiKeyCredentials, AuthError> {
-    super::validate_api_key_request(request.scopes, request.lifetime_days)?;
+    super::validate_api_key_request(request.scopes, request.lifetime)?;
     let account_id = owner.tenant.account_id();
     let old_hash: String = client.query_opt(
         "SELECT u.password_hash FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id JOIN sessions s ON s.account_id=m.account_id AND s.user_id=u.id WHERE m.role='owner' AND u.id=$1 AND m.account_id=$2 AND s.id=$3 AND s.revoked_at IS NULL AND s.expires_at>now() AND a.disabled_at IS NULL",
@@ -172,7 +173,7 @@ pub async fn create_api_key_with_proof(
         owner,
         request.scopes,
         request.bound_device_id,
-        request.lifetime_days,
+        request.lifetime,
     )
     .await?;
     tx.commit().await?;
