@@ -213,10 +213,23 @@ subject, distinct from the anonymous counter, and rolls over with the
 one-code-per-15-minutes throttle that sets the real cadence for known
 addresses. Anonymous requests naming a real address can therefore delay the
 owner's next code by at most one throttle window, not a day, and cannot cause
-more mail than the throttle allows. Unknown addresses charge their exhausted
-anonymous counter once more instead, so a refused request runs the same probe
-and counter statements whether or not the address exists, and the response is
-202 either way. The verified-route ceiling still bounds the lane as a whole.
+more mail than the throttle allows. The verified lane also has a daily cap of
+12 admitted requests per address, charged before the reset transaction and only
+after the throttle-window subject admits. With the 3 anonymous requests, an
+address therefore gets at most 15 reset mails a day, however many requests
+name it. A capped request gets the same 202 as every other throttled or
+unknown-address request. The cap is a trade-off: a stranger who keeps
+requesting codes for a real address can use up that day's verified lane (at
+least 4 throttle windows, about an hour, of repeated requests), and the owner
+then waits for the next day's budget. Unknown addresses charge their exhausted
+anonymous counter once more and read the daily budget instead, so a refused
+request runs the same probe and number of counter statements whether or not
+the address exists, and the response is 202 either way. The verified-route
+ceiling still bounds the lane as a whole. Each newly issued reset code marks
+the previous unused code for that owner as used and cancels its queued mail,
+so only the newest mailed code works; a stranger's request can therefore
+replace a code the owner has not used yet, but never within 15 minutes of the
+previous one.
 
 Argon2id uses 64 MiB per operation, so each process runs at most two password
 operations at once (sign-in, registration, verification resend, password change

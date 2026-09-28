@@ -58,6 +58,7 @@ limits! {
     Resend,
     Verify,
     PasswordResetRequest,
+    PasswordResetVerifiedDaily,
     PasswordResetConfirm,
     PasswordChange,
     SessionsRevokeOthers,
@@ -93,6 +94,11 @@ impl Limit {
             Self::Resend => ("resend", 120, 60, Some((12, 900))),
             Self::Verify => ("verify", 120, 60, None),
             Self::PasswordResetRequest => ("password_reset_request", 120, 60, Some((3, 86_400))),
+            // Daily cap on the verified reset lane for one owner address,
+            // charged only through `consume_verified`.
+            Self::PasswordResetVerifiedDaily => {
+                ("password_reset_verified_daily", 120, 60, Some((12, 86_400)))
+            }
             Self::PasswordResetConfirm => ("password_reset_confirm", 120, 60, Some((8, 3_600))),
             Self::PasswordChange => ("password_change", 120, 60, Some((8, 900))),
             Self::SessionsRevokeOthers => ("sessions_revoke_others", 120, 60, Some((8, 900))),
@@ -221,6 +227,18 @@ pub(crate) async fn failure_budget_open(
 ) -> Result<bool, tokio_postgres::Error> {
     let (_, maximum, _, _) = failure_subject(hasher, limit, subject);
     Ok(failures_in_window(client, hasher, limit, subject).await? < maximum)
+}
+
+/// Whether `subject` still has room in `limit`'s per-subject window, without
+/// charging anything. Callers use it where a refused path must run the same
+/// number of statements as a charging one.
+pub(crate) async fn subject_budget_open(
+    client: &impl GenericClient,
+    hasher: &TokenHasher,
+    limit: Limit,
+    subject: &str,
+) -> Result<bool, tokio_postgres::Error> {
+    failure_budget_open(client, hasher, limit, subject).await
 }
 
 /// Record one rejected factor, opening a new window once the previous one has
