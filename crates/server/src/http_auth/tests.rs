@@ -109,9 +109,13 @@ fn key_list_request(cookie_header: Option<&str>, csrf: Option<&str>, uri: &str) 
 }
 
 #[tokio::test]
-async fn api_key_creation_requires_current_password_in_the_body() {
-    // The unusable URL turns any database access into 503, so a 400 here
-    // proves the body was refused before the session was even looked up.
+async fn api_key_route_authenticates_before_parsing_the_body() {
+    // Since the preauth change on main, owner mutation routes authenticate
+    // (and admit through the account slot) before the body is read, so an
+    // unusable database answers 503 regardless of the body. The bodies differ
+    // only in the required password, proving neither is parsed first; the
+    // missing- and wrong-password 400s are covered against a live database by
+    // postgres_http_account_lifecycle_enforces_csrf_and_revocation.
     let state = AuthHttpState::new(
         "not a database url".to_owned(),
         Arc::new(TokenHasher::new(crate::test_keys::key(7)).unwrap()),
@@ -121,32 +125,20 @@ async fn api_key_creation_requires_current_password_in_the_body() {
     .unwrap();
     let app = router(state);
     let cookies = format!("{SESSION_COOKIE}=zts_fixture; {CSRF_COOKIE}=ztc_fixture");
-    let response = app
-        .clone()
-        .oneshot(owner_post(
-            "/api-keys",
-            serde_json::json!({"scopes":["messages:read"],"lifetime_days":30}),
-            &cookies,
-            "ztc_fixture",
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    // With the password present the handler proceeds to the session lookup.
-    let response = app
-        .clone()
-        .oneshot(owner_post(
-            "/api-keys",
-            serde_json::json!({
-                "scopes":["messages:read"],"lifetime_days":30,
-                "current_password":"synthetic-password",
-            }),
-            &cookies,
-            "ztc_fixture",
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    for body in [
+        serde_json::json!({"scopes":["messages:read"],"lifetime_days":30}),
+        serde_json::json!({
+            "scopes":["messages:read"],"lifetime_days":30,
+            "current_password":"synthetic-password",
+        }),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(owner_post("/api-keys", body, &cookies, "ztc_fixture"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
 }
 
 #[test]
@@ -169,6 +161,15 @@ fn revoke_others_keeps_api_keys_unless_the_body_opts_in() {
 
 #[test]
 fn api_key_lifetime_body_maps_omitted_null_and_days() {
+    // The required step-up password is a parse-level constraint too: a body
+    // without it never deserializes, so the route cannot reach the proof with
+    // a missing password.
+    assert!(
+        serde_json::from_value::<CreateKeyBody>(serde_json::json!({
+            "scopes":["messages:read"],"lifetime_days":30,
+        }))
+        .is_err()
+    );
     let body: CreateKeyBody = serde_json::from_value(
         serde_json::json!({"scopes":["messages:read"],"current_password":"x"}),
     )
