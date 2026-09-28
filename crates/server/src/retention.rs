@@ -109,6 +109,11 @@ pub async fn prune(
             &[&limit],
         )
         .await?;
+    // A signed STOP or START reply binds to an attempt with positive sent
+    // evidence and needs the recipient to record or clear a suppression. The
+    // recipient therefore outlives content retention while such evidence is
+    // inside the event window; the event row is deleted below only after the
+    // recipient is gone, so both cutoffs must have passed.
     let messages = client
         .execute(
             "WITH due AS (SELECT m.id FROM messages m \
@@ -116,10 +121,14 @@ pub async fn prune(
            AND m.recipient_e164 IS NOT NULL \
            AND m.state IN ('delivered','failed','cancelled','expired') \
            AND NOT EXISTS (SELECT 1 FROM dispatch_fences f WHERE f.message_id=m.id AND f.outcome IN ('granted','submitting','unknown')) \
+           AND NOT EXISTS (SELECT 1 FROM message_events me \
+               WHERE (me.account_id,me.message_id)=(m.account_id,m.id) \
+                 AND me.evidence_code='sent_callback_ok' \
+                 AND me.received_at>now()-$3::int * interval '1 day') \
          ORDER BY m.updated_at,m.id FOR UPDATE OF m SKIP LOCKED LIMIT $2) \
          UPDATE messages m SET recipient_e164=NULL,transport_payload=NULL \
          FROM due WHERE m.id=due.id",
-            &[&policy.message_days, &limit],
+            &[&policy.message_days, &limit, &policy.message_events_days],
         )
         .await?;
     let message_events = client
