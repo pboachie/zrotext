@@ -32,6 +32,9 @@
 //!   a future external authority (monotonic, refuses backward promotions).
 //!   It is an interface only: this build ships a test implementation and no
 //!   external anchoring.
+//! * [`observe`] forms one member's quorum report per round from raw probe
+//!   outcomes — the reporter half of the member-reporting transport — with
+//!   fail-closed rules for member-local probe faults.
 //!
 //! What this crate deliberately does **not** do yet: it listens on no
 //! network and runs no consensus service — no transport carries member
@@ -45,6 +48,7 @@
 pub mod anchor;
 pub mod decision;
 pub mod executor;
+pub mod observe;
 pub mod policy;
 pub mod store;
 
