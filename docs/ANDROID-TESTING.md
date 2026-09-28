@@ -47,6 +47,25 @@ manifest retains `allowBackup=false` for older versions. The virtual suite
 checks the installed schema and local routing behavior; actual device-to-device
 transfer and carrier behavior remain separate hardware checks.
 
+## Outbound MMS spike
+
+The "Controlled MMS spike" screen is the stage-one tool from [issue #438](https://github.com/pboachie/zrotext/issues/438).
+It composes one `m-send.req` PDU (an OMA-MMS minimal envelope whose byte shape
+mirrors AOSP's `com.google.android.mms.pdu.PduComposer`) around a
+synthetically generated 1x1 PNG, writes it to app-private storage, and submits
+it through `SmsManager.sendMultimediaMessage` with a null location URL so the
+carrier-configured MMSC is used. One attempt is allowed per installation; the
+gate is committed before any radio call, and an uncertain result is journaled
+as unknown and never retried automatically. The local journal
+(`files/mms_spike/journal.log`) records only a SHA-256 of the recipient, event
+kinds, and result codes — no message content.
+
+This tool is JVM-tested for composition and journaling only. The emulator
+cannot prove MMS. A physical-device spike must still find out whether the
+platform MMS service can read the FileProvider URI and whether the carrier's
+MMSC accepts the PDU; both are recorded as device findings in the issue, not
+as claims of this repository.
+
 ## Inbound SMS transport
 
 The inbound pilot receives carrier SMS through Android's `SMS_RECEIVED` broadcast. An RCS message visible in Google Messages does not exercise this receiver. The [Android SMS API](https://developer.android.com/reference/android/provider/Telephony.Sms.Intents) defines the broadcast for SMS; the app cannot turn Google Messages RCS on or off through that API.

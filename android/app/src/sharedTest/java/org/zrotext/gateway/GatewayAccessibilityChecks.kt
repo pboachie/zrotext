@@ -22,7 +22,7 @@ abstract class GatewayAccessibilityChecks {
     @Test fun sectionsAreHeadingsInReadingOrder() = onScreen { root ->
         val headings = nodes(root).filter { it.config.contains(SemanticsProperties.Heading) }
         assertEquals(listOf("ZROtext", "Gateway connection test", "Authenticated device heartbeat",
-            "Controlled SMS test", "Device pairing"), headings.map(::text))
+            "Controlled SMS test", "Controlled MMS spike", "Device pairing"), headings.map(::text))
         assertTrue(headings.zipWithNext().all { (first, next) ->
             first.positionInRoot.y < next.positionInRoot.y
         })
@@ -30,10 +30,11 @@ abstract class GatewayAccessibilityChecks {
 
     @Test fun statusRegionsExcludeRoutineHeartbeatCounters() = onScreen { root ->
         val regions = nodes(root).filter { it.config.contains(SemanticsProperties.LiveRegion) }
-        assertEquals(3, regions.size)
+        assertEquals(4, regions.size)
         assertTrue(regions.all { it.config[SemanticsProperties.LiveRegion] == LiveRegionMode.Polite })
         assertTrue(regions.none { text(it).contains("acknowledgments") })
-        assertEquals(listOf("Connection status", "Authenticated connection status", "Pairing status"),
+        assertEquals(listOf("Connection status", "Authenticated connection status",
+            "MMS spike status", "Pairing status"),
             regions.map { text(it).substringBefore(":") })
     }
 
@@ -60,10 +61,10 @@ abstract class GatewayAccessibilityChecks {
 
     @Test fun fieldsKeepLabelsAndTokensRemainPasswordFields() = onScreen { root ->
         val fields = nodes(root).filter { it.config.contains(SemanticsProperties.EditableText) }
-        assertEquals(8, fields.size)
+        assertEquals(10, fields.size)
         val expected = listOf("WSS test endpoint", "Short-lived test token", "WSS device stream URL",
-            "Approved device UUID", "Controlled recipient +E.164", "HTTPS server origin", "Pairing ID",
-            "One-use pairing token")
+            "Approved device UUID", "Controlled recipient +E.164", "Controlled MMS recipient +E.164",
+            "Optional subject", "HTTPS server origin", "Pairing ID", "One-use pairing token")
         assertEquals(expected, fields.map(::text))
         assertEquals(listOf("Short-lived test token", "One-use pairing token"),
             fields.filter { it.config.contains(SemanticsProperties.Password) }.map(::text))

@@ -53,6 +53,9 @@ class MainActivity : ComponentActivity() {
     private var deviceStreamEndpoint by mutableStateOf("")
     private var approvedDeviceId by mutableStateOf("")
     private var alphaRecipient by mutableStateOf("")
+    private var mmsRecipient by mutableStateOf("")
+    private var mmsSubject by mutableStateOf("")
+    private var mmsSpikeStatus by mutableStateOf("Not started")
     private var pairingOrigin by mutableStateOf("")
     private var pairingId by mutableStateOf("")
     private var pairingToken by mutableStateOf("")
@@ -193,6 +196,29 @@ class MainActivity : ComponentActivity() {
                             alphaRecipient = ""
                         }
                     }) { Text("Arm one test SMS") }
+                    HorizontalDivider()
+                    GatewaySectionTitle("Controlled MMS spike")
+                    Text("Stage one of the MMS spike (#438): compose one synthetic-image MMS and submit it from the selected SIM through the carrier default MMSC. One attempt per installation; an uncertain result is never retried automatically. Only a SHA-256 of the recipient is journaled locally.")
+                    OutlinedTextField(value = mmsRecipient, onValueChange = { mmsRecipient = it.trim() },
+                        label = { Text("Controlled MMS recipient +E.164") })
+                    OutlinedTextField(value = mmsSubject, onValueChange = { mmsSubject = it },
+                        label = { Text("Optional subject") })
+                    GatewayButton(onClick = {
+                        val sim = selectedSim
+                        when {
+                            getSharedPreferences("mms_spike", MODE_PRIVATE)
+                                .getString("attempt_id", null) != null ->
+                                mmsSpikeStatus = "Refused: one spike attempt already used on this install"
+                            sim == null || sims.none { it.first == sim } ->
+                                mmsSpikeStatus = "Select an active SIM first"
+                            !mmsRecipient.matches(Regex("^\\+[1-9][0-9]{1,14}$")) ->
+                                mmsSpikeStatus = "Enter a valid +E.164 recipient"
+                            else -> MmsSpikeSend.sendAuthorized(this@MainActivity, mmsRecipient, mmsSubject, sim) { result ->
+                                runOnUiThread { if (!isDestroyed) mmsSpikeStatus = "Spike: ${result.name}" }
+                            }
+                        }
+                    }) { Text("Submit one synthetic MMS") }
+                    GatewayStatusText("MMS spike status", mmsSpikeStatus)
                     HorizontalDivider()
                     GatewaySectionTitle("Device pairing")
                     Text("Enter the one-use pairing ID and token from the owner account. The phone will prove possession of its Keystore key. Compare both values below with the browser before approving there.")
