@@ -226,6 +226,7 @@ mod tests {
         )
         .await
         .unwrap();
+        crate::outbox_test_support::backdate_queued_verification_mail(&a).await;
         let first = claim_verification_mail(&mut a, &hasher)
             .await
             .unwrap()
@@ -246,7 +247,7 @@ mod tests {
                 .is_none()
         );
         a.execute(
-            "UPDATE verification_mail_outbox SET next_attempt_at=now()-interval '1 second' WHERE verification_id=$1",
+            "UPDATE verification_mail_outbox SET next_attempt_at=now()-interval '1 minute' WHERE verification_id=$1",
             &[&first.verification_id],
         )
         .await
@@ -297,6 +298,7 @@ mod tests {
             .await
             .unwrap()
         );
+        crate::outbox_test_support::backdate_queued_verification_mail(&b).await;
         let resent = claim_verification_mail(&mut b, &hasher)
             .await
             .unwrap()
@@ -364,7 +366,7 @@ mod tests {
         .unwrap();
         client
             .execute(
-                "UPDATE email_verifications SET expires_at=now()-interval '1 second' WHERE user_id=$1",
+                "UPDATE email_verifications SET expires_at=now()-interval '5 minutes' WHERE user_id=$1",
                 &[&signup.user_id],
             )
             .await
@@ -379,6 +381,7 @@ mod tests {
             .await
             .unwrap()
         );
+        crate::outbox_test_support::backdate_queued_verification_mail(&client).await;
         let rotated = claim_verification_mail(&mut client, &hasher)
             .await
             .unwrap()
@@ -399,7 +402,7 @@ mod tests {
             );
             client
                 .execute(
-                    "UPDATE verification_mail_outbox SET next_attempt_at=now()-interval '1 second' WHERE verification_id=$1",
+                    "UPDATE verification_mail_outbox SET next_attempt_at=now()-interval '1 minute' WHERE verification_id=$1",
                     &[&claimed.verification_id],
                 )
                 .await
@@ -418,9 +421,11 @@ mod tests {
                 .is_none()
         );
         for _ in 0..2 {
+            // Five minutes past the 60-second throttle: the margin absorbs
+            // host clock corrections between this update and the resend.
             client
                 .execute(
-                    "UPDATE users SET verification_resend_last_at=now()-interval '61 seconds' WHERE id=$1",
+                    "UPDATE users SET verification_resend_last_at=now()-interval '5 minutes' WHERE id=$1",
                     &[&signup.user_id],
                 )
                 .await
@@ -436,6 +441,7 @@ mod tests {
                 .unwrap()
             );
         }
+        crate::outbox_test_support::backdate_queued_verification_mail(&client).await;
         assert!(
             claim_verification_mail(&mut client, &hasher)
                 .await

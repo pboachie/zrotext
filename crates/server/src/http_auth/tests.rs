@@ -651,7 +651,7 @@ async fn failed_mail_worker_reports_each_attempt_and_final_dead_letter() {
         if attempt < 6 {
             client
                 .execute(
-                    "UPDATE verification_mail_outbox SET next_attempt_at=now()-interval '1 second'",
+                    "UPDATE verification_mail_outbox SET next_attempt_at=now()-interval '1 minute'",
                     &[],
                 )
                 .await
@@ -984,6 +984,7 @@ async fn verified_password_reset_survives_anonymous_request_and_confirm_exhausti
         .unwrap()
         .get(0);
     assert_eq!(count, 1);
+    crate::outbox_test_support::backdate_queued_reset_mail(&db).await;
     let reset = account::claim_reset_mail(&mut db, &hasher)
         .await
         .unwrap()
@@ -1165,6 +1166,7 @@ async fn stranger_spending_address_budget_does_not_block_owner_password_reset() 
     assert_eq!(response.status(), StatusCode::ACCEPTED);
     assert_eq!(issued(&db).await, 2);
     assert_eq!(queued(&db).await, 1);
+    crate::outbox_test_support::backdate_queued_reset_mail(&db).await;
     let reset = account::claim_reset_mail(&mut db, &hasher)
         .await
         .unwrap()
