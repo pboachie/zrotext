@@ -9,7 +9,7 @@
 
 use super::{OwnerReviewState, PAGE_SIZE};
 use crate::api_json::ApiJson;
-use crate::http_auth::require_owner;
+use crate::http_auth::{require_owner, require_owner_read};
 use axum::{
     Json,
     extract::{Query, State},
@@ -283,21 +283,13 @@ pub(super) async fn list_holds(
     Query(query): Query<HoldListQuery>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(error) = crate::http_auth::require_session_cookie(&headers) {
+    if let Err(error) = crate::http_auth::require_owner_read_headers(&headers) {
         return error.into_response();
     }
     let Ok(client) = crate::runtime_db::connect(&state.database_url).await else {
         return unavailable();
     };
-    let owner = match require_owner(
-        &client,
-        &state.auth_hasher,
-        &state.canonical_origin,
-        &headers,
-        false,
-    )
-    .await
-    {
+    let owner = match require_owner_read(&client, &state.auth_hasher, &headers).await {
         Ok(owner) => owner,
         Err(error) => return error.into_response(),
     };

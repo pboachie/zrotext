@@ -7,10 +7,19 @@ use axum::{
 use serde_json::Value;
 use tower::ServiceExt;
 
-fn get(path: &str, token: Option<&str>) -> Request<Body> {
+fn get(path: &str, session: Option<&crate::auth::SessionCredentials>) -> Request<Body> {
     let mut request = Request::builder().uri(path);
-    if let Some(token) = token {
-        request = request.header(header::COOKIE, format!("__Host-zrotext_session={token}"));
+    if let Some(session) = session {
+        // Content-bearing owner reads need the CSRF header, not Origin.
+        request = request
+            .header(
+                header::COOKIE,
+                format!(
+                    "__Host-zrotext_session={}; __Host-zrotext_csrf={}",
+                    session.token, session.csrf_token
+                ),
+            )
+            .header("x-zrotext-csrf", &session.csrf_token);
     }
     request.body(Body::empty()).unwrap()
 }
@@ -325,7 +334,7 @@ async fn export_is_tenant_bound_and_carries_owner_content() {
     assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
     let response = app
         .clone()
-        .oneshot(get("/v1/owner/export", Some(&session_a.token)))
+        .oneshot(get("/v1/owner/export", Some(&session_a)))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
@@ -396,7 +405,7 @@ async fn export_is_tenant_bound_and_carries_owner_content() {
     );
     let foreign = app
         .clone()
-        .oneshot(get("/v1/owner/export", Some(&session_b.token)))
+        .oneshot(get("/v1/owner/export", Some(&session_b)))
         .await
         .unwrap();
     assert_eq!(foreign.status(), StatusCode::OK);
@@ -524,7 +533,7 @@ async fn export_paginates_full_history_beyond_the_first_page() {
     });
     let first = body(
         app.clone()
-            .oneshot(get("/v1/owner/export", Some(&session_a.token)))
+            .oneshot(get("/v1/owner/export", Some(&session_a)))
             .await
             .unwrap(),
     )
@@ -554,7 +563,7 @@ async fn export_paginates_full_history_beyond_the_first_page() {
         app.clone()
             .oneshot(get(
                 &format!("/v1/owner/export?before={cursor}"),
-                Some(&session_a.token),
+                Some(&session_a),
             ))
             .await
             .unwrap(),
@@ -605,7 +614,7 @@ async fn export_paginates_full_history_beyond_the_first_page() {
         .clone()
         .oneshot(get(
             &format!("/v1/owner/export?before={b_id}"),
-            Some(&session_a.token),
+            Some(&session_a),
         ))
         .await
         .unwrap();
@@ -614,7 +623,7 @@ async fn export_paginates_full_history_beyond_the_first_page() {
         .clone()
         .oneshot(get(
             &format!("/v1/owner/export?before={}", Uuid::new_v4()),
-            Some(&session_a.token),
+            Some(&session_a),
         ))
         .await
         .unwrap();
