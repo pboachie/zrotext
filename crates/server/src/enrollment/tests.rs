@@ -452,6 +452,19 @@ async fn owner_precheck_reuses_one_fresh_validation_and_requeries_after() {
         include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
         include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
         include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+        include_str!("../../../../deploy/compose/migrations/006_usage_metering.sql"),
+        include_str!("../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"),
+        include_str!("../../../../deploy/compose/migrations/008_stripe_billing_foundation.sql"),
+        include_str!("../../../../deploy/compose/migrations/009_webhook_manual_replay.sql"),
+        include_str!("../../../../deploy/compose/migrations/010_billing_test_entitlement.sql"),
+        include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
+        include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
+        include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
+        include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
+        include_str!("../../../../deploy/compose/migrations/020_enrollment_retention_indexes.sql"),
+        include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+        include_str!("../../../../deploy/compose/migrations/027_billing_test_config.sql"),
+        include_str!("../../../../deploy/compose/migrations/028_billing_provider_failures.sql"),
     ] {
         client.batch_execute(sql).await.unwrap();
     }
