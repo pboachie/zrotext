@@ -2251,7 +2251,6 @@ async fn recent_grant_precheck_is_one_bounded_index_probe() {
             .await
             .unwrap()
     );
-    drop(store);
     client
         .execute(
             "UPDATE dispatch_fences SET outcome='submitted' WHERE attempt_id=$1",
@@ -2267,7 +2266,6 @@ async fn recent_grant_precheck_is_one_bounded_index_probe() {
             .unwrap(),
         "an attempt from the last minute must still refuse"
     );
-    drop(store);
     client
         .execute(
             "UPDATE message_attempts SET created_at=now()-interval '2 minutes' WHERE id=$1",
@@ -2289,7 +2287,6 @@ async fn recent_grant_precheck_is_one_bounded_index_probe() {
             .await
             .unwrap()
     );
-    drop(store);
     client
         .execute("UPDATE deployment_authority SET dispatch_enabled=TRUE", &[])
         .await
@@ -2301,7 +2298,6 @@ async fn recent_grant_precheck_is_one_bounded_index_probe() {
             .await
             .unwrap()
     );
-    drop(store);
     client
         .batch_execute(&format!(
             "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
