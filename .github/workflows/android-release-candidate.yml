@@ -1,22 +1,51 @@
-name: Android unsigned candidate (manual)
+name: Android unsigned candidate
 on:
   workflow_dispatch:
+  # Every published release also gets an unsigned APK built from its tag.
+  release:
+    types: [published]
 permissions:
   contents: read
   id-token: write
   attestations: write
 concurrency:
-  group: android-release-candidate
+  group: android-release-candidate-${{ github.event.release.tag_name || github.ref }}
   cancel-in-progress: false
 jobs:
   candidate:
-    # Signing secrets never run against a PR or a manually selected feature branch.
-    if: github.ref == 'refs/heads/main'
+    # Never runs for a PR or a manually selected feature branch: only a manual
+    # run on main, or a published release of this repository (the tag is
+    # validated as an annotated version tag on main before anything is built).
+    # No signing secret exists in this workflow; signing stays local.
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'release' && github.repository == 'pboachie/zrotext' &&
+       startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: ${{ github.event_name == 'release' && '0' || '1' }}
           persist-credentials: false
+      - name: Validate annotated main-branch release tag
+        if: github.event_name == 'release'
+        run: |
+          git fetch origin main
+          python3 scripts/check_release_tag.py
+      - name: Name the artifact after its source
+        id: artifact
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == release ]]; then
+            if [[ "$RELEASE_TAG" != "$GITHUB_REF_NAME" ]]; then
+              echo 'Release tag differs from the checked-out ref' >&2
+              exit 1
+            fi
+            echo "name=android-unsigned-candidate-${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=android-unsigned-candidate-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          fi
       - name: Validate Gradle wrapper JAR
         uses: gradle/actions/wrapper-validation@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
       - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
@@ -45,11 +74,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: python3 android/tools/release_candidate.py verify-unsigned
       # Actions artifacts from this public repository are publicly readable.
-      # Keep signing keys and signed candidates in an approved private channel.
+      # Keep signing keys and signed candidates in an approved private channel;
+      # nothing signed is ever produced or attached here.
       - name: Store unsigned candidate for manual review
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: android-unsigned-candidate-${{ github.sha }}
+          name: ${{ steps.artifact.outputs.name }}
           path: ${{ steps.release_paths.outputs.unsigned }}/
           if-no-files-found: error
           retention-days: 7

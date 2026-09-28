@@ -166,13 +166,27 @@ class ReleaseCandidateTest(unittest.TestCase):
         unsigned = Path("/tmp/zrotext-android-release/unsigned/unsigned.apk")
         digest = "a" * 64
         with patch.object(sys, "argv", ["release_candidate.py", "verify-unsigned"]), \
+             patch.dict(os.environ, {"GITHUB_REF": "refs/heads/main"}), \
              patch.object(release_candidate, "source_commit", return_value=self.COMMIT), \
              patch.object(release_candidate, "checked_unsigned",
                           return_value=(unsigned, digest, self.IDENTITY, "b" * 64, self.BOM)), \
              patch.object(release_candidate, "verify_unsigned_sbom_attestation") as attestation, \
              redirect_stdout(io.StringIO()):
             release_candidate.main()
-            attestation.assert_called_once_with(unsigned, digest, self.COMMIT, self.BOM)
+            attestation.assert_called_once_with(unsigned, digest, self.COMMIT, self.BOM,
+                                                ("refs/heads/main",))
+            # A release-event run verifies against its own tag ref, nothing else.
+            attestation.reset_mock()
+            with patch.dict(os.environ, {"GITHUB_REF": "refs/tags/v1.2.3"}):
+                release_candidate.main()
+            attestation.assert_called_once_with(unsigned, digest, self.COMMIT, self.BOM,
+                                                ("refs/tags/v1.2.3",))
+            attestation.reset_mock()
+            for ref in ["refs/heads/feature", "refs/tags/latest", "refs/pull/1/merge", ""]:
+                with patch.dict(os.environ, {"GITHUB_REF": ref}), \
+                     self.assertRaisesRegex(ValueError, "main or a published release tag"):
+                    release_candidate.main()
+            attestation.assert_not_called()
             attestation.side_effect = ValueError("Unsigned APK SBOM attestation verification failed")
             with self.assertRaisesRegex(ValueError, "attestation verification failed"):
                 release_candidate.main()
@@ -484,6 +498,43 @@ class ReleaseCandidateTest(unittest.TestCase):
                 release_candidate.verify_unsigned_sbom_attestation(
                     Path("unsigned.apk"), digest, self.COMMIT, self.BOM)
 
+    def test_reviewed_tag_accepts_its_release_attestation_or_main(self):
+        with patch.object(release_candidate, "reviewed_tag_commit", return_value=self.COMMIT), \
+             patch.object(release_candidate, "verify_candidate") as verify:
+            release_candidate.verify_reviewed_candidate("v1.2.3", self.CERTIFICATE, 7, "0.1.6")
+        verify.assert_called_once_with(self.COMMIT, self.CERTIFICATE, 7, "0.1.6",
+                                       source_refs=("refs/tags/v1.2.3", "refs/heads/main"))
+    def test_unsigned_sbom_attestation_tries_each_allowed_ref_in_order(self):
+        digest = "a" * 64
+        statement = [{"verificationResult": {"statement": {
+            "predicateType": release_candidate.SBOM_PREDICATE,
+            "subject": [{"digest": {"sha256": digest}}],
+            "predicate": self.BOM,
+        }}}]
+        failed = type("Result", (), {"returncode": 1, "stdout": ""})()
+        verified = type("Result", (), {"returncode": 0, "stdout": json.dumps(statement)})()
+        refs = ("refs/tags/v1.2.3", "refs/heads/main")
+        # Built earlier from main: the tag ref has no attestation, main does.
+        with patch.object(release_candidate.subprocess, "run",
+                          side_effect=[failed, verified]) as command:
+            release_candidate.verify_unsigned_sbom_attestation(
+                Path("unsigned.apk"), digest, self.COMMIT, self.BOM, refs)
+        used = [call.args[0][call.args[0].index("--source-ref") + 1]
+                for call in command.call_args_list]
+        self.assertEqual(used, list(refs))
+        for call in command.call_args_list:
+            self.assertIn(self.COMMIT, call.args[0])
+            self.assertIn(release_candidate.ATTESTATION_WORKFLOW, call.args[0])
+        with patch.object(release_candidate.subprocess, "run", side_effect=[failed, failed]):
+            with self.assertRaisesRegex(ValueError, "attestation verification failed"):
+                release_candidate.verify_unsigned_sbom_attestation(
+                    Path("unsigned.apk"), digest, self.COMMIT, self.BOM, refs)
+        for bad in [("refs/heads/feature",), ("refs/tags/nightly",), ()]:
+            with patch.object(release_candidate.subprocess, "run") as command, \
+                 self.assertRaises(ValueError):
+                release_candidate.verify_unsigned_sbom_attestation(
+                    Path("unsigned.apk"), digest, self.COMMIT, self.BOM, bad)
+            command.assert_not_called()
     def test_attested_non_ascii_sbom_survives_windows_default_encoding(self):
         bom = {**self.BOM, "components": [{**self.BOM["components"][0],
                                          "description": "Square’s HTTP client"}]}

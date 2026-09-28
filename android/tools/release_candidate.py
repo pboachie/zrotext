@@ -64,6 +64,8 @@ SBOM_NAME = "release-runtime.cdx.json"
 SBOM_CONFIGURATION = "releaseRuntimeClasspath"
 SBOM_PREDICATE = "https://cyclonedx.org/bom"
 ATTESTATION_WORKFLOW = "pboachie/zrotext/.github/workflows/android-release-candidate.yml"
+# The candidate workflow runs by manual dispatch on main or when a release is published.
+MAIN_REF = "refs/heads/main"
 SOURCE_TAG = re.compile(
     r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\."
     r"(?:0|[1-9][0-9]*)(?:-rc\.[1-9][0-9]*)?\Z"
@@ -168,8 +170,10 @@ def reviewed_tag_commit(tag: str) -> str:
 def verify_reviewed_candidate(tag: str, expected_certificate: str,
                               expected_version_code: int,
                               expected_version_name: str) -> None:
+    # A reviewed tag may have been built by its release event or earlier from main.
     verify_candidate(reviewed_tag_commit(tag), expected_certificate,
-                     expected_version_code, expected_version_name)
+                     expected_version_code, expected_version_name,
+                     source_refs=(f"refs/tags/{tag}", MAIN_REF))
 
 
 def release_approval(data: bytes) -> dict[str, str | int]:
@@ -483,21 +487,40 @@ def checked_unsigned(
     return unsigned, digest, identity, sbom_hash, bom
 
 
+def attestation_source_ref(ref: str) -> str:
+    """Accept only the refs the candidate workflow may attest from."""
+    tag = ref.removeprefix("refs/tags/")
+    if ref == MAIN_REF or (tag != ref and SOURCE_TAG.fullmatch(tag)):
+        return ref
+    raise ValueError("Attestations come only from main or a published release tag")
+
+
 def verify_unsigned_sbom_attestation(unsigned: Path, digest: str,
-                                     commit: str, bom: dict[str, object]) -> None:
-    """Require GitHub's signed SBOM for these exact unsigned APK bytes."""
-    try:
-        result = subprocess.run([
-            "gh", "attestation", "verify", str(unsigned),
-            "--repo", "pboachie/zrotext", "--hostname", "github.com",
-            "--signer-workflow", ATTESTATION_WORKFLOW,
-            "--source-ref", "refs/heads/main", "--source-digest", commit,
-            "--predicate-type", SBOM_PREDICATE, "--format", "json",
-        ], capture_output=True, text=True, encoding="utf-8", timeout=180,
-            check=False, shell=False)
-    except (OSError, UnicodeError, subprocess.TimeoutExpired) as exc:
-        raise ValueError("Unsigned APK SBOM attestation lookup could not finish") from exc
-    if result.returncode:
+                                     commit: str, bom: dict[str, object],
+                                     source_refs: tuple[str, ...] = (MAIN_REF,)) -> None:
+    """Require GitHub's signed SBOM for these exact unsigned APK bytes.
+
+    The attestation must come from the candidate workflow at one of
+    `source_refs` for exactly `commit`; the first ref that verifies is used.
+    """
+    if not source_refs:
+        raise ValueError("An attestation source ref is required")
+    result = None
+    for source_ref in source_refs:
+        try:
+            result = subprocess.run([
+                "gh", "attestation", "verify", str(unsigned),
+                "--repo", "pboachie/zrotext", "--hostname", "github.com",
+                "--signer-workflow", ATTESTATION_WORKFLOW,
+                "--source-ref", attestation_source_ref(source_ref), "--source-digest", commit,
+                "--predicate-type", SBOM_PREDICATE, "--format", "json",
+            ], capture_output=True, text=True, encoding="utf-8", timeout=180,
+                check=False, shell=False)
+        except (OSError, UnicodeError, subprocess.TimeoutExpired) as exc:
+            raise ValueError("Unsigned APK SBOM attestation lookup could not finish") from exc
+        if not result.returncode:
+            break
+    if result is None or result.returncode:
         raise ValueError("Unsigned APK SBOM attestation verification failed")
     try:
         verified = json.loads(result.stdout)
@@ -608,7 +631,8 @@ def sign_candidate(commit: str, keystore_path: Path,
 
 def verify_candidate(commit: str, expected_certificate: str,
                      expected_version_code: int,
-                     expected_version_name: str) -> None:
+                     expected_version_name: str,
+                     source_refs: tuple[str, ...] = (MAIN_REF,)) -> None:
     """Independently verify transferred artifacts without signing credentials."""
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ValueError("A full expected source commit is required")
@@ -667,7 +691,7 @@ def verify_candidate(commit: str, expected_certificate: str,
     if len(certificates) != 1 or certificates.pop().lower() != expected_certificate:
         raise ValueError("APK signing certificate differs from approved fingerprint")
     run(zipalign, "-c", "4", apk, capture=True, env=unsigned_build_env())
-    verify_unsigned_sbom_attestation(unsigned, unsigned_hash, commit, bom)
+    verify_unsigned_sbom_attestation(unsigned, unsigned_hash, commit, bom, source_refs)
     print(f"Verified signed candidate: {apk}")
     print(f"Source commit: {commit}")
     print(f"Unsigned APK SHA-256: {unsigned_hash}")
@@ -704,7 +728,9 @@ def main() -> None:
         build_unsigned(commit, out)
     elif args.phase == "verify-unsigned":
         unsigned, digest, _, _, bom = checked_unsigned(commit)
-        verify_unsigned_sbom_attestation(unsigned, digest, commit, bom)
+        # The hosted run verifies the attestation it just made, from its own ref.
+        source_ref = attestation_source_ref(os.environ.get("GITHUB_REF", ""))
+        verify_unsigned_sbom_attestation(unsigned, digest, commit, bom, (source_ref,))
         print(f"Verified attested unsigned candidate from {commit}: {digest}")
     else:
         out = external_artifact_path(ARTIFACT_ROOT / "candidate", "Output directory")
