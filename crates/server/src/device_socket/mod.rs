@@ -44,6 +44,7 @@ use zrotext_delivery_store::{DeliveryStore, GrantRecord, RadioEvent, SessionReco
 use zrotext_domain::{Evidence, MessageState};
 
 mod preconditions;
+mod stream_diagnostic;
 
 const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
 // Whole pre-session phase, from the upgrade request through proof verification,
@@ -912,7 +913,7 @@ async fn run_socket(
     // Enabled only for controlled local liveness probes. Emit bounded,
     // content-free timing and exit markers, never frames or device IDs.
     let diagnostic = std::env::var("ZT_DEVICE_STREAM_DIAGNOSTIC").is_ok_and(|value| value == "1");
-    let mut diagnostic_heartbeats = 0;
+    let mut diagnostic_tally = stream_diagnostic::StreamTally::new(last_heartbeat);
     let mut close_reason = "other_stream_exit";
     let mut close_with_code = None;
     loop {
@@ -975,14 +976,15 @@ async fn run_socket(
                             close_reason = "heartbeat_ack_write_failed";
                             break;
                         }
-                        if diagnostic && diagnostic_heartbeats < 256 {
+                        if diagnostic && diagnostic_tally.record_heartbeat(since_prior_accepted_ms) {
                             eprintln!(
-                                "ZTDeviceStream heartbeat_ack connection_epoch={} since_prior_accepted_ms={} handling_ms={}",
-                                session.connection_epoch,
-                                since_prior_accepted_ms,
-                                received_at.elapsed().as_millis()
+                                "{}",
+                                stream_diagnostic::StreamTally::heartbeat_line(
+                                    session.connection_epoch,
+                                    since_prior_accepted_ms,
+                                    received_at.elapsed().as_millis(),
+                                )
                             );
-                            diagnostic_heartbeats += 1;
                         }
                     }
                     Some(ClientFrame::AlphaReady { v: 1, connection_epoch, recipient_digest })
@@ -1278,9 +1280,13 @@ async fn run_socket(
     }
     if diagnostic {
         eprintln!(
-            "ZTDeviceStream close_reason={close_reason} connection_epoch={} since_heartbeat_ms={}",
-            session.connection_epoch,
-            last_heartbeat.elapsed().as_millis()
+            "{}",
+            diagnostic_tally.close_line(
+                close_reason,
+                session.connection_epoch,
+                last_heartbeat.elapsed(),
+                Instant::now(),
+            )
         );
     }
     release_socket_session(&state, session).await;

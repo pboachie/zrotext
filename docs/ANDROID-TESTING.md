@@ -57,6 +57,65 @@ When reporting device behavior, include the model, Android version, app revision
 
 The [device-stream contract](../protocol/v1/device-stream.md) documents the authenticated connection. The [architecture](ARCHITECTURE.md) explains why an ambiguous radio attempt remains unknown rather than being automatically resent.
 
+## Long liveness runs
+
+A liveness run keeps one enrolled phone connected for hours while you change
+the conditions around it: screen off, unplugged, Wi-Fi to mobile data and
+back, a different carrier or SIM, a reboot, or a different device model. The
+server records the run with content-free markers; `scripts/liveness_report.py`
+turns them into a comparable summary. No SMS is sent, and nothing in this
+procedure needs message content or phone numbers.
+
+1. Start a server you control with `ZT_DEVICE_STREAM_DIAGNOSTIC=1` in its
+   private environment (the Compose file passes it through). Keep one gateway
+   phone connected to that server for the run. Markers carry no device ID, so a
+   log with several devices mixes their connections; the report warns when
+   connections overlap.
+2. The device stream prints to standard error:
+   - `ZTDeviceStream heartbeat_ack connection_epoch=N since_prior_accepted_ms=M handling_ms=H`
+     for the first 256 accepted heartbeats of each connection (about two hours
+     at the 30-second cadence);
+   - `ZTDeviceStream close_reason=R connection_epoch=N since_heartbeat_ms=M heartbeats=C max_gap_ms=G connected_ms=T`
+     when the connection ends. The totals cover the whole connection, including
+     heartbeats after the per-heartbeat markers stop. `R` is one of the stream
+     exit reasons in `crates/server/src/device_socket/mod.rs`, for example
+     `heartbeat_deadline`, `superseded` or `site_drain`.
+3. Collect the log with timestamps, for example
+   `docker compose --env-file .env -f deploy/compose/compose.yaml logs --no-color --timestamps app > run.log`.
+   Keep the raw log private; it contains other server output.
+4. Summarize it:
+
+   ```sh
+   python3 scripts/liveness_report.py run.log --min-observed-seconds 86400 \
+     --label device_model="Example Phone 7" --label network="wifi to lte"
+   ```
+
+The report is JSON: connections and reconnects, total heartbeats, connected
+time, the worst accepted heartbeat gap, sampled gap percentiles, close reasons
+and, when every marker has a timestamp, the downtime between connections. The
+tool never copies log lines into the report; malformed markers are only
+counted. It exits `0` when every check passes, `1` when one fails, and `2` when
+the log has no markers.
+
+| Check | Fails when |
+|---|---|
+| `max_gap` | Any accepted heartbeat gap exceeds `--max-gap-seconds` (default 45, the server's heartbeat deadline). |
+| `well_formed_markers` | A `ZTDeviceStream` line does not match the grammar above. |
+| `min_observed` | With `--min-observed-seconds`, the connections together stayed up for less time. |
+| `max_reconnects` | With `--max-reconnects`, the run reconnected more often. |
+
+Labels accept only `android_version`, `app_version`, `carrier_class`,
+`device_model`, `network`, `power` and `screen`, with short values and no run of
+five or more digits, so a serial, IMEI or phone number cannot slip into a
+report. Use a coarse carrier class such as `prepaid-mvno` rather than an
+account detail.
+
+A passing report shows that this server kept a stream alive under the stated
+conditions for the stated time. It does not prove SMS delivery, carrier
+behavior on other plans, or behavior on another device model. Logs from a
+server before these totals existed still parse; the report then marks connected
+times as estimates.
+
 ## Virtual inbound receiver check
 
 On a freshly booted `sdk_gphone` emulator with neither gateway APK installed,
