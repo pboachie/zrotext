@@ -214,7 +214,31 @@ async fn signed_unsolicited_stop_is_attempt_free_line_bound_and_serialized() {
             .get::<_, i64>(0),
         0
     );
+    // Another device or busy traffic has spent the shared storage budget. A
+    // line STOP spends only this device's consent budget.
+    db.execute(
+        "INSERT INTO auth_abuse_counters(scope,subject_hash,window_started_at,attempts,updated_at) \
+         VALUES('inbound_daily',$1,clock_timestamp(),1000,clock_timestamp())",
+        &[&crate::inbound::budget_key("account", account)],
+    )
+    .await
+    .unwrap();
+    assert!(
+        !crate::inbound::consume_storage_budget(&db, account, device)
+            .await
+            .unwrap()
+    );
     assert!(ingest_line_opt_out(&mut db, session, &event).await.unwrap());
+    assert_eq!(
+        db.query_one(
+            "SELECT attempts FROM auth_abuse_counters WHERE scope='inbound_consent_daily' AND subject_hash=$1",
+            &[&crate::inbound::budget_key("device", device)],
+        )
+        .await
+        .unwrap()
+        .get::<_, i32>(0),
+        1
+    );
     let pending_state: String = db
         .query_one("SELECT state FROM messages WHERE id=$1", &[&pending_sms])
         .await
