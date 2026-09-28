@@ -60,8 +60,17 @@ SBOM inventories the final server image, not build-stage dependencies.
 
 ## Android candidate custody
 
-The manual `android-release-candidate.yml` workflow builds and uploads only an
-unsigned APK, its CycloneDX release-runtime SBOM, and a receipt containing both
+The `android-release-candidate.yml` workflow builds and uploads only an
+unsigned APK. It runs automatically when a GitHub Release is published, and a
+maintainer can also start it manually on `main`. For a release, it checks out the
+release tag and first runs `scripts/check_release_tag.py`, the same check the
+server image release uses: the tag must be an annotated `vMAJOR.MINOR.PATCH` (or
+`-rc.N`) tag whose commit is on `main`, or nothing is built. The uploaded
+artifact is named `android-unsigned-candidate-<tag>` for a release and
+`android-unsigned-candidate-<commit>` for a manual run. The workflow has no
+signing secret and never attaches anything to the release; signing stays local
+as described below. It uploads the unsigned APK, its CycloneDX
+release-runtime SBOM, and a receipt containing both
 SHA-256 digests. The pinned CycloneDX Gradle task resolves only
 `releaseRuntimeClasspath`; test, KSP, and other build-only dependencies remain
 in the Gradle lockfile and dependency graph, outside this shipped-app
@@ -144,7 +153,7 @@ published `origin` tag, a fresh fetched `origin/main`, and tag commit ancestry
 on that branch. It then checks both receipts and checksums against that tag's
 source commit, approved app version, package and SDK identity, the hashed release-runtime SBOM,
 GitHub's verified CycloneDX attestation for the exact unsigned APK digest and
-source commit, every uncompressed APK ZIP entry, ZIP alignment, the v3
+source commit (made by this workflow from the tag's release run or from `main`), every uncompressed APK ZIP entry, ZIP alignment, the v3
 signature (supported by the app's API 28 minimum) with `apksigner`, and the
 approved certificate fingerprint. Matching APK contents links the attested
 unsigned artifact to the privately signed candidate. Install the GitHub CLI
