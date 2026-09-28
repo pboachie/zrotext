@@ -244,7 +244,10 @@ reports older than one day are eligible for bounded retention pruning.
 
 ## Planned API v1 outline
 
-The following routes remain design targets, not current server behavior.
+The following routes remain design targets, not current server behavior. The
+machine-readable contract that separates the implemented routes from these
+planned ones, with the exact response shapes `crates/server` emits today, is
+[protocol/v1/openapi/public-v1.json](../protocol/v1/openapi/public-v1.json).
 
 | Method/path | Contract |
 |---|---|
