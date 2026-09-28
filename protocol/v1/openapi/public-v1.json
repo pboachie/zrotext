@@ -3,7 +3,7 @@
   "info": {
     "title": "ZROtext public HTTP API v1 (current server contract)",
     "version": "1.0.0",
-    "description": "Machine-readable contract for the four public route families /v1/messages, /v1/devices, /v1/webhooks and /v1/usage, documenting the routes exactly as crates/server implements them today and clearly labeling the routes that are planned but not implemented. Every operation carries an x-implemented extension: true means a route with that method and path is mounted by crates/server/src/main.rs today (some only when their feature flags are configured, as stated per operation); false means PLANNED, no route exists in this build and the entry only pins the design target from the 'Planned API v1 outline' in docs/ARCHITECTURE.md. Implemented today: the full /v1/webhooks owner lifecycle (crates/server/src/http_webhooks.rs, mounted when WEBHOOK_KEK_VERSION/WEBHOOK_KEK_B64 are configured), the /v1/owner/messages timeline (crates/server/src/http_owner_messages.rs), the allowlisted synthetic-alpha test plane at /v1/alpha/messages (crates/server/src/http_messages.rs, mounted at /v1/alpha only while SYNTHETIC_ALPHA_ENABLED admits an account and recipient), and the owner device surface at /v1/enrollment/devices (crates/server/src/http_enrollment/mod.rs). Planned and absent today: POST/GET /v1/messages, GET /v1/messages/{message_id}, POST /v1/messages/{message_id}/cancel, GET /v1/devices and GET /v1/usage; the sealed-message proposal for a future public send plane is pinned separately in openapi/sealed-v1.json and nothing here widens it. Implemented owner-session routes authenticate with the __Host-zrotext_session cookie plus the session-bound double-submit CSRF cookie and x-zrotext-csrf header (a GET with the session cookie alone is refused with 403), and owner mutations additionally require the exact configured HTTPS Origin header; alpha routes authenticate a scoped API key as a Bearer token. Every implemented response carries Cache-Control: no-store. Responses from these routes never contain message bodies, recipients, transport payloads, SIM identifiers or key material; the one exception is the webhook signing secret, which the create and rotate responses expose exactly once."
+    "description": "Machine-readable contract for the four public route families /v1/messages, /v1/devices, /v1/webhooks and /v1/usage, documenting the routes exactly as crates/server implements them today and clearly labeling the routes that are planned but not implemented. Every operation carries an x-implemented extension: true means a route with that method and path is mounted by crates/server/src/main.rs today (some only when their feature flags are configured, as stated per operation); false means PLANNED, no route exists in this build and the entry only pins the design target from the 'Planned API v1 outline' in docs/ARCHITECTURE.md. Implemented today: the full /v1/webhooks owner lifecycle (crates/server/src/http_webhooks.rs, mounted when WEBHOOK_KEK_VERSION/WEBHOOK_KEK_B64 are configured), the /v1/owner/messages timeline (crates/server/src/http_owner_messages.rs), the allowlisted synthetic-alpha test plane at /v1/alpha/messages (crates/server/src/http_messages.rs, mounted at /v1/alpha only while SYNTHETIC_ALPHA_ENABLED admits an account and recipient), and the owner device surface at /v1/enrollment/devices (crates/server/src/http_enrollment/mod.rs). Planned and absent today: POST/GET /v1/messages, GET /v1/messages/{message_id}, POST /v1/messages/{message_id}/cancel, GET /v1/devices and GET /v1/usage; the sealed-message proposal for a future public send plane is pinned separately in openapi/sealed-v1.json and nothing here widens it. Implemented owner-session routes authenticate with the __Host-zrotext_session cookie plus the session-bound double-submit CSRF cookie and x-zrotext-csrf header (a GET with the session cookie alone is refused with 403), and owner mutations additionally require the exact configured HTTPS Origin header; alpha routes authenticate a scoped API key as a Bearer token. Every implemented response carries Cache-Control: no-store. Responses from these routes never contain message bodies, recipients, transport payloads, SIM identifiers or key material; the one exception is the webhook signing secret, which the create and rotate responses expose exactly once. Shared transport responses: every implemented route is admitted by the process ingress before routing, authentication or body reading (crates/server/src/ingress.rs). When a route class's permit pool is saturated (64 concurrent owner/API requests per process), the request is refused with a bare 503 that has an empty body, Cache-Control: no-store and Retry-After: 1 — not the per-route JSON unavailable document. When the request body does not finish arriving within ten seconds of admission, or the handler does not produce a response within thirty seconds, the request is refused with a bare 408 with an empty body and Cache-Control: no-store. These two shared responses are pinned at components/responses/AdmissionUnavailable and components/responses/RequestDeadlineExceeded; every implemented operation references the 408, and the admission 503 can replace any per-route 503 for that request. Two more framework-level shapes are pinned the same way: components/responses/RequestBodyTooLarge (a body over the router's byte limit keeps the framework's plain-text 413 instead of the JSON envelope) and components/responses/MalformedRequestRejected (a malformed path or query parameter, or an unknown query field on the routes that reject them, is answered with a plain-text 400 by the framework extractor before authentication or the handler runs)."
   },
   "tags": [
     {
@@ -85,8 +85,11 @@
               }
             }
           },
+          "408": {
+            "$ref": "#/components/responses/RequestDeadlineExceeded"
+          },
           "503": {
-            "description": "unavailable: the store is temporarily unavailable.",
+            "description": "unavailable: the store is temporarily unavailable. The shared bare admission 503 (empty body, Retry-After: 1) can also replace this response; see components/responses/AdmissionUnavailable.",
             "headers": {
               "Cache-Control": { "$ref": "#/components/headers/NoStore" }
             },
@@ -104,7 +107,7 @@
         "operationId": "createWebhookEndpoint",
         "summary": "Create one disabled webhook endpoint",
         "x-implemented": true,
-        "description": "Implemented today (crates/server/src/http_webhooks.rs create_endpoint). Creates a disabled endpoint and returns the signing secret exactly once; there is no secret retrieval route, so losing the response requires rotation. The callback URL must pass the strict HTTPS egress validator (HTTPS DNS name on port 443, no IP literals, no userinfo, no fragment, no local/internal/special-use names). The account cap is eight endpoints including disabled ones. Requires the owner session cookie, the CSRF cookie/header pair and the exact configured HTTPS Origin. Request bodies are limited to 4 KiB and must be application/json with no unknown members.",
+        "description": "Implemented today (crates/server/src/http_webhooks.rs create_endpoint). Creates a disabled endpoint and returns the signing secret exactly once; there is no secret retrieval route, so losing the response requires rotation. The callback URL must pass the strict HTTPS egress validator (HTTPS DNS name on port 443, no IP literals, no userinfo, no fragment, no local/internal/special-use names). The account cap is eight endpoints including disabled ones. Request bodies are limited to 4 KiB and must be application/json with no unknown members. The session cookie, the CSRF cookie/header pair, the exact configured Origin and the account's in-flight admission slot are all checked from headers before the body is read (the OwnerMutation extractor of crates/server/src/http_auth/preauth.rs): a request without a live owner session is answered 401 even when its body is also invalid, and a request whose body is over the limit is still charged an admission slot first.",
         "security": [
           {
             "ownerSession": [],
@@ -192,8 +195,26 @@
               }
             }
           },
+          "413": {
+            "$ref": "#/components/responses/RequestBodyTooLarge"
+          },
+          "429": {
+            "description": "rate_limited: the account already holds its cap of four authenticated body-carrying requests in flight in this process (the per-account admission slot taken after the session, CSRF and Origin checks succeed). JSON error document without a Retry-After header.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "rate_limited" }
+              }
+            }
+          },
+          "408": {
+            "$ref": "#/components/responses/RequestDeadlineExceeded"
+          },
           "503": {
-            "description": "unavailable: storage or the secret vault is temporarily unavailable.",
+            "description": "unavailable: storage or the secret vault is temporarily unavailable. The shared bare admission 503 (empty body, Retry-After: 1) can also replace this response; see components/responses/AdmissionUnavailable.",
             "headers": {
               "Cache-Control": { "$ref": "#/components/headers/NoStore" }
             },
@@ -256,7 +277,7 @@
             }
           },
           "400": {
-            "description": "invalid_request: malformed endpoint or cursor ID, or a page size outside 1-20.",
+            "description": "invalid_request: a page size outside 1-20 is answered by the handler with the JSON envelope. A malformed endpoint or cursor ID, or a query parameter of the wrong type, is instead rejected by the framework extractor with a plain-text 400 before authentication; see components/responses/MalformedRequestRejected.",
             "headers": {
               "Cache-Control": { "$ref": "#/components/headers/NoStore" }
             },
@@ -264,6 +285,9 @@
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Error" },
                 "example": { "code": "invalid_request" }
+              },
+              "text/plain": {
+                "schema": { "type": "string" }
               }
             }
           },
@@ -303,8 +327,11 @@
               }
             }
           },
+          "408": {
+            "$ref": "#/components/responses/RequestDeadlineExceeded"
+          },
           "503": {
-            "description": "unavailable: the store is temporarily unavailable.",
+            "description": "unavailable: the store is temporarily unavailable. The shared bare admission 503 (empty body, Retry-After: 1) can also replace this response; see components/responses/AdmissionUnavailable.",
             "headers": {
               "Cache-Control": { "$ref": "#/components/headers/NoStore" }
             },
@@ -378,7 +405,7 @@
             }
           },
           "400": {
-            "description": "invalid_request: the Idempotency-Key is absent, malformed or not a UUIDv4, or a path ID is malformed.",
+            "description": "invalid_request: the Idempotency-Key is absent, malformed or not a UUIDv4. A malformed path ID is instead rejected by the framework extractor with a plain-text 400 before authentication; see components/responses/MalformedRequestRejected.",
             "headers": {
               "Cache-Control": { "$ref": "#/components/headers/NoStore" }
             },
@@ -386,6 +413,9 @@
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Error" },
                 "example": { "code": "invalid_request" }
+              },
+              "text/plain": {
+                "schema": { "type": "string" }
               }
             }
           },
@@ -440,8 +470,11 @@
               }
             }
           },
+          "408": {
+            "$ref": "#/components/responses/RequestDeadlineExceeded"
+          },
           "503": {
-            "description": "unavailable: storage is temporarily unavailable; retry later with the same Idempotency-Key.",
+            "description": "unavailable: storage is temporarily unavailable; retry later with the same Idempotency-Key. The shared bare admission 503 (empty body, Retry-After: 1) can also replace this response; see components/responses/AdmissionUnavailable.",
             "headers": {
               "Cache-Control": { "$ref": "#/components/headers/NoStore" }
             },
@@ -492,7 +525,7 @@
             }
           },
           "400": {
-            "description": "invalid_request: malformed endpoint ID. invalid_webhook_endpoint: the stored callback URL no longer passes the egress validator.",
+            "description": "invalid_webhook_endpoint: the stored callback URL no longer passes the egress validator (JSON envelope from the handler). A malformed endpoint ID is instead rejected by the framework extractor with a plain-text 400 before authentication; see components/responses/MalformedRequestRejected.",
             "headers": {
               "Cache-Control": { "$ref": "#/components/headers/NoStore" }
             },
@@ -500,9 +533,11 @@
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Error" },
                 "examples": {
-                  "invalidRequest": { "value": { "code": "invalid_request" } },
                   "invalidWebhookEndpoint": { "value": { "code": "invalid_webhook_endpoint" } }
                 }
+              },
+              "text/plain": {
+                "schema": { "type": "string" }
               }
             }
           },
@@ -542,8 +577,11 @@
               }
             }
           },
+          "408": {
+            "$ref": "#/components/responses/RequestDeadlineExceeded"
+          },
           "503": {
-            "description": "unavailable: storage or the secret vault is temporarily unavailable.",
+            "description": "unavailable: storage or the secret vault is temporarily unavailable. The shared bare admission 503 (empty body, Retry-After: 1) can also replace this response; see components/responses/AdmissionUnavailable.",
             "headers": {
               "Cache-Control": { "$ref": "#/components/headers/NoStore" }
             },
@@ -594,16 +632,7 @@
             }
           },
           "400": {
-            "description": "invalid_request: malformed endpoint ID.",
-            "headers": {
-              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
-            },
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/Error" },
-                "example": { "code": "invalid_request" }
-              }
-            }
+            "$ref": "#/components/responses/MalformedRequestRejected"
           },
           "401": {
             "description": "unauthorized: missing session cookie or unknown, expired or revoked session.",
@@ -641,8 +670,11 @@
               }
             }
           },
+          "408": {
+            "$ref": "#/components/responses/RequestDeadlineExceeded"
+          },
           "503": {
-            "description": "unavailable: storage is temporarily unavailable.",
+            "description": "unavailable: storage is temporarily unavailable. The shared bare admission 503 (empty body, Retry-After: 1) can also replace this response; see components/responses/AdmissionUnavailable.",
             "headers": {
               "Cache-Control": { "$ref": "#/components/headers/NoStore" }
             },
@@ -698,16 +730,7 @@
             }
           },
           "400": {
-            "description": "invalid_request: malformed endpoint ID.",
-            "headers": {
-              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
-            },
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/Error" },
-                "example": { "code": "invalid_request" }
-              }
-            }
+            "$ref": "#/components/responses/MalformedRequestRejected"
           },
           "401": {
             "description": "unauthorized: missing session cookie or unknown, expired or revoked session.",
@@ -745,8 +768,11 @@
               }
             }
           },
+          "408": {
+            "$ref": "#/components/responses/RequestDeadlineExceeded"
+          },
           "503": {
-            "description": "unavailable: storage or the secret vault is temporarily unavailable.",
+            "description": "unavailable: storage or the secret vault is temporarily unavailable. The shared bare admission 503 (empty body, Retry-After: 1) can also replace this response; see components/responses/AdmissionUnavailable.",
             "headers": {
               "Cache-Control": { "$ref": "#/components/headers/NoStore" }
             },
@@ -766,7 +792,7 @@
         "operationId": "listOwnerMessages",
         "summary": "Page the account's message timeline (writer metadata only)",
         "x-implemented": true,
-        "description": "Implemented today (crates/server/src/http_owner_messages.rs list_messages). Pages at most 20 messages newest first by creation time then ID, each with the last at most 32 timeline events and a flag when older events were dropped. The response contains writer metadata only: never the recipient, transport payload or device-side inbound content. A before cursor that is unknown or belongs to another account is 404; the 404 and 503 responses have empty bodies. Requires the owner session cookie plus the matching double-submit CSRF header.",
+        "description": "Implemented today (crates/server/src/http_owner_messages.rs list_messages). Pages at most 20 messages newest first by creation time then ID, each with the last at most 32 timeline events and a flag when older events were dropped. The response contains writer metadata only: never the recipient, transport payload or device-side inbound content. The query struct rejects unknown fields, so an unrecognized query parameter, like a before cursor that is not a UUID, is answered by the framework with a plain-text 400 before authentication runs (components/responses/MalformedRequestRejected). A before cursor that is unknown or belongs to another account is 404; the 404 and 503 responses have empty bodies. Requires the owner session cookie plus the matching double-submit CSRF header.",
         "security": [
           {
             "ownerSession": [],
@@ -794,8 +820,11 @@
               }
             }
           },
+          "400": {
+            "$ref": "#/components/responses/MalformedRequestRejected"
+          },
           "401": {
-            "description": "unauthorized: missing session cookie or unknown, expired or revoked session. Empty body.",
+            "description": "unauthorized: missing session cookie or unknown, expired or revoked session; the JSON error document.",
             "headers": {
               "Cache-Control": { "$ref": "#/components/headers/NoStore" }
             },
@@ -807,7 +836,7 @@
             }
           },
           "403": {
-            "description": "forbidden: the CSRF cookie and x-zrotext-csrf header are missing or do not match. Empty body.",
+            "description": "forbidden: the CSRF cookie and x-zrotext-csrf header are missing or do not match; the JSON error document.",
             "headers": {
               "Cache-Control": { "$ref": "#/components/headers/NoStore" }
             },
@@ -824,8 +853,11 @@
               "Cache-Control": { "$ref": "#/components/headers/NoStore" }
             }
           },
+          "408": {
+            "$ref": "#/components/responses/RequestDeadlineExceeded"
+          },
           "503": {
-            "description": "unavailable: the store is temporarily unavailable. Empty body; no JSON error document.",
+            "description": "unavailable: the store is temporarily unavailable. Empty body; no JSON error document, and no Retry-After. The shared bare admission 503 (also an empty body, but with Retry-After: 1) can also replace this response; see components/responses/AdmissionUnavailable.",
             "headers": {
               "Cache-Control": { "$ref": "#/components/headers/NoStore" }
             }
@@ -839,7 +871,7 @@
         "operationId": "submitAlphaMessage",
         "summary": "Submit one synthetic-alpha test message",
         "x-implemented": true,
-        "description": "Implemented today (crates/server/src/http_messages.rs accept), mounted at /v1/alpha only while SYNTHETIC_ALPHA_ENABLED admits the account and recipient. The caller never supplies message content: only a short test-case identifier, and the server constructs the fixed plaintext body. Requests need a scoped API-key Bearer token (messages:send bound to the named device), a caller-chosen Idempotency-Key header of 1-128 ASCII alphanumeric, dash, dot or underscore bytes, and a JSON body of at most 1 KiB with no unknown members. Admission is fail-closed: an account or recipient outside the allowlist, a disabled alpha policy or an unknown device is 404; quota, abuse and queue limits can reject with 429; a payment hold rejects with 402; billing not yet configured rejects with 503 billing_pending.",
+        "description": "Implemented today (crates/server/src/http_messages.rs accept), mounted at /v1/alpha only while SYNTHETIC_ALPHA_ENABLED admits the account and recipient. The caller never supplies message content: only a short test-case identifier, and the server constructs the fixed plaintext body. Requests need a scoped API-key Bearer token (messages:send bound to the named device), a caller-chosen Idempotency-Key header of 1-128 ASCII alphanumeric, dash, dot or underscore bytes, and a JSON body of at most 1 KiB with no unknown members. The alpha policy, the Bearer credential, the Idempotency-Key header and the account's in-flight admission slot are all checked before the body is read (the AcceptAuth extractor of crates/server/src/http_messages.rs over crates/server/src/http_auth/preauth.rs): a request without a valid key is answered 401, or 400 for a missing Idempotency-Key, even when its body is also invalid, and a body over the limit is rejected only after those header checks. Admission is fail-closed: an account or recipient outside the allowlist, a disabled alpha policy or an unknown device is 404; quota, abuse and queue limits and the per-account in-flight admission cap can reject with 429; a payment hold rejects with 402; billing not yet configured rejects with 503 billing_pending.",
         "security": [
           {
             "bearerAuth": []
@@ -950,8 +982,11 @@
               }
             }
           },
+          "413": {
+            "$ref": "#/components/responses/RequestBodyTooLarge"
+          },
           "429": {
-            "description": "rate_limited, queue_full or quota_exceeded: the account exceeded its abuse budget, the queue is full, or the metered quota is exhausted. Carries Retry-After: 60.",
+            "description": "rate_limited, queue_full or quota_exceeded. rate_limited is returned both when the account exceeds its per-account abuse budget and when it already holds its cap of four authenticated accept requests in flight in this process (the admission slot taken after the Bearer credential and Idempotency-Key header checks succeed); both carry Retry-After: 60. queue_full: the queue is full. quota_exceeded: the metered quota is exhausted.",
             "headers": {
               "Cache-Control": { "$ref": "#/components/headers/NoStore" },
               "Retry-After": { "$ref": "#/components/headers/RetryAfter60" }
@@ -967,8 +1002,11 @@
               }
             }
           },
+          "408": {
+            "$ref": "#/components/responses/RequestDeadlineExceeded"
+          },
           "503": {
-            "description": "unavailable or billing_pending: storage is temporarily unavailable, or no quota is configured for the account yet. billing_pending carries Retry-After: 10.",
+            "description": "unavailable or billing_pending: storage is temporarily unavailable, or no quota is configured for the account yet. billing_pending carries Retry-After: 10. The shared bare admission 503 (empty body, Retry-After: 1) can also replace this response; see components/responses/AdmissionUnavailable.",
             "headers": {
               "Cache-Control": { "$ref": "#/components/headers/NoStore" },
               "Retry-After": { "$ref": "#/components/headers/RetryAfter10" }
@@ -1020,16 +1058,7 @@
             }
           },
           "400": {
-            "description": "invalid_request: the message identity is malformed.",
-            "headers": {
-              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
-            },
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/Error" },
-                "example": { "code": "invalid_request" }
-              }
-            }
+            "$ref": "#/components/responses/MalformedRequestRejected"
           },
           "401": {
             "description": "unauthorized: missing, malformed or unknown bearer credential.",
@@ -1067,8 +1096,11 @@
               }
             }
           },
+          "408": {
+            "$ref": "#/components/responses/RequestDeadlineExceeded"
+          },
           "503": {
-            "description": "unavailable: storage is temporarily unavailable.",
+            "description": "unavailable: storage is temporarily unavailable. The shared bare admission 503 (empty body, Retry-After: 1) can also replace this response; see components/responses/AdmissionUnavailable.",
             "headers": {
               "Cache-Control": { "$ref": "#/components/headers/NoStore" }
             },
@@ -1111,16 +1143,7 @@
             }
           },
           "400": {
-            "description": "invalid_request: the message identity is malformed.",
-            "headers": {
-              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
-            },
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/Error" },
-                "example": { "code": "invalid_request" }
-              }
-            }
+            "$ref": "#/components/responses/MalformedRequestRejected"
           },
           "401": {
             "description": "unauthorized: missing, malformed or unknown bearer credential.",
@@ -1170,8 +1193,11 @@
               }
             }
           },
+          "408": {
+            "$ref": "#/components/responses/RequestDeadlineExceeded"
+          },
           "503": {
-            "description": "unavailable: storage is temporarily unavailable.",
+            "description": "unavailable: storage is temporarily unavailable. The shared bare admission 503 (empty body, Retry-After: 1) can also replace this response; see components/responses/AdmissionUnavailable.",
             "headers": {
               "Cache-Control": { "$ref": "#/components/headers/NoStore" }
             },
@@ -1191,7 +1217,7 @@
         "operationId": "listOwnerDevices",
         "summary": "Page the account's enrolled devices",
         "x-implemented": true,
-        "description": "Implemented today (crates/server/src/http_enrollment/mod.rs list_devices, mounted under /v1/enrollment). Pages at most 50 devices with revocation state, the current authenticated-socket-lease observation, capped pending and in-flight writer-state counts and the optional reported Android preconditions snapshot. A lease proves an authenticated socket only, never SIM, SMS or carrier readiness; counts describe stored writer states, not permission to dispatch, and are capped at 1,000. No SIM identifier, phone number or key material is returned. Requires the owner session cookie plus the matching double-submit CSRF header. A malformed before cursor is 400; the enrollment layer's failure responses have empty bodies.",
+        "description": "Implemented today (crates/server/src/http_enrollment/mod.rs list_devices, mounted under /v1/enrollment). Pages at most 50 devices with revocation state, the current authenticated-socket-lease observation, capped pending and in-flight writer-state counts and the optional reported Android preconditions snapshot. A lease proves an authenticated socket only, never SIM, SMS or carrier readiness; counts describe stored writer states, not permission to dispatch, and are capped at 1,000. No SIM identifier, phone number or key material is returned. Requires the owner session cookie plus the matching double-submit CSRF header. A before cursor that is not a UUID is answered by the framework with a plain-text 400 before authentication; the enrollment layer's failure responses have empty bodies.",
         "security": [
           {
             "ownerSession": [],
@@ -1220,10 +1246,7 @@
             }
           },
           "400": {
-            "description": "invalid_request: the before cursor is not a UUID. Empty body; no JSON error document.",
-            "headers": {
-              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
-            }
+            "$ref": "#/components/responses/MalformedRequestRejected"
           },
           "401": {
             "description": "unauthorized: missing session cookie, unknown or expired session, or the session's account is not active.",
@@ -1249,8 +1272,11 @@
               }
             }
           },
+          "408": {
+            "$ref": "#/components/responses/RequestDeadlineExceeded"
+          },
           "503": {
-            "description": "unavailable: the store or the deployment authority is unavailable, or a standby replica cannot render authoritative lease state. Empty body; no JSON error document.",
+            "description": "unavailable: the store or the deployment authority is unavailable, or a standby replica cannot render authoritative lease state. Empty body; no JSON error document, and no Retry-After. The shared bare admission 503 (also an empty body, but with Retry-After: 1) can also replace this response; see components/responses/AdmissionUnavailable.",
             "headers": {
               "Cache-Control": { "$ref": "#/components/headers/NoStore" }
             }
@@ -1295,10 +1321,7 @@
             }
           },
           "400": {
-            "description": "invalid_request: the device identity is malformed. Empty body; no JSON error document.",
-            "headers": {
-              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
-            }
+            "$ref": "#/components/responses/MalformedRequestRejected"
           },
           "401": {
             "description": "unauthorized: missing session cookie, unknown or expired session, or the session's account is not active.",
@@ -1330,8 +1353,11 @@
               "Cache-Control": { "$ref": "#/components/headers/NoStore" }
             }
           },
+          "408": {
+            "$ref": "#/components/responses/RequestDeadlineExceeded"
+          },
           "503": {
-            "description": "unavailable: the store is temporarily unavailable. Empty body; no JSON error document.",
+            "description": "unavailable: the store is temporarily unavailable. Empty body; no JSON error document, and no Retry-After. The shared bare admission 503 (also an empty body, but with Retry-After: 1) can also replace this response; see components/responses/AdmissionUnavailable.",
             "headers": {
               "Cache-Control": { "$ref": "#/components/headers/NoStore" }
             }
@@ -1628,6 +1654,46 @@
       "RetryAfter10": {
         "description": "A billing_pending response asks the caller to retry in 10 seconds.",
         "schema": { "type": "string", "const": "10" }
+      }
+    },
+    "responses": {
+      "AdmissionUnavailable": {
+        "description": "Shared ingress admission rejection (crates/server/src/ingress.rs): the route class's permit pool is saturated, so the request never reaches the route handler. Bare status with an empty body and Retry-After: 1; never the per-route JSON unavailable document, and it replaces any per-route 503 for this request.",
+        "headers": {
+          "Retry-After": {
+            "description": "The ingress asks the caller to retry after one second.",
+            "schema": { "type": "string", "const": "1" }
+          },
+          "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+        }
+      },
+      "RequestDeadlineExceeded": {
+        "description": "Shared ingress deadline rejection (crates/server/src/ingress.rs): the request body did not finish arriving within ten seconds of admission, or the handler did not produce a response within thirty seconds. Bare status with an empty body.",
+        "headers": {
+          "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+        }
+      },
+      "RequestBodyTooLarge": {
+        "description": "The request body exceeded the router's byte limit (4,096 bytes on POST /v1/webhooks, 1,024 bytes on POST /v1/alpha/messages). The framework's plain-text 413 is kept verbatim; it is not the JSON error envelope.",
+        "headers": {
+          "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+        },
+        "content": {
+          "text/plain": {
+            "schema": { "type": "string" }
+          }
+        }
+      },
+      "MalformedRequestRejected": {
+        "description": "A framework extractor rejected the request before authentication or the handler ran: a malformed path or query parameter, or an unrecognized query field on the routes whose query structs deny unknown fields. Plain text; not the JSON error envelope.",
+        "headers": {
+          "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+        },
+        "content": {
+          "text/plain": {
+            "schema": { "type": "string" }
+          }
+        }
       }
     },
     "schemas": {

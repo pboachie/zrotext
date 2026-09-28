@@ -6,7 +6,10 @@ the planned-but-unimplemented routes. These checks fail if the documented
 surface drifts from the server: a route marked implemented must exist in the
 document with the server's method map, the implemented response bodies must
 match the server serializers field for field, planned routes must stay clearly
-labeled, and the one-time webhook secret must never leak into another schema.
+labeled, the one-time webhook secret must never leak into another schema, and
+the shared transport and framework rejection shapes (bare admission 503 with
+Retry-After: 1, bare 408 deadlines, plain-text 413 body limits and plain-text
+pre-auth 400s, the per-account in-flight 429s) must stay pinned.
 Run: python -m unittest discover -s protocol/v1/tests -p 'test_public_api_v1.py'
 """
 
@@ -279,8 +282,9 @@ class PublicApiContractTests(unittest.TestCase):
     def test_every_response_is_no_store(self):
         for path, method, operation in operations(DOCUMENT):
             for status, response in responses(DOCUMENT, path, method):
+                resolved = resolve_schema(DOCUMENT, response)
                 self.assertEqual(
-                    response.get("headers", {}).get("Cache-Control", {}).get("$ref"),
+                    resolved.get("headers", {}).get("Cache-Control", {}).get("$ref"),
                     "#/components/headers/NoStore",
                     f"{method} {path} {status} must declare no-store",
                 )
@@ -292,15 +296,27 @@ class PublicApiContractTests(unittest.TestCase):
             for status, response in responses(DOCUMENT, path, method):
                 if not status.startswith(("4", "5")):
                     continue
-                content = response.get("content", {})
+                resolved = resolve_schema(DOCUMENT, response)
+                content = resolved.get("content", {})
                 if not content:
                     continue
-                schema = content["application/json"]["schema"]
-                self.assertEqual(
-                    schema,
-                    {"$ref": "#/components/schemas/Error"},
-                    f"{method} {path} {status} must use the shared Error schema",
+                self.assertLessEqual(
+                    set(content),
+                    {"application/json", "text/plain"},
+                    f"{method} {path} {status} may only expose JSON or plain text",
                 )
+                if "application/json" in content:
+                    self.assertEqual(
+                        content["application/json"]["schema"],
+                        {"$ref": "#/components/schemas/Error"},
+                        f"{method} {path} {status} must use the shared Error schema",
+                    )
+                if "text/plain" in content:
+                    self.assertEqual(
+                        content["text/plain"]["schema"],
+                        {"type": "string"},
+                        f"{method} {path} {status} plain text is a bare string",
+                    )
 
     def test_webhook_surface_mirrors_the_implemented_owner_lifecycle(self):
         webhook_operations = {
@@ -493,6 +509,125 @@ class PublicApiContractTests(unittest.TestCase):
         self.assertIn("/v1/owner/messages", planned_text)
         self.assertIn("/v1/enrollment/devices", planned_text)
         self.assertIn("sealed-v1.json", planned_text)
+
+    def test_webhook_create_documents_admission_and_body_limits(self):
+        create = DOCUMENT["paths"]["/v1/webhooks"]["post"]
+        rate = create["responses"]["429"]
+        self.assertEqual(
+            rate["content"]["application/json"]["schema"],
+            {"$ref": "#/components/schemas/Error"},
+        )
+        self.assertEqual(
+            rate["content"]["application/json"]["example"], {"code": "rate_limited"}
+        )
+        self.assertNotIn(
+            "Retry-After", rate["headers"], "the per-account in-flight 429 has no Retry-After"
+        )
+        description = rate["description"].lower()
+        self.assertIn("four", description)
+        self.assertIn("in flight", description)
+        self.assertEqual(
+            create["responses"].get("413"),
+            {"$ref": "#/components/responses/RequestBodyTooLarge"},
+            "create must declare the router body limit 413",
+        )
+        self.assertIn("before the body is read", create["description"])
+        self.assertIn("preauth.rs", create["description"])
+
+    def test_shared_transport_responses_are_stated_and_referenced(self):
+        description = DOCUMENT["info"]["description"]
+        self.assertIn("Shared transport responses", description)
+        self.assertIn("Retry-After: 1", description)
+        self.assertIn("408", description)
+        shared = DOCUMENT["components"]["responses"]
+        admission = shared["AdmissionUnavailable"]
+        self.assertEqual(admission.get("content", {}), {}, "admission 503 is bare")
+        self.assertEqual(admission["headers"]["Retry-After"]["schema"]["const"], "1")
+        self.assertEqual(
+            admission["headers"]["Cache-Control"]["$ref"], "#/components/headers/NoStore"
+        )
+        deadline = shared["RequestDeadlineExceeded"]
+        self.assertEqual(deadline.get("content", {}), {}, "the deadline 408 is bare")
+        self.assertEqual(
+            deadline["headers"]["Cache-Control"]["$ref"], "#/components/headers/NoStore"
+        )
+        for path, method, operation in implemented_operations():
+            self.assertEqual(
+                operation["responses"].get("408"),
+                {"$ref": "#/components/responses/RequestDeadlineExceeded"},
+                f"{method} {path} must reference the shared 408",
+            )
+            self.assertIn("503", operation["responses"], f"{method} {path} documents 503")
+            unavailable = resolve_schema(DOCUMENT, operation["responses"]["503"])
+            self.assertIn(
+                "AdmissionUnavailable",
+                unavailable.get("description", ""),
+                f"{method} {path} 503 must point at the bare admission variant",
+            )
+
+    def test_body_routes_declare_the_framework_413(self):
+        too_large = DOCUMENT["components"]["responses"]["RequestBodyTooLarge"]
+        self.assertEqual(sorted(too_large["content"]), ["text/plain"])
+        self.assertNotIn("application/json", too_large["content"])
+        for path in ("/v1/webhooks", "/v1/alpha/messages"):
+            self.assertEqual(
+                DOCUMENT["paths"][path]["post"]["responses"].get("413"),
+                {"$ref": "#/components/responses/RequestBodyTooLarge"},
+                f"POST {path} must reference the shared 413",
+            )
+        for path in ("/v1/webhooks", "/v1/alpha/messages"):
+            self.assertIn(
+                "KiB", DOCUMENT["paths"][path]["post"]["description"],
+                f"POST {path} states its body limit",
+            )
+
+    def test_plain_text_rejections_are_pinned_before_authentication(self):
+        shared = DOCUMENT["components"]["responses"]["MalformedRequestRejected"]
+        self.assertEqual(sorted(shared["content"]), ["text/plain"])
+        rejected = {"$ref": "#/components/responses/MalformedRequestRejected"}
+        for path, method in (
+            ("/v1/owner/messages", "get"),
+            ("/v1/enrollment/devices", "get"),
+            ("/v1/alpha/messages/{message_id}", "get"),
+            ("/v1/alpha/messages/{message_id}/cancel", "post"),
+            ("/v1/webhooks/{endpoint_id}/disable", "post"),
+            ("/v1/webhooks/{endpoint_id}/rotate", "post"),
+        ):
+            self.assertEqual(
+                DOCUMENT["paths"][path][method]["responses"].get("400"),
+                rejected,
+                f"{method} {path} 400 is the plain-text extractor rejection",
+            )
+        timeline = DOCUMENT["paths"]["/v1/owner/messages"]["get"]
+        self.assertIn("before authentication", timeline["description"])
+        self.assertIn("unknown fields", timeline["description"])
+
+    def test_owner_timeline_auth_errors_are_json_not_empty(self):
+        timeline = DOCUMENT["paths"]["/v1/owner/messages"]["get"]["responses"]
+        for status in ("401", "403"):
+            response = timeline[status]
+            self.assertIn("application/json", response.get("content", {}), status)
+            self.assertEqual(
+                response["content"]["application/json"]["schema"],
+                {"$ref": "#/components/schemas/Error"},
+                status,
+            )
+            self.assertNotIn("Empty body", response["description"], status)
+        for status in ("404", "503"):
+            self.assertNotIn("content", timeline[status], f"{status} stays empty-bodied")
+            self.assertIn("Empty body", timeline[status]["description"], status)
+
+    def test_alpha_429_and_precedence_credit_the_inflight_cap(self):
+        submit = DOCUMENT["paths"]["/v1/alpha/messages"]["post"]
+        rate = submit["responses"]["429"]
+        self.assertEqual(rate["headers"]["Retry-After"]["$ref"], "#/components/headers/RetryAfter60")
+        description = rate["description"].lower()
+        self.assertIn("in flight", description)
+        self.assertIn("four", description)
+        self.assertIn("abuse budget", description)
+        self.assertIn("before the body is read", submit["description"])
+        self.assertIn("401", submit["responses"])
+        self.assertIn("400", submit["responses"])
 
 
 if __name__ == "__main__":
