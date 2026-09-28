@@ -5,7 +5,7 @@
 //! always no-store and never cached. Full history pages through the
 //! same `before` cursor semantics as the timeline.
 
-use crate::{auth::TokenHasher, http_auth::require_owner};
+use crate::{auth::TokenHasher, http_auth::require_owner_read};
 use axum::{
     Json, Router,
     extract::{Query, Request, State},
@@ -162,21 +162,13 @@ async fn export_account(
     Query(query): Query<ExportQuery>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(error) = crate::http_auth::require_session_cookie(&headers) {
+    if let Err(error) = crate::http_auth::require_owner_read_headers(&headers) {
         return error.into_response();
     }
     let Ok(client) = crate::runtime_db::connect(&state.database_url).await else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
-    let principal = match require_owner(
-        &client,
-        &state.auth_hasher,
-        &state.canonical_origin,
-        &headers,
-        false,
-    )
-    .await
-    {
+    let principal = match require_owner_read(&client, &state.auth_hasher, &headers).await {
         Ok(principal) => principal,
         Err(error) => return error.into_response(),
     };

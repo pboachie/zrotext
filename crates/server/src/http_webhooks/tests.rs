@@ -18,6 +18,7 @@ fn request(
     session: Option<(&str, &str)>,
     csrf: bool,
 ) -> Request<Body> {
+    let read = method == Method::GET;
     let mut builder = Request::builder()
         .method(method)
         .uri(uri)
@@ -31,6 +32,9 @@ fn request(
             builder = builder
                 .header(header::ORIGIN, "https://test.example")
                 .header("x-zrotext-csrf", csrf_token);
+        } else if read {
+            // Owner reads need the CSRF header, but not Origin.
+            builder = builder.header("x-zrotext-csrf", csrf_token);
         }
     }
     builder.body(Body::from(body.to_string())).unwrap()

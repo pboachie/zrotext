@@ -11,7 +11,7 @@ use crate::{
         abuse_limits::{self, Limit},
     },
     enrollment::{self, DeviceChallenge, EnrollmentError, EnrollmentHasher},
-    http_auth::require_owner,
+    http_auth::{require_owner, require_owner_read},
 };
 use axum::{
     Json, Router,
@@ -236,21 +236,13 @@ async fn view_pairing(
     Path(pairing_id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(error) = crate::http_auth::require_session_cookie(&headers) {
+    if let Err(error) = crate::http_auth::require_owner_read_headers(&headers) {
         return error.into_response();
     }
     let Ok(client) = connect(&state).await else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
-    let principal = match require_owner(
-        &client,
-        &state.auth_hasher,
-        &state.canonical_origin,
-        &headers,
-        false,
-    )
-    .await
-    {
+    let principal = match require_owner_read(&client, &state.auth_hasher, &headers).await {
         Ok(principal) => principal,
         Err(error) => return error.into_response(),
     };
@@ -654,21 +646,13 @@ async fn list_devices(
     Query(query): Query<ListDevicesQuery>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(error) = crate::http_auth::require_session_cookie(&headers) {
+    if let Err(error) = crate::http_auth::require_owner_read_headers(&headers) {
         return error.into_response();
     }
     let Ok(client) = connect(&state).await else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
-    let principal = match require_owner(
-        &client,
-        &state.auth_hasher,
-        &state.canonical_origin,
-        &headers,
-        false,
-    )
-    .await
-    {
+    let principal = match require_owner_read(&client, &state.auth_hasher, &headers).await {
         Ok(principal) => principal,
         Err(error) => return error.into_response(),
     };
