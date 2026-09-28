@@ -1120,6 +1120,271 @@ async fn stranger_spending_address_budget_does_not_block_owner_password_reset() 
         .unwrap();
 }
 
+/// Records which budget statements an admission runs, answering from fixed
+/// outcomes. `anonymous` answers both anonymous charges.
+struct RecordingResetBudgets {
+    anonymous: bool,
+    live: bool,
+    window: bool,
+    daily: bool,
+    calls: Mutex<Vec<&'static str>>,
+}
+
+impl RecordingResetBudgets {
+    fn record(&self, call: &'static str, answer: bool) -> Result<bool, tokio_postgres::Error> {
+        self.calls.lock().unwrap().push(call);
+        Ok(answer)
+    }
+}
+
+impl ResetBudgets for RecordingResetBudgets {
+    async fn charge_anonymous(&self, _: &str) -> Result<bool, tokio_postgres::Error> {
+        self.record("charge_anonymous", self.anonymous)
+    }
+    async fn owner_is_live(&self, _: &str) -> Result<bool, tokio_postgres::Error> {
+        self.record("owner_is_live", self.live)
+    }
+    async fn charge_window(&self, _: &str) -> Result<bool, tokio_postgres::Error> {
+        self.record("charge_window", self.window)
+    }
+    async fn charge_daily(&self, _: &str) -> Result<bool, tokio_postgres::Error> {
+        self.record("charge_daily", self.daily)
+    }
+    async fn read_daily(&self, _: &str) -> Result<bool, tokio_postgres::Error> {
+        self.record("read_daily", self.daily)
+    }
+}
+
+#[tokio::test]
+async fn reset_admission_runs_the_same_statement_count_for_known_and_unknown_addresses() {
+    let now = UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+    // (anonymous, live, window, daily) -> expected admission and calls.
+    type Case = ((bool, bool, bool, bool), bool, &'static [&'static str]);
+    let cases: [Case; 7] = [
+        // The anonymous budget admits before any probe, known or not.
+        ((true, true, true, true), true, &["charge_anonymous"]),
+        ((true, false, true, true), true, &["charge_anonymous"]),
+        // Unknown address, anonymous budget spent.
+        (
+            (false, false, true, true),
+            false,
+            &[
+                "charge_anonymous",
+                "owner_is_live",
+                "charge_anonymous",
+                "read_daily",
+            ],
+        ),
+        // Verified owner admitted through the window and the daily cap.
+        (
+            (false, true, true, true),
+            true,
+            &[
+                "charge_anonymous",
+                "owner_is_live",
+                "charge_window",
+                "charge_daily",
+            ],
+        ),
+        // Verified owner over the daily cap: refused.
+        (
+            (false, true, true, false),
+            false,
+            &[
+                "charge_anonymous",
+                "owner_is_live",
+                "charge_window",
+                "charge_daily",
+            ],
+        ),
+        // Verified owner refused by the window: the daily cap is only read.
+        (
+            (false, true, false, true),
+            false,
+            &[
+                "charge_anonymous",
+                "owner_is_live",
+                "charge_window",
+                "read_daily",
+            ],
+        ),
+        (
+            (false, true, false, false),
+            false,
+            &[
+                "charge_anonymous",
+                "owner_is_live",
+                "charge_window",
+                "read_daily",
+            ],
+        ),
+    ];
+    for ((anonymous, live, window, daily), admitted, calls) in cases {
+        let budgets = RecordingResetBudgets {
+            anonymous,
+            live,
+            window,
+            daily,
+            calls: Mutex::new(Vec::new()),
+        };
+        assert_eq!(
+            admit_reset_request_with(&budgets, "owner@example.test", now)
+                .await
+                .unwrap(),
+            admitted,
+            "{anonymous} {live} {window} {daily}"
+        );
+        assert_eq!(budgets.calls.lock().unwrap().as_slice(), calls);
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn verified_reset_lane_refuses_the_thirteenth_code_of_a_day_per_address() {
+    let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+        .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let schema = format!("http_reset_daily_{}", Uuid::new_v4().simple());
+    setup
+        .batch_execute(&format!("CREATE SCHEMA {schema}"))
+        .await
+        .unwrap();
+    let separator = if base_url.contains('?') { '&' } else { '?' };
+    let url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
+    let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    for migration in [
+        include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+        include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+        include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
+        include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
+        include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
+        include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+        include_str!("../../../../deploy/compose/migrations/025_account_recovery.sql"),
+    ] {
+        db.batch_execute(migration).await.unwrap();
+    }
+    let hasher = Arc::new(TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
+    for email in ["capped@example.test", "other@example.test"] {
+        let owner = auth::register(&mut db, &hasher, email, &Uuid::new_v4().to_string())
+            .await
+            .unwrap();
+        assert!(
+            auth::verify_email(&mut db, &hasher, &owner.verification_token)
+                .await
+                .unwrap()
+        );
+    }
+    let state = AuthHttpState::new(
+        url,
+        hasher.clone(),
+        "https://zrotext.example".to_owned(),
+        Arc::new(CaptureVerification(Mutex::new(None))),
+    )
+    .unwrap();
+    let app = router(state);
+    // Each request returns the same 202; admission is observable only as an
+    // issued code once the 15-minute code throttle is aged out. The whole
+    // response (status, headers and body) is returned for parity checks.
+    let request = |email: &'static str| {
+        let app = app.clone();
+        async move {
+            let response = app
+                .oneshot(json_post(
+                    "/password/reset/request",
+                    serde_json::json!({"email":email}),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::ACCEPTED);
+            let (parts, body) = response.into_parts();
+            let body = axum::body::to_bytes(body, 16 * 1024).await.unwrap();
+            (parts.status, format!("{:?}", parts.headers), body)
+        }
+    };
+    async fn daily_rows(db: &Client) -> i64 {
+        db.query_one(
+            "SELECT count(*) FROM auth_abuse_counters WHERE scope='password_reset_verified_daily'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0)
+    }
+    async fn issued(db: &Client, email: &str) -> i64 {
+        db.query_one(
+            "SELECT count(*) FROM password_resets r JOIN users u ON u.id=r.user_id WHERE u.email=$1",
+            &[&email],
+        )
+        .await
+        .unwrap()
+        .get(0)
+    }
+    async fn age_codes(db: &Client) {
+        db.execute(
+            "UPDATE password_resets SET created_at=created_at-interval '16 minutes'",
+            &[],
+        )
+        .await
+        .unwrap();
+    }
+    // Spend the anonymous per-address budget (the first request issues a
+    // code), then take one code through the verified lane.
+    for _ in 0..3 {
+        request("capped@example.test").await;
+    }
+    assert_eq!(issued(&db, "capped@example.test").await, 1);
+    age_codes(&db).await;
+    request("capped@example.test").await;
+    assert_eq!(issued(&db, "capped@example.test").await, 2);
+    // Record ten more verified admissions today, as if spread over earlier
+    // throttle windows, so the lane has spent 11 of its 12 daily codes. Only
+    // this address has used the verified lane so far, so the daily scope holds
+    // exactly its per-address row and the scope's route-ceiling row (whose
+    // ceiling of 1,200 per minute is far from reached at 11).
+    let updated = db
+        .execute(
+            "UPDATE auth_abuse_counters SET attempts=11 \
+             WHERE scope='password_reset_verified_daily' AND attempts=1",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated, 2);
+    // The twelfth verified code of the day is still issued.
+    age_codes(&db).await;
+    request("capped@example.test").await;
+    assert_eq!(issued(&db, "capped@example.test").await, 3);
+    // The thirteenth is refused with the same 202 although the code throttle
+    // and the window subject would both allow it.
+    age_codes(&db).await;
+    let capped = request("capped@example.test").await;
+    assert_eq!(issued(&db, "capped@example.test").await, 3);
+    // An unknown address gets a byte-identical response, whether its own
+    // anonymous budget is fresh or spent, and it never charges (or creates) a
+    // daily verified-lane counter: it only reads that budget.
+    let rows = daily_rows(&db).await;
+    for _ in 0..5 {
+        assert_eq!(request("nobody@example.test").await, capped);
+    }
+    assert_eq!(daily_rows(&db).await, rows);
+    assert_eq!(issued(&db, "capped@example.test").await, 3);
+    // An unrelated owner address is unaffected, on both lanes.
+    for _ in 0..3 {
+        request("other@example.test").await;
+    }
+    assert_eq!(issued(&db, "other@example.test").await, 1);
+    age_codes(&db).await;
+    request("other@example.test").await;
+    assert_eq!(issued(&db, "other@example.test").await, 2);
+    assert_eq!(issued(&db, "capped@example.test").await, 3);
+    setup
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn postgres_http_account_lifecycle_enforces_csrf_and_revocation() {
