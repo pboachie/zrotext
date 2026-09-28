@@ -296,3 +296,194 @@ async fn saturated_handshake_budget_does_not_lock_out_enrolled_device() {
         .await
         .unwrap();
 }
+
+#[test]
+fn one_account_at_its_share_leaves_session_slots_for_other_accounts() {
+    let admission =
+        SocketAdmission::new(4, 4, AUTH_TIMEOUT, HANDSHAKE_DEADLINE).with_account_limit(2);
+    let (busy, other) = (Uuid::new_v4(), Uuid::new_v4());
+    let first = admission.admit_session(busy, Uuid::new_v4()).unwrap();
+    let _second = admission.admit_session(busy, Uuid::new_v4()).unwrap();
+    assert!(
+        admission.admit_session(busy, Uuid::new_v4()).is_none(),
+        "a third device must not exceed the account's share"
+    );
+    assert_eq!(admission.established.available_permits(), 2);
+
+    let _other = admission
+        .admit_session(other, Uuid::new_v4())
+        .expect("another account still connects while one holds its maximum");
+    assert_eq!(admission.established.available_permits(), 1);
+
+    // The share is released with the socket's slot on every exit path.
+    drop(first);
+    assert_eq!(admission.established.available_permits(), 2);
+    assert!(admission.admit_session(busy, Uuid::new_v4()).is_some());
+}
+
+#[test]
+fn account_share_never_exceeds_process_capacity() {
+    let admission = SocketAdmission::new(2, 2, AUTH_TIMEOUT, HANDSHAKE_DEADLINE);
+    let _a = admission
+        .admit_session(Uuid::new_v4(), Uuid::new_v4())
+        .unwrap();
+    let _b = admission
+        .admit_session(Uuid::new_v4(), Uuid::new_v4())
+        .unwrap();
+    assert!(
+        admission
+            .admit_session(Uuid::new_v4(), Uuid::new_v4())
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn reconnect_takes_over_its_device_slot_and_signals_the_older_socket() {
+    // One process slot and one per account: a reconnect needs neither a
+    // second process slot nor a second share of the account's budget.
+    let admission =
+        SocketAdmission::new(1, 1, AUTH_TIMEOUT, HANDSHAKE_DEADLINE).with_account_limit(1);
+    let (account, device) = (Uuid::new_v4(), Uuid::new_v4());
+    let older = admission.admit_session(account, device).unwrap();
+    assert_eq!(admission.established.available_permits(), 0);
+
+    let newer = admission
+        .admit_session(account, device)
+        .expect("a reconnecting device must not wait for its older socket's slot");
+    assert_eq!(admission.established.available_permits(), 0);
+    timeout(Duration::from_secs(1), older.superseded.notified())
+        .await
+        .expect("the superseded socket is told to close within a second");
+
+    // The older socket exiting later must not free the newer socket's slot.
+    drop(older);
+    assert_eq!(admission.established.available_permits(), 0);
+    assert!(
+        admission.admit_session(account, Uuid::new_v4()).is_none(),
+        "the device still counts once against its account"
+    );
+    assert!(
+        timeout(Duration::from_millis(50), newer.superseded.notified())
+            .await
+            .is_err(),
+        "the current socket is not signalled"
+    );
+    drop(newer);
+    assert_eq!(admission.established.available_permits(), 1);
+    assert!(admission.admit_session(account, Uuid::new_v4()).is_some());
+}
+
+async fn expect_closed_within(socket: &mut TestSocket, limit: Duration) {
+    timeout(limit, async {
+        while let Some(frame) = socket.next().await {
+            match frame {
+                Ok(WsMessage::Close(_)) | Err(_) => return,
+                Ok(_) => continue,
+            }
+        }
+    })
+    .await
+    .expect("superseded socket stayed open");
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn account_share_and_reconnect_takeover_on_real_sockets() {
+    use database_capacity_tests::{Fixture, prove};
+    let fixture = Fixture::new().await;
+    let admission =
+        SocketAdmission::new(8, 4, AUTH_TIMEOUT, HANDSHAKE_DEADLINE).with_account_limit(1);
+    let (address, server) = serve(
+        socket_state(fixture.url.clone(), "capacity-test"),
+        admission.clone(),
+    )
+    .await;
+    let connect = |device: Uuid, signing: SigningKey| async move {
+        let mut socket = open(address).await;
+        send_json(
+            &mut socket,
+            json!({"v":1,"type":"hello","device_id":device}),
+        )
+        .await;
+        let challenge = receive_json(&mut socket).await;
+        assert_eq!(challenge["type"], "challenge");
+        (socket, challenge, signing)
+    };
+
+    // The first account holds its whole share with one phone.
+    let (phone, signing) = fixture.device().await;
+    let (mut held, challenge, signing) = connect(phone, signing).await;
+    let held_epoch = prove(&mut held, challenge, &signing).await;
+    assert_eq!(admission.established.available_permits(), 3);
+
+    // A second device of the same account is refused after its proof.
+    let (extra, extra_signing) = fixture.device().await;
+    let (mut refused, challenge, extra_signing) = connect(extra, extra_signing).await;
+    let frame = &challenge;
+    let proof_challenge = DeviceChallenge {
+        id: Uuid::parse_str(frame["challenge_id"].as_str().unwrap()).unwrap(),
+        account_id: fixture.account_id,
+        device_id: extra,
+        nonce: URL_SAFE_NO_PAD
+            .decode(frame["nonce"].as_str().unwrap())
+            .unwrap()
+            .try_into()
+            .unwrap(),
+    };
+    let proof: Signature = extra_signing.sign(&device_challenge_bytes(&proof_challenge));
+    send_json(
+        &mut refused,
+        json!({
+            "v":1,"type":"proof","challenge_id":proof_challenge.id,"account_id":fixture.account_id,
+            "device_id":extra,"nonce":frame["nonce"],
+            "signature_der":URL_SAFE_NO_PAD.encode(proof.to_der().as_bytes())
+        }),
+    )
+    .await;
+    assert_eq!(expect_close(&mut refused).await, RETRY_LATER);
+    assert_eq!(admission.established.available_permits(), 3);
+
+    // Another account is still admitted while the first holds its maximum.
+    let other_account = Uuid::new_v4();
+    let other_device = Uuid::new_v4();
+    let other_signing = SigningKey::generate_from_rng(&mut rng());
+    let public_key = other_signing.verifying_key().to_sec1_point(false);
+    let fingerprint: [u8; 32] = Sha256::digest(public_key.as_bytes()).into();
+    fixture
+        .db
+        .execute("INSERT INTO accounts(id) VALUES($1)", &[&other_account])
+        .await
+        .unwrap();
+    fixture
+        .db
+        .execute(
+            "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'other phone')",
+            &[&other_device, &other_account],
+        )
+        .await
+        .unwrap();
+    fixture.db.execute(
+        "INSERT INTO device_keys(device_id,account_id,signing_key_sec1,fingerprint) VALUES($1,$2,$3,$4)",
+        &[&other_device, &other_account, &public_key.as_bytes(), &&fingerprint[..]],
+    ).await.unwrap();
+    let (mut other, challenge, other_signing) = connect(other_device, other_signing).await;
+    prove(&mut other, challenge, &other_signing).await;
+    assert_eq!(admission.established.available_permits(), 2);
+
+    // The same phone reconnecting takes over its slot; the older socket is
+    // closed well before the 10 second session check would notice.
+    let (mut replacement, challenge, signing) = connect(phone, signing).await;
+    let epoch = prove(&mut replacement, challenge, &signing).await;
+    assert!(epoch > held_epoch);
+    expect_closed_within(&mut held, Duration::from_secs(1)).await;
+    assert_eq!(admission.established.available_permits(), 2);
+    send_json(&mut replacement, json!({"v":1,"type":"heartbeat"})).await;
+    assert_eq!(
+        receive_json(&mut replacement).await,
+        json!({"v":1,"type":"heartbeat_ack","connection_epoch":epoch})
+    );
+
+    drop((replacement, other, held));
+    server.abort();
+    fixture.finish().await;
+}
