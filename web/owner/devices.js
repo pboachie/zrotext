@@ -711,8 +711,10 @@ async function loadKeys(reset = true) {
       const prefix = document.createElement("strong");
       const metadata = document.createElement("span");
       prefix.textContent = `ztk_${key.public_prefix}…`;
-      // Keys minted before the default lifetime existed carry no expiry.
-      const expires = key.expires_at_ms === null ? "never (older key; reissue to add an expiry)" : dateText(key.expires_at_ms);
+      // No expiry is either a key minted before the default existed or the
+      // explicit never opt-in; the list cannot tell them apart, so it says
+      // "never" without claiming the key is old.
+      const expires = key.expires_at_ms === null ? "never" : dateText(key.expires_at_ms);
       metadata.textContent = ` ${key.status} · ${key.scopes.join(", ")} · created ${dateText(key.created_at_ms)} · expires ${expires} · last used ${dateText(key.last_used_at_ms)}`;
       detail.append(prefix, metadata);
       if (key.bound_device_id) {

@@ -280,7 +280,8 @@ test("API key list shows when each key was last used and flags keys without an e
   assert.match(used, /last used/);
   assert.doesNotMatch(used, /last used Never/);
   assert.doesNotMatch(used, /Time unavailable/);
-  assert.match(used, /expires never \(older key; reissue to add an expiry\)/);
+  assert.match(used, /expires never(?! \()/);
+  assert.doesNotMatch(used, /older key/);
   assert.match(idle, /last used Never/);
   assert.doesNotMatch(idle, /expires never/);
 });

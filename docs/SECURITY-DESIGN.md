@@ -160,7 +160,9 @@ from a compromised browser or proxy, cannot mint a key that would keep sending
 through the owner's phone after the session is revoked. A missing, wrong or
 stale proof returns 400 without creating a key, the code is verified and
 consumed inside the same transaction as the insert under the owner's user-row
-lock, and factor failures spend the shared MFA failure budget. The issuance
+lock, and factor failures spend the separate step-up failure budget (see
+"Owner second factors" below), so repeated failures here do not lock the
+owner out of signing in. The issuance
 budget above is charged before the password is hashed, so it also bounds
 password guesses made through this route to 20 per account per day.
 
@@ -194,8 +196,9 @@ requested `lifetime_days` (1 to 365); omitting it applies the 365-day default.
 `expires_at` NULL, exactly as keys created before the default existed carry,
 and is discouraged — a stolen never-expiring key stays valid until an owner
 notices and revokes it. Existing non-expiring keys keep authenticating
-unchanged, and the owner dashboard flags them ("expires never (older key;
-reissue to add an expiry)") so they can be replaced.
+unchanged. The dashboard shows "expires never" for both legacy keys and
+explicit never-expiring keys (the metadata cannot distinguish them); the
+Never option in the creation form states that it is discouraged.
 
 Keys record the user that issued them, not the session, so a key minted from
 a stolen session cannot be told apart from the owner's own. "Sign out other

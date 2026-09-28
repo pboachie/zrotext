@@ -822,6 +822,11 @@ pub(crate) fn validate_api_key_request(
     Ok(())
 }
 
+/// Test-only mint without the step-up proof. Production code must go through
+/// `account::create_api_key_with_proof`, which requires the owner's password
+/// (and, with MFA enabled, a fresh code); keeping this visible only to tests
+/// means no future route can link against the proof-free path.
+#[cfg(test)]
 pub async fn create_api_key(
     client: &mut Client,
     hasher: &TokenHasher,
