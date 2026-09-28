@@ -10,9 +10,18 @@ current manifest. The SDK helper generates a next manifest and encrypted inbound
 and outbound envelopes. The Rust transactions verify and store those bytes,
 check exact replay and reject a changed signature. The test exports bytes read
 back from PostgreSQL and a separate expected-context file. Android checks that
-context, unwraps the content key and decodes the authenticated body. Negative
-cases cover a changed signature, trusted fingerprint, message, decryption key and a
-validly signed envelope with a changed body nonce.
+context, unwraps the content key and decodes the authenticated body.
+
+Negative cases cover a changed signature, trusted fingerprint, message, decryption key and a
+validly signed envelope with a changed body nonce. The adversarial extension
+adds fail-closed vectors across all three clients: tampered manifests and
+envelopes, expired, future and wrongly anchored manifests, replayed events with
+different bytes, reused and zero local sequences, stale and future inbound
+observations, truncated, oversized and profile-downgraded envelopes, unknown
+recipient keys, ungranted wrap roles, foreign accounts, and expired or
+future-dated outbound intents. Every server-side rejection asserts one stable
+error variant with no partial writes; the Android cases assert the same inputs
+fail closed before any recipient unwrap.
 
 All keys and exchanged files are temporary synthetic test data. The workflow
 does not upload them or use secrets. Software ECDH does not exercise Android
@@ -49,7 +58,7 @@ cd android
 ./gradlew --init-script sealed-interop.init.gradle :app:testDebugUnitTest --tests org.zrotext.gateway.SealedSdkPostgresInteropTest --no-configuration-cache --no-daemon --max-workers=2
 ```
 
-Use `gradlew.bat` on Windows. All six Android cases must run without skips.
+Use `gradlew.bat` on Windows. All eighteen Android cases must run without skips.
 Missing inputs or malformed fixtures fail the dedicated test. The opt-in Rust
 feature and explicit Android test source keep this fixture-dependent test out
 of ordinary unit-test commands; the dedicated CI workflow runs it explicitly.

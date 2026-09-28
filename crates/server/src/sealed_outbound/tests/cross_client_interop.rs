@@ -123,6 +123,156 @@ async fn actual_sdk_ciphertext_verifies_persists_and_replays_without_extra_effec
     assert!(f.admit(&outbound).await.unwrap().created);
     assert!(!f.admit(&outbound).await.unwrap().created);
     assert_eq!(counts(&f).await, (1, 1, 1));
+
+    // Adversarial cross-client vectors. Every tampered, replayed, reordered,
+    // truncated, oversized, downgraded or clock-skewed input must fail closed
+    // with one stable error variant and leave the already-admitted rows intact.
+    let tampered_manifest = {
+        let mut m = manifest.clone();
+        let last = m.len() - 1;
+        m[last] ^= 1;
+        m
+    };
+    let tampered_inbound = {
+        let mut e = inbound.clone();
+        let last = e.len() - 65; // Unsigned region; the old signature no longer matches.
+        e[last] ^= 1;
+        e
+    };
+    use crate::sealed_inbound::ingest::IngestError;
+    async fn ingest_reject(
+        f: &TestCase,
+        name: &str,
+        manifest_bytes: &[u8],
+        envelope: &[u8],
+        verdict: fn(&IngestError) -> bool,
+    ) {
+        let error = crate::sealed_inbound::ingest::ingest_candidate02(
+            &mut f.connect().await,
+            f.session(),
+            f.line,
+            1,
+            manifest_bytes,
+            envelope,
+        )
+        .await
+        .err()
+        .unwrap_or_else(|| panic!("{name} was accepted"));
+        assert!(verdict(&error), "{name} produced {error:?}");
+    }
+    ingest_reject(
+        &f,
+        "tampered manifest signature",
+        &tampered_manifest,
+        &inbound,
+        |e| matches!(e, IngestError::Authority(_)),
+    )
+    .await;
+    for (name, field) in [
+        ("expired manifest", "manifestExpired"),
+        ("future manifest", "manifestFuture"),
+        ("wrong previous digest", "manifestWrongPreviousDigest"),
+    ] {
+        ingest_reject(&f, name, &bytes(&fixture, field), &inbound, |e| {
+            matches!(e, IngestError::Authority(_))
+        })
+        .await;
+    }
+    ingest_reject(
+        &f,
+        "tampered inbound envelope",
+        &manifest,
+        &tampered_inbound,
+        |e| matches!(e, IngestError::Verification(_)),
+    )
+    .await;
+    ingest_reject(
+        &f,
+        "zero local sequence",
+        &manifest,
+        &bytes(&fixture, "inboundSequenceZero"),
+        |e| matches!(e, IngestError::InvalidClaims),
+    )
+    .await;
+    ingest_reject(
+        &f,
+        "reused local sequence",
+        &manifest,
+        &bytes(&fixture, "inboundReusedSequence"),
+        |e| matches!(e, IngestError::SequenceConflict),
+    )
+    .await;
+    ingest_reject(
+        &f,
+        "replayed event with different bytes",
+        &manifest,
+        &bytes(&fixture, "inboundReplayedDifferentBytes"),
+        |e| matches!(e, IngestError::EventConflict),
+    )
+    .await;
+    for (name, field) in [
+        ("stale inbound observation", "inboundObservedStale"),
+        ("future inbound observation", "inboundObservedFuture"),
+    ] {
+        ingest_reject(&f, name, &manifest, &bytes(&fixture, field), |e| {
+            matches!(e, IngestError::StaleEvent)
+        })
+        .await;
+    }
+    let oversized = [outbound.as_slice(), &[0u8; 36_865][..]].concat();
+    let rejects_parse: fn(&AdmitError) -> bool = |e| matches!(e, AdmitError::Invalid);
+    for (name, bytes_rejected, verdict) in [
+        (
+            "truncated tail",
+            outbound[..outbound.len() - 1].to_vec(),
+            rejects_parse,
+        ),
+        ("truncated header", outbound[..300].to_vec(), rejects_parse),
+        (
+            "truncated signature",
+            outbound[..outbound.len() - 64].to_vec(),
+            rejects_parse,
+        ),
+        ("oversized envelope", oversized, rejects_parse),
+        (
+            "downgraded profile byte",
+            bytes(&fixture, "outboundDowngradeV1"),
+            rejects_parse,
+        ),
+        (
+            "ungranted wrap role",
+            bytes(&fixture, "outboundWrongRole"),
+            rejects_parse,
+        ),
+        (
+            "unknown recipient key",
+            bytes(&fixture, "outboundWrongRecipient"),
+            |e: &AdmitError| matches!(e, AdmitError::Authority(_)),
+        ),
+        (
+            "foreign account",
+            bytes(&fixture, "outboundWrongAccount"),
+            |e: &AdmitError| matches!(e, AdmitError::Forbidden),
+        ),
+        (
+            "expired outbound intent",
+            bytes(&fixture, "outboundExpired"),
+            rejects_parse,
+        ),
+        (
+            "future outbound observation",
+            bytes(&fixture, "outboundFuture"),
+            rejects_parse,
+        ),
+    ] {
+        let error = f
+            .admit(&bytes_rejected)
+            .await
+            .err()
+            .unwrap_or_else(|| panic!("{name} was accepted"));
+        assert!(verdict(&error), "{name} produced {error:?}");
+    }
+    assert_eq!(counts(&f).await, (1, 1, 1));
     let row=f.db.query_one("SELECT transport_mode,transport_payload,sealed_binding_generation,request_digest FROM messages WHERE account_id=$1 AND id=$2", &[&f.account,&message]).await.unwrap();
     assert_eq!(row.get::<_, String>(0), "sealed_candidate02");
     let persisted_outbound: Vec<u8> = row.get(1);

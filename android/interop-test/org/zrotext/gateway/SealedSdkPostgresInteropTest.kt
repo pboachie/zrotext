@@ -33,9 +33,14 @@ class SealedSdkPostgresInteropTest {
         val expected = readFixture("ZT_INTEROP_TEST_CONTEXT")
         val now = expected.getLong("now")
         fun bytes(name: String) = hex(expected.getString(name))
-        fun authority(fingerprint: ByteArray = bytes("rootFingerprint")) = Draft02ManifestAuthority.verify(
-            bytes("rootPin"), hex(input.getString("manifest")), Draft02ManifestAuthority.Trust(
-                bytes("accountId"), fingerprint, expected.getLong("generation"),
+        fun authority(fingerprint: ByteArray = bytes("rootFingerprint"), manifestField: String = "manifest") =
+            Draft02ManifestAuthority.verify(
+                bytes("rootPin"), hex(input.getString(manifestField)), Draft02ManifestAuthority.Trust(
+                    bytes("accountId"), fingerprint, expected.getLong("generation"),
+                    Draft02ManifestAuthority.Position.after(expected.getLong("previousVersion"), bytes("previousDigest"))), now)
+        fun authorityWithManifest(manifest: ByteArray) = Draft02ManifestAuthority.verify(
+            bytes("rootPin"), manifest, Draft02ManifestAuthority.Trust(
+                bytes("accountId"), bytes("rootFingerprint"), expected.getLong("generation"),
                 Draft02ManifestAuthority.Position.after(expected.getLong("previousVersion"), bytes("previousDigest"))), now)
         fun request(message: ByteArray = bytes("messageId")) = Draft02ManifestAuthority.Request(
             Draft02ManifestAuthority.Direction.OUTBOUND, bytes("accountId"), message,
@@ -126,6 +131,77 @@ class SealedSdkPostgresInteropTest {
                 fixture.authority(), fixture.request()) { fixture.now }
         }
     }
+
+    // Adversarial cross-client vectors: every tampered, truncated, oversized,
+    // downgraded, misaddressed or clock-skewed input must fail closed here too.
+    private fun rejectEnvelope(bytes: ByteArray) {
+        val fixture = Fixture()
+        assertThrows(Exception::class.java) {
+            Draft02OutboundEnvelope.verify(bytes, fixture.authority(), fixture.request()) { fixture.now }
+        }
+    }
+
+    private fun rejectManifest(field: String) {
+        val fixture = Fixture()
+        assertThrows(Exception::class.java) { fixture.authority(manifestField = field) }
+    }
+
+    @Test fun truncatedEnvelopeTailIsRejected() {
+        val fixture = Fixture()
+        val envelope = hex(fixture.input.getString("outboundEnvelope"))
+        rejectEnvelope(envelope.copyOf(envelope.size - 1))
+    }
+
+    @Test fun truncatedEnvelopeHeaderIsRejected() {
+        val fixture = Fixture()
+        val envelope = hex(fixture.input.getString("outboundEnvelope"))
+        rejectEnvelope(envelope.copyOf(300))
+    }
+
+    @Test fun truncatedEnvelopeSignatureIsRejected() {
+        val fixture = Fixture()
+        val envelope = hex(fixture.input.getString("outboundEnvelope"))
+        rejectEnvelope(envelope.copyOf(envelope.size - 64))
+    }
+
+    @Test fun oversizedEnvelopeIsRejected() {
+        val fixture = Fixture()
+        val envelope = hex(fixture.input.getString("outboundEnvelope"))
+        rejectEnvelope(envelope + ByteArray(36_865))
+    }
+
+    @Test fun downgradedProfileByteIsRejected() {
+        val fixture = Fixture()
+        rejectEnvelope(hex(fixture.input.getString("outboundDowngradeV1")))
+    }
+
+    @Test fun unknownRecipientKeyIsRejected() {
+        val fixture = Fixture()
+        rejectEnvelope(hex(fixture.input.getString("outboundWrongRecipient")))
+    }
+
+    @Test fun ungrantedWrapRoleIsRejected() {
+        val fixture = Fixture()
+        rejectEnvelope(hex(fixture.input.getString("outboundWrongRole")))
+    }
+
+    @Test fun expiredEnvelopeIntentIsRejected() {
+        val fixture = Fixture()
+        rejectEnvelope(hex(fixture.input.getString("outboundExpired")))
+    }
+
+    @Test fun tamperedManifestSignatureIsRejected() {
+        val fixture = Fixture()
+        val manifest = hex(fixture.input.getString("manifest"))
+        manifest[manifest.size - 1] = (manifest[manifest.size - 1].toInt() xor 1).toByte()
+        assertThrows(Exception::class.java) { fixture.authorityWithManifest(manifest) }
+    }
+
+    @Test fun expiredManifestIsRejected() = rejectManifest("manifestExpired")
+
+    @Test fun futureManifestIsRejected() = rejectManifest("manifestFuture")
+
+    @Test fun wrongPreviousDigestManifestIsRejected() = rejectManifest("manifestWrongPreviousDigest")
 
     companion object {
         private const val MAX_FIXTURE_BYTES = 1_048_576
