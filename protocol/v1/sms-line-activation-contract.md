@@ -96,6 +96,12 @@ HTTPS Origin and share a per-owner rate limit.
 1. `POST /v1/auth/sms-lines/{line_id}/activations` with `{"device_id":"UUID"}`
    issues a challenge and returns `challenge_id`, `generation`, and
    `expires_at_ms` (201). A new challenge supersedes a pending one for the line.
+   The owner page picks a random `line_id` for a new line. Line rows are
+   permanent, so the server creates one only when it issues the challenge. A
+   `line_id` held by another account returns the same `forbidden` as any other
+   refused open, such as an unenrolled phone or a missing approval key. An
+   account may hold at most 16 lines that never reached an active binding; a
+   new line beyond that is refused, but those lines can still be reopened.
 2. The device's own authenticated stream sends `sms_line_challenge` (line,
    device, generation, Base64url nonce, expiry) within a few seconds, on
    whichever hub holds the session, and again after a reconnect.
