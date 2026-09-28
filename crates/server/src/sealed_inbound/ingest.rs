@@ -4,7 +4,7 @@
 //! This stores opaque bytes only: no plaintext, webhook, grant or radio effect.
 
 use crate::{
-    inbound::InboundSession,
+    inbound::{InboundSession, consume_storage_budget},
     sealed_envelope::{self, ExpectedRecipient, Kind, Profile, VerifyError},
     sealed_manifest::EnvelopeAuthority,
     sealed_manifest_store::{self, AdmissionError},
@@ -29,6 +29,8 @@ pub enum IngestError {
     EventConflict,
     #[error("sealed device sequence conflict")]
     SequenceConflict,
+    #[error("inbound storage budget exhausted")]
+    BudgetExhausted,
     #[error("sealed ingest database operation failed")]
     Database(#[from] tokio_postgres::Error),
 }
@@ -115,6 +117,23 @@ pub async fn ingest_candidate02(
     let context = admission.context(&wanted).await?;
     let verified = sealed_envelope::verify(envelope_bytes, &context)?;
     let received_ms = check_age(&tx, observed_ms).await?;
+    // Charge the shared account/device storage budget before the INSERT, in
+    // this transaction, so a saturated budget never writes envelope bytes. An
+    // already stored event is a free replay. The savepoint returns the charge
+    // if a concurrent writer stores the same event first.
+    let stored = tx
+        .query_opt(
+            "SELECT 1 FROM sealed_inbound_events WHERE account_id=$1 AND id=$2",
+            &[&session.account_id, &event_id],
+        )
+        .await?
+        .is_some();
+    if !stored {
+        tx.batch_execute("SAVEPOINT sealed_inbound_budget").await?;
+        if !consume_storage_budget(&tx, session.account_id, session.device_id).await? {
+            return Err(IngestError::BudgetExhausted);
+        }
+    }
     // All unique constraints remain race authorities, including a collision with
     // a different tenant's globally allocated event UUID. Never read its content.
     let inserted = tx.query_opt(
@@ -127,6 +146,10 @@ pub async fn ingest_candidate02(
           &observed_ms,&received_ms,&envelope_bytes,&verified.unsigned_digest().as_slice()],
     ).await?;
     if inserted.is_none() {
+        if !stored {
+            tx.batch_execute("ROLLBACK TO SAVEPOINT sealed_inbound_budget")
+                .await?;
+        }
         let same_event = tx
             .query_opt(
                 "SELECT device_id,line_id,device_sequence,unsigned_digest,envelope_profile \

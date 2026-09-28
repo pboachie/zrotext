@@ -3,7 +3,7 @@
 //! signed device declaration, not an
 //! independently verified carrier identity; no SMS body is stored.
 
-use super::{InboundSession, consume_storage_budget};
+use super::{InboundSession, consume_consent_budget};
 use crate::sealed_inbound::sms_line_binding_ready;
 use p256::ecdsa::{Signature, VerifyingKey, signature::Verifier};
 use sha2::{Digest, Sha256};
@@ -229,7 +229,8 @@ pub async fn ingest_line_opt_out(
     {
         return Err(LineOptOutError::SequenceConflict);
     }
-    if !consume_storage_budget(&tx, session.account_id, session.device_id).await? {
+    // Opt-outs spend the per-device consent budget, never the shared one.
+    if !consume_consent_budget(&tx, session.device_id).await? {
         return Err(LineOptOutError::BudgetExhausted);
     }
     let result = tx

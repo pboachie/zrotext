@@ -396,6 +396,7 @@ fn every_limit_keeps_rows_longer_than_its_longest_window() {
         assert!(retention_for(scope) > *window, "{scope}");
     }
     assert!(retention_for("sms_line_activation") > 900);
+    assert!(retention_for("inbound_consent_daily") > 86_400);
 }
 
 #[test]
