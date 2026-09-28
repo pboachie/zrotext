@@ -252,6 +252,12 @@ snapshot; they are listed here so an upgrade is not surprised by them.
 - **Owner session lifetime.** Owner sessions expire after 72 hours without
   use; signed-in owners are logged out rather than retained indefinitely.
   API keys are unaffected and record their last use.
+- **API-key issuance and lifetime.** Creating an API key requires the
+  owner's current password (and an MFA code when enabled). New keys expire
+  after 365 days by default; an explicit, discouraged opt-in issues a
+  non-expiring key, and keys created before this change keep working.
+  Signing out other sessions does not revoke API keys unless the request
+  explicitly opts in.
 - **Authentication ordering and error shape.** Owner and API requests are
   authenticated before their bodies are read, and malformed JSON bodies
   return the API error envelope with HTTP 400 instead of a bare parse error.
