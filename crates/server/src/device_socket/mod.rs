@@ -26,6 +26,7 @@ use axum::{
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     sync::{
@@ -1049,12 +1050,14 @@ async fn run_socket(
                             break;
                         }
                         if matches!(evidence, RadioEvidence::DurableSubmitIntent) {
-                            let current_grant = grant_still_current(&client, session,
-                                message_id, attempt_id, &state).await;
-                            let previous_intent = previous_submit_intent(&client, session,
-                                event_id, message_id, attempt_id).await;
+                            let (current_grant, previous_intent) = match durable_intent_preflight(
+                                &client, session, event_id, message_id, attempt_id, &state,
+                            ).await {
+                                Ok((grant, intent)) => (Some(grant), Some(intent)),
+                                Err(_) => (None, None),
+                            };
                             if let Some(code) = durable_intent_preflight_close_code(
-                                current_grant.ok(), previous_intent.ok())
+                                current_grant, previous_intent)
                             {
                                 close_with_code = Some(code);
                                 break;
@@ -1467,28 +1470,39 @@ async fn grant_still_current(
         .is_some())
 }
 
-async fn previous_submit_intent(
+/// Before recording a durable submit intent: whether the grant is still
+/// current (exactly [`grant_still_current`]), and whether this exact intent
+/// event was already recorded for this device's attempt (an idempotent
+/// replay). One statement answers both.
+async fn durable_intent_preflight(
     client: &Client,
     session: DeviceSession,
     event_id: Uuid,
     message_id: Uuid,
     attempt_id: Uuid,
-) -> Result<bool, tokio_postgres::Error> {
-    Ok(client
-        .query_opt(
-            "SELECT 1 FROM message_events e JOIN message_attempts a ON a.id=e.attempt_id \
-         WHERE e.id=$1 AND e.account_id=$2 AND e.message_id=$3 AND e.attempt_id=$4 \
-         AND a.device_id=$5 AND e.evidence_code='durable_intent'",
+    state: &DeviceSocketState,
+) -> Result<(bool, bool), tokio_postgres::Error> {
+    let row = client
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM dispatch_fences f JOIN deployment_authority a ON a.singleton=TRUE \
+              WHERE f.account_id=$1 AND f.device_id=$2 AND f.message_id=$3 AND f.attempt_id=$4 \
+              AND f.session_epoch=$5 AND f.deployment_epoch=$6 AND f.grant_expires_at>now() \
+              AND f.outcome IN ('granted','submitting') AND a.epoch=$6 AND a.dispatch_enabled=TRUE), \
+             EXISTS(SELECT 1 FROM message_events e JOIN message_attempts a ON a.id=e.attempt_id \
+              WHERE e.id=$7 AND e.account_id=$1 AND e.message_id=$3 AND e.attempt_id=$4 \
+              AND a.device_id=$2 AND e.evidence_code='durable_intent')",
             &[
-                &event_id,
                 &session.account_id,
+                &session.device_id,
                 &message_id,
                 &attempt_id,
-                &session.device_id,
+                &session.connection_epoch,
+                &state.deployment_epoch,
+                &event_id,
             ],
         )
-        .await?
-        .is_some())
+        .await?;
+    Ok((row.get(0), row.get(1)))
 }
 
 /// One-statement pre-claim filter for an armed dispatch tick; see
@@ -1530,8 +1544,11 @@ async fn poll_synthetic_grant(
         "{}:{}:{}",
         state.instance_id, session.device_id, session.connection_epoch
     );
-    let Some(claim) = DeliveryStore::new(client)
-        .claim_due_for_device_and_recipient(
+    // The claim transaction returns the message content, so it is read once:
+    // policy is applied here, and the same content is released only after
+    // the grant is confirmed below.
+    let Some((claim, content)) = DeliveryStore::new(client)
+        .claim_synthetic_for_device_and_recipient(
             &worker_id,
             session.account_id,
             session.device_id,
@@ -1541,28 +1558,18 @@ async fn poll_synthetic_grant(
     else {
         return Ok(None);
     };
-    let queued = client
-        .query_opt(
-            "SELECT recipient_e164,transport_payload,transport_mode FROM messages \
-             WHERE account_id=$1 AND id=$2 AND device_id=$3 AND state='claimed' AND expires_at>now()",
-            &[&claim.account_id, &claim.message_id, &claim.device_id],
-        )
-        .await?
-        .ok_or(StoreError::StaleFence)?;
-    let recipient: String = queued.get(0);
-    let body_bytes: Vec<u8> = queued.get(1);
-    let mode: String = queued.get(2);
-    let permitted = mode == "synthetic_alpha"
+    let content = content.ok_or(StoreError::StaleFence)?;
+    let recipient = content.recipient_e164;
+    let body = String::from_utf8(content.transport_payload).ok();
+    let permitted = content.transport_mode == "synthetic_alpha"
         && state.alpha_policy.allows(claim.account_id, &recipient)
-        && String::from_utf8(body_bytes)
-            .as_deref()
-            .is_ok_and(synthetic_body_is_fixed);
-    if !permitted {
+        && body.as_deref().is_some_and(synthetic_body_is_fixed);
+    let (true, Some(body)) = (permitted, body) else {
         DeliveryStore::new(client)
             .cancel(claim.account_id, claim.message_id)
             .await?;
         return Ok(None);
-    }
+    };
     let mut store = DeliveryStore::new(client);
     let record = store_session(session, state);
     let grant = match store.issue_grant(&claim, &record, Uuid::new_v4()).await {
@@ -1572,21 +1579,17 @@ async fn poll_synthetic_grant(
         ) => return Ok(None),
         Err(error) => return Err(error),
     };
-    let payload = store.synthetic_payload_for_grant(&grant, &record).await?;
-    if !state
-        .alpha_policy
-        .allows(session.account_id, &payload.recipient_e164)
+    // Defense in depth after the grant commits: re-check the fence, message,
+    // device, session, site and authority without re-reading content, then
+    // bind the claimed recipient to the digest issue_grant read under lock.
+    store.confirm_synthetic_grant(&grant, &record).await?;
+    if grant.recipient_digest.as_slice() != Sha256::digest(recipient.as_bytes()).as_slice()
         || grant.recipient_digest.as_slice() != recipient_digest
-        || !synthetic_body_is_fixed(&payload.body)
         || grant.expires_at_ms <= now_ms()
     {
         return Err(StoreError::InvalidInput);
     }
-    Ok(Some(grant_frame(
-        grant,
-        payload.recipient_e164,
-        payload.body,
-    )))
+    Ok(Some(grant_frame(grant, recipient, body)))
 }
 
 fn now_ms() -> i64 {

@@ -146,6 +146,14 @@ pub struct SyntheticExecutionPayload {
     pub body: String,
 }
 
+/// Private content of a message, read once by the claim that leased it.
+/// Never log this value or expose it on a public API.
+pub struct ClaimedContent {
+    pub recipient_e164: String,
+    pub transport_payload: Vec<u8>,
+    pub transport_mode: String,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RadioEvent {
     pub event_id: Uuid,
@@ -584,6 +592,28 @@ impl<'a> DeliveryStore<'a> {
         .await
     }
 
+    /// [`Self::claim_due_for_device_and_recipient`], also returning the
+    /// claimed message's private content from the claim transaction, so the
+    /// socket can apply its synthetic-alpha policy before `issue_grant`
+    /// without reading the message again. `None` content means the message
+    /// left `queued`/`claimed` concurrently; treat the claim as stale.
+    pub async fn claim_synthetic_for_device_and_recipient(
+        &mut self,
+        worker_id: &str,
+        account_id: Uuid,
+        device_id: Uuid,
+        recipient_digest: &[u8; 32],
+    ) -> Result<Option<(Claim, Option<ClaimedContent>)>, StoreError> {
+        self.claim_due_with_content(
+            worker_id,
+            Some(account_id),
+            Some(device_id),
+            Some(recipient_digest.as_slice()),
+            true,
+        )
+        .await
+    }
+
     async fn claim_due_inner(
         &mut self,
         worker_id: &str,
@@ -591,6 +621,20 @@ impl<'a> DeliveryStore<'a> {
         device_id: Option<Uuid>,
         recipient_digest: Option<&[u8]>,
     ) -> Result<Option<Claim>, StoreError> {
+        Ok(self
+            .claim_due_with_content(worker_id, account_id, device_id, recipient_digest, false)
+            .await?
+            .map(|(claim, _)| claim))
+    }
+
+    async fn claim_due_with_content(
+        &mut self,
+        worker_id: &str,
+        account_id: Option<Uuid>,
+        device_id: Option<Uuid>,
+        recipient_digest: Option<&[u8]>,
+        with_content: bool,
+    ) -> Result<Option<(Claim, Option<ClaimedContent>)>, StoreError> {
         if worker_id.is_empty() {
             return Err(StoreError::InvalidInput);
         }
@@ -626,14 +670,32 @@ impl<'a> DeliveryStore<'a> {
             generation: row.get(3),
             worker_id: worker_id.to_owned(),
         };
-        tx.execute(
-            "UPDATE messages SET state='claimed',state_version=state_version+1,updated_at=now() \
-             WHERE account_id=$1 AND id=$2 AND state IN ('queued','claimed')",
-            &[&claim.account_id, &claim.message_id],
-        )
-        .await?;
+        let content = if with_content {
+            tx.query_opt(
+                "UPDATE messages SET state='claimed',state_version=state_version+1,updated_at=now() \
+                 WHERE account_id=$1 AND id=$2 AND state IN ('queued','claimed') \
+                 RETURNING recipient_e164,transport_payload,transport_mode",
+                &[&claim.account_id, &claim.message_id],
+            )
+            .await?
+            .and_then(|row| {
+                Some(ClaimedContent {
+                    recipient_e164: row.get::<_, Option<String>>(0)?,
+                    transport_payload: row.get::<_, Option<Vec<u8>>>(1)?,
+                    transport_mode: row.get(2),
+                })
+            })
+        } else {
+            tx.execute(
+                "UPDATE messages SET state='claimed',state_version=state_version+1,updated_at=now() \
+                 WHERE account_id=$1 AND id=$2 AND state IN ('queued','claimed')",
+                &[&claim.account_id, &claim.message_id],
+            )
+            .await?;
+            None
+        };
         tx.commit().await?;
-        Ok(Some(claim))
+        Ok(Some((claim, content)))
     }
 
     /// A tenant may cancel while the queue still has proof that no execution
@@ -982,6 +1044,37 @@ impl<'a> DeliveryStore<'a> {
         grant: &GrantRecord,
         session: &SessionRecord,
     ) -> Result<SyntheticExecutionPayload, StoreError> {
+        let (recipient, body_bytes) = self
+            .checked_synthetic_grant(grant, session, true)
+            .await?
+            .ok_or(StoreError::StaleFence)?;
+        let body = String::from_utf8(body_bytes).map_err(|_| StoreError::InvalidInput)?;
+        Ok(SyntheticExecutionPayload {
+            recipient_e164: recipient,
+            body,
+        })
+    }
+
+    /// The same post-grant fence, message, device, session, site and
+    /// authority re-check as [`Self::synthetic_payload_for_grant`], without
+    /// reading the message content again. The caller must still bind the
+    /// content it holds from the claim to `grant.recipient_digest`.
+    pub async fn confirm_synthetic_grant(
+        &self,
+        grant: &GrantRecord,
+        session: &SessionRecord,
+    ) -> Result<(), StoreError> {
+        self.checked_synthetic_grant(grant, session, false)
+            .await
+            .map(|_| ())
+    }
+
+    async fn checked_synthetic_grant(
+        &self,
+        grant: &GrantRecord,
+        session: &SessionRecord,
+        with_content: bool,
+    ) -> Result<Option<(String, Vec<u8>)>, StoreError> {
         if grant.account_id != session.account_id
             || grant.device_id != session.device_id
             || grant.session_epoch != session.epoch
@@ -989,8 +1082,11 @@ impl<'a> DeliveryStore<'a> {
         {
             return Err(StoreError::StaleFence);
         }
+        // Content columns are evaluated only when requested ($8), so a
+        // confirmation does not read or detoast the message body.
         let row = self.client.query_typed_opt(
-            "SELECT m.recipient_e164,m.transport_payload,m.recipient_digest,m.transport_mode, \
+            "SELECT CASE WHEN $8 THEN m.recipient_e164 END,CASE WHEN $8 THEN m.transport_payload END, \
+              m.recipient_digest,m.transport_mode, \
               m.expires_at>now(),m.state, f.grant_expires_at>now(),f.outcome, \
               s.lease_until>now(),s.site_id,s.instance_id, \
               d.revoked_at IS NULL, a.epoch,a.dispatch_enabled, st.enabled,st.draining \
@@ -1005,17 +1101,24 @@ impl<'a> DeliveryStore<'a> {
             &[(&grant.account_id, Type::UUID), (&grant.message_id, Type::UUID),
               (&grant.device_id, Type::UUID), (&grant.attempt_id, Type::UUID),
               (&grant.generation, Type::INT8), (&grant.session_epoch, Type::INT8),
-              (&grant.deployment_epoch, Type::INT8)],
+              (&grant.deployment_epoch, Type::INT8), (&with_content, Type::BOOL)],
         ).await?.ok_or(StoreError::StaleFence)?;
-        let recipient: String = row
-            .get::<_, Option<String>>(0)
-            .ok_or(StoreError::StaleFence)?;
-        let body_bytes: Vec<u8> = row
-            .get::<_, Option<Vec<u8>>>(1)
-            .ok_or(StoreError::StaleFence)?;
+        let content = if with_content {
+            let recipient: String = row
+                .get::<_, Option<String>>(0)
+                .ok_or(StoreError::StaleFence)?;
+            let body_bytes: Vec<u8> = row
+                .get::<_, Option<Vec<u8>>>(1)
+                .ok_or(StoreError::StaleFence)?;
+            if Sha256::digest(recipient.as_bytes()).as_slice() != grant.recipient_digest {
+                return Err(StoreError::StaleFence);
+            }
+            Some((recipient, body_bytes))
+        } else {
+            None
+        };
         let recipient_digest: Vec<u8> = row.get(2);
         if recipient_digest != grant.recipient_digest
-            || recipient_digest != Sha256::digest(recipient.as_bytes()).as_slice()
             || row.get::<_, String>(3) != "synthetic_alpha"
             || !row.get::<_, bool>(4)
             || row.get::<_, String>(5) != "claimed"
@@ -1032,11 +1135,7 @@ impl<'a> DeliveryStore<'a> {
         {
             return Err(StoreError::StaleFence);
         }
-        let body = String::from_utf8(body_bytes).map_err(|_| StoreError::InvalidInput)?;
-        Ok(SyntheticExecutionPayload {
-            recipient_e164: recipient,
-            body,
-        })
+        Ok(content)
     }
 
     /// Evidence may arrive after a hub move. It is bound to the original
@@ -1135,71 +1234,62 @@ impl<'a> DeliveryStore<'a> {
         if !active_fence {
             return Err(StoreError::StaleFence);
         }
-        if event.evidence != Evidence::CallbackConflict {
-            let conflicted: bool = tx.query_typed_one(
-                "SELECT EXISTS(SELECT 1 FROM message_events WHERE attempt_id=$1 AND evidence_code='callback_conflict')",
-                &[(&event.attempt_id, Type::UUID)],
-            ).await?.get(0);
-            if conflicted {
-                return Err(StoreError::InvalidTransition);
-            }
+        let prior = prior_attempt_evidence(&tx, event.attempt_id, event.segment_count).await?;
+        if event.evidence != Evidence::CallbackConflict && prior.conflicted {
+            return Err(StoreError::InvalidTransition);
         }
-        if event.evidence == Evidence::ProvenNoSubmit {
-            // The phone's durable no-radio proof may arrive after the writer's
-            // silent-attempt timeout. Never release a fence once any radio
-            // callback or contradictory evidence was recorded for this attempt.
-            let contrary: bool = tx.query_typed_one(
-                "SELECT EXISTS(SELECT 1 FROM message_events WHERE attempt_id=$1 AND evidence_code IN \
-                 ('sent_callback_ok','sent_callback_failed','delivery_callback_ok','callback_conflict'))",
-                &[(&event.attempt_id, Type::UUID)],
-            ).await?.get(0);
-            if contrary {
-                return Err(StoreError::InvalidTransition);
-            }
+        // The phone's durable no-radio proof may arrive after the writer's
+        // silent-attempt timeout. Never release a fence once any radio
+        // callback or contradictory evidence was recorded for this attempt.
+        if event.evidence == Evidence::ProvenNoSubmit && prior.contrary {
+            return Err(StoreError::InvalidTransition);
         }
         let next = match event.evidence {
             Evidence::CallbackConflict => {
-                let intent: bool = tx.query_typed_one(
-                    "SELECT EXISTS(SELECT 1 FROM message_events WHERE attempt_id=$1 AND evidence_code='durable_intent')",
-                    &[(&event.attempt_id, Type::UUID)],
-                ).await?.get(0);
-                if !intent {
+                if !prior.durable_intent {
                     return Err(StoreError::InvalidTransition);
                 }
                 current.apply(Evidence::CallbackConflict)
             }
             Evidence::SentCallbackOk | Evidence::SentCallbackFailed => {
-                let intent: bool = tx.query_typed_one(
-                    "SELECT EXISTS(SELECT 1 FROM message_events WHERE attempt_id=$1 AND evidence_code='durable_intent')",
-                    &[(&event.attempt_id, Type::UUID)],
-                ).await?.get(0);
-                if !intent {
+                if !prior.durable_intent {
                     return Err(StoreError::InvalidTransition);
                 }
                 let count = event.segment_count.ok_or(StoreError::InvalidInput)?;
-                let seen = tx.query_typed_one(
-                    "SELECT count(*)::integer, count(*) FILTER (WHERE evidence_code='sent_callback_ok')::integer, \
-                     count(*) FILTER (WHERE segment_count<>$2)::integer \
-                     FROM message_events WHERE attempt_id=$1 AND evidence_code IN ('sent_callback_ok','sent_callback_failed')",
-                    &[(&event.attempt_id, Type::UUID), (&count, Type::INT4)],
-                ).await?;
-                let prior_count: i32 = seen.get(0);
-                let prior_ok: i32 = seen.get(1);
-                let inconsistent: i32 = seen.get(2);
+                let prior_count = prior.sent_callbacks;
+                let prior_ok = prior.sent_ok;
+                let inconsistent = prior.sent_other_count;
                 if inconsistent != 0 || prior_count >= count {
                     return Err(StoreError::InvalidInput);
                 }
                 match (event.evidence, count, prior_ok + 1) {
-                    (Evidence::SentCallbackFailed, 1, _) => current.apply(Evidence::SentCallbackFailed),
-                    (Evidence::SentCallbackFailed, _, _) if current == MessageState::Unknown => Ok(current),
-                    (Evidence::SentCallbackFailed, _, _) => current.apply(Evidence::PartialSentCallbacks),
-                    (Evidence::SentCallbackOk, _, ok) if ok == count => current.apply(Evidence::SentCallbackOk),
-                    (Evidence::SentCallbackOk, _, _) if current == MessageState::Submitting || current == MessageState::Unknown => Ok(current),
-                    _ => Err(zrotext_domain::InvalidTransition { from: current, evidence: event.evidence }),
+                    (Evidence::SentCallbackFailed, 1, _) => {
+                        current.apply(Evidence::SentCallbackFailed)
+                    }
+                    (Evidence::SentCallbackFailed, _, _) if current == MessageState::Unknown => {
+                        Ok(current)
+                    }
+                    (Evidence::SentCallbackFailed, _, _) => {
+                        current.apply(Evidence::PartialSentCallbacks)
+                    }
+                    (Evidence::SentCallbackOk, _, ok) if ok == count => {
+                        current.apply(Evidence::SentCallbackOk)
+                    }
+                    (Evidence::SentCallbackOk, _, _)
+                        if current == MessageState::Submitting
+                            || current == MessageState::Unknown =>
+                    {
+                        Ok(current)
+                    }
+                    _ => Err(zrotext_domain::InvalidTransition {
+                        from: current,
+                        evidence: event.evidence,
+                    }),
                 }
             }
             _ => current.apply(event.evidence),
-        }.map_err(|_| StoreError::InvalidTransition)?;
+        }
+        .map_err(|_| StoreError::InvalidTransition)?;
         let next_name = state_name(next);
         tx.execute_typed(
             "UPDATE messages SET state=$3,state_version=state_version+1,updated_at=now() \
@@ -1253,6 +1343,53 @@ impl<'a> DeliveryStore<'a> {
         tx.commit().await?;
         Ok(next)
     }
+}
+
+/// What an attempt's recorded radio evidence already says, from one
+/// aggregate. `record_radio_event` reads it after locking the message and
+/// attempt rows, so it sees exactly the rows the separate probes it replaces
+/// would have seen.
+#[derive(Debug, PartialEq, Eq)]
+struct PriorAttemptEvidence {
+    /// A `callback_conflict` was recorded.
+    conflicted: bool,
+    /// Any radio callback or conflict, which forbids a later no-submit proof.
+    contrary: bool,
+    durable_intent: bool,
+    /// Sent callbacks (ok or failed) so far, and how many were ok.
+    sent_callbacks: i32,
+    sent_ok: i32,
+    /// Sent callbacks that declared a segment count other than `segment_count`.
+    sent_other_count: i32,
+}
+
+async fn prior_attempt_evidence(
+    tx: &Transaction<'_>,
+    attempt_id: Uuid,
+    segment_count: Option<i32>,
+) -> Result<PriorAttemptEvidence, StoreError> {
+    let row = tx
+        .query_one(
+            "SELECT COALESCE(bool_or(evidence_code='callback_conflict'),FALSE), \
+              COALESCE(bool_or(evidence_code IN \
+               ('sent_callback_ok','sent_callback_failed','delivery_callback_ok','callback_conflict')),FALSE), \
+              COALESCE(bool_or(evidence_code='durable_intent'),FALSE), \
+              (count(*) FILTER (WHERE evidence_code IN ('sent_callback_ok','sent_callback_failed')))::integer, \
+              (count(*) FILTER (WHERE evidence_code='sent_callback_ok'))::integer, \
+              (count(*) FILTER (WHERE evidence_code IN ('sent_callback_ok','sent_callback_failed') \
+               AND segment_count<>$2))::integer \
+             FROM message_events WHERE attempt_id=$1",
+            &[&attempt_id, &segment_count],
+        )
+        .await?;
+    Ok(PriorAttemptEvidence {
+        conflicted: row.get(0),
+        contrary: row.get(1),
+        durable_intent: row.get(2),
+        sent_callbacks: row.get(3),
+        sent_ok: row.get(4),
+        sent_other_count: row.get(5),
+    })
 }
 
 async fn reservation_exists(

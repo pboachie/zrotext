@@ -2556,3 +2556,156 @@ async fn admission_pays_one_round_trip_per_statement() {
         .await
         .unwrap();
 }
+#[tokio::test]
+#[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn one_evidence_aggregate_keeps_conflict_segment_and_proof_rules() {
+    let url = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL")
+        .expect("set ZT_DELIVERY_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let (mut client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let schema = format!("evidence_aggregate_test_{}", Uuid::new_v4().simple());
+    client
+        .batch_execute(&format!(
+            "CREATE SCHEMA {schema}; SET search_path TO {schema}"
+        ))
+        .await
+        .unwrap();
+    apply_test_migrations(&client).await;
+    let account_id = Uuid::new_v4();
+    let device_id = Uuid::new_v4();
+    let message_id = Uuid::new_v4();
+    client
+        .execute("INSERT INTO accounts(id) VALUES($1)", &[&account_id])
+        .await
+        .unwrap();
+    client
+        .execute(
+            "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'synthetic phone')",
+            &[&device_id, &account_id],
+        )
+        .await
+        .unwrap();
+    client
+        .execute("UPDATE deployment_authority SET dispatch_enabled=TRUE", &[])
+        .await
+        .unwrap();
+    let mut store = DeliveryStore::new(&mut client);
+    store
+        .accept(NewMessage {
+            account_id,
+            device_id,
+            client_message_id: message_id,
+            idempotency_key: "evidence-aggregate",
+            recipient_e164: "+15551234567",
+            synthetic_payload: b"synthetic regression",
+            expires_at_ms: now_ms() + 60_000,
+        })
+        .await
+        .unwrap();
+    let session = store
+        .connect_session(account_id, device_id, "test", "test", 60)
+        .await
+        .unwrap();
+    let digest: [u8; 32] = Sha256::digest(b"+15551234567").into();
+    // The synthetic claim returns the message content from its own
+    // transaction, so the socket never reads it separately.
+    let (claim, content) = store
+        .claim_synthetic_for_device_and_recipient("test", account_id, device_id, &digest)
+        .await
+        .unwrap()
+        .unwrap();
+    let content = content.unwrap();
+    assert_eq!(content.recipient_e164, "+15551234567");
+    assert_eq!(content.transport_payload, b"synthetic regression");
+    assert_eq!(content.transport_mode, "synthetic_alpha");
+    let attempt_id = Uuid::new_v4();
+    let grant = store
+        .issue_grant(&claim, &session, attempt_id)
+        .await
+        .unwrap();
+    store
+        .confirm_synthetic_grant(&grant, &session)
+        .await
+        .unwrap();
+    let event = |evidence, segment: Option<(i32, i32)>| RadioEvent {
+        event_id: Uuid::new_v4(),
+        account_id,
+        device_id,
+        message_id,
+        attempt_id,
+        evidence,
+        observed_at_ms: now_ms(),
+        segment_index: segment.map(|(index, _)| index),
+        segment_count: segment.map(|(_, count)| count),
+    };
+    // A sent callback needs a durable intent first.
+    assert!(matches!(
+        store
+            .record_radio_event(event(Evidence::SentCallbackOk, Some((0, 3))))
+            .await,
+        Err(StoreError::InvalidTransition)
+    ));
+    store
+        .record_radio_event(event(Evidence::DurableSubmitIntent, None))
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .record_radio_event(event(Evidence::SentCallbackOk, Some((0, 3))))
+            .await
+            .unwrap(),
+        MessageState::Submitting
+    );
+    // A later segment must declare the same count as the first.
+    assert!(matches!(
+        store
+            .record_radio_event(event(Evidence::SentCallbackOk, Some((1, 2))))
+            .await,
+        Err(StoreError::InvalidInput)
+    ));
+    // A radio callback on the attempt forbids a no-submit proof.
+    assert!(matches!(
+        store
+            .record_radio_event(event(Evidence::ProvenNoSubmit, None))
+            .await,
+        Err(StoreError::InvalidTransition)
+    ));
+    // The same aggregate also sees the intent a conflict requires, and the
+    // conflict then refuses every later callback on this attempt.
+    assert_eq!(
+        store
+            .record_radio_event(event(Evidence::CallbackConflict, None))
+            .await
+            .unwrap(),
+        MessageState::Unknown
+    );
+    for (evidence, segment) in [
+        (Evidence::SentCallbackOk, Some((1, 3))),
+        (Evidence::DeliveryCallbackOk, None),
+        (Evidence::ProvenNoSubmit, None),
+    ] {
+        assert!(matches!(
+            store.record_radio_event(event(evidence, segment)).await,
+            Err(StoreError::InvalidTransition)
+        ));
+    }
+    let recorded: Vec<String> = client
+        .query(
+            "SELECT evidence_code FROM message_events WHERE attempt_id=$1 ORDER BY observed_at,id",
+            &[&attempt_id],
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| row.get(0))
+        .collect();
+    assert_eq!(recorded.len(), 3);
+    client
+        .batch_execute(&format!(
+            "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
+        ))
+        .await
+        .unwrap();
+}
