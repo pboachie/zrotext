@@ -278,9 +278,6 @@ impl WriterAuthority for MemoryAuthority {
                 current: self.epoch,
             });
         }
-        if self.epoch == new_epoch {
-            return Ok(PromoteOutcome::AlreadyAtEpoch);
-        }
         match self.sites.get(fenced_writer_site) {
             None => return Ok(PromoteOutcome::RefusedWriterUnfenced),
             Some(site) if !site.is_fenced() => return Ok(PromoteOutcome::RefusedWriterUnfenced),
@@ -289,11 +286,22 @@ impl WriterAuthority for MemoryAuthority {
         match self.sites.get_mut(promoted_site) {
             None => Ok(PromoteOutcome::SiteRowMissing),
             Some(site) => {
+                // Mirrors the SQL: at an equal epoch the promotion writes
+                // still run (promoted site enabled, dispatch forced
+                // paused) and only the outcome differs — a completion
+                // answer always implies the full promoted state.
+                let replayed = self.epoch == new_epoch;
                 self.epoch = new_epoch;
                 self.dispatch_enabled = false;
                 site.enabled = true;
-                self.promotions_applied += 1;
-                Ok(PromoteOutcome::Promoted)
+                if !replayed {
+                    self.promotions_applied += 1;
+                }
+                Ok(if replayed {
+                    PromoteOutcome::AlreadyAtEpoch
+                } else {
+                    PromoteOutcome::Promoted
+                })
             }
         }
     }
@@ -524,6 +532,57 @@ fn concurrent_epoch_bump_beyond_the_promotion_supersedes_the_failover() {
     assert!(port.dispatch_enabled, "a refusal writes nothing");
     assert!(port.site("site-a").draining, "the fence stays");
     assert_eq!(port.promotions_applied, 0);
+}
+
+#[test]
+fn an_external_same_epoch_bump_is_completion_only_with_the_full_promoted_state() {
+    // Another owner bumps the epoch to exactly the promotion epoch just
+    // before the compare-and-set runs. Answering `AlreadyAtEpoch` before
+    // verifying the fence and enforcing the promoted state would report
+    // "completion" while dispatch stays enabled; the equal-epoch path must
+    // converge fence, promoted-site and dispatch in the same operation.
+    let mut executor = full_executor(
+        MemoryAuthority::new(4),
+        &[
+            healthy_round(4, 1_000),
+            failure_round(2_000),
+            failure_round(3_000),
+            failure_round(4_000),
+            evidence_round(5_000),
+        ],
+    );
+    drive_to_fence(&mut executor);
+    executor.authority_mut().bump_epoch_on_promote_to = Some(5);
+    let report = executor.tick(5_000);
+    assert_eq!(
+        report.decision,
+        Some(Decision::PromoteStandby {
+            site_id: "site-b".to_owned(),
+            new_epoch: 5
+        })
+    );
+    assert_eq!(
+        report.application,
+        Application::Applied {
+            action: AppliedAction::Promote {
+                site_id: "site-b".to_owned(),
+                new_epoch: 5,
+                outcome: PromoteOutcome::AlreadyAtEpoch
+            },
+            replayed: true
+        }
+    );
+    let (_, _, port) = executor.into_parts();
+    assert_eq!(port.epoch, 5);
+    assert!(
+        !port.dispatch_enabled,
+        "completion is never answered with dispatch still enabled"
+    );
+    assert!(port.site("site-b").enabled, "the promoted site is enabled");
+    assert_eq!(
+        port.promotions_applied, 0,
+        "the epoch bump itself was the external writer's"
+    );
 }
 
 #[test]
@@ -1379,6 +1438,99 @@ fn reconciliation_is_refused_while_a_promotion_is_still_pending() {
         executor.reconcile_complete(),
         Err(ReconcileError::PromotionPending),
         "the promotion has not applied yet"
+    );
+}
+
+#[test]
+fn a_failed_intent_save_is_retried_and_never_promotes_without_durable_intent() {
+    // The intent save fails twice (armed again before the retry tick). The
+    // durable journal must stay at the fence and the promotion must stay
+    // pending: an unsaved in-memory `Promoting` phase is never a durable
+    // intent, so the retry re-attempts the save instead of skipping it and
+    // promoting with no persisted intent.
+    let mut executor = full_executor(
+        MemoryAuthority::new(4),
+        &[
+            healthy_round(4, 1_000),
+            failure_round(2_000),
+            failure_round(3_000),
+            failure_round(4_000),
+            evidence_round(5_000),
+        ],
+    );
+    drive_to_fence(&mut executor);
+    executor.authority_mut().fail_save_after = Some(0);
+    let report = executor.tick(5_000);
+    assert_eq!(
+        report.decision,
+        Some(Decision::PromoteStandby {
+            site_id: "site-b".to_owned(),
+            new_epoch: 5
+        })
+    );
+    assert_eq!(
+        report.application,
+        Application::Pending {
+            action: PendingAction::Promote {
+                site_id: "site-b".to_owned(),
+                new_epoch: 5
+            }
+        }
+    );
+    assert!(!report.journal_saved, "the intent save failed");
+    // Arm the second failure; the retry must fail the save again rather
+    // than treat the in-memory intent as already durable.
+    executor.authority_mut().fail_save_after = Some(0);
+    let report = executor.tick(6_000);
+    assert_eq!(
+        report.application,
+        Application::Pending {
+            action: PendingAction::Promote {
+                site_id: "site-b".to_owned(),
+                new_epoch: 5
+            }
+        }
+    );
+    let (_, _, port) = executor.into_parts();
+    assert_eq!(port.epoch, 4, "no promotion without a durable intent");
+    assert_eq!(port.promotions_applied, 0);
+    assert_eq!(
+        port.journal_phase(),
+        Some(RestorablePhase::FencingOldWriter),
+        "the durable journal never advanced past the fence"
+    );
+}
+
+#[test]
+fn a_promotion_blocked_by_a_failed_intent_save_applies_once_saves_recover() {
+    // Continuation of the same scenario: once a save succeeds, the same
+    // pending promotion applies exactly once and journals through Promoted.
+    let mut executor = full_executor(
+        MemoryAuthority::new(4),
+        &[
+            healthy_round(4, 1_000),
+            failure_round(2_000),
+            failure_round(3_000),
+            failure_round(4_000),
+            evidence_round(5_000),
+        ],
+    );
+    drive_to_fence(&mut executor);
+    executor.authority_mut().fail_save_after = Some(0);
+    let report = executor.tick(5_000);
+    assert!(matches!(report.application, Application::Pending { .. }));
+    let report = executor.tick(6_000);
+    assert!(matches!(report.application, Application::Applied { .. }));
+    let (_, _, port) = executor.into_parts();
+    assert_eq!(port.epoch, 5);
+    assert_eq!(port.promotions_applied, 1);
+    assert_eq!(
+        port.journal_phase(),
+        Some(RestorablePhase::Promoted {
+            new_epoch: 5,
+            reconciled: false,
+            rejoin_emitted: false
+        })
     );
 }
 

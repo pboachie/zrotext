@@ -25,11 +25,15 @@
 //! Durability: the executor persists a [`ControllerJournal`] through the same
 //! port *before* applying a promotion (write-ahead intent) and after every
 //! applied action, so a restart resumes the interrupted failover at the exact
-//! promotion epoch instead of re-deciding or double-bumping. All applications
-//! are idempotent: a fence re-apply is a no-op, a promotion replay meets the
-//! epoch compare-and-set and confirms rather than bumps. A journal that claims
-//! a promotion the authority never applied (for example after a database
-//! restore from backup) fails closed permanently instead of acting.
+//! promotion epoch instead of re-deciding or double-bumping. The intent is
+//! trusted only from the last save the authority confirmed, never from an
+//! unsaved in-memory journal, so a failed intent save is retried rather than
+//! skipped. All applications are idempotent: a fence re-apply is a no-op, a
+//! promotion replay meets the epoch compare-and-set, confirms rather than
+//! bumps, and converges the full promoted state (promoted site enabled,
+//! dispatch paused). A journal that claims a promotion the authority never
+//! applied (for example after a database restore from backup) fails closed
+//! permanently instead of acting.
 //!
 //! This module performs no I/O itself: both the observation source and the
 //! authority port are injected, which keeps every failure scenario below
@@ -104,8 +108,10 @@ pub enum PromoteOutcome {
     /// The epoch moved to exactly `new_epoch`, the promoted site was enabled
     /// and dispatch was forced paused, atomically.
     Promoted,
-    /// The authority already serves `new_epoch`: the promotion is complete
-    /// and the replay changed nothing.
+    /// The authority already serves `new_epoch`: this call verified the
+    /// fence, enabled the promoted site and forced dispatch paused in the
+    /// same atomic operation, without moving the epoch. A completion answer
+    /// always implies the full promoted state.
     AlreadyAtEpoch,
     /// The authority epoch is beyond `new_epoch`: someone else owns the
     /// authority now and it must never move backward. Permanent refusal.
@@ -138,7 +144,10 @@ pub trait WriterAuthority {
     /// Atomically: hold the `deployment_authority` row, verify the old
     /// writer's `sites` row still shows a fence, then move the epoch to
     /// exactly `new_epoch` (only forward), enable the promoted site and force
-    /// dispatch paused.
+    /// dispatch paused. At an equal epoch the same checks and writes apply
+    /// idempotently and the outcome is
+    /// [`PromoteOutcome::AlreadyAtEpoch`]: an external same-epoch bump is
+    /// answered as completion only once the full promoted state holds.
     fn promote_standby(
         &mut self,
         promoted_site: &str,
@@ -287,6 +296,13 @@ pub struct FailoverExecutor<S: ObservationSource, A: WriterAuthority> {
     authority: A,
     controller: Option<FailoverController>,
     journal: Option<ControllerJournal>,
+    /// The journal most recently confirmed durable: loaded from the
+    /// authority at restore, or saved successfully since. `journal` can hold
+    /// a newer phase whose save failed, so durability decisions (the
+    /// write-ahead promotion intent) must derive from this copy alone — a
+    /// retry re-attempts a failed intent save instead of promoting on an
+    /// intent that exists only in memory.
+    durable_journal: Option<ControllerJournal>,
     /// Decisions whose application failed and are retried unchanged, in
     /// decision order.
     pending: Vec<PendingAction>,
@@ -303,6 +319,7 @@ impl<S: ObservationSource, A: WriterAuthority> FailoverExecutor<S, A> {
             authority,
             controller: None,
             journal: None,
+            durable_journal: None,
             pending: Vec::new(),
             status: ExecutorStatus::WaitingForAuthority,
         }
@@ -359,11 +376,9 @@ impl<S: ObservationSource, A: WriterAuthority> FailoverExecutor<S, A> {
             && let RestorablePhase::Promoted { reconciled, .. } = &mut journal.phase
         {
             *reconciled = true;
-            if let Ok(encoded) = journal.encode() {
-                // Best-effort: a failed save only loses the flag on
-                // restart, which keeps dispatch paused — safe.
-                let _ = self.authority.save_controller_state(&encoded);
-            }
+            // Best-effort: a failed save only loses the flag on
+            // restart, which keeps dispatch paused — safe.
+            let _ = self.save_journal();
         }
         Ok(())
     }
@@ -560,9 +575,12 @@ impl<S: ObservationSource, A: WriterAuthority> FailoverExecutor<S, A> {
                 }
                 // Write-ahead: the promotion intent is durable before the
                 // authority is touched, so a crash can never leave an
-                // unjournaled epoch bump.
+                // unjournaled epoch bump. Durability is judged from the last
+                // confirmed-durable journal only: `journal` may hold an
+                // intent whose save failed, and treating that as durable
+                // would promote with no persisted intent at all.
                 let already_durable = matches!(
-                    &self.journal,
+                    &self.durable_journal,
                     Some(ControllerJournal {
                         phase: RestorablePhase::Promoting { new_epoch: intent },
                         ..
@@ -700,6 +718,10 @@ impl<S: ObservationSource, A: WriterAuthority> FailoverExecutor<S, A> {
             phase,
         ));
         self.journal = journal;
+        // The journal just loaded from the authority is durable by
+        // definition; a rebuilt Steady journal (loaded journal absent) was
+        // never saved and must not count as one.
+        self.durable_journal = self.journal.clone();
         self.status = ExecutorStatus::Running;
         true
     }
@@ -759,7 +781,8 @@ impl<S: ObservationSource, A: WriterAuthority> FailoverExecutor<S, A> {
         }
     }
 
-    /// Persist the journal; false when nothing was saved. Save failures are
+    /// Persist the journal; false when nothing was saved. A successful save
+    /// also refreshes the confirmed-durable copy. Save failures are
     /// surfaced, never blocking: every authority application is idempotent,
     /// so a restart after a lost save replays to the same state.
     fn save_journal(&mut self) -> bool {
@@ -769,7 +792,12 @@ impl<S: ObservationSource, A: WriterAuthority> FailoverExecutor<S, A> {
         let Ok(encoded) = journal.encode() else {
             return false;
         };
-        self.authority.save_controller_state(&encoded).is_ok()
+        if self.authority.save_controller_state(&encoded).is_ok() {
+            self.durable_journal = self.journal.clone();
+            true
+        } else {
+            false
+        }
     }
 }
 

@@ -326,6 +326,37 @@ fn pg_writer_authority_is_idempotent_and_refuses_unsafe_writes() {
             .unwrap(),
         PromoteOutcome::AlreadyAtEpoch
     );
+    // Adversarial: an external same-epoch bump (or an operator toggling
+    // dispatch back on) must not be answered as completion while dispatch
+    // is enabled — the equal-epoch replay converges the full promoted
+    // state in the same transaction instead of returning early.
+    let dispatch_back_on = url.clone();
+    runtime.block_on(admin(&dispatch_back_on, |client| async move {
+        client
+            .execute(
+                "UPDATE deployment_authority SET dispatch_enabled=TRUE \
+                 WHERE singleton=TRUE",
+                &[],
+            )
+            .await
+            .unwrap();
+    }));
+    assert_eq!(
+        authority
+            .promote_standby(&standby_site, &writer_site, new_epoch)
+            .unwrap(),
+        PromoteOutcome::AlreadyAtEpoch
+    );
+    let snapshot = authority.load_state(&writer_site, &standby_site).unwrap();
+    assert!(!snapshot.dispatch_enabled, "the replay re-paused dispatch");
+    assert_eq!(
+        snapshot.epoch, new_epoch,
+        "the epoch itself never bumps twice"
+    );
+    assert!(
+        snapshot.standby_site.unwrap().enabled,
+        "the promoted site stays enabled"
+    );
     assert_eq!(
         authority
             .promote_standby(&standby_site, &writer_site, new_epoch - 1)

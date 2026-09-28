@@ -242,12 +242,11 @@ impl WriterAuthority for PgWriterAuthority {
                         .map_err(|_| PgAuthorityError::EpochOutOfRange(current))?,
                 });
             }
-            if current == new_epoch_i64 {
-                transaction.rollback().await?;
-                return Ok(PromoteOutcome::AlreadyAtEpoch);
-            }
             // The promotion is conditional on the old writer's site row
-            // still showing a fence, held against concurrent changes.
+            // still showing a fence, held against concurrent changes. The
+            // checks run before the equal-epoch answer too: an external
+            // same-epoch bump is only ever confirmed together with the
+            // full promoted state, never with dispatch still enabled.
             let fenced = transaction
                 .query_opt(
                     "SELECT 1 FROM sites WHERE site_id=$1 AND (NOT enabled OR draining) FOR SHARE",
@@ -271,6 +270,8 @@ impl WriterAuthority for PgWriterAuthority {
                     &[&promoted_site],
                 )
                 .await?;
+            // At an equal epoch this write is the idempotent convergence:
+            // the epoch stays put and dispatch is forced paused.
             transaction
                 .execute(
                     "UPDATE deployment_authority SET epoch=$1, dispatch_enabled=FALSE \
@@ -279,7 +280,11 @@ impl WriterAuthority for PgWriterAuthority {
                 )
                 .await?;
             transaction.commit().await?;
-            Ok(PromoteOutcome::Promoted)
+            Ok(if current == new_epoch_i64 {
+                PromoteOutcome::AlreadyAtEpoch
+            } else {
+                PromoteOutcome::Promoted
+            })
         })
     }
 
