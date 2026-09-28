@@ -1242,6 +1242,40 @@ async fn writer_claim_replay_epoch_and_revocation() {
 }
 
 #[test]
+fn session_check_waits_for_ten_seconds_after_the_latest_verification() {
+    let start = Instant::now();
+    let mut schedule = SessionCheckSchedule::new(start);
+    assert_eq!(schedule.due(), start + SESSION_CHECK_INTERVAL);
+    // A renewal 4 s in verifies the session, so no standalone query runs
+    // until 10 s after that renewal.
+    schedule.verified(start + Duration::from_secs(4));
+    assert_eq!(schedule.due(), start + Duration::from_secs(14));
+    // An older verification finishing late never pulls the check earlier.
+    schedule.verified(start + Duration::from_secs(1));
+    assert_eq!(schedule.due(), start + Duration::from_secs(14));
+    // Phone cadence: renewals every 30 s. Standalone checks fall only in the
+    // gaps, never more than 10 s after the database last confirmed the
+    // session, so the fence bound is unchanged.
+    let mut schedule = SessionCheckSchedule::new(start);
+    let mut last_verified = start;
+    let mut checks = 0;
+    for second in 1..=300u64 {
+        let now = start + Duration::from_secs(second);
+        if second % 30 == 0 {
+            schedule.verified(now);
+            last_verified = now;
+        } else if now >= schedule.due() {
+            assert!(now - last_verified <= SESSION_CHECK_INTERVAL);
+            schedule.verified(now);
+            last_verified = now;
+            checks += 1;
+        }
+    }
+    // A fixed 10 s interval would run 30 standalone checks in 300 s.
+    assert_eq!(checks, 20);
+}
+
+#[test]
 fn heartbeat_flood_renews_at_most_once_per_window_and_acks_from_memory() {
     let start = Instant::now();
     let mut budget = HeartbeatBudget::new(start);

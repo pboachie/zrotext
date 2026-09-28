@@ -572,6 +572,38 @@ enum HeartbeatAction {
     Abuse,
 }
 
+/// Longest time between two verifications of a socket's session against the
+/// writer; `protocol/v1/device-stream.md` documents at most 10 seconds.
+const SESSION_CHECK_INTERVAL: Duration = Duration::from_secs(10);
+
+/// When the next standalone [`session_current`] query is due. A successful
+/// lease renewal or status write evaluates the same revocation, account,
+/// site, epoch, lease and writer predicates, so it counts as a verification
+/// and pushes the query back. Verification times are taken before the
+/// statement is sent, so the next check is never more than
+/// `SESSION_CHECK_INTERVAL` after the database last confirmed the session:
+/// a fence committed after that confirmation closes the socket within the
+/// same bound as before.
+struct SessionCheckSchedule {
+    due: Instant,
+}
+
+impl SessionCheckSchedule {
+    fn new(established_at: Instant) -> Self {
+        Self {
+            due: established_at + SESSION_CHECK_INTERVAL,
+        }
+    }
+
+    fn verified(&mut self, at: Instant) {
+        self.due = self.due.max(at + SESSION_CHECK_INTERVAL);
+    }
+
+    fn due(&self) -> Instant {
+        self.due
+    }
+}
+
 /// Per-socket heartbeat budget, enforced before any database checkout. The
 /// first heartbeat renews; later ones renew at most once per
 /// `HEARTBEAT_RENEW_INTERVAL`, so a flood cannot multiply lease writes.
@@ -898,8 +930,7 @@ async fn run_socket(
     }
     let mut last_heartbeat = Instant::now();
     let mut heartbeat_budget = HeartbeatBudget::new(last_heartbeat);
-    let mut checks = interval(Duration::from_secs(10));
-    checks.tick().await;
+    let mut session_checks = SessionCheckSchedule::new(Instant::now());
     let mut dispatch_checks = interval(Duration::from_secs(DISPATCH_POLL_SECONDS));
     dispatch_checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     dispatch_checks.tick().await;
@@ -939,10 +970,11 @@ async fn run_socket(
                             close_with_code = Some(RETRY_LATER);
                             break;
                         };
+                        let verified_at = Instant::now();
                         let accepted = preconditions::record(&mut client, session, &state, report).await;
                         drop(client);
                         match accepted {
-                            Ok(true) => {},
+                            Ok(true) => session_checks.verified(verified_at),
                             Ok(false) => { close_with_code = Some(close_code::POLICY); break; },
                             Err(_) => { close_with_code = Some(RETRY_LATER); break; },
                         }
@@ -962,11 +994,13 @@ async fn run_socket(
                                     close_with_code = Some(RETRY_LATER);
                                     break;
                                 };
+                                let verified_at = Instant::now();
                                 if !renew_session(&client, session, &state).await.unwrap_or(false) {
                                     close_reason = "heartbeat_renew_failed_or_fenced";
                                     break;
                                 }
                                 drop(client);
+                                session_checks.verified(verified_at);
                             }
                         }
                         last_heartbeat = Instant::now();
@@ -1205,7 +1239,7 @@ async fn run_socket(
                     _ => break,
                 }
             }
-            _ = checks.tick() => {
+            _ = tokio::time::sleep_until(session_checks.due().into()) => {
                 if last_heartbeat.elapsed() > HEARTBEAT_DEADLINE {
                     close_reason = "heartbeat_deadline";
                     break;
@@ -1214,10 +1248,12 @@ async fn run_socket(
                     close_with_code = Some(RETRY_LATER);
                     break;
                 };
+                let verified_at = Instant::now();
                 if !session_current(&client, session, &state).await.unwrap_or(false) {
                     close_reason = "session_check_failed_or_fenced";
                     break;
                 }
+                session_checks.verified(verified_at);
             }
             _ = dispatch_checks.tick(), if alpha_ready.is_some() => {
                 let Some((recipient_digest, armed_at)) = alpha_ready else { continue; };
@@ -1232,9 +1268,11 @@ async fn run_socket(
                     close_with_code = Some(RETRY_LATER);
                     break;
                 };
+                let verified_at = Instant::now();
                 if !session_current(&client, session, &state).await.unwrap_or(false) {
                     break;
                 }
+                session_checks.verified(verified_at);
                 let grant = poll_synthetic_grant(&mut client, session, &state, &recipient_digest).await;
                 drop(client);
                 match grant {
