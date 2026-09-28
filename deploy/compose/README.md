@@ -401,7 +401,7 @@ about one deployment; nothing here is enforced by the repository.
 - [ ] While webhook delivery is enabled, watch the `webhook_queue
   pending=... oldest_pending_age_seconds=... in_flight=...` line in container
   logs (about once a minute) alongside the owner-visible pause state.
-- [ ] During migrations 034, 040 and 049, monitor `pg_stat_progress_create_index`
+- [ ] During migrations 034, 040, 049 and 050, monitor `pg_stat_progress_create_index`
   and let the migration finish before starting API workers.
 - [ ] Provide your own alerting. The stack has no metrics endpoint, dashboard,
   or notifier; wiring the endpoints and log lines above into monitoring is

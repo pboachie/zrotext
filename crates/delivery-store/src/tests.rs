@@ -2298,6 +2298,57 @@ async fn recent_grant_precheck_is_one_bounded_index_probe() {
             .await
             .unwrap()
     );
+
+    // Fence outcomes: granted, submitting and unknown are active and refuse;
+    // resolved outcomes do not.
+    for (outcome, due) in [
+        ("granted", false),
+        ("submitting", false),
+        ("unknown", false),
+        ("submitted", true),
+        ("failed", true),
+    ] {
+        client
+            .execute(
+                "UPDATE dispatch_fences SET outcome=$2 WHERE attempt_id=$1",
+                &[&attempt_id, &outcome],
+            )
+            .await
+            .unwrap();
+        let mut store = DeliveryStore::new(&mut client);
+        assert_eq!(
+            store
+                .synthetic_grant_may_be_due(account_id, device_id, epoch, 60)
+                .await
+                .unwrap(),
+            due,
+            "fence outcome {outcome}"
+        );
+    }
+
+    // The spacing boundary is exclusive: inside one transaction now() is
+    // fixed, so an attempt exactly 60 s old no longer refuses and one 59 s
+    // old still does.
+    for (age, due) in [("60 seconds", true), ("59 seconds", false)] {
+        client.batch_execute("BEGIN").await.unwrap();
+        client
+            .execute(
+                "UPDATE message_attempts SET created_at=now()-($2::text)::interval WHERE id=$1",
+                &[&attempt_id, &age],
+            )
+            .await
+            .unwrap();
+        let mut store = DeliveryStore::new(&mut client);
+        assert_eq!(
+            store
+                .synthetic_grant_may_be_due(account_id, device_id, epoch, 60)
+                .await
+                .unwrap(),
+            due,
+            "attempt aged {age}"
+        );
+        client.batch_execute("ROLLBACK").await.unwrap();
+    }
     client
         .batch_execute(&format!(
             "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
