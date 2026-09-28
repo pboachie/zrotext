@@ -35,6 +35,14 @@ plugins {
     id("org.cyclonedx.bom")
 }
 
+// Explicit, isolated debug packaging only. Never install it over the gateway.
+val isolatedPreparationProbe = providers.gradleProperty("isolatedPreparationProbe").orNull == "true"
+val preparationProbeFixtures = if (isolatedPreparationProbe) tasks.register<Sync>("preparationProbeFixtures") {
+    from("src/androidTest/java") { include("**/SealedPreparationDeviceSample.kt") }
+    from("src/sharedTest/java") { include("**/PreparationFixture.kt") }
+    into(layout.buildDirectory.dir("generated/preparationProbeFixtures"))
+} else null
+
 tasks.named<CyclonedxDirectTask>("cyclonedxDirectBom") {
     // This inventory describes dependencies resolved for the shipped release APK.
     includeConfigs = listOf("releaseRuntimeClasspath")
@@ -54,6 +62,11 @@ android {
         versionCode = 7
         versionName = "0.1.6-m1-inbound-metadata"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        if (isolatedPreparationProbe) {
+            applicationId = "org.zrotext.gateway.preparationprobe"
+            testApplicationId = "org.zrotext.gateway.preparationprobe.test"
+            testInstrumentationRunner = "org.zrotext.gateway.PreparationProbeRunner"
+        }
     }
     buildTypes {
         release {
@@ -81,9 +94,21 @@ android {
             resources.srcDir("../../sdk/typescript/test/vectors")
         }
     }
+    if (isolatedPreparationProbe) {
+        sourceSets.getByName("main").manifest.srcFile("src/preparationProbe/AndroidManifest.xml")
+        sourceSets.getByName("androidTest") {
+            manifest.srcFile("src/preparationProbeTest/AndroidManifest.xml")
+            java.setSrcDirs(listOf("src/preparationProbeTest/java", layout.buildDirectory.dir("generated/preparationProbeFixtures")))
+        }
+    }
+}
+
+if (isolatedPreparationProbe) tasks.matching { it.name == "preDebugAndroidTestBuild" }.configureEach {
+    dependsOn(checkNotNull(preparationProbeFixtures))
 }
 
 androidComponents {
+    beforeVariants { if (isolatedPreparationProbe && it.buildType != "debug") it.enable = false }
     onVariants(selector().withBuildType("release")) { variant ->
         variant.sources.assets?.addGeneratedSourceDirectory(
             writeReleaseSourceCommit, WriteReleaseSourceCommit::outputDir
