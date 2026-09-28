@@ -373,7 +373,8 @@
           "short": "Optional managed AI",
           "stage": "planned",
           "evidence": [
-            ["product proposal", "PRODUCT-PLAN.md#managed-ai-and-larger-campaigns"]
+            ["product proposal", "PRODUCT-PLAN.md#managed-ai-and-larger-campaigns"],
+            ["data-handling proposal", "MANAGED-AI.md"]
           ],
           "evidence_note": "proposal only; no runtime implementation",
           "done": [],
