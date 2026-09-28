@@ -17,5 +17,5 @@ windows-sys = { version = "0.61.2", features = ["Wdk_Foundation", "Wdk_Storage_F
 serde_json.workspace = true
 
 [target.'cfg(windows)'.dev-dependencies]
-# Test-only: resolve a fixed per-user known folder for test directories.
-windows-sys = { version = "0.61.2", features = ["Win32_System_Com", "Win32_UI_Shell"] }
+# Test-only: resolve the per-user profile directory for test directories.
+windows-sys = { version = "0.61.2", features = ["Win32_UI_Shell"] }

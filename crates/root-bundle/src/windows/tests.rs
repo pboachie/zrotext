@@ -5,38 +5,49 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-/// Fixed per-user root for test directories: the account's own
-/// `LocalAppData\Temp` known folder, resolved by the OS rather than from the
-/// TEMP/TMP environment, so every test path descends from a controlled root.
+/// Fixed per-user root for test directories: `AppData\Local\Temp` under the
+/// account's profile directory, resolved from the process token by the OS
+/// rather than from the TEMP/TMP environment, so every test path descends
+/// from a controlled root. `userenv` keeps the suite free of user32, which a
+/// disposable CI account's second logon cannot initialize.
 fn test_root() -> PathBuf {
-    use std::os::windows::ffi::OsStringExt;
+    use std::os::windows::{ffi::OsStringExt, io::FromRawHandle};
     use windows_sys::Win32::{
-        System::Com::CoTaskMemFree,
-        UI::Shell::{FOLDERID_LocalAppData, KF_FLAG_DEFAULT, SHGetKnownFolderPath},
+        Security::TOKEN_QUERY,
+        System::Threading::{GetCurrentProcess, OpenProcessToken},
+        UI::Shell::GetUserProfileDirectoryW,
     };
-    // SAFETY: the out-pointer is written by the API, which also allocates the
-    // NUL-terminated result; it is read once with a bounded length and freed.
-    let local = unsafe {
+    // SAFETY: the token handle is owned and closed on drop; the profile path
+    // is written into a caller-sized buffer whose returned length is bounded.
+    let profile = unsafe {
         let mut raw = std::mem::MaybeUninit::uninit();
-        let result = SHGetKnownFolderPath(
-            &FOLDERID_LocalAppData,
-            KF_FLAG_DEFAULT as u32,
-            std::ptr::null_mut(),
-            raw.as_mut_ptr(),
+        assert_ne!(
+            OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, raw.as_mut_ptr()),
+            0
         );
-        let raw = raw.assume_init();
-        let path = (result == 0 && !raw.is_null()).then(|| {
-            let length = (0..32_768).take_while(|&i| *raw.add(i) != 0).count();
-            std::ffi::OsString::from_wide(std::slice::from_raw_parts(raw, length))
-        });
-        CoTaskMemFree(raw.cast());
-        PathBuf::from(path.expect("resolve the LocalAppData known folder"))
+        let token = std::os::windows::io::OwnedHandle::from_raw_handle(raw.assume_init());
+        let mut buffer = vec![0_u16; 1024];
+        let mut length = buffer.len() as u32;
+        assert_ne!(
+            GetUserProfileDirectoryW(
+                std::os::windows::io::AsRawHandle::as_raw_handle(&token),
+                buffer.as_mut_ptr(),
+                &mut length
+            ),
+            0,
+            "resolve the profile directory"
+        );
+        let length = buffer
+            .iter()
+            .take(length as usize)
+            .take_while(|&&c| c != 0)
+            .count();
+        PathBuf::from(std::ffi::OsString::from_wide(&buffer[..length]))
     };
-    let root = local.join("Temp");
+    let root = profile.join("AppData").join("Local").join("Temp");
     std::fs::create_dir_all(&root).unwrap();
     root
 }
-
 struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
