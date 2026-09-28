@@ -87,6 +87,7 @@ const EXPORT_SCHEMA: [(&str, &str); 50] = export_schema!(
     "048_observer_memberships.sql",
     "049_owner_queue_probe_indexes.sql",
     "050_message_attempts_recent_index.sql",
+    "051_failover_controller_state.sql",
 );
 
 #[test]

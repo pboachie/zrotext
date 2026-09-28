@@ -830,7 +830,7 @@ impl ControllerJournal {
 
     /// Parse a journal produced by [`Self::encode`]. Anything else — wrong
     /// version, missing, extra, duplicated or out-of-order fields, malformed
-    /// numbers or booleans — is an error; callers treat an unparseable
+    /// numbers or booleans — is an error; callers treat an unparsable
     /// journal as absent rather than guessing.
     pub fn decode(line: &str) -> Result<Self, JournalEncodingError> {
         let mut fields = line.split_whitespace();
