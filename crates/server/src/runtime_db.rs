@@ -40,8 +40,9 @@ const MAX_LIFETIME: Duration = Duration::from_secs(30 * 60);
 const RESET_DEADLINE: Duration = Duration::from_secs(2);
 const CONNECT_DEADLINE: Duration = Duration::from_secs(3);
 const ADMISSION_WAIT: Duration = Duration::from_secs(2);
-/// Only used after evicting another database URL's idle socket, which frees a
-/// permit as soon as its driver observes the close.
+/// Bounds how long worker-class admission waits for the permit of an evicted
+/// idle socket (freed once its driver observes the close), or for any socket
+/// to be returned to the pool, before failing fast.
 const EVICTION_WAIT: Duration = Duration::from_secs(1);
 
 struct Idle {
@@ -54,7 +55,8 @@ struct Idle {
 /// One admission class: a fixed socket budget plus the idle sockets it owns.
 struct ClassPool {
     slots: Arc<Semaphore>,
-    /// Request/device operations may wait briefly; background jobs fail fast.
+    /// Request/device operations may wait briefly; background jobs fail fast
+    /// after a shorter bounded wait.
     wait: bool,
     idle: Mutex<Vec<Idle>>,
     returned: Notify,
@@ -286,7 +288,16 @@ pub async fn connect_worker(url: &str) -> Result<PooledClient, ConnectError> {
 }
 
 async fn acquire(pool: &Arc<ClassPool>, url: &str) -> Result<PooledClient, ConnectError> {
-    let deadline = Instant::now() + ADMISSION_WAIT;
+    // Worker admission rejects faster than request admission, but both wait a
+    // bounded window first: a socket released a moment ago is still completing
+    // its DISCARD ALL reset with its permit held, and foreign-URL sockets can
+    // be busy rather than idle.
+    let deadline = Instant::now()
+        + if pool.wait {
+            ADMISSION_WAIT
+        } else {
+            EVICTION_WAIT
+        };
     let url: Arc<str> = url.into();
     loop {
         // Register before checking so a socket returned in between wakes us.
@@ -304,19 +315,12 @@ async fn acquire(pool: &Arc<ClassPool>, url: &str) -> Result<PooledClient, Conne
         if let Ok(permit) = pool.slots.clone().try_acquire_owned() {
             return open(pool, url, permit).await;
         }
-        if !pool.wait {
-            if !pool.evict_other(&url) {
-                return Err(ConnectError::Capacity);
-            }
-            let permit = timeout(EVICTION_WAIT, pool.slots.clone().acquire_owned())
-                .await
-                .map_err(|_| ConnectError::Capacity)?
-                .map_err(|_| ConnectError::Capacity)?;
-            return open(pool, url, permit).await;
-        }
         // HTTP and device socket admission already bound external callers.
         // Permit a brief, cancellable wait for bursts (including synchronized
         // heartbeats), for a free slot or a reset socket returned to the pool.
+        // Worker jobs get the shorter window: a replacement whose predecessor
+        // just released a socket must not fail admission while that socket is
+        // milliseconds from reuse.
         pool.evict_other(&url);
         tokio::select! {
             permit = timeout_at(deadline, pool.slots.clone().acquire_owned()) => {
