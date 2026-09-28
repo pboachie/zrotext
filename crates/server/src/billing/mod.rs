@@ -12,6 +12,7 @@ use uuid::Uuid;
 pub mod drain;
 pub mod http;
 pub mod owner;
+pub mod plans;
 pub mod review;
 pub mod risk;
 pub mod sessions;

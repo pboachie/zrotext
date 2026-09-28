@@ -36,8 +36,9 @@ use zrotext_server::{
     billing::{
         drain::{BillingQueueConfig, run_billing_queue},
         http::{self as billing_http, BillingHttpState},
-        owner as billing_owner, parse_test_quota_plans, quota_configuration_fingerprint,
-        reset_test_quotas_on_start,
+        owner as billing_owner, parse_test_quota_plans,
+        plans::{self, parse_usage_limit_plans},
+        quota_configuration_fingerprint, reset_test_quotas_on_start,
         sessions::{self as billing_sessions, SessionState},
         worker::StripeTestWorker,
     },
@@ -215,6 +216,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     if billing_test.is_none() && hosted_sessions_enabled {
         return Err("Stripe hosted sessions require STRIPE_BILLING_TEST_ENABLED=true".into());
+    }
+    // Usage-limit plans are quota-only operator configuration with no price
+    // or provider; the feature is disabled by default and encodes no default
+    // limits. See docs/USAGE-PLANS.md.
+    let usage_limit_plans =
+        parse_usage_limit_plans(&env::var("USAGE_LIMIT_PLANS").unwrap_or_default())?;
+    let usage_limits_enabled = optional_bool("USAGE_LIMITS_ENABLED")?;
+    if usage_limits_enabled && usage_limit_plans.is_empty() {
+        return Err("USAGE_LIMITS_ENABLED requires USAGE_LIMIT_PLANS".into());
+    }
+    if !usage_limits_enabled && !usage_limit_plans.is_empty() {
+        return Err("USAGE_LIMIT_PLANS requires USAGE_LIMITS_ENABLED=true".into());
     }
     let (webhook_vault, webhook_delivery_enabled) = webhook_config()?;
     // The process-wide worker database budget is eight connections. Each
@@ -414,6 +427,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             billing_test.is_some(),
             billing_test.as_ref().is_some_and(|billing| billing.4),
             billing_test.as_ref().map(|billing| &billing.5),
+        )
+        .await?;
+        plans::apply_usage_plan_assignments(
+            &config.database_url,
+            usage_limits_enabled,
+            &usage_limit_plans,
         )
         .await?;
         quotas_reset = true;
@@ -756,7 +775,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 config.database_url.clone(),
                 message_hasher,
                 config.alpha_policy.clone(),
-                billing_test.is_some(),
+                billing_test.is_some() || usage_limits_enabled,
             )?
             .with_idempotency_days(config.retention.idempotency_days);
             app = app.nest("/v1/alpha", http_messages::router(message_state));
@@ -778,6 +797,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         || config.sealed_admission_enabled
         || webhook_delivery_enabled
         || webhook_management_configured
+        || usage_limits_enabled
     {
         return Err("account and enrollment routes are required for enabled features".into());
     }

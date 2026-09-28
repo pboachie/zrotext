@@ -87,7 +87,7 @@ const TEST_MIGRATIONS: [(&str, &str); 55] = [
     migration!("054_stateless_device_challenges.sql"),
     migration!("055_trusted_browser_epoch.sql"),
 ];
-
+    migration!("050_usage_limit_plans.sql"),];
 #[test]
 fn hold_fixture_tracks_numbered_migrations() {
     let directory =
@@ -365,7 +365,11 @@ async fn owner_holds_and_review_decisions_are_owner_bound_tenant_scoped_and_audi
         owners.push((signup.account_id, device, session));
     }
     let (account_a, device_a, owner_a) = &owners[0];
-    let (account_b, device_b, owner_b) = &owners[1];
+    let (account_b, device_b, owner_b) = &owners[1    (
+        "055_usage_limit_plans.sql",
+        include_str!("../../../deploy/compose/migrations/055_usage_limit_plans.sql"),
+    ),
+];
     let review_a = signed_withdrawal(
         &db,
         (*account_a, *device_a),
