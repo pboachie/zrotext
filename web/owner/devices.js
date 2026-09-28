@@ -188,6 +188,13 @@ async function refreshDashboard() {
 }
 const passwordResetPaths = new Set(["/v1/auth/password/reset/request", "/v1/auth/password/reset/confirm"]);
 const unauthenticatedPaths = new Set(["/v1/auth/login", "/v1/auth/login/mfa", ...passwordResetPaths]);
+// Reads that return account content also carry the CSRF header. Session,
+// MFA and billing status stay cookie-only: the page asks for them to learn
+// whether it is signed in at all.
+const csrfReadPrefixes = [
+  "/v1/auth/api-keys", "/v1/owner/", "/v1/webhooks", "/v1/inbound/messages/",
+  "/v1/enrollment/devices", "/v1/enrollment/pairings/",
+];
 const statusDescriptions = Object.freeze({
   400: "Check the entered values and try again.",
   403: "This action was refused. Refresh the page and sign in again.",
@@ -261,7 +268,7 @@ async function api(path, method = "GET", body = undefined) {
   const headers = {};
   const unauthenticated = unauthenticatedPaths.has(path);
   if (body !== undefined) headers["content-type"] = "application/json";
-  if ((method !== "GET" && !unauthenticated) || path.startsWith("/v1/auth/api-keys")) {
+  if ((method !== "GET" && !unauthenticated) || csrfReadPrefixes.some((prefix) => path.startsWith(prefix))) {
     const csrf = csrfToken();
     if (!csrf) throw new Error("Your sign-in expired. Sign in again.");
     headers["x-zrotext-csrf"] = csrf;
