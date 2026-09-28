@@ -43,27 +43,6 @@ fn parse_usage_limit_plans_accepts_only_quota_shaped_catalogs() {
     }
 }
 
-#[test]
-fn usage_plan_fingerprint_ignores_entry_order_and_tracks_limits() {
-    let plans = vec![
-        UsageLimitPlan {
-            plan_key: "starter".into(),
-            outbound_limit: 100,
-        },
-        UsageLimitPlan {
-            plan_key: "standard".into(),
-            outbound_limit: 2500,
-        },
-    ];
-    let original = usage_plan_configuration_fingerprint(&plans);
-    let mut reordered = plans.clone();
-    reordered.reverse();
-    assert_eq!(original, usage_plan_configuration_fingerprint(&reordered));
-    reordered[0].outbound_limit += 1;
-    assert_ne!(original, usage_plan_configuration_fingerprint(&reordered));
-    assert_ne!(original, usage_plan_configuration_fingerprint(&plans[..1]));
-}
-
 /// Each test owns a unique schema, so ignored PostgreSQL tests can run in
 /// parallel without sharing rows; the schema is dropped on exit.
 async fn isolated_database(prefix: &str) -> (tokio_postgres::Client, String, String) {
@@ -362,7 +341,8 @@ async fn postgres_reprojects_skips_billed_and_clears_on_disable() {
     );
     assert_eq!(policy_limit(&db, removed).await, 0);
 
-    // An unchanged catalog fingerprint is a no-op across restarts.
+    // A restart with an unchanged catalog reprojects but writes no audit
+    // rows, because only real limit changes are audited.
     let audit_count: i64 = db
         .query_one("SELECT count(*) FROM usage_plan_audit", &[])
         .await
@@ -378,14 +358,15 @@ async fn postgres_reprojects_skips_billed_and_clears_on_disable() {
         .get(0);
     assert_eq!(audit_count, unchanged);
 
-    // Deleting an assignment row zeroes its policy on the next catalog change.
+    // Deleting an assignment row zeroes its policy on the next restart with
+    // an unchanged catalog.
     db.execute(
         "DELETE FROM usage_plan_assignments WHERE account_id=$1",
         &[&account],
     )
     .await
     .unwrap();
-    apply_usage_plan_assignments(&scoped_url, true, &catalog(&[("starter", 61)]))
+    apply_usage_plan_assignments(&scoped_url, true, &catalog(&[("starter", 60)]))
         .await
         .unwrap();
     assert_eq!(
@@ -393,26 +374,20 @@ async fn postgres_reprojects_skips_billed_and_clears_on_disable() {
         vec!["assigned", "reprojected", "assignment_removed"]
     );
     assert_eq!(policy_limit(&db, account).await, 0);
-    assert_eq!(policy_limit(&db, keeper).await, 61);
+    assert_eq!(policy_limit(&db, keeper).await, 60);
 
-    // Disabling the feature clears every usage_plan allowance and its
-    // marker; the bound tenant's Stripe policy stays untouched, and
-    // admission without billing returns to unmetered acceptance.
+    // Disabling the feature clears every usage_plan allowance; the bound
+    // tenant's Stripe policy stays untouched, and admission without billing
+    // returns to unmetered acceptance.
     apply_usage_plan_assignments(&scoped_url, false, &[])
         .await
         .unwrap();
     assert_eq!(policy_limit(&db, keeper).await, 0);
     assert_eq!(
         audit_reasons(&db, keeper).await,
-        vec!["assigned", "reprojected", "reprojected", "disabled"]
+        vec!["assigned", "reprojected", "disabled"]
     );
     assert_eq!(policy_limit(&db, billed).await, 77);
-    let marker: i64 = db
-        .query_one("SELECT count(*) FROM usage_plan_config", &[])
-        .await
-        .unwrap()
-        .get(0);
-    assert_eq!(marker, 0);
     assert!(
         DeliveryStore::new(&mut db)
             .accept_alpha(message(removed, removed_device, "reproject-key-9"), false)
@@ -424,11 +399,124 @@ async fn postgres_reprojects_skips_billed_and_clears_on_disable() {
 
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn postgres_assignment_changes_apply_on_every_enabled_startup() {
+    let (mut db, scoped_url, schema) = isolated_database("reassign").await;
+    let (first, first_device) = new_account(&db).await;
+    let (second, second_device) = new_account(&db).await;
+    db.execute(
+        "INSERT INTO usage_plan_assignments(account_id,plan_key) VALUES($1,'starter')",
+        &[&first],
+    )
+    .await
+    .unwrap();
+    let catalog = catalog(&[("starter", 5)]);
+    apply_usage_plan_assignments(&scoped_url, true, &catalog)
+        .await
+        .unwrap();
+    assert_eq!(policy_limit(&db, first).await, 5);
+
+    // An assignment added after the last startup must gain its limit on the
+    // next restart even though the catalog itself did not change; otherwise
+    // the account stays fail-closed on billing_pending forever.
+    db.execute(
+        "INSERT INTO usage_plan_assignments(account_id,plan_key) VALUES($1,'starter')",
+        &[&second],
+    )
+    .await
+    .unwrap();
+    apply_usage_plan_assignments(&scoped_url, true, &catalog)
+        .await
+        .unwrap();
+    assert_eq!(policy_limit(&db, second).await, 5);
+    assert_eq!(audit_reasons(&db, second).await, vec!["assigned"]);
+    assert!(
+        DeliveryStore::new(&mut db)
+            .accept_alpha(message(second, second_device, "reassign-key-1"), true)
+            .await
+            .is_ok()
+    );
+
+    // Deleting the new assignment removes its allowance at the next restart
+    // with the same catalog; the other account is untouched.
+    db.execute(
+        "DELETE FROM usage_plan_assignments WHERE account_id=$1",
+        &[&second],
+    )
+    .await
+    .unwrap();
+    apply_usage_plan_assignments(&scoped_url, true, &catalog)
+        .await
+        .unwrap();
+    assert_eq!(policy_limit(&db, second).await, 0);
+    assert_eq!(policy_limit(&db, first).await, 5);
+    assert!(
+        DeliveryStore::new(&mut db)
+            .accept_alpha(message(first, first_device, "reassign-key-2"), true)
+            .await
+            .is_ok()
+    );
+    drop_schema(&scoped_url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn postgres_concurrent_sends_cannot_exceed_the_plan_limit() {
+    let (db, scoped_url, schema) = isolated_database("concurrent").await;
+    let (account, device) = new_account(&db).await;
+    db.execute(
+        "INSERT INTO usage_plan_assignments(account_id,plan_key) VALUES($1,'starter')",
+        &[&account],
+    )
+    .await
+    .unwrap();
+    apply_usage_plan_assignments(&scoped_url, true, &catalog(&[("starter", 3)]))
+        .await
+        .unwrap();
+
+    // Eight concurrent metered admissions against a limit of three: exactly
+    // three reserve, the rest get the honest over-limit store error, and no
+    // reservation leaks past the period limit.
+    let mut tasks = Vec::new();
+    for index in 0..8 {
+        let url = scoped_url.clone();
+        let key: &'static str = Box::leak(format!("concurrent-key-{index}").into_boxed_str());
+        tasks.push(tokio::spawn(async move {
+            let (mut client, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+            tokio::spawn(async move {
+                let _ = connection.await;
+            });
+            DeliveryStore::new(&mut client)
+                .accept_alpha(message(account, device, key), true)
+                .await
+                .is_ok()
+        }));
+    }
+    let mut accepted = 0;
+    for task in tasks {
+        if task.await.unwrap() {
+            accepted += 1;
+        }
+    }
+    assert_eq!(accepted, 3);
+    let reserved: i64 = db
+        .query_one(
+            "SELECT reserved_units FROM usage_periods \
+             WHERE account_id=$1 AND metric='outbound_message'",
+            &[&account],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(reserved, 3);
+    drop_schema(&scoped_url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn postgres_without_migration_050_feature_stays_disabled() {
     let (db, scoped_url, schema) = isolated_database("noschema").await;
     db.batch_execute(
-        "DROP TABLE usage_plan_config CASCADE; \
-         DROP TABLE usage_plan_audit CASCADE; \
+        "DROP TABLE usage_plan_audit CASCADE; \
          DROP TABLE usage_plan_assignments CASCADE",
     )
     .await

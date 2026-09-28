@@ -7,7 +7,6 @@
 //! `USAGE_LIMITS_ENABLED=true` no policy is projected and admission stays
 //! unmetered for accounts without a billing-customer binding.
 
-use sha2::{Digest, Sha256};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -75,37 +74,22 @@ pub fn parse_usage_limit_plans(value: &str) -> Result<Vec<UsageLimitPlan>, &'sta
     Ok(plans)
 }
 
-/// Hash the effective plan catalog, independent of entry order. The catalog
-/// contains no secrets, so unlike the Stripe test fingerprint no key material
-/// is mixed in.
-pub fn usage_plan_configuration_fingerprint(plans: &[UsageLimitPlan]) -> [u8; 32] {
-    let mut plans = plans.to_vec();
-    plans.sort_by(|left, right| left.plan_key.cmp(&right.plan_key));
-    let mut hash = Sha256::new();
-    hash.update(b"usage-plan-catalog-v1\0");
-    for plan in plans {
-        hash.update((plan.plan_key.len() as u64).to_be_bytes());
-        hash.update(plan.plan_key.as_bytes());
-        hash.update(plan.outbound_limit.to_be_bytes());
-    }
-    hash.finalize().into()
-}
-
 /// Project operator-assigned plans into the shared quota tables at startup.
 ///
-/// * Disabled: every `usage_plan` policy is reset to zero (audited) and the
-///   catalog marker is cleared, mirroring the Stripe test reset. Admission
-///   only changes for deployments that had projected policies.
-/// * Enabled with an unchanged catalog fingerprint: a no-op, so ordinary
-///   restarts and rolling starts keep projections.
-/// * Enabled with a new fingerprint: every assignment is reprojected. An
-///   assignment whose plan key left the catalog projects zero
+/// * Disabled: every `usage_plan` policy is reset to zero (audited),
+///   mirroring the Stripe test reset. Admission only changes for deployments
+///   that had projected policies.
+/// * Enabled: every assignment is reprojected on **every** startup, not only
+///   when the catalog changes, so a newly assigned account gains its limit
+///   and a deleted assignment loses its allowance at the next restart.
+///   Reprojection only writes and audits rows whose effective limit actually
+///   changes. An assignment whose plan key left the catalog projects zero
 ///   (`plan_removed`); a policy without an assignment row projects zero
 ///   (`assignment_removed`); an assignment on an account with a billing
 ///   customer binding is skipped (`skipped_billed`) because a bound tenant's
 ///   quota is owned by Stripe reconciliation and must not be overwritten.
 ///
-/// Assignments take effect on the next startup or catalog change; there is no
+/// Assignments therefore take effect on the next startup; there is no
 /// request-time write path into quota policy.
 pub async fn apply_usage_plan_assignments(
     database_url: &str,
@@ -117,7 +101,6 @@ pub async fn apply_usage_plan_assignments(
         .query_one(
             "SELECT to_regclass('usage_plan_assignments') IS NOT NULL \
              AND to_regclass('usage_plan_audit') IS NOT NULL \
-             AND to_regclass('usage_plan_config') IS NOT NULL \
              AND COALESCE((SELECT pg_get_constraintdef(c.oid) LIKE '%usage_plan%' \
                  FROM pg_constraint c \
                  WHERE c.conrelid='usage_quota_policies'::regclass \
@@ -135,7 +118,6 @@ pub async fn apply_usage_plan_assignments(
             Ok(())
         };
     }
-    let fingerprint = usage_plan_configuration_fingerprint(plans);
     let tx = db.transaction().await?;
     // Serialize rolling starts on one database lock, as the test billing
     // reset does, so two instances cannot interleave projections.
@@ -143,28 +125,9 @@ pub async fn apply_usage_plan_assignments(
         .await?;
     if !enabled {
         clear_usage_plan_policies(&tx).await?;
-        tx.execute("DELETE FROM usage_plan_config WHERE singleton=true", &[])
-            .await?;
         tx.commit().await?;
         return Ok(());
     }
-    let current = tx
-        .query_opt(
-            "SELECT configuration_sha256 FROM usage_plan_config WHERE singleton=true",
-            &[],
-        )
-        .await?;
-    if current.is_some_and(|row| row.get::<_, Vec<u8>>(0) == fingerprint) {
-        tx.commit().await?;
-        return Ok(());
-    }
-    tx.execute(
-        "INSERT INTO usage_plan_config(singleton,configuration_sha256) VALUES(true,$1) \
-         ON CONFLICT(singleton) DO UPDATE SET configuration_sha256=EXCLUDED.configuration_sha256, \
-         updated_at=clock_timestamp()",
-        &[&fingerprint.as_slice()],
-    )
-    .await?;
     let assignments = tx
         .query(
             "SELECT account_id,plan_key FROM usage_plan_assignments ORDER BY account_id FOR UPDATE",
@@ -206,7 +169,7 @@ pub async fn apply_usage_plan_assignments(
         project_policy(&tx, account_id, Some(&plan_key), limit, cause).await?;
     }
     // A policy can outlive its assignment row (operator deleted it). Reset it
-    // so removal is enforced on the next catalog change or restart, not never.
+    // so removal is enforced on the next restart, not never.
     let orphans = tx
         .query(
             "SELECT p.account_id,p.limit_units FROM usage_quota_policies p \

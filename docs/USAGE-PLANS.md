@@ -23,14 +23,16 @@ USAGE_LIMITS_ENABLED=false
 USAGE_LIMIT_PLANS=starter:100,standard:2500
 ```
 
-Each entry is `plan_key:monthly_outbound_limit`. A plan key is 1–32
-characters of lowercase letters, digits and hyphens, starting with a letter or
-digit. Limits are positive integers counting accepted outbound messages per
-UTC calendar month. Enabling without a catalog, or configuring a catalog
-without enabling, fails startup: stale configuration must not silently change
-limits. There is no device-cap field in this slice; the existing device-cap
-machinery is coupled to Stripe reconciliation and extending it to plans is a
-separate, undecided step.
+The plan keys and numbers above are **placeholder examples, not
+recommendations**; nothing in this repository chooses a catalog for you. Each
+entry is `plan_key:monthly_outbound_limit`. A plan key is 1–32 characters of
+lowercase letters, digits and hyphens, starting with a letter or digit. Limits
+are positive integers counting accepted outbound messages per UTC calendar
+month. Enabling without a catalog, or configuring a catalog without enabling,
+fails startup: stale configuration must not silently change limits. There is
+no device-cap field in this slice; the existing device-cap machinery is
+coupled to Stripe reconciliation and extending it to plans is a separate,
+undecided step.
 
 Apply migration 050 (`050_usage_limit_plans.sql`) before enabling.
 
@@ -45,25 +47,28 @@ ON CONFLICT (account_id) DO UPDATE
   SET plan_key = EXCLUDED.plan_key, updated_at = now();
 ```
 
-At startup, and whenever the catalog fingerprint changes, the server
-reprojects every assignment into the shared quota policy
-(`usage_quota_policies` with `source='usage_plan'`) and the current period's
-limit, recording each change in `usage_plan_audit`. Consequences:
+At every startup while usage limits are enabled, the server reprojects every
+assignment into the shared quota policy (`usage_quota_policies` with
+`source='usage_plan'`) and the current period's limit, recording each **actual
+change** in `usage_plan_audit`. Consequences:
 
-- Assignments take effect at the next startup or catalog change. There is no
-  request-time write path into quota policy.
+- Assignment changes take effect at the next startup, without any catalog
+  change: a newly assigned account gains its limit, and a deleted assignment
+  loses its allowance. There is no request-time write path into quota policy.
 - Removing a plan from the catalog projects zero for its assignments
   (`plan_removed`); deleting an assignment row zeroes its policy at the next
-  projection (`assignment_removed`). A lower limit or zero never removes
+  startup (`assignment_removed`). A lower limit or zero never removes
   existing reservations, matching Stripe test projection.
 - An account with a Stripe billing-customer binding is skipped
   (`skipped_billed`): a bound tenant's quota is owned by Stripe
   reconciliation and an operator plan must not overwrite it. While such an
   account is bound, metered admission follows the Stripe test rules.
-- Restarting with an unchanged catalog is a no-op; a rolling restart
+- A restart with nothing changed writes no audit rows; a rolling restart
   serializes on a database advisory lock. Disabling the feature zeroes every
-  `usage_plan` policy (`disabled` audit) and clears the catalog marker, so a
-  downgrade cannot leave stale allowances.
+  `usage_plan` policy (`disabled` audit), so a downgrade cannot leave stale
+  allowances.
+- Deleting an account removes its assignment and audit history with it
+  (`ON DELETE CASCADE`).
 - On a database without migration 050, enabling fails startup with an
   explicit schema error; disabling is a no-op.
 

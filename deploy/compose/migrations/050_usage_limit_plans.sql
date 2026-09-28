@@ -9,8 +9,10 @@ ALTER TABLE usage_quota_policies
     ADD CONSTRAINT usage_quota_policies_source_check
         CHECK (source IN ('operator', 'stripe_test', 'usage_plan'));
 
+-- Account deletion (for example unverified-signup pruning) removes the
+-- assignment and its audit history with the account.
 CREATE TABLE usage_plan_assignments (
-    account_id uuid NOT NULL REFERENCES accounts(id),
+    account_id uuid NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
     plan_key text NOT NULL
         CHECK (plan_key ~ '^[a-z0-9][a-z0-9-]{0,31}$'),
     assigned_at timestamptz NOT NULL DEFAULT now(),
@@ -20,7 +22,7 @@ CREATE TABLE usage_plan_assignments (
 
 CREATE TABLE usage_plan_audit (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    account_id uuid NOT NULL REFERENCES accounts(id),
+    account_id uuid NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
     plan_key text,
     previous_limit_units bigint,
     limit_units bigint NOT NULL CHECK (limit_units >= 0),
@@ -30,12 +32,3 @@ CREATE TABLE usage_plan_audit (
     changed_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX usage_plan_audit_account ON usage_plan_audit(account_id, changed_at DESC);
-
--- Mirrors billing_test_config: a one-way digest of the effective plan catalog
--- so an unchanged configuration keeps projections across restarts and a
--- changed catalog forces one reprojection.
-CREATE TABLE usage_plan_config (
-    singleton boolean PRIMARY KEY CHECK (singleton),
-    configuration_sha256 bytea NOT NULL CHECK (octet_length(configuration_sha256) = 32),
-    updated_at timestamptz NOT NULL DEFAULT clock_timestamp()
-);
