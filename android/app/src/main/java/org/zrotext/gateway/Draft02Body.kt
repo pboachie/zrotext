@@ -19,14 +19,24 @@ internal object Draft02Body {
             cipher.updateAAD("ZTSE/body/v2\u0000".toByteArray(Charsets.US_ASCII) + parts.header + parts.protected)
             val clear = cipher.doFinal(parts.body)
             try {
-                require(clear.size in 1..32_768 && !clear.contains(0.toByte()) &&
-                    !(clear.size >= 3 && clear[0] == 0xef.toByte() && clear[1] == 0xbb.toByte() &&
-                        clear[2] == 0xbf.toByte())) { "Body text encoding" }
-                val decoded = Charsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
-                    .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(clear))
-                return try { CharArray(decoded.remaining()).also { decoded.get(it) } }
-                finally { if (decoded.hasArray()) decoded.array().fill('\u0000') }
+                return decodeText(clear)
             } finally { clear.fill(0) }
         } finally { cek.fill(0) }
+    }
+
+    /**
+     * ZT-009 Q9 receive rule for authenticated body plaintext: strict UTF-8,
+     * 1..32_768 bytes, no BOM, no NUL, no normalization. Shared with the Rust
+     * and TypeScript receivers through the public body-text vector corpus.
+     * Intermediate decode buffers are cleared; the caller owns the result.
+     */
+    fun decodeText(clear: ByteArray): CharArray {
+        require(clear.size in 1..32_768 && !clear.contains(0.toByte()) &&
+            !(clear.size >= 3 && clear[0] == 0xef.toByte() && clear[1] == 0xbb.toByte() &&
+                clear[2] == 0xbf.toByte())) { "Body text encoding" }
+        val decoded = Charsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
+            .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(clear))
+        return try { CharArray(decoded.remaining()).also { decoded.get(it) } }
+        finally { if (decoded.hasArray()) decoded.array().fill('\u0000') }
     }
 }
