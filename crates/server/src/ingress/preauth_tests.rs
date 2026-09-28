@@ -57,6 +57,8 @@ fn get_request(uri: &str) -> Request {
 struct Fixture {
     app: Router,
     session: SessionCredentials,
+    /// Needed because API key creation requires the owner's password (#406).
+    password: String,
     account_id: Uuid,
 }
 
@@ -125,6 +127,7 @@ async fn fixture(default_permits: usize) -> Fixture {
     Fixture {
         app,
         session,
+        password,
         account_id,
     }
 }
@@ -184,7 +187,10 @@ async fn credential_less_and_forged_session_trickles_get_prompt_rejections_and_f
     );
     let real = owner_request(
         "/v1/auth/api-keys",
-        Body::from(serde_json::json!({"scopes":["messages:read"]}).to_string()),
+        Body::from(
+            serde_json::json!({"scopes":["messages:read"],"current_password":f.password})
+                .to_string(),
+        ),
         Some((&f.session.token, &f.session.csrf_token)),
     );
     assert_eq!(
@@ -233,11 +239,13 @@ async fn one_account_cannot_hold_more_than_its_in_flight_cap() {
         status_within(&f.app, get_request("/readyz"), PROMPT).await,
         StatusCode::OK
     );
-    // Finishing one held body releases its slot for the next request.
+    // Finishing one held body releases its slot for the next request. The
+    // completed body carries the password this route now requires (#406).
     let (sender, task) = held.remove(0);
-    sender
-        .send(Bytes::from_static(b"[\"messages:read\"]}"))
-        .unwrap();
+    let mut completion = String::from("[\"messages:read\"],\"current_password\":\"");
+    completion.push_str(&f.password);
+    completion.push_str("\"}");
+    sender.send(Bytes::from(completion)).unwrap();
     drop(sender);
     let finished = tokio::time::timeout(PROMPT, task)
         .await
@@ -247,7 +255,10 @@ async fn one_account_cannot_hold_more_than_its_in_flight_cap() {
     assert_eq!(finished.status(), StatusCode::CREATED);
     let complete = owner_request(
         "/v1/auth/api-keys",
-        Body::from(serde_json::json!({"scopes":["messages:read"]}).to_string()),
+        Body::from(
+            serde_json::json!({"scopes":["messages:read"],"current_password":f.password})
+                .to_string(),
+        ),
         Some(session),
     );
     assert_eq!(
