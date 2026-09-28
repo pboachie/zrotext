@@ -2927,10 +2927,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "zrotext-root-bundle"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "windows-sys 0.61.2",
+ "zrotext-root-material",
+]
+
+[[package]]
 name = "zrotext-root-material"
 version = "0.1.0"
 dependencies = [
  "aes-gcm",
+ "data-encoding",
  "hkdf",
  "hmac",
  "p256",
@@ -2939,6 +2951,15 @@ dependencies = [
  "sha2",
  "thiserror",
  "url",
+ "zeroize",
+]
+
+[[package]]
+name = "zrotext-root-terminal"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 
