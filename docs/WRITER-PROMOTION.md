@@ -186,6 +186,19 @@ docker compose --env-file .env --profile two-hub -f deploy/compose/compose.yaml 
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8081/readyz   # 200
 ```
 
+Check the result with the read-only [promotion checker](#automated-go-no-go-checks),
+which runs the same writer queries through the Compose `db` service:
+
+```sh
+python3 deploy/compose/promotion_check.py writer --compose-env .env \
+  --expected-epoch 2 --active-site local-a --active-site local-b \
+  --readyz http://127.0.0.1:8080/readyz --readyz http://127.0.0.1:8081/readyz
+```
+
+It prints `"verdict": "go"` and exits 0. Run it once before you recreate the
+services and the two `--readyz` checks fail, which is the refusal this step
+demonstrates.
+
 The epoch gate is the reason a promotion is safe against stale processes:
 until every hub is restarted with the new `DEPLOYMENT_EPOCH`, none of the old
 ones can serve or grant, so there is no window where two configurations both
@@ -212,13 +225,26 @@ public repository.
    target is a 60-second lag alarm; lag is an operational target, not a bound
    on loss. If the standby is far behind, stop and reconcile expectations
    first: asynchronous promotion can lose recently acknowledged idempotency,
-   quota, revocation, grant and callback records.
+   quota, revocation, grant and callback records. Record the checker's
+   verdict: `promotion_check.py standby --service <standby>` must say `go`.
 2. **Fence and stop the old writer.** Fence its site in `sites` (as in A3),
    then stop PostgreSQL on the old writer with your operating procedure and
    make sure it cannot be restarted automatically (systemd mask, cluster
    policy, or equivalent). The design is explicit: promotion is only allowed
    after proving the old writer is stopped/fenced. If you cannot fence it,
-   stay unavailable rather than risk two writers.
+   stay unavailable rather than risk two writers. Immediately before stopping
+   it, record its final position with `SELECT pg_current_wal_lsn();` in your
+   private operations record. Then run
+   `promotion_check.py standby --service <standby> --writer-stopped
+   --min-replay-lsn <recorded LSN>`. With the old writer gone, the WAL
+   receiver stops and the standby no longer knows how far the writer got.
+   The recorded LSN is the only real bound on what an asynchronous promotion
+   loses, so the check requires replay to have reached it, and returns
+   `no-go` when the sender position is unknown and no LSN is given. It cannot
+   prove the old writer is stopped; that remains your fencing procedure. If
+   the old writer was lost before you could record its LSN, the check can
+   show only that everything the standby received was replayed; treat the
+   promotion as unplanned and follow step 6.
 3. **Promote the standby** with your PostgreSQL distribution's documented
    promotion procedure (see the
    [standby documentation](https://www.postgresql.org/docs/current/warm-standby.html)
@@ -248,12 +274,63 @@ public repository.
 7. **Post-checks.** `/readyz` returns 200 on both sites; `pg_is_in_recovery()`
    is false on the new writer only; `sites` shows the old writer's site still
    fenced; spot-check `device_sessions` to see sessions re-established on
-   surviving hubs with fresh epochs.
+   surviving hubs with fresh epochs. `promotion_check.py writer --service
+   <new writer> --expected-epoch <N> --fenced-site <old site> --active-site
+   <surviving site> --readyz <URL> ...` checks all of these at once; add
+   `--readyz-unready` for the fenced site's endpoint if it is still reachable,
+   and `--dispatch enabled` only after reconciliation has resumed dispatch.
 8. **Failback is planned, not automatic.** The former primary rejoins only as
    a reseeded or rewound replica after timeline and data checks, and traffic
    returns with hysteresis (for example 3 failed / 5 successful checks and at
    least 5 minutes stable — the design's starting point, tuned per
    deployment). Never disable fencing to regain availability.
+
+## Automated go/no-go checks
+
+`deploy/compose/promotion_check.py` turns the checks above into a JSON report
+with a `go` or `no-go` verdict. It only runs `SELECT` statements, in a session
+that first sets `default_transaction_read_only = on`, and exits `0` for `go`,
+`1` for `no-go`, and `2` when it could not run.
+
+It connects in one of two ways, so no connection string, password or hostname
+appears on its command line, in its output or in this repository:
+
+- `--service NAME` uses a libpq service from your private `pg_service.conf`,
+  with the password in `.pgpass`. Use a dedicated read-only role, not the
+  application or owner role: `SELECT` on `sites`, `deployment_authority` and
+  `device_sessions`, membership in `pg_monitor` for the `standby` phase's
+  `pg_stat_wal_receiver` columns, and nothing else. Without `pg_monitor` the
+  sender position reads as unknown and the `standby` phase is `no-go`.
+- `--compose-env .env` queries the local Compose `db` service, for the Part A
+  rehearsal.
+
+Database errors are reported only as an exit status, because libpq messages
+can name hosts. `/readyz` targets appear in the report as `ready #1`,
+`unready #1` and so on, not as URLs. A redirect is reported as its `3xx`
+status and never followed.
+
+Two WAL gaps are measured on the standby. **Received minus replayed** shows
+only WAL that has already arrived. The **sender gap** is the writer's WAL end,
+as last reported to the standby's receiver
+(`pg_stat_wal_receiver.latest_end_lsn`), minus the replay position. It also
+shows WAL the writer produced that has not arrived yet, so a standby limited
+by bandwidth cannot look caught up just because it has replayed everything it
+received.
+
+| Phase | When | Checks |
+|---|---|---|
+| `standby` | Step 1, old writer still running | In recovery. WAL receiver `streaming` and heard from within `--max-lag-seconds` (default 60). Received WAL replayed, or the last replayed commit within the limit. Sender gap known, and either zero with a sender report within the limit (an idle writer) or the last replayed commit within the limit. An unknown sender gap is `no-go`. |
+| `standby --writer-stopped` | Step 2, before promoting | In recovery; every received WAL byte replayed. If the receiver still reports a sender gap, it must be zero; if not, `--min-replay-lsn` is required. Receiver checks are skipped. |
+| `standby --min-replay-lsn LSN` | Either standby step | Additionally, replay has reached `LSN`. |
+| `writer` | Step 7 | Not in recovery; `deployment_authority.epoch` equals `--expected-epoch`; dispatch matches `--dispatch` (default `paused`); each `--fenced-site` is draining or disabled; each `--active-site` is enabled and not draining; each `--readyz` returns 200 `ready`; each `--readyz-unready` does not return 200. |
+
+The `writer` phase also warns about live device sessions that carry an older
+deployment epoch or sit on a fenced site. Those sessions cannot receive
+grants, so they are not failures, but they should reconnect or expire.
+
+Without `--min-replay-lsn`, a `go` covers only WAL the writer reported to the
+standby. With asynchronous replication, writes the old writer never shipped
+or reported are lost on promotion, which is why step 6 keeps dispatch paused.
 
 ## Related automated coverage
 
