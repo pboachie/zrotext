@@ -211,9 +211,12 @@ For a later invited owner, configure SMTP and account routes, then restart
 every API instance with the same allowlist and master key. The registrant opens
 `/owner/account` on the exact configured HTTPS `AUTH_ORIGIN`, enters their
 email, a new password and the address-bound invite token, then enters the
-emailed code in the verification form on that page. The page also offers a
-resend form. It sends JSON with the token in a request header; no credentials
-or codes go in URLs. A successful request still returns generic `202`, so the
+emailed code together with that password in the verification form on that
+page. The code alone verifies nothing: it only activates the pending owner
+whose password the registrant can prove, so a code that reaches a mailbox
+because someone else registered that address is useless to the recipient. The
+page also offers a resend form. It sends JSON with the token in a request
+header; no credentials or codes go in URLs. A successful request still returns generic `202`, so the
 page cannot tell a denied invitation from an accepted one.
 
 For a headless setup, send these two HTTPS requests to that same origin
@@ -237,7 +240,7 @@ Host: app.example.test
 Origin: https://app.example.test
 Content-Type: application/json
 
-{"token":"<emailed-verification-code>"}
+{"token":"<emailed-verification-code>","password":"<new-owner-password>"}
 ```
 
 Use a client that takes the password, invite and code from protected input;
@@ -250,9 +253,12 @@ and the shared MFA encryption key on every API instance. The page shows the
 manual secret and one-time recovery codes only during setup and clears them
 when the page is left. Save the recovery codes before leaving.
 
-`register` returns `202` even when admission is denied. A successful
-`verify-email` returns `204`. If no mail arrives, check the private policy and
-SMTP worker rather than repeating registrations blindly. After verification,
+`register` returns `202` even when admission is denied, including when the
+address already has a pending owner; that pending owner's outstanding code and
+queued mail are then canceled, and the pending owner must request a resend with
+its password. A successful `verify-email` returns `204`; a wrong password gives
+the same `400` as an unknown code. If no mail arrives, check the private policy
+and SMTP worker rather than repeating registrations blindly. After verification,
 remove the allowlists and enrollment key, set `REGISTRATION_MODE=closed`, and
 restart every API instance. Closing registration does not revoke owner sessions.
 
