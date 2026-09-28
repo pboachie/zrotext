@@ -237,6 +237,36 @@ Expect to lose data written between the backup and the rollback, and note
 that retention deletions and content redaction performed by the newer version
 cannot be undone by restoring unless your backup predates them.
 
+## Behavior changes operators must expect
+
+These changes are active in current source and apply when upgrading an older
+snapshot; they are listed here so an upgrade is not surprised by them.
+
+- **Database transport policy.** A `DATABASE_URL` for a non-local PostgreSQL
+  host (including one literally named `db`) must use `sslmode=require`,
+  `verify-ca`, or `verify-full`, or the process refuses to start until the
+  explicit, warned `DATABASE_ALLOW_PLAINTEXT=true` opt-in is set. The local
+  Compose development stack already sets it. Accepted modes and CA
+  configuration are described in the [Compose guide](README.md) and
+  [self-hosting documentation](../../docs/SELF-HOSTING.md).
+- **Owner session lifetime.** Owner sessions expire after 72 hours without
+  use; signed-in owners are logged out rather than retained indefinitely.
+  API keys are unaffected and record their last use.
+- **Authentication ordering and error shape.** Owner and API requests are
+  authenticated before their bodies are read, and malformed JSON bodies
+  return the API error envelope with HTTP 400 instead of a bare parse error.
+- **Admission limits.** HTTP admission uses route-class permit pools
+  (provider callbacks, device WebSocket upgrades, anonymous
+  authentication/enrollment, and general routes) with a total ten-second
+  request-body deadline; saturation in one class no longer rejects the
+  others.
+- **Registration invites.** Invite tokens expire after a bounded lifetime
+  (seven days by default). Outstanding tokens issued by an older snapshot
+  stop being accepted; issue new ones through the admin CLI.
+- **Email verification.** Verifying an email address now requires the
+  registrant's password, and password-reset emails are budgeted per verified
+  owner per day.
+
 ## Moving to a tagged release or candidate
 
 The release process is defined in
