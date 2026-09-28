@@ -209,7 +209,18 @@ def standby_checks(
     hint = {}
     if writer_stopped:
         if gap is not None:
-            sender_ok = gap <= 0
+            # A receiver that is still present keeps the sender's last report
+            # until wal_receiver_timeout drops it. If the old writer crashed
+            # behind a network partition, that report is stale: the writer kept
+            # committing WAL that never shipped, so a zero gap proves nothing.
+            # Trust the report only while it is fresh, or when the operator's
+            # recorded final LSN bounds what was lost.
+            report_fresh = (
+                report_age is not None and report_age <= max_lag_seconds
+            )
+            sender_ok = gap <= 0 and (report_fresh or min_replay_lsn is not None)
+            if gap <= 0 and not sender_ok:
+                hint = {"hint": "sender report is stale; pass --min-replay-lsn"}
         else:
             # The receiver exits with the writer; only the operator's recorded
             # final LSN can bound what was lost.
@@ -233,7 +244,7 @@ def standby_checks(
         check(
             "sender_caught_up",
             sender_ok,
-            limit_seconds=None if writer_stopped else max_lag_seconds,
+            limit_seconds=max_lag_seconds,
             value_bytes=gap,
             value_report_age_seconds=report_age,
             **hint,
@@ -258,8 +269,8 @@ def standby_checks(
     ]
     if writer_stopped:
         warnings.append(
-            "receiver checks skipped because the old writer is declared stopped; "
-            "this tool cannot prove that it is"
+            "receiver streaming checks skipped because the old writer is "
+            "declared stopped; this tool cannot prove that it is"
         )
     return checks, warnings
 
@@ -395,7 +406,8 @@ def build_parser() -> argparse.ArgumentParser:
             phase.add_argument(
                 "--writer-stopped", action="store_true",
                 help="the old writer is already fenced and stopped: skip receiver "
-                "checks and require every received WAL byte to be replayed",
+                "streaming checks, require every received WAL byte to be replayed, "
+                "and trust the receiver's sender report only while it is fresh",
             )
             phase.add_argument(
                 "--min-replay-lsn", metavar="LSN",

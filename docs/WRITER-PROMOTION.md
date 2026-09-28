@@ -240,8 +240,13 @@ public repository.
    receiver stops and the standby no longer knows how far the writer got.
    The recorded LSN is the only real bound on what an asynchronous promotion
    loses, so the check requires replay to have reached it, and returns
-   `no-go` when the sender position is unknown and no LSN is given. It cannot
-   prove the old writer is stopped; that remains your fencing procedure. If
+   `no-go` when the sender position is unknown and no LSN is given, or when
+   it is stale: if the writer was lost behind a network partition, the
+   receiver can still report `streaming` with its last position until
+   `wal_receiver_timeout` drops it, and the checker refuses to trust a
+   sender report older than the lag limit without the recorded LSN. It
+   cannot prove the old writer is stopped; that remains your fencing
+   procedure. If
    the old writer was lost before you could record its LSN, the check can
    show only that everything the standby received was replayed; treat the
    promotion as unplanned and follow step 6.
@@ -320,7 +325,7 @@ received.
 | Phase | When | Checks |
 |---|---|---|
 | `standby` | Step 1, old writer still running | In recovery. WAL receiver `streaming` and heard from within `--max-lag-seconds` (default 60). Received WAL replayed, or the last replayed commit within the limit. Sender gap known, and either zero with a sender report within the limit (an idle writer) or the last replayed commit within the limit. An unknown sender gap is `no-go`. |
-| `standby --writer-stopped` | Step 2, before promoting | In recovery; every received WAL byte replayed. If the receiver still reports a sender gap, it must be zero; if not, `--min-replay-lsn` is required. Receiver checks are skipped. |
+| `standby --writer-stopped` | Step 2, before promoting | In recovery; every received WAL byte replayed. If the receiver still reports a sender position, the gap must be zero and the report within `--max-lag-seconds`; a receiver whose writer crashed behind a partition keeps a stale report until `wal_receiver_timeout` drops it, so a stale or unknown position requires `--min-replay-lsn`. Receiver streaming checks are skipped. |
 | `standby --min-replay-lsn LSN` | Either standby step | Additionally, replay has reached `LSN`. |
 | `writer` | Step 7 | Not in recovery; `deployment_authority.epoch` equals `--expected-epoch`; dispatch matches `--dispatch` (default `paused`); each `--fenced-site` is draining or disabled; each `--active-site` is enabled and not draining; each `--readyz` returns 200 `ready`; each `--readyz-unready` does not return 200. |
 
