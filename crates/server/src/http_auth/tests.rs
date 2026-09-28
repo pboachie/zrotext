@@ -651,6 +651,47 @@ fn verification_mail_names_the_shipped_form_without_a_code_url() {
     assert!(body.contains("/owner/account#verify"));
     assert!(body.contains("synthetic-code"));
     assert!(!body.contains("?token="));
+    // Recipients who never signed up must learn that the code is not theirs
+    // to use, and registrants must learn that the code alone is not enough.
+    assert!(body.contains("If you did not sign up for ZROtext, ignore this message."));
+    assert!(body.contains("password"));
+}
+
+#[tokio::test]
+async fn verification_without_password_is_malformed_and_never_reaches_database() {
+    let state = AuthHttpState::new(
+        "postgres://unused".to_owned(),
+        Arc::new(TokenHasher::new(crate::test_keys::key(7)).unwrap()),
+        "https://zrotext.example".to_owned(),
+        Arc::new(DisabledVerificationDispatcher),
+    )
+    .unwrap();
+    let app = router(state);
+    // A code alone is a malformed body: the JSON extractor rejects it before
+    // the (unusable) database is contacted, so no connection failure shows.
+    for body in [
+        serde_json::json!({"token":"ztv_synthetic-code"}),
+        serde_json::json!({"token":"ztv_synthetic-code","password":null}),
+        serde_json::json!({"password":crate::test_keys::password(1)}),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(json_post("/verify-email", body))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        assert!(!response.headers().contains_key(header::SET_COOKIE));
+    }
+    // A complete body is the first request that needs the database.
+    let response = app
+        .oneshot(json_post(
+            "/verify-email",
+            serde_json::json!({"token":"ztv_synthetic-code","password":crate::test_keys::password(1)}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
 
 #[tokio::test]
@@ -1272,7 +1313,7 @@ async fn postgres_http_account_lifecycle_enforces_csrf_and_revocation() {
         .clone()
         .oneshot(json_post(
             "/verify-email",
-            serde_json::json!({"token":token}),
+            serde_json::json!({"token":token,"password":crate::test_keys::password(1)}),
         ))
         .await
         .unwrap();
@@ -1923,18 +1964,21 @@ async fn postgres_http_expired_pending_signup_is_replaced_with_uniform_responses
     assert!(dispatch_one_verification(&state).await.unwrap());
     let token = capture.0.lock().unwrap().take().unwrap();
     assert_ne!(token, stale_token);
-    let verify = |token: String| {
+    let verify = |token: String, password: &'static str| {
         app.clone().oneshot(json_post(
             "/verify-email",
-            serde_json::json!({"token":token}),
+            serde_json::json!({"token":token,"password":password}),
         ))
     };
     assert_eq!(
-        verify(stale_token).await.unwrap().status(),
+        verify(stale_token, "first registrant 1")
+            .await
+            .unwrap()
+            .status(),
         StatusCode::BAD_REQUEST
     );
     assert_eq!(
-        verify(token).await.unwrap().status(),
+        verify(token, "address owner 123").await.unwrap().status(),
         StatusCode::NO_CONTENT
     );
     let login = |password: &'static str| {
@@ -1949,6 +1993,184 @@ async fn postgres_http_expired_pending_signup_is_replaced_with_uniform_responses
     );
     assert_eq!(
         login("address owner 123").await.unwrap().status(),
+        StatusCode::NO_CONTENT
+    );
+    setup
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn postgres_http_verification_needs_registrant_password_and_collision_cancels_code() {
+    let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+        .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let schema = format!("http_verify_pw_test_{}", Uuid::new_v4().simple());
+    setup
+        .batch_execute(&format!("CREATE SCHEMA {schema}"))
+        .await
+        .unwrap();
+    let separator = if base_url.contains('?') { '&' } else { '?' };
+    let url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
+    let (client, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    for migration in [
+        include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+        include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+        include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
+        include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
+        include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+        include_str!("../../../../deploy/compose/migrations/022_pending_owner_expiry.sql"),
+    ] {
+        client.batch_execute(migration).await.unwrap();
+    }
+    let capture = Arc::new(CaptureVerification(Mutex::new(None)));
+    let state = AuthHttpState::new(
+        url,
+        Arc::new(TokenHasher::new(crate::test_keys::key(44)).unwrap()),
+        "https://zrotext.example".to_owned(),
+        capture.clone(),
+    )
+    .unwrap()
+    .with_registration_policy(RegistrationPolicy::Open);
+    let app = router(state.clone());
+    let register = |email: &'static str, password: &'static str| {
+        app.clone().oneshot(json_post(
+            "/register",
+            serde_json::json!({"email":email,"password":password}),
+        ))
+    };
+    let verify = |token: String, password: &'static str| {
+        app.clone().oneshot(json_post(
+            "/verify-email",
+            serde_json::json!({"token":token,"password":password}),
+        ))
+    };
+    let login = |email: &'static str, password: &'static str| {
+        app.clone().oneshot(json_post(
+            "/login",
+            serde_json::json!({"email":email,"password":password}),
+        ))
+    };
+    // A stranger registers the address owner's email with a foreign password;
+    // the code lands in the address owner's mailbox.
+    assert_eq!(
+        register("claimed@example.test", "stranger password 1")
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::ACCEPTED
+    );
+    assert!(dispatch_one_verification(&state).await.unwrap());
+    let foreign_code = capture.0.lock().unwrap().take().unwrap();
+    assert_eq!(
+        login("claimed@example.test", "stranger password 1")
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    // Pasting the code with any password other than the registrant's fails
+    // exactly like an unknown code, and the code stays unconsumed.
+    assert_eq!(
+        verify(foreign_code.clone(), "address owner 123")
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        verify("ztv_not-a-real-code".to_owned(), "stranger password 1")
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert!(
+        auth::verification_token_is_live(&client, &state.hasher, &foreign_code)
+            .await
+            .unwrap()
+    );
+    // The address owner's own sign-up collides with the pending record. The
+    // response stays generic and mails nothing, but the foreign code and its
+    // queued mail are canceled, so not even the registrant can use it now.
+    assert_eq!(
+        register("claimed@example.test", "address owner 123")
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::ACCEPTED
+    );
+    assert!(!dispatch_one_verification(&state).await.unwrap());
+    assert!(
+        !auth::verification_token_is_live(&client, &state.hasher, &foreign_code)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        verify(foreign_code.clone(), "stranger password 1")
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    let row = client
+        .query_one(
+            "SELECT (SELECT count(*) FROM email_verifications WHERE used_at IS NULL),
+                    (SELECT count(*) FROM verification_mail_outbox WHERE canceled_at IS NULL),
+                    (SELECT count(*) FROM users WHERE email_verified_at IS NOT NULL)",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(row.get::<_, i64>(0), 0);
+    assert_eq!(row.get::<_, i64>(1), 0);
+    assert_eq!(row.get::<_, i64>(2), 0);
+    // The stranger never observes the 403 -> 204 transition.
+    assert_eq!(
+        login("claimed@example.test", "stranger password 1")
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    // A genuine registrant still verifies with the code and the password it
+    // chose, and only with that password.
+    assert_eq!(
+        register("owner@example.test", "genuine owner 123")
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::ACCEPTED
+    );
+    assert!(dispatch_one_verification(&state).await.unwrap());
+    let code = capture.0.lock().unwrap().take().unwrap();
+    assert_eq!(
+        verify(code.clone(), "genuine owner 124")
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        verify(code.clone(), "genuine owner 123")
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        verify(code, "genuine owner 123").await.unwrap().status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        login("owner@example.test", "genuine owner 123")
+            .await
+            .unwrap()
+            .status(),
         StatusCode::NO_CONTENT
     );
     setup
@@ -2005,7 +2227,7 @@ async fn valid_verification_survives_anonymous_invalid_code_exhaustion() {
             .clone()
             .oneshot(json_post(
                 "/verify-email",
-                serde_json::json!({"token":"invalid"}),
+                serde_json::json!({"token":"invalid","password":test_password}),
             ))
             .await
             .unwrap();
@@ -2023,14 +2245,14 @@ async fn valid_verification_survives_anonymous_invalid_code_exhaustion() {
         .clone()
         .oneshot(json_post(
             "/verify-email",
-            serde_json::json!({"token":wrong_code}),
+            serde_json::json!({"token":wrong_code,"password":test_password}),
         ))
         .await
         .unwrap();
     assert_eq!(invalid.status(), StatusCode::TOO_MANY_REQUESTS);
     let mut wrong_origin = json_post(
         "/verify-email",
-        serde_json::json!({"token":signup.verification_token}),
+        serde_json::json!({"token":signup.verification_token,"password":test_password}),
     );
     wrong_origin.headers_mut().insert(
         header::ORIGIN,
@@ -2044,7 +2266,7 @@ async fn valid_verification_survives_anonymous_invalid_code_exhaustion() {
         .clone()
         .oneshot(json_post(
             "/verify-email",
-            serde_json::json!({"token":signup.verification_token}),
+            serde_json::json!({"token":signup.verification_token,"password":test_password}),
         ))
         .await
         .unwrap();
@@ -2052,7 +2274,7 @@ async fn valid_verification_survives_anonymous_invalid_code_exhaustion() {
     let replay = a
         .oneshot(json_post(
             "/verify-email",
-            serde_json::json!({"token":signup.verification_token}),
+            serde_json::json!({"token":signup.verification_token,"password":test_password}),
         ))
         .await
         .unwrap();

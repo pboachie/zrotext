@@ -519,24 +519,108 @@ pub async fn verification_token_is_live(
     Ok(row.get(0))
 }
 
-/// Atomically consumes a live verification code. The caller supplies this
-/// token in a POST body, never as a query parameter, to avoid referrer leakage.
-pub async fn verify_email(
+/// Consumes a live verification code after the registrant proves the password
+/// stored for the pending owner. A mailed code alone must never verify an
+/// address: a third party can register any address with its own password, and
+/// the recipient must not be able to activate that foreign account by pasting
+/// the code. Unknown, expired and consumed codes incur the same password work
+/// as live ones, and every `false` result must share one HTTP response.
+pub async fn verify_email_with_password(
     client: &mut Client,
     hasher: &TokenHasher,
     token: &str,
+    password: &str,
+) -> Result<bool, AuthError> {
+    let row = if valid_token(token, "ztv_") {
+        let hash = hasher.digest(b"email-verification-v1", token);
+        client
+            .query_opt(
+                "SELECT u.id,u.password_hash FROM email_verifications v JOIN users u ON u.id=v.user_id JOIN memberships m ON (m.account_id,m.user_id)=(v.account_id,v.user_id) WHERE m.role='owner' AND v.token_hash=$1 AND v.used_at IS NULL AND v.expires_at>now() AND (u.email_verified_at IS NOT NULL OR u.created_at>now()-($2::integer * interval '1 hour'))",
+                &[&&hash[..], &VERIFICATION_HOURS],
+            )
+            .await?
+    } else {
+        None
+    };
+    let user_id = row.as_ref().map(|row| row.get::<_, Uuid>(0));
+    let stored = row.as_ref().map(|row| row.get::<_, String>(1));
+    match password_work::verify(password, stored.clone()).await {
+        Ok(()) => {}
+        Err(AuthError::InvalidCredentials) => return Ok(false),
+        Err(error) => return Err(error),
+    }
+    let (Some(user_id), Some(stored)) = (user_id, stored) else {
+        return Ok(false);
+    };
+    consume_verification_code(client, hasher, token, Some((user_id, stored))).await
+}
+
+/// Invalidates every outstanding verification code and queued mail of the
+/// unverified owner holding `email`, if any. A registration that collides
+/// with a pending owner calls this so that a code issued for the earlier
+/// registrant's password can never verify the address for someone else.
+/// Verified owners are never touched. Returns whether a code was canceled.
+pub async fn cancel_pending_verification(
+    client: &mut Client,
+    email: &str,
+) -> Result<bool, AuthError> {
+    let email = normalize_email(email)?;
+    let tx = client.transaction().await?;
+    let canceled = tx
+        .query(
+            "UPDATE email_verifications v SET used_at=now() FROM users u WHERE u.id=v.user_id AND u.email=$1 AND u.email_verified_at IS NULL AND v.used_at IS NULL RETURNING v.id",
+            &[&email],
+        )
+        .await?;
+    for row in &canceled {
+        let verification_id: Uuid = row.get(0);
+        tx.execute(
+            "UPDATE verification_mail_outbox SET canceled_at=now(),lease_id=NULL,leased_until=NULL WHERE verification_id=$1 AND canceled_at IS NULL",
+            &[&verification_id],
+        )
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(!canceled.is_empty())
+}
+
+/// Test-fixture entry point that consumes a live verification code without
+/// a password proof. Every production path goes through
+/// [`verify_email_with_password`], so this function does not exist outside
+/// test builds.
+#[cfg(test)]
+pub(crate) async fn verify_email(
+    client: &mut Client,
+    hasher: &TokenHasher,
+    token: &str,
+) -> Result<bool, AuthError> {
+    consume_verification_code(client, hasher, token, None).await
+}
+
+/// When `bound` is set, the code is consumed only while it still belongs to
+/// that user with that password hash, so a password proof cannot be reused
+/// against a record that changed after it was checked.
+async fn consume_verification_code(
+    client: &mut Client,
+    hasher: &TokenHasher,
+    token: &str,
+    bound: Option<(Uuid, String)>,
 ) -> Result<bool, AuthError> {
     if !valid_token(token, "ztv_") {
         return Ok(false);
     }
     let hash = hasher.digest(b"email-verification-v1", token);
+    let (bound_user, bound_hash) = match bound {
+        Some((user_id, password_hash)) => (Some(user_id), Some(password_hash)),
+        None => (None, None),
+    };
     let tx = client.transaction().await?;
     // A code only verifies an owner still inside its pending window, even if
     // the code itself was issued with a later expiry by an older release.
     let row = tx
         .query_opt(
-            "UPDATE email_verifications v SET used_at=now() FROM users u WHERE u.id=v.user_id AND EXISTS(SELECT 1 FROM memberships m WHERE m.account_id=v.account_id AND m.user_id=v.user_id AND m.role='owner') AND v.token_hash=$1 AND v.used_at IS NULL AND v.expires_at>now() AND (u.email_verified_at IS NOT NULL OR u.created_at>now()-($2::integer * interval '1 hour')) RETURNING v.id,v.user_id",
-            &[&&hash[..], &VERIFICATION_HOURS],
+            "UPDATE email_verifications v SET used_at=now() FROM users u WHERE u.id=v.user_id AND EXISTS(SELECT 1 FROM memberships m WHERE m.account_id=v.account_id AND m.user_id=v.user_id AND m.role='owner') AND v.token_hash=$1 AND v.used_at IS NULL AND v.expires_at>now() AND (u.email_verified_at IS NOT NULL OR u.created_at>now()-($2::integer * interval '1 hour')) AND ($3::uuid IS NULL OR u.id=$3) AND ($4::text IS NULL OR u.password_hash=$4) RETURNING v.id,v.user_id",
+            &[&&hash[..], &VERIFICATION_HOURS, &bound_user, &bound_hash],
         )
         .await?;
     if let Some(row) = row {

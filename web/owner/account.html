@@ -34,10 +34,12 @@
 
     <section id="verify" aria-labelledby="verify-title">
       <h2 id="verify-title">Verify your email</h2>
-      <p>Enter the code from your ZROtext verification email. Keep the code out of links and URLs.</p>
+      <p>Enter the code from your ZROtext verification email together with the password you chose at sign-up. Keep the code out of links and URLs. If you did not sign up, ignore the email.</p>
       <form id="verify-form" method="post" action="/v1/auth/verify-email">
         <label for="verification-code">Verification code</label>
         <input id="verification-code" name="token" type="text" autocomplete="one-time-code" spellcheck="false" required>
+        <label for="verify-password">Password</label>
+        <input id="verify-password" name="password" type="password" autocomplete="current-password" required>
         <button type="submit">Verify email</button>
       </form>
       <p id="verify-status" role="status" aria-live="polite"></p>
