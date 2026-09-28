@@ -121,6 +121,29 @@ fn api_scopes_and_device_restriction_fail_closed() {
 }
 
 #[test]
+fn fresh_session_validation_is_spent_once_and_expires() {
+    let principal = |verification| SessionPrincipal {
+        tenant: Tenant {
+            account_id: Uuid::new_v4(),
+        },
+        user_id: Uuid::new_v4(),
+        session_id: Uuid::new_v4(),
+        csrf_hash: [0; 32],
+        verification,
+    };
+    let fresh = principal(FreshVerification::now());
+    assert!(fresh.spend_fresh_verification());
+    assert!(!fresh.spend_fresh_verification());
+    // Principals not produced by authenticate_session always re-check.
+    assert!(!principal(FreshVerification::spent()).spend_fresh_verification());
+    let old = principal(FreshVerification {
+        at: std::time::Instant::now().checked_sub(FRESH_VERIFICATION_WINDOW),
+        unspent: std::sync::atomic::AtomicBool::new(true),
+    });
+    assert!(!old.spend_fresh_verification());
+}
+
+#[test]
 fn token_domains_are_separate_and_csrf_needs_origin() {
     let hasher = TokenHasher::new(crate::test_keys::key(7)).unwrap();
     let token = random_token("ztc_");
@@ -131,6 +154,7 @@ fn token_domains_are_separate_and_csrf_needs_origin() {
         user_id: Uuid::new_v4(),
         session_id: Uuid::new_v4(),
         csrf_hash: hasher.digest(b"csrf-v1", &token),
+        verification: FreshVerification::spent(),
     };
     assert_ne!(
         hasher.digest(b"csrf-v1", &token),
