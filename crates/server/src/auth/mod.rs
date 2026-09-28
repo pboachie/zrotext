@@ -212,6 +212,7 @@ struct FreshVerification {
 }
 
 impl FreshVerification {
+    #[cfg(test)]
     fn spent() -> Self {
         Self {
             at: None,
