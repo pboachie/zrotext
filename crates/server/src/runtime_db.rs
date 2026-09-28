@@ -383,6 +383,26 @@ mod tests {
         assert_eq!(started.elapsed(), ADMISSION_WAIT);
     }
 
+    // A worker job replacing a finished one must not fail admission while the
+    // released socket's DISCARD ALL reset is still in flight: the permit is
+    // held and the idle list is empty until the reset completes.
+    #[tokio::test(flavor = "current_thread")]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+    async fn worker_admission_waits_for_in_flight_socket_reset() {
+        let url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
+        let pool = ClassPool::new(1, false);
+        let client = acquire(&pool, &url).await.unwrap();
+        client.query_one("SELECT 1", &[]).await.unwrap();
+        drop(client);
+        assert_eq!(pool.slots.available_permits(), 0);
+        let replacement = timeout(EVICTION_WAIT + Duration::from_secs(1), acquire(&pool, &url))
+            .await
+            .expect("replacement admission resolves within the bounded window");
+        let replacement = replacement.expect("imminent same-URL release is reused, not rejected");
+        replacement.query_one("SELECT 1", &[]).await.unwrap();
+    }
+
     #[tokio::test]
     #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn released_socket_is_reset_and_reused_within_its_budget() {
