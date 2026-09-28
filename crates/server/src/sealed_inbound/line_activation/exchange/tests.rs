@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+use super::super::MAX_UNACTIVATED_LINES;
 use super::*;
 use crate::{
     auth::{self, TokenHasher},
@@ -152,20 +153,20 @@ fn der(key: &SigningKey, message: &[u8]) -> Vec<u8> {
     signature.to_der().as_bytes().to_vec()
 }
 
-#[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
-async fn postgres_sms_line_activation_exchange_binds_owner_device_and_live_session() {
+/// A fresh schema holding the complete migrated tree. Returns the setup
+/// connection, the schema name, a URL pinned to it and a client on that URL.
+async fn migrated_schema(prefix: &str) -> (Client, String, String, Client) {
     let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL").expect("set test database URL");
     let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
-    let schema = format!("sms_line_exchange_test_{}", Uuid::new_v4().simple());
+    let schema = format!("{prefix}_{}", Uuid::new_v4().simple());
     setup
         .batch_execute(&format!("CREATE SCHEMA {schema}"))
         .await
         .unwrap();
     let sep = if base_url.contains('?') { '&' } else { '?' };
     let url = format!("{base_url}{sep}options=-csearch_path%3D{schema}");
-    let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    let (db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
     for (name, migration) in TEST_MIGRATIONS {
         if name == "034_delivery_sweep_index.sql" {
@@ -190,6 +191,13 @@ async fn postgres_sms_line_activation_exchange_binds_owner_device_and_live_sessi
             .await
             .unwrap_or_else(|error| panic!("{name}: {error}"));
     }
+    (setup, schema, url, db)
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn postgres_sms_line_activation_exchange_binds_owner_device_and_live_session() {
+    let (setup, schema, url, mut db) = migrated_schema("sms_line_exchange_test").await;
     db.execute("INSERT INTO sites(site_id) VALUES('virtual-sms-hub')", &[])
         .await
         .unwrap();
@@ -747,4 +755,149 @@ async fn postgres_sms_line_activation_exchange_binds_owner_device_and_live_sessi
 
 async fn owner_for_other_account(db: &mut Client, hasher: &TokenHasher) -> Owner {
     owner(db, hasher, "sms-line-exchange-other@example.test").await
+}
+
+/// Enrolls a phone and registers an SMS owner approval key, so a refused
+/// `open` for this account can only be about the line itself.
+async fn line_ready_account(db: &Client, account_id: Uuid) -> Uuid {
+    let device = Uuid::new_v4();
+    let device_sec1 = SigningKey::generate_from_rng(&mut rng())
+        .verifying_key()
+        .to_sec1_point(false);
+    let owner_sec1 = SigningKey::generate_from_rng(&mut rng())
+        .verifying_key()
+        .to_sec1_point(false);
+    db.execute(
+        "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'virtual sms device')",
+        &[&device, &account_id],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO device_keys(device_id,account_id,signing_key_sec1,fingerprint) VALUES($1,$2,$3,$4)",
+        &[&device, &account_id, &device_sec1.as_bytes(), &&digest(device_sec1.as_bytes())[..]],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO sms_line_owner_approval_keys(account_id,fingerprint,signing_key_sec1) VALUES($1,$2,$3)",
+        &[&account_id, &&digest(owner_sec1.as_bytes())[..], &owner_sec1.as_bytes()],
+    )
+    .await
+    .unwrap();
+    device
+}
+
+async fn line_holder(db: &Client, line: Uuid) -> Option<Uuid> {
+    db.query_opt("SELECT account_id FROM phone_lines WHERE id=$1", &[&line])
+        .await
+        .unwrap()
+        .map(|row| row.get(0))
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn postgres_sms_line_ids_are_account_private_and_bounded() {
+    let (setup, schema, url, mut db) = migrated_schema("sms_line_id_test").await;
+    let hasher = Arc::new(TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
+    let first = owner(&mut db, &hasher, "sms-line-ids@example.test").await;
+    let second = owner(&mut db, &hasher, "sms-line-ids-other@example.test").await;
+    let first_device = line_ready_account(&db, first.account_id).await;
+    let second_device = line_ready_account(&db, second.account_id).await;
+    let app = http_auth::router(
+        http_auth::AuthHttpState::new(
+            url.clone(),
+            hasher.clone(),
+            ORIGIN.to_owned(),
+            Arc::new(DisabledVerificationDispatcher),
+        )
+        .unwrap()
+        .with_sms_line_activation_enabled(),
+    );
+    let open = |who: &Owner, line: Uuid, device: Uuid| {
+        let app = app.clone();
+        let request = request(
+            who,
+            "POST",
+            &format!("/sms-lines/{line}/activations"),
+            Some(serde_json::json!({ "device_id": device })),
+        );
+        async move { app.oneshot(request).await.unwrap() }
+    };
+
+    let line = Uuid::new_v4();
+    assert_eq!(
+        open(&first, line, first_device).await.status(),
+        StatusCode::CREATED
+    );
+    // The second account has a ready phone and key, yet a line ID held by
+    // the first account is refused exactly like the second account's own
+    // open for a phone it never enrolled. Neither refusal writes a row.
+    let collided = open(&second, line, second_device).await;
+    let unrelated_line = Uuid::new_v4();
+    let refused = open(&second, unrelated_line, Uuid::new_v4()).await;
+    assert_eq!(collided.status(), StatusCode::FORBIDDEN);
+    assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+    assert_eq!(json(collided).await, json(refused).await);
+    assert_eq!(line_holder(&db, line).await, Some(first.account_id));
+    assert_eq!(line_holder(&db, unrelated_line).await, None);
+    let listed = json(
+        app.clone()
+            .oneshot(request(&second, "GET", "/sms-lines", None))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(listed["lines"].as_array().unwrap().len(), 0);
+    // The first account's line is untouched and still reopens.
+    let reopened = json(open(&first, line, first_device).await).await;
+    assert_eq!(reopened["generation"], 2);
+
+    // Lines are permanent, so an account holds at most
+    // MAX_UNACTIVATED_LINES that never activated.
+    let mut unactivated = Vec::new();
+    for _ in 1..MAX_UNACTIVATED_LINES {
+        let seeded = Uuid::new_v4();
+        db.execute(
+            "INSERT INTO phone_lines(id,account_id) VALUES($1,$2)",
+            &[&seeded, &second.account_id],
+        )
+        .await
+        .unwrap();
+        unactivated.push(seeded);
+    }
+    let last = Uuid::new_v4();
+    assert_eq!(
+        open(&second, last, second_device).await.status(),
+        StatusCode::CREATED
+    );
+    let over = Uuid::new_v4();
+    assert_eq!(
+        open(&second, over, second_device).await.status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(line_holder(&db, over).await, None);
+    // An existing unactivated line can still be retried at the cap.
+    assert_eq!(
+        open(&second, unactivated[0], second_device).await.status(),
+        StatusCode::CREATED
+    );
+    // A line that reached an active binding no longer counts.
+    db.execute(
+        "UPDATE phone_lines SET state='active',approved_at=now(), \
+         current_binding_generation=1,last_issued_generation=1 WHERE id=$1",
+        &[&unactivated[1]],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        open(&second, over, second_device).await.status(),
+        StatusCode::CREATED
+    );
+    assert_eq!(line_holder(&db, over).await, Some(second.account_id));
+
+    setup
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
 }
