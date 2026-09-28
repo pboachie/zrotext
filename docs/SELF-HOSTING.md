@@ -516,6 +516,41 @@ its database connection fails, the process log shows one
 data, and a later success re-arms it. Investigate the failure before these
 tables grow.
 
+## Account erasure
+
+`POST /v1/owner/erasure` is the owner-initiated counterpart of the data
+export: an authenticated owner re-proves the account's current password (and,
+when MFA is enabled, a fresh second-factor code in the request's `code`
+field) and the server deletes every account-owned row in one database
+transaction, ending with the account row itself. Authorization is re-checked
+under row locks inside that transaction immediately before the first delete:
+a password change, session revocation, or account disable that lands after
+the password was proven aborts the request with nothing deleted. The success
+response lists every table with its deleted row count plus the single
+retained set (the request-budget counters, which are pepper-keyed digests
+shared across accounts and hold no identifiers); this response is the only
+confirmation, because the account and its sessions no longer exist.
+
+Erasure is local and bounded. It applies only to this server's database. It
+does not cancel Stripe subscriptions or customers, does not release carrier
+or phone-line identities outside the database, does not delete anything in
+external systems, and does not rewrite backups, replicas, or WAL archives —
+those keep their own lifecycle, exactly as for retention above.
+
+An account cannot be erased at all, and nothing is deleted (HTTP 409
+`erasure_blocked`, with the blocking tables listed), while any of these
+exist: a line identity tombstone (`phone_lines`, `device_line_bindings`) or
+its approval keys, challenges, and activation exchanges; append-only consent
+and audit rows (`owner_recipient_holds`, `owner_opt_out_review_decisions`,
+`owner_opt_out_audit`, `sms_owner_key_audit`); the immutable sealed trust
+history (`known_signing_point_reservations`, `known_signing_role_claims`,
+`sealed_root_enrollments`, `sealed_root_receipts`), which exists for every
+account that ever enrolled a device key or approval key; a live owner-key
+ceremony; an operator billing review action over the account's risk events;
+or a billing event still referenced by another account's risk record. Owners
+of accounts with such rows must contact the operator about those records
+first; the endpoint never deletes part of an account.
+
 ## Source for modified deployments
 
 The server's HTML pages link to `/source`. Published release images point this link to the exact upstream commit used for the build. If you modify ZROtext and let people use your server over a network, set `SOURCE_URL` to a downloadable copy of the full corresponding source for **your running version**, including your changes and applicable build instructions. A link to the unmodified upstream repository is insufficient for a modified deployment. See [AGPL-3.0 section 13](https://www.gnu.org/licenses/agpl-3.0.en.html). Review the license for your situation.

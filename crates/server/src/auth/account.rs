@@ -180,6 +180,126 @@ pub async fn create_api_key_with_proof(
     Ok(key)
 }
 
+/// Password proof for owner-confirmed destructive actions outside this
+/// module. Same live-session lookup and argon2 verification as
+/// [`revoke_other_sessions`], without any of its side effects: it returns
+/// the hash that was verified so the caller can re-check it under its own
+/// locks (see [`fence_owner_mutation`]) before acting.
+pub async fn verify_current_password(
+    client: &Client,
+    owner: &SessionPrincipal,
+    current_password: &str,
+) -> Result<String, AuthError> {
+    let old_hash: Option<String> = client
+        .query_opt(
+            "SELECT u.password_hash FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id JOIN sessions s ON s.account_id=m.account_id AND s.user_id=u.id WHERE u.id=$1 AND m.account_id=$2 AND m.role='owner' AND s.id=$3 AND s.revoked_at IS NULL AND s.expires_at>now() AND a.disabled_at IS NULL",
+            &[&owner.user_id, &owner.tenant.account_id(), &owner.session_id],
+        )
+        .await?
+        .map(|row| row.get(0));
+    let Some(old_hash) = old_hash else {
+        return match password_work::verify(current_password, None).await {
+            // Burn the same argon2 work as a live comparison before failing.
+            Err(error) => Err(error),
+            // A dummy-hash match is not any owner's proof.
+            Ok(()) => Err(AuthError::InvalidCredentials),
+        };
+    };
+    password_work::verify(current_password, Some(old_hash.clone())).await?;
+    Ok(old_hash)
+}
+
+/// Result of [`fence_owner_mutation`].
+pub(crate) enum OwnerMutationFence {
+    /// The caller's password proof held under the locks: the caller may
+    /// mutate inside the same transaction.
+    Cleared,
+    /// The second factor was wrong: the shared failure budget was recorded
+    /// inside this transaction and the caller must commit before rejecting.
+    FactorRejected,
+}
+
+/// In-transaction authorization fence for owner-confirmed destructive
+/// actions, mirroring [`revoke_other_sessions`] under the same locks: the
+/// user, membership, and account rows are locked together, the password
+/// hash must be unchanged since the caller's pre-transaction proof
+/// ([`verify_current_password`]), the session must still be live, and an
+/// MFA-enabled owner must present a fresh factor against the shared failure
+/// budget.
+///
+/// Every statement here can wait on row locks, and PostgreSQL evaluates
+/// `now()` and quals against the snapshot taken when the waiting statement
+/// started, so a change committed during a wait must be re-observed after
+/// the lock is granted. Three layers cover that: the joined lookup locks
+/// `u`, `m`, and `a` (`FOR UPDATE OF u,m,a`), so a concurrent account
+/// disable or membership removal blocks on the account/membership row
+/// until this transaction ends, or — when it committed first — fails the
+/// locked row's re-qualification; the session row is locked by
+/// [`require_live_session`], so a concurrent revocation queues behind it;
+/// and after every wait this fence performed (the MFA step-up included),
+/// one final fresh-statement revalidation re-reads revoked, expiry against
+/// `clock_timestamp()` (the true clock, unlike the frozen `now()`), and
+/// account state. Callers must run this fence as their final gate, with no
+/// awaits between it and their first mutation: this fence is deliberately
+/// the last statement set before destruction.
+pub(crate) async fn fence_owner_mutation(
+    tx: &tokio_postgres::Transaction<'_>,
+    cipher: Option<&mfa::MfaCipher>,
+    hasher: &TokenHasher,
+    owner: &SessionPrincipal,
+    verified_hash: &str,
+    code: Option<&str>,
+) -> Result<OwnerMutationFence, AuthError> {
+    let account_id = owner.tenant.account_id();
+    let row = tx
+        .query_opt(
+            "SELECT u.password_hash,u.mfa_enabled FROM users u \
+             JOIN memberships m ON m.user_id=u.id \
+             JOIN accounts a ON a.id=m.account_id \
+             WHERE u.id=$1 AND m.account_id=$2 AND m.role='owner' AND a.disabled_at IS NULL \
+             FOR UPDATE OF u,m,a",
+            &[&owner.user_id, &account_id],
+        )
+        .await?
+        .ok_or(AuthError::Unauthorized)?;
+    if row.get::<_, String>(0) != verified_hash {
+        return Err(AuthError::InvalidCredentials);
+    }
+    require_live_session(tx, owner).await?;
+    if row.get::<_, bool>(1) {
+        let code = code.ok_or(AuthError::InvalidCredentials)?;
+        mfa::ensure_step_up_budget(tx, hasher, account_id, owner.user_id).await?;
+        if !mfa::use_factor(tx, cipher, hasher, account_id, owner.user_id, code).await? {
+            mfa::record_failed_step_up(tx, hasher, owner.user_id).await?;
+            return Ok(OwnerMutationFence::FactorRejected);
+        }
+    }
+    // Final revalidation, after every wait this fence performed. This is a
+    // fresh statement, so it reads committed state as of now — not the
+    // snapshot of whichever waiting statement above — and compares the
+    // session expiry against clock_timestamp(), the true current clock. A
+    // session revoked or expired, or an account disabled or unlinked from
+    // the user, while a lock above was being granted cannot pass here.
+    let still_live: bool = tx
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM sessions s \
+             JOIN memberships m ON m.account_id=s.account_id AND m.user_id=s.user_id \
+             JOIN accounts a ON a.id=m.account_id \
+             WHERE s.id=$1 AND s.account_id=$2 AND s.user_id=$3 \
+               AND m.role='owner' \
+               AND s.revoked_at IS NULL \
+               AND s.expires_at>clock_timestamp() \
+               AND a.disabled_at IS NULL)",
+            &[&owner.session_id, &account_id, &owner.user_id],
+        )
+        .await?
+        .get(0);
+    if !still_live {
+        return Err(AuthError::Unauthorized);
+    }
+    Ok(OwnerMutationFence::Cleared)
+}
+
 async fn require_live_session(
     tx: &tokio_postgres::Transaction<'_>,
     owner: &SessionPrincipal,
