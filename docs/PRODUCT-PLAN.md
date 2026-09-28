@@ -94,7 +94,7 @@ Provide an n8n recipe using its documented [Webhook](https://docs.n8n.io/integra
 
 These are independent later additions, not prerequisites for the customer-controlled assistant.
 
-**Managed AI:** require explicit opt-in to a separate ZROtext-managed content reader. Specify selected lines/conversations, model-provider access, retention, export, deletion, revocation and budgets. The service must receive explicitly authorized decryption/signing roles; it must not introduce a silent plaintext fallback to the sealed API. Revocation stops future access but cannot undo content already read. Complete hosted-service operations and the relevant export/deletion capability before release.
+**Managed AI:** require explicit opt-in to a separate ZROtext-managed content reader. Specify selected lines/conversations, model-provider access, retention, export, deletion, revocation and budgets. The service must receive explicitly authorized decryption/signing roles; it must not introduce a silent plaintext fallback to the sealed API. Revocation stops future access but cannot undo content already read. Complete hosted-service operations and the relevant export/deletion capability before release. The [data-handling proposal](MANAGED-AI.md) details these properties and the open decisions.
 
 **Larger campaigns:** evaluate a provider-based transport with explicit route selection. Document supported countries, sender eligibility, number ownership/portability, registration needs, cost units and measured throughput for the chosen route. Do not imply every provider can send from an existing SIM number. Preserve suppression, idempotency, expiry, pacing and honest delivery states across routes. An unknown phone submission must not be resent through a provider automatically.
 
