@@ -110,8 +110,9 @@ sender ID table; AWS country capabilities table):
   alternative and local DLT routes only available from in-country regions.
 - **Two-way SMS requires a dedicated numeric identity** (AWS: dedicated short
   code or long code); some countries offer inbound-only long codes precisely
-  so recipients can opt out of sender-ID traffic (AWS names India and Saudi
-  Arabia).
+  so recipients can opt out of sender-ID traffic (the AWS country table marks
+  long codes in India, Pakistan, the Philippines, Saudi Arabia and the UAE as
+  inbound-only).
 
 **Number ownership and the SIM question.** A provider route cannot inherit the
 gateway SIM's number by default; the product plan already warns "do not imply
@@ -142,8 +143,12 @@ CRTC (CASL).
   Standard. AWS confirms: "in the United States, local long codes cannot be
   used for A2P SMS messages" without a registered 10DLC, brand and campaign
   registration, roughly 7-10 days approval, and each 10DLC bound to one
-  campaign. Unregistered traffic draws "additional carrier fees" and heavier
-  filtering rather than a hard block (Twilio). The registration hub is The
+  campaign. Unregistered traffic is blocked outright, not merely surcharged
+  or filtered: Twilio announced that "all SMS and MMS messages sent to US
+  phone numbers from unregistered 10DLC phone numbers will be fully blocked
+  effective September 1st, 2023", and blocked attempts fail with Twilio error
+  30034, which states Twilio "blocks messages to U.S. numbers" sent from a
+  10DLC number without an approved campaign. The registration hub is The
   Campaign Registry; brands "must work with one of the registered messaging
   service providers (CSP)" — for ZROtext's hosted case that CSP would be the
   chosen provider, or ZROtext itself if it became one.
@@ -251,14 +256,18 @@ registration it depends on) so owners can see what recipients see.
 
 ## Capacity: what can and cannot be promised from documentation alone
 
-Provider documentation gives order-of-magnitude throughput defaults (AWS:
-toll-free about 1-3 message parts per second, 10DLC about 10-75, short codes
-100+), but all providers qualify delivery as best-effort and country-dependent,
-and AWS explicitly warns that its numbers are provisioned "through a single
-carrier partner in each region/country", creating a single point of failure it
-tells customers to work around. Consistent with the product plan ("publish
-capacity only after testing the actual route"), no capacity claim should be
-derived from this page; measured throughput per chosen route and country is a
+Provider documentation publishes throughput figures as selection guidance,
+not service defaults. AWS's chooser steers roughly 1-3 message parts per
+second to toll-free, 10-75 to 10DLC and 100 or more to short codes, while
+stating separately that toll-free throughput "average[s] three message parts
+per second (MPS)" and that "US short codes support 100 message parts per
+second by default", raisable beyond that rate for an additional monthly fee.
+All providers qualify delivery as best-effort and country-dependent, and AWS
+explicitly warns that its numbers are provisioned "through a single carrier
+partner in each region/country", creating a single point of failure it tells
+customers to work around. Consistent with the product plan ("publish capacity
+only after testing the actual route"), no capacity claim should be derived
+from this page; measured throughput per chosen route and country is a
 prerequisite for any promise.
 
 ## Founder decisions needed
@@ -308,6 +317,13 @@ Verified 2026-09-28 unless noted. Provider pages are living documents.
   https://www.twilio.com/docs/messaging/compliance/a2p-10dlc (page metadata
   dated 2026-07-07; brand/campaign model, mandatory registration, unregistered
   traffic treatment).
+- Twilio Help Center, Shutdown of Unregistered 10DLC Messaging:
+  https://help.twilio.com/articles/14910496447771-Shutdown-of-Unregistered-10DLC-Messaging-FAQ
+  (US-bound SMS/MMS from unregistered 10DLC numbers fully blocked from
+  2023-09-01).
+- Twilio, error 30034 reference:
+  https://www.twilio.com/docs/api/errors/30034 (blocked-message behavior and
+  registration remedies for unregistered 10DLC traffic).
 - Twilio Help Center, International Support for Alphanumeric Sender ID:
   https://help.twilio.com/articles/223133767-International-support-for-Alphanumeric-Sender-ID
   (country-by-country dynamic/registration-required/not-supported table).
@@ -316,9 +332,9 @@ Verified 2026-09-28 unless noted. Provider pages are living documents.
   (per-country short code/long code/sender ID/two-way matrix; Ireland,
   Singapore, India, UK, France notes).
 - AWS End User Messaging SMS, choosing an origination identity:
-  https://docs.aws.amazon.com/sns-voice/latest/userguide/phone-number-types.html
+  https://docs.aws.amazon.com/sms-voice/latest/userguide/phone-number-types.html
   (identity model properties, 10DLC/toll-free registration requirements,
-  shared-pool caveats, throughput defaults, India ILDO/DLT).
+  shared-pool caveats, throughput selection guidance, India ILDO/DLT).
 - The Campaign Registry: https://www.campaignregistry.com/ (10DLC registration
   hub; brands register via CSPs).
 - ComReg, SMS Sender ID Registry:
