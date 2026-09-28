@@ -8,8 +8,10 @@ use tokio_postgres::Client;
 
 mod owner_queue_index;
 mod radio_evidence_index;
+mod recent_attempt_index;
 use owner_queue_index::*;
 use radio_evidence_index::*;
+use recent_attempt_index::*;
 
 // Fixed, project-specific advisory lock. Held on one connection for the full run.
 const MIGRATION_LOCK: i64 = 0x5a_52_4f_54_45_58_54;
@@ -106,6 +108,12 @@ pub enum MigrationError {
     OwnerQueueIndexConflict(&'static str),
     #[error("{0} is still being built; refusing to interrupt it")]
     OwnerQueueIndexBuildInProgress(&'static str),
+    #[error("message_attempts_device_created is absent, invalid, or has the wrong definition")]
+    RecentAttemptIndexUnavailable,
+    #[error("message_attempts_device_created has an unexpected definition; refusing to replace it")]
+    RecentAttemptIndexConflict,
+    #[error("message_attempts_device_created is still being built; refusing to interrupt it")]
+    RecentAttemptIndexBuildInProgress,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -265,6 +273,9 @@ async fn apply_locked(
     if ledger.contains_key(&OWNER_QUEUE_INDEX_MIGRATION) {
         verify_owner_queue_indexes(client).await?;
     }
+    if ledger.contains_key(&RECENT_ATTEMPT_INDEX_MIGRATION) {
+        verify_recent_attempt_index(client).await?;
+    }
 
     for migration in migrations {
         if ledger.contains_key(&migration.version) {
@@ -297,6 +308,16 @@ async fn apply_locked(
             // CREATE INDEX CONCURRENTLY cannot run in the numbered migration's
             // transaction. The advisory lock still serializes migrator jobs.
             prepare_owner_queue_indexes(client).await?;
+        }
+        if migration.version == RECENT_ATTEMPT_INDEX_MIGRATION {
+            if migration.filename != RECENT_ATTEMPT_INDEX_FILE {
+                return Err(MigrationError::InvalidDirectory(format!(
+                    "migration {RECENT_ATTEMPT_INDEX_MIGRATION:03} must be {RECENT_ATTEMPT_INDEX_FILE}"
+                )));
+            }
+            // CREATE INDEX CONCURRENTLY cannot run in the numbered migration's
+            // transaction. The advisory lock still serializes migrator jobs.
+            prepare_recent_attempt_index(client).await?;
         }
         let tx = client.transaction().await?;
         if let Err(error) = tx.batch_execute(&migration.sql).await {
@@ -333,6 +354,12 @@ async fn apply_locked(
         .any(|migration| migration.version == OWNER_QUEUE_INDEX_MIGRATION)
     {
         verify_owner_queue_indexes(client).await?;
+    }
+    if migrations
+        .iter()
+        .any(|migration| migration.version == RECENT_ATTEMPT_INDEX_MIGRATION)
+    {
+        verify_recent_attempt_index(client).await?;
     }
     Ok(applied)
 }
@@ -702,6 +729,8 @@ mod online_index_tests;
 mod owner_queue_index_tests;
 #[cfg(test)]
 mod radio_evidence_index_tests;
+#[cfg(test)]
+mod recent_attempt_index_tests;
 
 #[cfg(test)]
 mod tests {

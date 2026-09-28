@@ -1491,6 +1491,23 @@ async fn previous_submit_intent(
         .is_some())
 }
 
+/// One-statement pre-claim filter for an armed dispatch tick; see
+/// [`DeliveryStore::synthetic_grant_may_be_due`].
+async fn grant_may_be_due(
+    client: &mut Client,
+    session: DeviceSession,
+    state: &DeviceSocketState,
+) -> Result<bool, StoreError> {
+    DeliveryStore::new(client)
+        .synthetic_grant_may_be_due(
+            session.account_id,
+            session.device_id,
+            state.deployment_epoch,
+            MIN_SECONDS_BETWEEN_GRANTS as i32,
+        )
+        .await
+}
+
 /// Claim only for this authenticated device and issue at most one fenced grant.
 /// A failed frame send leaves the grant unresolved; reconnect never retries it.
 async fn poll_synthetic_grant(
@@ -1506,35 +1523,7 @@ async fn poll_synthetic_grant(
     {
         return Ok(None);
     }
-    let enabled = client
-        .query_opt(
-            "SELECT dispatch_enabled FROM deployment_authority WHERE singleton=TRUE AND epoch=$1",
-            &[&state.deployment_epoch],
-        )
-        .await?
-        .is_some_and(|row| row.get::<_, bool>(0));
-    if !enabled {
-        return Ok(None);
-    }
-    let active: bool = client
-        .query_one(
-            "SELECT EXISTS(SELECT 1 FROM dispatch_fences WHERE account_id=$1 AND device_id=$2 AND outcome IN ('granted','submitting','unknown'))",
-            &[&session.account_id, &session.device_id],
-        )
-        .await?
-        .get(0);
-    if active {
-        return Ok(None);
-    }
-    let recently_granted: bool = client
-        .query_one(
-            "SELECT EXISTS(SELECT 1 FROM message_attempts WHERE account_id=$1 AND device_id=$2 \
-             AND created_at>now()-interval '60 seconds')",
-            &[&session.account_id, &session.device_id],
-        )
-        .await?
-        .get(0);
-    if recently_granted {
+    if !grant_may_be_due(client, session, state).await? {
         return Ok(None);
     }
     let worker_id = format!(

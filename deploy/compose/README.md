@@ -113,10 +113,18 @@ PostgreSQL release instead of scanning a device's terminal history. The same
 wrong-shape refusal, active-build protection, invalid-build retry, and
 post-recording verification rules as 034 and 040 apply to each index.
 
+Migration 050 uses the same online preparation and transactional validation for
+`message_attempts_device_created`, a btree index on
+`(account_id, device_id, created_at)`. The device dispatch pre-check asks
+whether a device had any attempt in the last minute; with this index that is a
+range scan over the device's recent attempts rather than its whole attempt
+history, which is never pruned. The same wrong-shape refusal, active-build
+protection, invalid-build retry, and post-recording verification rules apply.
+
 A concurrent build permits message writes but may wait for older transactions;
 monitor `pg_stat_progress_create_index` and allow migration to finish before
 starting API workers. If application rollback is needed, the valid index can
-remain; keep the migration package containing the applied 034, 040 and 049 files so a rolled-back
+remain; keep the migration package containing the applied 034, 040, 049 and 050 files so a rolled-back
 API does not rerun an older migrator with a mismatched checksum. Removing the
 index later requires a separately planned
 `DROP INDEX CONCURRENTLY` outside a transaction, after workers that depend on
