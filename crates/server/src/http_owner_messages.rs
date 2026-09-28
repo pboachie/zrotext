@@ -248,6 +248,7 @@ mod tests {
             include_str!("../../../deploy/compose/migrations/005_verification_outbox.sql"),
             include_str!("../../../deploy/compose/migrations/013_owner_mfa.sql"),
             include_str!("../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
+            include_str!("../../../deploy/compose/migrations/048_observer_memberships.sql"),
         ] {
             db.batch_execute(migration).await.unwrap();
         }

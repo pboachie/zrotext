@@ -211,6 +211,8 @@ const TEST_MIGRATIONS: [(&str, &str); 52] = [
     (
         "052_admission_pending_index.sql",
         migration!("052_admission_pending_index.sql"),
+        "053_observer_seat_invitations.sql",
+        migration!("053_observer_seat_invitations.sql"),
     ),
 ];
 

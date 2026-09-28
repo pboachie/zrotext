@@ -65,6 +65,7 @@ async fn apply_migrations(admin: &Client) {
         include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
         include_str!("../../../../deploy/compose/migrations/041_device_preconditions.sql"),
         include_str!("../../../../deploy/compose/migrations/047_device_network_service.sql"),
+        include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
     ] {
         admin.batch_execute(sql).await.unwrap();
     }

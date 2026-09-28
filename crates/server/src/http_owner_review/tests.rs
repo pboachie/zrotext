@@ -18,7 +18,7 @@ macro_rules! migration {
     };
 }
 
-const TEST_MIGRATIONS: [&str; 25] = [
+const TEST_MIGRATIONS: [&str; 26] = [
     migration!("001_foundation.sql"),
     migration!("002_auth.sql"),
     migration!("003_delivery.sql"),
@@ -44,6 +44,7 @@ const TEST_MIGRATIONS: [&str; 25] = [
     migration!("036_owner_opt_out_holds.sql"),
     migration!("038_owner_opt_out_hold_guards.sql"),
     migration!("039_inbound_device_clock_offset.sql"),
+    migration!("048_observer_memberships.sql"),
 ];
 
 fn get(path: &str, session: Option<&crate::auth::SessionCredentials>) -> Request<Body> {

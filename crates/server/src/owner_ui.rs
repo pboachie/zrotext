@@ -16,6 +16,10 @@ const ACCOUNT_SCRIPT: &str = include_str!("../../../web/owner/account.js");
 const SMS_LINES_PAGE: &str = include_str!("../../../web/owner/sms-lines.html");
 const SMS_LINES_SCRIPT: &str = include_str!("../../../web/owner/sms-lines.js");
 const SMS_LINE_SIGNING_SCRIPT: &str = include_str!("../../../web/owner/sms-line-signing.js");
+const SEATS_PAGE: &str = include_str!("../../../web/owner/seats.html");
+const SEATS_SCRIPT: &str = include_str!("../../../web/owner/seats.js");
+const OBSERVER_PAGE: &str = include_str!("../../../web/owner/observer.html");
+const OBSERVER_SCRIPT: &str = include_str!("../../../web/owner/observer.js");
 const TEMPLATE_PAGE: &str = include_str!("../../../web/owner/template-preview.html");
 const TEMPLATE_SCRIPT: &str = include_str!("../../../web/owner/template-preview.js");
 const TEMPLATE_CORE: &str = include_str!("../../../web/owner/template-preview-core.js");
@@ -32,6 +36,10 @@ pub fn router() -> Router {
         .route("/owner/sms-lines", get(sms_lines_page))
         .route("/owner/sms-lines.js", get(sms_lines_script))
         .route("/owner/sms-line-signing.js", get(sms_line_signing_script))
+        .route("/owner/seats", get(seats_page))
+        .route("/owner/seats.js", get(seats_script))
+        .route("/owner/observer", get(observer_page))
+        .route("/owner/observer.js", get(observer_script))
         .route("/owner/template-preview", get(template_page))
         .route("/owner/template-preview.js", get(template_script))
         .route("/owner/template-preview-core.js", get(template_core))
@@ -149,6 +157,31 @@ async fn sms_lines_script() -> Response {
 async fn sms_line_signing_script() -> Response {
     secure_response(
         (StatusCode::OK, SMS_LINE_SIGNING_SCRIPT).into_response(),
+        "text/javascript; charset=utf-8",
+    )
+}
+
+async fn seats_page() -> Response {
+    secure_response(Html(SEATS_PAGE).into_response(), "text/html; charset=utf-8")
+}
+
+async fn seats_script() -> Response {
+    secure_response(
+        (StatusCode::OK, SEATS_SCRIPT).into_response(),
+        "text/javascript; charset=utf-8",
+    )
+}
+
+async fn observer_page() -> Response {
+    secure_response(
+        Html(OBSERVER_PAGE).into_response(),
+        "text/html; charset=utf-8",
+    )
+}
+
+async fn observer_script() -> Response {
+    secure_response(
+        (StatusCode::OK, OBSERVER_SCRIPT).into_response(),
         "text/javascript; charset=utf-8",
     )
 }
@@ -306,14 +339,35 @@ mod tests {
                 "code=synthetic-code",
             ),
             ("key-form", "/v1/auth/sms-line-owner-keys", "mfa=000000"),
+            (
+                "invite-form",
+                "/v1/auth/seats/invitations",
+                "email=observer%40example.test",
+            ),
+            (
+                "accept-form",
+                "/v1/auth/seats/accept",
+                "token=synthetic-invitation&password=synthetic-password",
+            ),
+            (
+                "password-form",
+                "/v1/auth/password",
+                "current_password=synthetic-password&new_password=synthetic-password",
+            ),
         ] {
             // Without the submit listener, native HTML forms must not put
             // credentials in the URL. Their URL-encoded POST fails closed at
             // the JSON-only endpoint, before any database or password work.
-            let document = [PAGE, ACCOUNT_PAGE, SMS_LINES_PAGE]
-                .into_iter()
-                .find(|page| page.contains(&format!("<form id=\"{id}\"")))
-                .unwrap();
+            let document = [
+                PAGE,
+                ACCOUNT_PAGE,
+                SMS_LINES_PAGE,
+                SEATS_PAGE,
+                OBSERVER_PAGE,
+            ]
+            .into_iter()
+            .find(|page| page.contains(&format!("<form id=\"{id}\"")))
+            .unwrap();
             let start = document.find(&format!("<form id=\"{id}\"")).unwrap();
             let tag = document[start..].split('>').next().unwrap();
             assert!(tag.contains("method=\"post\""));
@@ -336,6 +390,7 @@ mod tests {
                     "/v1/auth/register",
                     "/v1/auth/verify-email",
                     "/v1/auth/resend-verification",
+                    "/v1/auth/seats/accept",
                 ]
                 .contains(&endpoint)
             {
@@ -385,6 +440,10 @@ mod tests {
                 "/owner/sms-line-signing.js",
                 "text/javascript; charset=utf-8",
             ),
+            ("/owner/seats", "text/html; charset=utf-8"),
+            ("/owner/seats.js", "text/javascript; charset=utf-8"),
+            ("/owner/observer", "text/html; charset=utf-8"),
+            ("/owner/observer.js", "text/javascript; charset=utf-8"),
         ] {
             let response = router()
                 .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())

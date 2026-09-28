@@ -271,6 +271,48 @@ show no recent use. Keys created without a lifetime never expire, so prefer a
 lifetime for new keys. See
 [SECURITY-DESIGN.md](SECURITY-DESIGN.md#owner-session-and-api-key-lifetime).
 
+### Device-status observers
+
+After signing in at `/owner/devices`, open `/owner/seats` to invite a
+device-status observer. The invitation token is shown once, expires after
+seven days, works once, and is bound to the invited address; deliver it out of
+band. The invitee opens `/owner/observer`, accepts the token with a password
+they choose, verifies their email with the mailed code, and then signs in to a
+read-only device-status page. Observers can change their own password, review
+their sessions, and sign out, and nothing else: message content, device
+management, API keys, billing, exports, webhooks, and further invitations stay
+owner-only. Removing a seat on `/owner/seats` revokes its sessions and every
+outstanding credential immediately and cannot be undone.
+
+An invitation cannot be issued for an address that already belongs to any user
+on the server, and one address can hold only one open invitation at a time. A
+removed observer's address stays occupied: this phase has no re-invite or
+address reuse for removed seats. An accepted-but-unverified observer is pruned
+after the same 24-hour pending window as an unverified owner, which frees the
+address for a fresh invitation. Observer MFA, password reset by email, and
+additional collaboration roles are not part of this phase.
+
+### Device-status observers
+
+After signing in at `/owner/devices`, open `/owner/seats` to invite a
+device-status observer. The invitation token is shown once, expires after
+seven days, works once, and is bound to the invited address; deliver it out of
+band. The invitee opens `/owner/observer`, accepts the token with a password
+they choose, verifies their email with the mailed code, and then signs in to a
+read-only device-status page. Observers can change their own password, review
+their sessions, and sign out, and nothing else: message content, device
+management, API keys, billing, exports, webhooks, and further invitations stay
+owner-only. Removing a seat on `/owner/seats` revokes its sessions and every
+outstanding credential immediately and cannot be undone.
+
+An invitation cannot be issued for an address that already belongs to any user
+on the server, and one address can hold only one open invitation at a time. A
+removed observer's address stays occupied: this phase has no re-invite or
+address reuse for removed seats. An accepted-but-unverified observer is pruned
+after the same 24-hour pending window as an unverified owner, which frees the
+address for a fresh invitation. Observer MFA, password reset by email, and
+additional collaboration roles are not part of this phase.
+
 ### Owner password recovery
 
 With SMTP configured, a signed-out owner can request a one-hour, one-use reset

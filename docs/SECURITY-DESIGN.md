@@ -73,6 +73,46 @@ The restricted M1 pilot classifies STOP-family keywords and likely free-text wit
 
 OPAQUE is defined in **RFC 9807**, not RFC 9380 (hash-to-curve). It may improve later password-based vault UX, but switching authentication protocols requires explicit migration and security review. Ordinary server-side Argon2 authentication cannot preserve an OPAQUE-derived zero-knowledge-password claim. [OPAQUE](https://www.rfc-editor.org/rfc/rfc9807.html)
 
+## Team seats (device-status observers)
+
+An account has exactly one immutable owner. The first collaboration phase adds
+owner-managed observer seats: the owner invites an address from `/owner/seats`,
+and the server stores only the HMAC of the single-use invitation token under
+the auth pepper. Invitations expire after seven days, are bound to one address
+(one open invitation per address server-wide), are bounded to ten open
+invitations and ten live observer seats per account, and can be canceled by
+the owner before use. Acceptance claims the invitation row under a lock
+(single-use, replay-safe, exactly one winner under concurrency), refuses any
+address that already belongs to a user without touching that user's password
+or membership, and creates an unverified observer that must verify its email
+with its own password before signing in - the same password-bound code model
+as owner registration. An accepted-but-unverified observer is pruned after the
+24-hour pending window, like an unverified owner.
+
+Observers authenticate with sessions in their own name and can manage only
+their own authentication: change password (which revokes their sessions and
+their API keys, which they cannot create), review and revoke their own
+sessions, and sign out. Every owner-authority route rechecks the owner role in
+the database and answers an observer session with the same 401 as no session,
+so role is not a side channel. Their single read surface,
+`/v1/observer/devices`, returns the account's device status (socket lease,
+queue counts, reported preconditions) with the CSRF header proof, and never
+message content, recipients, credentials, or tokens. Removing a seat is
+irreversible: the membership is revoked (never deleted), and the same
+transaction revokes its sessions, API keys, MFA challenges, reset codes,
+queued verification mail, and any still-open invitation for that address.
+Threats considered: a leaked invitation token (bounded lifetime, single use,
+owner cancel, one open invitation per address); racing accepts or
+accept-versus-cancel (invitation row lock, exactly one winner); a removed seat
+attempting reuse (every credential dead, tombstone immutable); an observer
+probing owner routes (database role recheck, uniform 401); and enumeration or
+timing probes of the accept route (uniform failure with the same password
+work as a live acceptance).
+
+Not in this phase: observer MFA, emailed password reset for observers,
+re-inviting a removed seat's address, additional collaboration roles
+(administrators, billing viewers), and owner-registration invitations.
+
 ## Baseline controls
 
 Use 256-bit random API tokens, prefix lookup, constant-time verification, revocation and scopes. HMAC-SHA256 with a separately stored server pepper is suitable for high-entropy token verification; the old allegation that all fast hashes need password-style salts is too broad. Passwords use a password KDF. Password hashing and verification run on blocking workers behind one process-wide two-worker semaphore, including registration, login, verification resend, MFA password proofs, and initialization of the unknown-account verifier. Admission occurs before submitting blocking work; cancellation retains the permit until that work finishes. HTTP admission and abuse limits still bound pending requests, while the worker gate keeps expensive password work off the async runtime. API keys never enter query strings, analytics, QR device enrollment, or logs.

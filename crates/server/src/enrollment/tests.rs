@@ -67,6 +67,7 @@ async fn postgres_one_use_tenant_replay_expiry_and_revocation() {
         include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
         include_str!("../../../../deploy/compose/migrations/027_billing_test_config.sql"),
         include_str!("../../../../deploy/compose/migrations/028_billing_provider_failures.sql"),
+        include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
     ] {
         client.batch_execute(sql).await.unwrap();
     }
@@ -617,6 +618,7 @@ async fn postgres_device_cap_downgrade_grandfathers_and_serializes_approval() {
         include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
         include_str!("../../../../deploy/compose/migrations/027_billing_test_config.sql"),
         include_str!("../../../../deploy/compose/migrations/028_billing_provider_failures.sql"),
+        include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
     ] {
         db.batch_execute(sql).await.unwrap();
     }

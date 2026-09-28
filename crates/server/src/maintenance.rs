@@ -145,9 +145,18 @@ async fn prune_once(client: &mut Client, task: PruneTask) -> Result<u64, ()> {
         PruneTask::AbuseLimits => abuse_limits::prune(client).await.map_err(drop),
         PruneTask::MfaChallenges => mfa::prune_expired_challenges(client).await.map_err(drop),
         PruneTask::Enrollment => enrollment::prune_expired(client).await.map_err(drop),
-        PruneTask::PendingOwners => auth::prune_expired_pending_owners(client)
+        PruneTask::PendingOwners => {
+            async {
+                let owners = auth::prune_expired_pending_owners(client)
+                    .await
+                    .map_err(drop)?;
+                let observers = auth::seats::prune_expired_pending_observers(client)
+                    .await
+                    .map_err(drop)?;
+                Ok(owners + observers)
+            }
             .await
-            .map_err(drop),
+        }
         PruneTask::PasswordResets => auth::account::prune_expired_password_resets(client)
             .await
             .map_err(drop),

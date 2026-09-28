@@ -364,6 +364,8 @@ fn auth_error(error: AuthError) -> Response {
             error_response(StatusCode::FORBIDDEN, "forbidden")
         }
         AuthError::RateLimited => error_response(StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
+        // Only the seat-invitation routes raise Conflict; erasure never does.
+        AuthError::Conflict => error_response(StatusCode::CONFLICT, "conflict"),
         AuthError::Database(_) => error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
         AuthError::Password => error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal_error"),
         AuthError::Crypto => error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),

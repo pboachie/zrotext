@@ -83,6 +83,7 @@ const TEST_MIGRATIONS: [(&str, &str); 52] = [
     migration!("050_message_attempts_recent_index.sql"),
     migration!("051_failover_controller_state.sql"),
     migration!("052_admission_pending_index.sql"),
+    migration!("053_observer_seat_invitations.sql"),
 ];
 
 #[test]

@@ -212,6 +212,8 @@ const TEST_MIGRATIONS: [(&str, &str); 52] = [
     (
         "052_admission_pending_index.sql",
         include_str!("../../../deploy/compose/migrations/052_admission_pending_index.sql"),
+        "053_observer_seat_invitations.sql",
+        include_str!("../../../deploy/compose/migrations/053_observer_seat_invitations.sql"),
     ),
 ];
 

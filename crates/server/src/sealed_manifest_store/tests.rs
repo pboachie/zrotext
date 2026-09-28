@@ -54,6 +54,7 @@ impl Fixture {
             include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
             include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
             include_str!("../../../../deploy/compose/migrations/006_usage_metering.sql"),
+            include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
             include_str!(
                 "../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"
             ),

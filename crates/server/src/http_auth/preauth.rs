@@ -9,7 +9,7 @@
 //! authenticated client trickling a body cannot hold a database connection
 //! either. [`AccountSlot`] then bounds how many of those authenticated requests
 //! one account can have in flight at once.
-use super::{AuthHttpError, require_owner, require_session_cookie};
+use super::{AuthHttpError, require_member, require_owner, require_session_cookie};
 use crate::auth::{SessionPrincipal, TokenHasher};
 use axum::{
     extract::FromRequestParts,
@@ -110,6 +110,37 @@ impl<S: OwnerAuthState> FromRequestParts<Arc<S>> for OwnerMutation {
             .await
             .map_err(IntoResponse::into_response)?
             // The client returns to the pool here, before any body byte is read.
+        };
+        let slot = AccountSlot::try_acquire(principal.tenant.account_id())
+            .ok_or_else(|| AuthHttpError::TooManyRequests.into_response())?;
+        Ok(Self(principal, slot))
+    }
+}
+
+/// A live membership of any role (owner or observer) authorized for a
+/// self-service mutation: password change and session revocation for the
+/// caller's own account. Owner authority never routes through this
+/// extractor; it keeps using [`OwnerMutation`].
+pub struct MemberMutation(pub SessionPrincipal, pub AccountSlot);
+
+impl<S: OwnerAuthState> FromRequestParts<Arc<S>> for MemberMutation {
+    type Rejection = Response;
+
+    async fn from_request_parts(parts: &mut Parts, state: &Arc<S>) -> Result<Self, Response> {
+        require_session_cookie(&parts.headers).map_err(IntoResponse::into_response)?;
+        let principal = {
+            let client = crate::runtime_db::connect(state.database_url())
+                .await
+                .map_err(|_| state.unavailable_response())?;
+            require_member(
+                &client,
+                state.session_hasher(),
+                state.canonical_origin(),
+                &parts.headers,
+                true,
+            )
+            .await
+            .map_err(IntoResponse::into_response)?
         };
         let slot = AccountSlot::try_acquire(principal.tenant.account_id())
             .ok_or_else(|| AuthHttpError::TooManyRequests.into_response())?;

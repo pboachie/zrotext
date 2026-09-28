@@ -83,6 +83,7 @@ async fn fixture(default_permits: usize) -> Fixture {
         include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
         include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
         include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+        include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
     ] {
         client.batch_execute(migration).await.unwrap();
     }

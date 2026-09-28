@@ -236,6 +236,7 @@ const QUEUE_SCHEMA: [(&str, &str); 52] = queue_schema!(
     "050_message_attempts_recent_index.sql",
     "051_failover_controller_state.sql",
     "052_admission_pending_index.sql",
+    "053_observer_seat_invitations.sql",
 );
 
 #[test]
