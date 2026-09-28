@@ -58,6 +58,11 @@ impl RecoverySecret {
     pub fn new(bytes: Zeroizing<[u8; 32]>) -> Self {
         Self(bytes)
     }
+
+    /// Internal explicit borrow for the pure recovery-token encoder; never a reveal operation.
+    pub(crate) fn encoding_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
 }
 impl std::fmt::Debug for RecoverySecret {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -135,6 +140,17 @@ fn parse_header(bytes: &[u8], expected: &ExpectedIdentity) -> Result<usize, Back
         return Err(BackupError::Rejected);
     }
     Ok(h)
+}
+
+/// Check bounded public framing and identity, returning the public backup ID.
+/// This does not authenticate ciphertext or establish that a root can be restored.
+/// Call `open` with independently supplied recovery material for authentication.
+pub fn validate_public_header(
+    bytes: &[u8],
+    expected: &ExpectedIdentity,
+) -> Result<[u8; 16], BackupError> {
+    parse_header(bytes, expected)?;
+    Ok(bytes[6..22].try_into().unwrap())
 }
 
 fn wrapping_key(

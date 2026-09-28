@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 from test_zt_sealed_draft_shape import check_envelope_shape
+from root_kit_vectors import check_recovery_kit_vector
 
 
 FIXTURE = json.loads(
@@ -15,6 +16,9 @@ FIXTURE = json.loads(
 
 
 class DraftVectorTests(unittest.TestCase):
+    def test_recovery_kit_vector_with_independent_python_stdlib(self):
+        check_recovery_kit_vector()
+
     def test_root_backup_vector_with_independent_node_crypto(self):
         subprocess.run(
             ["node", str(Path(__file__).with_name("root-backup-vector.cjs"))],
