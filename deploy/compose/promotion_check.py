@@ -8,7 +8,8 @@ Two phases follow docs/WRITER-PROMOTION.md:
 * ``writer`` runs after promotion and the deployment-epoch bump against the
   new writer, and optionally probes each site's ``/readyz``.
 
-The tool only runs SELECT statements. It connects through a libpq service
+The tool only runs SELECT statements, in a session set to
+``default_transaction_read_only``. It connects through a libpq service
 name (``pg_service.conf`` plus ``.pgpass``) or through the Compose ``db``
 container, so no connection string, password or hostname is passed on the
 command line or printed. Database errors are reported without their text,
@@ -46,9 +47,19 @@ SELECT json_build_object(
   'replay_lag_bytes', CASE WHEN pg_is_in_recovery() THEN
     pg_wal_lsn_diff(pg_last_wal_receive_lsn(), pg_last_wal_replay_lsn())::float8 END,
   'replay_lag_seconds', CASE WHEN pg_is_in_recovery() THEN
-    EXTRACT(EPOCH FROM now() - pg_last_xact_replay_timestamp())::float8 END
+    EXTRACT(EPOCH FROM now() - pg_last_xact_replay_timestamp())::float8 END,
+  'replay_lsn', pg_last_wal_replay_lsn()::text,
+  'sender_gap_bytes', (
+    SELECT pg_wal_lsn_diff(latest_end_lsn, pg_last_wal_replay_lsn())::float8
+    FROM pg_stat_wal_receiver WHERE latest_end_lsn IS NOT NULL LIMIT 1),
+  'sender_report_age_seconds', (
+    SELECT EXTRACT(EPOCH FROM now() - latest_end_time)::float8
+    FROM pg_stat_wal_receiver WHERE latest_end_time IS NOT NULL LIMIT 1)
 );
 """
+# Sent before every query, so even a mistaken statement cannot write.
+READ_ONLY_SESSION = "SET default_transaction_read_only = on;\n"
+LSN = re.compile(r"([0-9A-Fa-f]{1,8})/([0-9A-Fa-f]{1,8})\Z")
 
 WRITER_SQL = """
 SELECT json_build_object(
@@ -97,7 +108,12 @@ def compose_runner(env_file: Path, compose_file: Path = COMPOSE) -> Runner:
 def _run_psql(command: list[str], sql: str) -> dict:
     try:
         result = subprocess.run(
-            command, input=sql, capture_output=True, text=True, check=False, timeout=60
+            command,
+            input=READ_ONLY_SESSION + sql,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         raise CheckError(f"could not run {command[0]}") from error
@@ -110,10 +126,27 @@ def _run_psql(command: list[str], sql: str) -> dict:
         raise CheckError("query returned unexpected output") from error
 
 
+class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
+    """A redirect is reported as its 3xx status, never followed."""
+
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+_READYZ_OPENER = urllib.request.build_opener(_RefuseRedirects)
+
+
+def parse_lsn(text: str) -> int:
+    match = LSN.fullmatch(text or "")
+    if match is None:
+        raise ValueError("not a PostgreSQL LSN")
+    return (int(match.group(1), 16) << 32) | int(match.group(2), 16)
+
+
 def fetch_readyz(url: str) -> tuple[int | None, str]:
     request = urllib.request.Request(url, headers={"Accept": "application/json"})
     try:
-        with urllib.request.urlopen(request, timeout=READYZ_TIMEOUT_SECONDS) as response:
+        with _READYZ_OPENER.open(request, timeout=READYZ_TIMEOUT_SECONDS) as response:
             return response.status, response.read(256).decode("utf-8", "replace")
     except urllib.error.HTTPError as error:
         return error.code, error.read(256).decode("utf-8", "replace")
@@ -126,7 +159,10 @@ def check(name: str, ok: bool, **detail) -> dict:
 
 
 def standby_checks(
-    observed: dict, max_lag_seconds: float, writer_stopped: bool = False
+    observed: dict,
+    max_lag_seconds: float,
+    writer_stopped: bool = False,
+    min_replay_lsn: str | None = None,
 ) -> tuple[list[dict], list[str]]:
     checks = [check("standby_in_recovery", observed.get("in_recovery") is True)]
     status = observed.get("receiver_status")
@@ -151,27 +187,74 @@ def standby_checks(
         )
     lag_bytes = observed.get("replay_lag_bytes")
     lag_seconds = observed.get("replay_lag_seconds")
+    seconds_ok = lag_seconds is not None and lag_seconds <= max_lag_seconds
+    # Received minus replayed. It cannot see WAL the writer produced that
+    # has not arrived yet; sender_caught_up covers that.
     if writer_stopped:
-        # Nothing more can arrive; everything received must be replayed.
-        caught_up = lag_bytes == 0
+        received_ok = lag_bytes == 0
     else:
-        # With nothing left to replay, the replay timestamp only shows how long
-        # the old writer has been idle, not lag.
-        caught_up = lag_bytes == 0 or (
-            lag_seconds is not None and lag_seconds <= max_lag_seconds
-        )
+        received_ok = lag_bytes is not None and (lag_bytes == 0 or seconds_ok)
     checks.append(
         check(
-            "replay_caught_up",
-            lag_bytes is not None and caught_up,
+            "received_replayed",
+            received_ok,
             limit_seconds=None if writer_stopped else max_lag_seconds,
             value_bytes=lag_bytes,
             value_seconds=lag_seconds,
         )
     )
+    # The sender's WAL end as last reported to this standby, minus replay.
+    gap = observed.get("sender_gap_bytes")
+    report_age = observed.get("sender_report_age_seconds")
+    hint = {}
+    if writer_stopped:
+        if gap is not None:
+            sender_ok = gap <= 0
+        else:
+            # The receiver exits with the writer; only the operator's recorded
+            # final LSN can bound what was lost.
+            sender_ok = min_replay_lsn is not None
+            if not sender_ok:
+                hint = {"hint": "sender position unknown; pass --min-replay-lsn"}
+    else:
+        # A zero gap proves nothing unless the sender reported recently; an
+        # idle writer is caught up only then. Otherwise the replayed commit
+        # must be recent. An unknown gap is never caught up.
+        idle_caught_up = (
+            gap is not None
+            and gap <= 0
+            and report_age is not None
+            and report_age <= max_lag_seconds
+        )
+        sender_ok = gap is not None and (idle_caught_up or seconds_ok)
+        if gap is None:
+            hint = {"hint": "sender position unknown; needs pg_monitor or a running receiver"}
+    checks.append(
+        check(
+            "sender_caught_up",
+            sender_ok,
+            limit_seconds=None if writer_stopped else max_lag_seconds,
+            value_bytes=gap,
+            value_report_age_seconds=report_age,
+            **hint,
+        )
+    )
+    if min_replay_lsn is not None:
+        try:
+            replayed = parse_lsn(observed.get("replay_lsn"))
+        except ValueError:
+            replayed = None
+        checks.append(
+            check(
+                "min_replay_lsn",
+                replayed is not None and replayed >= parse_lsn(min_replay_lsn),
+                expected_at_least=min_replay_lsn,
+                value=observed.get("replay_lsn"),
+            )
+        )
     warnings = [
-        "replay lag covers only WAL this standby received; with asynchronous "
-        "replication, writes the old writer never shipped are lost on promotion"
+        "with asynchronous replication, WAL the old writer never shipped is lost "
+        "on promotion; only --min-replay-lsn with the writer's final LSN bounds it"
     ]
     if writer_stopped:
         warnings.append(
@@ -314,6 +397,11 @@ def build_parser() -> argparse.ArgumentParser:
                 help="the old writer is already fenced and stopped: skip receiver "
                 "checks and require every received WAL byte to be replayed",
             )
+            phase.add_argument(
+                "--min-replay-lsn", metavar="LSN",
+                help="the old writer's final LSN (pg_current_wal_lsn() recorded just "
+                "before stopping it); replay must have reached it",
+            )
         else:
             phase.add_argument("--expected-epoch", type=int, required=True)
             phase.add_argument(
@@ -351,9 +439,11 @@ def main(
         if args.phase == "standby":
             if args.max_lag_seconds <= 0:
                 raise CheckError("--max-lag-seconds must be positive")
+            if args.min_replay_lsn is not None and not LSN.fullmatch(args.min_replay_lsn):
+                raise CheckError("--min-replay-lsn must be an LSN such as 0/3000060")
             observed = runner(STANDBY_SQL)
             checks, warnings = standby_checks(
-                observed, args.max_lag_seconds, args.writer_stopped
+                observed, args.max_lag_seconds, args.writer_stopped, args.min_replay_lsn
             )
         else:
             if args.expected_epoch <= 0:
