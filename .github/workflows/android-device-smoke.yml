@@ -7,6 +7,8 @@ on:
       - 'sdk/typescript/test/vectors/**'
       - 'scripts/android_device_smoke.py'
       - 'scripts/tests/test_android_device_smoke.py'
+      - 'scripts/android_preparation_probe.py'
+      - 'scripts/tests/test_android_preparation_probe.py'
       - '.github/workflows/android-device-smoke.yml'
   push:
     branches: [main]
@@ -16,6 +18,8 @@ on:
       - 'sdk/typescript/test/vectors/**'
       - 'scripts/android_device_smoke.py'
       - 'scripts/tests/test_android_device_smoke.py'
+      - 'scripts/android_preparation_probe.py'
+      - 'scripts/tests/test_android_preparation_probe.py'
       - '.github/workflows/android-device-smoke.yml'
 permissions:
   contents: read
@@ -51,3 +55,5 @@ jobs:
           trap 'adb -s emulator-5562 emu kill >/dev/null 2>&1 || true; kill "$emulator_pid" 2>/dev/null || true' EXIT
           timeout 240 bash -c 'until [ "$(adb -s emulator-5562 shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")" = 1 ]; do sleep 2; done'
           python3 scripts/android_device_smoke.py
+          (cd android && ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest -PisolatedPreparationProbe=true --no-daemon --max-workers=2)
+          python3 scripts/android_preparation_probe.py --serial emulator-5562
