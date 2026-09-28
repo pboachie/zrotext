@@ -99,7 +99,10 @@ async function smsLinesPage({ signedIn = true, tamper = null, register = "ok", l
       return response(200, server.linePages.get(cursor));
     }
     if (path === "/v1/enrollment/devices")
-      return response(200, { devices: [{ id: DEVICE, display_name: "Pixel", revoked: false, active_socket_lease: true }] });
+      // Field names mirror the server's OwnerDeviceResponse serialization.
+      return response(200, { devices: [{ device_id: DEVICE, display_name: "Pixel", revoked: false,
+        active_socket_lease: true, pending_messages: 0, in_flight_messages: 0, status_observed_at_ms: 0,
+        reported_preconditions: null }] });
     if (path.endsWith("/activations") && method === "POST") {
       server.opened = { path, body };
       return response(201, { challenge_id: CHALLENGE, generation: 3, expires_at_ms: Date.now() + 300000 });
@@ -183,6 +186,20 @@ test("activation is approved only after the page rebuilds and checks the phone's
   await page.click("activation-approve");
   assert.equal(page.server.ownerSignatureValid, true);
   assert.equal(page.element("activation-status").textContent, "The line is active on this phone.");
+});
+
+test("the activation picker lists the server's device UUIDs and posts the chosen one", async () => {
+  const page = await smsLinesPage();
+  const select = page.element("activation-device");
+  assert.deepEqual(select.children.map((option) => option.value), [DEVICE]);
+  assert.match(select.children[0].textContent, /Pixel/);
+  select.value = select.children[0].value;
+  await page.click("activation-new-line");
+  const line = page.element("activation-line").value;
+  page.server.views.push({ status: "awaiting_device", device_id: DEVICE, generation: 3, expires_at_ms: Date.now() + 300000 });
+  await page.submit("activation-form");
+  assert.equal(page.server.opened.path, `/v1/auth/sms-lines/${line}/activations`);
+  assert.deepEqual(page.server.opened.body, { device_id: DEVICE });
 });
 
 for (const [name, tamper, overrides] of [
