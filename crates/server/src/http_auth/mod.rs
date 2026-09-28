@@ -46,9 +46,18 @@ mod sms_owner_keys;
 pub(crate) const SESSION_COOKIE: &str = "__Host-zrotext_session";
 pub(crate) const CSRF_COOKIE: &str = "__Host-zrotext_csrf";
 const CSRF_HEADER: &str = "x-zrotext-csrf";
+/// Argon2id uses 64 MiB per operation, so a process runs at most this many
+/// password hashes at once.
+const HASH_PERMITS: usize = 2;
+/// How many requests may queue for one of the [`HASH_PERMITS`] slots. Each
+/// waiter already holds one of the 16 request-pool connections
+/// (`crate::runtime_db`), so an uncapped queue could pin the whole request
+/// pool for [`HASH_PERMIT_WAIT`]. Four waiters plus two hashing requests
+/// leave at least ten connections for every other owner route.
+const HASH_WAIT_SLOTS: usize = 4;
 /// Two queued 64 MiB Argon2id operations normally finish well inside this.
-/// The ingress layer's in-flight cap and 30-second deadline bound how many
-/// requests can wait at once and for how long.
+/// [`HASH_WAIT_SLOTS`] bounds how many requests can wait at once; this bounds
+/// how long.
 const HASH_PERMIT_WAIT: Duration = Duration::from_secs(2);
 
 /// A deployment supplies a reviewed mail transport here. The default server
@@ -589,6 +598,11 @@ pub struct AuthHttpState {
     pub dispatcher: Arc<dyn VerificationDispatcher>,
     pub registration_policy: RegistrationPolicy,
     pub hash_limit: Arc<Semaphore>,
+    /// Caps how many requests may wait for a `hash_limit` permit at once.
+    /// Each waiter holds a request-pool connection for up to
+    /// `hash_permit_wait`, so beyond this cap a request is refused fast
+    /// instead of idling a shared connection.
+    pub hash_wait_limit: Arc<Semaphore>,
     /// How long a request that has already spent its abuse budget waits for a
     /// `hash_limit` permit before the server answers 503 `unavailable`.
     pub hash_permit_wait: Duration,
@@ -630,8 +644,8 @@ impl AuthHttpState {
             canonical_origin,
             dispatcher,
             registration_policy: RegistrationPolicy::Closed,
-            // Argon2id uses 64 MiB per operation. Limit concurrent hashes.
-            hash_limit: Arc::new(Semaphore::new(2)),
+            hash_limit: Arc::new(Semaphore::new(HASH_PERMITS)),
+            hash_wait_limit: Arc::new(Semaphore::new(HASH_WAIT_SLOTS)),
             hash_permit_wait: HASH_PERMIT_WAIT,
             mfa_cipher: None,
             mfa_enrollment_enabled: false,
@@ -759,8 +773,19 @@ impl IntoResponse for AuthHttpError {
 impl AuthHttpState {
     /// Wait up to `hash_permit_wait` for one of the process's password-hash
     /// permits. Callers must spend their abuse budget first, so only admitted
-    /// requests queue here.
+    /// requests queue here. Every waiter holds a request-pool connection, so
+    /// the queue itself is bounded: a request that cannot take one of the
+    /// `hash_wait_limit` slots is refused immediately with the same `Busy`
+    /// answer a full wait produces, and cannot pin further request
+    /// connections.
     async fn hash_permit(&self) -> Result<OwnedSemaphorePermit, AuthHttpError> {
+        // Held only while this call queues; dropped on success, timeout, or
+        // a closed gate, so waiter slots always recycle.
+        let _waiter = self
+            .hash_wait_limit
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| AuthHttpError::Busy)?;
         let acquire = self.hash_limit.clone().acquire_owned();
         match tokio::time::timeout(self.hash_permit_wait, acquire).await {
             Ok(Ok(permit)) => Ok(permit),

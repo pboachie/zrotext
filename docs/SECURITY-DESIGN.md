@@ -269,8 +269,13 @@ previous one.
 Argon2id uses 64 MiB per operation, so each process runs at most two password
 operations at once (sign-in, registration, verification resend, password change
 and reset, revoking other sessions, and authenticator enrollment or removal).
-A request reaches this gate only after spending its abuse budget. It then waits
-up to two seconds for a free slot; if none frees, it gets 503 `unavailable`
-with `Retry-After: 1` rather than 429, so a busy server is not mistaken for a
-throttle. The 64-handler admission cap and 30-second deadline above bound how
-many requests can wait and for how long.
+A request reaches this gate only after spending its abuse budget. It may then
+queue for up to two seconds for a free slot, but at most four requests may
+queue at once: a queued request still holds one of the request pool's 16
+database connections, so an uncapped queue could idle most of that pool during
+a burst of budget-admitted password attempts. With two hashing and four queued
+requests, the password lane holds at most six request connections; the rest
+stay available to every other owner route. A request that finds no queue slot,
+or whose two-second wait expires, gets 503 `unavailable` with
+`Retry-After: 1` rather than 429, so a busy server is not mistaken for a
+throttle.
