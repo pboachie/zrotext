@@ -211,7 +211,7 @@ async fn observers_cannot_use_owner_sessions_keys_or_direct_helpers() {
         &f.owner,
         &[Scope::DevicesRead],
         None,
-        None,
+        ApiKeyLifetime::Unspecified,
     )
     .await
     .unwrap();
@@ -227,7 +227,7 @@ async fn observers_cannot_use_owner_sessions_keys_or_direct_helpers() {
             &f.observer,
             &[Scope::DevicesRead],
             None,
-            None
+            ApiKeyLifetime::Unspecified
         )
         .await
         .is_err()
@@ -245,9 +245,17 @@ async fn observers_cannot_use_owner_sessions_keys_or_direct_helpers() {
     );
     assert!(account::list_sessions(&f.db, &f.observer).await.is_err());
     assert!(
-        account::revoke_other_sessions(&mut f.db, None, &f.hasher, &f.observer, &f.password, None)
-            .await
-            .is_err()
+        account::revoke_other_sessions(
+            &mut f.db,
+            None,
+            &f.hasher,
+            &f.observer,
+            &f.password,
+            None,
+            true
+        )
+        .await
+        .is_err()
     );
     assert!(
         account::change_password(

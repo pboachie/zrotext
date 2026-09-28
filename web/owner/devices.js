@@ -361,6 +361,11 @@ function clearKeySecret() {
   byId("key-secret-panel").hidden = true;
 }
 
+function clearKeyProofFields() {
+  byId("key-password").value = "";
+  byId("key-mfa-code").value = "";
+}
+
 function clearInboundHistory() {
   inboundLoadGeneration += 1;
   selectedInboundMessageId = null;
@@ -442,6 +447,7 @@ function clearOwnerState() {
   nextKeyCursor = null;
   shownKeyCount = 0;
   message("key-create-status", "");
+  clearKeyProofFields();
   clearPasswordFields();
   clearResetFields();
   message("change-password-status", "");
@@ -705,7 +711,11 @@ async function loadKeys(reset = true) {
       const prefix = document.createElement("strong");
       const metadata = document.createElement("span");
       prefix.textContent = `ztk_${key.public_prefix}…`;
-      metadata.textContent = ` ${key.status} · ${key.scopes.join(", ")} · created ${dateText(key.created_at_ms)} · expires ${dateText(key.expires_at_ms)} · last used ${dateText(key.last_used_at_ms)}`;
+      // No expiry is either a key minted before the default existed or the
+      // explicit never opt-in; the list cannot tell them apart, so it says
+      // "never" without claiming the key is old.
+      const expires = key.expires_at_ms === null ? "never" : dateText(key.expires_at_ms);
+      metadata.textContent = ` ${key.status} · ${key.scopes.join(", ")} · created ${dateText(key.created_at_ms)} · expires ${expires} · last used ${dateText(key.last_used_at_ms)}`;
       detail.append(prefix, metadata);
       if (key.bound_device_id) {
         const device = document.createElement("code");
@@ -1385,19 +1395,25 @@ byId("change-password-form").addEventListener("submit", async (event) => {
 byId("refresh-sessions").addEventListener("click", loadSessions);
 byId("revoke-other-sessions-form").addEventListener("submit", async (event) => {
   event.preventDefault();
-  if (!window.confirm("Sign out all other sessions?")) return;
+  const revokeApiKeys = byId("revoke-sessions-api-keys").checked;
+  if (!window.confirm(revokeApiKeys
+    ? "Sign out all other sessions and revoke every API key?"
+    : "Sign out all other sessions?")) return;
   const currentPassword = byId("revoke-sessions-password").value;
   const code = byId("revoke-sessions-mfa-code").value.trim();
   byId("revoke-sessions-password").value = "";
   byId("revoke-sessions-mfa-code").value = "";
+  byId("revoke-sessions-api-keys").checked = false;
   byId("revoke-other-sessions").disabled = true;
   message("session-status", "Signing out other sessions…");
   try {
     await api("/v1/auth/sessions/revoke-others", "POST", {
       current_password: currentPassword,
       ...(code ? { code } : {}),
+      revoke_api_keys: revokeApiKeys,
     });
-    await loadSessions();
+    clearKeySecret();
+    await Promise.all([loadSessions(), loadKeys()]);
   } catch (error) {
     message("session-status", `Could not sign out other sessions. ${error.message}`);
   } finally {
@@ -1490,7 +1506,7 @@ window.addEventListener("pagehide", () => {
   stopDashboardRefresh();
   stopLiveUpdates();
   stopPreconditionAging();
-  clearKeySecret(); clearPasswordFields(); clearResetFields();
+  clearKeySecret(); clearKeyProofFields(); clearPasswordFields(); clearResetFields();
 });
 window.addEventListener("pageshow", () => {
   dashboardPageActive = true;
@@ -1531,14 +1547,24 @@ byId("key-create-form").addEventListener("submit", exclusive(async (event) => {
   clearKeySecret();
   const scopes = [...byId("key-create-form").querySelectorAll('input[name="scope"]:checked')]
     .map((input) => input.value);
+  const currentPassword = byId("key-password").value;
+  const code = byId("key-mfa-code").value.trim();
+  clearKeyProofFields();
   if (scopes.length === 0) {
     message("key-create-status", "Choose at least one scope.");
+    return;
+  }
+  if (!currentPassword) {
+    message("key-create-status", "Enter your password to create a key.");
     return;
   }
   message("key-create-status", "Creating key…");
   try {
     const created = await api("/v1/auth/api-keys", "POST", {
-      scopes, lifetime_days: Number(byId("key-lifetime").value),
+      scopes,
+      lifetime_days: byId("key-lifetime").value === "never" ? null : Number(byId("key-lifetime").value),
+      current_password: currentPassword,
+      ...(code ? { code } : {}),
     });
     if (createEpoch !== ownerEpoch) return;
     byId("key-secret").textContent = created.token;

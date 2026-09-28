@@ -769,20 +769,103 @@ pub async fn revoke_session(
         == 1)
 }
 
+/// Applied when `lifetime_days` is omitted, so a key minted without an explicit
+/// lifetime cannot outlive the longest lifetime an owner may request.
+pub const API_KEY_DEFAULT_LIFETIME_DAYS: i32 = 365;
+
+/// The lifetime an owner asked for. `Unspecified` is a request that omitted
+/// `lifetime_days` and gets the capped default; `Never` is the explicit,
+/// discouraged opt-in that leaves `expires_at` NULL (the state keys created
+/// before the default existed carry). JSON `null` maps to `Never`, an integer
+/// to `Days`, so the two are distinct on the wire.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ApiKeyLifetime {
+    #[default]
+    Unspecified,
+    Days(i32),
+    Never,
+}
+
+impl<'de> serde::Deserialize<'de> for ApiKeyLifetime {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        match Option::<i32>::deserialize(deserializer)? {
+            None => Ok(ApiKeyLifetime::Never),
+            Some(days) => Ok(ApiKeyLifetime::Days(days)),
+        }
+    }
+}
+
+impl ApiKeyLifetime {
+    /// The number of days to store, or `None` for a key that never expires.
+    fn stored_days(self) -> Option<i32> {
+        match self {
+            ApiKeyLifetime::Unspecified => Some(API_KEY_DEFAULT_LIFETIME_DAYS),
+            ApiKeyLifetime::Days(days) => Some(days),
+            ApiKeyLifetime::Never => None,
+        }
+    }
+}
+
+pub(crate) fn validate_api_key_request(
+    scopes: &[Scope],
+    lifetime: ApiKeyLifetime,
+) -> Result<(), AuthError> {
+    if scopes.is_empty()
+        || scopes.len() > 7
+        || matches!(lifetime, ApiKeyLifetime::Days(days) if !(1..=API_KEY_DEFAULT_LIFETIME_DAYS).contains(&days))
+    {
+        return Err(AuthError::InvalidInput);
+    }
+    Ok(())
+}
+
+/// Test-only mint without the step-up proof. Production code must go through
+/// `account::create_api_key_with_proof`, which requires the owner's password
+/// (and, with MFA enabled, a fresh code); keeping this visible only to tests
+/// means no future route can link against the proof-free path.
+#[cfg(test)]
 pub async fn create_api_key(
     client: &mut Client,
     hasher: &TokenHasher,
     principal: &SessionPrincipal,
     scopes: &[Scope],
     bound_device_id: Option<Uuid>,
-    lifetime_days: Option<i32>,
+    lifetime: ApiKeyLifetime,
 ) -> Result<ApiKeyCredentials, AuthError> {
-    if scopes.is_empty()
-        || scopes.len() > 7
-        || matches!(lifetime_days, Some(days) if !(1..=365).contains(&days))
-    {
-        return Err(AuthError::InvalidInput);
-    }
+    validate_api_key_request(scopes, lifetime)?;
+    // Recovery locks this same user row before revoking keys and sessions.
+    // The lock closes the race where a pre-reset session mints a key after
+    // recovery has already revoked the keys it could see.
+    let tx = client.transaction().await?;
+    tx.query_opt(
+        "SELECT u.id FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE m.role='owner' AND u.id=$1 AND m.account_id=$2 AND a.disabled_at IS NULL FOR UPDATE OF u",
+        &[&principal.user_id, &principal.tenant.account_id()],
+    )
+    .await?
+    .ok_or(AuthError::Unauthorized)?;
+    let key = insert_api_key(&tx, hasher, principal, scopes, bound_device_id, lifetime).await?;
+    tx.commit().await?;
+    Ok(key)
+}
+
+/// Inserts a key inside `tx`, whose caller must already hold the owner's
+/// user-row lock. The session is re-checked inside the insert so a session
+/// revoked while the caller waited for the lock cannot mint.
+pub(crate) async fn insert_api_key(
+    tx: &tokio_postgres::Transaction<'_>,
+    hasher: &TokenHasher,
+    principal: &SessionPrincipal,
+    scopes: &[Scope],
+    bound_device_id: Option<Uuid>,
+    lifetime: ApiKeyLifetime,
+) -> Result<ApiKeyCredentials, AuthError> {
+    validate_api_key_request(scopes, lifetime)?;
+    // `Never` stores NULL: `now() + (NULL * interval '1 day')` is NULL, and a
+    // NULL `expires_at` never excludes the key from authentication.
+    let lifetime_days = lifetime.stored_days();
     let mut normalized = scopes.to_vec();
     normalized.sort_unstable();
     normalized.dedup();
@@ -794,26 +877,15 @@ pub async fn create_api_key(
     let public_prefix = token.chars().skip(4).take(12).collect::<String>();
     let hash = hasher.digest(b"api-key-v1", &token);
     let id = Uuid::new_v4();
-    // Recovery locks this same user row before revoking keys and sessions.
-    // The lock closes the race where a pre-reset session mints a key after
-    // recovery has already revoked the keys it could see.
-    let tx = client.transaction().await?;
-    tx.query_opt(
-        "SELECT u.id FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE m.role='owner' AND u.id=$1 AND m.account_id=$2 AND a.disabled_at IS NULL FOR UPDATE OF u",
-        &[&principal.user_id, &principal.tenant.account_id()],
-    )
-    .await?
-    .ok_or(AuthError::Unauthorized)?;
     let inserted = tx
         .execute(
-            "INSERT INTO api_keys(id,account_id,created_by_user_id,public_prefix,token_hash,scopes,bound_device_id,expires_at) SELECT $1,$2,$3,$4,$5,$6,$7,CASE WHEN $8::integer IS NULL THEN NULL ELSE now()+($8::integer * interval '1 day') END FROM sessions s WHERE s.id=$9 AND s.account_id=$2 AND s.user_id=$3 AND s.revoked_at IS NULL AND s.expires_at>now()",
+            "INSERT INTO api_keys(id,account_id,created_by_user_id,public_prefix,token_hash,scopes,bound_device_id,expires_at) SELECT $1,$2,$3,$4,$5,$6,$7,now()+($8::integer * interval '1 day') FROM sessions s WHERE s.id=$9 AND s.account_id=$2 AND s.user_id=$3 AND s.revoked_at IS NULL AND s.expires_at>now()",
             &[&id, &principal.tenant.account_id, &principal.user_id, &public_prefix, &&hash[..], &scope_names, &bound_device_id, &lifetime_days, &principal.session_id],
         )
         .await?;
     if inserted != 1 {
         return Err(AuthError::Unauthorized);
     }
-    tx.commit().await?;
     Ok(ApiKeyCredentials {
         id,
         token,
