@@ -5,6 +5,7 @@
 //! credential or authenticate the M0 heartbeat socket.
 
 use crate::api_json::ApiJson;
+use crate::http_auth::preauth::OwnerMutation;
 use crate::{
     auth::{
         TokenHasher,
@@ -34,6 +35,21 @@ pub struct EnrollmentHttpState {
     pub auth_hasher: Arc<TokenHasher>,
     pub enrollment_hasher: Arc<EnrollmentHasher>,
     pub canonical_origin: String,
+}
+
+impl crate::http_auth::preauth::OwnerAuthState for EnrollmentHttpState {
+    fn database_url(&self) -> &str {
+        &self.database_url
+    }
+    fn session_hasher(&self) -> &TokenHasher {
+        &self.auth_hasher
+    }
+    fn canonical_origin(&self) -> &str {
+        &self.canonical_origin
+    }
+    fn unavailable_response(&self) -> Response {
+        StatusCode::SERVICE_UNAVAILABLE.into_response()
+    }
 }
 
 impl EnrollmentHttpState {
@@ -167,26 +183,11 @@ struct CreatePairingResponse {
 
 async fn create_pairing(
     State(state): State<Arc<EnrollmentHttpState>>,
-    headers: HeaderMap,
+    OwnerMutation(principal, _slot): OwnerMutation,
     ApiJson(body): ApiJson<CreatePairingBody>,
 ) -> Response {
-    if let Err(error) = crate::http_auth::require_session_cookie(&headers) {
-        return error.into_response();
-    }
     let Ok(client) = connect(&state).await else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    };
-    let principal = match require_owner(
-        &client,
-        &state.auth_hasher,
-        &state.canonical_origin,
-        &headers,
-        true,
-    )
-    .await
-    {
-        Ok(principal) => principal,
-        Err(error) => return error.into_response(),
     };
     // Charged per account before the insert so one owner cannot grow
     // `pairing_requests` faster than maintenance prunes it.
@@ -410,29 +411,14 @@ struct ApprovedResponse {
 async fn approve_pairing(
     State(state): State<Arc<EnrollmentHttpState>>,
     Path(pairing_id): Path<Uuid>,
-    headers: HeaderMap,
+    OwnerMutation(principal, _slot): OwnerMutation,
     ApiJson(body): ApiJson<ApproveBody>,
 ) -> Response {
     if body.comparison_code.len() > 8 || body.key_fingerprint.len() > 64 {
         return StatusCode::BAD_REQUEST.into_response();
     }
-    if let Err(error) = crate::http_auth::require_session_cookie(&headers) {
-        return error.into_response();
-    }
     let Ok(mut client) = connect(&state).await else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    };
-    let principal = match require_owner(
-        &client,
-        &state.auth_hasher,
-        &state.canonical_origin,
-        &headers,
-        true,
-    )
-    .await
-    {
-        Ok(principal) => principal,
-        Err(error) => return error.into_response(),
     };
     match enrollment::approve_pairing(
         &mut client,

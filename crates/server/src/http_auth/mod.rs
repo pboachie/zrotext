@@ -23,6 +23,7 @@ use lettre::{
     AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
     transport::smtp::authentication::Credentials,
 };
+use preauth::OwnerMutation;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::{
@@ -38,11 +39,12 @@ use tokio_postgres::Client;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
+pub mod preauth;
 mod sms_lines;
 mod sms_owner_keys;
 
-const SESSION_COOKIE: &str = "__Host-zrotext_session";
-const CSRF_COOKIE: &str = "__Host-zrotext_csrf";
+pub(crate) const SESSION_COOKIE: &str = "__Host-zrotext_session";
+pub(crate) const CSRF_COOKIE: &str = "__Host-zrotext_csrf";
 const CSRF_HEADER: &str = "x-zrotext-csrf";
 /// Two queued 64 MiB Argon2id operations normally finish well inside this.
 /// The ingress layer's in-flight cap and 30-second deadline bound how many
@@ -594,6 +596,18 @@ pub struct AuthHttpState {
     pub mfa_enrollment_enabled: bool,
     /// Dormant owner routes for SMS line activation; off by default.
     pub sms_line_activation_enabled: bool,
+}
+
+impl preauth::OwnerAuthState for AuthHttpState {
+    fn database_url(&self) -> &str {
+        &self.database_url
+    }
+    fn session_hasher(&self) -> &TokenHasher {
+        &self.hasher
+    }
+    fn canonical_origin(&self) -> &str {
+        &self.canonical_origin
+    }
 }
 
 impl AuthHttpState {
@@ -1389,19 +1403,10 @@ struct RevokeOtherSessionsBody {
 
 async fn revoke_other_sessions(
     State(state): State<Arc<AuthHttpState>>,
-    headers: HeaderMap,
+    OwnerMutation(owner, _slot): OwnerMutation,
     ApiJson(body): ApiJson<RevokeOtherSessionsBody>,
 ) -> Result<StatusCode, AuthHttpError> {
-    require_session_cookie(&headers)?;
     let mut client = connect(&state.database_url).await?;
-    let owner = require_owner(
-        &client,
-        &state.hasher,
-        &state.canonical_origin,
-        &headers,
-        true,
-    )
-    .await?;
     if !abuse_limits::consume(
         &client,
         &state.hasher,
@@ -1440,19 +1445,10 @@ struct ChangePasswordBody {
 
 async fn change_password(
     State(state): State<Arc<AuthHttpState>>,
-    headers: HeaderMap,
+    OwnerMutation(owner, _slot): OwnerMutation,
     ApiJson(body): ApiJson<ChangePasswordBody>,
 ) -> Result<Response, AuthHttpError> {
-    require_session_cookie(&headers)?;
     let mut client = connect(&state.database_url).await?;
-    let owner = require_owner(
-        &client,
-        &state.hasher,
-        &state.canonical_origin,
-        &headers,
-        true,
-    )
-    .await?;
     let subject = owner.user_id.to_string();
     if !abuse_limits::consume(
         &client,
@@ -1745,9 +1741,32 @@ struct MfaEnrollBodyResponse {
     provisioning_uri: String,
 }
 
+/// Keeps disabled MFA enrollment a 404 (and a missing cipher a 503) ahead of
+/// owner authentication, as before authentication moved ahead of the body.
+struct MfaEnrollmentGate;
+
+impl axum::extract::FromRequestParts<Arc<AuthHttpState>> for MfaEnrollmentGate {
+    type Rejection = AuthHttpError;
+
+    async fn from_request_parts(
+        _parts: &mut axum::http::request::Parts,
+        state: &Arc<AuthHttpState>,
+    ) -> Result<Self, AuthHttpError> {
+        if !state.mfa_enrollment_enabled {
+            return Err(AuthHttpError::NotFound);
+        }
+        state
+            .mfa_cipher
+            .as_ref()
+            .ok_or(AuthHttpError::Unavailable)?;
+        Ok(Self)
+    }
+}
+
 async fn begin_mfa_enrollment(
     State(state): State<Arc<AuthHttpState>>,
-    headers: HeaderMap,
+    _gate: MfaEnrollmentGate,
+    OwnerMutation(owner, _slot): OwnerMutation,
     ApiJson(body): ApiJson<MfaEnrollBody>,
 ) -> Result<Response, AuthHttpError> {
     if !state.mfa_enrollment_enabled {
@@ -1757,16 +1776,7 @@ async fn begin_mfa_enrollment(
         .mfa_cipher
         .as_ref()
         .ok_or(AuthHttpError::Unavailable)?;
-    require_session_cookie(&headers)?;
     let mut client = connect(&state.database_url).await?;
-    let owner = require_owner(
-        &client,
-        &state.hasher,
-        &state.canonical_origin,
-        &headers,
-        true,
-    )
-    .await?;
     mfa_manage_budget(&client, &state, &owner).await?;
     let _permit = state.hash_permit().await?;
     let enrollment = mfa::begin_enrollment(&mut client, cipher, &owner, &body.password)
@@ -1793,7 +1803,8 @@ struct MfaRecoveryBody {
 
 async fn confirm_mfa_enrollment(
     State(state): State<Arc<AuthHttpState>>,
-    headers: HeaderMap,
+    _gate: MfaEnrollmentGate,
+    OwnerMutation(owner, _slot): OwnerMutation,
     ApiJson(body): ApiJson<MfaCodeBody>,
 ) -> Result<Response, AuthHttpError> {
     if !state.mfa_enrollment_enabled {
@@ -1803,16 +1814,7 @@ async fn confirm_mfa_enrollment(
         .mfa_cipher
         .as_ref()
         .ok_or(AuthHttpError::Unavailable)?;
-    require_session_cookie(&headers)?;
     let mut client = connect(&state.database_url).await?;
-    let owner = require_owner(
-        &client,
-        &state.hasher,
-        &state.canonical_origin,
-        &headers,
-        true,
-    )
-    .await?;
     mfa_manage_budget(&client, &state, &owner).await?;
     let codes = mfa::confirm_enrollment(&mut client, cipher, &state.hasher, &owner, &body.code)
         .await
@@ -1833,19 +1835,10 @@ struct MfaDisableBody {
 
 async fn disable_mfa(
     State(state): State<Arc<AuthHttpState>>,
-    headers: HeaderMap,
+    OwnerMutation(owner, _slot): OwnerMutation,
     ApiJson(body): ApiJson<MfaDisableBody>,
 ) -> Result<StatusCode, AuthHttpError> {
-    require_session_cookie(&headers)?;
     let mut client = connect(&state.database_url).await?;
-    let owner = require_owner(
-        &client,
-        &state.hasher,
-        &state.canonical_origin,
-        &headers,
-        true,
-    )
-    .await?;
     mfa_manage_budget(&client, &state, &owner).await?;
     let _permit = state.hash_permit().await?;
     mfa::disable(
@@ -1993,7 +1986,7 @@ fn parse_scope(value: &str) -> Option<Scope> {
 
 async fn create_api_key(
     State(state): State<Arc<AuthHttpState>>,
-    headers: HeaderMap,
+    OwnerMutation(owner, _slot): OwnerMutation,
     ApiJson(body): ApiJson<CreateKeyBody>,
 ) -> Result<Response, AuthHttpError> {
     let scopes = body
@@ -2001,16 +1994,7 @@ async fn create_api_key(
         .iter()
         .map(|name| parse_scope(name).ok_or(AuthHttpError::BadRequest))
         .collect::<Result<Vec<_>, _>>()?;
-    require_session_cookie(&headers)?;
     let mut client = connect(&state.database_url).await?;
-    let owner = require_owner(
-        &client,
-        &state.hasher,
-        &state.canonical_origin,
-        &headers,
-        true,
-    )
-    .await?;
     // Charge the account, not its session or live key count: logging in again
     // and revoking issued keys must not reset the database growth budget.
     if !abuse_limits::consume(

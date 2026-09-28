@@ -243,15 +243,46 @@ struct AcceptedBody {
     created: bool,
 }
 
+/// The API key of an accept request, authenticated from headers alone before
+/// the body is read, plus the account's in-flight slot. The same stateless
+/// checks as before run first, in the same order; the pooled client used for
+/// the key lookup is released before the body is read.
+struct AcceptAuth {
+    principal: auth::ApiPrincipal,
+    _slot: crate::http_auth::preauth::AccountSlot,
+}
+
+impl axum::extract::FromRequestParts<Arc<MessagesHttpState>> for AcceptAuth {
+    type Rejection = MessageHttpError;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        state: &Arc<MessagesHttpState>,
+    ) -> Result<Self, MessageHttpError> {
+        if !state.policy.enabled() {
+            return Err(MessageHttpError::NotFound);
+        }
+        let token = bearer(&parts.headers)?;
+        idempotency_key(&parts.headers)?;
+        let principal = {
+            let client = connect(&state.database_url).await?;
+            auth::authenticate_api_key(&client, &state.hasher, token)
+                .await
+                .map_err(map_auth)?
+        };
+        let _slot =
+            crate::http_auth::preauth::AccountSlot::try_acquire(principal.tenant.account_id())
+                .ok_or(MessageHttpError::RateLimited)?;
+        Ok(Self { principal, _slot })
+    }
+}
+
 async fn accept(
     State(state): State<Arc<MessagesHttpState>>,
     headers: HeaderMap,
+    auth: AcceptAuth,
     ApiJson(body): ApiJson<AcceptBody>,
 ) -> Result<Response, MessageHttpError> {
-    if !state.policy.enabled() {
-        return Err(MessageHttpError::NotFound);
-    }
-    let token = bearer(&headers)?;
     let key = idempotency_key(&headers)?;
     if !valid_e164(&body.recipient_e164)
         || body.test_case_id.is_empty()
@@ -263,13 +294,11 @@ async fn accept(
     {
         return Err(MessageHttpError::BadRequest);
     }
-    let mut client = connect(&state.database_url).await?;
-    let principal = auth::authenticate_api_key(&client, &state.hasher, token)
-        .await
-        .map_err(map_auth)?;
+    let principal = &auth.principal;
     principal
         .require(Scope::MessagesSend, Some(body.device_id))
         .map_err(map_auth)?;
+    let mut client = connect(&state.database_url).await?;
     let account_id = principal.tenant.account_id();
     if !state.policy.allows(account_id, &body.recipient_e164) {
         return Err(MessageHttpError::NotFound);

@@ -700,28 +700,33 @@ async fn owner_checkout_portal_bind_customer_and_reject_cross_tenant() {
     // Independent requests alternate routes and rotate checkout keys.
     // The two successful sessions above have already spent two of eight
     // account slots. Rejections must never reach the external provider.
-    let mut attempts = tokio::task::JoinSet::new();
-    for index in 0..16 {
-        let app = app.clone();
-        let request = owner_request(
-            if index % 2 == 0 {
-                "/checkout"
-            } else {
-                "/portal"
-            },
-            &owner.token,
-            &owner.csrf_token,
-            true,
-        );
-        attempts.spawn(async move { app.oneshot(request).await.unwrap().status() });
-    }
+    // Rounds of exactly the per-account in-flight cap keep the requests
+    // concurrent while every 429 comes from the session budget.
+    let cap = crate::http_auth::preauth::ACCOUNT_IN_FLIGHT;
     let mut accepted = 0;
     let mut limited = 0;
-    while let Some(result) = attempts.join_next().await {
-        match result.unwrap() {
-            StatusCode::OK => accepted += 1,
-            StatusCode::TOO_MANY_REQUESTS => limited += 1,
-            status => panic!("unexpected hosted-session status: {status}"),
+    for round in 0..16 / cap {
+        let mut attempts = tokio::task::JoinSet::new();
+        for index in round * cap..(round + 1) * cap {
+            let app = app.clone();
+            let request = owner_request(
+                if index % 2 == 0 {
+                    "/checkout"
+                } else {
+                    "/portal"
+                },
+                &owner.token,
+                &owner.csrf_token,
+                true,
+            );
+            attempts.spawn(async move { app.oneshot(request).await.unwrap().status() });
+        }
+        while let Some(result) = attempts.join_next().await {
+            match result.unwrap() {
+                StatusCode::OK => accepted += 1,
+                StatusCode::TOO_MANY_REQUESTS => limited += 1,
+                status => panic!("unexpected hosted-session status: {status}"),
+            }
         }
     }
     assert_eq!((accepted, limited), (6, 10));
