@@ -6,7 +6,9 @@ use std::{collections::BTreeMap, fs, path::Path};
 use thiserror::Error;
 use tokio_postgres::Client;
 
+mod owner_queue_index;
 mod radio_evidence_index;
+use owner_queue_index::*;
 use radio_evidence_index::*;
 
 // Fixed, project-specific advisory lock. Held on one connection for the full run.
@@ -98,6 +100,12 @@ pub enum MigrationError {
     RadioEvidenceIndexConflict,
     #[error("message_events_attempt_evidence is still being built; refusing to interrupt it")]
     RadioEvidenceIndexBuildInProgress,
+    #[error("{0} is absent, invalid, or has the wrong definition")]
+    OwnerQueueIndexUnavailable(&'static str),
+    #[error("{0} has an unexpected definition; refusing to replace it")]
+    OwnerQueueIndexConflict(&'static str),
+    #[error("{0} is still being built; refusing to interrupt it")]
+    OwnerQueueIndexBuildInProgress(&'static str),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -254,6 +262,9 @@ async fn apply_locked(
     if ledger.contains_key(&RADIO_EVIDENCE_INDEX_MIGRATION) {
         verify_radio_evidence_index(client).await?;
     }
+    if ledger.contains_key(&OWNER_QUEUE_INDEX_MIGRATION) {
+        verify_owner_queue_indexes(client).await?;
+    }
 
     for migration in migrations {
         if ledger.contains_key(&migration.version) {
@@ -276,6 +287,16 @@ async fn apply_locked(
                 )));
             }
             prepare_radio_evidence_index(client).await?;
+        }
+        if migration.version == OWNER_QUEUE_INDEX_MIGRATION {
+            if migration.filename != OWNER_QUEUE_INDEX_FILE {
+                return Err(MigrationError::InvalidDirectory(format!(
+                    "migration 049 must be {OWNER_QUEUE_INDEX_FILE}"
+                )));
+            }
+            // CREATE INDEX CONCURRENTLY cannot run in the numbered migration's
+            // transaction. The advisory lock still serializes migrator jobs.
+            prepare_owner_queue_indexes(client).await?;
         }
         let tx = client.transaction().await?;
         if let Err(error) = tx.batch_execute(&migration.sql).await {
@@ -306,6 +327,12 @@ async fn apply_locked(
         .any(|migration| migration.version == RADIO_EVIDENCE_INDEX_MIGRATION)
     {
         verify_radio_evidence_index(client).await?;
+    }
+    if migrations
+        .iter()
+        .any(|migration| migration.version == OWNER_QUEUE_INDEX_MIGRATION)
+    {
+        verify_owner_queue_indexes(client).await?;
     }
     Ok(applied)
 }
@@ -671,6 +698,8 @@ async fn verify_m0_shape(tx: &tokio_postgres::Transaction<'_>) -> Result<(), Mig
 
 #[cfg(test)]
 mod online_index_tests;
+#[cfg(test)]
+mod owner_queue_index_tests;
 #[cfg(test)]
 mod radio_evidence_index_tests;
 

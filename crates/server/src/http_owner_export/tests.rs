@@ -36,7 +36,7 @@ macro_rules! export_schema {
             [$(($name, include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/compose/migrations/", $name)))),+]
         };
     }
-const EXPORT_SCHEMA: [(&str, &str); 48] = export_schema!(
+const EXPORT_SCHEMA: [(&str, &str); 49] = export_schema!(
     "001_foundation.sql",
     "002_auth.sql",
     "003_delivery.sql",
@@ -85,6 +85,7 @@ const EXPORT_SCHEMA: [(&str, &str); 48] = export_schema!(
     "046_sealed_root_ceremonies.sql",
     "047_device_network_service.sql",
     "048_observer_memberships.sql",
+    "049_owner_queue_probe_indexes.sql",
 );
 
 #[test]
@@ -174,7 +175,23 @@ async fn export_is_tenant_bound_and_carries_owner_content() {
         if name == "040_radio_evidence_index.sql" {
             db.batch_execute(
                 "CREATE INDEX CONCURRENTLY message_events_attempt_evidence \
-                     ON message_events(attempt_id,evidence_code)",
+                 ON message_events(attempt_id,evidence_code)",
+            )
+            .await
+            .unwrap();
+        }
+        if name == "049_owner_queue_probe_indexes.sql" {
+            db.batch_execute(
+                "CREATE INDEX CONCURRENTLY messages_owner_pending_state \
+                 ON messages(device_id,state,created_at) \
+                 WHERE state IN ('accepted','queued','claimed')",
+            )
+            .await
+            .unwrap();
+            db.batch_execute(
+                "CREATE INDEX CONCURRENTLY messages_owner_in_flight_state \
+                 ON messages(device_id,state,created_at) \
+                 WHERE state IN ('submitting','submitted')",
             )
             .await
             .unwrap();

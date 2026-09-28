@@ -125,6 +125,9 @@ pub struct OwnerDevicePage {
 pub(crate) const OWNER_DEVICE_PAGE_SIZE: usize = 50;
 pub(crate) const OWNER_DEVICE_QUEUE_LIMIT: i64 = 1_000;
 // Materialize the bounded tenant page before probing each device/state index.
+// The two probes' state sets exactly match the migration 049 partial indexes
+// (messages_owner_pending_state / messages_owner_in_flight_state); keep them
+// aligned so no PostgreSQL release filters the device history at probe time.
 pub(crate) const OWNER_DEVICE_STATUS_QUERY: &str = "WITH page AS MATERIALIZED ( \
              SELECT d.id,d.display_name,(d.revoked_at IS NOT NULL OR k.revoked_at IS NOT NULL) AS revoked, \
                COALESCE(d.revoked_at IS NULL AND k.revoked_at IS NULL AND a.disabled_at IS NULL \
