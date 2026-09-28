@@ -27,8 +27,9 @@ use axum::{
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashMap,
     sync::{
-        Arc, LazyLock,
+        Arc, LazyLock, Mutex, PoisonError,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -61,7 +62,10 @@ const HEARTBEAT_ABUSE_WINDOW: Duration = Duration::from_secs(60);
 const MAX_HEARTBEATS_PER_WINDOW: u32 = 60;
 const SESSION_LEASE_SECONDS: i32 = 90;
 const MAX_FRAME_BYTES: usize = 4096;
-const MAX_DEVICE_SOCKETS: usize = 32;
+/// Authenticated device sockets per process, across all accounts.
+pub const MAX_DEVICE_SOCKETS: usize = 32;
+/// Default share of [`MAX_DEVICE_SOCKETS`] one account may hold.
+pub const DEFAULT_DEVICE_SOCKETS_PER_ACCOUNT: usize = 8;
 const MAX_HANDSHAKING_DEVICE_SOCKETS: usize = 32;
 const DISPATCH_POLL_SECONDS: u64 = 5;
 const MIN_SECONDS_BETWEEN_GRANTS: u64 = 60;
@@ -82,13 +86,52 @@ static DEVICE_SOCKET_ADMISSION: LazyLock<SocketAdmission> = LazyLock::new(|| {
 /// enrolled key draws only from the short-lived handshake budget; the
 /// long-lived session slot is reserved after the proof verifies. Sockets that
 /// never authenticate therefore expire and cannot occupy enrolled phones'
-/// session capacity.
+/// session capacity. Session slots are held per device: one device holds at
+/// most one slot, and one account holds at most `per_account` of them.
 #[derive(Clone)]
 struct SocketAdmission {
     handshaking: Arc<Semaphore>,
     established: Arc<Semaphore>,
+    tenancy: Arc<Mutex<Tenancy>>,
+    per_account: usize,
     step_timeout: Duration,
     handshake_deadline: Duration,
+}
+
+/// Session slots by device. The map holds at most `established` entries, so a
+/// linear per-account count stays small.
+#[derive(Default)]
+struct Tenancy {
+    next_holder: u64,
+    devices: HashMap<(Uuid, Uuid), DeviceHold>,
+}
+
+struct DeviceHold {
+    holder: u64,
+    superseded: Arc<Notify>,
+    _slot: OwnedSemaphorePermit,
+}
+
+/// A verified socket's claim on its device's session slot. Dropping it frees
+/// the slot unless a newer socket for the same device has taken it over.
+struct SessionSlot {
+    tenancy: Arc<Mutex<Tenancy>>,
+    key: (Uuid, Uuid),
+    holder: u64,
+    superseded: Arc<Notify>,
+}
+
+impl Drop for SessionSlot {
+    fn drop(&mut self) {
+        let mut tenancy = self.tenancy.lock().unwrap_or_else(PoisonError::into_inner);
+        if tenancy
+            .devices
+            .get(&self.key)
+            .is_some_and(|hold| hold.holder == self.holder)
+        {
+            tenancy.devices.remove(&self.key);
+        }
+    }
 }
 
 impl SocketAdmission {
@@ -101,9 +144,58 @@ impl SocketAdmission {
         Self {
             handshaking: Arc::new(Semaphore::new(handshaking)),
             established: Arc::new(Semaphore::new(established)),
+            tenancy: Arc::default(),
+            per_account: established,
             step_timeout,
             handshake_deadline,
         }
+    }
+
+    fn with_account_limit(mut self, per_account: usize) -> Self {
+        self.per_account = per_account;
+        self
+    }
+
+    /// Reserve the session slot for a verified device. A newer socket for the
+    /// same device takes over the older socket's slot and tells it to close,
+    /// so a reconnect never counts twice. A new device is refused while its
+    /// account already holds its share or the process is full.
+    fn admit_session(&self, account_id: Uuid, device_id: Uuid) -> Option<SessionSlot> {
+        let key = (account_id, device_id);
+        let mut tenancy = self.tenancy.lock().unwrap_or_else(PoisonError::into_inner);
+        tenancy.next_holder += 1;
+        let holder = tenancy.next_holder;
+        let superseded = Arc::new(Notify::new());
+        if let Some(hold) = tenancy.devices.get_mut(&key) {
+            // notify_one keeps a permit, so an older socket that is busy with
+            // other work still sees this at its next loop iteration.
+            std::mem::replace(&mut hold.superseded, superseded.clone()).notify_one();
+            hold.holder = holder;
+        } else {
+            let held = tenancy
+                .devices
+                .keys()
+                .filter(|(account, _)| *account == account_id)
+                .count();
+            if held >= self.per_account {
+                return None;
+            }
+            let slot = self.established.clone().try_acquire_owned().ok()?;
+            tenancy.devices.insert(
+                key,
+                DeviceHold {
+                    holder,
+                    superseded: superseded.clone(),
+                    _slot: slot,
+                },
+            );
+        }
+        Some(SessionSlot {
+            tenancy: self.tenancy.clone(),
+            key,
+            holder,
+            superseded,
+        })
     }
 }
 
@@ -394,7 +486,18 @@ fn is_false(value: &bool) -> bool {
 /// Mount at `/v1/device-stream`. Deploy behind TLS/WSS; this route accepts
 /// neither a browser Origin nor an identity token in URL or headers.
 pub fn router(state: DeviceSocketState) -> Router {
-    router_with_admission(state, DEVICE_SOCKET_ADMISSION.clone())
+    router_with_account_share(state, DEFAULT_DEVICE_SOCKETS_PER_ACCOUNT)
+}
+
+/// [`router`] with `sockets_per_account` capping one account's share of the
+/// process's authenticated device sockets.
+pub fn router_with_account_share(state: DeviceSocketState, sockets_per_account: usize) -> Router {
+    router_with_admission(
+        state,
+        DEVICE_SOCKET_ADMISSION
+            .clone()
+            .with_account_limit(sockets_per_account),
+    )
 }
 
 fn router_with_admission(state: DeviceSocketState, admission: SocketAdmission) -> Router {
@@ -732,14 +835,14 @@ async fn run_socket(
     )
     .await
     .unwrap_or(Err(Some(RETRY_LATER)));
-    let session_slot = match authenticated {
-        Ok(_) => admission.established.clone().try_acquire_owned().ok(),
+    let session_slot = match &authenticated {
+        Ok(identity) => admission.admit_session(identity.account_id, identity.device_id),
         Err(_) => None,
     };
     // The handshake budget is released on every path before any close write or
     // steady-state work; only a verified device continues with a session slot.
     drop(handshake_slot);
-    let (identity, _session_slot) = match (authenticated, session_slot) {
+    let (identity, session_slot) = match (authenticated, session_slot) {
         (Ok(identity), Some(slot)) => (identity, slot),
         (Ok(_), None) => {
             close_handshake(&mut socket, RETRY_LATER).await;
@@ -1161,6 +1264,12 @@ async fn run_socket(
             }
             _ = state.drain_notify.notified() => {
                 close_reason = "site_drain";
+                break;
+            },
+            // A newer socket for this device took the slot; claim_session
+            // has fenced or is about to fence this epoch, so stop now.
+            _ = session_slot.superseded.notified() => {
+                close_reason = "superseded";
                 break;
             },
         }

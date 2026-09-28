@@ -427,20 +427,50 @@ async fn authenticated_line_opt_out_replays_and_rejects_wrong_line_epoch_and_seq
         (2, 2, 0)
     );
 
-    // A second authenticated connection fences the first writer epoch.
+    // A second authenticated connection fences the first writer epoch. The
+    // superseded socket is closed at once, without an authentication-failure
+    // code, and storage still refuses an event signed for the fenced epoch.
     let (_new_socket, _new_epoch) = open_socket(address, account, device, &signing).await;
+    let closed = timeout(Duration::from_secs(1), socket.next())
+        .await
+        .expect("superseded socket stayed open");
+    assert!(matches!(closed, Some(Ok(Message::Close(None)))));
+    let stale_id = Uuid::new_v4();
     let stale = signed_frame(
         FrameSpec {
             epoch,
-            id: Uuid::new_v4(),
+            id: stale_id,
             sequence: 5,
             recipient: "+15559876543",
             ..first_spec
         },
         &signing,
     );
-    send_json(&mut socket, stale).await;
-    assert_eq!(receive_close_code(&mut socket).await, close_code::POLICY);
+    let stale_signature = URL_SAFE_NO_PAD
+        .decode(stale["signature_der"].as_str().unwrap())
+        .unwrap();
+    let stale_event = LineOptOut {
+        id: stale_id,
+        line_id: first_spec.line,
+        binding_generation: first_spec.generation,
+        sequence: 5,
+        recipient_e164: "+15559876543",
+        action: first_spec.action,
+        observed_at_ms: stale["observed_at_ms"].as_i64().unwrap(),
+        signature_der: &stale_signature,
+    };
+    let stale_session = InboundSession {
+        account_id: account,
+        device_id: device,
+        site_id: "line-socket",
+        instance_id: "virtual-hub",
+        connection_epoch: epoch,
+        deployment_epoch: 1,
+    };
+    assert!(matches!(
+        unsolicited::ingest_line_opt_out(&mut db, stale_session, &stale_event).await,
+        Err(LineOptOutError::Unauthorized)
+    ));
 
     // The feature flag is independent of the existing attempt-bound pilot.
     let disabled_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
