@@ -193,6 +193,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(env::VarError::NotPresent) => 2,
         Err(_) => return Err("WEBHOOK_DISPATCH_CONCURRENCY must be valid UTF-8".into()),
     };
+    // One account's share of this process's authenticated device sockets.
+    let device_sockets_per_account = match env::var("DEVICE_SOCKETS_PER_ACCOUNT") {
+        Ok(value) => match value.parse::<usize>() {
+            Ok(count @ 1..=device_socket::MAX_DEVICE_SOCKETS) => count,
+            _ => return Err("DEVICE_SOCKETS_PER_ACCOUNT must be 1..=32".into()),
+        },
+        Err(env::VarError::NotPresent) => device_socket::DEFAULT_DEVICE_SOCKETS_PER_ACCOUNT,
+        Err(_) => return Err("DEVICE_SOCKETS_PER_ACCOUNT must be valid UTF-8".into()),
+    };
     let webhook_management_configured = webhook_vault.is_some();
     let alpha_policy = Arc::new(AlphaPolicy::parse(
         env::var("SYNTHETIC_ALPHA_ENABLED").ok().as_deref(),
@@ -577,7 +586,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .merge(http_owner_events::router(owner_events_state))
             .merge(http_owner_review::router(owner_review_state))
             .merge(owner_ui::router())
-            .merge(device_socket::router(socket_state));
+            .merge(device_socket::router_with_account_share(
+                socket_state,
+                device_sockets_per_account,
+            ));
         if config.alpha_policy.enabled() {
             let message_state = MessagesHttpState::new(
                 config.database_url.clone(),
