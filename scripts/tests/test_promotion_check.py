@@ -161,6 +161,29 @@ class StandbyPhaseTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(failed(report), {("sender_caught_up", None)})
 
+    def test_stopped_writer_trusting_a_stale_sender_report_is_no_go(self):
+        # The old writer crashed behind a network partition: until
+        # wal_receiver_timeout drops it, pg_stat_wal_receiver still reports
+        # streaming with the last position the writer managed to send, so the
+        # sender gap reads zero even though the writer kept committing after
+        # the partition and that WAL never shipped.
+        partitioned = dict(
+            CAUGHT_UP_STANDBY,
+            receiver_message_age_seconds=300.0,
+            sender_report_age_seconds=300.0,
+        )
+        code, report, _, _ = run(self.STOPPED, partitioned)
+        self.assertEqual(code, 1)
+        self.assertEqual(failed(report), {("sender_caught_up", None)})
+        check = next(c for c in report["checks"] if c["name"] == "sender_caught_up")
+        self.assertIn("hint", check)
+        # The operator's recorded final LSN bounds what the writer lost.
+        recovered = run(self.STOPPED + ["--min-replay-lsn", "0/3000060"], partitioned)
+        self.assertEqual(recovered[0], 0)
+        # A report within the lag limit is still trusted.
+        fresh = dict(partitioned, sender_report_age_seconds=30.0)
+        self.assertEqual(run(self.STOPPED, fresh)[0], 0)
+
     def test_stopped_writer_with_unknown_sender_needs_min_replay_lsn(self):
         gone = dict(
             CAUGHT_UP_STANDBY,
