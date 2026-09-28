@@ -12,6 +12,15 @@ mod recovery;
 pub use recovery::{RECOVERY_BATCH, RECOVERY_BATCHES_PER_TICK, RecoveryBacklog, RecoveryPass};
 pub mod sealed;
 
+/// See [`DeliveryStore::synthetic_grant_may_be_due`]. Public so plan tests
+/// can prove the recent-attempt probe stays an index range scan.
+pub const SYNTHETIC_GRANT_PRECHECK: &str = "SELECT COALESCE((SELECT dispatch_enabled \
+      FROM deployment_authority WHERE singleton=TRUE AND epoch=$3),FALSE) \
+    AND NOT EXISTS(SELECT 1 FROM dispatch_fences WHERE account_id=$1 AND device_id=$2 \
+      AND outcome IN ('granted','submitting','unknown')) \
+    AND NOT EXISTS(SELECT 1 FROM message_attempts WHERE account_id=$1 AND device_id=$2 \
+      AND created_at>now()-($4::integer * interval '1 second'))";
+
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
     #[error("database operation failed")]
@@ -510,6 +519,37 @@ impl<'a> DeliveryStore<'a> {
     ) -> Result<Option<Claim>, StoreError> {
         self.claim_due_inner(worker_id, Some(account_id), Some(device_id), None)
             .await
+    }
+
+    /// Unlocked pre-claim filter for a device's synthetic dispatch, in one
+    /// statement: dispatch is enabled for `deployment_epoch`, the device has
+    /// no active fence, and it has no attempt newer than `min_spacing_secs`.
+    /// A false answer only avoids a claim that `issue_grant` would refuse or
+    /// that grant spacing forbids; `issue_grant` still re-checks authority,
+    /// device, account, session and the active-device fence under lock. The
+    /// recent-attempt test is a range scan of
+    /// `message_attempts_device_created`, so it reads only the device's
+    /// recent attempts rather than its whole history.
+    pub async fn synthetic_grant_may_be_due(
+        &mut self,
+        account_id: Uuid,
+        device_id: Uuid,
+        deployment_epoch: i64,
+        min_spacing_secs: i32,
+    ) -> Result<bool, StoreError> {
+        Ok(self
+            .client
+            .query_one(
+                SYNTHETIC_GRANT_PRECHECK,
+                &[
+                    &account_id,
+                    &device_id,
+                    &deployment_epoch,
+                    &min_spacing_secs,
+                ],
+            )
+            .await?
+            .get(0))
     }
 
     /// A one-shot phone readiness signal can narrow a claim to the exact

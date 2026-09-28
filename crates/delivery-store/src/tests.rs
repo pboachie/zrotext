@@ -2,7 +2,7 @@ use super::*;
 
 // Keep the admission fixtures on the complete, reviewed schema. SQL is
 // embedded at build time so tests never execute files discovered at runtime.
-const TEST_MIGRATIONS: [(&str, &str); 49] = [
+const TEST_MIGRATIONS: [(&str, &str); 50] = [
     (
         "001_foundation.sql",
         include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
@@ -201,6 +201,10 @@ const TEST_MIGRATIONS: [(&str, &str); 49] = [
         "049_owner_queue_probe_indexes.sql",
         include_str!("../../../deploy/compose/migrations/049_owner_queue_probe_indexes.sql"),
     ),
+    (
+        "050_message_attempts_recent_index.sql",
+        include_str!("../../../deploy/compose/migrations/050_message_attempts_recent_index.sql"),
+    ),
 ];
 
 /// Applies every numbered migration in order. Shared by the PostgreSQL-backed
@@ -242,6 +246,15 @@ pub(crate) async fn apply_test_migrations(client: &Client) {
                     "CREATE INDEX CONCURRENTLY messages_owner_in_flight_state \
                  ON messages(device_id,state,created_at) \
                  WHERE state IN ('submitting','submitted')",
+                )
+                .await
+                .unwrap();
+        }
+        if name == "050_message_attempts_recent_index.sql" {
+            client
+                .batch_execute(
+                    "CREATE INDEX CONCURRENTLY message_attempts_device_created \
+                 ON message_attempts(account_id,device_id,created_at)",
                 )
                 .await
                 .unwrap();
@@ -2063,6 +2076,278 @@ async fn terminal_dispatch_backfill_and_live_claims_ignore_large_history() {
         let state: String = row.get(1);
         assert_eq!(state, if id == due { "cancelled" } else { "expired" });
         assert!(row.get::<_, bool>(2));
+    }
+    client
+        .batch_execute(&format!(
+            "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
+        ))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn recent_grant_precheck_is_one_bounded_index_probe() {
+    let url = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL")
+        .expect("set ZT_DELIVERY_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let (mut client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let schema = format!("recent_grant_test_{}", Uuid::new_v4().simple());
+    client
+        .batch_execute(&format!(
+            "CREATE SCHEMA {schema}; SET search_path TO {schema}"
+        ))
+        .await
+        .unwrap();
+    apply_test_migrations(&client).await;
+    let account_id = Uuid::new_v4();
+    let device_id = Uuid::new_v4();
+    let message_id = Uuid::new_v4();
+    client
+        .execute("INSERT INTO accounts(id) VALUES($1)", &[&account_id])
+        .await
+        .unwrap();
+    client
+        .execute(
+            "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'synthetic phone')",
+            &[&device_id, &account_id],
+        )
+        .await
+        .unwrap();
+    client
+        .execute("UPDATE deployment_authority SET dispatch_enabled=TRUE", &[])
+        .await
+        .unwrap();
+    let epoch: i64 = client
+        .query_one("SELECT epoch FROM deployment_authority", &[])
+        .await
+        .unwrap()
+        .get(0);
+    {
+        let mut store = DeliveryStore::new(&mut client);
+        store
+            .accept(NewMessage {
+                account_id,
+                device_id,
+                client_message_id: message_id,
+                idempotency_key: "recent-grant",
+                recipient_e164: "+15551234567",
+                synthetic_payload: b"synthetic regression",
+                expires_at_ms: now_ms() + 60_000,
+            })
+            .await
+            .unwrap();
+        assert!(
+            store
+                .synthetic_grant_may_be_due(account_id, device_id, epoch, 60)
+                .await
+                .unwrap()
+        );
+    }
+    // A long-lived device: thousands of old attempts, none in the last minute.
+    client
+        .execute(
+            "INSERT INTO message_attempts(id,account_id,message_id,device_id,generation,session_epoch,\
+              deployment_epoch,status,created_at,updated_at) \
+             SELECT gen_random_uuid(),$1,$2,$3,g,1,$4,'failed',now()-interval '1 day'-g*interval '1 second',now() \
+             FROM generate_series(1000,4999) g",
+            &[&account_id, &message_id, &device_id, &epoch],
+        )
+        .await
+        .unwrap();
+    client
+        .batch_execute("ANALYZE message_attempts")
+        .await
+        .unwrap();
+    let plan: Vec<String> = client
+        .query(
+            &format!("EXPLAIN (ANALYZE, BUFFERS, COSTS OFF) {SYNTHETIC_GRANT_PRECHECK}"),
+            &[&account_id, &device_id, &epoch, &60i32],
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| row.get(0))
+        .collect();
+    let shown = plan.join("\n");
+    // Exactly one access to message_attempts, through the new index, and it
+    // returns nothing without filtering the old history out of the heap.
+    let accesses: Vec<usize> = plan
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.contains(" on message_attempts"))
+        .map(|(index, _)| index)
+        .collect();
+    assert_eq!(accesses.len(), 1, "{shown}");
+    let node = &plan[accesses[0]];
+    assert!(
+        node.contains("Index Only Scan using message_attempts_device_created")
+            || node.contains("Index Scan using message_attempts_device_created"),
+        "{shown}"
+    );
+    // PostgreSQL 18 prints fractional row counts ("rows=0.00").
+    assert!(
+        node.contains("rows=0 ") || node.contains("rows=0.00 "),
+        "{shown}"
+    );
+    let depth = node.len() - node.trim_start().len();
+    let details: Vec<&String> = plan[accesses[0] + 1..]
+        .iter()
+        .take_while(|line| {
+            let indent = line.len() - line.trim_start().len();
+            indent > depth && !line.trim_start().starts_with("->")
+        })
+        .collect();
+    assert!(
+        details
+            .iter()
+            .all(|line| !line.contains("Rows Removed by Filter")),
+        "{shown}"
+    );
+    let blocks: u64 = details
+        .iter()
+        .filter_map(|line| line.trim().strip_prefix("Buffers: shared "))
+        .flat_map(|rest| rest.split(' '))
+        .filter_map(|part| {
+            part.split_once('=')
+                .and_then(|(_, n)| n.parse::<u64>().ok())
+        })
+        .sum();
+    assert!(blocks <= 4, "probe touched {blocks} blocks: {shown}");
+    let mut store = DeliveryStore::new(&mut client);
+    assert!(
+        store
+            .synthetic_grant_may_be_due(account_id, device_id, epoch, 60)
+            .await
+            .unwrap()
+    );
+    // A stale epoch or paused dispatch refuses before any claim.
+    assert!(
+        !store
+            .synthetic_grant_may_be_due(account_id, device_id, epoch + 1, 60)
+            .await
+            .unwrap()
+    );
+    // A fresh grant: its fence and its attempt each refuse on their own.
+    let session = store
+        .connect_session(account_id, device_id, "test", "test", 60)
+        .await
+        .unwrap();
+    let claim = store
+        .claim_due_for_device("test", account_id, device_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let attempt_id = Uuid::new_v4();
+    store
+        .issue_grant(&claim, &session, attempt_id)
+        .await
+        .unwrap();
+    assert!(
+        !store
+            .synthetic_grant_may_be_due(account_id, device_id, epoch, 60)
+            .await
+            .unwrap()
+    );
+    client
+        .execute(
+            "UPDATE dispatch_fences SET outcome='submitted' WHERE attempt_id=$1",
+            &[&attempt_id],
+        )
+        .await
+        .unwrap();
+    let mut store = DeliveryStore::new(&mut client);
+    assert!(
+        !store
+            .synthetic_grant_may_be_due(account_id, device_id, epoch, 60)
+            .await
+            .unwrap(),
+        "an attempt from the last minute must still refuse"
+    );
+    client
+        .execute(
+            "UPDATE message_attempts SET created_at=now()-interval '2 minutes' WHERE id=$1",
+            &[&attempt_id],
+        )
+        .await
+        .unwrap();
+    client
+        .execute(
+            "UPDATE deployment_authority SET dispatch_enabled=FALSE",
+            &[],
+        )
+        .await
+        .unwrap();
+    let mut store = DeliveryStore::new(&mut client);
+    assert!(
+        !store
+            .synthetic_grant_may_be_due(account_id, device_id, epoch, 60)
+            .await
+            .unwrap()
+    );
+    client
+        .execute("UPDATE deployment_authority SET dispatch_enabled=TRUE", &[])
+        .await
+        .unwrap();
+    let mut store = DeliveryStore::new(&mut client);
+    assert!(
+        store
+            .synthetic_grant_may_be_due(account_id, device_id, epoch, 60)
+            .await
+            .unwrap()
+    );
+
+    // Fence outcomes: granted, submitting and unknown are active and refuse;
+    // resolved outcomes do not.
+    for (outcome, due) in [
+        ("granted", false),
+        ("submitting", false),
+        ("unknown", false),
+        ("submitted", true),
+        ("failed", true),
+    ] {
+        client
+            .execute(
+                "UPDATE dispatch_fences SET outcome=$2 WHERE attempt_id=$1",
+                &[&attempt_id, &outcome],
+            )
+            .await
+            .unwrap();
+        let mut store = DeliveryStore::new(&mut client);
+        assert_eq!(
+            store
+                .synthetic_grant_may_be_due(account_id, device_id, epoch, 60)
+                .await
+                .unwrap(),
+            due,
+            "fence outcome {outcome}"
+        );
+    }
+
+    // The spacing boundary is exclusive: inside one transaction now() is
+    // fixed, so an attempt exactly 60 s old no longer refuses and one 59 s
+    // old still does.
+    for (age, due) in [("60 seconds", true), ("59 seconds", false)] {
+        client.batch_execute("BEGIN").await.unwrap();
+        client
+            .execute(
+                "UPDATE message_attempts SET created_at=now()-($2::text)::interval WHERE id=$1",
+                &[&attempt_id, &age],
+            )
+            .await
+            .unwrap();
+        let mut store = DeliveryStore::new(&mut client);
+        assert_eq!(
+            store
+                .synthetic_grant_may_be_due(account_id, device_id, epoch, 60)
+                .await
+                .unwrap(),
+            due,
+            "attempt aged {age}"
+        );
+        client.batch_execute("ROLLBACK").await.unwrap();
     }
     client
         .batch_execute(&format!(

@@ -18,7 +18,7 @@ macro_rules! migration {
 
 // The ceremony runs on the complete schema. SQL is embedded at build time so
 // the test never executes files discovered at runtime.
-const TEST_MIGRATIONS: [(&str, &str); 49] = [
+const TEST_MIGRATIONS: [(&str, &str); 50] = [
     ("001_foundation.sql", migration!("001_foundation.sql")),
     ("002_auth.sql", migration!("002_auth.sql")),
     ("003_delivery.sql", migration!("003_delivery.sql")),
@@ -199,6 +199,10 @@ const TEST_MIGRATIONS: [(&str, &str); 49] = [
     (
         "049_owner_queue_probe_indexes.sql",
         migration!("049_owner_queue_probe_indexes.sql"),
+    ),
+    (
+        "050_message_attempts_recent_index.sql",
+        migration!("050_message_attempts_recent_index.sql"),
     ),
 ];
 
@@ -383,6 +387,14 @@ async fn postgres_owner_key_ceremony_requires_possession_mfa_and_revokes_only_sm
                 "CREATE INDEX CONCURRENTLY messages_owner_in_flight_state \
                  ON messages(device_id,state,created_at) \
                  WHERE state IN ('submitting','submitted')",
+            )
+            .await
+            .unwrap();
+        }
+        if name == "050_message_attempts_recent_index.sql" {
+            db.batch_execute(
+                "CREATE INDEX CONCURRENTLY message_attempts_device_created \
+                 ON message_attempts(account_id,device_id,created_at)",
             )
             .await
             .unwrap();
