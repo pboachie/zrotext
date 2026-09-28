@@ -3281,6 +3281,90 @@ async fn saturated_password_work_returns_503_with_retry_after() {
     ));
 }
 
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn saturated_hash_waiters_are_refused_fast_without_pinning_more_connections() {
+    let state = hash_permit_state();
+    // Both hash permits stay held, so every caller queues for the full wait.
+    let held = state
+        .hash_limit
+        .clone()
+        .acquire_many_owned(HASH_PERMITS as u32)
+        .await
+        .unwrap();
+    // Fill every waiter slot. Each task stands for a budget-admitted request
+    // that holds one request-pool connection while it queues.
+    let mut waiters = Vec::new();
+    for _ in 0..HASH_WAIT_SLOTS {
+        let state = state.clone();
+        waiters.push(tokio::spawn(
+            async move { state.hash_permit().await.map(drop) },
+        ));
+    }
+    // Let every queued task register before the next caller tries.
+    tokio::time::sleep(Duration::from_millis(1)).await;
+    assert_eq!(state.hash_wait_limit.available_permits(), 0);
+    let started = tokio::time::Instant::now();
+    let error = state.hash_permit().await.unwrap_err();
+    // The refusal is immediate: without a waiter cap this call would idle a
+    // request-pool connection for the whole HASH_PERMIT_WAIT first.
+    assert!(matches!(error, AuthHttpError::Busy));
+    assert!(started.elapsed() < HASH_PERMIT_WAIT);
+    let response = error.into_response();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.headers()[header::RETRY_AFTER], "1");
+    // Waiter slots recycle: each queued request times out and releases its
+    // slot, so later requests can queue again and then hash normally.
+    for waiter in waiters {
+        assert!(matches!(waiter.await.unwrap(), Err(AuthHttpError::Busy)));
+    }
+    assert_eq!(state.hash_wait_limit.available_permits(), HASH_WAIT_SLOTS);
+    drop(held);
+    assert!(state.hash_permit().await.is_ok());
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn a_hash_waiter_frees_its_queue_slot_for_the_next_request() {
+    let state = hash_permit_state();
+    let held = state
+        .hash_limit
+        .clone()
+        .acquire_many_owned(HASH_PERMITS as u32)
+        .await
+        .unwrap();
+    // Every waiter slot is taken by requests queued on the held permits.
+    // Each holds its hash permit for a while, like a real Argon2 operation.
+    let mut waiters = Vec::new();
+    for _ in 0..HASH_WAIT_SLOTS {
+        let state = state.clone();
+        waiters.push(tokio::spawn(async move {
+            let _permit = state.hash_permit().await?;
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            Ok::<_, AuthHttpError>(())
+        }));
+    }
+    tokio::time::sleep(Duration::from_millis(1)).await;
+    assert_eq!(state.hash_wait_limit.available_permits(), 0);
+    // The permits free mid-wait: the first queued waiters take them and stop
+    // occupying waiter slots, so a late request can still queue and succeed
+    // rather than being refused fast.
+    drop(held);
+    // Paused time cannot advance until the woken waiters run, so the freed
+    // waiter slots are visible to the late request below.
+    tokio::time::sleep(Duration::from_millis(1)).await;
+    let late = tokio::spawn({
+        let state = state.clone();
+        async move { state.hash_permit().await.map(drop) }
+    });
+    assert!(late.await.unwrap().is_ok());
+    for waiter in waiters {
+        assert!(waiter.await.unwrap().is_ok());
+    }
+    // Both gates return to full: no waiter slot or hash permit leaked.
+    assert_eq!(state.hash_limit.available_permits(), HASH_PERMITS);
+    assert_eq!(state.hash_wait_limit.available_permits(), HASH_WAIT_SLOTS);
+    assert!(state.hash_permit().await.is_ok());
+}
+
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn concurrent_logins_queue_for_password_work_and_saturation_is_503() {
