@@ -217,7 +217,7 @@ class InstalledApkPullTest(unittest.TestCase):
         reads = ['', path, moved, path, path, path, path, moved, moved]
         (used, seen), pulled, slept = self.pull(reads, ['permission', 'missing', None])
         self.assertEqual(5, used)
-        self.assertEqual(['path-not-ready', 'path-moving', 'permission', 'missing'], seen)
+        self.assertEqual(['path-not-ready', 'path-moving', 'pull-permission', 'pull-missing'], seen)
         self.assertEqual([INSTALLED, INSTALLED, moved.removeprefix('package:')], pulled)
         self.assertEqual([1, 2, 3, 5], slept)
 
@@ -236,6 +236,20 @@ class InstalledApkPullTest(unittest.TestCase):
             probe.pull_installed(lambda: 'package:/sdcard/evil.apk', pulled.append, slept.append)
         self.assertEqual(([], []), (pulled, slept))
 
+    def test_package_manager_command_failures_are_retried_and_staged(self):
+        outcomes = [probe.ProbeCommandError('service'), 'package:' + INSTALLED, 'package:' + INSTALLED]
+        slept, pulled = [], []
+
+        def read():
+            outcome = outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        used, seen = probe.pull_installed(read, pulled.append, slept.append)
+        self.assertEqual((2, ['path-service']), (used, seen))
+        self.assertEqual(([INSTALLED], [1]), (pulled, slept))
+
     def test_failures_are_reported_as_fixed_classes_only(self):
         secret = 'synthetic-device-text-7f3a'
         for raw, kind in [(f'adb: error: failed to stat remote object {secret}: No such file or directory', 'missing'),
@@ -243,7 +257,8 @@ class InstalledApkPullTest(unittest.TestCase):
                           ('adb: device offline', 'device-offline'),
                           ('error: no devices/emulators found', 'device-offline'),
                           (f'protocol fault (couldn\'t read status): Connection reset by peer {secret}', 'transport'),
-                          (secret, 'other'), ('', 'other'), (None, 'other')]:
+                          ("cmd: Can't find service: package", 'service'),
+                          (secret, 'other'), ('', 'silent'), (' \n', 'silent'), (None, 'silent')]:
             with self.subTest(kind=kind):
                 self.assertEqual(kind, probe.failure_class(raw))
                 self.assertNotIn(secret, str(probe.ProbeCommandError(probe.failure_class(raw))))

@@ -83,12 +83,15 @@ FAILURE_CLASSES = (
     ("missing", ("does not exist", "no such file")),
     ("permission", ("permission denied",)),
     ("transport", ("protocol fault", "connection reset", "closed", "broken pipe")),
+    ("service", ("can't find service", "failure calling service", "deadobject", "system has crashed")),
 )
 
 
 def failure_class(output):
     """Map raw tool output to one fixed class so logs never carry device text."""
     text = (output or "").lower()
+    if not text.strip():
+        return "silent"
     for kind, needles in FAILURE_CLASSES:
         if any(needle in text for needle in needles):
             return kind
@@ -130,17 +133,19 @@ def pull_installed(read_path_output, pull, sleep, attempts=PULL_ATTEMPTS, backof
     """
     seen = []
     for attempt in range(attempts):
+        stage = "path"
         try:
             first = installed_apk_path(read_path_output())
             if installed_apk_path(read_path_output()) != first:
                 seen.append("path-moving")
             else:
+                stage = "pull"
                 pull(first)
                 return attempt + 1, seen
         except PathNotReady:
             seen.append("path-not-ready")
         except ProbeCommandError as error:
-            seen.append(error.kind)
+            seen.append(f"{stage}-{error.kind}")
         if attempt + 1 < attempts:
             sleep(backoff[min(attempt, len(backoff) - 1)])
     raise RuntimeError("Installed APK pull failed after bounded retries (" + ",".join(seen) +
