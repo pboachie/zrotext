@@ -13,9 +13,14 @@ It is a library, not an owner CLI or a custody implementation.
   root card. Its checksum detects accidental errors only; it does not authenticate
   the backup or independently compare the intended identity. Secret token bytes
   require explicit borrowed exposure and must never be implicitly displayed.
+- `root_unlock` signs one exact enrollment challenge with an already recovered
+  root after binding the challenge's account, origin and root fingerprint to an
+  independently supplied identity and clock. It is possession signing only, and
+  the server deliberately re-exports nothing from it.
 
-The server re-exports both modules at their existing public paths. Shared types,
-formats, error behavior and public vectors are unchanged by this extraction.
+The server re-exports the enrollment and backup modules at their existing public
+paths; it deliberately re-exports neither `recovery_kit` nor `root_unlock`. Shared
+types, formats, error behavior and public vectors are unchanged by this extraction.
 The HMAC zeroization feature is explicitly enabled here so standalone use does
 not depend on feature unification through the server.
 

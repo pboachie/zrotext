@@ -9,9 +9,20 @@ mod native_process;
 fn main() -> std::process::ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args == ["--help"] {
-        println!(
-            "Candidate offline Windows owner tool\ninit --account UUID --origin HTTPS_ORIGIN\nrestore-check --account UUID --origin HTTPS_ORIGIN --bundle PUBLIC_ID\nNo enrollment. Creation requires a separate recovery check."
-        );
+        #[cfg(feature = "unlock")]
+        let help = {
+            let mut help = String::from(
+                "Candidate offline Windows owner tool\ninit --account UUID --origin HTTPS_ORIGIN\nrestore-check --account UUID --origin HTTPS_ORIGIN --bundle PUBLIC_ID\nNo enrollment. Creation requires a separate recovery check.\n",
+            );
+            // Only a deliberate --features unlock build even lists the command.
+            help.push_str(
+                "unlock --account UUID --origin HTTPS_ORIGIN --bundle PUBLIC_ID --challenge FILE\nSigns one enrollment challenge after verified recovery (candidate).\n",
+            );
+            help
+        };
+        #[cfg(not(feature = "unlock"))]
+        let help = "Candidate offline Windows owner tool\ninit --account UUID --origin HTTPS_ORIGIN\nrestore-check --account UUID --origin HTTPS_ORIGIN --bundle PUBLIC_ID\nNo enrollment. Creation requires a separate recovery check.\n";
+        println!("{help}");
         return std::process::ExitCode::SUCCESS;
     }
     if args == ["--version"] {
@@ -22,7 +33,14 @@ fn main() -> std::process::ExitCode {
     if windows::run(&args).is_ok() {
         return std::process::ExitCode::SUCCESS;
     }
-    // Fixed diagnostic only. Never format arguments, context, errors or secrets.
+    // Fixed diagnostics only. Never format arguments, context, errors or secrets.
+    #[cfg(feature = "unlock")]
+    if args.first().map(String::as_str) == Some("unlock") {
+        eprintln!(
+            "Operation failed. No signature was produced; the stored bundle and recovery state are unchanged."
+        );
+        return std::process::ExitCode::FAILURE;
+    }
     eprintln!(
         "Operation failed. No recovery readiness is established; any existing bundle remains unchanged."
     );

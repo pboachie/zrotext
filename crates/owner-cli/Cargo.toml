@@ -5,6 +5,12 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+default = []
+# Candidate offline unlock signing, disabled by default: the default build has
+# no unlock command at all, and no release artifact or workflow enables this.
+unlock = []
+
 [target.'cfg(windows)'.dependencies]
 zrotext-root-material = { path = "../root-material" }
 zrotext-root-bundle = { path = "../root-bundle" }

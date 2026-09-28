@@ -356,7 +356,7 @@ Keep message content out of reach of the server, and give owners control of thei
 - [x] Q1-Q11 decisions recorded with cross-client manifest vectors ([#260](https://github.com/pboachie/zrotext/pull/260))
 - [ ] Verify the recorded Q1-Q11 decisions with the evidence each row still lists in the [protocol decision log](../protocol/drafts/zt-009-decision-log.md)
 - [ ] Cross-client interoperability and adversarial security tests
-- [ ] Recovery and unlock flows
+- [ ] Recovery and unlock flows (first increment recorded as evidence only: offline unlock signing behind a disabled-by-default owner-CLI build feature, no server enablement)
 - [ ] Enabled in the gateway for real messages
 
 </details>
