@@ -9,10 +9,23 @@ jobs:
   native-bundle:
     runs-on: windows-2025
     timeout-minutes: 20
+    env:
+      # Smaller, reusable build artifacts: no incremental churn, symbols only
+      # deep enough for line-numbered backtraces.
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Cache Rust build artifacts
+        # Windows dependency cache; PR runs only read it. The restore step
+        # invokes rustc, which installs the pinned toolchain from
+        # rust-toolchain.toml before any lint runs.
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: windows-cargo-deps
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Check formatting
         run: cargo fmt --all --check
       - name: Lint native bundle adapter
