@@ -92,9 +92,13 @@ test("invited registration sends credentials in JSON and invite only in a header
 test("verification and resend never put a code or password in a URL", async () => {
   const { element, calls, replies } = await accountPage();
   element("verification-code").value = " code from email ";
+  element("verify-password").value = testPassword;
   await submit(element("verify-form"));
-  assert.deepEqual(JSON.parse(calls.at(-1).options.body), { token: "code from email" });
+  assert.deepEqual(JSON.parse(calls.at(-1).options.body), {
+    token: "code from email", password: testPassword,
+  });
   assert.equal(element("verification-code").value, "");
+  assert.equal(element("verify-password").value, "");
   element("resend-email").value = "owner@example.test";
   element("resend-password").value = testPassword;
   await submit(element("resend-form"));
@@ -104,8 +108,10 @@ test("verification and resend never put a code or password in a URL", async () =
   assert.equal(element("resend-password").value, "");
   replies.set("/v1/auth/verify-email", response(400));
   element("verification-code").value = "wrong-code";
+  element("verify-password").value = testPassword;
   await submit(element("verify-form"));
   assert.match(element("verify-status").textContent, /Check the entered values/);
+  assert.equal(element("verify-password").value, "");
   assert.ok(calls.every(({ path }) => !path.includes("?")));
 });
 

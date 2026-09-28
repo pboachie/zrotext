@@ -135,14 +135,16 @@ byId("register-form").addEventListener("submit", exclusive(async (event) => {
 byId("verify-form").addEventListener("submit", exclusive(async (event) => {
   event.preventDefault();
   const token = byId("verification-code").value.trim();
+  const password = byId("verify-password").value;
   status("verify-status", "Verifying email…");
   try {
-    await request("/v1/auth/verify-email", "POST", { token });
+    await request("/v1/auth/verify-email", "POST", { token, password });
     status("verify-status", "Email verified. You can sign in on the Devices page.");
   } catch (error) {
     status("verify-status", `Verification failed. ${error.message}`);
   } finally {
     byId("verification-code").value = "";
+    byId("verify-password").value = "";
   }
 }));
 

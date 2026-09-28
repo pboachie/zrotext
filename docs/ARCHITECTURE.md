@@ -177,7 +177,7 @@ separate member authorization and per-user MFA storage before it can be enabled.
 
 | Method/path | Current contract |
 |---|---|
-| POST /v1/auth/register; POST /v1/auth/verify-email; POST /v1/auth/resend-verification | Exact HTTPS Origin; registration policy admits new accounts and otherwise returns a generic acceptance without mail; verification code is queued in a durable outbox, never returned by HTTP; resend requires the password and uses a generic response; an unverified sign-up expires 24 hours after registration and a later registration replaces it |
+| POST /v1/auth/register; POST /v1/auth/verify-email; POST /v1/auth/resend-verification | Exact HTTPS Origin; registration policy admits new accounts and otherwise returns a generic acceptance without mail; verification code is queued in a durable outbox, never returned by HTTP; verification and resend require the registrant's password and use generic responses; a registration that collides with a pending sign-up cancels that sign-up's outstanding code and queued mail; an unverified sign-up expires 24 hours after registration and a later registration replaces it |
 | POST /v1/auth/login; POST /v1/auth/logout; GET /v1/auth/session | Owner session with secure host-only cookie; logout requires Origin and CSRF proof |
 | POST /v1/auth/api-keys; DELETE /v1/auth/api-keys/{key_id} | Owner session, Origin and CSRF proof; token shown only at creation |
 | POST /v1/enrollment/pairings; GET /v1/enrollment/pairings/{pairing_id} | Owner creates or views a five-minute, one-use pairing |
