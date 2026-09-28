@@ -109,6 +109,7 @@
           "name": "Owner dashboard: device health and history",
           "short": "Owner dashboard",
           "stage": "build",
+          "release_gate_note": "The listed owner dashboard work is complete for restricted pilot use. Device readiness reporting is bounded to Android-reported preconditions and writer queue counts; carrier-level sendability is not measured.",
           "evidence": [
             ["#36", "https://github.com/pboachie/zrotext/pull/36"],
             ["#74", "https://github.com/pboachie/zrotext/pull/74"],
@@ -126,11 +127,10 @@
             "Opt-out hold and review decision forms ([#245](https://github.com/pboachie/zrotext/pull/245))",
             "SMS lines page: approval key, line list and activation approval ([#251](https://github.com/pboachie/zrotext/pull/251), [#255](https://github.com/pboachie/zrotext/pull/255))",
             "Device health and recent messages refresh every 15 seconds while the owner page is visible; pagination and active interactions pause their list ([#295](https://github.com/pboachie/zrotext/pull/295))",
-            "Live device and message updates over an owner event stream; the 15-second snapshot refresh stays as the fallback"
+            "Live device and message updates over an owner event stream; the 15-second snapshot refresh stays as the fallback",
+            "SIM, queue depth and radio readiness per device, from Android-reported preconditions and bounded writer counts ([#308](https://github.com/pboachie/zrotext/pull/308), [#317](https://github.com/pboachie/zrotext/pull/317), [#340](https://github.com/pboachie/zrotext/pull/340), [#396](https://github.com/pboachie/zrotext/pull/396))"
           ],
-          "todo": [
-            "SIM, queue depth and radio readiness per device"
-          ]
+          "todo": []
         }
       ]
     },
@@ -373,7 +373,8 @@
           "short": "Optional managed AI",
           "stage": "planned",
           "evidence": [
-            ["product proposal", "PRODUCT-PLAN.md#managed-ai-and-larger-campaigns"]
+            ["product proposal", "PRODUCT-PLAN.md#managed-ai-and-larger-campaigns"],
+            ["data-handling proposal", "MANAGED-AI.md"]
           ],
           "evidence_note": "proposal only; no runtime implementation",
           "done": [],

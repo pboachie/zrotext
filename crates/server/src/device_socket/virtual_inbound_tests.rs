@@ -26,8 +26,10 @@ async fn receive_json(socket: &mut TestSocket) -> Value {
         .expect("socket response timed out")
         .expect("socket closed")
         .expect("socket read failed");
-    serde_json::from_str(frame.to_text().expect("expected a text frame"))
-        .expect("invalid server JSON")
+    let Message::Text(text) = &frame else {
+        panic!("expected a text frame, got {frame:?}");
+    };
+    serde_json::from_str(text).expect("invalid server JSON")
 }
 
 async fn send_json(socket: &mut TestSocket, value: Value) {
@@ -413,6 +415,9 @@ async fn socket_handshakes_share_http_enrollment_budgets() {
     let signing = SigningKey::generate_from_rng(&mut rng());
     let public_key = signing.verifying_key().to_sec1_point(false);
     let fingerprint: [u8; 32] = Sha256::digest(public_key.as_bytes()).into();
+    db.execute("INSERT INTO sites(site_id) VALUES('fixture')", &[])
+        .await
+        .unwrap();
     db.execute("INSERT INTO accounts(id) VALUES($1)", &[&account_id])
         .await
         .unwrap();
@@ -459,49 +464,69 @@ async fn socket_handshakes_share_http_enrollment_budgets() {
             .body(Body::empty())
             .unwrap()
     };
-    // Spend 29 attempts on HTTP, then the last attempt on a fresh socket.
-    for _ in 0..29 {
+    let hello = |address: std::net::SocketAddr| async move {
+        let (mut socket, _) = connect_async(format!("ws://{address}/v1/device-stream"))
+            .await
+            .unwrap();
+        send_json(
+            &mut socket,
+            json!({"v":1,"type":"hello","device_id":device_id}),
+        )
+        .await;
+        socket
+    };
+    let typed_challenge = |challenge: &Value| DeviceChallenge {
+        id: Uuid::parse_str(challenge["challenge_id"].as_str().unwrap()).unwrap(),
+        account_id,
+        device_id,
+        nonce: URL_SAFE_NO_PAD
+            .decode(challenge["nonce"].as_str().unwrap())
+            .unwrap()
+            .try_into()
+            .unwrap(),
+    };
+    // An anonymous caller who knows the public device ID spends the whole
+    // anonymous per-device challenge budget over HTTP.
+    for _ in 0..30 {
         assert_eq!(
             http.clone().oneshot(request()).await.unwrap().status(),
             StatusCode::OK
         );
     }
-    let (mut socket, _) = connect_async(format!("ws://{address}/v1/device-stream"))
-        .await
-        .unwrap();
-    send_json(
-        &mut socket,
-        json!({"v":1,"type":"hello","device_id":device_id}),
-    )
-    .await;
+    // The enrolled phone is still answered: its verified counter is its own.
+    let mut socket = hello(address).await;
     let challenge = receive_json(&mut socket).await;
     assert_eq!(challenge["type"], "challenge");
+    // That verified counter is the same size and shared with HTTP, so the
+    // device holds at most 60 persistent challenges per window.
+    for _ in 0..28 {
+        assert_eq!(
+            http.clone().oneshot(request()).await.unwrap().status(),
+            StatusCode::OK
+        );
+    }
+    let mut second = hello(address).await;
+    let second_challenge = receive_json(&mut second).await;
+    assert_eq!(second_challenge["type"], "challenge");
     assert_eq!(
         http.clone().oneshot(request()).await.unwrap().status(),
         StatusCode::TOO_MANY_REQUESTS
     );
-    // A reconnect must not create the 31st persistent challenge.
-    let (mut denied, _) = connect_async(format!("ws://{address}/v1/device-stream"))
-        .await
-        .unwrap();
-    send_json(
-        &mut denied,
-        json!({"v":1,"type":"hello","device_id":device_id}),
-    )
-    .await;
+    let mut denied = hello(address).await;
     assert!(matches!(
         timeout(Duration::from_secs(5), denied.next())
             .await
             .unwrap(),
-        Some(Ok(Message::Close(_)))
+        Some(Ok(Message::Close(Some(frame)))) if u16::from(frame.code) == RETRY_LATER
     ));
     let count: i64 = db
         .query_one("SELECT count(*) FROM device_auth_challenges", &[])
         .await
         .unwrap()
         .get(0);
-    assert_eq!(count, 30);
-    // A valid signature must still be rejected when the shared proof budget is spent.
+    assert_eq!(count, 60);
+    // The anonymous per-device proof budget is spent the same way, and the
+    // phone's valid proof still completes through its verified counter.
     for _ in 0..30 {
         assert!(
             abuse_limits::consume(
@@ -514,23 +539,31 @@ async fn socket_handshakes_share_http_enrollment_budgets() {
             .unwrap()
         );
     }
-    let typed = DeviceChallenge {
-        id: Uuid::parse_str(challenge["challenge_id"].as_str().unwrap()).unwrap(),
-        account_id,
-        device_id,
-        nonce: URL_SAFE_NO_PAD
-            .decode(challenge["nonce"].as_str().unwrap())
-            .unwrap()
-            .try_into()
-            .unwrap(),
-    };
+    let typed = typed_challenge(&challenge);
     let signature: Signature = signing.sign(&device_challenge_bytes(&typed));
     send_json(&mut socket, json!({"v":1,"type":"proof","challenge_id":typed.id,"account_id":account_id,"device_id":device_id,"nonce":challenge["nonce"],"signature_der":URL_SAFE_NO_PAD.encode(signature.to_der().as_bytes())})).await;
+    assert_eq!(receive_json(&mut socket).await["type"], "session");
+    // A valid signature is still refused once the verified proof budget is spent.
+    for _ in 1..30 {
+        assert!(
+            abuse_limits::consume_verified(
+                &db,
+                &auth_hasher,
+                Limit::DeviceAuthenticate,
+                &device_id.to_string()
+            )
+            .await
+            .unwrap()
+        );
+    }
+    let typed = typed_challenge(&second_challenge);
+    let signature: Signature = signing.sign(&device_challenge_bytes(&typed));
+    send_json(&mut second, json!({"v":1,"type":"proof","challenge_id":typed.id,"account_id":account_id,"device_id":device_id,"nonce":second_challenge["nonce"],"signature_der":URL_SAFE_NO_PAD.encode(signature.to_der().as_bytes())})).await;
     assert!(matches!(
-        timeout(Duration::from_secs(5), socket.next())
+        timeout(Duration::from_secs(5), second.next())
             .await
             .unwrap(),
-        Some(Ok(Message::Close(_)))
+        Some(Ok(Message::Close(Some(frame)))) if u16::from(frame.code) == RETRY_LATER
     ));
     let used: bool = db
         .query_one(
