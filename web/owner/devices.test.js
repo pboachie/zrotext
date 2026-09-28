@@ -32,7 +32,7 @@ async function ownerPage() {
   const windowListeners = {};
   let nextTimer = 0;
   const state = {
-    requests: [], devicePages: [], messagePages: [],
+    requests: [], calls: [], devicePages: [], messagePages: [],
     unauthorized: false, pendingCreate: null, nextCreateResponse: null, pendingHistory: null,
     historyPages: [], historyRequests: [], webhookPages: [], webhookRequests: [], pendingWebhook: null,
     endpoints: [], pendingEndpoints: null, pendingDevices: null, messages: [],
@@ -44,6 +44,7 @@ async function ownerPage() {
   };
   const fetch = async (url, options) => {
     state.requests.push(url);
+    state.calls.push({ url, options });
     if (url === "/v1/auth/session") return response(200);
     if (url === "/v1/auth/login") return response(204);
     if (url === "/v1/auth/logout") return response(204);
@@ -67,6 +68,8 @@ async function ownerPage() {
     if (url === "/v1/enrollment/pairings" && options.method === "POST")
       return response(201, { pairing_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", token: "synthetic" });
     if (url.endsWith("/approve") && options.method === "POST") return state.approveResponse;
+    if (url.startsWith("/v1/enrollment/pairings/") && options.method === "GET")
+      return response(200, { claimed: false, proof_verified: false });
     if (url.startsWith("/v1/enrollment/devices/") && options.method === "DELETE") {
       const id = url.split("/").at(-1);
       state.deletedDevices.push(id);
@@ -206,6 +209,39 @@ test("opt-out review ignores a late response after session expiry", async () => 
   await pending;
   assert.equal(element("opt-out-review-list").children.length, 0);
   assert.equal(element("owner-content").hidden, true);
+});
+
+test("content-bearing reads send the CSRF header while session probes stay cookie-only", async () => {
+  const { element, state } = await ownerPage();
+  state.endpoints = [{ endpoint_id: endpointId, callback_url: "https://callback.example.test/hook", enabled: true }];
+  await element("refresh-webhook-endpoints").listeners.click();
+  element("webhook-endpoint").value = endpointId;
+  await element("webhook-endpoint").listeners.change();
+  element("inbound-message-id").value = eventId;
+  await element("inbound-history-form").listeners.submit({ preventDefault() {} });
+  await element("refresh-opt-out-review").listeners.click();
+  await element("refresh-sessions").listeners.click();
+  element("display-name").value = "Synthetic phone";
+  await element("create-form").listeners.submit({ preventDefault() {} });
+  await element("check-proof").listeners.click();
+  const gets = state.calls.filter((call) => call.options.method === "GET");
+  const header = (prefix) => {
+    const matching = gets.filter((call) => call.url.startsWith(prefix));
+    assert.notEqual(matching.length, 0, `no GET to ${prefix}`);
+    return matching.map((call) => call.options.headers["x-zrotext-csrf"]);
+  };
+  for (const prefix of [
+    "/v1/enrollment/devices", "/v1/owner/messages", "/v1/owner/opt-out-review",
+    "/v1/owner/opt-out-holds", "/v1/auth/api-keys", "/v1/webhooks", `/v1/webhooks/${endpointId}/deliveries`,
+    `/v1/inbound/messages/${eventId}/events`, "/v1/enrollment/pairings/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  ]) {
+    for (const value of header(prefix)) assert.equal(value, "ztc_synthetic", prefix);
+  }
+  // The page reads these to learn whether it is signed in; they carry no
+  // account content and the server accepts them with the session cookie only.
+  for (const path of ["/v1/auth/session", "/v1/auth/sessions", "/v1/billing/status"]) {
+    for (const value of header(path)) assert.equal(value, undefined, path);
+  }
 });
 
 test("password reset keeps the token out of URLs and clears entered passwords", async () => {

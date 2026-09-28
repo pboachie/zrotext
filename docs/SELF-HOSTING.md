@@ -407,7 +407,15 @@ key use a separate budget of 32 handshakes per process and never occupy an
 authenticated slot. Each handshake must send its hello and its proof within 10
 seconds each and must finish authenticating within 15 seconds of the upgrade
 request, or it is closed and its handshake slot is released. When either budget
-is full, the upgrade is refused with HTTP 503. These in-process budgets are not
+is full, the upgrade is refused with HTTP 503. Authenticated slots are held per
+device: one device holds at most one, and one account holds at most
+`DEVICE_SOCKETS_PER_ACCOUNT` of them per process (default 8, allowed 1–32). This
+cap applies whether or not billing device caps are enabled. A proven socket for
+a new device of an account already at its share is closed with retry-later code
+1013, so one owner cannot fill the hub for other accounts. A device that
+reconnects takes over its own slot at once, even when its account is at its
+share, and its older socket is closed immediately rather than at the next
+10-second session check. These in-process budgets are not
 keyed by client address; put a reverse proxy per-address connection limit in
 front of `/v1/device-stream` so one source cannot keep the handshake budget
 full. Each socket permits a burst of 256 received frames and refills

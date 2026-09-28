@@ -4,8 +4,9 @@ These browser routes are mounted only when account routes and an operational
 `WEBHOOK_KEK_VERSION`/`WEBHOOK_KEK_B64` pair are configured. They can be used
 while `WEBHOOK_DELIVERY_ENABLED=false`; that flag must be set separately to
 start the sender. No route sends a test webhook. All routes require a verified,
-active owner session. POST also requires the exact configured HTTPS `Origin`
-and the session's double-submit CSRF cookie/header. Responses use
+active owner session and the session's double-submit CSRF cookie and
+`x-zrotext-csrf` header; a GET with the session cookie alone is refused with
+403. POST also requires the exact configured HTTPS `Origin`. Responses use
 `Cache-Control: no-store`; request bodies are limited to 4 KiB.
 
 | Route | Result |

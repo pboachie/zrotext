@@ -46,10 +46,19 @@ const TEST_MIGRATIONS: [&str; 25] = [
     migration!("039_inbound_device_clock_offset.sql"),
 ];
 
-fn get(path: &str, token: Option<&str>) -> Request<Body> {
+fn get(path: &str, session: Option<&crate::auth::SessionCredentials>) -> Request<Body> {
     let mut request = Request::builder().uri(path);
-    if let Some(token) = token {
-        request = request.header(header::COOKIE, format!("__Host-zrotext_session={token}"));
+    if let Some(session) = session {
+        // Content-bearing owner reads need the CSRF header, not Origin.
+        request = request
+            .header(
+                header::COOKIE,
+                format!(
+                    "__Host-zrotext_session={}; __Host-zrotext_csrf={}",
+                    session.token, session.csrf_token
+                ),
+            )
+            .header("x-zrotext-csrf", &session.csrf_token);
     }
     request.body(Body::empty()).unwrap()
 }
@@ -245,7 +254,7 @@ async fn review_queue_is_owner_only_tenant_bound_paginated_and_content_free() {
     assert_eq!(anonymous.headers()[header::CACHE_CONTROL], "no-store");
     let first = app
         .clone()
-        .oneshot(get("/v1/owner/opt-out-review", Some(&session_a.token)))
+        .oneshot(get("/v1/owner/opt-out-review", Some(&session_a)))
         .await
         .unwrap();
     assert_eq!(first.status(), StatusCode::OK);
@@ -260,7 +269,7 @@ async fn review_queue_is_owner_only_tenant_bound_paginated_and_content_free() {
         app.clone()
             .oneshot(get(
                 &format!("/v1/owner/opt-out-review?before={cursor}"),
-                Some(&session_a.token),
+                Some(&session_a),
             ))
             .await
             .unwrap(),
@@ -298,7 +307,7 @@ async fn review_queue_is_owner_only_tenant_bound_paginated_and_content_free() {
         .clone()
         .oneshot(get(
             &format!("/v1/owner/opt-out-review?before={foreign_event}"),
-            Some(&session_a.token),
+            Some(&session_a),
         ))
         .await
         .unwrap();
@@ -306,7 +315,7 @@ async fn review_queue_is_owner_only_tenant_bound_paginated_and_content_free() {
     assert_eq!(foreign_cursor.headers()[header::CACHE_CONTROL], "no-store");
     let b_page = body(
         app.clone()
-            .oneshot(get("/v1/owner/opt-out-review", Some(&session_b.token)))
+            .oneshot(get("/v1/owner/opt-out-review", Some(&session_b)))
             .await
             .unwrap(),
     )
