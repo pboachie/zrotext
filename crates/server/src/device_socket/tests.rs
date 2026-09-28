@@ -939,6 +939,19 @@ async fn writer_claim_replay_epoch_and_revocation() {
         .unwrap()
     );
     let event_id = Uuid::new_v4();
+    assert_eq!(
+        durable_intent_preflight(
+            &client,
+            second_session,
+            event_id,
+            message_id,
+            attempt_id,
+            &alpha_state
+        )
+        .await
+        .unwrap(),
+        (true, false)
+    );
     let intent = RadioEvent {
         event_id,
         account_id,
@@ -986,21 +999,33 @@ async fn writer_claim_replay_epoch_and_revocation() {
         .await
         .unwrap()
     );
-    assert!(
-        previous_submit_intent(&client, second_session, event_id, message_id, attempt_id)
-            .await
-            .unwrap()
+    // One preflight statement: the expired grant is no longer current, and
+    // only the exact recorded intent counts as a replay.
+    assert_eq!(
+        durable_intent_preflight(
+            &client,
+            second_session,
+            event_id,
+            message_id,
+            attempt_id,
+            &alpha_state
+        )
+        .await
+        .unwrap(),
+        (false, true)
     );
-    assert!(
-        !previous_submit_intent(
+    assert_eq!(
+        durable_intent_preflight(
             &client,
             second_session,
             Uuid::new_v4(),
             message_id,
-            attempt_id
+            attempt_id,
+            &alpha_state
         )
         .await
-        .unwrap()
+        .unwrap(),
+        (false, false)
     );
     assert_eq!(
         DeliveryStore::new(&mut client)
