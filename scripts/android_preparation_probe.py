@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 import xml.etree.ElementTree as ET
 
 from android_device_smoke import verify_results
@@ -66,6 +67,89 @@ def tool_environment(sdk_home, serial=None, base=None):
     if serial is not None:
         environment["ANDROID_SERIAL"] = validated_serial(serial)
     return environment
+
+
+class ProbeCommandError(RuntimeError):
+    """A failed tool command. Only a fixed failure class is kept, never raw output."""
+
+    def __init__(self, kind):
+        super().__init__(f"Probe command failed ({kind}); no raw device output published")
+        self.kind = kind
+
+
+# Fixed classes for adb failures; the matched text itself is never reported.
+FAILURE_CLASSES = (
+    ("device-offline", ("device offline", "device not found", "no devices/emulators", "device unauthorized")),
+    ("missing", ("does not exist", "no such file")),
+    ("permission", ("permission denied",)),
+    ("transport", ("protocol fault", "connection reset", "closed", "broken pipe")),
+    ("service", ("can't find service", "failure calling service", "deadobject", "system has crashed")),
+)
+
+
+def failure_class(output):
+    """Map raw tool output to one fixed class so logs never carry device text."""
+    text = (output or "").lower()
+    if not text.strip():
+        return "silent"
+    for kind, needles in FAILURE_CLASSES:
+        if any(needle in text for needle in needles):
+            return kind
+    return "other"
+
+
+# An installed APK path from `pm path`: under /data/app, safe characters only,
+# no relative segments, ending in base.apk.
+INSTALLED_PATH = re.compile(r"package:(/data/app/(?:[A-Za-z0-9._~=+-]+/){1,3}base\.apk)")
+
+
+class PathNotReady(Exception):
+    """`pm path` has no entry for the package yet; worth retrying."""
+
+
+def installed_apk_path(output):
+    """Return the one installed APK path, or refuse anything but an absent entry."""
+    lines = [line.strip() for line in output.strip().splitlines()]
+    if not lines:
+        raise PathNotReady()
+    match = INSTALLED_PATH.fullmatch(lines[0]) if len(lines) == 1 else None
+    if match is None or "/../" in match.group(1) or "/./" in match.group(1):
+        raise ValueError("Unexpected installed package shape")
+    return match.group(1)
+
+
+# Right after `adb install` the package manager can still be publishing the
+# new code directory (relabel/rename), so an immediate pull intermittently
+# failed. Each attempt re-resolves the path and requires two identical reads.
+PULL_ATTEMPTS = 6
+PULL_BACKOFF_SECONDS = (1, 2, 3, 5, 8)
+
+
+def pull_installed(read_path_output, pull, sleep, attempts=PULL_ATTEMPTS, backoff=PULL_BACKOFF_SECONDS):
+    """Pull the installed APK, retrying bounded transient failures.
+
+    Returns (attempts used, failure classes seen). Malformed `pm path` output is
+    never retried; it raises immediately.
+    """
+    seen = []
+    for attempt in range(attempts):
+        stage = "path"
+        try:
+            first = installed_apk_path(read_path_output())
+            if installed_apk_path(read_path_output()) != first:
+                seen.append("path-moving")
+            else:
+                stage = "pull"
+                pull(first)
+                return attempt + 1, seen
+        except PathNotReady:
+            seen.append("path-not-ready")
+        except ProbeCommandError as error:
+            seen.append(f"{stage}-{error.kind}")
+        if attempt + 1 < attempts:
+            sleep(backoff[min(attempt, len(backoff) - 1)])
+    raise RuntimeError("Installed APK pull failed after bounded retries (" + ",".join(seen) +
+                       "); no raw device output published")
 
 
 def validate_manifest(xml, package, test=False):
@@ -144,7 +228,7 @@ def main():
         result = subprocess.run([program, *arguments], capture_output=True, text=True, timeout=timeout,
                                 env=environment)
         if result.returncode:
-            raise RuntimeError("Probe command failed; no raw device output published")
+            raise ProbeCommandError(failure_class(f"{result.stdout}\n{result.stderr}"))
         return result.stdout
 
     def device(*command, timeout=90):
@@ -184,11 +268,13 @@ def main():
         installed = []
 
         def verify_installed(package):
-            paths = device("shell", "pm", "path", package).strip().splitlines()
-            if len(paths) != 1 or not paths[0].startswith("package:/"):
-                raise ValueError("Unexpected installed package shape")
             copy = directory / "installed.apk"
-            device("pull", paths[0].removeprefix("package:"), str(copy))
+            copy.unlink(missing_ok=True)
+            used, seen = pull_installed(lambda: device("shell", "pm", "path", package),
+                                        lambda path: device("pull", path, str(copy)), time.sleep)
+            if used > 1:
+                # Fixed counts and classes only, to track the post-install race.
+                print(f"Installed APK pull needed {used} attempts ({','.join(seen)})")
             if digest(copy) != digest(artifacts[package]):
                 raise ValueError("Installed artifact changed; refusing access or cleanup")
 
