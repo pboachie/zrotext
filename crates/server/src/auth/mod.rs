@@ -194,9 +194,61 @@ pub struct SessionPrincipal {
     pub user_id: Uuid,
     pub session_id: Uuid,
     csrf_hash: [u8; 32],
+    /// Unspent proof that [`authenticate_session`] validated this session for
+    /// the current request. See [`SessionPrincipal::spend_fresh_verification`].
+    verification: FreshVerification,
+}
+
+/// How long `authenticate_session`'s validation stands in for the next
+/// unlocked owner re-check. Owner handlers make that re-check microseconds
+/// later on the same request; anything slower re-queries.
+const FRESH_VERIFICATION_WINDOW: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Only [`authenticate_session`] creates an unspent verification; principals
+/// built any other way start spent, so every re-check runs.
+struct FreshVerification {
+    at: Option<std::time::Instant>,
+    unspent: std::sync::atomic::AtomicBool,
+}
+
+impl FreshVerification {
+    #[cfg(test)]
+    fn spent() -> Self {
+        Self {
+            at: None,
+            unspent: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    fn now() -> Self {
+        Self {
+            at: Some(std::time::Instant::now()),
+            unspent: std::sync::atomic::AtomicBool::new(true),
+        }
+    }
 }
 
 impl SessionPrincipal {
+    /// Spends this request's session validation in place of one unlocked
+    /// owner re-check. True at most once per principal, and only within
+    /// [`FRESH_VERIFICATION_WINDOW`] of `authenticate_session` returning it.
+    ///
+    /// An unlocked re-check is point-in-time evidence only: a revocation can
+    /// commit immediately after it just as after `authenticate_session`, so
+    /// the operation that follows is ordered before that revocation either
+    /// way. Locking re-checks inside transactions (`FOR UPDATE`/`FOR SHARE`),
+    /// and the session joins inside INSERT statements, never use this.
+    pub(crate) fn spend_fresh_verification(&self) -> bool {
+        let Some(at) = self.verification.at else {
+            return false;
+        };
+        at.elapsed() < FRESH_VERIFICATION_WINDOW
+            && self
+                .verification
+                .unspent
+                .swap(false, std::sync::atomic::Ordering::AcqRel)
+    }
+
     /// Cookie-authenticated mutations require both exact origin and a matching
     /// CSRF cookie/header value. Origin is the configured canonical HTTPS origin.
     pub fn require_csrf(
@@ -751,6 +803,7 @@ pub async fn authenticate_session(
         },
         user_id: row.get(2),
         csrf_hash,
+        verification: FreshVerification::now(),
     })
 }
 
@@ -759,7 +812,7 @@ pub async fn revoke_session(
     principal: &SessionPrincipal,
     session_id: Uuid,
 ) -> Result<bool, AuthError> {
-    require_current_owner(client, principal).await?;
+    require_unlocked_owner(client, principal).await?;
     Ok(client
         .execute(
             "UPDATE sessions SET revoked_at=now() WHERE account_id=$1 AND user_id=$2 AND id=$3 AND revoked_at IS NULL",
@@ -946,7 +999,7 @@ pub async fn revoke_api_key(
     principal: &SessionPrincipal,
     key_id: Uuid,
 ) -> Result<bool, AuthError> {
-    require_current_owner(client, principal).await?;
+    require_unlocked_owner(client, principal).await?;
     Ok(client
         .execute(
             "UPDATE api_keys SET revoked_at=now() WHERE account_id=$1 AND id=$2 AND revoked_at IS NULL",
@@ -963,7 +1016,7 @@ pub async fn list_api_keys(
     principal: &SessionPrincipal,
     before: Option<Uuid>,
 ) -> Result<ApiKeyPage, AuthError> {
-    require_current_owner(client, principal).await?;
+    require_unlocked_owner(client, principal).await?;
     let account_id = principal.tenant.account_id();
     let cursor = if let Some(id) = before {
         let row = client
@@ -1025,6 +1078,22 @@ pub async fn session_email(client: &Client, session_id: Uuid) -> Result<Option<S
         )
         .await?
         .map(|row| row.get(0)))
+}
+
+/// The unlocked, outside-a-transaction form of [`require_current_owner`].
+/// It skips the query only when this request's `authenticate_session`
+/// validation is unspent and under a second old, because an unlocked
+/// re-check moments later cannot add a revocation guarantee (see
+/// [`SessionPrincipal::spend_fresh_verification`]). Use
+/// [`require_current_owner`] on a transaction.
+pub(crate) async fn require_unlocked_owner(
+    client: &Client,
+    principal: &SessionPrincipal,
+) -> Result<(), AuthError> {
+    if principal.spend_fresh_verification() {
+        return Ok(());
+    }
+    require_current_owner(client, principal).await
 }
 
 /// Recheck a caller's owner role from the database. A previously constructed

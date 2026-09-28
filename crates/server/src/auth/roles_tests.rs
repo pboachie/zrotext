@@ -89,6 +89,7 @@ impl Fixture {
             user_id: observer_id,
             session_id: observer_credentials.id,
             csrf_hash,
+            verification: FreshVerification::spent(),
         };
         Self {
             db,

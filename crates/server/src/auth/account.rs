@@ -25,7 +25,7 @@ pub async fn list_sessions(
     client: &Client,
     owner: &SessionPrincipal,
 ) -> Result<Vec<SessionInfo>, AuthError> {
-    super::require_current_owner(client, owner).await?;
+    super::require_unlocked_owner(client, owner).await?;
     // Idle-expired sessions can no longer authenticate, so they are omitted,
     // and `expires_at_ms` is the earlier of the absolute and idle deadlines.
     let rows = client

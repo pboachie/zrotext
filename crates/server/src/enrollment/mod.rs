@@ -246,10 +246,17 @@ pub fn device_challenge_bytes(challenge: &DeviceChallenge) -> Vec<u8> {
     bytes
 }
 
+/// Unlocked owner pre-check before an enrollment read or mutation. It uses
+/// this request's unspent `authenticate_session` validation when it has one
+/// (see `SessionPrincipal::spend_fresh_verification`); transactional checks
+/// that lock the session keep querying.
 async fn owner_session_active(
     client: &Client,
     principal: &SessionPrincipal,
 ) -> Result<bool, EnrollmentError> {
+    if principal.spend_fresh_verification() {
+        return Ok(true);
+    }
     Ok(client
         .query_opt(
             "SELECT 1 FROM sessions s JOIN users u ON u.id=s.user_id JOIN memberships m ON (m.account_id,m.user_id)=(s.account_id,s.user_id) JOIN accounts a ON a.id=s.account_id WHERE m.role='owner' AND s.id=$1 AND s.account_id=$2 AND s.user_id=$3 AND s.revoked_at IS NULL AND s.expires_at>now() AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL",
