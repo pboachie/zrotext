@@ -1550,31 +1550,104 @@ fn verified_reset_subject(subject: &str, now: SystemTime) -> String {
 
 /// Spend the anonymous per-address budget first. When it refuses, a live
 /// verified owner address is charged the verified lane's own subject rather
-/// than the anonymous counter a stranger may have spent. An unknown address
-/// charges the refused anonymous counter once more instead, so both outcomes
-/// run the same probe and one further counter statement before the uniform
-/// 202; that charge admits at most what the anonymous lane would have.
+/// than the anonymous counter a stranger may have spent, and then the lane's
+/// daily per-address cap (`Limit::PasswordResetVerifiedDaily`, 12 per day),
+/// both before the reset transaction. An unknown address charges the refused
+/// anonymous counter once more and reads its daily budget instead, and a
+/// verified request refused by its window subject also reads the daily budget,
+/// so every outcome runs the probe and two further counter statements before
+/// the uniform 202. The unknown-address charge admits at most what the
+/// anonymous lane would have.
 async fn admit_password_reset_request(
     client: &Client,
     hasher: &TokenHasher,
     subject: &str,
 ) -> Result<bool, tokio_postgres::Error> {
-    let limit = Limit::PasswordResetRequest;
-    if abuse_limits::consume(client, hasher, limit, Some(subject)).await? {
+    admit_reset_request_with(
+        &ClientResetBudgets { client, hasher },
+        subject,
+        SystemTime::now(),
+    )
+    .await
+}
+
+/// The database statements a reset-request admission can run. Each method is
+/// one statement, so tests can check that every outcome runs the same kinds
+/// and number of statements whether or not the address exists.
+trait ResetBudgets {
+    /// Charge the anonymous per-address counter.
+    async fn charge_anonymous(&self, subject: &str) -> Result<bool, tokio_postgres::Error>;
+    /// Whether the address belongs to a verified owner of an enabled account.
+    async fn owner_is_live(&self, subject: &str) -> Result<bool, tokio_postgres::Error>;
+    /// Charge the verified lane's throttle-window subject.
+    async fn charge_window(&self, window_subject: &str) -> Result<bool, tokio_postgres::Error>;
+    /// Charge the verified lane's daily per-address cap.
+    async fn charge_daily(&self, subject: &str) -> Result<bool, tokio_postgres::Error>;
+    /// Read the daily per-address cap without charging it.
+    async fn read_daily(&self, subject: &str) -> Result<bool, tokio_postgres::Error>;
+}
+
+struct ClientResetBudgets<'a> {
+    client: &'a Client,
+    hasher: &'a TokenHasher,
+}
+
+impl ResetBudgets for ClientResetBudgets<'_> {
+    async fn charge_anonymous(&self, subject: &str) -> Result<bool, tokio_postgres::Error> {
+        let limit = Limit::PasswordResetRequest;
+        abuse_limits::consume(self.client, self.hasher, limit, Some(subject)).await
+    }
+
+    async fn owner_is_live(&self, subject: &str) -> Result<bool, tokio_postgres::Error> {
+        Ok(self
+            .client
+            .query_one(
+                "SELECT EXISTS(SELECT 1 FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE m.role='owner' AND u.email=$1 AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL)",
+                &[&subject],
+            )
+            .await?
+            .get::<_, bool>(0))
+    }
+
+    async fn charge_window(&self, window_subject: &str) -> Result<bool, tokio_postgres::Error> {
+        let limit = Limit::PasswordResetRequest;
+        abuse_limits::consume_verified(self.client, self.hasher, limit, window_subject).await
+    }
+
+    async fn charge_daily(&self, subject: &str) -> Result<bool, tokio_postgres::Error> {
+        let limit = Limit::PasswordResetVerifiedDaily;
+        abuse_limits::consume_verified(self.client, self.hasher, limit, subject).await
+    }
+
+    async fn read_daily(&self, subject: &str) -> Result<bool, tokio_postgres::Error> {
+        let limit = Limit::PasswordResetVerifiedDaily;
+        abuse_limits::subject_budget_open(self.client, self.hasher, limit, subject).await
+    }
+}
+
+async fn admit_reset_request_with(
+    budgets: &impl ResetBudgets,
+    subject: &str,
+    now: SystemTime,
+) -> Result<bool, tokio_postgres::Error> {
+    if budgets.charge_anonymous(subject).await? {
         return Ok(true);
     }
-    let live = client
-        .query_one(
-            "SELECT EXISTS(SELECT 1 FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE m.role='owner' AND u.email=$1 AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL)",
-            &[&subject],
-        )
-        .await?
-        .get::<_, bool>(0);
-    if live {
-        let verified = verified_reset_subject(subject, SystemTime::now());
-        abuse_limits::consume_verified(client, hasher, limit, &verified).await
+    if budgets.owner_is_live(subject).await? {
+        if budgets
+            .charge_window(&verified_reset_subject(subject, now))
+            .await?
+        {
+            // Charged only after the window subject admits, so requests the
+            // window already refuses do not spend the owner's daily cap.
+            return budgets.charge_daily(subject).await;
+        }
+        budgets.read_daily(subject).await?;
+        Ok(false)
     } else {
-        abuse_limits::consume(client, hasher, limit, Some(subject)).await
+        let admitted = budgets.charge_anonymous(subject).await?;
+        budgets.read_daily(subject).await?;
+        Ok(admitted)
     }
 }
 
