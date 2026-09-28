@@ -381,7 +381,7 @@ Offer an operated service built from the same public code, and keep it available
 | Hosted accounts and subscriptions | Build (Stripe test mode only) | [#34](https://github.com/pboachie/zrotext/pull/34), [#44](https://github.com/pboachie/zrotext/pull/44), [#70](https://github.com/pboachie/zrotext/pull/70), [#184](https://github.com/pboachie/zrotext/pull/184) |
 | Two-location routing with fenced devices | Build | [#73](https://github.com/pboachie/zrotext/pull/73), [design](MULTI-LOCATION.md) |
 | Automatic failover with independent quorum | Design | [Failover design](MULTI-LOCATION.md#automatic-failover-needs-an-independent-decision), [Implementation status](MULTI-LOCATION.md#implementation-status-first-increment) |
-| Optional managed AI service | Planned | [product proposal](PRODUCT-PLAN.md#managed-ai-and-larger-campaigns) proposal only; no runtime implementation |
+| Optional managed AI service | Planned | [product proposal](PRODUCT-PLAN.md#managed-ai-and-larger-campaigns), [data-handling proposal](MANAGED-AI.md) proposal only; no runtime implementation |
 | Provider-based high-volume sending | Planned | [product proposal](PRODUCT-PLAN.md#managed-ai-and-larger-campaigns) proposal only; no runtime implementation |
 
 <a id="cap-hosted"></a>
