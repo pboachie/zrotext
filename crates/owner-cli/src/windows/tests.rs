@@ -17,6 +17,48 @@ use windows_sys::Win32::{
     System::{Console::*, Threading::*},
 };
 
+/// Fixed per-user root for test directories: `AppData\Local\Temp` under the
+/// account's profile directory, resolved from the process token by the OS
+/// rather than from the TEMP/TMP environment, so every test path descends
+/// from a controlled root. Children receive the directory created here as TEMP.
+fn test_root() -> PathBuf {
+    use std::os::windows::{ffi::OsStringExt, io::FromRawHandle};
+    use windows_sys::Win32::{
+        Security::TOKEN_QUERY,
+        System::Threading::{GetCurrentProcess, OpenProcessToken},
+        UI::Shell::GetUserProfileDirectoryW,
+    };
+    // SAFETY: the token handle is owned and closed on drop; the profile path
+    // is written into a caller-sized buffer whose returned length is bounded.
+    let profile = unsafe {
+        let mut raw = std::mem::MaybeUninit::uninit();
+        assert_ne!(
+            OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, raw.as_mut_ptr()),
+            0
+        );
+        let token = std::os::windows::io::OwnedHandle::from_raw_handle(raw.assume_init());
+        let mut buffer = vec![0_u16; 1024];
+        let mut length = buffer.len() as u32;
+        assert_ne!(
+            GetUserProfileDirectoryW(
+                std::os::windows::io::AsRawHandle::as_raw_handle(&token),
+                buffer.as_mut_ptr(),
+                &mut length
+            ),
+            0,
+            "resolve the profile directory"
+        );
+        let length = buffer
+            .iter()
+            .take(length as usize)
+            .take_while(|&&c| c != 0)
+            .count();
+        PathBuf::from(std::ffi::OsString::from_wide(&buffer[..length]))
+    };
+    let root = profile.join("AppData").join("Local").join("Temp");
+    std::fs::create_dir_all(&root).unwrap();
+    root
+}
 fn wide(value: &OsStr) -> Vec<u16> {
     value.encode_wide().chain(Some(0)).collect()
 }
@@ -260,7 +302,7 @@ fn native_create_then_fresh_restore() {
             PHASE.load(std::sync::atomic::Ordering::SeqCst)
         });
     }
-    let parent = std::env::temp_dir().join(format!(
+    let parent = test_root().join(format!(
         "zrotext-owner-test-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
@@ -297,9 +339,9 @@ fn native_create_then_fresh_restore() {
         assert!(!bytes.windows(32).any(|w| w == [7; 32] || w == [9; 32]));
         assert!(!bytes.windows(6).any(|w| w == b"ZTRK1-"));
     }
-    // Delete only the resolved, uniquely created direct TEMP child owned above.
+    // Delete only the resolved, uniquely created direct child of the test root.
     let resolved = parent.canonicalize().unwrap();
-    let temp = std::env::temp_dir().canonicalize().unwrap();
+    let temp = test_root().canonicalize().unwrap();
     assert_eq!(resolved.parent(), Some(temp.as_path()));
     assert!(
         resolved

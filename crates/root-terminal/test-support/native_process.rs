@@ -239,18 +239,49 @@ pub(crate) unsafe fn default_dacl_grants_user(token: HANDLE) -> bool {
         let user = sid_bytes((*user.as_ptr().cast::<TOKEN_USER>()).User.Sid);
         let dacl = query(token, TokenDefaultDacl);
         let acl = (*dacl.as_ptr().cast::<TOKEN_DEFAULT_DACL>()).DefaultDacl;
-        if acl.is_null() {
+        // The ACE count comes from GetAclInformation, and each ACE is read
+        // only as unaligned copies inside its own declared size.
+        let mut sizes: ACL_SIZE_INFORMATION = zeroed();
+        if acl.is_null()
+            || IsValidAcl(acl) == 0
+            || GetAclInformation(
+                acl,
+                (&mut sizes as *mut ACL_SIZE_INFORMATION).cast(),
+                size_of::<ACL_SIZE_INFORMATION>() as u32,
+                AclSizeInformation,
+            ) == 0
+        {
             return false;
         }
-        (0..u32::from((*acl).AceCount)).any(|index| {
-            let mut ace = null_mut();
-            GetAce(acl, index, &mut ace) != 0 && {
-                let ace = &*ace.cast::<ACCESS_ALLOWED_ACE>();
-                ace.Header.AceType == 0 // ACCESS_ALLOWED_ACE_TYPE
-                    && ace.Mask & 0x1000_0000 != 0
-                    && sid_bytes((&ace.SidStart as *const u32).cast_mut().cast()) == user
-            }
+        (0..sizes.AceCount).any(|index| {
+            let mut ace = std::mem::MaybeUninit::<*mut std::ffi::c_void>::uninit();
+            GetAce(acl, index, ace.as_mut_ptr()) != 0
+                && std::ptr::NonNull::new(ace.assume_init().cast::<u8>())
+                    .is_some_and(|ace| allowed_generic_all_for(ace, &user))
         })
+    }
+}
+
+/// Whether one ACE allows GENERIC_ALL to exactly `user`.
+///
+/// Caller passes an ACE from GetAce on an ACL accepted by IsValidAcl, whose
+/// allocation stays live for this call.
+unsafe fn allowed_generic_all_for(ace: std::ptr::NonNull<u8>, user: &[u8]) -> bool {
+    const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
+    const GENERIC_ALL: u32 = 0x1000_0000;
+    const MASK: usize = std::mem::offset_of!(ACCESS_ALLOWED_ACE, Mask);
+    const SID: usize = std::mem::offset_of!(ACCESS_ALLOWED_ACE, SidStart);
+    // SAFETY: at least an ACE header is readable; later reads stay within the
+    // ACE's declared size, which is checked first.
+    unsafe {
+        let header = ace.cast::<ACE_HEADER>().as_ptr().read_unaligned();
+        let size = usize::from(header.AceSize);
+        if header.AceType != ACCESS_ALLOWED_ACE_TYPE || size < SID + user.len() {
+            return false;
+        }
+        let mask = ace.add(MASK).cast::<u32>().as_ptr().read_unaligned();
+        let sid = std::slice::from_raw_parts(ace.add(SID).as_ptr(), user.len());
+        mask & GENERIC_ALL != 0 && sid == user
     }
 }
 
