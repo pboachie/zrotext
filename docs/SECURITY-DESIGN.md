@@ -95,27 +95,38 @@ Seed synthetic canary message bodies, run a full send/reply/backup/error cycle, 
 
 ### HTTP resource admission and API key issuance
 
-The API admits at most 64 concurrent HTTP handlers per process and rejects
-excess requests with 503 and Retry-After before authentication, body extraction,
-or database connection setup. A 30-second handler deadline bounds slow request
-bodies; timed-out requests return 408. This is per-process admission, not a
-fleet-wide database connection pool. A canceled handler can leave a PostgreSQL
-query running until its connection driver receives the result, so this is not a
-hard bound on outstanding database queries or connections. Each process reuses
-PostgreSQL sockets within fixed per-class budgets (16 request, 16 device,
-4 worker); idle database sockets count against those budgets. Device clients
-are checked out per operation and released before peer reads/writes, including
-the pre-authentication proof wait. Up to 32 established device streams share the
+The API admits HTTP handlers per process through four separate permit pools,
+chosen from the request path before authentication, body extraction, or database
+connection setup: 16 for provider callbacks (`/v1/billing/stripe-events`), 16
+for device WebSocket upgrades (`/v1/device-stream`), 32 for anonymous routes
+(login, MFA login, registration, verification, password reset, enrollment
+claim/prove, and device challenge/authenticate), and 64 for everything else,
+including owner and API-key routes. A full pool rejects further requests of that
+class with 503 and Retry-After while the other classes keep admitting, so a
+slow-request flood on the anonymous routes cannot starve Stripe deliveries or
+device reconnects. The request body must be fully received within 10 seconds of
+admission, however steadily it trickles; a late body fails with 408 and releases
+its permit. A 30-second handler deadline bounds the rest of the request and also
+returns 408. This is per-process admission, not a fleet-wide database connection
+pool. A canceled handler can leave a PostgreSQL query running until its
+connection driver receives the result, so this is not a hard bound on
+outstanding database queries or connections. Each process reuses PostgreSQL
+sockets within fixed per-class budgets (16 request, 16 device, 4 worker); idle
+database sockets count against those budgets. Device clients are checked out per
+operation and released before peer reads/writes, including the
+pre-authentication proof wait. Up to 32 established device streams share the
 16-client device reserve; request and device checkouts wait at most two seconds
-for pool admission, while workers fail fast. A released socket is reset
-with `DISCARD ALL` before reuse and is closed instead when the reset does not
-finish within two seconds (for example a canceled query still running or an
-open transaction), after 60 idle seconds, or at 30 minutes old. A five-second
-timer closes expired idle sockets on quiet hubs and returns their connection
-permits after the PostgreSQL driver exits. Deployments must still bound incoming
-sockets/headers at the edge and size PostgreSQL for HTTP, upgraded WebSockets,
-and background workers across all API instances. A timed-out mutation may have
-committed; callers must reconcile state before retrying non-idempotent actions.
+for pool admission, while workers fail fast. A released socket is reset with
+`DISCARD ALL` before reuse and is closed instead when the reset does not finish
+within two seconds (for example a canceled query still running or an open
+transaction), after 60 idle seconds, or at 30 minutes old. A five-second timer
+closes expired idle sockets on quiet hubs and returns their connection permits
+after the PostgreSQL driver exits. Deployments must still bound incoming
+sockets, headers, and per-address connections at the edge, because the admission
+pools are not keyed by client address, and size PostgreSQL for HTTP, upgraded
+WebSockets, and background workers across all API instances. A timed-out
+mutation may have committed; callers must reconcile state before retrying
+non-idempotent actions.
 
 API key creation consumes an atomic PostgreSQL budget of 20 attempts per account
 per 24-hour window and 600 globally per minute. Sessions and API instances share

@@ -359,6 +359,19 @@ expiry age in seconds, silent attempts, and overdue delivery receipts waiting
 contains no IDs, phone numbers, or content. A count that stays high or keeps
 growing means recovery is falling behind.
 
+HTTP admission is also per process and split by route class: 16 concurrent
+Stripe webhook deliveries, 16 device WebSocket upgrades, 32 anonymous requests
+(login, MFA login, registration, email verification, password reset, and the
+enrollment claim, prove, challenge, and authenticate steps), and 64 other
+requests such as owner and API-key routes. When a class is full, its requests get
+`503` with `Retry-After: 1`; other classes are unaffected. A request body must
+arrive in full within 10 seconds of admission or the request fails with `408`,
+and handlers have 30 seconds overall. None of these pools is keyed by client
+address, so one source can still fill a class. Configure a per-address
+connection limit and a request body rate or timeout limit at the reverse proxy
+for every route, not only `/v1/device-stream`; treat this as a deployment
+requirement.
+
 Some requests are rejected before they take a request connection. The alpha
 message routes reject a missing or malformed `Authorization: Bearer` header, and
 owner routes reject a request with no session cookie. A request that carries a
