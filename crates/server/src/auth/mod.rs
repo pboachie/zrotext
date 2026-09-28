@@ -769,6 +769,23 @@ pub async fn revoke_session(
         == 1)
 }
 
+/// Applied when `lifetime_days` is omitted, so a key minted without an explicit
+/// lifetime cannot outlive the longest lifetime an owner may request.
+pub const API_KEY_DEFAULT_LIFETIME_DAYS: i32 = 365;
+
+pub(crate) fn validate_api_key_request(
+    scopes: &[Scope],
+    lifetime_days: Option<i32>,
+) -> Result<(), AuthError> {
+    if scopes.is_empty()
+        || scopes.len() > 7
+        || matches!(lifetime_days, Some(days) if !(1..=API_KEY_DEFAULT_LIFETIME_DAYS).contains(&days))
+    {
+        return Err(AuthError::InvalidInput);
+    }
+    Ok(())
+}
+
 pub async fn create_api_key(
     client: &mut Client,
     hasher: &TokenHasher,
@@ -777,12 +794,43 @@ pub async fn create_api_key(
     bound_device_id: Option<Uuid>,
     lifetime_days: Option<i32>,
 ) -> Result<ApiKeyCredentials, AuthError> {
-    if scopes.is_empty()
-        || scopes.len() > 7
-        || matches!(lifetime_days, Some(days) if !(1..=365).contains(&days))
-    {
-        return Err(AuthError::InvalidInput);
-    }
+    validate_api_key_request(scopes, lifetime_days)?;
+    // Recovery locks this same user row before revoking keys and sessions.
+    // The lock closes the race where a pre-reset session mints a key after
+    // recovery has already revoked the keys it could see.
+    let tx = client.transaction().await?;
+    tx.query_opt(
+        "SELECT u.id FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE m.role='owner' AND u.id=$1 AND m.account_id=$2 AND a.disabled_at IS NULL FOR UPDATE OF u",
+        &[&principal.user_id, &principal.tenant.account_id()],
+    )
+    .await?
+    .ok_or(AuthError::Unauthorized)?;
+    let key = insert_api_key(
+        &tx,
+        hasher,
+        principal,
+        scopes,
+        bound_device_id,
+        lifetime_days,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(key)
+}
+
+/// Inserts a key inside `tx`, whose caller must already hold the owner's
+/// user-row lock. The session is re-checked inside the insert so a session
+/// revoked while the caller waited for the lock cannot mint.
+pub(crate) async fn insert_api_key(
+    tx: &tokio_postgres::Transaction<'_>,
+    hasher: &TokenHasher,
+    principal: &SessionPrincipal,
+    scopes: &[Scope],
+    bound_device_id: Option<Uuid>,
+    lifetime_days: Option<i32>,
+) -> Result<ApiKeyCredentials, AuthError> {
+    validate_api_key_request(scopes, lifetime_days)?;
+    let lifetime_days = lifetime_days.unwrap_or(API_KEY_DEFAULT_LIFETIME_DAYS);
     let mut normalized = scopes.to_vec();
     normalized.sort_unstable();
     normalized.dedup();
@@ -794,26 +842,15 @@ pub async fn create_api_key(
     let public_prefix = token.chars().skip(4).take(12).collect::<String>();
     let hash = hasher.digest(b"api-key-v1", &token);
     let id = Uuid::new_v4();
-    // Recovery locks this same user row before revoking keys and sessions.
-    // The lock closes the race where a pre-reset session mints a key after
-    // recovery has already revoked the keys it could see.
-    let tx = client.transaction().await?;
-    tx.query_opt(
-        "SELECT u.id FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE m.role='owner' AND u.id=$1 AND m.account_id=$2 AND a.disabled_at IS NULL FOR UPDATE OF u",
-        &[&principal.user_id, &principal.tenant.account_id()],
-    )
-    .await?
-    .ok_or(AuthError::Unauthorized)?;
     let inserted = tx
         .execute(
-            "INSERT INTO api_keys(id,account_id,created_by_user_id,public_prefix,token_hash,scopes,bound_device_id,expires_at) SELECT $1,$2,$3,$4,$5,$6,$7,CASE WHEN $8::integer IS NULL THEN NULL ELSE now()+($8::integer * interval '1 day') END FROM sessions s WHERE s.id=$9 AND s.account_id=$2 AND s.user_id=$3 AND s.revoked_at IS NULL AND s.expires_at>now()",
+            "INSERT INTO api_keys(id,account_id,created_by_user_id,public_prefix,token_hash,scopes,bound_device_id,expires_at) SELECT $1,$2,$3,$4,$5,$6,$7,now()+($8::integer * interval '1 day') FROM sessions s WHERE s.id=$9 AND s.account_id=$2 AND s.user_id=$3 AND s.revoked_at IS NULL AND s.expires_at>now()",
             &[&id, &principal.tenant.account_id, &principal.user_id, &public_prefix, &&hash[..], &scope_names, &bound_device_id, &lifetime_days, &principal.session_id],
         )
         .await?;
     if inserted != 1 {
         return Err(AuthError::Unauthorized);
     }
-    tx.commit().await?;
     Ok(ApiKeyCredentials {
         id,
         token,

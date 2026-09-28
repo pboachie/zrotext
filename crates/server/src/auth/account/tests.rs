@@ -450,7 +450,16 @@ async fn postgres_password_session_and_reset_lifecycle() {
     assert_eq!(sessions.iter().filter(|session| session.current).count(), 1);
     let wrong_password = Uuid::new_v4().to_string();
     assert!(matches!(
-        revoke_other_sessions(&mut db, None, &hasher, &principal, &wrong_password, None).await,
+        revoke_other_sessions(
+            &mut db,
+            None,
+            &hasher,
+            &principal,
+            &wrong_password,
+            None,
+            true
+        )
+        .await,
         Err(AuthError::InvalidCredentials)
     ));
     assert!(
@@ -459,9 +468,17 @@ async fn postgres_password_session_and_reset_lifecycle() {
             .is_ok()
     );
     assert_eq!(
-        revoke_other_sessions(&mut db, None, &hasher, &principal, &old_password, None)
-            .await
-            .unwrap(),
+        revoke_other_sessions(
+            &mut db,
+            None,
+            &hasher,
+            &principal,
+            &old_password,
+            None,
+            true
+        )
+        .await
+        .unwrap(),
         1
     );
     assert!(
@@ -630,6 +647,7 @@ async fn postgres_password_session_and_reset_lifecycle() {
             &mfa_owner,
             &reset_password,
             None,
+            true,
         )
         .await,
         Err(AuthError::InvalidCredentials)
@@ -642,6 +660,7 @@ async fn postgres_password_session_and_reset_lifecycle() {
             &mfa_owner,
             &reset_password,
             Some(&recovery.codes[2]),
+            true,
         )
         .await
         .unwrap(),
@@ -842,6 +861,16 @@ async fn postgres_operator_reset_revokes_all_owner_credentials() {
         .unwrap();
 }
 
+async fn live_key_count(db: &Client) -> i64 {
+    db.query_one(
+        "SELECT count(*) FROM api_keys WHERE revoked_at IS NULL",
+        &[],
+    )
+    .await
+    .unwrap()
+    .get(0)
+}
+
 /// An owner with confirmed MFA and one live session in a private schema.
 struct MfaOwner {
     setup: Client,
@@ -993,6 +1022,7 @@ async fn failed_sign_in_factors_do_not_block_a_signed_in_owner_step_up() {
             &owner.principal,
             &owner.password,
             Some(&owner.recovery[1]),
+            false,
         )
         .await
         .unwrap(),
@@ -1021,6 +1051,229 @@ async fn failed_sign_in_factors_do_not_block_a_signed_in_owner_step_up() {
         Err(AuthError::MfaRequired { .. })
     ));
     owner.finish().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn api_key_issuance_needs_step_up_expires_by_default_and_dies_with_other_sessions() {
+    let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+        .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let schema = format!("key_step_up_{}", Uuid::new_v4().simple());
+    setup
+        .batch_execute(&format!("CREATE SCHEMA {schema}"))
+        .await
+        .unwrap();
+    let separator = if base_url.contains('?') { '&' } else { '?' };
+    let url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
+    let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    for migration in [
+        include_str!("../../../../../deploy/compose/migrations/002_auth.sql"),
+        include_str!("../../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+        include_str!("../../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
+        include_str!("../../../../../deploy/compose/migrations/013_owner_mfa.sql"),
+        include_str!("../../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
+        include_str!("../../../../../deploy/compose/migrations/025_account_recovery.sql"),
+    ] {
+        db.batch_execute(migration).await.unwrap();
+    }
+    let hasher = TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap();
+    let cipher = mfa::MfaCipher::new(rand::random::<[u8; 32]>().to_vec()).unwrap();
+    let password = Uuid::new_v4().to_string();
+    let wrong_password = Uuid::new_v4().to_string();
+    let owner = auth::register(&mut db, &hasher, "owner@example.test", &password)
+        .await
+        .unwrap();
+    assert!(
+        auth::verify_email(&mut db, &hasher, &owner.verification_token)
+            .await
+            .unwrap()
+    );
+    let session = auth::login(&db, &hasher, "owner@example.test", &password)
+        .await
+        .unwrap();
+    let principal = auth::authenticate_session(&db, &hasher, &session.token)
+        .await
+        .unwrap();
+    let request = || ApiKeyRequest {
+        scopes: &[Scope::MessagesRead],
+        bound_device_id: None,
+        lifetime_days: None,
+    };
+
+    // A session cookie alone (the stolen-cookie case) is not enough.
+    assert!(matches!(
+        create_api_key_with_proof(
+            &mut db,
+            Some(&cipher),
+            &hasher,
+            &principal,
+            &wrong_password,
+            None,
+            request(),
+        )
+        .await,
+        Err(AuthError::InvalidCredentials)
+    ));
+    let default_key = create_api_key_with_proof(
+        &mut db,
+        Some(&cipher),
+        &hasher,
+        &principal,
+        &password,
+        None,
+        request(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        auth::authenticate_api_key(&db, &hasher, &default_key.token)
+            .await
+            .is_ok()
+    );
+    // Omitting the lifetime yields the bounded default, never NULL.
+    let default_days: Option<f64> = db
+        .query_one(
+            "SELECT (extract(epoch FROM expires_at-created_at)/86400)::double precision FROM api_keys WHERE id=$1",
+            &[&default_key.id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    let default_days = default_days.expect("default lifetime stored");
+    assert!(
+        (default_days - f64::from(auth::API_KEY_DEFAULT_LIFETIME_DAYS)).abs() < 0.01,
+        "expected {} days, stored {default_days}",
+        auth::API_KEY_DEFAULT_LIFETIME_DAYS
+    );
+    let explicit_key = create_api_key_with_proof(
+        &mut db,
+        Some(&cipher),
+        &hasher,
+        &principal,
+        &password,
+        None,
+        ApiKeyRequest {
+            scopes: &[Scope::MessagesRead],
+            bound_device_id: None,
+            lifetime_days: Some(7),
+        },
+    )
+    .await
+    .unwrap();
+    let explicit_days: f64 = db
+        .query_one(
+            "SELECT (extract(epoch FROM expires_at-created_at)/86400)::double precision FROM api_keys WHERE id=$1",
+            &[&explicit_key.id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert!((explicit_days - 7.0).abs() < 0.01);
+
+    // Once MFA is enabled the password alone stops working; a wrong code is
+    // rejected and a recovery code is accepted.
+    let pending = mfa::begin_enrollment(&mut db, &cipher, &principal, &password)
+        .await
+        .unwrap();
+    let secret = Secret::try_from_base32(&pending.secret_base32).unwrap();
+    let code = Builder::new()
+        .with_secret(secret)
+        .build()
+        .unwrap()
+        .generate_current()
+        .to_string();
+    let recovery = mfa::confirm_enrollment(&mut db, &cipher, &hasher, &principal, &code)
+        .await
+        .unwrap();
+    assert!(matches!(
+        create_api_key_with_proof(
+            &mut db,
+            Some(&cipher),
+            &hasher,
+            &principal,
+            &password,
+            None,
+            request(),
+        )
+        .await,
+        Err(AuthError::InvalidCredentials)
+    ));
+    assert!(matches!(
+        create_api_key_with_proof(
+            &mut db,
+            Some(&cipher),
+            &hasher,
+            &principal,
+            &password,
+            Some("000000"),
+            request(),
+        )
+        .await,
+        Err(AuthError::InvalidCredentials)
+    ));
+    let mfa_key = create_api_key_with_proof(
+        &mut db,
+        Some(&cipher),
+        &hasher,
+        &principal,
+        &password,
+        Some(&recovery.codes[0]),
+        request(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        auth::authenticate_api_key(&db, &hasher, &mfa_key.token)
+            .await
+            .is_ok()
+    );
+    assert_eq!(live_key_count(&db).await, 3);
+
+    // Opting out keeps the keys; the default takes them with the sessions.
+    revoke_other_sessions(
+        &mut db,
+        Some(&cipher),
+        &hasher,
+        &principal,
+        &password,
+        Some(&recovery.codes[1]),
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(live_key_count(&db).await, 3);
+    revoke_other_sessions(
+        &mut db,
+        Some(&cipher),
+        &hasher,
+        &principal,
+        &password,
+        Some(&recovery.codes[2]),
+        true,
+    )
+    .await
+    .unwrap();
+    assert_eq!(live_key_count(&db).await, 0);
+    for key in [&default_key, &explicit_key, &mfa_key] {
+        assert!(
+            auth::authenticate_api_key(&db, &hasher, &key.token)
+                .await
+                .is_err()
+        );
+    }
+    // The calling session survives, as before.
+    assert!(
+        auth::authenticate_session(&db, &hasher, &session.token)
+            .await
+            .is_ok()
+    );
+    setup
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
 }
 
 #[tokio::test]

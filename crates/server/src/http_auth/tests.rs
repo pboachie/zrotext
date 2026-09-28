@@ -108,6 +108,65 @@ fn key_list_request(cookie_header: Option<&str>, csrf: Option<&str>, uri: &str) 
     request.body(Body::empty()).unwrap()
 }
 
+#[tokio::test]
+async fn api_key_creation_requires_current_password_in_the_body() {
+    // The unusable URL turns any database access into 503, so a 400 here
+    // proves the body was refused before the session was even looked up.
+    let state = AuthHttpState::new(
+        "not a database url".to_owned(),
+        Arc::new(TokenHasher::new(crate::test_keys::key(7)).unwrap()),
+        "https://zrotext.example".to_owned(),
+        Arc::new(DisabledVerificationDispatcher),
+    )
+    .unwrap();
+    let app = router(state);
+    let cookies = format!("{SESSION_COOKIE}=zts_fixture; {CSRF_COOKIE}=ztc_fixture");
+    let response = app
+        .clone()
+        .oneshot(owner_post(
+            "/api-keys",
+            serde_json::json!({"scopes":["messages:read"],"lifetime_days":30}),
+            &cookies,
+            "ztc_fixture",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    // With the password present the handler proceeds to the session lookup.
+    let response = app
+        .clone()
+        .oneshot(owner_post(
+            "/api-keys",
+            serde_json::json!({
+                "scopes":["messages:read"],"lifetime_days":30,
+                "current_password":"synthetic-password",
+            }),
+            &cookies,
+            "ztc_fixture",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[test]
+fn revoke_others_revokes_api_keys_unless_the_body_opts_out() {
+    let body: RevokeOtherSessionsBody =
+        serde_json::from_value(serde_json::json!({"current_password":"synthetic"})).unwrap();
+    assert!(body.revoke_api_keys);
+    let body: RevokeOtherSessionsBody = serde_json::from_value(serde_json::json!({
+        "current_password":"synthetic","revoke_api_keys":false,
+    }))
+    .unwrap();
+    assert!(!body.revoke_api_keys);
+    assert!(
+        serde_json::from_value::<RevokeOtherSessionsBody>(serde_json::json!({
+            "current_password":"synthetic","revoke_api_keys":"no",
+        }))
+        .is_err()
+    );
+}
+
 #[test]
 fn registration_policy_defaults_closed_and_matches_exact_addresses_or_domains() {
     let token = STANDARD.encode([7u8; 32]);
@@ -1708,7 +1767,10 @@ async fn postgres_http_account_lifecycle_enforces_csrf_and_revocation() {
             .status(),
         StatusCode::UNAUTHORIZED
     );
-    let body = serde_json::json!({"scopes":["messages:read"],"lifetime_days":30});
+    let body = serde_json::json!({
+        "scopes":["messages:read"],"lifetime_days":30,
+        "current_password":crate::test_keys::password(1),
+    });
     let mut request = json_post("/api-keys", body.clone());
     request.headers_mut().insert(
         header::COOKIE,
@@ -1718,6 +1780,22 @@ async fn postgres_http_account_lifecycle_enforces_csrf_and_revocation() {
         app.clone().oneshot(request).await.unwrap().status(),
         StatusCode::FORBIDDEN
     );
+    // A live cookie and CSRF token without the password (the stolen-cookie
+    // case) or with a guessed password mint nothing.
+    for proof in [
+        serde_json::json!({"scopes":["messages:read"],"lifetime_days":30}),
+        serde_json::json!({
+            "scopes":["messages:read"],"lifetime_days":30,
+            "current_password":wrong_password,
+        }),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(owner_post("/api-keys", proof, &cookie_header, csrf))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
     let mut request = json_post("/api-keys", body);
     request.headers_mut().insert(
         header::COOKIE,
@@ -2064,7 +2142,7 @@ async fn api_key_issuance_budget_survives_concurrency_revocation_and_new_session
     let request_for = |session: &auth::SessionCredentials| {
         owner_post(
             "/api-keys",
-            serde_json::json!({"scopes":["messages:read"]}),
+            serde_json::json!({"scopes":["messages:read"],"current_password":password}),
             &format!(
                 "{SESSION_COOKIE}={}; {CSRF_COOKIE}={}",
                 session.token, session.csrf_token

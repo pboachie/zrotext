@@ -179,8 +179,8 @@ separate member authorization and per-user MFA storage before it can be enabled.
 |---|---|
 | POST /v1/auth/register; POST /v1/auth/verify-email; POST /v1/auth/resend-verification | Exact HTTPS Origin; registration policy admits new accounts and otherwise returns a generic acceptance without mail; verification code is queued in a durable outbox, never returned by HTTP; verification and resend require the registrant's password and use generic responses; a registration that collides with a pending sign-up cancels that sign-up's outstanding code and queued mail; an unverified sign-up expires 24 hours after registration and a later registration replaces it |
 | POST /v1/auth/login; POST /v1/auth/logout; GET /v1/auth/session | Owner session with secure host-only cookie; logout requires Origin and CSRF proof |
-| POST /v1/auth/api-keys; DELETE /v1/auth/api-keys/{key_id} | Owner session, Origin and CSRF proof; token shown only at creation |
-| POST /v1/enrollment/pairings; GET /v1/enrollment/pairings/{pairing_id} | Owner creates or views a five-minute, one-use pairing; the view requires the CSRF header |
+| POST /v1/auth/api-keys; DELETE /v1/auth/api-keys/{key_id} | Owner session, Origin and CSRF proof; creation also needs the current password and, with MFA enabled, a fresh code; lifetime defaults to 365 days; token shown only at creation |
+| POST /v1/enrollment/pairings; GET /v1/enrollment/pairings/{pairing_id} | Owner creates or views a five-minute, one-use pairing |
 | POST /v1/enrollment/pairings/{pairing_id}/claim; POST /v1/enrollment/pairings/{pairing_id}/prove | Phone claims pairing and proves its P-256 key through bounded challenge bodies |
 | POST /v1/enrollment/pairings/{pairing_id}/approve; POST /v1/enrollment/pairings/{pairing_id}/cancel | Owner compares code and fingerprint, then approves or cancels with CSRF proof |
 | POST /v1/enrollment/devices/{device_id}/challenge; POST /v1/enrollment/devices/authenticate | One-use device-key proof; no socket credential is issued |

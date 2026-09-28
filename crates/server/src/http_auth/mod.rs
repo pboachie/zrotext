@@ -1424,6 +1424,14 @@ async fn list_sessions(
 struct RevokeOtherSessionsBody {
     current_password: String,
     code: Option<String>,
+    /// Defaults to true: a key minted by a session being revoked is not
+    /// distinguishable from any other, so all of the owner's keys go too.
+    #[serde(default = "default_true")]
+    revoke_api_keys: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 async fn revoke_other_sessions(
@@ -1451,6 +1459,7 @@ async fn revoke_other_sessions(
         &owner,
         &body.current_password,
         body.code.as_deref(),
+        body.revoke_api_keys,
     )
     .await
     {
@@ -1907,6 +1916,8 @@ struct CreateKeyBody {
     scopes: Vec<String>,
     bound_device_id: Option<Uuid>,
     lifetime_days: Option<i32>,
+    current_password: String,
+    code: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -2025,6 +2036,9 @@ async fn create_api_key(
     let mut client = connect(&state.database_url).await?;
     // Charge the account, not its session or live key count: logging in again
     // and revoking issued keys must not reset the database growth budget.
+    // The same 20-per-day budget is spent before the password is hashed, so
+    // it also bounds password guesses made through this route more tightly
+    // than the password-change budget would.
     if !abuse_limits::consume(
         &client,
         &state.hasher,
@@ -2036,16 +2050,26 @@ async fn create_api_key(
     {
         return Err(AuthHttpError::TooManyRequests);
     }
-    let key = auth::create_api_key(
+    let _permit = state.hash_permit().await?;
+    let key = match account::create_api_key_with_proof(
         &mut client,
+        state.mfa_cipher.as_deref(),
         &state.hasher,
         &owner,
-        &scopes,
-        body.bound_device_id,
-        body.lifetime_days,
+        &body.current_password,
+        body.code.as_deref(),
+        account::ApiKeyRequest {
+            scopes: &scopes,
+            bound_device_id: body.bound_device_id,
+            lifetime_days: body.lifetime_days,
+        },
     )
     .await
-    .map_err(map_auth)?;
+    {
+        Ok(key) => key,
+        Err(AuthError::InvalidCredentials) => return Err(AuthHttpError::BadRequest),
+        Err(error) => return Err(map_auth(error)),
+    };
     let mut response = (
         StatusCode::CREATED,
         Json(CreatedKeyBody {

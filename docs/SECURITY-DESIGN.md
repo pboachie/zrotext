@@ -152,6 +152,18 @@ the budget; key revocation does not refund it. Exhaustion returns 429, and budge
 storage failure returns 503 without creating a key. This bounds issuance rate,
 not the lifetime retention of audit metadata for previously created keys.
 
+Issuing a key (`POST /v1/auth/api-keys`) takes the same step-up as changing the
+password or revoking other sessions: the body must carry `current_password`
+and, once MFA is enabled, a fresh authenticator or recovery `code`. A session
+cookie plus CSRF token alone, the position of an attacker who copied the cookie
+from a compromised browser or proxy, cannot mint a key that would keep sending
+through the owner's phone after the session is revoked. A missing, wrong or
+stale proof returns 400 without creating a key, the code is verified and
+consumed inside the same transaction as the insert under the owner's user-row
+lock, and factor failures spend the shared MFA failure budget. The issuance
+budget above is charged before the password is hashed, so it also bounds
+password guesses made through this route to 20 per account per day.
+
 Pairing creation (`POST /v1/enrollment/pairings`) consumes an atomic PostgreSQL
 budget of 10 attempts per account per 15-minute window and 120 globally per
 minute, charged after the owner session and CSRF checks and before the pairing
@@ -176,9 +188,20 @@ key prefix never moves it. Because of that write window, the recorded time can
 trail the true last use by up to 15 minutes, and a session can lapse up to 15
 minutes before 72 hours after its true last request. The owner key list
 (`GET /v1/auth/api-keys`) returns `last_used_at_ms` (`null` if never used) so
-owners can find and revoke keys no integration uses. API keys keep their
-optional lifetime (1 to 365 days); omitting `lifetime_days` still creates a key
-without an expiry, which the owner dashboard shows as "expires Never".
+owners can find and revoke keys no integration uses. An API key lives for its
+requested `lifetime_days` (1 to 365); omitting it applies the 365-day maximum
+rather than an unbounded lifetime, so no key issued now outlives one year
+without being reissued. Keys created before this default carry no expiry and
+the owner dashboard flags them ("expires never (older key; reissue to add an
+expiry)") so they can be replaced.
+
+Keys record the user that issued them, not the session, so a key minted from
+a stolen session cannot be told apart from the owner's own. "Sign out other
+sessions" (`POST /v1/auth/sessions/revoke-others`) therefore also revokes every
+unrevoked key of that owner in the same transaction, matching password change
+and reset. API callers that only want the sessions gone can pass
+`"revoke_api_keys": false`; the owner dashboard always uses the default and
+says so before asking for the password.
 
 ### Public sign-in and enrollment budgets
 
