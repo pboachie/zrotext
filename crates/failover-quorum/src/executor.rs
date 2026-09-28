@@ -37,8 +37,11 @@
 //!
 //! This module performs no I/O itself: both the observation source and the
 //! authority port are injected, which keeps every failure scenario below
-//! unit-testable. The in-process source in this build collects nothing until
-//! real quorum members exist (a later increment wires the consensus store).
+//! unit-testable. The [`InProcessSource`](crate::executor::InProcessSource)
+//! default collects nothing; the durable consensus store and its
+//! [`StoreObservationSource`](crate::store::StoreObservationSource) adapter
+//! are the source production wiring uses, and until a member-reporting
+//! transport exists that store stays empty, so every round fails closed.
 
 use crate::decision::{
     Decision, FailoverConfig, FailoverController, Phase, RestorablePhase, Round, SiteFenceState,

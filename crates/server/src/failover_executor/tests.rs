@@ -8,7 +8,7 @@ use super::*;
 use zrotext_failover_quorum::decision::{
     Decision, FailoverConfig, HoldReason, MemberReport, Round, SiteFenceState, WriterObservation,
 };
-use zrotext_failover_quorum::executor::Application;
+use zrotext_failover_quorum::executor::{Application, InProcessSource};
 
 const MIGRATION_FOUNDATION: &str =
     include_str!("../../../../deploy/compose/migrations/001_foundation.sql");
@@ -18,15 +18,17 @@ const MIGRATION_FAILOVER_JOURNAL: &str =
 #[test]
 fn executor_env_is_disabled_by_default_and_reads_nothing_else() {
     for enabled in [None, Some("false")] {
-        let env = ExecutorEnv::parse(enabled, None, None, None, None).unwrap();
+        let env = ExecutorEnv::parse(enabled, None, None, None, None, None).unwrap();
         assert!(env.is_none(), "no executor while the flag is off");
-        // Garbage in every other variable is not even read while off.
+        // Garbage in every other variable is not even read while off,
+        // including the consensus store directory.
         let env = ExecutorEnv::parse(
             enabled,
             Some("not,three"),
             Some(""),
             Some("nope"),
             Some("zero"),
+            Some("relative/../unsafe\0dir"),
         )
         .unwrap();
         assert!(env.is_none());
@@ -35,12 +37,21 @@ fn executor_env_is_disabled_by_default_and_reads_nothing_else() {
 
 #[test]
 fn executor_env_fails_closed_on_incomplete_or_invalid_configuration() {
-    assert!(ExecutorEnv::parse(Some("true"), Some("a,b,c"), None, None, None).is_err());
-    assert!(ExecutorEnv::parse(Some("true"), Some("a,b,c"), Some(""), None, None).is_err());
-    assert!(ExecutorEnv::parse(Some("true"), Some("a,b,c"), Some("a"), Some("a"), None).is_err());
-    assert!(ExecutorEnv::parse(Some("true"), Some("a,b"), Some("a"), Some("b"), None).is_err());
+    assert!(ExecutorEnv::parse(Some("true"), Some("a,b,c"), None, None, None, None).is_err());
+    assert!(ExecutorEnv::parse(Some("true"), Some("a,b,c"), Some(""), None, None, None).is_err());
     assert!(
-        ExecutorEnv::parse(Some("true"), Some("a,b,c"), Some("a"), Some("b"), Some("0")).is_err()
+        ExecutorEnv::parse(
+            Some("true"),
+            Some("a,b,c"),
+            Some("a"),
+            Some("a"),
+            None,
+            None
+        )
+        .is_err()
+    );
+    assert!(
+        ExecutorEnv::parse(Some("true"), Some("a,b"), Some("a"), Some("b"), None, None).is_err()
     );
     assert!(
         ExecutorEnv::parse(
@@ -48,11 +59,51 @@ fn executor_env_fails_closed_on_incomplete_or_invalid_configuration() {
             Some("a,b,c"),
             Some("a"),
             Some("b"),
-            Some("soon")
+            Some("0"),
+            None
         )
         .is_err()
     );
-    assert!(ExecutorEnv::parse(Some("maybe"), None, None, None, None).is_err());
+    assert!(
+        ExecutorEnv::parse(
+            Some("true"),
+            Some("a,b,c"),
+            Some("a"),
+            Some("b"),
+            Some("soon"),
+            None
+        )
+        .is_err()
+    );
+    assert!(ExecutorEnv::parse(Some("maybe"), None, None, None, None, None).is_err());
+}
+
+#[test]
+fn executor_env_requires_a_consensus_store_directory_when_enabled() {
+    // The store directory is explicit configuration, never a silent default
+    // that writes somewhere surprising.
+    assert!(
+        ExecutorEnv::parse(
+            Some("true"),
+            Some("a,b,c"),
+            Some("a"),
+            Some("b"),
+            None,
+            None
+        )
+        .is_err()
+    );
+    assert!(
+        ExecutorEnv::parse(
+            Some("true"),
+            Some("a,b,c"),
+            Some("a"),
+            Some("b"),
+            None,
+            Some("")
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -63,6 +114,7 @@ fn executor_env_enabled_builds_a_validated_configuration() {
         Some("site-a"),
         Some("site-b"),
         None,
+        Some("/var/lib/zrotext/failover-store"),
     )
     .unwrap()
     .unwrap();
@@ -73,16 +125,22 @@ fn executor_env_enabled_builds_a_validated_configuration() {
     );
     assert_eq!(env.config().writer_site_id(), "site-a");
     assert_eq!(env.config().standby_site_id(), "site-b");
+    assert_eq!(
+        env.store_dir(),
+        std::path::Path::new("/var/lib/zrotext/failover-store")
+    );
     let env = ExecutorEnv::parse(
         Some("true"),
         Some("workload-a,workload-b,witness"),
         Some("site-a"),
         Some("site-b"),
         Some("250"),
+        Some("D:/${STORE_DIR}"),
     )
     .unwrap()
     .unwrap();
     assert_eq!(env.check_interval_ms(), 250);
+    assert_eq!(env.store_dir(), std::path::Path::new("D:/${STORE_DIR}"));
 }
 
 #[test]

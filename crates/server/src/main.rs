@@ -228,11 +228,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mfa_enrollment_enabled = optional_bool("MFA_ENROLLMENT_ENABLED")?;
     let sms_line_activation_enabled = optional_bool("SMS_LINE_ACTIVATION_ENABLED")?;
     // Independent-quorum failover executor. Disabled by default; when off
-    // (or absent) nothing further is read and no thread or database access
-    // exists. When on, the validated configuration runs the controller loop
-    // against the authoritative writer database; its observation source is
-    // the in-process placeholder until quorum members report (see
-    // docs/MULTI-LOCATION.md), so every round holds fail-closed.
+    // (or absent) nothing further is read and no thread, database or store
+    // access exists. When on, the validated configuration runs the controller
+    // loop against the authoritative writer database with its observation
+    // source backed by the durable consensus store directory; no transport
+    // reports into that store in this build, so every round holds
+    // fail-closed (see docs/MULTI-LOCATION.md).
     let failover_executor_env = failover_executor::ExecutorEnv::parse(
         env::var("FAILOVER_QUORUM_ENABLED").ok().as_deref(),
         env::var("FAILOVER_QUORUM_MEMBERS").ok().as_deref(),
@@ -241,6 +242,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         env::var("FAILOVER_QUORUM_CHECK_INTERVAL_MS")
             .ok()
             .as_deref(),
+        env::var("FAILOVER_QUORUM_STORE_DIR").ok().as_deref(),
     )?;
     if mfa_recovery_only && mfa_enrollment_enabled {
         return Err("MFA enrollment cannot be enabled in recovery-only mode".into());

@@ -127,9 +127,11 @@ enum AuthorityCall {
 }
 
 /// In-memory writer authority implementing exactly the SQL semantics the
-/// PostgreSQL port promises, plus fault injection and a call log.
+/// PostgreSQL port promises, plus fault injection and a call log. Shared with
+/// the consensus-store corpus, which drives full executor rounds through a
+/// store-backed source.
 #[derive(Default)]
-struct MemoryAuthority {
+pub(crate) struct MemoryAuthority {
     epoch: u64,
     dispatch_enabled: bool,
     sites: HashMap<String, SiteFenceState>,
@@ -153,7 +155,7 @@ struct MemoryAuthority {
 
 impl MemoryAuthority {
     /// A healthy two-site authority serving `epoch` with dispatch enabled.
-    fn new(epoch: u64) -> Self {
+    pub(crate) fn new(epoch: u64) -> Self {
         let mut sites = HashMap::new();
         for site_id in ["site-a", "site-b"] {
             sites.insert(
@@ -192,14 +194,14 @@ impl MemoryAuthority {
             .map(|journal| journal.phase)
     }
 
-    fn fence_calls(&self) -> usize {
+    pub(crate) fn fence_calls(&self) -> usize {
         self.calls
             .iter()
             .filter(|call| matches!(call, AuthorityCall::Fence { .. }))
             .count()
     }
 
-    fn promote_calls(&self) -> Vec<u64> {
+    pub(crate) fn promote_calls(&self) -> Vec<u64> {
         self.calls
             .iter()
             .filter_map(|call| match call {
