@@ -171,5 +171,98 @@ class PreparationProbeTest(unittest.TestCase):
                 probe.validate_results(bad)
 
 
+INSTALLED = '/data/app/~~AbC-_12==/org.zrotext.gateway.preparationprobe-Xy_9-==/base.apk'
+
+
+class InstalledApkPullTest(unittest.TestCase):
+    def pull(self, reads, pulls, **options):
+        """Run pull_installed with scripted `pm path` outputs and pull results."""
+        reads, pulls, pulled, slept = list(reads), list(pulls), [], []
+
+        def read():
+            return reads.pop(0)
+
+        def pull(path):
+            pulled.append(path)
+            outcome = pulls.pop(0)
+            if outcome is not None:
+                raise probe.ProbeCommandError(outcome)
+
+        result = probe.pull_installed(read, pull, slept.append, **options)
+        return result, pulled, slept
+
+    def test_installed_path_accepts_only_one_safe_data_app_apk(self):
+        for good in ['package:' + INSTALLED, 'package:/data/app/org.zrotext.gateway.preparationprobe-1/base.apk',
+                     '  package:' + INSTALLED + '\r\n']:
+            self.assertTrue(probe.installed_apk_path(good).endswith('/base.apk'))
+        with self.assertRaises(probe.PathNotReady):
+            probe.installed_apk_path(' \r\n')
+        for bad in ['package:/sdcard/base.apk', 'package:/data/app/../system/base.apk',
+                    'package:/data/app/./x/base.apk', 'package:/data/app/x/other.apk', '/data/app/x/base.apk',
+                    'package:/data/app/x y/base.apk', 'package:/data/app/x/base.apk;reboot',
+                    'package:' + INSTALLED + '\npackage:' + INSTALLED, 'package:/data/app/base.apk',
+                    'package:/data/app/a/b/c/d/base.apk', 'package:/data/app/$(reboot)/base.apk']:
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                probe.installed_apk_path(bad)
+
+    def test_first_stable_path_is_pulled_without_waiting(self):
+        (used, seen), pulled, slept = self.pull(['package:' + INSTALLED] * 2, [None])
+        self.assertEqual((1, []), (used, seen))
+        self.assertEqual([INSTALLED], pulled)
+        self.assertEqual([], slept)
+
+    def test_post_install_races_are_retried_with_bounded_backoff(self):
+        path = 'package:' + INSTALLED
+        moved = 'package:' + INSTALLED.replace('Xy_9', 'Zz_1')
+        reads = ['', path, moved, path, path, path, path, moved, moved]
+        (used, seen), pulled, slept = self.pull(reads, ['permission', 'missing', None])
+        self.assertEqual(5, used)
+        self.assertEqual(['path-not-ready', 'path-moving', 'pull-permission', 'pull-missing'], seen)
+        self.assertEqual([INSTALLED, INSTALLED, moved.removeprefix('package:')], pulled)
+        self.assertEqual([1, 2, 3, 5], slept)
+
+    def test_persistent_failure_stops_after_the_attempt_bound_without_raw_output(self):
+        reads = ['package:' + INSTALLED] * 2 * probe.PULL_ATTEMPTS
+        with self.assertRaises(RuntimeError) as raised:
+            self.pull(reads, ['transport'] * probe.PULL_ATTEMPTS)
+        message = str(raised.exception)
+        self.assertIn('no raw device output published', message)
+        self.assertEqual(probe.PULL_ATTEMPTS, message.count('transport'))
+        self.assertNotIn(INSTALLED, message)
+
+    def test_malformed_package_manager_output_is_never_retried(self):
+        slept, pulled = [], []
+        with self.assertRaises(ValueError):
+            probe.pull_installed(lambda: 'package:/sdcard/evil.apk', pulled.append, slept.append)
+        self.assertEqual(([], []), (pulled, slept))
+
+    def test_package_manager_command_failures_are_retried_and_staged(self):
+        outcomes = [probe.ProbeCommandError('service'), 'package:' + INSTALLED, 'package:' + INSTALLED]
+        slept, pulled = [], []
+
+        def read():
+            outcome = outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        used, seen = probe.pull_installed(read, pulled.append, slept.append)
+        self.assertEqual((2, ['path-service']), (used, seen))
+        self.assertEqual(([INSTALLED], [1]), (pulled, slept))
+
+    def test_failures_are_reported_as_fixed_classes_only(self):
+        secret = 'synthetic-device-text-7f3a'
+        for raw, kind in [(f'adb: error: failed to stat remote object {secret}: No such file or directory', 'missing'),
+                          (f'adb: error: {secret}: Permission denied', 'permission'),
+                          ('adb: device offline', 'device-offline'),
+                          ('error: no devices/emulators found', 'device-offline'),
+                          (f'protocol fault (couldn\'t read status): Connection reset by peer {secret}', 'transport'),
+                          ("cmd: Can't find service: package", 'service'),
+                          (secret, 'other'), ('', 'silent'), (' \n', 'silent'), (None, 'silent')]:
+            with self.subTest(kind=kind):
+                self.assertEqual(kind, probe.failure_class(raw))
+                self.assertNotIn(secret, str(probe.ProbeCommandError(probe.failure_class(raw))))
+
+
 if __name__ == '__main__':
     unittest.main()
