@@ -8,6 +8,14 @@ The window starts on the first accepted event and renews after 24 hours, rather
 than at midnight. These are conservative pilot safety defaults, not billing
 entitlements. Review legitimate traffic before expanding the pilot.
 
+Consent changes do not spend that shared budget. Attempt-bound `opt_out`,
+`opt_out_review` and `opt_in` events, and line-bound unsolicited opt-outs, have
+their own budget of 10,000 per device in 24 hours with no account-wide ceiling.
+A busy account, or another device's junk events, therefore cannot defer a STOP
+or START; only a single device sending more than 10,000 consent changes in one
+window is deferred. That limit is far above the replies one phone receives and
+still bounds the rows a misbehaving device key can write.
+
 Both charges, event insertion and webhook queue insertion share one PostgreSQL
 transaction. Invalid signatures, conflicting replays, stale sessions and rejected
 charges leave no partial event, queue entry or budget consumption. An exact
@@ -21,7 +29,9 @@ This bounds fresh pilot fanout at 8,000 queue entries per account per window.
 Budgets limit growth rate, not lifetime storage; retention remains an operational
 requirement. They do not limit replay frame rate or signature-verification CPU.
 
-The sealed inbound module currently provides identity readiness only and cannot
-ingest content. Any future sealed ingest path must apply durable account/device
-budgets in the same transaction after authenticating and deduplicating an event,
-and recheck the session lease before commit. Readiness alone is not admission.
+The dormant sealed candidate ingest transaction has no transport caller yet.
+It charges the same shared account/device budget after authenticating and
+deduplicating an event and before its INSERT, in the same transaction, and
+rechecks the session lease before commit. An exact stored replay is free, and a
+concurrent writer that stores the same event first returns the charge.
+Readiness alone is not admission.

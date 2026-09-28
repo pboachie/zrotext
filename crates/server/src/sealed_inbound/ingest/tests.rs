@@ -569,3 +569,67 @@ async fn candidate_ingest_revocation_serializes_before_admission_or_after_its_ow
         f.cleanup().await;
     }
 }
+
+async fn shared_budget_attempts(f: &Fixture) -> Vec<i32> {
+    f.db.query(
+        "SELECT attempts FROM auth_abuse_counters WHERE scope='inbound_daily' ORDER BY attempts",
+        &[],
+    )
+    .await
+    .unwrap()
+    .iter()
+    .map(|row| row.get(0))
+    .collect()
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn candidate_ingest_spends_the_shared_storage_budget_and_replays_are_free() {
+    let f = Fixture::new().await;
+    let stored = envelope(&f, Uuid::new_v4(), 1, now(&f).await, 17);
+    assert!(ingest(&f, &stored).await.unwrap().created);
+    // One account row and one device row, charged once each.
+    assert_eq!(shared_budget_attempts(&f).await, vec![1, 1]);
+    assert!(!ingest(&f, &stored).await.unwrap().created);
+    assert_eq!(shared_budget_attempts(&f).await, vec![1, 1]);
+    // Two writers racing with one new event store it once and charge once.
+    let raced = envelope(&f, Uuid::new_v4(), 2, now(&f).await, 17);
+    let (first, second) = tokio::join!(ingest(&f, &raced), ingest(&f, &raced));
+    assert_eq!(
+        [first.unwrap().created, second.unwrap().created]
+            .iter()
+            .filter(|created| **created)
+            .count(),
+        1
+    );
+    assert_eq!(shared_budget_attempts(&f).await, vec![2, 2]);
+    // Spend the device's daily allowance. A new envelope is refused before
+    // its INSERT; a stored one still replays for free.
+    f.db.execute(
+        "UPDATE auth_abuse_counters SET attempts=200 WHERE scope='inbound_daily'",
+        &[],
+    )
+    .await
+    .unwrap();
+    f.db.batch_execute(
+        "CREATE FUNCTION reject_budget_insert() RETURNS trigger LANGUAGE plpgsql AS $$ \
+         BEGIN RAISE EXCEPTION 'over-budget sealed INSERT attempted'; END $$; \
+         CREATE TRIGGER reject_budget_insert BEFORE INSERT ON sealed_inbound_events \
+         FOR EACH ROW EXECUTE FUNCTION reject_budget_insert()",
+    )
+    .await
+    .unwrap();
+    let refused = envelope(&f, Uuid::new_v4(), 3, now(&f).await, 17);
+    assert!(matches!(
+        ingest(&f, &refused).await,
+        Err(IngestError::BudgetExhausted)
+    ));
+    // A BEFORE INSERT trigger fires even for ON CONFLICT DO NOTHING.
+    f.db.batch_execute("DROP TRIGGER reject_budget_insert ON sealed_inbound_events")
+        .await
+        .unwrap();
+    assert!(!ingest(&f, &stored).await.unwrap().created);
+    assert_eq!(count(&f).await, 2);
+    assert_eq!(shared_budget_attempts(&f).await, vec![200, 200]);
+    f.cleanup().await;
+}

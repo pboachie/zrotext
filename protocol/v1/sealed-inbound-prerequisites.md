@@ -119,8 +119,8 @@ update guard still permits only removal of the envelope, preserving all replay
 identity and profile metadata. Content pruning does not delete tombstones.
 
 Production use still requires independently authenticated root provisioning,
-an explicit device-authenticated transport adapter, bounded ingress/storage
-budgets, and Android production manifest trust, event/sequence journaling,
+an explicit device-authenticated transport adapter, a bounded ingress budget
+(the ingest transaction already charges the shared inbound storage budget), and Android production manifest trust, event/sequence journaling,
 multipart and ambiguous-SIM handling, signing and upload. Existing Android
 test-only vectors and dormant recipient primitives do not establish those
 properties or physical-phone interoperability. No sealed runtime gate is enabled.
