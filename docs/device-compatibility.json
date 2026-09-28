@@ -1,9 +1,91 @@
 {
-  "schema_version": 1,
-  "note": "Machine-readable supported-device list for the ZROtext Android gateway. scripts/check_device_compatibility.py re-verifies this file against android/app/build.gradle.kts, the repository tree, and docs/DEVICE-COMPATIBILITY.md. Validation checks the consistency of recorded claims and that referenced tests exist; it does not run any device, emulator, or simulator.",
+  "schema_version": 2,
+  "note": "Machine-readable supported-device list for the ZROtext Android gateway. scripts/check_device_compatibility.py re-verifies this file against android/app/build.gradle.kts, the repository tree, docs/DEVICE-COMPATIBILITY.md, and the CI allowlist in scripts/android_device_smoke.py. Validation checks the consistency of recorded claims and that referenced tests and jobs exist; it does not run any device, emulator, or simulator. The no_radio_run and radio_run fields link the procedure that re-verifies a configuration; the status and evidence fields record what has actually been proven.",
   "statuses": ["supported", "partial", "excluded", "unevaluated"],
   "sim_types": ["physical", "esim", "none", "unknown"],
   "evidence_levels": ["physical", "emulator", "device-sim", "none"],
+  "repeatable_runs": [
+    {
+      "id": "selected-device-tests",
+      "kind": "ci-job",
+      "name": "Selected no-radio device tests on the CI emulator",
+      "workflow": ".github/workflows/android-device-smoke.yml",
+      "job": "selected-device-tests",
+      "runs": "scripts/android_device_smoke.py",
+      "tests": [
+        "android/app/src/androidTest/java/org/zrotext/gateway/DevicePreconditionsDeviceTest.kt",
+        "android/app/src/androidTest/java/org/zrotext/gateway/GatewayAccessibilityDeviceTest.kt",
+        "android/app/src/androidTest/java/org/zrotext/gateway/ManifestAuthorityDeviceTest.kt",
+        "android/app/src/androidTest/java/org/zrotext/gateway/NetworkServiceDeviceTest.kt",
+        "android/app/src/androidTest/java/org/zrotext/gateway/OutboundEnvelopeDeviceTest.kt",
+        "android/app/src/androidTest/java/org/zrotext/gateway/Draft02RootStorageDeviceTest.kt",
+        "android/app/src/androidTest/java/org/zrotext/gateway/SealedBodyDeviceTest.kt",
+        "android/app/src/androidTest/java/org/zrotext/gateway/SealedPreparationDeviceTest.kt",
+        "android/app/src/preparationProbeTest/java/org/zrotext/gateway/PreparationProbeDeviceTest.kt"
+      ],
+      "notes": "The selected-device-tests job in .github/workflows/android-device-smoke.yml runs scripts/android_device_smoke.py, which executes exactly this no-radio class allowlist plus the preparation probe (scripts/android_preparation_probe.py) on a disposable API 36 google_apis x86_64 Android Virtual Device with no SIM, on every pull request that touches android/**, the scripts, or the workflow. The validator cross-checks this list against the allowlist in scripts/android_device_smoke.py, so the two cannot drift. Proves the app-level, no-radio behavior of the current build on that one virtual configuration. Proves nothing about any physical device, carrier delivery, OEM power management, Keystore hardware behavior, or any other API level."
+    },
+    {
+      "id": "api-28-emulator-suites",
+      "kind": "documented-command",
+      "name": "Documented no-radio suites on an API 28 emulator",
+      "doc": "docs/ANDROID-TESTING.md",
+      "tests": [
+        "android/app/src/androidTest/java/org/zrotext/gateway/ForegroundRefusalDeviceTest.kt",
+        "android/app/src/androidTest/java/org/zrotext/gateway/StaleEvidenceVirtualDeviceTest.kt",
+        "android/app/src/androidTest/java/org/zrotext/gateway/VirtualInboundSmsDeviceTest.kt",
+        "android/tools/virtual_inbound_sms.py"
+      ],
+      "notes": "The foreground-refusal, stale-evidence, and virtual inbound SMS checks run through the documented commands in docs/ANDROID-TESTING.md on an API 28 Android Virtual Device. Repeatable by anyone with the Android SDK, but not executed by CI, so freshness depends on the last manual run. Virtual evidence only: no carrier delivery, OEM power management, or Keystore hardware behavior."
+    },
+    {
+      "id": "api-34-emulator-suites",
+      "kind": "documented-command",
+      "name": "Documented no-radio suites on an API 34 or later emulator",
+      "doc": "docs/ANDROID-TESTING.md",
+      "tests": [
+        "android/app/src/androidTest/java/org/zrotext/gateway/ForegroundRefusalDeviceTest.kt",
+        "android/app/src/androidTest/java/org/zrotext/gateway/StaleEvidenceVirtualDeviceTest.kt",
+        "android/app/src/androidTest/java/org/zrotext/gateway/VirtualInboundSmsDeviceTest.kt",
+        "android/tools/virtual_inbound_sms.py"
+      ],
+      "notes": "The same documented suites on API 34 or later Android Virtual Devices. API 36 is additionally exercised on every android-touching pull request by the selected-device-tests CI run. Virtual evidence only: no carrier delivery, OEM power management, or Keystore hardware behavior."
+    },
+    {
+      "id": "device-sim-suite",
+      "kind": "ci-job",
+      "name": "Host delivery simulator tests and timeline",
+      "workflow": ".github/workflows/ci.yml",
+      "job": "rust",
+      "runs": "crates/device-sim/src/main.rs",
+      "tests": ["crates/device-sim/src/main.rs"],
+      "notes": "The rust job in .github/workflows/ci.yml runs cargo test --locked --workspace, which includes the inline tests of crates/device-sim, plus the simulator timeline through cargo run -p zrotext-device-sim. Host-side evidence for delivery-state logic only: it represents no phone hardware, Android level, SIM, or carrier."
+    },
+    {
+      "id": "physical-no-radio-classes",
+      "kind": "documented-command",
+      "name": "No-radio classes on a founder-authorized connected phone",
+      "doc": "docs/ANDROID-TESTING.md",
+      "tests": [
+        "android/app/src/androidTest/java/org/zrotext/gateway/DevicePreconditionsDeviceTest.kt",
+        "android/app/src/androidTest/java/org/zrotext/gateway/ManifestAuthorityDeviceTest.kt",
+        "android/app/src/androidTest/java/org/zrotext/gateway/OutboundEnvelopeDeviceTest.kt",
+        "android/app/src/androidTest/java/org/zrotext/gateway/SealedBodyDeviceTest.kt"
+      ],
+      "notes": "The hardware-agnostic subset of the CI no-radio allowlist, run through the documented am instrument command in docs/ANDROID-TESTING.md on a connected, founder-authorized physical phone. The remaining CI allowlist classes (accessibility, network service, root storage, sealed preparation) deliberately assert emulator isolation flags and are excluded from this procedure. Linking this run defines how a physical configuration is re-verified without the radio; a device entry only records a result after a run has actually been executed and its outcome summarized. No execution on any listed physical device is recorded in this matrix today."
+    },
+    {
+      "id": "opt-in-radio-instrumentation",
+      "kind": "opt-in-radio",
+      "name": "Opt-in radio instrumentation on the founder-authorized phone",
+      "doc": "docs/ANDROID-TESTING.md",
+      "tests": [
+        "android/app/src/androidTest/java/org/zrotext/gateway/LocalRadioPreflightDeviceTest.kt",
+        "android/app/src/androidTest/java/org/zrotext/gateway/LocalAuthorizedOneSendDeviceTest.kt"
+      ],
+      "notes": "LocalRadioPreflightDeviceTest (gated by -e m1RadioPreflight true) selects exactly one consented active SIM and arms no radio operation; LocalAuthorizedOneSendDeviceTest (gated by -e m1AuthorizedOneSend true with a controlled recipient) performs exactly one authorized send and asserts the one-use grant is consumed. These classes use the radio for real, run only on the founder-authorized test phone with a controlled recipient, and are never executed in CI. Linking this run states that the configuration may exercise it; it does not state that it did. No passing run on any listed device is recorded in this matrix today; raw run evidence stays in the private operations repository."
+    }
+  ],
   "devices": [
     {
       "id": "samsung-galaxy-s24-ultra",
@@ -13,8 +95,33 @@
       "status": "partial",
       "evidence": "physical",
       "tests": [],
+      "no_radio_run": ["physical-no-radio-classes"],
+      "radio_run": "opt-in-radio-instrumentation",
       "source": "docs/DEVICE-COMPATIBILITY.md",
-      "notes": "One controlled physical run on Android 16 recorded in the source document: one authorized send with positive sent and delivery callbacks and recipient confirmation, one captured inbound upload, a roughly 275-second screen-off socket run, and recovery after a loopback TLS proxy cut. This is a manual record, not a repeatable repository test, so the status stays partial. The record states one active SIM without stating physical SIM or eSIM."
+      "notes": "One controlled physical run on Android 16 recorded in the source document: one authorized send with positive sent and delivery callbacks and recipient confirmation, one captured inbound upload, a roughly 275-second screen-off socket run, and recovery after a loopback TLS proxy cut. This is a manual record, not a repeatable repository test, so the status stays partial. The record states one active SIM without stating physical SIM or eSIM. The linked no_radio_run and radio_run procedures define re-verification for this configuration; neither has been executed on this device yet, so no no-radio hardware result and no opt-in radio instrumentation result is claimed here. The only claimed evidence stays the manual physical record in the source document."
+    },
+    {
+      "id": "emulator-api-36-ci",
+      "name": "Android Virtual Device, API 36 (CI selected-device-tests configuration)",
+      "api": {"min": 36, "max": 36},
+      "sim": "none",
+      "status": "supported",
+      "evidence": "emulator",
+      "tests": [
+        "android/app/src/androidTest/java/org/zrotext/gateway/DevicePreconditionsDeviceTest.kt",
+        "android/app/src/androidTest/java/org/zrotext/gateway/GatewayAccessibilityDeviceTest.kt",
+        "android/app/src/androidTest/java/org/zrotext/gateway/ManifestAuthorityDeviceTest.kt",
+        "android/app/src/androidTest/java/org/zrotext/gateway/NetworkServiceDeviceTest.kt",
+        "android/app/src/androidTest/java/org/zrotext/gateway/OutboundEnvelopeDeviceTest.kt",
+        "android/app/src/androidTest/java/org/zrotext/gateway/Draft02RootStorageDeviceTest.kt",
+        "android/app/src/androidTest/java/org/zrotext/gateway/SealedBodyDeviceTest.kt",
+        "android/app/src/androidTest/java/org/zrotext/gateway/SealedPreparationDeviceTest.kt",
+        "android/app/src/preparationProbeTest/java/org/zrotext/gateway/PreparationProbeDeviceTest.kt"
+      ],
+      "no_radio_run": ["selected-device-tests"],
+      "radio_run": null,
+      "source": ".github/workflows/android-device-smoke.yml",
+      "notes": "The exact virtual configuration CI executes: a disposable API 36 google_apis x86_64 AVD with no SIM, recreated fresh on every run, running the no-radio allowlist and preparation probe selected by scripts/android_device_smoke.py. Supported as a regression environment: the run repeats on every android-touching pull request. Emulator evidence proves nothing about carrier delivery, OEM power management, Keystore hardware behavior, or physical hardware."
     },
     {
       "id": "emulator-api-28",
@@ -29,8 +136,10 @@
         "android/app/src/androidTest/java/org/zrotext/gateway/VirtualInboundSmsDeviceTest.kt",
         "android/tools/virtual_inbound_sms.py"
       ],
+      "no_radio_run": ["api-28-emulator-suites"],
+      "radio_run": null,
       "source": "docs/ANDROID-TESTING.md",
-      "notes": "Supported as a virtual regression environment: the foreground-refusal and stale-evidence suites and the virtual inbound receiver check run on API 28 emulators. An emulator proves nothing about carrier delivery, OEM power management, or Keystore hardware behavior, and is not a production gateway."
+      "notes": "Supported as a virtual regression environment: the foreground-refusal and stale-evidence suites and the virtual inbound receiver check run on API 28 emulators through the documented commands in the source document. An emulator proves nothing about carrier delivery, OEM power management, or Keystore hardware behavior, and is not a production gateway."
     },
     {
       "id": "emulator-api-34-plus",
@@ -45,8 +154,10 @@
         "android/app/src/androidTest/java/org/zrotext/gateway/VirtualInboundSmsDeviceTest.kt",
         "android/tools/virtual_inbound_sms.py"
       ],
+      "no_radio_run": ["api-34-emulator-suites"],
+      "radio_run": null,
       "source": "docs/ANDROID-TESTING.md",
-      "notes": "The same suites on API 34 or later emulators. The recorded upper bound follows the app targetSdk, the newest Android level the app targets and has exercised; levels above it are unevaluated. The virtual inbound check does not pin one API level. Emulator evidence does not cover carrier behavior or real hardware."
+      "notes": "The same documented suites on API 34 or later emulators. The recorded upper bound follows the app targetSdk, the newest Android level the app targets and has exercised; levels above it are unevaluated. API 36 is additionally exercised on every android-touching pull request by the separate selected-device-tests CI run recorded as its own entry. The virtual inbound check does not pin one API level. Emulator evidence does not cover carrier behavior or real hardware."
     },
     {
       "id": "host-delivery-simulator",
@@ -56,6 +167,8 @@
       "status": "supported",
       "evidence": "device-sim",
       "tests": ["crates/device-sim/src/main.rs"],
+      "no_radio_run": ["device-sim-suite"],
+      "radio_run": null,
       "source": "crates/device-sim/src/main.rs",
       "notes": "The deterministic two-hub fault model with inline Rust tests and a simulator-timeline run in the CI rust job. It models writer and radio-ambiguity decisions on the host and represents no phone hardware, Android level, SIM, or carrier, so it carries no API range."
     },
@@ -67,6 +180,8 @@
       "status": "excluded",
       "evidence": "none",
       "tests": [],
+      "no_radio_run": [],
+      "radio_run": null,
       "source": "docs/DEVICE-COMPATIBILITY.md",
       "notes": "The gateway requires Android 9 (API 28) or later, and the Gradle minSdk enforces the same floor by construction. No per-model testing exists below that line."
     },
@@ -78,6 +193,8 @@
       "status": "unevaluated",
       "evidence": "none",
       "tests": [],
+      "no_radio_run": [],
+      "radio_run": null,
       "source": "docs/DEVICE-COMPATIBILITY.md",
       "notes": "No comparison OEM, for example a Pixel, has been exercised. The not-yet-tested list in the source document records this gap."
     },
@@ -89,6 +206,8 @@
       "status": "unevaluated",
       "evidence": "none",
       "tests": [],
+      "no_radio_run": [],
+      "radio_run": null,
       "source": "docs/DEVICE-COMPATIBILITY.md",
       "notes": "No eSIM line has been exercised. The single physical record states one active SIM without naming its type."
     }
