@@ -1,0 +1,2081 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "ZROtext public HTTP API v1 (current server contract)",
+    "version": "1.0.0",
+    "description": "Machine-readable contract for the four public route families /v1/messages, /v1/devices, /v1/webhooks and /v1/usage, documenting the routes exactly as crates/server implements them today and clearly labeling the routes that are planned but not implemented. Every operation carries an x-implemented extension: true means a route with that method and path is mounted by crates/server/src/main.rs today (some only when their feature flags are configured, as stated per operation); false means PLANNED, no route exists in this build and the entry only pins the design target from the 'Planned API v1 outline' in docs/ARCHITECTURE.md. Implemented today: the full /v1/webhooks owner lifecycle (crates/server/src/http_webhooks.rs, mounted when WEBHOOK_KEK_VERSION/WEBHOOK_KEK_B64 are configured), the /v1/owner/messages timeline (crates/server/src/http_owner_messages.rs), the allowlisted synthetic-alpha test plane at /v1/alpha/messages (crates/server/src/http_messages.rs, mounted at /v1/alpha only while SYNTHETIC_ALPHA_ENABLED admits an account and recipient), and the owner device surface at /v1/enrollment/devices (crates/server/src/http_enrollment/mod.rs). Planned and absent today: POST/GET /v1/messages, GET /v1/messages/{message_id}, POST /v1/messages/{message_id}/cancel, GET /v1/devices and GET /v1/usage; the sealed-message proposal for a future public send plane is pinned separately in openapi/sealed-v1.json and nothing here widens it. Implemented owner-session routes authenticate with the __Host-zrotext_session cookie plus the session-bound double-submit CSRF cookie and x-zrotext-csrf header (a GET with the session cookie alone is refused with 403), and owner mutations additionally require the exact configured HTTPS Origin header; alpha routes authenticate a scoped API key as a Bearer token. Every implemented response carries Cache-Control: no-store. Responses from these routes never contain message bodies, recipients, transport payloads, SIM identifiers or key material; the one exception is the webhook signing secret, which the create and rotate responses expose exactly once."
+  },
+  "tags": [
+    {
+      "name": "webhooks",
+      "description": "Owner webhook endpoint lifecycle as implemented today in crates/server/src/http_webhooks.rs. Mounted only when account routes and the WEBHOOK_KEK_VERSION/WEBHOOK_KEK_B64 vault are configured; WEBHOOK_DELIVERY_ENABLED remains the separate sender gate."
+    },
+    {
+      "name": "owner-messages",
+      "description": "Owner message timeline as implemented today in crates/server/src/http_owner_messages.rs. Writer metadata only: never the recipient, transport payload or device-side inbound content."
+    },
+    {
+      "name": "alpha-messages",
+      "description": "Allowlisted synthetic-alpha test plane as implemented today in crates/server/src/http_messages.rs, nested at /v1/alpha only while SYNTHETIC_ALPHA_ENABLED admits the account and recipient. The caller selects a short test-case identifier; the server constructs the fixed plaintext body. This is not a general customer message-content endpoint."
+    },
+    {
+      "name": "devices",
+      "description": "Owner device list and revocation as implemented today in crates/server/src/http_enrollment/mod.rs under /v1/enrollment. Enrollment ceremonies stay on the other owner enrollment routes."
+    },
+    {
+      "name": "planned-messages",
+      "description": "PLANNED public message routes from the docs/ARCHITECTURE.md outline. No route exists in crates/server today; entries pin the design target only."
+    },
+    {
+      "name": "planned-devices",
+      "description": "PLANNED public device route from the docs/ARCHITECTURE.md outline. No route exists in crates/server today."
+    },
+    {
+      "name": "planned-usage",
+      "description": "PLANNED public usage route from the docs/ARCHITECTURE.md outline. No route exists in crates/server today; the durable usage_periods/usage_ledger metering core is implemented without a public query route."
+    }
+  ],
+  "paths": {
+    "/v1/webhooks": {
+      "get": {
+        "tags": ["webhooks"],
+        "operationId": "listWebhookEndpoints",
+        "summary": "List this account's webhook endpoints",
+        "x-implemented": true,
+        "description": "Implemented today (crates/server/src/http_webhooks.rs list_endpoints). Lists every endpoint of the account (at most eight, including disabled ones) ordered by creation time, then ID. Never includes signing secrets or encrypted secret bytes. Requires the owner session cookie plus the matching double-submit CSRF header; a GET with the session cookie alone is refused with 403.",
+        "security": [
+          {
+            "ownerSession": [],
+            "ownerCsrf": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "All of the account's webhook endpoints.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/WebhookEndpointList" }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: missing session cookie or unknown, expired or revoked session.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "unauthorized" }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: the CSRF cookie and x-zrotext-csrf header are missing or do not match.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "forbidden" }
+              }
+            }
+          },
+          "503": {
+            "description": "unavailable: the store is temporarily unavailable.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "unavailable" }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["webhooks"],
+        "operationId": "createWebhookEndpoint",
+        "summary": "Create one disabled webhook endpoint",
+        "x-implemented": true,
+        "description": "Implemented today (crates/server/src/http_webhooks.rs create_endpoint). Creates a disabled endpoint and returns the signing secret exactly once; there is no secret retrieval route, so losing the response requires rotation. The callback URL must pass the strict HTTPS egress validator (HTTPS DNS name on port 443, no IP literals, no userinfo, no fragment, no local/internal/special-use names). The account cap is eight endpoints including disabled ones. Requires the owner session cookie, the CSRF cookie/header pair and the exact configured HTTPS Origin. Request bodies are limited to 4 KiB and must be application/json with no unknown members.",
+        "security": [
+          {
+            "ownerSession": [],
+            "ownerCsrf": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "description": "The exact configured HTTPS origin of the owner deployment; mutations reject a missing or mismatched Origin.",
+            "schema": { "type": "string" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "The callback URL. Unknown JSON members are rejected.",
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/WebhookCreateRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Endpoint created disabled. The signing secret appears in this response and in the rotate response only.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/WebhookSecret" }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_webhook_endpoint: the callback URL fails the strict HTTPS egress validator, or the JSON body is malformed or has unknown or missing members.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "examples": {
+                  "invalidWebhookEndpoint": { "value": { "code": "invalid_webhook_endpoint" } },
+                  "invalidRequest": { "value": { "code": "invalid_request" } }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: missing session cookie or unknown, expired or revoked session.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "unauthorized" }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: missing or mismatched CSRF proof, or a missing or mismatched Origin.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "forbidden" }
+              }
+            }
+          },
+          "409": {
+            "description": "endpoint_limit: the account already has eight endpoints, including disabled ones.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "endpoint_limit" }
+              }
+            }
+          },
+          "503": {
+            "description": "unavailable: storage or the secret vault is temporarily unavailable.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "unavailable" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/webhooks/{endpoint_id}/deliveries": {
+      "get": {
+        "tags": ["webhooks"],
+        "operationId": "listWebhookDeliveries",
+        "summary": "Page delivery history for one webhook endpoint",
+        "x-implemented": true,
+        "description": "Implemented today (crates/server/src/http_webhooks.rs list_deliveries). Pages this account's endpoint delivery and attempt metadata, newest first by creation time then ID, including attempts from every generation and retired deliveries as immutable audit history. No payload, callback URL, signing secret, response body, recipient or inbound content is ever returned. An unknown or another account's endpoint or cursor is 404; invalid IDs and page sizes are 400.",
+        "security": [
+          {
+            "ownerSession": [],
+            "ownerCsrf": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "endpoint_id",
+            "in": "path",
+            "required": true,
+            "description": "The webhook endpoint identity.",
+            "schema": { "type": "string", "format": "uuid" }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Page size, 1-20, default 20.",
+            "schema": { "type": "integer", "minimum": 1, "maximum": 20, "default": 20 }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "required": false,
+            "description": "Cursor: the delivery_id returned as next_before on the preceding page.",
+            "schema": { "type": "string", "format": "uuid" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of delivery history with per-attempt metadata.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/WebhookDeliveryPage" }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: malformed endpoint or cursor ID, or a page size outside 1-20.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "invalid_request" }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: missing session cookie or unknown, expired or revoked session.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "unauthorized" }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: the CSRF cookie and x-zrotext-csrf header are missing or do not match.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "forbidden" }
+              }
+            }
+          },
+          "404": {
+            "description": "not_found: no such endpoint or cursor in this account.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "not_found" }
+              }
+            }
+          },
+          "503": {
+            "description": "unavailable: the store is temporarily unavailable.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "unavailable" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/webhooks/{endpoint_id}/deliveries/{delivery_id}/replay": {
+      "post": {
+        "tags": ["webhooks"],
+        "operationId": "replayWebhookDelivery",
+        "summary": "Queue one bounded replay generation of an exhausted failed delivery",
+        "x-implemented": true,
+        "description": "Implemented today (crates/server/src/http_webhooks.rs replay_delivery). The caller generates a random UUIDv4 Idempotency-Key and must reuse the exact same key after an uncertain response; the server never generates one on the caller's behalf. The endpoint must be enabled and the delivery must be dead with terminal_reason failed after seven completed transport failures in its current generation; pending, leased, succeeded, policy-rejected, retired and legacy rows are ineligible, as is reusing the same key for a different delivery. A delivery has at most three generations. Repeating a successful request returns 202 with the same generation and created:false. Because a previous timeout may already have reached the receiver, the receiver must deduplicate the event_id across every generation. Requires the owner session cookie, the CSRF cookie/header pair and the exact configured Origin.",
+        "security": [
+          {
+            "ownerSession": [],
+            "ownerCsrf": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "endpoint_id",
+            "in": "path",
+            "required": true,
+            "description": "The webhook endpoint identity.",
+            "schema": { "type": "string", "format": "uuid" }
+          },
+          {
+            "name": "delivery_id",
+            "in": "path",
+            "required": true,
+            "description": "The exhausted failed delivery to replay.",
+            "schema": { "type": "string", "format": "uuid" }
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "description": "The exact configured HTTPS origin of the owner deployment; mutations reject a missing or mismatched Origin.",
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "A caller-generated random UUIDv4, durable across HTTP retries and never server-generated. Reuse the exact key after an uncertain response; using it for another delivery is a conflict.",
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Replay generation queued, or an identical idempotent replay no-op (created:false with the same generation, even if that generation has since run).",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/WebhookReplayAccepted" }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: the Idempotency-Key is absent, malformed or not a UUIDv4, or a path ID is malformed.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "invalid_request" }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: missing session cookie or unknown, expired or revoked session.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "unauthorized" }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: missing or mismatched CSRF proof, or a missing or mismatched Origin.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "forbidden" }
+              }
+            }
+          },
+          "404": {
+            "description": "not_found: no such endpoint or delivery in this account.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "not_found" }
+              }
+            }
+          },
+          "409": {
+            "description": "replay_not_eligible: the delivery is not an exhausted failed generation, the endpoint is disabled, or the Idempotency-Key was already used for a different delivery. replay_limit: the delivery already used all three generations.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "examples": {
+                  "replayNotEligible": { "value": { "code": "replay_not_eligible" } },
+                  "replayLimit": { "value": { "code": "replay_limit" } }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "unavailable: storage is temporarily unavailable; retry later with the same Idempotency-Key.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "unavailable" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/webhooks/{endpoint_id}/enable": {
+      "post": {
+        "tags": ["webhooks"],
+        "operationId": "enableWebhookEndpoint",
+        "summary": "Enable future inbound fan-out to one endpoint",
+        "x-implemented": true,
+        "description": "Implemented today (crates/server/src/http_webhooks.rs enable_endpoint). Revalidates the stored callback URL against the strict egress validator and the decryptability of the stored signing secret, then enables future fan-out and clears any transport-failure pause. Enabling never replays work retired by disable or rotation; WEBHOOK_DELIVERY_ENABLED remains the separate sender gate. No request body. Requires the owner session cookie, the CSRF cookie/header pair and the exact configured Origin.",
+        "security": [
+          {
+            "ownerSession": [],
+            "ownerCsrf": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "endpoint_id",
+            "in": "path",
+            "required": true,
+            "description": "The webhook endpoint identity.",
+            "schema": { "type": "string", "format": "uuid" }
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "description": "The exact configured HTTPS origin of the owner deployment; mutations reject a missing or mismatched Origin.",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Enabled; future inbound events fan out to this endpoint.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            }
+          },
+          "400": {
+            "description": "invalid_request: malformed endpoint ID. invalid_webhook_endpoint: the stored callback URL no longer passes the egress validator.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "examples": {
+                  "invalidRequest": { "value": { "code": "invalid_request" } },
+                  "invalidWebhookEndpoint": { "value": { "code": "invalid_webhook_endpoint" } }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: missing session cookie or unknown, expired or revoked session.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "unauthorized" }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: missing or mismatched CSRF proof, or a missing or mismatched Origin.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "forbidden" }
+              }
+            }
+          },
+          "404": {
+            "description": "not_found: no such endpoint in this account.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "not_found" }
+              }
+            }
+          },
+          "503": {
+            "description": "unavailable: storage or the secret vault is temporarily unavailable.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "unavailable" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/webhooks/{endpoint_id}/disable": {
+      "post": {
+        "tags": ["webhooks"],
+        "operationId": "disableWebhookEndpoint",
+        "summary": "Disable an endpoint and permanently retire its pending deliveries",
+        "x-implemented": true,
+        "description": "Implemented today (crates/server/src/http_webhooks.rs disable_endpoint). Disables the endpoint and permanently retires its pending and leased deliveries in one transaction. Completed deliveries remain as audit history; retired deliveries can never be replayed, and re-enabling cannot revive them. An in-flight HTTPS request that already loaded a payload may still complete, so the receiver must deduplicate the event_id. No request body. Requires the owner session cookie, the CSRF cookie/header pair and the exact configured Origin.",
+        "security": [
+          {
+            "ownerSession": [],
+            "ownerCsrf": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "endpoint_id",
+            "in": "path",
+            "required": true,
+            "description": "The webhook endpoint identity.",
+            "schema": { "type": "string", "format": "uuid" }
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "description": "The exact configured HTTPS origin of the owner deployment; mutations reject a missing or mismatched Origin.",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Disabled; pending and leased deliveries permanently retired.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            }
+          },
+          "400": {
+            "description": "invalid_request: malformed endpoint ID.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "invalid_request" }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: missing session cookie or unknown, expired or revoked session.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "unauthorized" }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: missing or mismatched CSRF proof, or a missing or mismatched Origin.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "forbidden" }
+              }
+            }
+          },
+          "404": {
+            "description": "not_found: no such endpoint in this account.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "not_found" }
+              }
+            }
+          },
+          "503": {
+            "description": "unavailable: storage is temporarily unavailable.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "unavailable" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/webhooks/{endpoint_id}/rotate": {
+      "post": {
+        "tags": ["webhooks"],
+        "operationId": "rotateWebhookEndpoint",
+        "summary": "Rotate the signing secret, disabling the endpoint and retiring its deliveries",
+        "x-implemented": true,
+        "description": "Implemented today (crates/server/src/http_webhooks.rs rotate_endpoint). Generates a new 32-byte signing secret, disables the endpoint and permanently retires pending, leased and replayable failed deliveries in one transaction. The new secret is returned as unpadded base64url exactly once; only an AES-256-GCM ciphertext bound to account, endpoint and key version is stored, and there is no retrieval route. Receivers should keep verifying with the old secret until deliveries signed with the new secret arrive. No request body. Requires the owner session cookie, the CSRF cookie/header pair and the exact configured Origin.",
+        "security": [
+          {
+            "ownerSession": [],
+            "ownerCsrf": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "endpoint_id",
+            "in": "path",
+            "required": true,
+            "description": "The webhook endpoint identity.",
+            "schema": { "type": "string", "format": "uuid" }
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "description": "The exact configured HTTPS origin of the owner deployment; mutations reject a missing or mismatched Origin.",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Secret rotated; endpoint disabled and its pending deliveries permanently retired. The new signing secret appears here and in the create response only.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/WebhookSecret" }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: malformed endpoint ID.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "invalid_request" }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: missing session cookie or unknown, expired or revoked session.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "unauthorized" }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: missing or mismatched CSRF proof, or a missing or mismatched Origin.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "forbidden" }
+              }
+            }
+          },
+          "404": {
+            "description": "not_found: no such endpoint in this account.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "not_found" }
+              }
+            }
+          },
+          "503": {
+            "description": "unavailable: storage or the secret vault is temporarily unavailable.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "unavailable" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/owner/messages": {
+      "get": {
+        "tags": ["owner-messages"],
+        "operationId": "listOwnerMessages",
+        "summary": "Page the account's message timeline (writer metadata only)",
+        "x-implemented": true,
+        "description": "Implemented today (crates/server/src/http_owner_messages.rs list_messages). Pages at most 20 messages newest first by creation time then ID, each with the last at most 32 timeline events and a flag when older events were dropped. The response contains writer metadata only: never the recipient, transport payload or device-side inbound content. A before cursor that is unknown or belongs to another account is 404; the 404 and 503 responses have empty bodies. Requires the owner session cookie plus the matching double-submit CSRF header.",
+        "security": [
+          {
+            "ownerSession": [],
+            "ownerCsrf": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "before",
+            "in": "query",
+            "required": false,
+            "description": "Cursor: the message_id returned as next_cursor on the preceding page. Absent on the first page.",
+            "schema": { "type": "string", "format": "uuid" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of the account's message timeline.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OwnerMessagePage" }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: missing session cookie or unknown, expired or revoked session. Empty body.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "unauthorized" }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: the CSRF cookie and x-zrotext-csrf header are missing or do not match. Empty body.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "forbidden" }
+              }
+            }
+          },
+          "404": {
+            "description": "not_found: the before cursor is unknown or belongs to another account. Empty body; no JSON error document.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            }
+          },
+          "503": {
+            "description": "unavailable: the store is temporarily unavailable. Empty body; no JSON error document.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            }
+          }
+        }
+      }
+    },
+    "/v1/alpha/messages": {
+      "post": {
+        "tags": ["alpha-messages"],
+        "operationId": "submitAlphaMessage",
+        "summary": "Submit one synthetic-alpha test message",
+        "x-implemented": true,
+        "description": "Implemented today (crates/server/src/http_messages.rs accept), mounted at /v1/alpha only while SYNTHETIC_ALPHA_ENABLED admits the account and recipient. The caller never supplies message content: only a short test-case identifier, and the server constructs the fixed plaintext body. Requests need a scoped API-key Bearer token (messages:send bound to the named device), a caller-chosen Idempotency-Key header of 1-128 ASCII alphanumeric, dash, dot or underscore bytes, and a JSON body of at most 1 KiB with no unknown members. Admission is fail-closed: an account or recipient outside the allowlist, a disabled alpha policy or an unknown device is 404; quota, abuse and queue limits can reject with 429; a payment hold rejects with 402; billing not yet configured rejects with 503 billing_pending.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Caller-chosen key of 1-128 ASCII alphanumeric, dash, dot or underscore bytes, unique per logical submission and reused verbatim on retry.",
+            "schema": { "type": "string", "pattern": "^[A-Za-z0-9._-]{1,128}$" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "The synthetic-alpha submission. Unknown JSON members are rejected.",
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/AlphaSubmitRequest" }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Accepted for dispatch, or an identical idempotent replay no-op (created:false with the stored message identity).",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AlphaAccepted" }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: the recipient is not a bounded E.164 number, the test-case identifier is missing or not 1-32 ASCII alphanumeric, dash or underscore bytes, the JSON body is malformed or has unknown members, or the Idempotency-Key is absent or malformed.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "invalid_request" }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: missing, malformed or unknown bearer credential, or multi-factor authentication is required.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "unauthorized" }
+              }
+            }
+          },
+          "402": {
+            "description": "payment_hold: the account has an unresolved billing hold.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "payment_hold" }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: the credential lacks the required scope or is bound to another device or tenant. recipient_suppressed: the recipient was suppressed by an owner or compliance control.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "examples": {
+                  "forbidden": { "value": { "code": "forbidden" } },
+                  "recipientSuppressed": { "value": { "code": "recipient_suppressed" } }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not_found: the alpha policy is disabled, the account or recipient is outside the allowlist, or the device is unknown or revoked.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "not_found" }
+              }
+            }
+          },
+          "409": {
+            "description": "conflict: the client_message_id or idempotency key was already used with different content, or the message state forbids the transition.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "conflict" }
+              }
+            }
+          },
+          "429": {
+            "description": "rate_limited, queue_full or quota_exceeded: the account exceeded its abuse budget, the queue is full, or the metered quota is exhausted. Carries Retry-After: 60.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" },
+              "Retry-After": { "$ref": "#/components/headers/RetryAfter60" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "examples": {
+                  "rateLimited": { "value": { "code": "rate_limited" } },
+                  "queueFull": { "value": { "code": "queue_full" } },
+                  "quotaExceeded": { "value": { "code": "quota_exceeded" } }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "unavailable or billing_pending: storage is temporarily unavailable, or no quota is configured for the account yet. billing_pending carries Retry-After: 10.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" },
+              "Retry-After": { "$ref": "#/components/headers/RetryAfter10" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "examples": {
+                  "unavailable": { "value": { "code": "unavailable" } },
+                  "billingPending": { "value": { "code": "billing_pending" } }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/alpha/messages/{message_id}": {
+      "get": {
+        "tags": ["alpha-messages"],
+        "operationId": "getAlphaMessageStatus",
+        "summary": "Get one message's current writer state",
+        "x-implemented": true,
+        "description": "Implemented today (crates/server/src/http_messages.rs status). Tenant-bound status snapshot of one accepted message: identity, device, state, state version and timestamps. Requires a messages:read-scoped API-key Bearer token bound to the message's device; an unknown or foreign message_id is 404.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "message_id",
+            "in": "path",
+            "required": true,
+            "description": "The accepted message identity.",
+            "schema": { "type": "string", "format": "uuid" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The message's current writer state.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AlphaStatus" }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: the message identity is malformed.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "invalid_request" }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: missing, malformed or unknown bearer credential.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "unauthorized" }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: the credential lacks the required scope or is bound to another device or tenant.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "forbidden" }
+              }
+            }
+          },
+          "404": {
+            "description": "not_found: no such message in this account.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "not_found" }
+              }
+            }
+          },
+          "503": {
+            "description": "unavailable: storage is temporarily unavailable.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "unavailable" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/alpha/messages/{message_id}/cancel": {
+      "post": {
+        "tags": ["alpha-messages"],
+        "operationId": "cancelAlphaMessage",
+        "summary": "Cancel one message before dispatch",
+        "x-implemented": true,
+        "description": "Implemented today (crates/server/src/http_messages.rs cancel). Requests cancellation of a message that has not left the writer's control; a message already claimed, submitting, submitted or terminal cannot be cancelled (409). Requires a messages:send-scoped API-key Bearer token bound to the message's device. Success is 204 with an empty body.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "message_id",
+            "in": "path",
+            "required": true,
+            "description": "The message to cancel.",
+            "schema": { "type": "string", "format": "uuid" }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Cancelled.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            }
+          },
+          "400": {
+            "description": "invalid_request: the message identity is malformed.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "invalid_request" }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: missing, malformed or unknown bearer credential.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "unauthorized" }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: the credential lacks the required scope or is bound to another device or tenant.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "forbidden" }
+              }
+            }
+          },
+          "404": {
+            "description": "not_found: no such message in this account, or it was already terminal.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "not_found" }
+              }
+            }
+          },
+          "409": {
+            "description": "conflict: the message state no longer permits cancellation.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "conflict" }
+              }
+            }
+          },
+          "503": {
+            "description": "unavailable: storage is temporarily unavailable.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "unavailable" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/enrollment/devices": {
+      "get": {
+        "tags": ["devices"],
+        "operationId": "listOwnerDevices",
+        "summary": "Page the account's enrolled devices",
+        "x-implemented": true,
+        "description": "Implemented today (crates/server/src/http_enrollment/mod.rs list_devices, mounted under /v1/enrollment). Pages at most 50 devices with revocation state, the current authenticated-socket-lease observation, capped pending and in-flight writer-state counts and the optional reported Android preconditions snapshot. A lease proves an authenticated socket only, never SIM, SMS or carrier readiness; counts describe stored writer states, not permission to dispatch, and are capped at 1,000. No SIM identifier, phone number or key material is returned. Requires the owner session cookie plus the matching double-submit CSRF header. A malformed before cursor is 400; the enrollment layer's failure responses have empty bodies.",
+        "security": [
+          {
+            "ownerSession": [],
+            "ownerCsrf": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "before",
+            "in": "query",
+            "required": false,
+            "description": "Cursor: the device_id returned as next_cursor on the preceding page. Absent on the first page.",
+            "schema": { "type": "string", "format": "uuid" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of the account's devices.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OwnerDevicePage" }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: the before cursor is not a UUID. Empty body; no JSON error document.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            }
+          },
+          "401": {
+            "description": "unauthorized: missing session cookie, unknown or expired session, or the session's account is not active.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "unauthorized" }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: the CSRF cookie and x-zrotext-csrf header are missing or do not match.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "forbidden" }
+              }
+            }
+          },
+          "503": {
+            "description": "unavailable: the store or the deployment authority is unavailable, or a standby replica cannot render authoritative lease state. Empty body; no JSON error document.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            }
+          }
+        }
+      }
+    },
+    "/v1/enrollment/devices/{device_id}": {
+      "delete": {
+        "tags": ["devices"],
+        "operationId": "revokeOwnerDevice",
+        "summary": "Revoke one enrolled device",
+        "x-implemented": true,
+        "description": "Implemented today (crates/server/src/http_enrollment/mod.rs revoke_device, mounted under /v1/enrollment). Revokes the device and its device key; an unknown or another account's device is 404. Success is 204 with an empty body. Requires the owner session cookie, the CSRF cookie/header pair and the exact configured HTTPS Origin.",
+        "security": [
+          {
+            "ownerSession": [],
+            "ownerCsrf": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "required": true,
+            "description": "The enrolled device identity assigned at pairing.",
+            "schema": { "type": "string", "format": "uuid" }
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "description": "The exact configured HTTPS origin of the owner deployment; mutations reject a missing or mismatched Origin.",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Revoked.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            }
+          },
+          "400": {
+            "description": "invalid_request: the device identity is malformed. Empty body; no JSON error document.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            }
+          },
+          "401": {
+            "description": "unauthorized: missing session cookie, unknown or expired session, or the session's account is not active.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "unauthorized" }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: missing or mismatched CSRF proof, or a missing or mismatched Origin.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "forbidden" }
+              }
+            }
+          },
+          "404": {
+            "description": "not_found: no such device in this account. Empty body; no JSON error document.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            }
+          },
+          "503": {
+            "description": "unavailable: the store is temporarily unavailable. Empty body; no JSON error document.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            }
+          }
+        }
+      }
+    },
+    "/v1/messages": {
+      "post": {
+        "tags": ["planned-messages"],
+        "operationId": "submitMessage",
+        "summary": "Submit one outbound message (planned)",
+        "x-implemented": false,
+        "description": "PLANNED: no /v1/messages route exists in crates/server today. Design target from the docs/ARCHITECTURE.md outline: Authorization: Bearer header, required Idempotency-Key, returns 202 and a message identity. The sealed-content proposal that would carry customer-readable text through this plane is pinned separately in openapi/sealed-v1.json (POST /v1/sealed/messages, proposed and unimplemented); public REST does not silently accept plaintext under the sealed promise. The only implemented send plane today is the allowlisted synthetic-alpha test route POST /v1/alpha/messages.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Planned shape: accepted for dispatch with a message identity. Response schema is intentionally not pinned until the route is implemented.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            }
+          },
+          "401": {
+            "description": "unauthorized: missing, malformed or unknown bearer credential.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "unauthorized" }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": ["planned-messages"],
+        "operationId": "listMessages",
+        "summary": "List messages with metadata filters (planned)",
+        "x-implemented": false,
+        "description": "PLANNED: no /v1/messages list route exists in crates/server today. Design target from the docs/ARCHITECTURE.md outline: cursor pagination with metadata filters and no server-side plaintext search. The implemented owner timeline today is GET /v1/owner/messages.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Planned shape: one cursor page of message metadata. Response schema is intentionally not pinned until the route is implemented.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            }
+          },
+          "401": {
+            "description": "unauthorized: missing, malformed or unknown bearer credential.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "unauthorized" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/messages/{message_id}": {
+      "get": {
+        "tags": ["planned-messages"],
+        "operationId": "getMessage",
+        "summary": "Get one message's metadata and event timeline (planned)",
+        "x-implemented": false,
+        "description": "PLANNED: no /v1/messages/{message_id} route exists in crates/server today. Design target from the docs/ARCHITECTURE.md outline: tenant-bound metadata, envelope reference and event timeline according to the credential's scope. The implemented per-message writer state today is GET /v1/alpha/messages/{message_id} on the allowlisted test plane.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "message_id",
+            "in": "path",
+            "required": true,
+            "description": "The message identity.",
+            "schema": { "type": "string", "format": "uuid" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Planned shape: tenant-bound message metadata and timeline. Response schema is intentionally not pinned until the route is implemented.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            }
+          },
+          "401": {
+            "description": "unauthorized: missing, malformed or unknown bearer credential.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "unauthorized" }
+              }
+            }
+          },
+          "404": {
+            "description": "not_found: no such message in this account.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "not_found" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/messages/{message_id}/cancel": {
+      "post": {
+        "tags": ["planned-messages"],
+        "operationId": "cancelMessage",
+        "summary": "Cancel one message before dispatch (planned)",
+        "x-implemented": false,
+        "description": "PLANNED: no /v1/messages/{message_id}/cancel route exists in crates/server today. Design target from the docs/ARCHITECTURE.md outline: cancellation becomes uncertain (409) once an execution grant or carrier submission exists. The implemented cancellation surface today is POST /v1/alpha/messages/{message_id}/cancel on the allowlisted test plane.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "message_id",
+            "in": "path",
+            "required": true,
+            "description": "The message to cancel.",
+            "schema": { "type": "string", "format": "uuid" }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Planned shape: cancelled.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            }
+          },
+          "401": {
+            "description": "unauthorized: missing, malformed or unknown bearer credential.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "unauthorized" }
+              }
+            }
+          },
+          "404": {
+            "description": "not_found: no such message in this account.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "not_found" }
+              }
+            }
+          },
+          "409": {
+            "description": "conflict: an execution grant or carrier submission already makes cancellation uncertain.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "conflict" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/devices": {
+      "get": {
+        "tags": ["planned-devices"],
+        "operationId": "listDevices",
+        "summary": "List the account's devices with health and capabilities (planned)",
+        "x-implemented": false,
+        "description": "PLANNED: no /v1/devices route exists in crates/server today. Design target from the docs/ARCHITECTURE.md outline: health, SIM, queue, last event and supported capabilities. The implemented owner device surface today is GET /v1/enrollment/devices; the proposed sealed-plane projection is pinned separately in openapi/sealed-v1.json (GET /v1/sealed/devices, proposed and unimplemented).",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Planned shape: the account's devices with health, SIM, queue, last event and supported capabilities. Response schema is intentionally not pinned until the route is implemented.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            }
+          },
+          "401": {
+            "description": "unauthorized: missing, malformed or unknown bearer credential.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "unauthorized" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/usage": {
+      "get": {
+        "tags": ["planned-usage"],
+        "operationId": "getUsage",
+        "summary": "Get the account's usage snapshot (planned)",
+        "x-implemented": false,
+        "description": "PLANNED: no /v1/usage route exists in crates/server today. Design target from the docs/ARCHITECTURE.md outline: quotas, reservations, refunds, reset times and clear units. The durable usage_periods/usage_ledger metering core is implemented (one outbound_message unit is reserved in the same transaction as metered admission, with refunds through the pre-grant cancellation/expiry path), but no public query route exposes it. The proposed sealed-plane projection is pinned separately in openapi/sealed-v1.json (GET /v1/sealed/usage, proposed and unimplemented).",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Planned shape: quotas, reservations, refunds, reset times and clear units. Response schema is intentionally not pinned until the route is implemented.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            }
+          },
+          "401": {
+            "description": "unauthorized: missing, malformed or unknown bearer credential.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "code": "unauthorized" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "ownerSession": {
+        "type": "apiKey",
+        "description": "The __Host-zrotext_session cookie of a verified, active owner session. Every owner route additionally requires the session-bound double-submit CSRF pair (the __Host-zrotext_csrf cookie and the equal x-zrotext-csrf header, modeled as ownerCsrf); a GET with the session cookie alone is refused with 403. Owner mutations additionally require the exact configured HTTPS Origin header.",
+        "in": "cookie",
+        "name": "__Host-zrotext_session"
+      },
+      "ownerCsrf": {
+        "type": "apiKey",
+        "description": "The x-zrotext-csrf header; its value must equal the __Host-zrotext_csrf cookie bound to the same session.",
+        "in": "header",
+        "name": "x-zrotext-csrf"
+      },
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "A scoped API-key token from the owner account routes, sent as the sole Authorization header value. Alpha message routes require the messages:send or messages:read scope bound to the addressed device."
+      }
+    },
+    "headers": {
+      "NoStore": {
+        "description": "Every response from these routes is marked Cache-Control: no-store.",
+        "schema": { "type": "string", "const": "no-store" }
+      },
+      "RetryAfter60": {
+        "description": "The alpha admission limiter asks the caller to wait 60 seconds before retrying.",
+        "schema": { "type": "string", "const": "60" }
+      },
+      "RetryAfter10": {
+        "description": "A billing_pending response asks the caller to retry in 10 seconds.",
+        "schema": { "type": "string", "const": "10" }
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "description": "The error body emitted by the implemented routes that return JSON errors. Owner-session enrollment failures and the owner timeline's 404/503 return bare status codes with empty bodies instead, as noted per operation.",
+        "additionalProperties": false,
+        "required": ["code"],
+        "properties": {
+          "code": {
+            "type": "string",
+            "enum": [
+              "invalid_request",
+              "unauthorized",
+              "forbidden",
+              "not_found",
+              "conflict",
+              "rate_limited",
+              "queue_full",
+              "quota_exceeded",
+              "billing_pending",
+              "payment_hold",
+              "recipient_suppressed",
+              "invalid_webhook_endpoint",
+              "endpoint_limit",
+              "replay_not_eligible",
+              "replay_limit",
+              "unavailable"
+            ],
+            "description": "Stable machine-readable reason code for the failure."
+          }
+        }
+      },
+      "WebhookCreateRequest": {
+        "type": "object",
+        "description": "The create-endpoint request body as implemented by crates/server/src/http_webhooks.rs. Unknown members are rejected.",
+        "additionalProperties": false,
+        "required": ["callback_url"],
+        "properties": {
+          "callback_url": {
+            "type": "string",
+            "maxLength": 2048,
+            "description": "HTTPS callback URL that must pass the strict egress validator: an HTTPS DNS name on port 443 with no IP literals, userinfo, fragment, local/internal/special-use names or invalid host labels."
+          }
+        }
+      },
+      "WebhookEndpointView": {
+        "type": "object",
+        "description": "One endpoint row as implemented by crates/server/src/http_webhooks.rs. Never includes signing secrets or encrypted secret bytes.",
+        "additionalProperties": false,
+        "required": [
+          "endpoint_id",
+          "callback_url",
+          "enabled",
+          "paused_at_ms",
+          "failure_started_at_ms",
+          "created_at_ms"
+        ],
+        "properties": {
+          "endpoint_id": { "type": "string", "format": "uuid" },
+          "callback_url": { "type": "string" },
+          "enabled": { "type": "boolean" },
+          "paused_at_ms": {
+            "type": ["integer", "null"],
+            "description": "When non-null, the automatic pause after 72 hours of sustained transport failure; enable clears it.",
+            "minimum": 0
+          },
+          "failure_started_at_ms": {
+            "type": ["integer", "null"],
+            "description": "When non-null, the start of the current sustained transport-failure streak.",
+            "minimum": 0
+          },
+          "created_at_ms": { "type": "integer", "minimum": 0 }
+        }
+      },
+      "WebhookEndpointList": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["endpoints"],
+        "properties": {
+          "endpoints": {
+            "type": "array",
+            "maxItems": 8,
+            "items": { "$ref": "#/components/schemas/WebhookEndpointView" }
+          }
+        }
+      },
+      "WebhookSecret": {
+        "type": "object",
+        "description": "The create and rotate response as implemented by crates/server/src/http_webhooks.rs. The signing secret is 32 random bytes as unpadded base64url and appears in these two responses only; there is no retrieval route.",
+        "additionalProperties": false,
+        "required": ["endpoint_id", "callback_url", "enabled", "signing_secret_b64url"],
+        "properties": {
+          "endpoint_id": { "type": "string", "format": "uuid" },
+          "callback_url": { "type": "string" },
+          "enabled": { "type": "boolean" },
+          "signing_secret_b64url":
+          {
+            "type": "string",
+            "minLength": 43,
+            "maxLength": 43,
+            "description": "The one-time 32-byte HMAC-SHA256 signing secret as unpadded base64url."
+          }
+        }
+      },
+      "WebhookAttemptView": {
+        "type": "object",
+        "description": "One immutable delivery attempt as implemented by crates/server/src/http_webhooks.rs.",
+        "additionalProperties": false,
+        "required": [
+          "generation",
+          "attempt_number",
+          "started_at_ms",
+          "completed_at_ms",
+          "outcome",
+          "http_status"
+        ],
+        "properties": {
+          "generation": { "type": "integer", "minimum": 1, "maximum": 3 },
+          "attempt_number": { "type": "integer", "minimum": 1, "maximum": 7 },
+          "started_at_ms": { "type": "integer", "minimum": 0 },
+          "completed_at_ms": { "type": ["integer", "null"], "minimum": 0 },
+          "outcome": {
+            "type": ["string", "null"],
+            "description": "Transport outcome such as timeout, http_error, network_error, or policy_rejected when disable or rotation retired a leased attempt."
+          },
+          "http_status": { "type": ["integer", "null"] }
+        }
+      },
+      "WebhookDeliveryView": {
+        "type": "object",
+        "description": "One delivery row with its attempts as implemented by crates/server/src/http_webhooks.rs. No payload, callback URL, signing secret, response body, recipient or inbound content is included.",
+        "additionalProperties": false,
+        "required": [
+          "delivery_id",
+          "event_id",
+          "status",
+          "generation",
+          "terminal_reason",
+          "attempt_count",
+          "next_attempt_at_ms",
+          "created_at_ms",
+          "updated_at_ms",
+          "attempts"
+        ],
+        "properties": {
+          "delivery_id": { "type": "string", "format": "uuid" },
+          "event_id": { "type": "string", "format": "uuid" },
+          "status": {
+            "type": "string",
+            "description": "Writer delivery status: pending, leased, succeeded or dead."
+          },
+          "generation": { "type": "integer", "minimum": 1, "maximum": 3 },
+          "terminal_reason": {
+            "type": ["string", "null"],
+            "description": "For dead deliveries: failed after exhausted transport attempts, or retired permanently by disable or rotation."
+          },
+          "attempt_count": { "type": "integer", "minimum": 0, "maximum": 7 },
+          "next_attempt_at_ms": {
+            "type": ["integer", "null"],
+            "minimum": 0,
+            "description": "Present only while the delivery is pending."
+          },
+          "created_at_ms": { "type": "integer", "minimum": 0 },
+          "updated_at_ms": { "type": "integer", "minimum": 0 },
+          "attempts": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/WebhookAttemptView" }
+          }
+        }
+      },
+      "WebhookDeliveryPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["deliveries", "next_before"],
+        "properties": {
+          "deliveries": {
+            "type": "array",
+            "maxItems": 20,
+            "items": { "$ref": "#/components/schemas/WebhookDeliveryView" }
+          },
+          "next_before": {
+            "type": ["string", "null"],
+            "format": "uuid",
+            "description": "The cursor for the next page; null after the last page."
+          }
+        }
+      },
+      "WebhookReplayAccepted": {
+        "type": "object",
+        "description": "The replay response as implemented by crates/server/src/http_webhooks.rs.",
+        "additionalProperties": false,
+        "required": ["delivery_id", "generation", "created"],
+        "properties": {
+          "delivery_id": { "type": "string", "format": "uuid" },
+          "generation": { "type": "integer", "minimum": 1, "maximum": 3 },
+          "created": {
+            "type": "boolean",
+            "description": "false for an identical idempotent replay of the same Idempotency-Key."
+          }
+        }
+      },
+      "OwnerMessageEvent": {
+        "type": "object",
+        "description": "One timeline event as implemented by crates/server/src/http_owner_messages.rs.",
+        "additionalProperties": false,
+        "required": [
+          "evidence",
+          "resulting_state",
+          "received_at_ms",
+          "segment_index",
+          "segment_count"
+        ],
+        "properties": {
+          "evidence": { "type": "string" },
+          "resulting_state": { "type": "string" },
+          "received_at_ms": { "type": "integer", "minimum": 0 },
+          "segment_index": { "type": ["integer", "null"] },
+          "segment_count": { "type": ["integer", "null"] }
+        }
+      },
+      "OwnerMessageView": {
+        "type": "object",
+        "description": "One message row as implemented by crates/server/src/http_owner_messages.rs. Writer metadata only: never the recipient, transport payload or device-side inbound content.",
+        "additionalProperties": false,
+        "required": [
+          "message_id",
+          "device_id",
+          "state",
+          "created_at_ms",
+          "updated_at_ms",
+          "events",
+          "events_truncated"
+        ],
+        "properties": {
+          "message_id": { "type": "string", "format": "uuid" },
+          "device_id": { "type": "string", "format": "uuid" },
+          "state": { "$ref": "#/components/schemas/MessageState" },
+          "created_at_ms": { "type": "integer", "minimum": 0 },
+          "updated_at_ms": { "type": "integer", "minimum": 0 },
+          "events": {
+            "type": "array",
+            "maxItems": 32,
+            "items": { "$ref": "#/components/schemas/OwnerMessageEvent" }
+          },
+          "events_truncated": {
+            "type": "boolean",
+            "description": "true when the message had more than 32 events and the oldest were dropped."
+          }
+        }
+      },
+      "OwnerMessagePage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["messages", "next_cursor"],
+        "properties": {
+          "messages": {
+            "type": "array",
+            "maxItems": 20,
+            "items": { "$ref": "#/components/schemas/OwnerMessageView" }
+          },
+          "next_cursor": {
+            "type": ["string", "null"],
+            "format": "uuid",
+            "description": "The cursor for the next page; null after the last page."
+          }
+        }
+      },
+      "MessageState": {
+        "type": "string",
+        "description": "The writer message state as serialized by zrotext_domain::MessageState (snake_case).",
+        "enum": [
+          "accepted",
+          "queued",
+          "claimed",
+          "submitting",
+          "submitted",
+          "delivered",
+          "delivery_unknown",
+          "unknown",
+          "failed",
+          "cancelled",
+          "expired"
+        ]
+      },
+      "AlphaSubmitRequest": {
+        "type": "object",
+        "description": "The synthetic-alpha submission body as implemented by crates/server/src/http_messages.rs. The caller selects only a short test-case identifier; the server constructs the fixed plaintext body. Unknown members are rejected.",
+        "additionalProperties": false,
+        "required": [
+          "client_message_id",
+          "device_id",
+          "recipient_e164",
+          "test_case_id",
+          "expires_at_ms"
+        ],
+        "properties": {
+          "client_message_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The caller-allocated identity; reusing it with different content is a conflict."
+          },
+          "device_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The enrolled, unrevoked device that will dispatch the test message."
+          },
+          "recipient_e164": {
+            "type": "string",
+            "pattern": "^\\+[1-9][0-9]{1,14}$",
+            "description": "The allowlisted test recipient in E.164 form: a plus sign followed by 2-15 digits with no leading zero."
+          },
+          "test_case_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "pattern": "^[A-Za-z0-9_-]{1,32}$",
+            "description": "Short test-case identifier incorporated into the fixed synthetic body."
+          },
+          "expires_at_ms": {
+            "type": "integer",
+            "description": "Unix millisecond deadline after which an undispatched message expires."
+          }
+        }
+      },
+      "AlphaAccepted": {
+        "type": "object",
+        "description": "The alpha accept response as implemented by crates/server/src/http_messages.rs.",
+        "additionalProperties": false,
+        "required": ["message_id", "created"],
+        "properties": {
+          "message_id": { "type": "string", "format": "uuid" },
+          "created": {
+            "type": "boolean",
+            "description": "false for an identical idempotent replay of the same Idempotency-Key."
+          }
+        }
+      },
+      "AlphaStatus": {
+        "type": "object",
+        "description": "The alpha status response as implemented by crates/server/src/http_messages.rs (StatusBody).",
+        "additionalProperties": false,
+        "required": [
+          "message_id",
+          "device_id",
+          "state",
+          "state_version",
+          "created_at_ms",
+          "updated_at_ms"
+        ],
+        "properties": {
+          "message_id": { "type": "string", "format": "uuid" },
+          "device_id": { "type": "string", "format": "uuid" },
+          "state": { "$ref": "#/components/schemas/MessageState" },
+          "state_version": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Monotonic writer version of the state row."
+          },
+          "created_at_ms": { "type": "integer", "minimum": 0 },
+          "updated_at_ms": { "type": "integer", "minimum": 0 }
+        }
+      },
+      "ReportedPreconditions": {
+        "type": "object",
+        "description": "The device's latest reported Android preconditions snapshot as implemented by crates/server/src/enrollment. A report never authorizes a send or establishes carrier readiness.",
+        "additionalProperties": false,
+        "required": [
+          "selected_sim",
+          "sms_permission",
+          "airplane_mode",
+          "network_service",
+          "received_at_ms",
+          "fresh"
+        ],
+        "properties": {
+          "selected_sim": { "type": "string" },
+          "sms_permission": { "type": "string" },
+          "airplane_mode": { "type": "string" },
+          "network_service": { "type": ["string", "null"] },
+          "received_at_ms": { "type": "integer", "minimum": 0 },
+          "fresh": {
+            "type": "boolean",
+            "description": "true only when the snapshot is fresh at the writer's status observation time."
+          }
+        }
+      },
+      "OwnerDevice": {
+        "type": "object",
+        "description": "One enrolled device row as implemented by crates/server/src/http_enrollment. No SIM identifier, phone number or key material is returned; active_socket_lease proves an authenticated socket only and the counts are stored writer states, not permission to dispatch.",
+        "additionalProperties": false,
+        "required": [
+          "device_id",
+          "display_name",
+          "revoked",
+          "active_socket_lease",
+          "pending_messages",
+          "in_flight_messages",
+          "status_observed_at_ms",
+          "reported_preconditions"
+        ],
+        "properties": {
+          "device_id": { "type": "string", "format": "uuid" },
+          "display_name": { "type": "string" },
+          "revoked": { "type": "boolean" },
+          "active_socket_lease": {
+            "type": "boolean",
+            "description": "A current authenticated hub lease, not evidence of SIM or SMS readiness."
+          },
+          "pending_messages": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000,
+            "description": "Capped count of accepted, queued or claimed messages; rendered at the 1,000 cap."
+          },
+          "in_flight_messages": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000,
+            "description": "Capped count of submitting or submitted messages; rendered at the 1,000 cap."
+          },
+          "status_observed_at_ms": { "type": "integer", "minimum": 0 },
+          "reported_preconditions": {
+            "oneOf": [
+              { "$ref": "#/components/schemas/ReportedPreconditions" },
+              { "type": "null" }
+            ],
+            "description": "The latest reported Android preconditions snapshot, when one was retained."
+          }
+        }
+      },
+      "OwnerDevicePage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["devices", "next_cursor"],
+        "properties": {
+          "devices": {
+            "type": "array",
+            "maxItems": 50,
+            "items": { "$ref": "#/components/schemas/OwnerDevice" }
+          },
+          "next_cursor": {
+            "type": ["string", "null"],
+            "format": "uuid",
+            "description": "The cursor for the next page; null after the last page."
+          }
+        }
+      }
+    }
+  }
+}

@@ -306,7 +306,7 @@ Make ZROtext practical to run, upgrade and build against.
 
 - [x] Route outline and sealed send shape ([outline](ARCHITECTURE.md#planned-api-v1-outline))
 - [x] Versioned device stream schema aligned with the wire format
-- [ ] OpenAPI contract for `/v1/messages`, `/v1/devices`, `/v1/webhooks` and `/v1/usage`
+- [x] OpenAPI contract for `/v1/messages`, `/v1/devices`, `/v1/webhooks` and `/v1/usage` ([contract](../protocol/v1/openapi/public-v1.json))
 - [ ] TypeScript SDK with local encryption, after the sealed protocol is finalized
 
 </details>

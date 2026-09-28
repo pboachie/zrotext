@@ -18,6 +18,15 @@ exists, the sealed runtime stays disabled, and the synthetic-alpha and general
 send planes remain separate. Sealed device, webhook and usage endpoints are
 deferred to later slices.
 
+[openapi/public-v1.json](openapi/public-v1.json) pins the public HTTP surface of
+the `/v1/messages`, `/v1/devices`, `/v1/webhooks` and `/v1/usage` route families
+exactly as `crates/server` implements them today, and labels the
+planned-but-unimplemented routes. Implemented today: the owner webhook lifecycle
+(`webhook-endpoints.md`), the owner message timeline, the allowlisted
+synthetic-alpha plane at `/v1/alpha/messages` and the owner device surface at
+`/v1/enrollment/devices`. `POST`/`GET /v1/messages`, `GET /v1/devices` and
+`GET /v1/usage` remain design targets marked `x-implemented: false`.
+
 [line-activation-contract.md](line-activation-contract.md) defines an internal, challenge-bound, dual-signature generation transition. It is not wired to a transport or a trusted owner-key bootstrap.
 
 [vectors/ztse-draft-01.json](vectors/ztse-draft-01.json) contains public synthetic
