@@ -2952,6 +2952,7 @@ dependencies = [
  "base64 0.23.1",
  "futures-util",
  "hmac",
+ "http-body",
  "lettre",
  "p256",
  "rand 0.10.3",
