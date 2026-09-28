@@ -2,7 +2,7 @@ use super::*;
 
 // Keep the admission fixtures on the complete, reviewed schema. SQL is
 // embedded at build time so tests never execute files discovered at runtime.
-const TEST_MIGRATIONS: [(&str, &str); 48] = [
+const TEST_MIGRATIONS: [(&str, &str); 49] = [
     (
         "001_foundation.sql",
         include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
@@ -197,6 +197,10 @@ const TEST_MIGRATIONS: [(&str, &str); 48] = [
         "048_observer_memberships.sql",
         include_str!("../../../deploy/compose/migrations/048_observer_memberships.sql"),
     ),
+    (
+        "049_owner_queue_probe_indexes.sql",
+        include_str!("../../../deploy/compose/migrations/049_owner_queue_probe_indexes.sql"),
+    ),
 ];
 
 /// Applies every numbered migration in order. Shared by the PostgreSQL-backed
@@ -220,6 +224,24 @@ pub(crate) async fn apply_test_migrations(client: &Client) {
                 .batch_execute(
                     "CREATE INDEX CONCURRENTLY message_events_attempt_evidence \
                  ON message_events(attempt_id,evidence_code)",
+                )
+                .await
+                .unwrap();
+        }
+        if name == "049_owner_queue_probe_indexes.sql" {
+            client
+                .batch_execute(
+                    "CREATE INDEX CONCURRENTLY messages_owner_pending_state \
+                 ON messages(device_id,state,created_at) \
+                 WHERE state IN ('accepted','queued','claimed')",
+                )
+                .await
+                .unwrap();
+            client
+                .batch_execute(
+                    "CREATE INDEX CONCURRENTLY messages_owner_in_flight_state \
+                 ON messages(device_id,state,created_at) \
+                 WHERE state IN ('submitting','submitted')",
                 )
                 .await
                 .unwrap();

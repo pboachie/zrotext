@@ -18,7 +18,7 @@ macro_rules! migration {
 
 // The ceremony runs on the complete schema. SQL is embedded at build time so
 // the test never executes files discovered at runtime.
-const TEST_MIGRATIONS: [(&str, &str); 48] = [
+const TEST_MIGRATIONS: [(&str, &str); 49] = [
     ("001_foundation.sql", migration!("001_foundation.sql")),
     ("002_auth.sql", migration!("002_auth.sql")),
     ("003_delivery.sql", migration!("003_delivery.sql")),
@@ -196,6 +196,10 @@ const TEST_MIGRATIONS: [(&str, &str); 48] = [
         "048_observer_memberships.sql",
         migration!("048_observer_memberships.sql"),
     ),
+    (
+        "049_owner_queue_probe_indexes.sql",
+        migration!("049_owner_queue_probe_indexes.sql"),
+    ),
 ];
 
 #[test]
@@ -363,6 +367,22 @@ async fn postgres_owner_key_ceremony_requires_possession_mfa_and_revokes_only_sm
             db.batch_execute(
                 "CREATE INDEX CONCURRENTLY message_events_attempt_evidence \
                  ON message_events(attempt_id,evidence_code)",
+            )
+            .await
+            .unwrap();
+        }
+        if name == "049_owner_queue_probe_indexes.sql" {
+            db.batch_execute(
+                "CREATE INDEX CONCURRENTLY messages_owner_pending_state \
+                 ON messages(device_id,state,created_at) \
+                 WHERE state IN ('accepted','queued','claimed')",
+            )
+            .await
+            .unwrap();
+            db.batch_execute(
+                "CREATE INDEX CONCURRENTLY messages_owner_in_flight_state \
+                 ON messages(device_id,state,created_at) \
+                 WHERE state IN ('submitting','submitted')",
             )
             .await
             .unwrap();

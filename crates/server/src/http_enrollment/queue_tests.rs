@@ -183,7 +183,7 @@ macro_rules! queue_schema {
         [$(($name, include_str!(concat!("../../../../deploy/compose/migrations/", $name)))),+]
     };
 }
-const QUEUE_SCHEMA: [(&str, &str); 48] = queue_schema!(
+const QUEUE_SCHEMA: [(&str, &str); 49] = queue_schema!(
     "001_foundation.sql",
     "002_auth.sql",
     "003_delivery.sql",
@@ -232,6 +232,7 @@ const QUEUE_SCHEMA: [(&str, &str); 48] = queue_schema!(
     "046_sealed_root_ceremonies.sql",
     "047_device_network_service.sql",
     "048_observer_memberships.sql",
+    "049_owner_queue_probe_indexes.sql",
 );
 
 #[test]
@@ -257,6 +258,10 @@ async fn apply_queue_schema(db: &Client) {
             }
             "040_radio_evidence_index.sql" => {
                 db.batch_execute("CREATE INDEX message_events_attempt_evidence ON message_events(attempt_id,evidence_code)").await.unwrap();
+            }
+            "049_owner_queue_probe_indexes.sql" => {
+                db.batch_execute("CREATE INDEX messages_owner_pending_state ON messages(device_id,state,created_at) WHERE state IN ('accepted','queued','claimed')").await.unwrap();
+                db.batch_execute("CREATE INDEX messages_owner_in_flight_state ON messages(device_id,state,created_at) WHERE state IN ('submitting','submitted')").await.unwrap();
             }
             _ => {}
         }
