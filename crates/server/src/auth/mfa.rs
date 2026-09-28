@@ -321,7 +321,7 @@ async fn require_live_session(
 }
 
 pub async fn status(client: &Client, principal: &SessionPrincipal) -> Result<Status, AuthError> {
-    super::require_current_owner(client, principal).await?;
+    super::require_unlocked_owner(client, principal).await?;
     let row = client.query_opt(
         "SELECT enabled_at IS NOT NULL, COALESCE(pending_expires_at>now(),false) FROM owner_mfa WHERE account_id=$1 AND user_id=$2",
         &[&principal.tenant.account_id(), &principal.user_id],

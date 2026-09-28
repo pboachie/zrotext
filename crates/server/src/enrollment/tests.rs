@@ -430,6 +430,113 @@ async fn postgres_one_use_tenant_replay_expiry_and_revocation() {
         .unwrap();
 }
 
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn owner_precheck_reuses_one_fresh_validation_and_requeries_after() {
+    let url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+        .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let (mut client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let schema = format!("enrollment_fresh_{}", Uuid::new_v4().simple());
+    client
+        .batch_execute(&format!(
+            "CREATE SCHEMA {schema}; SET search_path TO {schema}"
+        ))
+        .await
+        .unwrap();
+    for sql in [
+        include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
+        include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+        include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
+        include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
+        include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+        include_str!("../../../../deploy/compose/migrations/006_usage_metering.sql"),
+        include_str!("../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"),
+        include_str!("../../../../deploy/compose/migrations/008_stripe_billing_foundation.sql"),
+        include_str!("../../../../deploy/compose/migrations/009_webhook_manual_replay.sql"),
+        include_str!("../../../../deploy/compose/migrations/010_billing_test_entitlement.sql"),
+        include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
+        include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
+        include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
+        include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
+        include_str!("../../../../deploy/compose/migrations/020_enrollment_retention_indexes.sql"),
+        include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+        include_str!("../../../../deploy/compose/migrations/027_billing_test_config.sql"),
+        include_str!("../../../../deploy/compose/migrations/028_billing_provider_failures.sql"),
+    ] {
+        client.batch_execute(sql).await.unwrap();
+    }
+    let auth_hasher = TokenHasher::new(crate::test_keys::key(23)).unwrap();
+    let password = Uuid::new_v4().to_string();
+    let owner = register(
+        &mut client,
+        &auth_hasher,
+        "fresh-owner@example.test",
+        &password,
+    )
+    .await
+    .unwrap();
+    verify_email(&mut client, &auth_hasher, &owner.verification_token)
+        .await
+        .unwrap();
+    let revoke = "UPDATE sessions SET revoked_at=now() WHERE id=$1";
+
+    // The request's own authentication stands in for the unlocked pre-check
+    // exactly once: revoking the session after authentication shows the
+    // first call did not re-query, and the second call on the same principal
+    // does.
+    let session = login(&client, &auth_hasher, "fresh-owner@example.test", &password)
+        .await
+        .unwrap();
+    let principal = authenticate_session(&client, &auth_hasher, &session.token)
+        .await
+        .unwrap();
+    client
+        .execute(revoke, &[&principal.session_id])
+        .await
+        .unwrap();
+    assert!(
+        pairing_view(&client, &principal, Uuid::new_v4())
+            .await
+            .is_ok()
+    );
+    assert!(matches!(
+        pairing_view(&client, &principal, Uuid::new_v4()).await,
+        Err(EnrollmentError::Unauthorized)
+    ));
+    // The next request authenticates again and is refused.
+    assert!(
+        authenticate_session(&client, &auth_hasher, &session.token)
+            .await
+            .is_err()
+    );
+
+    // A validation older than the reuse window is never reused.
+    let session = login(&client, &auth_hasher, "fresh-owner@example.test", &password)
+        .await
+        .unwrap();
+    let principal = authenticate_session(&client, &auth_hasher, &session.token)
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    client
+        .execute(revoke, &[&principal.session_id])
+        .await
+        .unwrap();
+    assert!(matches!(
+        pairing_view(&client, &principal, Uuid::new_v4()).await,
+        Err(EnrollmentError::Unauthorized)
+    ));
+    client
+        .batch_execute(&format!(
+            "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
+        ))
+        .await
+        .unwrap();
+}
+
 async fn proven_pairing(
     db: &mut Client,
     hasher: &EnrollmentHasher,
