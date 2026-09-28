@@ -14,7 +14,7 @@ import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/** Opt-in preflight only. It selects one active SIM but never arms or calls the radio. */
+/** Opt-in preflight only. It selects one active SIM (naming its slot when several are active) but never arms or calls the radio. */
 @RunWith(AndroidJUnit4::class)
 class LocalRadioPreflightDeviceTest {
     @Test fun selectExactlyOneConsentedActiveSimForPrivatePilot() {
@@ -27,8 +27,16 @@ class LocalRadioPreflightDeviceTest {
         }
         val subscriptions = app.getSystemService(SubscriptionManager::class.java)
             .activeSubscriptionInfoList.orEmpty()
-        assertTrue("exactly one active SIM is required", subscriptions.size == 1)
-        val subscriptionId = subscriptions.single().subscriptionId
+        val namedSlot = args.getString("m1SubscriptionSlot")?.toIntOrNull()
+        val selected = if (namedSlot == null) {
+            assertTrue("exactly one active SIM is required when no slot is named", subscriptions.size == 1)
+            subscriptions.single()
+        } else {
+            assertTrue("m1SubscriptionSlot must name exactly one active SIM",
+                subscriptions.count { it.simSlotIndex == namedSlot } == 1)
+            subscriptions.single { it.simSlotIndex == namedSlot }
+        }
+        val subscriptionId = selected.subscriptionId
         assertTrue(subscriptionId >= 0)
         assertFalse("one-send pilot was already consumed",
             app.getSharedPreferences("alpha_pilot", Context.MODE_PRIVATE).getBoolean("attempt_used", false))
