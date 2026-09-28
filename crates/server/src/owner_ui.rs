@@ -287,7 +287,7 @@ mod tests {
             (
                 "verify-form",
                 "/v1/auth/verify-email",
-                "token=synthetic-code",
+                "token=synthetic-code&password=synthetic-password",
             ),
             (
                 "resend-form",
