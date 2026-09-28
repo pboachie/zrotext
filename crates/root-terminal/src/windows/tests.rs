@@ -30,6 +30,9 @@ fn isolated(name: &str, run: fn()) {
                     0
                 );
             }
+            step(5);
+            crate::native_process::assert_current_process_limited();
+            step(10);
             run();
         });
         std::process::exit(if result.is_ok() {
@@ -66,17 +69,13 @@ fn isolated(name: &str, run: fn()) {
         startup.wShowWindow = 0;
         let mut process = zeroed();
         assert_ne!(
-            CreateProcessW(
+            crate::native_process::create(
                 application.as_ptr(),
                 command.as_mut_ptr(),
-                null(),
-                null(),
-                0,
-                CREATE_NEW_CONSOLE | CREATE_UNICODE_ENVIRONMENT,
                 environment.as_ptr().cast(),
-                null(),
                 &startup,
-                &mut process
+                &mut process,
+                || verify_process_eligibility().is_ok(),
             ),
             0
         );
@@ -103,7 +102,10 @@ fn input() -> HANDLE {
     unsafe { GetStdHandle(STD_INPUT_HANDLE) }
 }
 fn snapshot() -> Vec<u16> {
-    let mut text = vec![0; 256];
+    snapshot_size(256)
+}
+fn snapshot_size(size: usize) -> Vec<u16> {
+    let mut text = vec![0; size];
     let mut count = 0;
     // SAFETY: synthetic child-owned screen and bounded writable output buffer.
     unsafe {
@@ -118,7 +120,7 @@ fn snapshot() -> Vec<u16> {
             0
         );
     }
-    assert_eq!(count, 256);
+    assert_eq!(count as usize, size);
     text
 }
 fn inject(value: u16, repeat: u16) {
@@ -139,6 +141,165 @@ fn line() {
     for value in b"SYNTHETIC\r" {
         inject(*value as u16, 1);
     }
+}
+
+fn synthetic_token() -> zrotext_root_material::recovery_kit::RecoveryToken {
+    use zrotext_root_material::{
+        recovery_kit::{KitContext, encode_token},
+        root_backup::{ExpectedIdentity, RecoverySecret},
+        sealed_root_enrollment::root_fingerprint,
+    };
+    let source = include_str!("../../../../protocol/v1/vectors/recovery-kit-01.json");
+    let encoded = source
+        .split("\"rootPinHex\": \"")
+        .nth(1)
+        .unwrap()
+        .split('"')
+        .next()
+        .unwrap();
+    let pin: Vec<u8> = encoded
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|p| u8::from_str_radix(std::str::from_utf8(p).unwrap(), 16).unwrap())
+        .collect();
+    let expected = ExpectedIdentity {
+        account_id: [1; 16],
+        origin: "https://example.test".into(),
+        root_fingerprint: root_fingerprint(&pin, &[1; 16]).unwrap(),
+    };
+    encode_token(
+        &RecoverySecret::new(Zeroizing::new([9; 32])),
+        &KitContext::new(expected, &pin, [1; 16]).unwrap(),
+    )
+}
+
+fn consent(value: &[u8]) {
+    let value = value.to_vec();
+    let baseline = String::from_utf16_lossy(&snapshot_size(2048))
+        .matches("Type REVEAL")
+        .count();
+    std::thread::spawn(move || {
+        let started = Instant::now();
+        while String::from_utf16_lossy(&snapshot_size(2048))
+            .matches("Type REVEAL")
+            .count()
+            <= baseline
+        {
+            assert!(started.elapsed() < Duration::from_secs(2));
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        for b in value.iter().chain(std::iter::once(&b'\r')) {
+            inject(u16::from(*b), 1);
+        }
+    });
+}
+
+#[test]
+fn native_reveal_rejects_input_queued_before_prompt() {
+    isolated("native_reveal_rejects_input_queued_before_prompt", || {
+        let token = synthetic_token();
+        let session = Session::acquire().unwrap();
+        for b in b"REVEAL\r" {
+            inject(u16::from(*b), 1);
+        }
+        assert_eq!(
+            session.confirm_and_reveal(&token, Duration::from_secs(2)),
+            Err(Error::Busy)
+        );
+        assert!(!String::from_utf16_lossy(&snapshot_size(2048)).contains("ZTRK1-"));
+    });
+}
+
+#[test]
+fn native_reveal_requires_exact_consent_and_restores() {
+    isolated("native_reveal_requires_exact_consent_and_restores", || {
+        let token = synthetic_token();
+        let original = mode(input()).unwrap();
+        let session = Session::acquire().unwrap();
+        consent(b"REVEAL");
+        session
+            .confirm_and_reveal(&token, Duration::from_secs(2))
+            .unwrap();
+        assert_eq!(mode(input()).unwrap(), original);
+        let snapshot = snapshot_size(2048);
+        let text = String::from_utf16_lossy(&snapshot);
+        assert!(text.contains(std::str::from_utf8(token.expose_ascii()).unwrap()));
+    });
+}
+
+#[test]
+fn native_reveal_decline_and_timeout_do_not_output_token() {
+    isolated(
+        "native_reveal_decline_and_timeout_do_not_output_token",
+        || {
+            let token = synthetic_token();
+            for value in [b"reveal".as_slice(), b"NO"] {
+                let session = Session::acquire().unwrap();
+                consent(value);
+                assert_eq!(
+                    session.confirm_and_reveal(&token, Duration::from_secs(2)),
+                    Err(Error::Rejected)
+                );
+            }
+            let session = Session::acquire().unwrap();
+            assert_eq!(
+                session.confirm_and_reveal(&token, Duration::from_millis(10)),
+                Err(Error::TimedOut)
+            );
+            assert!(!String::from_utf16_lossy(&snapshot()).contains("ZTRK1-"));
+        },
+    );
+}
+
+#[test]
+fn native_partial_reveal_returns_error_without_second_output() {
+    isolated(
+        "native_partial_reveal_returns_error_without_second_output",
+        || {
+            let token = synthetic_token();
+            let mut session = Session::acquire().unwrap();
+            session.fault = Some(Fault::RevealAfterPrefix);
+            consent(b"REVEAL");
+            assert_eq!(
+                session.confirm_and_reveal(&token, Duration::from_secs(2)),
+                Err(Error::Io)
+            );
+            assert!(
+                !String::from_utf16_lossy(&snapshot())
+                    .contains(std::str::from_utf8(token.expose_ascii()).unwrap())
+            );
+        },
+    );
+}
+
+#[test]
+fn native_reveal_cleanup_failure_is_not_success_and_poisons() {
+    isolated(
+        "native_reveal_cleanup_failure_is_not_success_and_poisons",
+        || {
+            let token = synthetic_token();
+            let mut session = Session::acquire().unwrap();
+            session.fault = Some(Fault::Unregister);
+            consent(b"REVEAL");
+            assert_eq!(
+                session.confirm_and_reveal(&token, Duration::from_secs(2)),
+                Err(Error::RestorationFailed)
+            );
+            assert!(matches!(Session::acquire(), Err(Error::Poisoned)));
+        },
+    );
+}
+
+#[test]
+fn native_public_finish_propagates_restoration_failure() {
+    isolated(
+        "native_public_finish_propagates_restoration_failure",
+        || {
+            let mut session = Session::acquire().unwrap();
+            session.fault = Some(Fault::Unregister);
+            assert_eq!(session.finish(), Err(Error::RestorationFailed));
+        },
+    );
 }
 
 #[test]

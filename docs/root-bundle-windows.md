@@ -1,7 +1,7 @@
 # Candidate Windows encrypted-bundle storage
 
-`zrotext-root-bundle` is a dormant library for storing a proposed encrypted root
-backup and its public card together. It is not a usable recovery CLI. Nothing
+`zrotext-root-bundle` stores an encrypted root backup and its public card for the
+[candidate offline CLI](offline-owner-cli.md). Nothing
 invokes it in the server or Android app. It does not generate roots or recovery
 tokens, decrypt backups, display secrets, enroll roots, or access a network.
 
@@ -9,6 +9,11 @@ tokens, decrypt backups, display secrets, enroll roots, or access a network.
 supplied public identity, and matching public-card digest. This does **not**
 authenticate the encrypted content or prove that recovery will succeed. The
 existing `root_backup::open` remains necessary for authenticated recovery.
+
+`Store::open_existing` never creates a store. `read_bundle` accepts only a public
+backup ID and independent expected identity, derives the fixed directory name,
+and retains both child handles while checking ACLs, file identities, size bounds,
+framing, digest and the directory-to-backup ID binding. It does not decrypt data.
 
 ## Supported boundary
 

@@ -1,11 +1,17 @@
 # Candidate Windows console transport
 
-`zrotext-root-terminal` is a dormant library for one bounded, no-echo ASCII
-input operation. It has no CLI, recovery-codec dependency, root generation,
-secret-reveal ceremony, enrollment, network, clipboard, keystore or file output.
-It is not a usable owner recovery tool. `Session` is available only on Windows.
+`zrotext-root-terminal` provides bounded no-echo ASCII input and a narrowly typed
+recovery-token reveal operation for the [candidate offline CLI](offline-owner-cli.md).
+It does not generate roots, enroll accounts, access a network, clipboard or
+keystore, or write files. `Session` is available only on Windows.
 
 ## Eligibility and ownership
+
+`confirm_and_reveal` consumes the session, accepts only the reviewed recovery
+token type, requires exact `REVEAL` consent, and writes through the same retained
+console handle using bounded zeroizing UTF-16 storage. Partial output is an error
+without automatic retry. Restoration must succeed before success is returned.
+`finish` reports cleanup failures for sessions used only for public output.
 
 Acquisition requires the current standard input, output and error handles to
 be console character handles with the correct directions. It retains separate
@@ -15,8 +21,10 @@ protocol is the local console protocol. Query failures are refusals.
 
 These checks do not prove physical presence, an unrecorded terminal, or the
 absence of a ConPTY/remoting host. The terminal host and other processes running
-as the user remain trusted. Elevation policy and human consent belong to the
-future CLI. There is no reopening of `CONIN$`/`CONOUT$`, allocation/attachment to
+as the user remain trusted. `verify_process_eligibility` rejects elevated processes
+and all thread impersonation tokens. The CLI checks it before entropy; the reveal
+operation checks it before consent and each output segment. There is no reopening
+of `CONIN$`/`CONOUT$`, allocation/attachment to
 another console, blocking-input fallback, or redirected-stdio fallback.
 
 A process-wide exclusive guard prevents overlapping adapter sessions. **The

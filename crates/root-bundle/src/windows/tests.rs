@@ -81,6 +81,57 @@ impl Drop for Temp {
 }
 
 #[test]
+fn native_reader_requires_existing_store_and_independent_identity() {
+    let temp = Temp::new();
+    assert!(Store::open_existing(&temp.0).is_err());
+    assert_eq!(std::fs::read_dir(&temp.0).unwrap().count(), 0);
+    let bundle = bundle();
+    let (_, _, mut expected) = crate::tests::fixture();
+    temp.store().publish(&bundle).unwrap();
+    let store = Store::open_existing(&temp.0).unwrap();
+    let read = store.read_bundle(&bundle.id, &expected).unwrap();
+    assert_eq!(read.encrypted_backup(), bundle.encrypted_backup());
+    assert_eq!(read.public_card(), bundle.public_card());
+    expected.root_fingerprint[0] ^= 1;
+    assert!(store.read_bundle(&bundle.id, &expected).is_err());
+    expected.root_fingerprint[0] ^= 1;
+    assert!(store.read_bundle(&[0; 16], &expected).is_err());
+    let mut other_id = bundle.id;
+    other_id[0] ^= 1;
+    assert!(store.read_bundle(&other_id, &expected).is_err());
+}
+
+#[test]
+fn native_reader_rejects_corruption_and_directory_id_aliases() {
+    let temp = Temp::new();
+    let bundle = bundle();
+    let (_, _, expected) = crate::tests::fixture();
+    let store = temp.store();
+    store.publish(&bundle).unwrap();
+    let path = temp.directory().join(bundle.name()).join("backup.ztrb");
+    let mut bytes = bundle.backup.clone();
+    *bytes.last_mut().unwrap() ^= 1;
+    std::fs::write(&path, &bytes).unwrap();
+    assert!(store.read_bundle(&bundle.id, &expected).is_err());
+    std::fs::write(&path, &bundle.backup).unwrap();
+    let mut alias_id = bundle.id;
+    alias_id[0] ^= 1;
+    let alias_name = format!(
+        "bundle-{}",
+        alias_id
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    );
+    std::fs::rename(
+        temp.directory().join(bundle.name()),
+        temp.directory().join(alias_name),
+    )
+    .unwrap();
+    assert!(store.read_bundle(&alias_id, &expected).is_err());
+}
+
+#[test]
 fn native_publish_reopens_destination_and_preserves_permissions_and_bytes() {
     let temp = Temp::new();
     let store = temp.store();

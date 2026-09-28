@@ -46,4 +46,8 @@ mod input;
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
-pub use windows::Session;
+pub use windows::{Session, verify_process_eligibility};
+
+#[cfg(all(windows, test))]
+#[path = "../test-support/native_process.rs"]
+mod native_process;
