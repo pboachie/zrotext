@@ -12,6 +12,9 @@ use tokio_postgres::Client;
 use uuid::Uuid;
 
 const CHALLENGE_LIFETIME_SECS: i32 = 300;
+/// Lines are permanent tombstones. Bound the ones an account can create
+/// without ever completing an activation.
+const MAX_UNACTIVATED_LINES: i64 = 16;
 const DEVICE_DOMAIN: &[u8] = b"ZTSE/line/device-confirm/v1\0";
 const OWNER_DOMAIN: &[u8] = b"ZTSE/line/owner-approve/v1\0";
 const SMS_DEVICE_DOMAIN: &[u8] = b"ZTSMS/line/device-confirm/v1\0";
@@ -262,6 +265,39 @@ async fn issue_line_challenge_with_lifetime(
     .await
 }
 
+/// Serializes line creation per account and refuses a new line while the
+/// account already holds [`MAX_UNACTIVATED_LINES`] that never activated.
+/// Reopening one of those lines is still allowed.
+async fn create_line(
+    tx: &tokio_postgres::Transaction<'_>,
+    account_id: Uuid,
+    line_id: Uuid,
+) -> Result<(), LineActivationError> {
+    tx.execute(
+        "SELECT pg_advisory_xact_lock(hashtextextended('zt:phone-line-create:' || $1::uuid::text, 0))",
+        &[&account_id],
+    )
+    .await?;
+    let unactivated: i64 = tx
+        .query_one(
+            "SELECT count(*) FROM phone_lines WHERE account_id=$1 AND approved_at IS NULL",
+            &[&account_id],
+        )
+        .await?
+        .get(0);
+    if unactivated >= MAX_UNACTIVATED_LINES {
+        return Err(LineActivationError::Unavailable);
+    }
+    // A concurrent insert by another account wins the conflict; the scoped
+    // read that follows then finds no row and refuses.
+    tx.execute(
+        "INSERT INTO phone_lines(id,account_id) VALUES($1,$2) ON CONFLICT(id) DO NOTHING",
+        &[&line_id, &account_id],
+    )
+    .await?;
+    Ok(())
+}
+
 async fn issue_challenge_for_purpose(
     client: &mut Client,
     principal: &SessionPrincipal,
@@ -312,11 +348,22 @@ async fn issue_challenge_for_purpose(
     {
         return Err(LineActivationError::Unavailable);
     }
-    tx.execute(
-        "INSERT INTO phone_lines(id,account_id) VALUES($1,$2) ON CONFLICT(id) DO NOTHING",
-        &[&line_id, &account_id],
-    )
-    .await?;
+    // `phone_lines.id` is a global key and rows can never be deleted. An ID
+    // held by another account gets the same refusal as a revoked line or a
+    // missing key or device. Every refusal below rolls this transaction back,
+    // so only an issued challenge leaves a new row behind.
+    let holder = tx
+        .query_opt(
+            "SELECT account_id FROM phone_lines WHERE id=$1",
+            &[&line_id],
+        )
+        .await?
+        .map(|row| row.get::<_, Uuid>(0));
+    match holder {
+        Some(holder) if holder != account_id => return Err(LineActivationError::Unavailable),
+        Some(_) => {}
+        None => create_line(&tx, account_id, line_id).await?,
+    }
     let Some(line) = tx
         .query_opt(
             "SELECT state,last_issued_generation FROM phone_lines \
