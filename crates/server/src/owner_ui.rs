@@ -327,8 +327,25 @@ mod tests {
                 .unwrap();
             assert!(request.uri().query().is_none());
             let response = app.clone().oneshot(request).await.unwrap();
-            // The JSON-only extractor answers with the API error envelope.
-            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            // Anonymous forms reach the JSON-only extractor, which answers with
+            // the API error envelope. Owner forms are rejected from headers
+            // alone before their body is read: 401 without a session, and the
+            // disabled-by-default MFA enrollment routes stay 404.
+            let expected = if endpoint.starts_with("/v1/auth/login")
+                || [
+                    "/v1/auth/register",
+                    "/v1/auth/verify-email",
+                    "/v1/auth/resend-verification",
+                ]
+                .contains(&endpoint)
+            {
+                StatusCode::BAD_REQUEST
+            } else if ["/v1/auth/mfa/enroll", "/v1/auth/mfa/confirm"].contains(&endpoint) {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::UNAUTHORIZED
+            };
+            assert_eq!(response.status(), expected, "{id}");
             assert!(!response.headers().contains_key(header::SET_COOKIE));
             assert!(!response.headers().contains_key(header::LOCATION));
             assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");

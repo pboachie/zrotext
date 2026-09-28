@@ -9,7 +9,8 @@
 
 use super::{OwnerReviewState, PAGE_SIZE};
 use crate::api_json::ApiJson;
-use crate::http_auth::{require_owner, require_owner_read};
+use crate::http_auth::preauth::{OwnerAuthState, OwnerMutation};
+use crate::http_auth::require_owner_read;
 use axum::{
     Json,
     extract::{Query, State},
@@ -189,9 +190,24 @@ async fn lock_account(tx: &Transaction<'_>, account_id: Uuid) -> Result<bool, Re
     .map_err(|_| unavailable())
 }
 
+impl OwnerAuthState for OwnerReviewState {
+    fn database_url(&self) -> &str {
+        &self.database_url
+    }
+    fn session_hasher(&self) -> &crate::auth::TokenHasher {
+        &self.auth_hasher
+    }
+    fn canonical_origin(&self) -> &str {
+        &self.canonical_origin
+    }
+    fn unavailable_response(&self) -> Response {
+        unavailable()
+    }
+}
+
 pub(super) async fn create_hold(
     State(state): State<Arc<OwnerReviewState>>,
-    headers: HeaderMap,
+    OwnerMutation(owner, _slot): OwnerMutation,
     ApiJson(body): ApiJson<HoldBody>,
 ) -> Response {
     let Some(now) = now_ms() else {
@@ -200,23 +216,8 @@ pub(super) async fn create_hold(
     if !valid_hold(&body, now) {
         return error(StatusCode::BAD_REQUEST, "invalid_request");
     }
-    if let Err(error) = crate::http_auth::require_session_cookie(&headers) {
-        return error.into_response();
-    }
     let Ok(mut client) = crate::runtime_db::connect(&state.database_url).await else {
         return unavailable();
-    };
-    let owner = match require_owner(
-        &client,
-        &state.auth_hasher,
-        &state.canonical_origin,
-        &headers,
-        true,
-    )
-    .await
-    {
-        Ok(owner) => owner,
-        Err(error) => return error.into_response(),
     };
     let account_id = owner.tenant.account_id();
     let Ok(tx) = client.transaction().await else {
@@ -350,26 +351,11 @@ pub(super) async fn list_holds(
 
 pub(super) async fn decide_review(
     State(state): State<Arc<OwnerReviewState>>,
-    headers: HeaderMap,
+    OwnerMutation(owner, _slot): OwnerMutation,
     ApiJson(body): ApiJson<DecisionBody>,
 ) -> Response {
-    if let Err(error) = crate::http_auth::require_session_cookie(&headers) {
-        return error.into_response();
-    }
     let Ok(mut client) = crate::runtime_db::connect(&state.database_url).await else {
         return unavailable();
-    };
-    let owner = match require_owner(
-        &client,
-        &state.auth_hasher,
-        &state.canonical_origin,
-        &headers,
-        true,
-    )
-    .await
-    {
-        Ok(owner) => owner,
-        Err(error) => return error.into_response(),
     };
     let account_id = owner.tenant.account_id();
     let Ok(tx) = client.transaction().await else {

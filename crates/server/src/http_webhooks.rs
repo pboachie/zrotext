@@ -3,6 +3,7 @@
 //! module only in the create and rotate responses, once per generated secret.
 
 use crate::api_json::ApiJson;
+use crate::http_auth::preauth::OwnerMutation;
 use crate::{
     auth::{SessionPrincipal, TokenHasher},
     http_auth::{require_owner, require_owner_read},
@@ -34,6 +35,21 @@ pub struct WebhookHttpState {
     pub auth_hasher: Arc<TokenHasher>,
     pub canonical_origin: String,
     pub vault: Arc<WebhookSecretVault>,
+}
+
+impl crate::http_auth::preauth::OwnerAuthState for WebhookHttpState {
+    fn database_url(&self) -> &str {
+        &self.database_url
+    }
+    fn session_hasher(&self) -> &TokenHasher {
+        &self.auth_hasher
+    }
+    fn canonical_origin(&self) -> &str {
+        &self.canonical_origin
+    }
+    fn unavailable_response(&self) -> Response {
+        EndpointError::Unavailable.into_response()
+    }
 }
 
 pub fn router(state: WebhookHttpState) -> Router {
@@ -654,18 +670,11 @@ async fn replay(
 
 async fn create_endpoint(
     State(state): State<Arc<WebhookHttpState>>,
-    headers: HeaderMap,
+    OwnerMutation(principal, _slot): OwnerMutation,
     ApiJson(body): ApiJson<CreateBody>,
 ) -> Response {
-    if let Err(error) = crate::http_auth::require_session_cookie(&headers) {
-        return error.into_response();
-    }
     let Ok(mut client) = connect(&state).await else {
         return EndpointError::Unavailable.into_response();
-    };
-    let principal = match owner(&client, &state, &headers, true).await {
-        Ok(principal) => principal,
-        Err(response) => return response,
     };
     match create(&mut client, &state.vault, &principal, &body.callback_url).await {
         Ok(response) => (StatusCode::CREATED, Json(response)).into_response(),

@@ -2,6 +2,7 @@
 //! Owner-controlled SMS approval public keys. The signing key stays with the
 //! owner; registration verifies a challenge-bound proof of possession.
 
+use super::preauth::OwnerMutation;
 use super::{
     AuthHttpError, AuthHttpState, CSRF_COOKIE, CSRF_HEADER, connect, cookie, map_auth, mfa,
     mfa_manage_budget, require_owner,
@@ -158,21 +159,12 @@ async fn alias_exists(
 
 pub(super) async fn challenge(
     State(state): State<Arc<AuthHttpState>>,
-    headers: HeaderMap,
+    OwnerMutation(owner, _slot): OwnerMutation,
     ApiJson(body): ApiJson<ChallengeBody>,
 ) -> Result<Json<ChallengeResponse>, AuthHttpError> {
     let sec1 = key_bytes(&body.signing_key_sec1_b64)?;
     let fingerprint = sha256(&sec1);
-    crate::http_auth::require_session_cookie(&headers)?;
     let mut client = connect(&state.database_url).await?;
-    let owner = require_owner(
-        &client,
-        &state.hasher,
-        &state.canonical_origin,
-        &headers,
-        true,
-    )
-    .await?;
     if state.mfa_cipher.is_none() {
         return Err(AuthHttpError::Unavailable);
     }
@@ -220,7 +212,7 @@ pub(super) async fn challenge(
 
 pub(super) async fn register(
     State(state): State<Arc<AuthHttpState>>,
-    headers: HeaderMap,
+    OwnerMutation(owner, _slot): OwnerMutation,
     ApiJson(body): ApiJson<RegisterBody>,
 ) -> Result<StatusCode, AuthHttpError> {
     let nonce = decode_canonical::<32>(&body.nonce_b64)?;
@@ -236,16 +228,7 @@ pub(super) async fn register(
     {
         return Err(AuthHttpError::BadRequest);
     }
-    crate::http_auth::require_session_cookie(&headers)?;
     let mut client = connect(&state.database_url).await?;
-    let owner = require_owner(
-        &client,
-        &state.hasher,
-        &state.canonical_origin,
-        &headers,
-        true,
-    )
-    .await?;
     let cipher = state
         .mfa_cipher
         .as_deref()
@@ -374,23 +357,14 @@ pub(super) async fn list(
 pub(super) async fn revoke(
     State(state): State<Arc<AuthHttpState>>,
     Path(fingerprint): Path<String>,
-    headers: HeaderMap,
+    OwnerMutation(owner, _slot): OwnerMutation,
     ApiJson(body): ApiJson<RevokeBody>,
 ) -> Result<StatusCode, AuthHttpError> {
     let fingerprint = parse_fingerprint(&fingerprint)?;
     if body.mfa_code.len() > 30 {
         return Err(AuthHttpError::BadRequest);
     }
-    crate::http_auth::require_session_cookie(&headers)?;
     let mut client = connect(&state.database_url).await?;
-    let owner = require_owner(
-        &client,
-        &state.hasher,
-        &state.canonical_origin,
-        &headers,
-        true,
-    )
-    .await?;
     let cipher = state
         .mfa_cipher
         .as_deref()

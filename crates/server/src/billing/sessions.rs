@@ -4,7 +4,7 @@
 
 use super::{bind_customer, is_test_api_key, valid_id};
 use crate::auth::abuse_limits::{self, Limit};
-use crate::http_auth::{self, AuthHttpError, AuthHttpState};
+use crate::http_auth::{AuthHttpError, AuthHttpState, preauth::OwnerMutation};
 use axum::{
     Json, Router,
     body::Bytes,
@@ -183,24 +183,28 @@ struct SessionRefusal {
     code: &'static str,
 }
 
+impl crate::http_auth::preauth::OwnerAuthState for SessionState {
+    fn database_url(&self) -> &str {
+        &self.auth.database_url
+    }
+    fn session_hasher(&self) -> &crate::auth::TokenHasher {
+        &self.auth.hasher
+    }
+    fn canonical_origin(&self) -> &str {
+        &self.auth.canonical_origin
+    }
+}
+
 async fn checkout(
     State(state): State<Arc<SessionState>>,
     headers: HeaderMap,
+    OwnerMutation(owner, _slot): OwnerMutation,
     body: Bytes,
 ) -> Result<Response, AuthHttpError> {
     if !body.is_empty() {
         return Err(AuthHttpError::BadRequest);
     }
-    crate::http_auth::require_session_cookie(&headers)?;
     let mut db = connect(&state.auth.database_url).await?;
-    let owner = http_auth::require_owner(
-        &db,
-        &state.auth.hasher,
-        &state.auth.canonical_origin,
-        &headers,
-        true,
-    )
-    .await?;
     let account_id = owner.tenant.account_id();
     require_checkout_request_key(&headers)?;
     let profile = checkout_profile(
@@ -286,22 +290,13 @@ async fn subscription_exists(db: &mut Client, account_id: Uuid) -> Result<bool, 
 
 async fn portal(
     State(state): State<Arc<SessionState>>,
-    headers: HeaderMap,
+    OwnerMutation(owner, _slot): OwnerMutation,
     body: Bytes,
 ) -> Result<Json<SessionUrl>, AuthHttpError> {
     if !body.is_empty() {
         return Err(AuthHttpError::BadRequest);
     }
-    crate::http_auth::require_session_cookie(&headers)?;
     let db = connect(&state.auth.database_url).await?;
-    let owner = http_auth::require_owner(
-        &db,
-        &state.auth.hasher,
-        &state.auth.canonical_origin,
-        &headers,
-        true,
-    )
-    .await?;
     let customer_id = bound_customer(&db, owner.tenant.account_id())
         .await?
         .ok_or(AuthHttpError::NotFound)?;
