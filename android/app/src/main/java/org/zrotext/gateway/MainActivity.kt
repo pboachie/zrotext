@@ -60,6 +60,7 @@ class MainActivity : ComponentActivity() {
     private var comparisonCode by mutableStateOf("")
     private var signingFingerprint by mutableStateOf("")
     private var signingSecurity by mutableStateOf("")
+    private var defaultSmsAppRcsRisk by mutableStateOf(DefaultSmsAppRcsRisk.Risk.UNAVAILABLE)
     private val pairingWorker = Executors.newSingleThreadExecutor()
     private val permissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         refreshSims()
@@ -80,6 +81,7 @@ class MainActivity : ComponentActivity() {
             AuthenticatedGatewayStatus.value = "Could not disable previous reboot resume; retry Pause"
         }
         refreshSims()
+        defaultSmsAppRcsRisk = DefaultSmsAppRcsRisk.observe(this)
         setContent {
             GatewayTheme {
                 Column(
@@ -149,6 +151,14 @@ class MainActivity : ComponentActivity() {
                             .setAction(AuthenticatedGatewayService.ACTION_PAUSE))
                     }) { Text("Pause authenticated heartbeat") }
                     Text("Inbound pilot: capture carrier SMS replies and upload signed metadata. RCS replies do not reach this SMS receiver. Before using a dedicated gateway line, verify that a sender with unchanged messaging settings can send an SMS reply and this app acknowledges it. The sender number and SMS body stay on this phone.")
+                    Text(when (defaultSmsAppRcsRisk) {
+                        DefaultSmsAppRcsRisk.Risk.RCS_CAPABLE_APP ->
+                            "Default messaging app: RCS-capable app detected. This app cannot see whether RCS chats are enabled on this phone; if they are, RCS replies stay in that app and bypass the gateway. Keep RCS chats off and verify with a controlled sender."
+                        DefaultSmsAppRcsRisk.Risk.UNKNOWN_APP ->
+                            "Default messaging app: not recognized. This app cannot see whether it registers RCS chats, so RCS replies may still bypass the gateway. Verify with a controlled sender."
+                        DefaultSmsAppRcsRisk.Risk.UNAVAILABLE ->
+                            "Default messaging app: not observable. This app cannot see whether RCS chats could register on this phone. Verify with a controlled sender."
+                    })
                     GatewayButton(onClick = {
                         if (!validAuthenticatedFields()) return@GatewayButton
                         stopService(Intent(this@MainActivity, GatewayService::class.java))
