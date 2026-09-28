@@ -2569,3 +2569,338 @@ async fn hold_release_event(db: &tokio_postgres::Client, hold: Uuid) -> Option<U
     .unwrap()
     .get(0)
 }
+
+#[test]
+fn only_consent_changes_skip_the_shared_storage_budget() {
+    for classification in [
+        Classification::CapturedLocal,
+        Classification::SimUnverified,
+        Classification::SendUnverified,
+        Classification::EncryptionUnverified,
+    ] {
+        assert!(!classification.changes_consent(), "{classification:?}");
+    }
+    for classification in [
+        Classification::OptOut,
+        Classification::OptOutReview,
+        Classification::OptIn,
+    ] {
+        assert!(classification.changes_consent(), "{classification:?}");
+    }
+}
+
+struct BudgetDevice {
+    device: Uuid,
+    message: Uuid,
+    attempt: Uuid,
+    signing: SigningKey,
+}
+
+async fn seed_budget_device(db: &Client, account: Uuid, recipient: &str) -> BudgetDevice {
+    let device = Uuid::new_v4();
+    let message = Uuid::new_v4();
+    let attempt = Uuid::new_v4();
+    let signing = SigningKey::generate_from_rng(&mut rng());
+    let public = signing
+        .verifying_key()
+        .to_sec1_point(false)
+        .as_bytes()
+        .to_vec();
+    db.execute(
+        "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'budget fixture')",
+        &[&device, &account],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO device_keys(device_id,account_id,signing_key_sec1,fingerprint) \
+         VALUES($1,$2,$3,$4)",
+        &[
+            &device,
+            &account,
+            &public,
+            &Sha256::digest(&public).to_vec(),
+        ],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO device_sessions(device_id,account_id,site_id,instance_id,connection_epoch,lease_until,deployment_epoch) \
+         VALUES($1,$2,'test','instance',2,now()+interval '10 minutes',1)",
+        &[&device, &account],
+    ).await.unwrap();
+    db.execute(
+        "INSERT INTO messages(id,account_id,device_id,recipient_e164,recipient_digest, \
+         transport_mode,transport_payload,request_digest,state,expires_at) \
+         VALUES($1,$2,$3,$4,$5,'synthetic_alpha',$6,$7,'submitted',now()+interval '1 hour')",
+        &[
+            &message,
+            &account,
+            &device,
+            &recipient,
+            &vec![2u8; 32],
+            &b"fixture".as_slice(),
+            &vec![3u8; 32],
+        ],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO message_attempts(id,account_id,message_id,device_id,generation, \
+         session_epoch,deployment_epoch,status) VALUES($1,$2,$3,$4,1,2,1,'submitted')",
+        &[&attempt, &account, &message, &device],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO message_events(id,account_id,message_id,attempt_id,evidence_code, \
+         event_digest,observed_at,resulting_state,segment_index,segment_count) \
+         VALUES($1,$2,$3,$4,'sent_callback_ok',$5,now(),'submitted',0,1)",
+        &[
+            &Uuid::new_v4(),
+            &account,
+            &message,
+            &attempt,
+            &vec![4u8; 32],
+        ],
+    )
+    .await
+    .unwrap();
+    BudgetDevice {
+        device,
+        message,
+        attempt,
+        signing,
+    }
+}
+
+async fn ingest_budget_event(
+    db: &mut Client,
+    account: Uuid,
+    device: &BudgetDevice,
+    sequence: i64,
+    classification: Classification,
+) -> Result<IngestOutcome, InboundError> {
+    let session = InboundSession {
+        account_id: account,
+        device_id: device.device,
+        site_id: "test",
+        instance_id: "instance",
+        connection_epoch: 2,
+        deployment_epoch: 1,
+    };
+    let unsigned = InboundEvent {
+        event_id: Uuid::new_v4(),
+        sequence,
+        message_id: device.message,
+        attempt_id: device.attempt,
+        classification,
+        observed_at_ms: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64,
+        part_count: 1,
+        content: Content::MetadataOnly,
+        signature_der: &[],
+    };
+    let signature: Signature = device.signing.sign(&signed_event_bytes(session, &unsigned));
+    let signature = signature.to_der();
+    ingest(
+        db,
+        session,
+        &InboundEvent {
+            signature_der: signature.as_bytes(),
+            ..unsigned
+        },
+    )
+    .await
+}
+
+async fn suppression_active(db: &Client, account: Uuid, recipient: &str) -> Option<bool> {
+    db.query_opt(
+        "SELECT active FROM recipient_suppressions WHERE account_id=$1 AND recipient_e164=$2",
+        &[&account, &recipient],
+    )
+    .await
+    .unwrap()
+    .map(|row| row.get(0))
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn consent_changes_are_not_deferred_by_a_spent_storage_budget() {
+    let url = std::env::var("ZT_INBOUND_TEST_DATABASE_URL")
+        .expect("set ZT_INBOUND_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let (mut db, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let schema = format!("inbound_consent_budget_{}", Uuid::new_v4().simple());
+    db.batch_execute(&format!(
+        "CREATE SCHEMA {schema}; SET search_path TO {schema}"
+    ))
+    .await
+    .unwrap();
+    for migration in [
+        include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
+        include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+        include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
+        include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
+        include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+        include_str!("../../../../deploy/compose/migrations/006_usage_metering.sql"),
+        include_str!("../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"),
+        include_str!("../../../../deploy/compose/migrations/008_stripe_billing_foundation.sql"),
+        include_str!("../../../../deploy/compose/migrations/009_webhook_manual_replay.sql"),
+        include_str!("../../../../deploy/compose/migrations/010_billing_test_entitlement.sql"),
+        include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
+        include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
+        include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
+        include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
+        include_str!("../../../../deploy/compose/migrations/015_webhook_kek_commitments.sql"),
+        include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+        include_str!("../../../../deploy/compose/migrations/029_webhook_dispatch_fairness.sql"),
+        include_str!("../../../../deploy/compose/migrations/030_terminal_dispatch_jobs.sql"),
+        include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
+        include_str!("../../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
+        include_str!("../../../../deploy/compose/migrations/038_owner_opt_out_hold_guards.sql"),
+        include_str!("../../../../deploy/compose/migrations/039_inbound_device_clock_offset.sql"),
+    ] {
+        db.batch_execute(migration).await.unwrap();
+    }
+    let account = Uuid::new_v4();
+    db.execute("INSERT INTO accounts(id) VALUES($1)", &[&account])
+        .await
+        .unwrap();
+    db.execute("INSERT INTO sites(site_id) VALUES('test')", &[])
+        .await
+        .unwrap();
+    let flooder = seed_budget_device(&db, account, "+15550000001").await;
+    let other = seed_budget_device(&db, account, "+15550000002").await;
+
+    // One device spends its whole shared allowance on junk events.
+    for sequence in 1..=200 {
+        ingest_budget_event(
+            &mut db,
+            account,
+            &flooder,
+            sequence,
+            Classification::CapturedLocal,
+        )
+        .await
+        .unwrap();
+    }
+    assert!(matches!(
+        ingest_budget_event(
+            &mut db,
+            account,
+            &flooder,
+            201,
+            Classification::CapturedLocal
+        )
+        .await,
+        Err(InboundError::BudgetExhausted)
+    ));
+    // Other devices' traffic spends the rest of the account's shared budget.
+    db.execute(
+        "UPDATE auth_abuse_counters SET attempts=1000 WHERE scope='inbound_daily' AND subject_hash=$1",
+        &[&budget_key("account", account)],
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        ingest_budget_event(&mut db, account, &other, 1, Classification::CapturedLocal).await,
+        Err(InboundError::BudgetExhausted)
+    ));
+
+    // A STOP from another device, and from the flooding device itself, is
+    // still recorded and suppresses its recipient.
+    assert!(
+        ingest_budget_event(&mut db, account, &other, 2, Classification::OptOut)
+            .await
+            .unwrap()
+            .created
+    );
+    assert_eq!(
+        suppression_active(&db, account, "+15550000002").await,
+        Some(true)
+    );
+    assert!(
+        ingest_budget_event(
+            &mut db,
+            account,
+            &flooder,
+            202,
+            Classification::OptOutReview
+        )
+        .await
+        .unwrap()
+        .created
+    );
+    assert_eq!(
+        suppression_active(&db, account, "+15550000001").await,
+        Some(true)
+    );
+    // START is a consent change too and clears the matching STOP. It must be
+    // observed strictly after the STOP it clears.
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    let resumed = ingest_budget_event(&mut db, account, &other, 3, Classification::OptIn)
+        .await
+        .unwrap();
+    assert!(resumed.created && resumed.suppression_cleared);
+    assert_eq!(
+        suppression_active(&db, account, "+15550000002").await,
+        Some(false)
+    );
+    // Consent changes left the shared counters untouched.
+    let shared: Vec<i32> = db
+        .query(
+            "SELECT attempts FROM auth_abuse_counters WHERE scope='inbound_daily' ORDER BY attempts",
+            &[],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get(0))
+        .collect();
+    assert_eq!(shared, vec![200, 1000]);
+
+    // The consent budget is per device with no account-wide ceiling, so a
+    // device that exhausts its own allowance cannot defer another's STOP.
+    db.execute(
+        "UPDATE auth_abuse_counters SET attempts=10000 WHERE scope='inbound_consent_daily' AND subject_hash=$1",
+        &[&budget_key("device", flooder.device)],
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        ingest_budget_event(&mut db, account, &flooder, 203, Classification::OptOut).await,
+        Err(InboundError::BudgetExhausted)
+    ));
+    assert!(
+        ingest_budget_event(&mut db, account, &other, 4, Classification::OptOut)
+            .await
+            .unwrap()
+            .created
+    );
+    let consent = db
+        .query(
+            "SELECT subject_hash,attempts FROM auth_abuse_counters WHERE scope='inbound_consent_daily'",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(consent.len(), 2, "consent budget keeps no account row");
+    for row in consent {
+        let subject: Vec<u8> = row.get(0);
+        let expected = if subject == budget_key("device", flooder.device) {
+            10_000
+        } else {
+            assert_eq!(subject, budget_key("device", other.device));
+            3
+        };
+        assert_eq!(row.get::<_, i32>(1), expected);
+    }
+    db.batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
