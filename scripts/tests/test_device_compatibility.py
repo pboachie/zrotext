@@ -4,10 +4,15 @@ import copy
 import json
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import check_device_compatibility as cdc  # noqa: E402
+
+
+def find_run(data, run_id):
+    return next(r for r in data["repeatable_runs"] if r["id"] == run_id)
 
 
 class DeviceCompatibilityMatrixTest(unittest.TestCase):
@@ -147,9 +152,57 @@ class DeviceCompatibilityMatrixTest(unittest.TestCase):
             ).update(evidence="none"),
             "non-object device": lambda d: d["devices"].__setitem__(0, "samsung"),
             "empty devices list": lambda d: d.update(devices=[]),
-            "schema version bump": lambda d: d.update(schema_version=2),
+            "schema version bump": lambda d: d.update(schema_version=3),
             "widened status enum": lambda d: d.update(statuses=list(d["statuses"]) + ["promised"]),
             "missing top-level key": lambda d: d.pop("note"),
+            "missing repeatable runs catalog": lambda d: d.pop("repeatable_runs"),
+            "empty repeatable runs catalog": lambda d: d.update(repeatable_runs=[]),
+            "run with an unknown kind": lambda d: find_run(d, "api-28-emulator-suites").update(
+                kind="adhoc"
+            ),
+            "run missing its tests": lambda d: find_run(d, "api-28-emulator-suites").pop("tests"),
+            "run with a dangling test path": lambda d: find_run(d, "api-28-emulator-suites")[
+                "tests"
+            ].append("android/app/src/androidTest/java/org/zrotext/gateway/AbsentDeviceTest.kt"),
+            "ci run naming an absent workflow": lambda d: find_run(d, "device-sim-suite").update(
+                workflow=".github/workflows/absent.yml"
+            ),
+            "ci run naming an absent job": lambda d: find_run(d, "device-sim-suite").update(
+                job="not-a-job"
+            ),
+            "ci run tests drift from the smoke allowlist": lambda d: find_run(
+                d, "selected-device-tests"
+            )["tests"].pop(),
+            "supported class without a no-radio run": lambda d: find(d, "emulator-api-36-ci").update(
+                no_radio_run=[]
+            ),
+            "excluded class with a no-radio run": lambda d: find(
+                d, "devices-below-api-28"
+            ).update(no_radio_run=["selected-device-tests"]),
+            "unknown no-radio run reference": lambda d: find(d, "emulator-api-28")[
+                "no_radio_run"
+            ].append("not-a-run"),
+            "repeated no-radio run reference": lambda d: find(d, "emulator-api-28")[
+                "no_radio_run"
+            ].append("api-28-emulator-suites"),
+            "no-radio link to the opt-in radio run": lambda d: find(d, "emulator-api-28")[
+                "no_radio_run"
+            ].append("opt-in-radio-instrumentation"),
+            "radio run naming a ci job": lambda d: find(d, "samsung-galaxy-s24-ultra").update(
+                radio_run="selected-device-tests"
+            ),
+            "radio run naming an unknown run": lambda d: find(
+                d, "samsung-galaxy-s24-ultra"
+            ).update(radio_run="not-a-run"),
+            "radio run on a SIM-less class": lambda d: find(d, "emulator-api-36-ci").update(
+                radio_run="opt-in-radio-instrumentation"
+            ),
+            "device-sim evidence claiming a radio run": lambda d: find(
+                d, "host-delivery-simulator"
+            ).update(radio_run="opt-in-radio-instrumentation"),
+            "device tests diverging from its runs": lambda d: find(d, "emulator-api-28")[
+                "tests"
+            ].append("android/app/src/androidTest/java/org/zrotext/gateway/SealedBodyDeviceTest.kt"),
         }
         for label, mutate in cases.items():
             with self.subTest(label):
@@ -170,10 +223,73 @@ class DeviceCompatibilityMatrixTest(unittest.TestCase):
             "renamed physical section": self.doc.replace(
                 "## Physical devices", "## Hardware runs"
             ),
+            "dropped selected-device-tests mention": self.doc.replace(
+                "selected-device-tests", "selected-device-test"
+            ),
         }
         for label, doc in cases.items():
             with self.subTest(label):
                 self.assertTrue(self.check(doc=doc), label)
+
+    def test_every_claimed_configuration_links_a_repeatable_no_radio_run(self):
+        for device in self.matrix["devices"]:
+            with self.subTest(device=device["id"]):
+                if device["status"] in ("supported", "partial"):
+                    self.assertTrue(device["no_radio_run"])
+                else:
+                    self.assertEqual(device["no_radio_run"], [])
+                    self.assertIsNone(device["radio_run"])
+
+    def test_ci_job_references_resolve_in_the_workflows(self):
+        for run in self.matrix["repeatable_runs"]:
+            if run["kind"] == "ci-job":
+                with self.subTest(run=run["id"]):
+                    self.assertIsNone(
+                        cdc._workflow_job_error(cdc.ROOT, run["workflow"], run["job"])
+                    )
+        self.assertIsNotNone(
+            cdc._workflow_job_error(
+                cdc.ROOT, ".github/workflows/android-device-smoke.yml", "not-a-job"
+            )
+        )
+        self.assertIsNotNone(
+            cdc._workflow_job_error(cdc.ROOT, ".github/workflows/absent.yml", "rust")
+        )
+
+    def test_documented_procedures_name_their_run_id(self):
+        for run in self.matrix["repeatable_runs"]:
+            if run["kind"] == "ci-job":
+                continue
+            with self.subTest(run=run["id"]):
+                procedure = (cdc.ROOT / run["doc"]).read_text(encoding="utf-8")
+                self.assertIn(run["id"], procedure)
+
+    def test_documented_run_reference_requires_the_id_in_the_doc(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "docs").mkdir()
+            procedure = root / "docs" / "PROCEDURE.md"
+            procedure.write_text("a procedure that names no run", encoding="utf-8")
+            run = {"id": "the-run", "kind": "documented-command", "doc": "docs/PROCEDURE.md", "tests": []}
+            self.assertIn("does not mention the run id", cdc._run_reference_error(root, run))
+            procedure.write_text("Repeatable run id: the-run.", encoding="utf-8")
+            self.assertIsNone(cdc._run_reference_error(root, run))
+
+    def test_ci_emulator_entry_matches_the_smoke_script_allowlist(self):
+        allowlist = cdc.ci_emulator_allowlist(cdc.ROOT)
+        self.assertEqual(set(find_run(self.matrix, "selected-device-tests")["tests"]), allowlist)
+        ci_device = self.device("emulator-api-36-ci")
+        self.assertEqual(set(ci_device["tests"]), allowlist)
+
+    def test_radio_runs_stay_opt_in_and_off_ci(self):
+        radio_runs = {
+            run["id"] for run in self.matrix["repeatable_runs"] if run["kind"] == "opt-in-radio"
+        }
+        for device in self.matrix["devices"]:
+            if device["radio_run"] is not None:
+                with self.subTest(device=device["id"]):
+                    self.assertIn(device["radio_run"], radio_runs)
+                    self.assertNotEqual(device["sim"], "none")
 
 
 if __name__ == "__main__":

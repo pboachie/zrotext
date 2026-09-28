@@ -26,6 +26,8 @@ adb -s emulator-5554 shell am instrument -w \
 
 Change the serial for the second emulator. These cases use only invalid inputs and never open a gateway socket or call the SMS radio.
 
+Repeatable run ids: `api-28-emulator-suites` (an API 28 emulator) and `api-34-emulator-suites` (an API 34 or later emulator). Each id covers this suite, the stale-evidence suite, and the virtual inbound receiver check below, and is recorded with its exact test list in [device-compatibility.json](device-compatibility.json).
+
 ## Stale-evidence virtual regression
 
 `StaleEvidenceVirtualDeviceTest` exercises the Room outbox and reconnect
@@ -137,3 +139,63 @@ one encrypted local event and one pending upload row. The script removes only th
 gateway APKs it installed. The synthetic message can remain in the emulator's
 messaging inbox; use a disposable AVD. This check does not prove carrier delivery,
 real SIM attribution, a server upload, or RCS fallback.
+
+## No-radio classes on a connected phone
+
+Repeatable run id: `physical-no-radio-classes`. This is the documented procedure
+that re-verifies the app-level, no-radio behavior of the current build on a
+connected physical phone. Only the founder-authorized test phone may be used. The
+four classes below are the hardware-agnostic subset of the CI no-radio allowlist;
+the remaining CI classes (accessibility, network service, root storage, sealed
+preparation) assert emulator isolation flags on purpose and are excluded from this
+procedure, so this run is not the CI run and never replaces it.
+
+```sh
+cd android
+./gradlew :app:assembleDebug :app:assembleDebugAndroidTest
+adb -s <phone-serial> install -r app/build/outputs/apk/debug/app-debug.apk
+adb -s <phone-serial> install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+adb -s <phone-serial> shell am instrument -w \
+  -e class org.zrotext.gateway.DevicePreconditionsDeviceTest,org.zrotext.gateway.ManifestAuthorityDeviceTest,org.zrotext.gateway.OutboundEnvelopeDeviceTest,org.zrotext.gateway.SealedBodyDeviceTest \
+  org.zrotext.gateway.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+Use `gradlew.bat` on Windows. The classes read device preconditions, the installed
+manifest, and envelope logic; none of them sends, arms, or reads the radio, and none
+requires granting SMS or location permission. A passing run proves the app-level
+no-radio behavior of that build on that phone; it does not prove carrier delivery,
+power management, or any other phone. Record the summarized outcome (model, Android
+level, pass or fail) in the private operations repository and, if the device is
+listed, in the compatibility matrix; never publish raw output, numbers, or device
+identifiers. Linking this run for a device defines how it is re-verified; it is not
+a claim that it ran.
+
+## Opt-in radio instrumentation
+
+Repeatable run id: `opt-in-radio-instrumentation`. These two classes use the radio
+for real, so they are opt-in, never run in CI, never run on an emulator, and only
+run on the founder-authorized test phone with a controlled recipient.
+
+`LocalRadioPreflightDeviceTest` runs only with `-e m1RadioPreflight true`. It checks
+that the pilot permissions are granted, requires exactly one active SIM (or exactly
+one matching `-e m1SubscriptionSlot N`), refuses if the one-send pilot was already
+consumed, and stores the selected subscription in the app's local selection. It arms
+no radio operation and sends nothing.
+
+`LocalAuthorizedOneSendDeviceTest` runs only with `-e m1AuthorizedOneSend true`,
+`-e m1DeviceId <paired-device-id>`, and `-e m1ControlledRecipient <controlled-recipient>`.
+It performs exactly one authorized send to the controlled recipient and asserts that
+the one-use grant was consumed, so a second invocation fails until the pilot state
+is reset. Use a phone and recipient you control.
+
+```sh
+adb -s <phone-serial> shell am instrument -w \
+  -e class org.zrotext.gateway.LocalRadioPreflightDeviceTest \
+  -e m1RadioPreflight true \
+  org.zrotext.gateway.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+Both classes log fixed status strings, not message content or numbers. Raw run
+output stays in the private operations repository; only the summarized outcome
+belongs in the compatibility matrix. No passing run of either class is recorded in
+the public matrix today.

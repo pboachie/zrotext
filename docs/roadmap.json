@@ -22,11 +22,11 @@
             "P-256 device keys in Android Keystore with challenge-response sign-in",
             "Authenticated WebSocket stream with heartbeats, fenced session epochs and bounded reconnects",
             "Opt-in heartbeat resumes after a phone reboot",
-            "Controlled test on one Samsung device and SIM ([compatibility notes](DEVICE-COMPATIBILITY.md))"
+            "Controlled test on one Samsung device and SIM ([compatibility notes](DEVICE-COMPATIBILITY.md))",
+            "Supported-device guidance ([compatibility guidance](DEVICE-COMPATIBILITY.md))"
           ],
           "todo": [
-            "Longer liveness runs across networks, carriers and device models",
-            "Supported-device guidance"
+            "Longer liveness runs across networks, carriers and device models"
           ]
         },
         {
@@ -216,15 +216,15 @@
             ["Android review", "ANDROID-ACCESSIBILITY.md"]
           ],
           "evidence_note": "Android review covers the current Compose screen and automated/emulator checks; interactive assistive-technology validation remains open",
+          "release_gate_note": "The listed setup diagnostics and device guidance work is complete for restricted pilot use. The compatibility matrix records virtual, host-simulator, and one manual physical record only; no physical device or carrier is proven supported, and the linked physical no-radio and opt-in radio procedures have not been executed on any listed phone.",
           "done": [
             "Owner enrollment, account setup and mail diagnostics",
             "SMS and RCS readiness guidance for the gateway phone",
             "Accessibility review of the owner web pages ([review](ACCESSIBILITY-REVIEW.md))",
-            "Accessibility review of the Android app ([review](ANDROID-ACCESSIBILITY.md))"
+            "Accessibility review of the Android app ([review](ANDROID-ACCESSIBILITY.md))",
+            "Supported-device list backed by repeatable tests ([compatibility matrix](DEVICE-COMPATIBILITY.md))"
           ],
-          "todo": [
-            "Supported-device list backed by repeatable tests"
-          ]
+          "todo": []
         }
       ]
     },
