@@ -3,7 +3,7 @@
 //! owner workflow for off-channel opt-out holds and review decisions.
 //! No SMS content or credentials are served here.
 
-use crate::{auth::TokenHasher, http_auth::require_owner};
+use crate::{auth::TokenHasher, http_auth::require_owner_read};
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Query, Request, State},
@@ -82,21 +82,13 @@ async fn list_review_holds(
     Query(query): Query<ListQuery>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(error) = crate::http_auth::require_session_cookie(&headers) {
+    if let Err(error) = crate::http_auth::require_owner_read_headers(&headers) {
         return error.into_response();
     }
     let Ok(client) = crate::runtime_db::connect(&state.database_url).await else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
-    let principal = match require_owner(
-        &client,
-        &state.auth_hasher,
-        &state.canonical_origin,
-        &headers,
-        false,
-    )
-    .await
-    {
+    let principal = match require_owner_read(&client, &state.auth_hasher, &headers).await {
         Ok(principal) => principal,
         Err(error) => return error.into_response(),
     };

@@ -2,7 +2,7 @@
 //! Owner-only synthetic pilot timeline. The response contains writer metadata,
 //! never the recipient, transport payload, or device-side inbound content.
 
-use crate::{auth::TokenHasher, http_auth::require_owner};
+use crate::{auth::TokenHasher, http_auth::require_owner_read};
 use axum::{
     Json, Router,
     extract::{Query, Request, State},
@@ -80,21 +80,13 @@ async fn list_messages(
     Query(query): Query<ListQuery>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(error) = crate::http_auth::require_session_cookie(&headers) {
+    if let Err(error) = crate::http_auth::require_owner_read_headers(&headers) {
         return error.into_response();
     }
     let Ok(client) = crate::runtime_db::connect(&state.database_url).await else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
-    let principal = match require_owner(
-        &client,
-        &state.auth_hasher,
-        &state.canonical_origin,
-        &headers,
-        false,
-    )
-    .await
-    {
+    let principal = match require_owner_read(&client, &state.auth_hasher, &headers).await {
         Ok(principal) => principal,
         Err(error) => return error.into_response(),
     };
@@ -211,10 +203,19 @@ mod tests {
     use serde_json::Value;
     use tower::ServiceExt;
 
-    fn get(path: &str, token: Option<&str>) -> Request<Body> {
+    fn get(path: &str, session: Option<&crate::auth::SessionCredentials>) -> Request<Body> {
         let mut request = Request::builder().uri(path);
-        if let Some(token) = token {
-            request = request.header(header::COOKIE, format!("__Host-zrotext_session={token}"));
+        if let Some(session) = session {
+            // Content-bearing owner reads need the CSRF header, not Origin.
+            request = request
+                .header(
+                    header::COOKIE,
+                    format!(
+                        "__Host-zrotext_session={}; __Host-zrotext_csrf={}",
+                        session.token, session.csrf_token
+                    ),
+                )
+                .header("x-zrotext-csrf", &session.csrf_token);
         }
         request.body(Body::empty()).unwrap()
     }
@@ -354,7 +355,7 @@ mod tests {
         assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
         let first = app
             .clone()
-            .oneshot(get("/v1/owner/messages", Some(&session_a.token)))
+            .oneshot(get("/v1/owner/messages", Some(&session_a)))
             .await
             .unwrap();
         assert_eq!(first.status(), StatusCode::OK);
@@ -366,7 +367,7 @@ mod tests {
             app.clone()
                 .oneshot(get(
                     &format!("/v1/owner/messages?before={cursor}"),
-                    Some(&session_a.token),
+                    Some(&session_a),
                 ))
                 .await
                 .unwrap(),
@@ -407,13 +408,13 @@ mod tests {
             .clone()
             .oneshot(get(
                 &format!("/v1/owner/messages?before={b_id}"),
-                Some(&session_a.token),
+                Some(&session_a),
             ))
             .await
             .unwrap();
         assert_eq!(foreign_cursor.status(), StatusCode::NOT_FOUND);
         let b_page = body(
-            app.oneshot(get("/v1/owner/messages", Some(&session_b.token)))
+            app.oneshot(get("/v1/owner/messages", Some(&session_b)))
                 .await
                 .unwrap(),
         )
