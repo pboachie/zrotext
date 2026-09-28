@@ -48,7 +48,9 @@ heartbeat that arrives sooner is acknowledged with the same
 `heartbeat_ack` frame without a storage round trip. Independently, the hub
 checks session status against PostgreSQL at most 10 seconds apart, so a
 revoked or fenced session closes within that check even when its latest
-heartbeat was acknowledged from memory. More than 60 heartbeats within one
+heartbeat was acknowledged from memory. A successful lease renewal or
+`device_status` write checks the same conditions, so it counts as one of
+these checks and the next standalone check is due 10 seconds after it. More than 60 heartbeats within one
 minute close the session with `1008` (Policy Violation). A new valid
 connection fences the older epoch; release of an old socket cannot clear the newer lease. A drained,
 disabled, revoked, or writer-isolated hub closes its session. The phone stops

@@ -210,6 +210,59 @@ async fn all_admitted_sessions_renew_while_proofs_wait_without_pinning_database_
     fixture.finish().await;
 }
 
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn renewal_defers_the_session_check_and_a_fence_still_closes_within_ten_seconds() {
+    let fixture = Fixture::new().await;
+    let admission = SocketAdmission::new(
+        MAX_HANDSHAKING_DEVICE_SOCKETS,
+        MAX_DEVICE_SOCKETS,
+        AUTH_TIMEOUT,
+        HANDSHAKE_DEADLINE,
+    );
+    let state = socket_state(fixture.url.clone(), "capacity-test");
+    let (address, server) = serve(state, admission).await;
+    let (device_id, signing) = fixture.device().await;
+    let (mut socket, frame) = challenge(address, device_id).await;
+    let epoch = prove(&mut socket, frame, &signing).await;
+
+    // Renew halfway to the first standalone check, then revoke the key.
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    send_json(&mut socket, json!({"v":1,"type":"heartbeat"})).await;
+    assert_eq!(
+        receive_json(&mut socket).await,
+        json!({"v":1,"type":"heartbeat_ack","connection_epoch":epoch})
+    );
+    let renewed = Instant::now();
+    fixture
+        .db
+        .execute(
+            "UPDATE device_keys SET revoked_at=now() WHERE device_id=$1",
+            &[&device_id],
+        )
+        .await
+        .unwrap();
+
+    // The renewal verified the session, so no standalone query runs for
+    // 10 s after it. A fixed interval would have checked 10 s after connect,
+    // about 5 s after the renewal, and closed the socket by now.
+    let quiet = Duration::from_secs(8).saturating_sub(renewed.elapsed());
+    assert!(
+        timeout(quiet, socket.next()).await.is_err(),
+        "the session check ran within 10 s of a renewal"
+    );
+    // The revocation still closes the socket within 10 s of the renewal that
+    // last confirmed the session, plus one query.
+    expect_close_after_acks(&mut socket).await;
+    assert!(
+        renewed.elapsed() <= Duration::from_secs(12),
+        "revoked socket stayed open {:?} after its last verification",
+        renewed.elapsed()
+    );
+    server.abort();
+    fixture.finish().await;
+}
+
 /// Reads past heartbeat acknowledgements until the hub closes the socket.
 async fn expect_close_after_acks(socket: &mut TestSocket) -> Option<u16> {
     timeout(Duration::from_secs(15), async {
