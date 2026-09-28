@@ -2913,6 +2913,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "zrotext-owner"
+version = "0.1.0"
+dependencies = [
+ "p256",
+ "rand 0.10.3",
+ "sha2",
+ "uuid",
+ "windows-sys 0.61.2",
+ "zeroize",
+ "zrotext-root-bundle",
+ "zrotext-root-material",
+ "zrotext-root-terminal",
+]
+
+[[package]]
 name = "zrotext-postgres-connection"
 version = "0.1.0"
 dependencies = [
@@ -2961,6 +2976,7 @@ dependencies = [
  "thiserror",
  "windows-sys 0.61.2",
  "zeroize",
+ "zrotext-root-material",
 ]
 
 [[package]]

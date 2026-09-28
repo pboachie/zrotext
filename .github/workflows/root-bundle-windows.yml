@@ -17,9 +17,13 @@ jobs:
         run: cargo fmt --all --check
       - name: Lint native bundle adapter
         run: cargo clippy --locked -p zrotext-root-bundle --all-targets -- -D warnings
-      - name: Exercise native NTFS permissions, races and failures
-        run: cargo test --locked -p zrotext-root-bundle
       - name: Lint bounded console transport
         run: cargo clippy --locked -p zrotext-root-terminal --all-targets -- -D warnings
-      - name: Exercise isolated hidden native console contracts
-        run: cargo test --locked -p zrotext-root-terminal
+      - name: Lint offline owner commands
+        run: cargo clippy --locked -p zrotext-owner --all-targets -- -D warnings
+      - name: Verify disposable native fixture guards
+        run: ./scripts/windows_native_ci.ps1 -SelfTest
+      - name: Exercise the bundle suite as a disposable standard user
+        run: ./scripts/windows_native_ci.ps1 -ProvisionEphemeralGithubHostedAccount
+      - name: Exercise console and owner suites with reduced-rights children
+        run: ./scripts/windows_native_ci.ps1 -ReducedRightsSuites
