@@ -205,7 +205,7 @@ async function loadDevices() {
   const select = byId("activation-device");
   select.replaceChildren(...page.devices.filter((device) => !device.revoked).map((device) => {
     const option = document.createElement("option");
-    option.value = device.id;
+    option.value = device.device_id;
     option.textContent = `${device.display_name}${device.active_socket_lease ? "" : " (not connected)"}`;
     return option;
   }));
