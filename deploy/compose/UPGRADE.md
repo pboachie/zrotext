@@ -154,7 +154,7 @@ migration credential in an API environment.
 
 - Migrations are numbered SQL files in `deploy/compose/migrations/`, append-only
   and consecutive from `001_foundation.sql`. The current highest migration in
-  this repository is **040** (`040_radio_evidence_index.sql`). Never
+  this repository is **050** (`050_message_attempts_recent_index.sql`). Never
   edit a file that is already applied; a change is always a new file with the
   next number.
 - The runner takes a fixed PostgreSQL advisory lock for the whole run, creates
