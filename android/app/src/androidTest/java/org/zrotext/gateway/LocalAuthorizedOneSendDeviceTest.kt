@@ -33,12 +33,16 @@ class LocalAuthorizedOneSendDeviceTest {
             assertTrue("pilot permission missing: $permission",
                 ContextCompat.checkSelfPermission(app, permission) == PackageManager.PERMISSION_GRANTED)
         }
+        // The preflight owns SIM selection; any active SIM may be selected, so
+        // devices with several active SIMs can run the pilot without disabling one.
+        val selected = app.getSharedPreferences("gateway_selection", Context.MODE_PRIVATE)
+            .getInt("subscription_id", SubscriptionManager.INVALID_SUBSCRIPTION_ID)
+        assertTrue("no SIM selected; run the radio preflight first",
+            selected != SubscriptionManager.INVALID_SUBSCRIPTION_ID)
         val active = app.getSystemService(SubscriptionManager::class.java)
             .activeSubscriptionInfoList.orEmpty()
-        assertTrue("exactly one active SIM is required", active.size == 1)
-        val subscriptionId = active.single().subscriptionId
-        assertTrue(subscriptionId >= 0 && app.getSharedPreferences("gateway_selection", Context.MODE_PRIVATE)
-            .getInt("subscription_id", SubscriptionManager.INVALID_SUBSCRIPTION_ID) == subscriptionId)
+        assertTrue("the selected SIM is no longer active", active.any { it.subscriptionId == selected })
+        val subscriptionId = selected
         val oneUse = app.getSharedPreferences("alpha_pilot", Context.MODE_PRIVATE)
         assertTrue("the one-send pilot was already consumed", !oneUse.getBoolean("attempt_used", false))
 
