@@ -86,6 +86,10 @@ fn inbound_invalid_content_is_permanent_but_storage_failure_is_retryable() {
         RETRY_LATER
     );
     assert_eq!(
+        inbound_evidence_close_code(&InboundError::SourceRetired),
+        RETRY_LATER
+    );
+    assert_eq!(
         inbound_evidence_close_code(&InboundError::Unauthorized),
         close_code::POLICY
     );

@@ -334,6 +334,37 @@ fn early_reply_waits_for_sent_evidence_but_missing_source_is_permanent() {
 }
 
 #[test]
+fn opt_out_transitions_on_a_retired_source_are_deferred_not_permanent() {
+    for classification in [
+        Classification::OptOut,
+        Classification::OptOutReview,
+        Classification::OptIn,
+    ] {
+        assert!(
+            matches!(
+                retired_source_error(classification),
+                InboundError::SourceRetired
+            ),
+            "{classification:?}"
+        );
+    }
+    for classification in [
+        Classification::CapturedLocal,
+        Classification::SimUnverified,
+        Classification::SendUnverified,
+        Classification::EncryptionUnverified,
+    ] {
+        assert!(
+            matches!(
+                retired_source_error(classification),
+                InboundError::UnknownSource
+            ),
+            "{classification:?}"
+        );
+    }
+}
+
+#[test]
 fn metadata_signature_bytes_match_android_pilot_vector() {
     let session = InboundSession {
         account_id: Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap(),
@@ -1712,8 +1743,9 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
         .is_none()
     );
     // Data retention nulls a terminal source's recipient and payload. A stored
-    // event stays exact-replayable; a new event for that attempt is refused
-    // permanently instead of reading the NULL recipient.
+    // event stays exact-replayable; a new STOP for that attempt is deferred
+    // instead of reading the NULL recipient, and a new capture is refused
+    // permanently.
     db.execute(
         "UPDATE recipient_suppressions SET active=FALSE,source_event_id=$2,source='sms_resume' WHERE account_id=$1",
         &[&account, &resume.event_id],
@@ -1745,7 +1777,7 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
     };
     assert!(matches!(
         ingest(&mut db, session, &late_stop).await,
-        Err(InboundError::UnknownSource)
+        Err(InboundError::SourceRetired)
     ));
     assert!(
         db.query_opt(
@@ -1756,6 +1788,27 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
         .unwrap()
         .is_none()
     );
+    let late_capture = InboundEvent {
+        event_id: Uuid::new_v4(),
+        sequence: 2006,
+        classification: Classification::CapturedLocal,
+        signature_der: &[],
+        ..unsigned
+    };
+    let capture_signature: Signature = signing.sign(&signed_event_bytes(session, &late_capture));
+    let capture_der = capture_signature.to_der();
+    assert!(matches!(
+        ingest(
+            &mut db,
+            session,
+            &InboundEvent {
+                signature_der: capture_der.as_bytes(),
+                ..late_capture
+            }
+        )
+        .await,
+        Err(InboundError::UnknownSource)
+    ));
     assert!(db.query_one(
         "SELECT NOT active FROM recipient_suppressions WHERE account_id=$1 AND recipient_e164='+15551234567'",
         &[&account],
@@ -1770,6 +1823,313 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
         ingest(&mut db, session, &signed).await,
         Err(InboundError::Unauthorized)
     ));
+    db.batch_execute(&format!(
+        "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
+    ))
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn signed_stop_after_content_retention_still_suppresses_recipient() {
+    let url = std::env::var("ZT_INBOUND_TEST_DATABASE_URL")
+        .expect("set ZT_INBOUND_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let (mut db, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let schema = format!("inbound_test_{}", Uuid::new_v4().simple());
+    db.batch_execute(&format!(
+        "CREATE SCHEMA {schema}; SET search_path TO {schema}"
+    ))
+    .await
+    .unwrap();
+    for migration in [
+        include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
+        include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+        include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
+        include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
+        include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+        include_str!("../../../../deploy/compose/migrations/006_usage_metering.sql"),
+        include_str!("../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"),
+        include_str!("../../../../deploy/compose/migrations/008_stripe_billing_foundation.sql"),
+        include_str!("../../../../deploy/compose/migrations/009_webhook_manual_replay.sql"),
+        include_str!("../../../../deploy/compose/migrations/010_billing_test_entitlement.sql"),
+        include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
+        include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
+        include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
+        include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
+        include_str!("../../../../deploy/compose/migrations/015_webhook_kek_commitments.sql"),
+        include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+        include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
+        include_str!("../../../../deploy/compose/migrations/018_sealed_inbound_identity.sql"),
+        include_str!("../../../../deploy/compose/migrations/019_line_activation_contract.sql"),
+        include_str!("../../../../deploy/compose/migrations/020_enrollment_retention_indexes.sql"),
+        include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+        include_str!("../../../../deploy/compose/migrations/022_pending_owner_expiry.sql"),
+        include_str!(
+            "../../../../deploy/compose/migrations/023_billing_py_charge_and_unsupported.sql"
+        ),
+        include_str!("../../../../deploy/compose/migrations/024_billing_risk_operator_review.sql"),
+        include_str!("../../../../deploy/compose/migrations/025_account_recovery.sql"),
+        include_str!("../../../../deploy/compose/migrations/026_data_retention.sql"),
+        include_str!("../../../../deploy/compose/migrations/027_billing_test_config.sql"),
+        include_str!("../../../../deploy/compose/migrations/028_billing_provider_failures.sql"),
+        include_str!("../../../../deploy/compose/migrations/029_webhook_dispatch_fairness.sql"),
+        include_str!("../../../../deploy/compose/migrations/030_terminal_dispatch_jobs.sql"),
+        include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
+        include_str!("../../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
+        include_str!("../../../../deploy/compose/migrations/038_owner_opt_out_hold_guards.sql"),
+        include_str!("../../../../deploy/compose/migrations/039_inbound_device_clock_offset.sql"),
+        include_str!("../../../../deploy/compose/migrations/041_device_preconditions.sql"),
+        include_str!("../../../../deploy/compose/migrations/047_device_network_service.sql"),
+    ] {
+        db.batch_execute(migration).await.unwrap();
+    }
+    let account = Uuid::new_v4();
+    let device = Uuid::new_v4();
+    let message = Uuid::new_v4();
+    let attempt = Uuid::new_v4();
+    let signing = SigningKey::generate_from_rng(&mut rng());
+    let public = signing
+        .verifying_key()
+        .to_sec1_point(false)
+        .as_bytes()
+        .to_vec();
+    db.execute("INSERT INTO accounts(id) VALUES($1)", &[&account])
+        .await
+        .unwrap();
+    db.execute("INSERT INTO sites(site_id) VALUES('test')", &[])
+        .await
+        .unwrap();
+    db.execute(
+        "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'fixture')",
+        &[&device, &account],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO device_keys(device_id,account_id,signing_key_sec1,fingerprint) \
+         VALUES($1,$2,$3,$4)",
+        &[&device, &account, &public, &vec![1u8; 32]],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO device_sessions(device_id,account_id,site_id,instance_id,connection_epoch,lease_until,deployment_epoch) \
+         VALUES($1,$2,'test','instance',2,now()+interval '10 minutes',1)",
+        &[&device, &account],
+    ).await.unwrap();
+    // Delivered past the default content window, with its sent callback
+    // received at the same time: inside the default event window.
+    db.execute(
+        "INSERT INTO messages(id,account_id,device_id,recipient_e164,recipient_digest, \
+         transport_mode,transport_payload,request_digest,state,expires_at,created_at,updated_at) \
+         VALUES($1,$2,$3,'+15551234567',$4,'synthetic_alpha',$5,$6,'delivered',now()+interval '1 hour', \
+         now()-interval '31 days',now()-interval '31 days')",
+        &[&message, &account, &device, &vec![2u8;32], &b"fixture".as_slice(), &vec![3u8;32]],
+    ).await.unwrap();
+    db.execute(
+        "INSERT INTO message_attempts(id,account_id,message_id,device_id,generation, \
+         session_epoch,deployment_epoch,status) VALUES($1,$2,$3,$4,1,2,1,'submitted')",
+        &[&attempt, &account, &message, &device],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO message_events(id,account_id,message_id,attempt_id,evidence_code, \
+         event_digest,observed_at,received_at,resulting_state,segment_index,segment_count) \
+         VALUES($1,$2,$3,$4,'sent_callback_ok',$5,now()-interval '31 days',now()-interval '31 days', \
+         'submitted',0,1)",
+        &[&Uuid::new_v4(), &account, &message, &attempt, &vec![4u8; 32]],
+    )
+    .await
+    .unwrap();
+    let pruned = crate::retention::prune(
+        &mut db,
+        crate::retention::RetentionPolicy::default(),
+        crate::retention::BATCH_SIZE,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        pruned.messages, 0,
+        "reply target retired inside the event window"
+    );
+    let recipient_kept: Option<String> = db
+        .query_one(
+            "SELECT recipient_e164 FROM messages WHERE id=$1",
+            &[&message],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(recipient_kept.as_deref(), Some("+15551234567"));
+
+    let session = InboundSession {
+        account_id: account,
+        device_id: device,
+        site_id: "test",
+        instance_id: "instance",
+        connection_epoch: 2,
+        deployment_epoch: 1,
+    };
+    let unsigned = InboundEvent {
+        event_id: Uuid::new_v4(),
+        sequence: 1,
+        message_id: message,
+        attempt_id: attempt,
+        classification: Classification::OptOut,
+        observed_at_ms: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64,
+        part_count: 1,
+        content: Content::MetadataOnly,
+        signature_der: &[],
+    };
+    let stop_signature: Signature = signing.sign(&signed_event_bytes(session, &unsigned));
+    let stop_der = stop_signature.to_der();
+    let stop = InboundEvent {
+        signature_der: stop_der.as_bytes(),
+        ..unsigned
+    };
+    assert!(ingest(&mut db, session, &stop).await.unwrap().created);
+    let active: bool = db.query_one(
+        "SELECT active FROM recipient_suppressions WHERE account_id=$1 AND recipient_e164='+15551234567'",
+        &[&account],
+    ).await.unwrap().get(0);
+    assert!(active);
+    let expires_at_ms = i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap()
+        + 60_000;
+    assert!(matches!(
+        zrotext_delivery_store::DeliveryStore::new(&mut db)
+            .accept(zrotext_delivery_store::NewMessage {
+                account_id: account,
+                device_id: device,
+                client_message_id: Uuid::new_v4(),
+                idempotency_key: "after-retained-stop",
+                recipient_e164: "+15551234567",
+                synthetic_payload: b"synthetic",
+                expires_at_ms,
+            })
+            .await,
+        Err(zrotext_delivery_store::StoreError::RecipientSuppressed)
+    ));
+    let resume = InboundEvent {
+        event_id: Uuid::new_v4(),
+        sequence: 2,
+        observed_at_ms: unsigned.observed_at_ms + 1,
+        classification: Classification::OptIn,
+        signature_der: &[],
+        ..unsigned
+    };
+    let resume_signature: Signature = signing.sign(&signed_event_bytes(session, &resume));
+    let resume_der = resume_signature.to_der();
+    assert!(
+        ingest(
+            &mut db,
+            session,
+            &InboundEvent {
+                signature_der: resume_der.as_bytes(),
+                ..resume
+            }
+        )
+        .await
+        .unwrap()
+        .suppression_cleared
+    );
+    zrotext_delivery_store::DeliveryStore::new(&mut db)
+        .accept(zrotext_delivery_store::NewMessage {
+            account_id: account,
+            device_id: device,
+            client_message_id: Uuid::new_v4(),
+            idempotency_key: "after-retained-start",
+            recipient_e164: "+15551234567",
+            synthetic_payload: b"synthetic",
+            expires_at_ms,
+        })
+        .await
+        .unwrap();
+    // Once the sent evidence leaves the event window the recipient is retired
+    // and its event row deleted in the same pass. A source retired under the
+    // earlier rule can still carry sent evidence; a STOP for it is deferred,
+    // not quarantined, and nothing is stored for it.
+    db.execute(
+        "UPDATE message_events SET received_at=now()-interval '91 days' WHERE attempt_id=$1",
+        &[&attempt],
+    )
+    .await
+    .unwrap();
+    let retired = crate::retention::prune(
+        &mut db,
+        crate::retention::RetentionPolicy::default(),
+        crate::retention::BATCH_SIZE,
+    )
+    .await
+    .unwrap();
+    assert_eq!(retired.messages, 1);
+    assert!(
+        db.query_one(
+            "SELECT recipient_e164 FROM messages WHERE id=$1",
+            &[&message]
+        )
+        .await
+        .unwrap()
+        .get::<_, Option<String>>(0)
+        .is_none()
+    );
+    db.execute(
+        "INSERT INTO message_events(id,account_id,message_id,attempt_id,evidence_code, \
+         event_digest,observed_at,resulting_state,segment_index,segment_count) \
+         VALUES($1,$2,$3,$4,'sent_callback_ok',$5,now(),'submitted',0,1)",
+        &[
+            &Uuid::new_v4(),
+            &account,
+            &message,
+            &attempt,
+            &vec![4u8; 32],
+        ],
+    )
+    .await
+    .unwrap();
+    let late_stop = InboundEvent {
+        event_id: Uuid::new_v4(),
+        sequence: 3,
+        observed_at_ms: unsigned.observed_at_ms + 2,
+        signature_der: &[],
+        ..unsigned
+    };
+    let late_signature: Signature = signing.sign(&signed_event_bytes(session, &late_stop));
+    let late_der = late_signature.to_der();
+    assert!(matches!(
+        ingest(
+            &mut db,
+            session,
+            &InboundEvent {
+                signature_der: late_der.as_bytes(),
+                ..late_stop
+            }
+        )
+        .await,
+        Err(InboundError::SourceRetired)
+    ));
+    assert!(
+        db.query_opt(
+            "SELECT 1 FROM inbound_events WHERE id=$1",
+            &[&late_stop.event_id]
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
     db.batch_execute(&format!(
         "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
     ))
