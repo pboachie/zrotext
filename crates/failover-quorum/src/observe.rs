@@ -29,9 +29,10 @@
 //! * the member identity is bound at construction and stamped on every
 //!   report; one round yields at most one report.
 //!
-//! Nothing in this build invokes the observer. It stays dormant library
-//! logic until a later increment wires it to a consensus store and a
-//! transport, so the failover feature remains disabled by default.
+//! The observer stays pure: it is invoked by the member-side reporting loop
+//! ([`crate::report::ReportLoop`]) and by tests, never by a network listener
+//! — this crate performs no I/O, and the failover feature remains disabled
+//! by default.
 
 use crate::decision::{MAX_STORED_EPOCH, MemberReport, SiteFenceState, WriterObservation};
 

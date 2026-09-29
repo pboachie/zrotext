@@ -5,10 +5,15 @@
 //! end-to-end executor failover with a restart.
 
 use super::*;
+use std::collections::VecDeque;
 use zrotext_failover_quorum::decision::{
     Decision, FailoverConfig, HoldReason, MemberReport, Round, SiteFenceState, WriterObservation,
 };
-use zrotext_failover_quorum::executor::{Application, InProcessSource};
+use zrotext_failover_quorum::executor::{Application, InProcessSource, ObservationSource};
+use zrotext_failover_quorum::observe::{
+    AbstainReason, MemberObserver, RoundProbes, StopConfirmation, WriterProbe,
+};
+use zrotext_failover_quorum::report::{ConsensusStoreSink, ProbeSource, ReportLoop, RoundOutcome};
 
 const MIGRATION_FOUNDATION: &str =
     include_str!("../../../../deploy/compose/migrations/001_foundation.sql");
@@ -18,10 +23,12 @@ const MIGRATION_FAILOVER_JOURNAL: &str =
 #[test]
 fn executor_env_is_disabled_by_default_and_reads_nothing_else() {
     for enabled in [None, Some("false")] {
-        let env = ExecutorEnv::parse(enabled, None, None, None, None, None).unwrap();
+        let env =
+            ExecutorEnv::parse(enabled, None, None, None, None, None, None, None, None).unwrap();
         assert!(env.is_none(), "no executor while the flag is off");
         // Garbage in every other variable is not even read while off,
-        // including the consensus store directory.
+        // including the consensus store directory and the reporting
+        // variables.
         let env = ExecutorEnv::parse(
             enabled,
             Some("not,three"),
@@ -29,6 +36,9 @@ fn executor_env_is_disabled_by_default_and_reads_nothing_else() {
             Some("nope"),
             Some("zero"),
             Some("relative/../unsafe\0dir"),
+            Some("soon"),
+            Some("-1"),
+            Some("a-stranger"),
         )
         .unwrap();
         assert!(env.is_none());
@@ -37,8 +47,34 @@ fn executor_env_is_disabled_by_default_and_reads_nothing_else() {
 
 #[test]
 fn executor_env_fails_closed_on_incomplete_or_invalid_configuration() {
-    assert!(ExecutorEnv::parse(Some("true"), Some("a,b,c"), None, None, None, None).is_err());
-    assert!(ExecutorEnv::parse(Some("true"), Some("a,b,c"), Some(""), None, None, None).is_err());
+    assert!(
+        ExecutorEnv::parse(
+            Some("true"),
+            Some("a,b,c"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None
+        )
+        .is_err()
+    );
+    assert!(
+        ExecutorEnv::parse(
+            Some("true"),
+            Some("a,b,c"),
+            Some(""),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None
+        )
+        .is_err()
+    );
     assert!(
         ExecutorEnv::parse(
             Some("true"),
@@ -46,12 +82,26 @@ fn executor_env_fails_closed_on_incomplete_or_invalid_configuration() {
             Some("a"),
             Some("a"),
             None,
+            None,
+            None,
+            None,
             None
         )
         .is_err()
     );
     assert!(
-        ExecutorEnv::parse(Some("true"), Some("a,b"), Some("a"), Some("b"), None, None).is_err()
+        ExecutorEnv::parse(
+            Some("true"),
+            Some("a,b"),
+            Some("a"),
+            Some("b"),
+            None,
+            None,
+            None,
+            None,
+            None
+        )
+        .is_err()
     );
     assert!(
         ExecutorEnv::parse(
@@ -60,6 +110,9 @@ fn executor_env_fails_closed_on_incomplete_or_invalid_configuration() {
             Some("a"),
             Some("b"),
             Some("0"),
+            None,
+            None,
+            None,
             None
         )
         .is_err()
@@ -71,11 +124,27 @@ fn executor_env_fails_closed_on_incomplete_or_invalid_configuration() {
             Some("a"),
             Some("b"),
             Some("soon"),
+            None,
+            None,
+            None,
             None
         )
         .is_err()
     );
-    assert!(ExecutorEnv::parse(Some("maybe"), None, None, None, None, None).is_err());
+    assert!(
+        ExecutorEnv::parse(
+            Some("maybe"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -89,6 +158,9 @@ fn executor_env_requires_a_consensus_store_directory_when_enabled() {
             Some("a"),
             Some("b"),
             None,
+            None,
+            None,
+            None,
             None
         )
         .is_err()
@@ -100,7 +172,10 @@ fn executor_env_requires_a_consensus_store_directory_when_enabled() {
             Some("a"),
             Some("b"),
             None,
-            Some("")
+            Some(""),
+            None,
+            None,
+            None
         )
         .is_err()
     );
@@ -134,10 +209,17 @@ fn executor_env_enabled_builds_a_validated_configuration() {
         Some("site-b"),
         None,
         Some(&store_dir),
+        None,
+        Some("1500"),
+        Some("witness"),
     )
     .unwrap()
     .unwrap();
     assert_eq!(env.check_interval_ms(), DEFAULT_CHECK_INTERVAL_MS);
+    // An unset probe interval defaults to lockstep with the checks.
+    assert_eq!(env.probe_interval_ms(), DEFAULT_CHECK_INTERVAL_MS);
+    assert_eq!(env.probe_timeout_ms(), 1500);
+    assert_eq!(env.report_member_id(), "witness");
     assert_eq!(
         env.config().members(),
         ["workload-a", "workload-b", "witness"].as_slice()
@@ -154,11 +236,57 @@ fn executor_env_enabled_builds_a_validated_configuration() {
         Some("site-b"),
         Some("250"),
         Some(&literal_dir),
+        Some("250"),
+        Some("1500"),
+        Some("workload-a"),
     )
     .unwrap()
     .unwrap();
     assert_eq!(env.check_interval_ms(), 250);
+    assert_eq!(env.probe_interval_ms(), 250);
     assert_eq!(env.store_dir(), std::path::Path::new(&literal_dir));
+}
+
+#[test]
+fn executor_env_parses_the_reporting_variables_strictly() {
+    let store_dir = absolute_dir("failover-store");
+    let valid = |interval: Option<&str>, timeout: Option<&str>, member: Option<&str>| {
+        ExecutorEnv::parse(
+            Some("true"),
+            Some("workload-a,workload-b,witness"),
+            Some("site-a"),
+            Some("site-b"),
+            None,
+            Some(&store_dir),
+            interval,
+            timeout,
+            member,
+        )
+    };
+    // The reporting identity and the probe timeout are required and must be
+    // well-formed; anything else fails startup closed.
+    assert!(
+        valid(None, Some("1500"), None).is_err(),
+        "a reporting member identity is required when the module is enabled"
+    );
+    assert!(valid(None, Some("1500"), Some("")).is_err());
+    assert!(
+        valid(None, Some("1500"), Some("rogue")).is_err(),
+        "an identity outside the configured membership must fail closed"
+    );
+    assert!(valid(None, None, Some("witness")).is_err());
+    assert!(valid(None, Some(""), Some("witness")).is_err());
+    assert!(
+        valid(Some("0"), Some("1500"), Some("witness")).is_err(),
+        "a zero probe interval would spin"
+    );
+    assert!(valid(Some("soon"), Some("1500"), Some("witness")).is_err());
+    assert!(
+        valid(None, Some("0"), Some("witness")).is_err(),
+        "a zero probe timeout is not a bound"
+    );
+    assert!(valid(None, Some("soon"), Some("witness")).is_err());
+    assert!(valid(None, Some("1500"), Some("workload-b")).is_ok());
 }
 
 #[test]
@@ -184,6 +312,9 @@ fn executor_env_refuses_a_relative_or_dot_segment_store_directory() {
             Some("b"),
             None,
             Some(dir),
+            None,
+            Some("1500"),
+            Some("c"),
         )
         .expect_err(dir);
         assert!(
@@ -250,6 +381,9 @@ fn enabled_env(store_dir: &Path) -> ExecutorEnv {
         Some("site-b"),
         Some("50"),
         Some(store_dir.to_str().expect("utf-8 scratch path")),
+        None,
+        Some("5000"),
+        Some("witness"),
     )
     .unwrap()
     .unwrap()
@@ -258,19 +392,22 @@ fn enabled_env(store_dir: &Path) -> ExecutorEnv {
 #[test]
 fn a_consensus_store_that_cannot_open_fails_the_executor_visibly() {
     let scratch = ScratchDir::new("corrupt-store");
-    // A torn membership record: the store must fail closed on open.
+    // A torn membership record: the store must fail closed on open, before
+    // any thread runs.
     std::fs::write(scratch.0.join("membership"), "v1 members=workload-a").unwrap();
     let healthy = Arc::new(AtomicBool::new(true));
     // Building the authority port does not connect, so no database is
     // needed to reach the store-open failure.
-    let handle = spawn_failover_executor(
+    let threads = spawn_failover_executor(
         Some(enabled_env(&scratch.0)),
         "postgres://unused.example.invalid/db".to_owned(),
         Arc::new(AtomicBool::new(false)),
         healthy.clone(),
-    )
-    .expect("the enabled executor spawns its thread");
-    handle.join().expect("the executor thread exits cleanly");
+    );
+    assert!(
+        threads.is_none(),
+        "a store that cannot open must fail the executor before any thread runs"
+    );
     assert!(
         !healthy.load(Ordering::Acquire),
         "a store-open failure must be visible to operators, not only logged"
@@ -293,11 +430,153 @@ fn a_consensus_store_that_opens_keeps_the_executor_healthy() {
         Some("site-b"),
         None,
         Some(scratch.0.to_str().expect("utf-8 scratch path")),
+        None,
+        Some("5000"),
+        Some("witness-2"),
     )
     .unwrap()
     .unwrap();
     assert!(open_consensus_store(&foreign, &healthy).is_none());
     assert!(!healthy.load(Ordering::Acquire));
+}
+
+/// Deterministic scripted probe source for wiring tests: replays one
+/// outcome per round.
+struct ScriptedProbes(VecDeque<RoundProbes>);
+
+impl ProbeSource for ScriptedProbes {
+    fn probe(&mut self) -> RoundProbes {
+        self.0
+            .pop_front()
+            .expect("the script must cover every round")
+    }
+}
+
+fn healthy_probes(epoch: u64) -> RoundProbes {
+    RoundProbes {
+        writer: WriterProbe::Reachable { epoch },
+        writer_site_fence: Ok(SiteFenceState {
+            enabled: true,
+            draining: false,
+        }),
+        writer_stop: Ok(StopConfirmation { confirmed: false }),
+        standby: Ok(true),
+        former_writer: Ok(true),
+    }
+}
+
+#[test]
+fn the_deterministic_probe_placeholder_abstains_and_records_nothing() {
+    let scratch = ScratchDir::new("placeholder-probes");
+    let store = Arc::new(std::sync::Mutex::new(
+        ConsensusStore::open(
+            &scratch.0,
+            ["workload-a", "workload-b", "witness"]
+                .iter()
+                .map(|member| (*member).to_owned())
+                .collect(),
+            10_000,
+        )
+        .unwrap(),
+    ));
+    // The placeholder is the stand-in until a production probe source
+    // exists: every probe is indeterminate, so the observer abstains each
+    // round and nothing is ever recorded — fail-closed, never fabricated.
+    let mut reporting = ReportLoop::new(
+        MemberObserver::new("witness").unwrap(),
+        AbstainingProbeSource,
+        ConsensusStoreSink::new(store.clone()),
+    );
+    for at_ms in [1_000_u64, 2_000, 3_000] {
+        assert_eq!(
+            reporting.run_round(at_ms),
+            RoundOutcome::Abstained(AbstainReason::WriterIndeterminate)
+        );
+    }
+    let store = store.lock().unwrap();
+    assert_eq!(store.round(3_000), Round::default());
+    for member in ["workload-a", "workload-b", "witness"] {
+        let journal = scratch
+            .0
+            .join("observations")
+            .join(format!("{member}.journal"));
+        assert_eq!(std::fs::read_to_string(journal).unwrap(), "");
+    }
+}
+
+#[test]
+fn the_shared_store_source_serves_exactly_what_the_reporting_loop_records() {
+    let scratch = ScratchDir::new("shared-store");
+    let store = Arc::new(std::sync::Mutex::new(
+        ConsensusStore::open(
+            &scratch.0,
+            ["workload-a", "workload-b", "witness"]
+                .iter()
+                .map(|member| (*member).to_owned())
+                .collect(),
+            10_000,
+        )
+        .unwrap(),
+    ));
+    let mut reporting = ReportLoop::new(
+        MemberObserver::new("witness").unwrap(),
+        ScriptedProbes(vec![healthy_probes(5)].into()),
+        ConsensusStoreSink::new(store.clone()),
+    );
+    assert_eq!(reporting.run_round(1_000), RoundOutcome::Reported);
+    // The executor side of the shared store serves the recorded report once
+    // and never re-serves it inside its freshness window.
+    let mut source = SharedStoreSource::new(store);
+    let round = source.collect(1_000);
+    assert_eq!(round.reports.len(), 1);
+    assert_eq!(round.reports[0].member_id, "witness");
+    assert_eq!(
+        round.reports[0].writer,
+        WriterObservation::Reachable { epoch: 5 }
+    );
+    for now in [1_001_u64, 5_000, 9_999] {
+        assert_eq!(
+            source.collect(now),
+            Round::default(),
+            "a served report must not be re-served while fresh"
+        );
+    }
+}
+
+#[test]
+fn the_enabled_threads_run_and_stop_at_the_drain_flag() {
+    let scratch = ScratchDir::new("drain-flag");
+    let healthy = Arc::new(AtomicBool::new(true));
+    // The graceful-drain flag is set before the threads start: both loops
+    // must observe it and exit without a single round, leaving the store
+    // untouched and readiness healthy. The executor thread never connects
+    // (building the authority port opens no connection).
+    let threads = spawn_failover_executor(
+        Some(enabled_env(&scratch.0)),
+        "postgres://unused.example.invalid/db".to_owned(),
+        Arc::new(AtomicBool::new(true)),
+        healthy.clone(),
+    )
+    .expect("the enabled wiring spawns its threads");
+    threads
+        .reporter
+        .join()
+        .expect("the reporter thread exits cleanly");
+    threads
+        .executor
+        .join()
+        .expect("the executor thread exits cleanly");
+    assert!(
+        healthy.load(Ordering::Acquire),
+        "a clean drain is not an executor failure"
+    );
+    for member in ["workload-a", "workload-b", "witness"] {
+        let journal = scratch
+            .0
+            .join("observations")
+            .join(format!("{member}.journal"));
+        assert_eq!(std::fs::read_to_string(journal).unwrap(), "");
+    }
 }
 
 fn report(member_id: &str, writer: WriterObservation, now_ms: u64) -> MemberReport {
