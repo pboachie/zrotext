@@ -257,14 +257,21 @@ pub async fn ingest_with_clock(
     let signed = signed_event_bytes(session, event);
     key.verify(&signed, &signature)
         .map_err(|_| InboundError::InvalidSignature)?;
-    // Admission takes this account lock before checking suppression. This
-    // serializes STOP and START with every acceptance transaction.
-    tx.query_opt(
-        "SELECT id FROM accounts WHERE id=$1 AND disabled_at IS NULL FOR NO KEY UPDATE",
-        &[&session.account_id],
-    )
-    .await?
-    .ok_or(InboundError::Unauthorized)?;
+    // Only consent transitions need to serialize with message admission and
+    // dispatch grants, which take this same account lock before reading
+    // suppression. The other classifications never read or write consent
+    // state, so they keep only the enabled check in the key lookup above plus
+    // the KEY SHARE the inbound_events foreign-key insert already takes on the
+    // account row; a burst of replies cannot stall the tenant's API sends and
+    // radio grants one event at a time.
+    if event.classification.changes_consent() {
+        tx.query_opt(
+            "SELECT id FROM accounts WHERE id=$1 AND disabled_at IS NULL FOR NO KEY UPDATE",
+            &[&session.account_id],
+        )
+        .await?
+        .ok_or(InboundError::Unauthorized)?;
+    }
 
     // A reply can be associated only with a message attempt from this tenant
     // and device that already has positive sent-callback evidence. An early
