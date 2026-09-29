@@ -352,9 +352,10 @@ class AuthenticatedGatewayService : Service() {
                                             disconnect(currentGeneration, DeviceReconnectPolicy.Loss.TRANSPORT)
                                         } else {
                                             val version = statusPublisher.nextVersion(heartbeatEpoch, SystemClock.elapsedRealtime())
-                                            fun sendStatus(network: NetworkService) {
+                                            fun sendStatus(network: NetworkService, activeSubscriptionIds: List<Int>?) {
                                                 if (generation != currentGeneration) return
-                                                val observed = DevicePreconditions.observe(applicationContext)
+                                                val observed = DevicePreconditions.observe(
+                                                    applicationContext, activeSubscriptionIds)
                                                 val status = if (version == DeviceStatusPublisher.Version.V2)
                                                     observed.frameV2(heartbeatEpoch, network) else observed.frame(heartbeatEpoch)
                                                 if (webSocket.send(status))
@@ -362,7 +363,9 @@ class AuthenticatedGatewayService : Service() {
                                                 else disconnect(currentGeneration, DeviceReconnectPolicy.Loss.TRANSPORT)
                                             }
                                             when (version) {
-                                                DeviceStatusPublisher.Version.V1 -> sendStatus(NetworkService.UNAVAILABLE)
+                                                DeviceStatusPublisher.Version.V1 -> networkServiceSampler.lookupOnly {
+                                                    active -> sendStatus(NetworkService.UNAVAILABLE, active)
+                                                }
                                                 DeviceStatusPublisher.Version.V2 -> networkServiceSampler.sample(
                                                     { generation == currentGeneration }, ::sendStatus)
                                                 null -> Unit
@@ -1109,6 +1112,7 @@ class AuthenticatedGatewayService : Service() {
         processActive = false
         halt()
         connectivity.unregisterNetworkCallback(networkCallback)
+        networkServiceSampler.shutdown()
         client.dispatcher.executorService.shutdown()
         scheduler.shutdownNow()
         super.onDestroy()

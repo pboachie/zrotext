@@ -11,18 +11,18 @@ class NetworkServiceTest {
         for (invalid in listOf(-1, 4, Int.MAX_VALUE)) assertEquals(NetworkService.UNAVAILABLE, NetworkService.fromPlatform(invalid))
     }
     @Test fun selectionPermissionAndMonotonicDeadlineInvalidateObservation() {
-        for ((selection, time) in listOf(null to 100L, 8 to 100L, 7 to 99L, 7 to 5101L)) {
-            assertEquals(NetworkService.UNAVAILABLE, NetworkServiceCapture(7,100).complete(selection,time,NetworkService.IN_SERVICE))
+        for ((active, time) in listOf(null to 100L, listOf(8) to 100L, listOf(7,8) to 99L, listOf(7) to 5101L)) {
+            assertEquals(NetworkService.UNAVAILABLE, NetworkServiceCapture(7,100).complete(active,time,NetworkService.IN_SERVICE))
         }
-        assertEquals(NetworkService.IN_SERVICE, NetworkServiceCapture(7,100).complete(7,5100,NetworkService.IN_SERVICE))
+        assertEquals(NetworkService.IN_SERVICE, NetworkServiceCapture(7,100).complete(listOf(7,8),5100,NetworkService.IN_SERVICE))
     }
     @Test fun cancellationAndDuplicateCallbacksCannotPublish() {
         val cancelled=NetworkServiceCapture(7,0)
         cancelled.cancel()
-        assertNull(cancelled.complete(7,1,NetworkService.IN_SERVICE))
+        assertNull(cancelled.complete(listOf(7),1,NetworkService.IN_SERVICE))
         val once=NetworkServiceCapture(7,0)
-        assertEquals(NetworkService.UNAVAILABLE,once.complete(7,1,NetworkService.UNAVAILABLE))
-        assertNull(once.complete(7,2,NetworkService.IN_SERVICE))
+        assertEquals(NetworkService.UNAVAILABLE,once.complete(listOf(7),1,NetworkService.UNAVAILABLE))
+        assertNull(once.complete(listOf(7),2,NetworkService.IN_SERVICE))
     }
     @Test fun negotiatedVersionsShareOneBudgetAndV1ShapeRemainsExact() {
         val publisher=DeviceStatusPublisher()

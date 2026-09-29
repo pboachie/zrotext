@@ -44,7 +44,25 @@ internal data class DevicePreconditions(
             else -> SelectedSim.INACTIVE
         }
 
-        fun observe(context: Context): DevicePreconditions {
+        /**
+         * The one SubscriptionManager lookup a status report is allowed: resolved
+         * off the main thread, and the value lives for that report only. Null
+         * means no selection, no READ_PHONE_STATE grant, or a platform failure.
+         */
+        fun resolveActiveSubscriptionIds(context: Context, selected: Int): List<Int>? = try {
+            if (selected < 0 ||
+                context.checkSelfPermission(Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED
+            ) null
+            else context.getSystemService(SubscriptionManager::class.java)
+                ?.activeSubscriptionInfoList?.map { it.subscriptionId }
+        } catch (_: RuntimeException) { null }
+
+        fun observe(context: Context): DevicePreconditions =
+            observe(context, resolveActiveSubscriptionIds(context,
+                context.getSharedPreferences("gateway_selection", Context.MODE_PRIVATE)
+                    .getInt("subscription_id", SubscriptionManager.INVALID_SUBSCRIPTION_ID)))
+
+        fun observe(context: Context, activeSubscriptionIds: List<Int>?): DevicePreconditions {
             val permission = try {
                 if (context.checkSelfPermission(Manifest.permission.SEND_SMS) == PackageManager.PERMISSION_GRANTED)
                     SmsPermission.GRANTED else SmsPermission.DENIED
@@ -52,12 +70,7 @@ internal data class DevicePreconditions(
             val sim = try {
                 val selected = context.getSharedPreferences("gateway_selection", Context.MODE_PRIVATE)
                     .getInt("subscription_id", SubscriptionManager.INVALID_SUBSCRIPTION_ID)
-                val active = if (selected >= 0 && context.checkSelfPermission(Manifest.permission.READ_PHONE_STATE) ==
-                    PackageManager.PERMISSION_GRANTED) {
-                    context.getSystemService(SubscriptionManager::class.java)?.activeSubscriptionInfoList
-                        ?.map { it.subscriptionId }
-                } else null
-                selectedSim(selected, active)
+                selectedSim(selected, activeSubscriptionIds)
             } catch (_: RuntimeException) { SelectedSim.UNAVAILABLE }
             val airplane = try {
                 when (Settings.Global.getInt(context.contentResolver, Settings.Global.AIRPLANE_MODE_ON)) {

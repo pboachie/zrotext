@@ -30,14 +30,16 @@ class NetworkServiceDeviceTest {
         assertEquals(1,active.size)
         val selected=active.single().subscriptionId
         assertTrue(selected>=0)
-        val sampler=NetworkServiceSampler(context) { selected }
+        val sampler=NetworkServiceSampler(context, selectedId = { selected })
         val completed=CountDownLatch(1)
         val received=AtomicReference<NetworkService>()
         try {
-            sampler.sample({true}) { value -> received.set(value); completed.countDown() }
+            sampler.sample({true}) { value, activeIds -> received.set(value);
+                // The one resolved lookup must still carry the selected subscription.
+                assertTrue(checkNotNull(activeIds).contains(selected)); completed.countDown() }
             assertTrue("Actual callback deadline",completed.await(8,TimeUnit.SECONDS))
             assertTrue("Unknown-only output is not platform proof",received.get() in setOf(
                 NetworkService.IN_SERVICE,NetworkService.OUT_OF_SERVICE,NetworkService.EMERGENCY_ONLY,NetworkService.POWER_OFF))
-        } finally { sampler.cancel() }
+        } finally { sampler.cancel(); sampler.shutdown() }
     }
 }
