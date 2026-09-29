@@ -2885,22 +2885,21 @@ async fn billed_admission_guard_share_locks_every_row_it_reads() {
         .execute("INSERT INTO accounts(id) VALUES($1)", &[&account])
         .await
         .unwrap();
-    client
-        .batch_execute(&format!(
-            "INSERT INTO billing_customers(account_id,stripe_customer_id) VALUES('{account}','cus_guardlock'); \
-             INSERT INTO billing_reconciliations(stripe_subscription_id,account_id,stripe_customer_id, \
-               dirty_generation,processed_generation) VALUES('sub_guardlock','{account}','cus_guardlock',2,1); \
-             INSERT INTO billing_subscriptions(stripe_subscription_id,account_id,stripe_customer_id,stripe_status) \
-               VALUES('sub_guardlock','{account}','cus_guardlock','past_due'); \
-             INSERT INTO billing_events(stripe_event_id,event_type,account_id,body_sha256,disposition) \
-               VALUES('evt_guardlock','charge.refunded','{account}',decode(repeat('ab',32),'hex'),'queued'); \
-             INSERT INTO billing_risk_events(stripe_event_id,stripe_charge_id,risk_kind,account_id) \
-               VALUES('evt_guardlock','ch_guardlock','refund','{account}'); \
-             INSERT INTO usage_quota_policies(account_id,metric,limit_units,source) \
-               VALUES('{account}','outbound_message',10,'stripe_test')"
-        ))
-        .await
-        .unwrap();
+    for statement in [
+        "INSERT INTO billing_customers(account_id,stripe_customer_id) VALUES($1,'cus_guardlock')",
+        "INSERT INTO billing_reconciliations(stripe_subscription_id,account_id,stripe_customer_id, \
+         dirty_generation,processed_generation) VALUES('sub_guardlock',$1,'cus_guardlock',2,1)",
+        "INSERT INTO billing_subscriptions(stripe_subscription_id,account_id,stripe_customer_id,stripe_status) \
+         VALUES('sub_guardlock',$1,'cus_guardlock','past_due')",
+        "INSERT INTO billing_events(stripe_event_id,event_type,account_id,body_sha256,disposition) \
+         VALUES('evt_guardlock','charge.refunded',$1,decode(repeat('ab',32),'hex'),'queued')",
+        "INSERT INTO billing_risk_events(stripe_event_id,stripe_charge_id,risk_kind,account_id) \
+         VALUES('evt_guardlock','ch_guardlock','refund',$1)",
+        "INSERT INTO usage_quota_policies(account_id,metric,limit_units,source) \
+         VALUES($1,'outbound_message',10,'stripe_test')",
+    ] {
+        client.execute(statement, &[&account]).await.unwrap();
+    }
     let (mut peer, peer_connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
         .await
         .unwrap();
