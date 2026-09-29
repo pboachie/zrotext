@@ -743,58 +743,66 @@ async fn writer_claim_replay_epoch_and_revocation() {
         drain_notify: Arc::new(Notify::new()),
     };
 
-    let bad = enrollment::issue_device_challenge(&client, &hasher, device_id)
-        .await
-        .unwrap();
+    let bad = enrollment::issue_socket_challenge(
+        &hasher,
+        account_id,
+        device_id,
+        enrollment::unix_now_ms(),
+    );
     let wrong_signing = SigningKey::generate_from_rng(&mut rng());
     let wrong_signature: Signature = wrong_signing.sign(&device_challenge_bytes(&bad));
     assert!(matches!(
-        enrollment::authenticate_device_challenge(
-            &mut client,
+        enrollment::authenticate_socket_proof(
+            &client,
             &hasher,
             &bad,
-            wrong_signature.to_der().as_bytes()
+            wrong_signature.to_der().as_bytes(),
+            enrollment::unix_now_ms(),
         )
         .await,
         Err(EnrollmentError::Unauthorized)
     ));
+    // A rejected signature consumes nothing: the same stateless challenge
+    // still verifies for the enrolled key inside its window. Claim-time
+    // session fencing, not challenge consumption, serializes connections.
     let good_signature: Signature = signing.sign(&device_challenge_bytes(&bad));
-    assert!(matches!(
-        enrollment::authenticate_device_challenge(
-            &mut client,
+    assert!(
+        enrollment::authenticate_socket_proof(
+            &client,
             &hasher,
             &bad,
-            good_signature.to_der().as_bytes()
+            good_signature.to_der().as_bytes(),
+            enrollment::unix_now_ms(),
         )
-        .await,
-        Err(EnrollmentError::Unauthorized)
-    ));
+        .await
+        .is_ok()
+    );
 
-    let expired = enrollment::issue_device_challenge(&client, &hasher, device_id)
-        .await
-        .unwrap();
-    client
-        .execute(
-            "UPDATE device_auth_challenges SET created_at=now()-interval '2 minutes',expires_at=now()-interval '1 minute' WHERE id=$1",
-            &[&expired.id],
-        )
-        .await
-        .unwrap();
+    let expired = enrollment::issue_socket_challenge(
+        &hasher,
+        account_id,
+        device_id,
+        enrollment::unix_now_ms() - 60_000 - 10_000 - 1_000,
+    );
     let expired_signature: Signature = signing.sign(&device_challenge_bytes(&expired));
     assert!(matches!(
-        enrollment::authenticate_device_challenge(
-            &mut client,
+        enrollment::authenticate_socket_proof(
+            &client,
             &hasher,
             &expired,
-            expired_signature.to_der().as_bytes()
+            expired_signature.to_der().as_bytes(),
+            enrollment::unix_now_ms(),
         )
         .await,
         Err(EnrollmentError::Unauthorized)
     ));
 
-    let first = enrollment::issue_device_challenge(&client, &hasher, device_id)
-        .await
-        .unwrap();
+    let first = enrollment::issue_socket_challenge(
+        &hasher,
+        account_id,
+        device_id,
+        enrollment::unix_now_ms(),
+    );
     let cross_tenant = crate::enrollment::DeviceChallenge {
         id: first.id,
         account_id: Uuid::new_v4(),
@@ -803,21 +811,23 @@ async fn writer_claim_replay_epoch_and_revocation() {
     };
     let cross_signature: Signature = signing.sign(&device_challenge_bytes(&cross_tenant));
     assert!(matches!(
-        enrollment::authenticate_device_challenge(
-            &mut client,
+        enrollment::authenticate_socket_proof(
+            &client,
             &hasher,
             &cross_tenant,
-            cross_signature.to_der().as_bytes()
+            cross_signature.to_der().as_bytes(),
+            enrollment::unix_now_ms(),
         )
         .await,
         Err(EnrollmentError::Unauthorized)
     ));
     let first_signature: Signature = signing.sign(&device_challenge_bytes(&first));
-    let first_identity = enrollment::authenticate_device_challenge(
-        &mut client,
+    let first_identity = enrollment::authenticate_socket_proof(
+        &client,
         &hasher,
         &first,
         first_signature.to_der().as_bytes(),
+        enrollment::unix_now_ms(),
     )
     .await
     .unwrap();
@@ -831,26 +841,33 @@ async fn writer_claim_replay_epoch_and_revocation() {
             .await
             .unwrap()
     );
-    assert!(matches!(
-        enrollment::authenticate_device_challenge(
-            &mut client,
+    // The proof itself remains valid for its window; only the epoch fence
+    // makes the first session stale once a second claim lands.
+    assert!(
+        enrollment::authenticate_socket_proof(
+            &client,
             &hasher,
             &first,
-            first_signature.to_der().as_bytes()
+            first_signature.to_der().as_bytes(),
+            enrollment::unix_now_ms(),
         )
-        .await,
-        Err(EnrollmentError::Unauthorized)
-    ));
-
-    let second = enrollment::issue_device_challenge(&client, &hasher, device_id)
         .await
-        .unwrap();
+        .is_ok()
+    );
+
+    let second = enrollment::issue_socket_challenge(
+        &hasher,
+        account_id,
+        device_id,
+        enrollment::unix_now_ms(),
+    );
     let second_signature: Signature = signing.sign(&device_challenge_bytes(&second));
-    let second_identity = enrollment::authenticate_device_challenge(
-        &mut client,
+    let second_identity = enrollment::authenticate_socket_proof(
+        &client,
         &hasher,
         &second,
         second_signature.to_der().as_bytes(),
+        enrollment::unix_now_ms(),
     )
     .await
     .unwrap();
@@ -1135,16 +1152,20 @@ async fn writer_claim_replay_epoch_and_revocation() {
     // The writer serializes them and leaves only the higher epoch current.
     let mut identities = Vec::new();
     for _ in 0..2 {
-        let challenge = enrollment::issue_device_challenge(&client, &hasher, device_id)
-            .await
-            .unwrap();
+        let challenge = enrollment::issue_socket_challenge(
+            &hasher,
+            account_id,
+            device_id,
+            enrollment::unix_now_ms(),
+        );
         let signature: Signature = signing.sign(&device_challenge_bytes(&challenge));
         identities.push(
-            enrollment::authenticate_device_challenge(
-                &mut client,
+            enrollment::authenticate_socket_proof(
+                &client,
                 &hasher,
                 &challenge,
                 signature.to_der().as_bytes(),
+                enrollment::unix_now_ms(),
             )
             .await
             .unwrap(),
@@ -1256,10 +1277,14 @@ async fn writer_claim_replay_epoch_and_revocation() {
             .await
             .unwrap()
     );
-    assert!(matches!(
-        enrollment::issue_device_challenge(&client, &hasher, device_id).await,
-        Err(EnrollmentError::Unauthorized)
-    ));
+    // Issuance is stateless, so revocation shows up as the liveness read the
+    // socket performs before sending a challenge, and at proof verification.
+    assert_eq!(
+        enrollment::live_device_account(&client, device_id)
+            .await
+            .unwrap(),
+        None
+    );
     client
         .batch_execute(&format!(
             "SET search_path TO public; DROP SCHEMA {schema} CASCADE"

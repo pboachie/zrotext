@@ -324,7 +324,10 @@ about one deployment; nothing here is enforced by the repository.
 - [ ] Add per-source connection limits in front of `/v1/device-stream`. The
   in-process budgets (32 authenticated sockets and 32 handshakes per process)
   are not keyed by client address and the bundled Caddyfile adds no limiting;
-  this control is upstream guidance the repository does not ship.
+  this control is upstream guidance the repository does not ship. Also
+  rate-limit upgrade requests per source: a connection limit does not bound
+  sequential hello/close cycles, which can fill the shared handshake budgets
+  (see [security design](../../docs/SECURITY-DESIGN.md)).
   The 16 device PostgreSQL clients per process are shared by short operations;
   connected streams and pending proofs do not pin a client. Device operations
   wait up to two seconds for pool admission, then close with retry-later on

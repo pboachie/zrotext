@@ -467,7 +467,9 @@ share, and its older socket is closed immediately rather than at the next
 10-second session check. These in-process budgets are not
 keyed by client address; put a reverse proxy per-address connection limit in
 front of `/v1/device-stream` so one source cannot keep the handshake budget
-full. Each socket permits a burst of 256 received frames and refills
+full, and a per-address upgrade request rate limit, because sequential
+hello/close cycles hold only one connection at a time while spending the
+shared handshake route budgets. Each socket permits a burst of 256 received frames and refills
 64 frame credits per second. Text, ping, pong and duplicate replay frames all
 count. An exhausted socket closes; devices can reconnect and replay unacknowledged
 evidence using existing deduplication. Device implementations should pace backlog

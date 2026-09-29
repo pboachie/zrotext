@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Bounded HTTP transport for one-use device enrollment.
 //!
-//! The challenge proof acknowledges a device key. It does not issue a socket
-//! credential or authenticate the M0 heartbeat socket.
+//! Pairing claim and proof happen here; the device stream handshake issues
+//! its own stateless challenges on the socket and has no HTTP device route.
 
 use crate::api_json::ApiJson;
 use crate::http_auth::preauth::OwnerMutation;
@@ -11,7 +11,7 @@ use crate::{
         TokenHasher,
         abuse_limits::{self, Limit},
     },
-    enrollment::{self, DeviceChallenge, EnrollmentError, EnrollmentHasher},
+    enrollment::{self, EnrollmentError, EnrollmentHasher},
     http_auth::{require_owner, require_owner_read},
 };
 use axum::{
@@ -79,8 +79,6 @@ pub fn router(state: EnrollmentHttpState) -> Router {
         .route("/pairings/{pairing_id}/prove", post(prove_pairing))
         .route("/pairings/{pairing_id}/approve", post(approve_pairing))
         .route("/pairings/{pairing_id}/cancel", post(cancel_pairing))
-        .route("/devices/{device_id}/challenge", post(device_challenge))
-        .route("/devices/authenticate", post(device_authenticate))
         .route("/devices", get(list_devices))
         .route("/devices/{device_id}", delete(revoke_device))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
@@ -104,7 +102,8 @@ async fn connect(state: &EnrollmentHttpState) -> Result<crate::runtime_db::Poole
 }
 
 /// `live` runs only after anonymous callers exhaust the route budget, so junk
-/// identifiers cannot lock out a phone that holds a real device or pairing.
+/// identifiers cannot lock out a phone that holds a real pairing's one-use
+/// secret.
 async fn public_admission(
     state: &EnrollmentHttpState,
     client: &Client,
@@ -463,114 +462,6 @@ async fn cancel_pairing(
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => StatusCode::NOT_FOUND.into_response(),
         Err(error) => owner_error(error),
-    }
-}
-
-#[derive(Serialize)]
-struct ChallengeResponse {
-    challenge_id: Uuid,
-    account_id: Uuid,
-    device_id: Uuid,
-    nonce: String,
-}
-
-async fn device_challenge(
-    State(state): State<Arc<EnrollmentHttpState>>,
-    Path(device_id): Path<Uuid>,
-) -> Response {
-    let Ok(client) = connect(&state).await else {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    };
-    if let Err(response) = public_admission(
-        &state,
-        &client,
-        Limit::DeviceChallenge,
-        &device_id.to_string(),
-        enrollment::device_is_live(&client, device_id),
-    )
-    .await
-    {
-        return response;
-    }
-    match enrollment::issue_device_challenge(&client, &state.enrollment_hasher, device_id).await {
-        Ok(challenge) => Json(ChallengeResponse {
-            challenge_id: challenge.id,
-            account_id: challenge.account_id,
-            device_id: challenge.device_id,
-            nonce: URL_SAFE_NO_PAD.encode(challenge.nonce),
-        })
-        .into_response(),
-        Err(error) => public_error(error),
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AuthenticateBody {
-    challenge_id: Uuid,
-    account_id: Uuid,
-    device_id: Uuid,
-    nonce: String,
-    signature_der: String,
-}
-
-async fn device_authenticate(
-    State(state): State<Arc<EnrollmentHttpState>>,
-    ApiJson(body): ApiJson<AuthenticateBody>,
-) -> Response {
-    let Ok(mut client) = connect(&state).await else {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    };
-    let live = async {
-        match decode_nonce(&body.nonce) {
-            Ok(nonce) => {
-                let challenge = DeviceChallenge {
-                    id: body.challenge_id,
-                    account_id: body.account_id,
-                    device_id: body.device_id,
-                    nonce,
-                };
-                enrollment::device_challenge_is_live(&client, &state.enrollment_hasher, &challenge)
-                    .await
-            }
-            Err(_) => Ok(false),
-        }
-    };
-    if let Err(response) = public_admission(
-        &state,
-        &client,
-        Limit::DeviceAuthenticate,
-        &body.device_id.to_string(),
-        live,
-    )
-    .await
-    {
-        return response;
-    }
-    let nonce = match decode_nonce(&body.nonce) {
-        Ok(nonce) => nonce,
-        Err(status) => return status.into_response(),
-    };
-    let signature = match decode_bounded(&body.signature_der, 107, 8, 80) {
-        Ok(bytes) => bytes,
-        Err(status) => return status.into_response(),
-    };
-    let challenge = DeviceChallenge {
-        id: body.challenge_id,
-        account_id: body.account_id,
-        device_id: body.device_id,
-        nonce,
-    };
-    match enrollment::authenticate_device_challenge(
-        &mut client,
-        &state.enrollment_hasher,
-        &challenge,
-        &signature,
-    )
-    .await
-    {
-        Ok(_) => StatusCode::NO_CONTENT.into_response(),
-        Err(error) => public_error(error),
     }
 }
 

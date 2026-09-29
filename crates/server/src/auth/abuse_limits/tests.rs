@@ -197,18 +197,18 @@ async fn junk_subjects_cannot_spend_the_budget_of_verified_subjects() {
     };
     // An open route never runs the liveness probe.
     assert!(
-        consume_or_verify(&db, &hasher, Limit::DeviceChallenge, "phone", live(true))
+        consume_or_verify(&db, &hasher, Limit::PairClaim, "pairing", live(true))
             .await
             .unwrap()
     );
     assert_eq!(probes.load(Ordering::SeqCst), 0);
-    // One anonymous caller spends the whole route with made-up device IDs.
+    // One anonymous caller spends the whole route with made-up pairing IDs.
     for index in 1..300 {
         assert!(
             consume_or_verify(
                 &db,
                 &hasher,
-                Limit::DeviceChallenge,
+                Limit::PairClaim,
                 &format!("junk-{index}"),
                 live(false),
             )
@@ -221,7 +221,7 @@ async fn junk_subjects_cannot_spend_the_budget_of_verified_subjects() {
             !consume_or_verify(
                 &db,
                 &hasher,
-                Limit::DeviceChallenge,
+                Limit::PairClaim,
                 &format!("junk-{index}"),
                 live(false),
             )
@@ -229,27 +229,27 @@ async fn junk_subjects_cannot_spend_the_budget_of_verified_subjects() {
             .unwrap()
         );
     }
-    // The real phone keeps its own verified per-device budget, and no more.
-    for _ in 0..30 {
+    // The real pairing keeps its own verified per-subject budget, and no more.
+    for _ in 0..20 {
         assert!(
-            consume_or_verify(&db, &hasher, Limit::DeviceChallenge, "phone", live(true))
+            consume_or_verify(&db, &hasher, Limit::PairClaim, "pairing", live(true))
                 .await
                 .unwrap()
         );
     }
     assert!(
-        !consume_or_verify(&db, &hasher, Limit::DeviceChallenge, "phone", live(true))
+        !consume_or_verify(&db, &hasher, Limit::PairClaim, "pairing", live(true))
             .await
             .unwrap()
     );
     // Other routes are unaffected.
     assert!(
-        consume(&db, &hasher, Limit::DeviceAuthenticate, Some("phone"))
+        consume(&db, &hasher, Limit::PairProof, Some("pairing"))
             .await
             .unwrap()
     );
     // Refused junk leaves no rows; only the two route rows, 300 admitted
-    // anonymous subjects (junk and the phone's first hello), the phone's
+    // anonymous subjects (junk and the pairing's first claim), the pairing's
     // verified counter and the other route's two rows remain.
     let rows: i64 = db
         .query_one("SELECT count(*) FROM auth_abuse_counters", &[])
@@ -258,22 +258,216 @@ async fn junk_subjects_cannot_spend_the_budget_of_verified_subjects() {
         .get(0);
     assert_eq!(rows, 2 + 299 + 1 + 1 + 2);
     // The verified ceiling is a backstop across many real subjects.
-    let ceiling = hasher.digest(b"abuse-verified-v1", "device_challenge");
+    let ceiling = hasher.digest(b"abuse-verified-v1", "pair_claim");
     db.execute(
-            "UPDATE auth_abuse_counters SET attempts=2999 WHERE scope='device_challenge' AND subject_hash=$1",
-            &[&&ceiling[..]],
-        )
-        .await
-        .unwrap();
+        "UPDATE auth_abuse_counters SET attempts=2999 WHERE scope='pair_claim' AND subject_hash=$1",
+        &[&&ceiling[..]],
+    )
+    .await
+    .unwrap();
     assert!(
-        consume_or_verify(&db, &hasher, Limit::DeviceChallenge, "phone-2", live(true))
+        consume_or_verify(&db, &hasher, Limit::PairClaim, "pairing-2", live(true))
             .await
             .unwrap()
     );
     assert!(
-        !consume_or_verify(&db, &hasher, Limit::DeviceChallenge, "phone-3", live(true))
+        !consume_or_verify(&db, &hasher, Limit::PairClaim, "pairing-3", live(true))
             .await
             .unwrap()
+    );
+    setup
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn device_handshake_keeps_no_anonymous_device_budget_and_caps_verified_shares() {
+    let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+        .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let schema = format!("abuse_device_{}", Uuid::new_v4().simple());
+    setup
+        .batch_execute(&format!("CREATE SCHEMA {schema}"))
+        .await
+        .unwrap();
+    let separator = if base_url.contains('?') { '&' } else { '?' };
+    let url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
+    let (db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    for migration in [
+        include_str!("../../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
+        include_str!("../../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+    ] {
+        db.batch_execute(migration).await.unwrap();
+    }
+    let hasher = TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap();
+    // An attacker names one real device ID many times, then many made-up ones.
+    // The device scopes must charge the route ceiling only, so nothing
+    // per-device accumulates that a later hello from the phone would hit.
+    for _ in 0..60 {
+        assert!(
+            consume(&db, &hasher, Limit::DeviceChallenge, Some("known-device"))
+                .await
+                .unwrap()
+        );
+    }
+    for index in 0..240 {
+        assert!(
+            consume(
+                &db,
+                &hasher,
+                Limit::DeviceChallenge,
+                Some(&format!("junk-{index}"))
+            )
+            .await
+            .unwrap()
+        );
+    }
+    assert!(
+        !consume(&db, &hasher, Limit::DeviceChallenge, None)
+            .await
+            .unwrap()
+    );
+    let rows: i64 = db
+        .query_one(
+            "SELECT count(*) FROM auth_abuse_counters WHERE scope IN ('device_challenge','device_authenticate')",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(rows, 1, "only the route row; no per-device subject rows");
+    // An enrolled device refused by the full anonymous ceiling falls through
+    // to the verified issuance ceiling. One device ID may use only 60 of it
+    // per window, so traffic naming one known ID leaves room for every other
+    // phone, and its share opens again when the window rolls over.
+    for _ in 0..60 {
+        assert!(
+            consume_verified(&db, &hasher, Limit::DeviceChallenge, "known-device")
+                .await
+                .unwrap()
+        );
+    }
+    assert!(
+        !consume_verified(&db, &hasher, Limit::DeviceChallenge, "known-device")
+            .await
+            .unwrap(),
+        "one device ID is capped at its share of the verified ceiling"
+    );
+    assert!(
+        consume_verified(&db, &hasher, Limit::DeviceChallenge, "other-device")
+            .await
+            .unwrap(),
+        "another enrolled device keeps its own share"
+    );
+    db.execute(
+        "UPDATE auth_abuse_counters SET window_started_at=clock_timestamp()-interval '61 seconds'
+         WHERE scope='device_challenge' AND subject_hash=$1",
+        &[&&subject_hash(
+            &hasher,
+            Limit::DeviceChallenge,
+            "known-device",
+            Lane::Verified,
+        )
+        .unwrap()[..]],
+    )
+    .await
+    .unwrap();
+    assert!(
+        consume_verified(&db, &hasher, Limit::DeviceChallenge, "known-device")
+            .await
+            .unwrap(),
+        "the device's share resets with its window"
+    );
+    // Filling the fleet-wide verified ceiling (3,000) takes 50 device IDs:
+    // 62 attempts are spent above, so 48 more full shares and 58 attempts.
+    for device in 0..48 {
+        for _ in 0..60 {
+            assert!(
+                consume_verified(
+                    &db,
+                    &hasher,
+                    Limit::DeviceChallenge,
+                    &format!("device-{device}")
+                )
+                .await
+                .unwrap()
+            );
+        }
+    }
+    for _ in 0..58 {
+        assert!(
+            consume_verified(&db, &hasher, Limit::DeviceChallenge, "device-last")
+                .await
+                .unwrap()
+        );
+    }
+    assert!(
+        !consume_verified(&db, &hasher, Limit::DeviceChallenge, "fresh-device")
+            .await
+            .unwrap(),
+        "the verified-route ceiling still bounds all enrolled devices together"
+    );
+    let route_rows: Vec<(Vec<u8>, i32)> = db
+        .query(
+            "SELECT subject_hash, attempts FROM auth_abuse_counters
+             WHERE scope='device_challenge' AND subject_hash = ANY($1)",
+            &[&vec![
+                hasher
+                    .digest(b"abuse-global-v1", "device_challenge")
+                    .to_vec(),
+                hasher
+                    .digest(b"abuse-verified-v1", "device_challenge")
+                    .to_vec(),
+            ]],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| (row.get(0), row.get(1)))
+        .collect();
+    assert_eq!(route_rows.len(), 2);
+    assert!(route_rows.iter().any(|(_, attempts)| *attempts == 300));
+    assert!(route_rows.iter().any(|(_, attempts)| *attempts == 3_000));
+    // Per-device rows exist only in the verified lane, one per live device
+    // that was admitted there; the anonymous lane still keeps none, and a
+    // refused charge leaves no row.
+    let subject_rows: i64 = db
+        .query_one(
+            "SELECT count(*) FROM auth_abuse_counters WHERE scope='device_challenge'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(subject_rows, 2 + 2 + 48 + 1);
+    // Verified proofs keep no per-device row: only the device key can produce
+    // one, so there is no share for anyone else to spend.
+    assert!(
+        consume_verified_route(&db, &hasher, Limit::DeviceAuthenticate)
+            .await
+            .unwrap()
+    );
+    assert!(
+        subject_hash(
+            &hasher,
+            Limit::DeviceAuthenticate,
+            "known-device",
+            Lane::Verified
+        )
+        .is_none()
+    );
+    assert!(
+        subject_hash(
+            &hasher,
+            Limit::DeviceChallenge,
+            "known-device",
+            Lane::Anonymous
+        )
+        .is_none()
     );
     setup
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
@@ -376,8 +570,14 @@ fn verified_lane_keys_its_own_subject_counter() {
     for limit in Limit::ALL {
         let anonymous = subject_hash(&hasher, *limit, "phone", Lane::Anonymous);
         let verified = subject_hash(&hasher, *limit, "phone", Lane::Verified);
-        assert_eq!(anonymous.is_some(), limit.policy().3.is_some());
-        assert_eq!(verified.is_some(), limit.policy().3.is_some());
+        assert_eq!(
+            anonymous.is_some(),
+            limit.subject_policy(Lane::Anonymous).is_some()
+        );
+        assert_eq!(
+            verified.is_some(),
+            limit.subject_policy(Lane::Verified).is_some()
+        );
         if anonymous.is_some() && !limit.subject_is_secret() {
             assert_ne!(
                 anonymous, verified,
@@ -426,39 +626,41 @@ async fn anonymous_callers_naming_a_live_subject_cannot_spend_its_verified_budge
     let (setup, db, schema) = abuse_schema().await;
     let hasher = TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap();
     let live = |answer: bool| async move { Ok::<_, tokio_postgres::Error>(answer) };
-    // Anyone who knows the public device ID spends its anonymous budget
-    // while the route is still open; the probe never runs for them.
-    for _ in 0..30 {
+    // Anyone who names the public pairing ID spends its anonymous budget
+    // while the route is still open; the probe never runs for them. The
+    // device handshake keeps no per-subject budget at all, so this invariant
+    // is pinned on the pairing claim route, which still has one.
+    for _ in 0..20 {
         assert!(
-            consume_or_verify(&db, &hasher, Limit::DeviceChallenge, "phone", live(false))
+            consume_or_verify(&db, &hasher, Limit::PairClaim, "pairing", live(false))
                 .await
                 .unwrap()
         );
     }
     assert!(
-        !consume_or_verify(&db, &hasher, Limit::DeviceChallenge, "phone", live(false))
+        !consume_or_verify(&db, &hasher, Limit::PairClaim, "pairing", live(false))
             .await
             .unwrap()
     );
-    // The enrolled phone is still admitted through its own verified counter.
-    for _ in 0..30 {
+    // The real pairing is still admitted through its own verified counter.
+    for _ in 0..20 {
         assert!(
-            consume_or_verify(&db, &hasher, Limit::DeviceChallenge, "phone", live(true))
+            consume_or_verify(&db, &hasher, Limit::PairClaim, "pairing", live(true))
                 .await
                 .unwrap()
         );
     }
     assert!(
-        !consume_or_verify(&db, &hasher, Limit::DeviceChallenge, "phone", live(true))
+        !consume_or_verify(&db, &hasher, Limit::PairClaim, "pairing", live(true))
             .await
             .unwrap()
     );
     // Each lane holds one counter row for the subject at its own cap.
-    for (lane, attempts) in [(Lane::Anonymous, 30), (Lane::Verified, 30)] {
-        let hash = subject_hash(&hasher, Limit::DeviceChallenge, "phone", lane).unwrap();
+    for (lane, attempts) in [(Lane::Anonymous, 20), (Lane::Verified, 20)] {
+        let hash = subject_hash(&hasher, Limit::PairClaim, "pairing", lane).unwrap();
         let row = db
             .query_one(
-                "SELECT attempts FROM auth_abuse_counters WHERE scope='device_challenge' AND subject_hash=$1",
+                "SELECT attempts FROM auth_abuse_counters WHERE scope='pair_claim' AND subject_hash=$1",
                 &[&&hash[..]],
             )
             .await
@@ -466,9 +668,8 @@ async fn anonymous_callers_naming_a_live_subject_cannot_spend_its_verified_budge
         assert_eq!(row.get::<_, i32>(0), attempts, "{lane:?}");
     }
     // Once the anonymous window passes, anonymous callers cannot touch the
-    // still-exhausted verified counter, and the phone is refused only by it.
-    let anonymous =
-        subject_hash(&hasher, Limit::DeviceChallenge, "phone", Lane::Anonymous).unwrap();
+    // still-exhausted verified counter, and the pairing is refused only by it.
+    let anonymous = subject_hash(&hasher, Limit::PairClaim, "pairing", Lane::Anonymous).unwrap();
     db.execute(
         "UPDATE auth_abuse_counters SET window_started_at=now()-interval '2 minutes' WHERE subject_hash=$1",
         &[&&anonymous[..]],
@@ -476,12 +677,12 @@ async fn anonymous_callers_naming_a_live_subject_cannot_spend_its_verified_budge
     .await
     .unwrap();
     assert!(
-        consume(&db, &hasher, Limit::DeviceChallenge, Some("phone"))
+        consume(&db, &hasher, Limit::PairClaim, Some("pairing"))
             .await
             .unwrap()
     );
     assert!(
-        !consume_verified(&db, &hasher, Limit::DeviceChallenge, "phone")
+        !consume_verified(&db, &hasher, Limit::PairClaim, "pairing")
             .await
             .unwrap()
     );
