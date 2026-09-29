@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zrotext.com/protocol/v1/vectors/sealed-execution-grant.schema.json",
+  "title": "PROPOSED optional sealed dispatch frames, grant version 1 (roadmap #539)",
+  "description": "Optional device-stream extension, sent only on a session that negotiated zrotext-device-status-v2+sealed-dispatch-v1. No hub emits these frames and no client negotiates them yet. A schema-valid grant is not authority: the device still refuses any binding mismatch.",
+  "oneOf": [
+    { "$ref": "#/$defs/sealed_execution_grant" },
+    { "$ref": "#/$defs/sealed_execution_refusal" }
+  ],
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "positive": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "sha256": {
+      "type": "string",
+      "description": "Base64url without padding of exactly 32 bytes.",
+      "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+    },
+    "sealed_execution_grant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v", "type", "grant_version", "account_id", "device_id", "line_id", "message_id",
+        "attempt_id", "connection_epoch", "deployment_epoch", "binding_generation",
+        "attempt_generation", "reader_role", "reader_key_id", "envelope_sha256",
+        "unsigned_sha256", "expires_at_ms", "segment_count"
+      ],
+      "properties": {
+        "v": { "const": 1 },
+        "type": { "const": "sealed_execution_grant" },
+        "grant_version": { "const": 1 },
+        "account_id": { "$ref": "#/$defs/uuid" },
+        "device_id": { "$ref": "#/$defs/uuid" },
+        "line_id": { "$ref": "#/$defs/uuid" },
+        "message_id": { "$ref": "#/$defs/uuid" },
+        "attempt_id": { "$ref": "#/$defs/uuid" },
+        "connection_epoch": { "$ref": "#/$defs/positive" },
+        "deployment_epoch": { "$ref": "#/$defs/positive" },
+        "binding_generation": { "$ref": "#/$defs/positive" },
+        "attempt_generation": { "$ref": "#/$defs/positive" },
+        "reader_role": {
+          "description": "Profile-02 wrap role the grant authorizes. The device refuses every role but 1 (device payload).",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3
+        },
+        "reader_key_id": { "$ref": "#/$defs/sha256" },
+        "envelope_sha256": { "$ref": "#/$defs/sha256" },
+        "unsigned_sha256": { "$ref": "#/$defs/sha256" },
+        "expires_at_ms": { "$ref": "#/$defs/positive" },
+        "segment_count": {
+          "description": "Maximum SMS parts the grant authorizes. The device refuses 0 or more than 6, and a text needing more parts than granted.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        }
+      }
+    },
+    "sealed_execution_refusal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "type", "grant_version", "attempt_id", "connection_epoch", "reason"],
+      "properties": {
+        "v": { "const": 1 },
+        "type": { "const": "sealed_execution_refusal" },
+        "grant_version": { "const": 1 },
+        "attempt_id": { "$ref": "#/$defs/uuid" },
+        "connection_epoch": { "$ref": "#/$defs/positive" },
+        "reason": {
+          "enum": [
+            "account_mismatch", "device_mismatch", "line_mismatch", "message_mismatch",
+            "message_or_attempt_mismatch", "reader_role_mismatch", "reader_key_mismatch",
+            "session_mismatch", "deployment_mismatch", "binding_generation_mismatch",
+            "envelope_malformed", "envelope_digest_mismatch", "expired", "implausible_expiry",
+            "segment_count_out_of_range", "segment_count_exceeds_grant"
+          ]
+        }
+      }
+    }
+  }
+}

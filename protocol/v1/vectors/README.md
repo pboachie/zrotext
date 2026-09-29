@@ -64,3 +64,17 @@ The shared contract uses the signature verifier called by the test-only
 Android manifest parser and the existing Android DER converter. This
 owner-only fixture proves signature and digest behavior, not complete
 manifest authorization, enrollment, trusted storage, or hardware key custody.
+
+`sealed-execution-grant-01.json` holds the PROPOSED `sealed_execution_grant`
+vectors (roadmap #539; see [device-stream.md](../device-stream.md)) and
+`sealed-execution-grant.schema.json` their schema. One valid grant is bound to
+the synthetic candidate-02 `normal` envelope in
+`android/app/src/sharedTest/resources/candidate02-preparation.json`; each case
+patches the frame, the device context or the envelope and pins `accept`,
+`malformed` (schema and strict parser reject the frame) or `refuse` with the
+exact reason. Every binding field (account, device, line and binding
+generation, message, reader role, reader key, epochs, envelope digest, expiry
+and segment count) has a refusal case. The Python reference
+(`protocol/v1/tests/test_sealed_execution_grant_vectors.py`) and the Android
+JVM suite (`SealedExecutionGrantVectorTest`) consume the same file and must
+reach identical verdicts. No hub emits this frame and no client negotiates it.
