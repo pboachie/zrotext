@@ -124,6 +124,14 @@ class SealedApiContractTests(unittest.TestCase):
         self.assertIn("no server route", description)
         self.assertIn("2026-09-26", DOCUMENT["info"]["description"])
 
+    def test_document_discloses_exactly_one_implemented_slice_behind_default_off_flag(self):
+        description = DOCUMENT["info"]["description"].lower()
+        self.assertIn("implemented: post /v1/sealed/messages", description)
+        self.assertIn("sealed_admission_enabled", description)
+        # Everything except the message-plane submission stays proposal-only.
+        self.assertIn("proposal only: every other path", description)
+        self.assertIn("/v1/sealed/inbound-events", description)
+
     def test_documented_path_method_surface_is_exactly_the_sealed_v1_map(self):
         self.assertEqual(sorted(DOCUMENT["paths"]), sorted(PATH_METHODS))
         seen = {}

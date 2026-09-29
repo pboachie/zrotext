@@ -1,18 +1,34 @@
 # Sealed API v1 contract
 
-**Proposal only, no route exists.** This document and the companion
-[OpenAPI 3.1.0 document](openapi/sealed-v1.json) define the proposed HTTP
+**Contract with one implemented slice.** This document and the companion
+[OpenAPI 3.1.0 document](openapi/sealed-v1.json) define the HTTP
 surface for the sealed API, derived from the ZT-009 decisions
 recorded 2026-09-26 ([decision log Q4/Q6/Q8/Q9/Q11](../drafts/zt-009-decision-log.md)).
 They are task 21: contract first, implementation later. Slice 1 pinned the
-sealed message plane (outbound submission and inbound upload); this revision
-adds slice 2, the read-only devices surface, the webhook endpoint-management
-and delivery/event surface, and the usage metering query. **The sealed
-runtime remains disabled**: no production client may emit or accept a
-profile-01/02 envelope, no server route is mounted for any endpoint described
-here, and nothing in this document authorizes one. Every response below is a
-specified behavior for a future implementation to satisfy, not a behavior
-that exists today.
+sealed message plane (outbound submission and inbound upload); slice 2 added
+the read-only devices surface, the webhook endpoint-management
+and delivery/event surface, and the usage metering query.
+
+**Implementation status.** `POST /v1/sealed/messages` is implemented
+([#538](https://github.com/pboachie/zrotext/issues/538) slice 1, module
+`crates/server/src/http_sealed`): mounted only when an operator sets
+`SEALED_ADMISSION_ENABLED=true`, off by default. With the flag off, no server
+route is mounted for any endpoint in this document. With it on, the single
+mounted handler accepts only the exact raw-binary content type, verifies the
+manifest chain, signer scope and envelope signature, and queues exact bytes
+toward the bound device; acceptance is never carrier evidence and never an
+execution grant, and sealed dispatch to devices remains deliberately
+unimplemented. Every other endpoint — `POST /v1/sealed/inbound-events` and
+all slice-2 surfaces — remains proposal-only with no route in any flag
+state. Error mapping in the implemented slice is coarser than the contract
+taxonomy: manifest-authority and verification rejections surface as
+`forbidden`/`invalid_request` rather than the proposal's finer
+`future_manifest`, `stale_manifest` and `re_enrollment_required` codes; a
+later slice may refine the mapping without widening acceptance.
+
+**The sealed runtime remains disabled by default**: no production client may
+emit or accept a profile-01/02 envelope without an explicit operator flag,
+and nothing in this document authorizes general plaintext sending.
 
 ## Purpose
 

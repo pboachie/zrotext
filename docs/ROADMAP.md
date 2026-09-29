@@ -355,6 +355,7 @@ Keep message content out of reach of the server, and give owners control of thei
 - [x] Test-only envelope parser and Android Keystore boundary
 - [x] Q1-Q11 decisions recorded with cross-client manifest vectors ([#260](https://github.com/pboachie/zrotext/pull/260))
 - [x] Recorded Q1-Q11 decisions re-verified against the evidence each row lists in the [protocol decision log](../protocol/drafts/zt-009-decision-log.md) ([#464](https://github.com/pboachie/zrotext/pull/464)); the Q9 Rust receiver gap it found is closed ([#525](https://github.com/pboachie/zrotext/pull/525))
+- [x] Sealed v1 message admission route (`POST /v1/sealed/messages`) mounted behind the default-off `SEALED_ADMISSION_ENABLED` flag; acceptance stores exact envelope bytes and queues toward the bound device, never carrier evidence ([#538](https://github.com/pboachie/zrotext/issues/538))
 - [ ] Cross-client interoperability and adversarial security tests
 - [ ] Recovery and unlock flows
 - [ ] Enabled in the gateway for real messages
