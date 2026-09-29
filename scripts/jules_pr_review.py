@@ -16,6 +16,9 @@ REPO = "pboachie/zrotext"
 OWNER = "pboachie"
 TRUSTED_PR_AUTHORS = {OWNER, "dependabot[bot]"}
 TRUSTED_REVIEW_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
+# Reviews are opt-in: an in-flight session keeps this label so the scheduled
+# collector can find it with a single labelled-issues listing.
+PENDING_LABEL = "jules-pending"
 # Jules results are published by this workflow's GITHUB_TOKEN, which GitHub
 # attributes to the github-actions[bot] app user with this fixed account id.
 ACTIONS_BOT_LOGIN = "github-actions[bot]"
@@ -173,7 +176,19 @@ def pages(path: str, github_token: str, *, maximum: int = 10) -> list[dict]:
 
 def command(body: str) -> str | None:
     first = body.strip().splitlines()[0].strip() if body.strip() else ""
-    return {"/jules review": "review", "/jules address": "address"}.get(first)
+    return {"/jules review": "review", "/jules address": "address",
+            "@jules review": "review", "@jules address": "address"}.get(first)
+
+
+def add_pending_label(number: int, github_token: str) -> None:
+    request_json(f"{GITHUB}/issues/{number}/labels", token=github_token,
+                 service="github", method="POST",
+                 payload={"labels": [PENDING_LABEL]})
+
+
+def remove_pending_label(number: int, github_token: str) -> None:
+    request_json(f"{GITHUB}/issues/{number}/labels/{PENDING_LABEL}",
+                 token=github_token, service="github", method="DELETE")
 
 
 def event_request(event_name: str, event: dict) -> tuple[int, str, str] | None:
@@ -186,33 +201,15 @@ def event_request(event_name: str, event: dict) -> tuple[int, str, str] | None:
         if comment.get("user", {}).get("login", "").lower() != OWNER:
             return None
         return int(issue["number"]), mode, f"comment-{int(comment['id'])}"
-    if event_name == "pull_request_target":
-        pr = event.get("pull_request", {})
-        if event.get("action") not in {"opened", "ready_for_review"} or pr.get("draft"):
-            return None
-        # Dependabot-triggered runs do not receive the Actions secret. The
-        # trusted scheduled run starts those reviews instead.
-        if pr.get("user", {}).get("login", "").lower() != OWNER:
-            return None
-        return int(pr["number"]), "review", f"ready-{int(pr['number'])}-{pr['head']['sha']}"
-    if event_name == "pull_request_review":
-        review = event.get("review", {})
-        pr = event.get("pull_request", {})
-        if event.get("action") != "submitted" or not pr:
-            return None
-        if review.get("author_association") not in TRUSTED_REVIEW_ASSOCIATIONS:
-            return None
-        if review.get("user", {}).get("login", "").endswith("[bot]"):
-            return None
-        if review.get("state", "").lower() not in {"commented", "changes_requested"}:
-            return None
-        return int(pr["number"]), "address", f"review-{int(review['id'])}"
     if event_name == "workflow_dispatch":
         inputs = event.get("inputs", {})
         mode = inputs.get("mode")
         if mode not in {"review", "address"}:
-            raise RuntimeError("Invalid review mode")
-        number = int(inputs["pr_number"])
+            raise RuntimeError("A review dispatch needs mode review or address")
+        try:
+            number = int(inputs["pr_number"])
+        except (KeyError, TypeError, ValueError):
+            raise RuntimeError("A review dispatch needs a pull request number") from None
         if number < 1:
             raise RuntimeError("Invalid PR number")
         return number, mode, f"dispatch-{os.environ['GITHUB_RUN_ID']}"
@@ -399,6 +396,7 @@ def start_review(number: int, mode: str, trigger: str, github_token: str,
     body += " Findings and proposed changes are advisory until reviewed here.\n\n" + marker
     request_json(f"{GITHUB}/issues/{number}/comments", token=github_token,
                  service="github", method="POST", payload={"body": body})
+    add_pending_label(number, github_token)
     print(f"Started Jules {mode} for PR #{number} at {sha[:12]}.")
     return True
 
@@ -407,8 +405,9 @@ def defer_request(number: int, mode: str, trigger: str, github_token: str, reaso
     """Record a start that Jules refused at its task limit without failing the check."""
     print(f"::notice::Jules is at its task limit; PR #{number} {mode} deferred ({reason}).")
     if mode == "review":
-        # The trusted schedule starts a review for any open PR head without one.
-        print("A scheduled run will start this review when Jules has capacity.")
+        # Reviews are opt-in and are not started by the schedule; the owner
+        # repeats the command once running sessions free up capacity.
+        print("Repeat `/jules review` after running Jules sessions finish.")
         return
     # Address requests come only from the owner and are not retried by the
     # schedule, so say so on the PR. This comment carries no control marker.
@@ -418,34 +417,30 @@ def defer_request(number: int, mode: str, trigger: str, github_token: str, reaso
                               "Comment `/jules address` again after running Jules sessions finish.")})
 
 
-def start_missing_reviews(github_token: str, jules_key: str, *, maximum: int = 2) -> None:
-    """Gradually cover ready same-repository PRs from the trusted schedule."""
-    started = 0
-    source: tuple[str, set[str]] | None = None
-    for pr in reversed(pages("/pulls?state=open", github_token)):
-        if started >= maximum:
-            break
-        if not eligible_pr(pr) or pr.get("draft"):
-            continue
+def backfill_pending_labels(github_token: str) -> list[int]:
+    """One-time rollout step: label open PRs with an unfinished Jules session.
+
+    Sessions started before the opt-in change carry a START marker but no
+    jules-pending label; without this scan the collector would never find
+    them. Run once via workflow_dispatch with backfill=true at rollout.
+    """
+    labelled: list[int] = []
+    for pr in pages("/pulls?state=open", github_token):
         number = pr["number"]
-        sha = pr["head"]["sha"]
         comments = pages(f"/issues/{number}/comments", github_token)
-        # Parent branch movement alone does not start repeated paid sessions.
-        # A new head or an explicit owner request can obtain a fresh review.
-        if any(from_actions(item) and (match := START.search(item.get("body") or "")) and
-               match.group(2) == sha and match.group(4) == "review"
-               for item in comments):
-            continue
-        if source is None:
-            source = source_branches(jules_key)
-        try:
-            if start_review(number, "review", f"scheduled-{sha[:12]}",
-                            github_token, jules_key, available_source=source):
-                started += 1
-        except JulesCapacity as error:
-            # Later scheduled runs retry once running sessions finish.
-            print(f"::notice::Jules is at its task limit; PR #{number} review deferred ({error}).")
-            break
+        # A finished session's result can be published as an issue comment or
+        # - for a valid review report - as a PR review; both count, so an
+        # already-finished PR is never labelled.
+        reviews = pages(f"/pulls/{number}/reviews", github_token)
+        starts = {match.group(1) for item in comments
+                  if from_actions(item) and (match := START.search(item.get("body") or ""))}
+        finished = {match.group(1) for item in [*comments, *reviews]
+                    if from_actions(item) and (match := RESULT.search(item.get("body") or ""))}
+        if starts - finished:
+            add_pending_label(number, github_token)
+            labelled.append(number)
+            print(f"Labelled PR #{number} for its in-flight Jules session.")
+    return labelled
 
 
 
@@ -519,8 +514,24 @@ def review_report(message: str, sha: str, base_sha: str | None) -> str | None:
     return body.replace("<!--", "&lt;!--")
 
 
+def unfinished_sessions_present(number: int, comments: list, reviews: list) -> bool:
+    """Whether the PR has a Jules session with a START marker and no result,
+    counting results published as issue comments and as PR reviews."""
+    started = {match.group(1) for item in comments
+               if from_actions(item) and (match := START.search(item.get("body") or ""))}
+    finished = {match.group(1) for item in [*comments, *reviews]
+                if from_actions(item) and (match := RESULT.search(item.get("body") or ""))}
+    return bool(started - finished)
+
+
 def poll_reviews(github_token: str, jules_key: str) -> None:
-    for pr in pages("/pulls?state=open", github_token):
+    listing = pages(f"/issues?labels={PENDING_LABEL}&state=open", github_token)
+    # The label listing can include plain issues (added by hand or a race);
+    # a plain issue has no PR reviews endpoint and would fail every run.
+    pending = [pr for pr in listing if "pull_request" in pr]
+    if not pending:
+        return
+    for pr in pending:
         number = pr["number"]
         comments = pages(f"/issues/{number}/comments", github_token)
         reviews = pages(f"/pulls/{number}/reviews", github_token)
@@ -530,6 +541,8 @@ def poll_reviews(github_token: str, jules_key: str) -> None:
                      (match := RESULT.search(item.get("body") or ""))}
         resumed = {match.group(1) for item in comments if from_actions(item) and
                    (match := RESUME.search(item.get("body") or ""))}
+        started = {match.group(1) for item in comments
+                   if from_actions(item) and (match := START.search(item.get("body") or ""))}
         for item in comments:
             if not from_actions(item):
                 continue
@@ -601,6 +614,26 @@ def poll_reviews(github_token: str, jules_key: str) -> None:
                              service="github", method="POST", payload={"body": body})
             completed.add(session)
             print(f"Published Jules {mode} result for PR #{number}.")
+        # The label means "this PR still has unfinished sessions", so it comes
+        # off exactly when none remain - including sessions still running on
+        # the provider and the stale-label case where every result was already
+        # published elsewhere: the collector heals the label by itself.
+        # An owner-command run is concurrent with the collector (different
+        # concurrency groups), so a session may be started while this run
+        # works: re-check right before and again after the DELETE so that
+        # session is not stranded without its label.
+        if not started - completed:
+            if not unfinished_sessions_present(
+                    number,
+                    pages(f"/issues/{number}/comments", github_token),
+                    pages(f"/pulls/{number}/reviews", github_token)):
+                remove_pending_label(number, github_token)
+                if unfinished_sessions_present(
+                        number,
+                        pages(f"/issues/{number}/comments", github_token),
+                        pages(f"/pulls/{number}/reviews", github_token)):
+                    add_pending_label(number, github_token)
+                    print(f"Re-added {PENDING_LABEL} to PR #{number}: a session started during collection.")
 
 
 def main() -> int:
@@ -613,17 +646,21 @@ def main() -> int:
     event_name = os.environ.get("GITHUB_EVENT_NAME", "")
     if event_name == "schedule":
         poll_reviews(github_token, jules_key)
-        start_missing_reviews(github_token, jules_key)
+        return 0
+    event = json.load(sys.stdin)
+    if event_name == "workflow_dispatch" and str(
+            event.get("inputs", {}).get("backfill", "")).lower() == "true":
+        labelled = backfill_pending_labels(github_token)
+        print(f"Backfill labelled {len(labelled)} PR(s) with {PENDING_LABEL}.")
+        return 0
+    requested = event_request(event_name, event)
+    if requested:
+        try:
+            start_review(*requested, github_token, jules_key)
+        except JulesCapacity as error:
+            defer_request(*requested, github_token, str(error))
     else:
-        event = json.load(sys.stdin)
-        requested = event_request(event_name, event)
-        if requested:
-            try:
-                start_review(*requested, github_token, jules_key)
-            except JulesCapacity as error:
-                defer_request(*requested, github_token, str(error))
-        else:
-            print("No owner PR review command in this event.")
+        print("No owner PR review command in this event.")
     return 0
 
 
