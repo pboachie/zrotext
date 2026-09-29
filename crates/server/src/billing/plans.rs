@@ -16,7 +16,7 @@ pub enum UsagePlanError {
     RuntimeDatabase(#[from] crate::runtime_db::ConnectError),
     #[error("usage-limit plan storage unavailable: {0}")]
     Database(#[from] tokio_postgres::Error),
-    #[error("usage-limit plan schema is missing; apply migration 050 first")]
+    #[error("usage-limit plan schema is missing; apply migration 055 first")]
     SchemaMissing,
 }
 
@@ -146,11 +146,22 @@ pub async fn apply_usage_plan_assignments(
             .is_some();
         if billed {
             // A bound tenant's quota policy belongs to Stripe reconciliation;
-            // an operator plan must not shadow or overwrite it.
+            // an operator plan must not shadow or overwrite it. The skip is
+            // audited only when it is new state: a restart whose latest audit
+            // row already says skipped_billed for this plan and limit writes
+            // nothing, so the log cannot grow on every restart.
             tx.execute(
                 "INSERT INTO usage_plan_audit(account_id,plan_key,previous_limit_units,limit_units,reason) \
                  SELECT $1,$2,p.limit_units,p.limit_units,'skipped_billed' \
-                 FROM usage_quota_policies p WHERE p.account_id=$1 AND p.metric='outbound_message'",
+                 FROM usage_quota_policies p \
+                 WHERE p.account_id=$1 AND p.metric='outbound_message' \
+                   AND NOT EXISTS ( \
+                     SELECT 1 FROM usage_plan_audit a \
+                     WHERE a.account_id=$1 AND a.reason='skipped_billed' \
+                       AND a.plan_key IS NOT DISTINCT FROM $2 \
+                       AND a.limit_units=p.limit_units \
+                       AND a.id=(SELECT max(b.id) FROM usage_plan_audit b \
+                                 WHERE b.account_id=$1))",
                 &[&account_id, &plan_key],
             )
             .await?;
