@@ -68,9 +68,9 @@ class MmsSpikeJournalTest {
     @Test fun rejectsEventsThatCouldCorruptTheLineFormat() {
         assertNull(MmsSpikeJournal.validationError(event(MmsSpikeJournal.COMPOSED)))
         assertEquals("unknown event kind", MmsSpikeJournal.validationError(event("deleted")))
-        assertEquals("detail must be short printable ASCII",
+        assertEquals("detail must be a fixed result code",
             MmsSpikeJournal.validationError(event(MmsSpikeJournal.SENT_OK, detail = "a\tb")))
-        assertEquals("detail must be short printable ASCII",
+        assertEquals("detail must be a fixed result code",
             MmsSpikeJournal.validationError(event(MmsSpikeJournal.SENT_OK, detail = "x".repeat(121))))
         assertEquals("timestamp must be positive",
             MmsSpikeJournal.validationError(event(MmsSpikeJournal.COMPOSED, atMs = 0)))
@@ -91,5 +91,18 @@ class MmsSpikeJournalTest {
         }
         assertTrue(thrown)
         assertEquals(0, MmsSpikeJournal.replay(file).size)
+    }
+
+    @Test fun detailAcceptsOnlyFixedResultCodesSoNoRecipientOrTokenCanBeJournaled() {
+        for (detail in listOf("", "send_threw", "result_0", "result_-1", "result_133")) {
+            assertNull(detail, MmsSpikeJournal.validationError(event(MmsSpikeJournal.SENT_OK, detail = detail)))
+        }
+        val sha256OfRecipient = java.security.MessageDigest.getInstance("SHA-256")
+            .digest("+15555550123".toByteArray(Charsets.US_ASCII)).joinToString("") { "%02x".format(it) }
+        for (detail in listOf(sha256OfRecipient, "+15555550123", "15555550123", "subject text",
+                "result_15555550123")) {
+            assertEquals(detail, "detail must be a fixed result code",
+                MmsSpikeJournal.validationError(event(MmsSpikeJournal.COMPOSED, detail = detail)))
+        }
     }
 }

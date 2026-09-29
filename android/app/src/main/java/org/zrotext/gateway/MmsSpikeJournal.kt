@@ -5,7 +5,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.nio.ByteBuffer
 
-/** One append-only journal line. No recipient or media content, only a hash token. */
+/** One append-only journal line. It holds no recipient, recipient token, subject or media. */
 internal data class MmsSpikeEvent(
     val attemptId: String,
     val transactionId: String,
@@ -32,7 +32,8 @@ internal object MmsSpikeJournal {
     private val TERMINAL = setOf(SENT_OK, SENT_ERROR, TIMEOUT_UNKNOWN, UNKNOWN_RESULT)
     private val ATTEMPT_ID = Regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
     private val TRANSACTION_ID = Regex("^[A-Za-z0-9-]{1,64}$")
-    private val DETAIL = Regex("^[ -~]{0,120}$")
+    // Only fixed result codes: a recipient, its digest or any free text cannot be journaled.
+    private val DETAIL = Regex("^(|send_threw|result_-?[0-9]{1,10})$")
     private val lock = Any()
 
     fun validationError(event: MmsSpikeEvent): String? = when {
@@ -40,7 +41,7 @@ internal object MmsSpikeJournal {
         !event.transactionId.matches(TRANSACTION_ID) -> "invalid transaction id"
         event.kind !in KINDS -> "unknown event kind"
         event.atMs <= 0 -> "timestamp must be positive"
-        !event.detail.matches(DETAIL) -> "detail must be short printable ASCII"
+        !event.detail.matches(DETAIL) -> "detail must be a fixed result code"
         else -> null
     }
 

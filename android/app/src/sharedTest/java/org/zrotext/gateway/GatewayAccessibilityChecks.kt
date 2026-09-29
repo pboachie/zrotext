@@ -19,10 +19,15 @@ import org.junit.Test
 abstract class GatewayAccessibilityChecks {
     protected abstract fun onScreen(check: (RootForTest) -> Unit)
 
+    /** The MMS spike section (#438) exists only in debug builds. */
+    private fun debugOnly(vararg labels: String): List<String> =
+        if (BuildConfig.DEBUG) labels.toList() else emptyList()
+
     @Test fun sectionsAreHeadingsInReadingOrder() = onScreen { root ->
         val headings = nodes(root).filter { it.config.contains(SemanticsProperties.Heading) }
         assertEquals(listOf("ZROtext", "Gateway connection test", "Authenticated device heartbeat",
-            "Controlled SMS test", "Controlled MMS spike", "Device pairing"), headings.map(::text))
+            "Controlled SMS test") + debugOnly("Controlled MMS spike") + "Device pairing",
+            headings.map(::text))
         assertTrue(headings.zipWithNext().all { (first, next) ->
             first.positionInRoot.y < next.positionInRoot.y
         })
@@ -30,11 +35,11 @@ abstract class GatewayAccessibilityChecks {
 
     @Test fun statusRegionsExcludeRoutineHeartbeatCounters() = onScreen { root ->
         val regions = nodes(root).filter { it.config.contains(SemanticsProperties.LiveRegion) }
-        assertEquals(4, regions.size)
+        assertEquals(if (BuildConfig.DEBUG) 4 else 3, regions.size)
         assertTrue(regions.all { it.config[SemanticsProperties.LiveRegion] == LiveRegionMode.Polite })
         assertTrue(regions.none { text(it).contains("acknowledgments") })
-        assertEquals(listOf("Connection status", "Authenticated connection status",
-            "MMS spike status", "Pairing status"),
+        assertEquals(listOf("Connection status", "Authenticated connection status") +
+            debugOnly("MMS spike status") + "Pairing status",
             regions.map { text(it).substringBefore(":") })
     }
 
@@ -61,10 +66,11 @@ abstract class GatewayAccessibilityChecks {
 
     @Test fun fieldsKeepLabelsAndTokensRemainPasswordFields() = onScreen { root ->
         val fields = nodes(root).filter { it.config.contains(SemanticsProperties.EditableText) }
-        assertEquals(10, fields.size)
         val expected = listOf("WSS test endpoint", "Short-lived test token", "WSS device stream URL",
-            "Approved device UUID", "Controlled recipient +E.164", "Controlled MMS recipient +E.164",
-            "Optional subject", "HTTPS server origin", "Pairing ID", "One-use pairing token")
+            "Approved device UUID", "Controlled recipient +E.164") +
+            debugOnly("Controlled MMS recipient +E.164", "Optional subject") +
+            listOf("HTTPS server origin", "Pairing ID", "One-use pairing token")
+        assertEquals(expected.size, fields.size)
         assertEquals(expected, fields.map(::text))
         assertEquals(listOf("Short-lived test token", "One-use pairing token"),
             fields.filter { it.config.contains(SemanticsProperties.Password) }.map(::text))
