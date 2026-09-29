@@ -146,6 +146,11 @@ services:
       # Only read when FAILOVER_QUORUM_ENABLED=true. Each app owns a separate
       # volume: two executors must never share one consensus store directory.
       FAILOVER_QUORUM_STORE_DIR: /var/lib/zrotext/failover-store
+      # Member-side reporting loop, also read only when enabled; the member
+      # id must be this app's entry in FAILOVER_QUORUM_MEMBERS.
+      FAILOVER_QUORUM_PROBE_INTERVAL_MS:
+      FAILOVER_QUORUM_PROBE_TIMEOUT_MS:
+      FAILOVER_QUORUM_REPORT_MEMBER_ID: workload-a
     volumes:
       - failover_store_a:/var/lib/zrotext/failover-store
     ports:
@@ -226,6 +231,11 @@ services:
       FAILOVER_QUORUM_CHECK_INTERVAL_MS:
       # Only read when FAILOVER_QUORUM_ENABLED=true; never app's store volume.
       FAILOVER_QUORUM_STORE_DIR: /var/lib/zrotext/failover-store
+      # Member-side reporting loop; app_b reports as the second workload
+      # member of the configured quorum.
+      FAILOVER_QUORUM_PROBE_INTERVAL_MS:
+      FAILOVER_QUORUM_PROBE_TIMEOUT_MS:
+      FAILOVER_QUORUM_REPORT_MEMBER_ID: workload-b
     volumes:
       - failover_store_b:/var/lib/zrotext/failover-store
     ports:

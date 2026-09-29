@@ -366,10 +366,10 @@
           "stage": "design",
           "evidence": [
             ["Failover design", "MULTI-LOCATION.md#automatic-failover-needs-an-independent-decision"],
-            ["Implementation status", "MULTI-LOCATION.md#implementation-status-three-increments"]
+            ["Implementation status", "MULTI-LOCATION.md#implementation-status-five-increments"]
           ],
           "done": [
-            "Design requiring an independent quorum member and fencing control; three increments recorded as evidence only (pure promotion-decision model with failure-scenario tests, the database executor that applies decisions with a durable journal, and the durable consensus store with its observation-source adapter and epoch-anchor interface, all disabled by default)"
+            "Design requiring an independent quorum member and fencing control; five increments recorded as evidence only (pure promotion-decision model with failure-scenario tests, the database executor that applies decisions with a durable journal, the durable consensus store with its observation-source adapter and epoch-anchor interface, the member-side observer that forms safe quorum reports from raw probe outcomes, and the member-side probe-and-report loop that carries those reports into the durable store behind the same default-off flag, all disabled by default)"
           ],
           "todo": [
             "Implementation and failure-scenario tests"

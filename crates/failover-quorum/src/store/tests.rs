@@ -1073,6 +1073,79 @@ fn record_codec_round_trips_every_field_shape() {
 }
 
 #[test]
+fn record_codec_represents_every_evidence_combination() {
+    // A live-writer round suppresses the stop confirmation while carrying
+    // fence, standby and former-writer evidence: the omitted middle field
+    // is a `-`, so the record reloads instead of failing the store closed
+    // on the steady-state healthy shape.
+    let suppressed_stop = JournalRecord {
+        sequence: 7,
+        report: MemberReport {
+            member_id: "workload-a".to_owned(),
+            observed_at_ms: 1_000,
+            writer: WriterObservation::Reachable { epoch: 5 },
+            writer_site_fence: Some(SiteFenceState {
+                enabled: true,
+                draining: false,
+            }),
+            writer_stop_confirmed: None,
+            standby_ready: Some(true),
+            former_writer_healthy: Some(true),
+        },
+    };
+    let line = encoded(&suppressed_stop);
+    assert_eq!(
+        line,
+        "v1 member=workload-a seq=7 at=1000 writer=reachable:5 \
+         fence=true,false stop=- standby=true former=true"
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    assert_eq!(JournalRecord::decode(&line).unwrap(), suppressed_stop);
+
+    let former_only = JournalRecord {
+        sequence: 1,
+        report: MemberReport {
+            member_id: "witness".to_owned(),
+            observed_at_ms: 2_000,
+            writer: WriterObservation::Reachable { epoch: 6 },
+            writer_site_fence: None,
+            writer_stop_confirmed: None,
+            standby_ready: None,
+            former_writer_healthy: Some(true),
+        },
+    };
+    let line = encoded(&former_only);
+    assert_eq!(JournalRecord::decode(&line).unwrap(), former_only);
+}
+
+#[test]
+fn pre_sentinel_journal_lines_still_decode() {
+    // Journals written before the `-` sentinel simply end at the last
+    // carried field; they must keep loading.
+    let legacy = JournalRecord::decode(
+        "v1 member=workload-a seq=3 at=1000 writer=unreachable \
+         fence=true,true stop=true standby=true",
+    )
+    .unwrap();
+    assert_eq!(legacy.sequence, 3);
+    assert!(legacy.report.writer_site_fence.is_some());
+    assert_eq!(legacy.report.writer_stop_confirmed, Some(true));
+    assert_eq!(legacy.report.standby_ready, Some(true));
+    assert_eq!(legacy.report.former_writer_healthy, None);
+    // A `-` is only a whole-field marker, never part of a value.
+    assert!(
+        JournalRecord::decode("v1 member=workload-a seq=1 at=1000 writer=unreachable fence=-,true")
+            .is_err()
+    );
+    assert!(
+        JournalRecord::decode("v1 member=workload-a seq=1 at=1000 writer=unreachable stop=-maybe")
+            .is_err()
+    );
+}
+
+#[test]
 fn record_codec_rejects_malformed_lines() {
     let malformed = [
         "",

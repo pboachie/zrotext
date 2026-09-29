@@ -36,12 +36,15 @@
 //!   failed-check and successful-check hysteresis counts distinct member
 //!   reports, not executor ticks inside one report's freshness window.
 //!
-//! Not in this increment: a network transport that carries member reports
-//! into the store (no listener exists, so a production store stays empty and
-//! every round fails closed), journal rotation or compaction (the whole
-//! journal is re-read on open), and any external coordination between store
-//! instances — one writer per directory is assumed, and concurrent writers
-//! are detected as corruption on the next load.
+//! Not in this increment: a cross-member network transport that carries
+//! member reports between machines (no listener exists; the member-side
+//! reporting loop of [`crate::report`] records only what its injected probe
+//! source observes, and no production probe source exists yet, so a
+//! production store stays empty and every round fails closed), journal
+//! rotation or compaction (the whole journal is re-read on open), and any
+//! external coordination between store instances — one writer per directory
+//! is assumed, and concurrent writers are detected as corruption on the
+//! next load.
 
 use crate::decision::{MemberReport, Round, SiteFenceState, WriterObservation};
 use crate::executor::ObservationSource;
@@ -355,8 +358,11 @@ pub struct JournalRecord {
 impl JournalRecord {
     /// Encode into the stable single-line journal format
     /// (`v1 member=… seq=… at=… writer=… [fence=…,…] [stop=…] [standby=…]
-    /// [former=…]`). Member identifiers that cannot be safe journal file
-    /// names cannot be encoded.
+    /// [former=…]`, where a `-` in an optional field marks evidence the
+    /// report does not carry — a round that observed the writer alive
+    /// carries no stop confirmation, whatever else it observed). Member
+    /// identifiers that cannot be safe journal file names cannot be
+    /// encoded.
     pub fn encode(&self) -> Result<String, StoreError> {
         if !member_is_file_safe(&self.report.member_id) {
             return Err(StoreError::InvalidMembers(format!(
@@ -375,23 +381,40 @@ impl JournalRecord {
             }
             WriterObservation::Unreachable => line.push_str("unreachable"),
         }
-        if let Some(fence) = self.report.writer_site_fence {
+        // Optional evidence appears in a fixed order. Once any field is
+        // carried, every field is emitted and `-` marks the kinds this
+        // report does not carry, so every evidence combination the observer
+        // can form encodes unambiguously and reloads; journals written
+        // before the sentinel (trailing fields simply absent) still decode.
+        let carries_evidence = self.report.writer_site_fence.is_some()
+            || self.report.writer_stop_confirmed.is_some()
+            || self.report.standby_ready.is_some()
+            || self.report.former_writer_healthy.is_some();
+        if carries_evidence {
             line.push_str(" fence=");
-            line.push_str(if fence.enabled { "true" } else { "false" });
-            line.push(',');
-            line.push_str(if fence.draining { "true" } else { "false" });
-        }
-        if let Some(confirmed) = self.report.writer_stop_confirmed {
+            match self.report.writer_site_fence {
+                Some(fence) => {
+                    line.push_str(if fence.enabled { "true" } else { "false" });
+                    line.push(',');
+                    line.push_str(if fence.draining { "true" } else { "false" });
+                }
+                None => line.push('-'),
+            }
             line.push_str(" stop=");
-            line.push_str(if confirmed { "true" } else { "false" });
-        }
-        if let Some(ready) = self.report.standby_ready {
+            match self.report.writer_stop_confirmed {
+                Some(confirmed) => line.push_str(if confirmed { "true" } else { "false" }),
+                None => line.push('-'),
+            }
             line.push_str(" standby=");
-            line.push_str(if ready { "true" } else { "false" });
-        }
-        if let Some(healthy) = self.report.former_writer_healthy {
+            match self.report.standby_ready {
+                Some(ready) => line.push_str(if ready { "true" } else { "false" }),
+                None => line.push('-'),
+            }
             line.push_str(" former=");
-            line.push_str(if healthy { "true" } else { "false" });
+            match self.report.former_writer_healthy {
+                Some(healthy) => line.push_str(if healthy { "true" } else { "false" }),
+                None => line.push('-'),
+            }
         }
         Ok(line)
     }
@@ -433,7 +456,8 @@ impl JournalRecord {
             WriterObservation::Reachable { epoch }
         };
         // Optional evidence fields appear in a fixed order without gaps or
-        // duplicates; anything else at their position is malformed.
+        // duplicates; anything else at their position is malformed. A `-`
+        // marks evidence the report does not carry (see [`Self::encode`]).
         let mut index = 5;
         let mut optional = |prefix: &str| -> Result<Option<&str>, StoreError> {
             match fields.get(index) {
@@ -447,19 +471,29 @@ impl JournalRecord {
                 }
             }
         };
-        let writer_site_fence = optional("fence=")?
-            .map(|value| {
+        let writer_site_fence = match optional("fence=")? {
+            None | Some("-") => None,
+            Some(value) => {
                 let (enabled, draining) =
                     value.split_once(',').ok_or(StoreError::MalformedRecord)?;
-                Ok(SiteFenceState {
+                Some(SiteFenceState {
                     enabled: parse_bool(enabled)?,
                     draining: parse_bool(draining)?,
                 })
-            })
-            .transpose()?;
-        let writer_stop_confirmed = optional("stop=")?.map(parse_bool).transpose()?;
-        let standby_ready = optional("standby=")?.map(parse_bool).transpose()?;
-        let former_writer_healthy = optional("former=")?.map(parse_bool).transpose()?;
+            }
+        };
+        let writer_stop_confirmed = match optional("stop=")? {
+            None | Some("-") => None,
+            Some(value) => Some(parse_bool(value)?),
+        };
+        let standby_ready = match optional("standby=")? {
+            None | Some("-") => None,
+            Some(value) => Some(parse_bool(value)?),
+        };
+        let former_writer_healthy = match optional("former=")? {
+            None | Some("-") => None,
+            Some(value) => Some(parse_bool(value)?),
+        };
         if fields.get(index).is_some() {
             return Err(StoreError::MalformedRecord);
         }
