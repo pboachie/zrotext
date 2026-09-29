@@ -19,6 +19,10 @@
 //! keeps its periodic snapshot refresh. Each poll runs only bounded queries:
 //! the first device snapshot page (whose queue counts are already capped) and
 //! the first message timeline page, both through tenant-leading indexes.
+//! Polls back off while the fingerprint is unchanged — doubling from 2 s up
+//! to 15 s — so an idle dashboard costs no more database work than its
+//! periodic snapshot fallback, and any observed change restores the 2 s
+//! cadence.
 
 use crate::{
     auth::TokenHasher,
@@ -44,9 +48,14 @@ use std::{
 use tokio_postgres::Client;
 use uuid::Uuid;
 
-/// Fingerprint cadence. One event stream therefore emits at most one change
-/// signal per section per interval, however busy the tenant is.
+/// Fingerprint cadence while the tenant is changing. One event stream therefore
+/// emits at most one change signal per section per interval, however busy the
+/// tenant is.
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
+/// Ceiling for the unchanged-poll backoff. An idle stream settles at one
+/// fingerprint per 15 s — no more database work than the dashboard's periodic
+/// snapshot fallback — and still notices a change within that cadence.
+const MAX_POLL_INTERVAL: Duration = Duration::from_secs(15);
 /// Streams end after this long so connections cannot accumulate indefinitely;
 /// the client reconnects. Keepalive comments below keep proxies from closing
 /// the stream earlier as idle.
@@ -316,8 +325,39 @@ struct Watch {
     session_id: Uuid,
     ends_at: tokio::time::Instant,
     next_poll: tokio::time::Instant,
+    cadence: PollCadence,
     previous: TenantFingerprint,
     _permit: StreamPermit,
+}
+
+/// Poll cadence per stream: unchanged polls double the interval, capped at
+/// [`MAX_POLL_INTERVAL`]; any observed change resets it to [`POLL_INTERVAL`]
+/// so an active tenant keeps its 2 s signal latency.
+#[derive(Clone, Copy)]
+struct PollCadence {
+    interval: Duration,
+}
+
+impl PollCadence {
+    fn new() -> Self {
+        Self {
+            interval: POLL_INTERVAL,
+        }
+    }
+
+    fn after_unchanged_poll(&mut self) {
+        self.interval = std::cmp::min(self.interval.saturating_mul(2), MAX_POLL_INTERVAL);
+    }
+
+    fn after_change(&mut self) {
+        self.interval = POLL_INTERVAL;
+    }
+}
+
+impl Default for PollCadence {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 async fn events(State(state): State<Arc<OwnerEventsState>>, headers: HeaderMap) -> Response {
@@ -335,7 +375,7 @@ async fn events(State(state): State<Arc<OwnerEventsState>>, headers: HeaderMap) 
                 _ = tokio::time::sleep_until(watch.next_poll) => {}
                 _ = tokio::time::sleep_until(watch.ends_at) => return None,
             }
-            watch.next_poll = tokio::time::Instant::now() + POLL_INTERVAL;
+            watch.next_poll = tokio::time::Instant::now() + watch.cadence.interval;
             // Each poll checks out a pooled client instead of holding one for
             // the stream's lifetime, so an idle dashboard tab never occupies a
             // request-slot between polls. Any failure ends the stream; the
@@ -371,6 +411,11 @@ async fn events(State(state): State<Arc<OwnerEventsState>>, headers: HeaderMap) 
                 changed.push("messages");
             }
             watch.previous = observed;
+            if changed.is_empty() {
+                watch.cadence.after_unchanged_poll();
+            } else {
+                watch.cadence.after_change();
+            }
             let event = if changed.is_empty() {
                 // A comment keeps intermediate polls invisible to clients and
                 // makes a disconnected client's write fail promptly.
@@ -437,6 +482,7 @@ async fn open_watch(state: &OwnerEventsState, headers: &HeaderMap) -> Result<Wat
         session_id: principal.session_id,
         ends_at: now + MAX_STREAM_LIFETIME,
         next_poll: now + POLL_INTERVAL,
+        cadence: PollCadence::new(),
         previous: baseline,
         _permit: permit,
     })
