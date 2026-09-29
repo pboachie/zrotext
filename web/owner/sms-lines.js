@@ -7,6 +7,10 @@
 
 const signing = globalThis.ZtSmsLineSigning;
 const pollIntervalMs = 2000;
+// Once the owner statement is verified the page only needs to notice final
+// approval or closure, which the server reports on the same view.
+const verifiedPollIntervalMs = 10000;
+const pollBackoffMaxMs = 30000;
 const maxPollMs = 10 * 60 * 1000;
 const requestTimeoutMs = 15000;
 let session = null;
@@ -219,8 +223,20 @@ function stopPolling() {
 
 function schedulePoll() {
   const round = pollRound;
-  pollTimer = schedule(() => (round === pollRound ? poll() : undefined), pollIntervalMs);
+  const current = activation;
+  if (!current) return;
+  const delay = current.backoffMs ?? (current.ownerStatement ? verifiedPollIntervalMs : pollIntervalMs);
+  pollTimer = schedule(() => (round === pollRound ? poll() : undefined), delay);
 }
+
+// A hidden tab cannot act on an activation; polling resumes when it returns.
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    stopPolling();
+  } else if (activation && pollTimer === null) {
+    schedulePoll();
+  }
+});
 
 /** Checks the server's statements against what this page opened and rebuilds the bytes to sign. */
 async function verifiedOwnerStatement(view) {
@@ -247,11 +263,15 @@ async function poll() {
   } catch (error) {
     if (activation !== current) return;
     say("activation-status", `${error.message} Retrying…`);
+    // Poll errors back off exponentially, capped, instead of retrying
+    // at the fixed cadence.
+    current.backoffMs = Math.min((current.backoffMs ?? pollIntervalMs) * 2, pollBackoffMaxMs);
     if (Date.now() - current.startedAt < maxPollMs) schedulePoll();
     return;
   }
   // A newer activation replaced this one while the request was in flight.
   if (activation !== current) return;
+  current.backoffMs = null;
   if (view.status === "awaiting_owner" && !current.ownerStatement) {
     try {
       const { owner, parsed } = await verifiedOwnerStatement(view);

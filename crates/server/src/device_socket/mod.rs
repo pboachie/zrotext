@@ -72,8 +72,34 @@ const DISPATCH_POLL_SECONDS: u64 = 5;
 const MIN_SECONDS_BETWEEN_GRANTS: u64 = 60;
 const ALPHA_READY_SECONDS: u64 = 300;
 const SMS_LINE_POLL_SECONDS: u64 = 3;
-const SMS_LINE_RETIRE_EVERY_TICKS: u32 = 20;
+/// Idle sockets poll the activation exchange far more slowly: almost no
+/// device ever has an open exchange, and a new owner challenge wakes every
+/// socket in this process immediately through SMS_LINE_CHALLENGE_WAKE.
+const SMS_LINE_IDLE_POLL_SECONDS: u64 = 30;
+const SMS_LINE_RETIRE_INTERVAL: Duration = Duration::from_secs(60);
 const MAX_SMS_LINE_ACKS_PER_CONNECTION: usize = 64;
+/// Process-wide wake for sockets idling between activation polls; the owner
+/// side calls wake_sms_line_challenges after opening a challenge. Other hub
+/// instances are covered by the idle poll.
+static SMS_LINE_CHALLENGE_WAKE: LazyLock<Notify> = LazyLock::new(Notify::new);
+
+/// Poll spacing for the activation loop: fast while the previous poll pushed
+/// a frame (an exchange is open), slow while the device has nothing pending.
+fn sms_line_poll_delay(pushed: bool) -> Duration {
+    if pushed {
+        Duration::from_secs(SMS_LINE_POLL_SECONDS)
+    } else {
+        Duration::from_secs(SMS_LINE_IDLE_POLL_SECONDS)
+    }
+}
+
+/// Wakes every device socket in this process so a fresh owner challenge or
+/// approval is pushed within the active 3 s bound instead of the next idle
+/// poll. Called by the activation exchange layer; writes from other hub
+/// instances are covered by the idle poll.
+pub fn wake_sms_line_activation() {
+    SMS_LINE_CHALLENGE_WAKE.notify_waiters();
+}
 static DEVICE_SOCKET_ADMISSION: LazyLock<SocketAdmission> = LazyLock::new(|| {
     SocketAdmission::new(
         MAX_HANDSHAKING_DEVICE_SOCKETS,
@@ -934,10 +960,9 @@ async fn run_socket(
     let mut dispatch_checks = interval(Duration::from_secs(DISPATCH_POLL_SECONDS));
     dispatch_checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     dispatch_checks.tick().await;
-    let mut sms_line_checks = interval(Duration::from_secs(SMS_LINE_POLL_SECONDS));
-    sms_line_checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut sms_line_next_poll = tokio::time::Instant::now();
+    let mut sms_line_last_retire: Option<Instant> = None;
     let mut sms_line_acks_sent: Vec<Uuid> = Vec::new();
-    let mut sms_line_ticks: u32 = 0;
     let mut last_grant_at: Option<Instant> = None;
     let mut alpha_ready: Option<([u8; 32], Instant)> = None;
     let mut alpha_ready_used = false;
@@ -1285,7 +1310,7 @@ async fn run_socket(
                     Err(_) => break,
                 }
             }
-            _ = sms_line_checks.tick(), if state.sms_line_activation_enabled => {
+            _ = tokio::time::sleep_until(sms_line_next_poll), if state.sms_line_activation_enabled => {
                 let inbound_session = InboundSession {
                     account_id: session.account_id,
                     device_id: session.device_id,
@@ -1295,15 +1320,30 @@ async fn run_socket(
                     deployment_epoch: state.deployment_epoch,
                 };
                 // Retire finished exchanges on the first poll and about once a minute.
-                let retire = sms_line_ticks.is_multiple_of(SMS_LINE_RETIRE_EVERY_TICKS);
-                sms_line_ticks = sms_line_ticks.wrapping_add(1);
-                if !push_sms_line_frames(&mut socket, &state.database_url, inbound_session,
-                    &mut sms_line_acks_sent, retire).await {
-                    close_reason = "sms_line_push_failed";
-                    close_with_code = Some(RETRY_LATER);
-                    break;
+                let retire = sms_line_last_retire.is_none_or(|at| at.elapsed() >= SMS_LINE_RETIRE_INTERVAL);
+                if retire {
+                    sms_line_last_retire = Some(Instant::now());
                 }
-            }
+                match push_sms_line_frames(&mut socket, &state.database_url, inbound_session,
+                    &mut sms_line_acks_sent, retire).await {
+                    None => {
+                        close_reason = "sms_line_push_failed";
+                        close_with_code = Some(RETRY_LATER);
+                        break;
+                    }
+                    Some(pushed) => {
+                        // An open exchange keeps the fast cadence; an idle
+                        // socket settles into the slow poll.
+                        sms_line_next_poll =
+                            tokio::time::Instant::now() + sms_line_poll_delay(pushed);
+                    }
+                }
+            },
+            // The owner just opened a challenge: poll now instead of waiting
+            // for the idle cadence.
+            _ = SMS_LINE_CHALLENGE_WAKE.notified(), if state.sms_line_activation_enabled => {
+                sms_line_next_poll = tokio::time::Instant::now();
+            },
             _ = state.drain_notify.notified() => {
                 close_reason = "site_drain";
                 break;
@@ -1346,27 +1386,36 @@ async fn release_socket_session(state: &DeviceSocketState, session: DeviceSessio
 /// Pushes at most one pending SMS line challenge and one activation
 /// acknowledgement. A challenge is marked pushed only after its frame was
 /// written; an acknowledgement repeats on each new connection until retired.
+/// Returns None when the socket must close, otherwise whether anything was
+/// pushed, so the caller keeps the fast cadence only for open exchanges.
+/// Both reads share one pooled client; the challenge-push write re-checks
+/// out only after its frame was written.
 async fn push_sms_line_frames(
     socket: &mut WebSocket,
     database_url: &str,
     session: InboundSession<'_>,
     acks_sent: &mut Vec<Uuid>,
     retire: bool,
-) -> bool {
-    let Ok(client) = runtime_db::connect_device(database_url).await else {
-        return false;
-    };
-    if retire
-        && exchange::retire(&client, session, exchange::ACK_RESEND_SECONDS)
+) -> Option<bool> {
+    let client = runtime_db::connect_device(database_url).await.ok()?;
+    let retired = if retire {
+        exchange::retire(&client, session, exchange::ACK_RESEND_SECONDS)
             .await
-            .is_err()
-    {
-        return false;
+            .is_ok()
+    } else {
+        true
+    };
+    if !retired {
+        return None;
     }
-    let Ok(challenge) = exchange::next_challenge(&client, session).await else {
-        return false;
+    let challenge = exchange::next_challenge(&client, session).await.ok()?;
+    let ack = if acks_sent.len() >= MAX_SMS_LINE_ACKS_PER_CONNECTION {
+        None
+    } else {
+        exchange::next_ack(&client, session, acks_sent).await.ok()?
     };
     drop(client);
+    let mut pushed = false;
     if let Some(challenge) = challenge {
         let frame = ServerFrame::SmsLineChallenge {
             v: 1,
@@ -1379,28 +1428,17 @@ async fn push_sms_line_frames(
             expires_at_ms: challenge.expires_at_ms,
         };
         if !send_frame(socket, frame).await {
-            return false;
+            return None;
         }
-        let Ok(client) = runtime_db::connect_device(database_url).await else {
-            return false;
-        };
+        pushed = true;
+        let client = runtime_db::connect_device(database_url).await.ok()?;
         if exchange::mark_challenge_pushed(&client, session, challenge.challenge_id)
             .await
             .is_err()
         {
-            return false;
+            return None;
         }
     }
-    if acks_sent.len() >= MAX_SMS_LINE_ACKS_PER_CONNECTION {
-        return true;
-    }
-    let Ok(client) = runtime_db::connect_device(database_url).await else {
-        return false;
-    };
-    let Ok(ack) = exchange::next_ack(&client, session, acks_sent).await else {
-        return false;
-    };
-    drop(client);
     if let Some(ack) = ack {
         let frame = ServerFrame::SmsLineActivated {
             v: 1,
@@ -1413,11 +1451,12 @@ async fn push_sms_line_frames(
             device_signature_sha256: URL_SAFE_NO_PAD.encode(ack.device_signature_sha256),
         };
         if !send_frame(socket, frame).await {
-            return false;
+            return None;
         }
         acks_sent.push(ack.challenge_id);
+        pushed = true;
     }
-    true
+    Some(pushed)
 }
 
 fn synthetic_body_is_fixed(body: &str) -> bool {
@@ -1709,6 +1748,34 @@ mod line_opt_out_wire_tests;
 mod virtual_inbound_tests;
 #[cfg(test)]
 mod virtual_line_opt_out_tests;
+#[cfg(test)]
+mod sms_line_cadence_tests {
+    use super::*;
+
+    #[test]
+    fn idle_activation_polls_are_ten_times_slower_than_active_ones() {
+        assert_eq!(sms_line_poll_delay(true), Duration::from_secs(3));
+        assert_eq!(sms_line_poll_delay(false), Duration::from_secs(30));
+    }
+
+    #[tokio::test]
+    async fn a_new_owner_challenge_wakes_waiting_device_sockets() {
+        let woke = tokio::sync::oneshot::channel();
+        let (sender, receiver) = woke;
+        tokio::spawn(async move {
+            SMS_LINE_CHALLENGE_WAKE.notified().await;
+            let _ = sender.send(());
+        });
+        // The spawned task must register its waiter before the wake fires.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        wake_sms_line_activation();
+        tokio::time::timeout(Duration::from_secs(1), receiver)
+            .await
+            .expect("waiting socket was not woken")
+            .expect("wake sender dropped");
+    }
+}
+
 #[cfg(test)]
 mod virtual_sms_line_activation_tests;
 

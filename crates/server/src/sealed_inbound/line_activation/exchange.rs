@@ -160,6 +160,8 @@ pub async fn open(
             ],
         )
         .await?;
+    // The owning device's socket may be idling between activation polls.
+    crate::device_socket::wake_sms_line_activation();
     Ok((challenge, row.get(0)))
 }
 
@@ -524,6 +526,9 @@ pub async fn approve(
         },
     )
     .await?;
+    // Push the approval acknowledgement now rather than at the device's
+    // idle activation-poll cadence.
+    crate::device_socket::wake_sms_line_activation();
     Ok(())
 }
 
