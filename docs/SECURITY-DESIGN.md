@@ -397,10 +397,37 @@ name it. A capped request gets the same 202 as every other throttled or
 unknown-address request. The cap is a trade-off: a stranger who keeps
 requesting codes for a real address can use up that day's verified lane (at
 least 4 throttle windows, about an hour, of repeated requests), and the owner
-then waits for the next day's budget. Unknown addresses charge their exhausted
+then waits for the next day's budget.
+
+The real owner keeps a separate budget such a stranger cannot reach. After a
+successful sign-in, the server sets a signed, HttpOnly, Secure,
+SameSite=Strict trusted-browser cookie bound to the owner's account, user and
+current password hash under the auth pepper, with a 90-day lifetime enforced
+server-side on the embedded issue time. A reset request carrying a valid
+cookie for the address's owner charges a trusted lane with its own window and
+daily subjects (same 12-per-day cap), on top of the shared route ceiling and
+the one-code-per-15-minutes code spacing, so an email-only attacker who spent
+the public lanes cannot hold back the owner's next code. Because the cookie
+binds to the current password hash and the owner's trust epoch, changing the
+password, completing a reset (which always replaces the password and revokes
+every session), revoking other sessions, confirming or disabling owner MFA
+(each bumps the epoch), or erasing the account invalidates it; signing in
+again re-establishes trust. Revoking other sessions also invalidates the
+calling browser's own cookie: de-trusting every browser is the fail-closed
+side of the separate budget. An
+invalid, expired, or other-account cookie is ignored and the request falls
+back to the ordinary lanes with an identical response. Operators may also
+list trusted networks in `RESET_TRUSTED_CIDRS`; the client address is the
+socket peer, or `X-Forwarded-For` only when the immediate peer is inside
+`TRUSTED_PROXY_CIDRS` (the chain is walked right to left past trusted
+proxies), so the header cannot spoof a trusted address from outside. Trusted
+requests spend the same trusted lane. No IP address is stored: membership
+checks run in memory, and only the existing HMAC-hidden abuse-counter
+subjects record anything. Unknown addresses charge their exhausted
 anonymous counter once more and read the daily budget instead, so a refused
 request runs the same probe and number of counter statements whether or not
-the address exists, and the response is 202 either way. The verified-route
+the address exists or the request carried trusted evidence, and the response
+is 202 either way. The verified-route
 ceiling still bounds the lane as a whole. Each newly issued reset code marks
 the previous unused code for that owner as used and cancels its queued mail,
 so only the newest mailed code works; a stranger's request can therefore

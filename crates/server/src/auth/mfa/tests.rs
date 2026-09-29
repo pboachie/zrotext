@@ -56,6 +56,7 @@ async fn postgres_enrollment_challenge_replay_recovery_and_disable() {
         include_str!("../../../../../deploy/compose/migrations/005_verification_outbox.sql"),
         include_str!("../../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
         include_str!("../../../../../deploy/compose/migrations/048_observer_memberships.sql"),
+        include_str!("../../../../../deploy/compose/migrations/060_trusted_browser_epoch.sql"),
     ] {
         client.batch_execute(migration).await.unwrap();
     }
@@ -174,6 +175,20 @@ async fn postgres_enrollment_challenge_replay_recovery_and_disable() {
         .await
         .unwrap();
     assert_eq!(recovery.codes.len(), RECOVERY_COUNT);
+    // Confirming enrollment revoked the other sessions and bumped the trust
+    // epoch, invalidating every browser's trusted reset cookie (#526).
+    let epoch: i64 = client
+        .query_one(
+            "SELECT trusted_browser_epoch FROM users WHERE id=$1",
+            &[&pa.user_id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        epoch, 1,
+        "MFA enrollment confirmation bumps the trust epoch"
+    );
     assert!(matches!(
         confirm_enrollment(&mut client, &cipher, &hasher, &pa, &confirm_code).await,
         Err(AuthError::Forbidden)
@@ -445,6 +460,16 @@ async fn postgres_enrollment_challenge_replay_recovery_and_disable() {
     )
     .await
     .unwrap();
+    // Disabling MFA revoked the other sessions and bumped the epoch again.
+    let epoch: i64 = client
+        .query_one(
+            "SELECT trusted_browser_epoch FROM users WHERE id=$1",
+            &[&recovered_principal.user_id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(epoch, 2, "MFA disable bumps the trust epoch again");
     assert!(
         auth::authenticate_session(&client, &hasher, &session.token)
             .await

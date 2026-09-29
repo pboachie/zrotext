@@ -346,6 +346,36 @@ if MFA is enabled, then reissue integration keys. A reset notification is
 queued and is delivered if SMTP is configured later. Password recovery restores
 authentication only; it does not unlock sealed message history.
 
+#### Keeping reset codes available to the real owner
+
+Anyone who knows an owner's address can spend that address's public daily
+reset budget. Two optional settings give the real owner a separate budget such
+a stranger cannot reach; both default to empty and the reset lanes work
+without them exactly as before.
+
+- After a successful sign-in, the server marks the browser with a signed
+  `__Host-zrotext_trusted_browser` cookie (HttpOnly, Secure, SameSite=Strict,
+  90 days). A reset request from that browser spends a trusted daily budget of
+  its own. The cookie binds to the owner's account, user, current password
+  hash and a trust epoch, so a password change, a reset (which revokes every
+  session and changes the password), revoking other sessions, an owner MFA
+  change (each bumps the epoch), or erasing the account invalidates it;
+  signing in again re-establishes it. An invalid, expired, or other-account cookie is ignored
+  and the request uses the ordinary lanes with the same response.
+- `RESET_TRUSTED_CIDRS` is a comma-separated list of IPv4/IPv6 networks
+  (prefix required, or a bare address for a single host) whose reset requests
+  use the same trusted budget. The client address is the connection's socket
+  address, or `X-Forwarded-For` when the immediate peer is inside
+  `TRUSTED_PROXY_CIDRS`; from any other peer the header is ignored and cannot
+  spoof a trusted address. Configure `TRUSTED_PROXY_CIDRS` with the networks
+  your reverse proxies connect from, and only trust proxies that append the
+  real client address to the header.
+
+The trusted budget is capped at 12 codes per address per day, on top of the
+normal route ceiling and the one-code-per-15-minutes cadence, and every
+outcome still returns the same 202. Trusted networks grant extra reset
+availability only; they authenticate nothing and unlock no account route.
+
 ### Database privileges
 
 Use separate migration and runtime credentials before public deployment. The

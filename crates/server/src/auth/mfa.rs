@@ -432,6 +432,13 @@ pub async fn confirm_enrollment(
         "UPDATE sessions SET revoked_at=now() WHERE account_id=$1 AND user_id=$2 AND id<>$3 AND revoked_at IS NULL",
         &[&account_id, &principal.user_id, &principal.session_id],
     ).await?;
+    // Confirming MFA enrollment revokes other sessions and their
+    // trusted-browser cookies with them (issue #526).
+    tx.execute(
+        "UPDATE users SET trusted_browser_epoch=trusted_browser_epoch+1 WHERE id=$1",
+        &[&principal.user_id],
+    )
+    .await?;
     let mut codes = Vec::with_capacity(RECOVERY_COUNT);
     for _ in 0..RECOVERY_COUNT {
         let code = new_recovery_code();
@@ -779,6 +786,13 @@ pub async fn disable(
     .await?;
     tx.execute("UPDATE owner_mfa_login_challenges SET consumed_at=now() WHERE account_id=$1 AND user_id=$2 AND consumed_at IS NULL", &[&account_id, &principal.user_id]).await?;
     tx.execute("UPDATE sessions SET revoked_at=now() WHERE account_id=$1 AND user_id=$2 AND id<>$3 AND revoked_at IS NULL", &[&account_id, &principal.user_id, &principal.session_id]).await?;
+    // Disabling MFA revokes other sessions and their trusted-browser cookies
+    // with them (issue #526).
+    tx.execute(
+        "UPDATE users SET trusted_browser_epoch=trusted_browser_epoch+1 WHERE id=$1",
+        &[&principal.user_id],
+    )
+    .await?;
     tx.commit().await?;
     Ok(())
 }

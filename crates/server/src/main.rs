@@ -46,8 +46,8 @@ use zrotext_server::{
     failover_executor,
     http_auth::{
         self, AuthHttpState, DisabledVerificationDispatcher, RegistrationPolicy,
-        SmtpVerificationDispatcher, VerificationDispatchOutcome, VerificationDispatcher,
-        VerificationWarningGate,
+        SmtpVerificationDispatcher, TrustedNetworks, VerificationDispatchOutcome,
+        VerificationDispatcher, VerificationWarningGate,
     },
     http_enrollment::{self, EnrollmentHttpState},
     http_messages::{self, MessagesHttpState},
@@ -860,9 +860,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.site_id, config.instance_id
     );
     let listener = tokio::net::TcpListener::bind(bind).await?;
-    axum::serve(listener, zrotext_server::ingress::protect(app))
-        .with_graceful_shutdown(shutdown_signal(config))
-        .await?;
+    // Connection info is required for the reset lane's trusted-network
+    // evidence: handlers must see the socket peer to decide whether an
+    // X-Forwarded-For chain may be believed.
+    axum::serve(
+        listener,
+        zrotext_server::ingress::protect(app).into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal(config))
+    .await?;
     Ok(())
 }
 
@@ -1004,6 +1010,14 @@ async fn account_routes(
     if config.sms_line_activation_enabled {
         auth_state = auth_state.with_sms_line_activation_enabled();
     }
+    let reset_trusted_cidrs = smtp_env_option("RESET_TRUSTED_CIDRS")?;
+    let trusted_proxy_cidrs = smtp_env_option("TRUSTED_PROXY_CIDRS")?;
+    let trusted_networks = TrustedNetworks::parse(
+        reset_trusted_cidrs.as_deref(),
+        trusted_proxy_cidrs.as_deref(),
+    )
+    .map_err(|error| error.to_string())?;
+    auth_state = auth_state.with_reset_trusted_networks(trusted_networks);
     let enrollment_state = EnrollmentHttpState::new(
         config.database_url.clone(),
         auth_hasher,
