@@ -380,7 +380,7 @@ Offer an operated service built from the same public code, and keep it available
 
 | Capability | Stage | Evidence |
 |---|---|---|
-| Hosted accounts and subscriptions | Build (Stripe test mode only) | [#34](https://github.com/pboachie/zrotext/pull/34), [#44](https://github.com/pboachie/zrotext/pull/44), [#70](https://github.com/pboachie/zrotext/pull/70), [#184](https://github.com/pboachie/zrotext/pull/184) |
+| Hosted accounts and subscriptions | Build (Stripe test mode only) | [#34](https://github.com/pboachie/zrotext/pull/34), [#44](https://github.com/pboachie/zrotext/pull/44), [#70](https://github.com/pboachie/zrotext/pull/70), [#184](https://github.com/pboachie/zrotext/pull/184), [#468](https://github.com/pboachie/zrotext/pull/468) |
 | Two-location routing with fenced devices | Build | [#73](https://github.com/pboachie/zrotext/pull/73), [design](MULTI-LOCATION.md) |
 | Automatic failover with independent quorum | Design | [Failover design](MULTI-LOCATION.md#automatic-failover-needs-an-independent-decision), [Implementation status](MULTI-LOCATION.md#implementation-status-five-increments) |
 | Optional managed AI service | Planned | [product proposal](PRODUCT-PLAN.md#managed-ai-and-larger-campaigns), [data-handling proposal](MANAGED-AI.md) proposal only; no runtime implementation |
@@ -393,6 +393,7 @@ Offer an operated service built from the same public code, and keep it available
 - [x] Stripe Checkout and Customer Portal in test mode
 - [x] Signed event inbox with risk holds for refunds and disputes
 - [x] Metered admission for billed pilot tenants
+- [x] First slice of usage limits and plans: quota-only usage-limit plans with enforced metered limits and honest over-limit responses, disabled by default and without any pricing decision
 - [ ] Live payments, usage limits and plans
 - [ ] Customer support and status communication
 
