@@ -18,6 +18,20 @@
 //! timeout is a failed operation like any transport or SQL error, and the
 //! executor's idempotent replay turns it into a retry instead of a hang.
 //!
+//! The executor is a per-database singleton, guarded by a session-level
+//! PostgreSQL advisory lock ([`EXECUTOR_ADVISORY_LOCK_KEY`]): every API
+//! replica with the wiring enabled may spawn the executor thread, but the
+//! authority's dedicated connection must acquire the lock when it opens —
+//! and again after every reconnect, because the lock dies with its session
+//! — so exactly one replica runs rounds against the journal row. A replica
+//! that cannot acquire the lock stays dormant: every operation fails
+//! closed without a connection (fail-closed — no lock means no authority
+//! writes), the retry rides the check cadence, readiness is unaffected —
+//! a dormant replica is an ordinary API replica — and each role change is
+//! logged once, never per tick. Executor-host failover needs no lease
+//! semantics: taking the previous owner's connection down releases the
+//! lock, and a dormant replica acquires it on its next retry.
+//!
 //! The observation source is the durable consensus store
 //! (`FAILOVER_QUORUM_STORE_DIR`): one membership record plus append-only
 //! per-member journals, served through the decision model's freshness
@@ -40,9 +54,9 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU8, Ordering},
 };
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use zrotext_failover_quorum::decision::{FailoverConfig, Round, SiteFenceState};
 use zrotext_failover_quorum::executor::{
     AuthoritySnapshot, FailoverExecutor, FenceOutcome, ObservationSource, PromoteOutcome,
@@ -79,6 +93,150 @@ const OPERATION_CEILING: Duration = Duration::from_secs(30);
 /// reconnect attempts, nothing more.
 const RECONNECT_JITTER_CEILING: Duration = Duration::from_millis(250);
 
+/// Key of the session-level PostgreSQL advisory lock that makes the
+/// failover executor a per-database singleton. The value is the big-endian
+/// ASCII of `ZROFAILO`, so it is self-describing when an operator inspects
+/// `pg_locks`; it is otherwise arbitrary but must stay fixed forever;
+/// changing it would let two executors that disagree on the key drive the
+/// one `failover_controller_state` journal row again.
+pub const EXECUTOR_ADVISORY_LOCK_KEY: i64 = 0x5A52_4F46_4149_4C4F;
+
+/// The singleton-executor role of one [`PgWriterAuthority`] connection, as
+/// the executor wiring observes it. The role is shared through a
+/// [`SharedExecutorRole`] cell so the wiring loop can log role changes
+/// without borrowing the authority the controller loop owns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExecutorRole {
+    /// No lock attempt has completed on the current connection yet.
+    Pending,
+    /// The connection holds [`EXECUTOR_ADVISORY_LOCK_KEY`]: authority
+    /// operations run.
+    Active,
+    /// Another replica's executor holds the lock: operations fail closed
+    /// until a later attempt acquires it.
+    Dormant,
+}
+
+impl ExecutorRole {
+    /// The shared-cell encoding of the role.
+    fn as_bits(self) -> u8 {
+        match self {
+            ExecutorRole::Pending => 0,
+            ExecutorRole::Active => 1,
+            ExecutorRole::Dormant => 2,
+        }
+    }
+
+    /// The role for a shared-cell encoding; anything unexpected reads as
+    /// [`ExecutorRole::Pending`], the claim-nothing default.
+    fn from_bits(bits: u8) -> Self {
+        match bits {
+            1 => ExecutorRole::Active,
+            2 => ExecutorRole::Dormant,
+            _ => ExecutorRole::Pending,
+        }
+    }
+}
+
+/// The wiring loop's lock-free window onto the guard's role.
+#[derive(Clone)]
+struct SharedExecutorRole(Arc<AtomicU8>);
+
+impl SharedExecutorRole {
+    /// A cell that claims no role yet.
+    fn new() -> Self {
+        Self(Arc::new(AtomicU8::new(ExecutorRole::Pending.as_bits())))
+    }
+
+    /// The currently observed role.
+    fn load(&self) -> ExecutorRole {
+        ExecutorRole::from_bits(self.0.load(Ordering::Acquire))
+    }
+
+    /// Publish a role change to every holder of the cell.
+    fn store(&self, role: ExecutorRole) {
+        self.0.store(role.as_bits(), Ordering::Release);
+    }
+}
+
+/// The guard's verdict for one arriving operation.
+enum GuardDecision {
+    /// Run the operation: the connection holds the lock, or a lock
+    /// attempt is due now (the port attempts it while opening).
+    Proceed,
+    /// Fail the operation closed without touching the database: another
+    /// replica holds the lock and the retry interval has not elapsed.
+    Dormant,
+}
+
+/// Pure state machine behind the singleton-executor guard. The port
+/// consults it before every operation and resolves it with the outcome of
+/// `pg_try_advisory_lock` on each connection it opens, so the lock's
+/// lifetime is exactly the connection's lifetime: a lost connection
+/// demotes the role to [`ExecutorRole::Pending`] instead of assuming it,
+/// and the next operation re-attempts the lock on the fresh connection.
+/// A replica whose attempt fails stays [`ExecutorRole::Dormant`] — every
+/// operation fails closed without a connection — until the retry interval
+/// elapses, which bounds lock attempts regardless of how often operations
+/// arrive.
+struct SingletonExecutorGuard {
+    retry_interval: Duration,
+    next_attempt: Option<Instant>,
+    role: SharedExecutorRole,
+}
+
+impl SingletonExecutorGuard {
+    /// Build the guard and the role cell shared with the wiring loop.
+    fn new(retry_interval: Duration) -> (Self, SharedExecutorRole) {
+        let role = SharedExecutorRole::new();
+        (
+            Self {
+                retry_interval,
+                next_attempt: None,
+                role: role.clone(),
+            },
+            role,
+        )
+    }
+
+    /// The verdict for an operation arriving at `now`.
+    fn poll(&mut self, now: Instant) -> GuardDecision {
+        if self.role.load() == ExecutorRole::Active {
+            return GuardDecision::Proceed;
+        }
+        match self.next_attempt {
+            Some(due) if now < due => GuardDecision::Dormant,
+            _ => GuardDecision::Proceed,
+        }
+    }
+
+    /// Record the outcome of one `pg_try_advisory_lock` attempt: an
+    /// acquisition runs operations until the connection is lost; a refusal
+    /// parks the guard dormant until the retry interval elapses, so at most
+    /// one attempt is made per interval however often operations arrive.
+    fn resolved(&mut self, acquired: bool, now: Instant) {
+        if acquired {
+            self.role.store(ExecutorRole::Active);
+            self.next_attempt = None;
+        } else {
+            self.role.store(ExecutorRole::Dormant);
+            self.next_attempt = Some(now.checked_add(self.retry_interval).unwrap_or(now));
+        }
+    }
+
+    /// The connection holding the lock was discarded: the role is not
+    /// assumed across connections, so the next operation re-attempts the
+    /// lock on the fresh one. A dormant guard keeps its retry floor — an
+    /// unrelated discard must not wake it early.
+    fn connection_lost(&mut self) {
+        if self.role.load() == ExecutorRole::Active {
+            self.role.store(ExecutorRole::Pending);
+            self.next_attempt = None;
+        }
+    }
+}
+
+/// Parsed `FAILOVER_QUORUM_*` wiring for the executor loop.
 /// Parsed `FAILOVER_QUORUM_*` wiring for the executor loop and the
 /// member-side reporting loop.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -242,6 +400,11 @@ pub enum PgAuthorityError {
     Database(#[from] tokio_postgres::Error),
     #[error("writer authority operation did not finish within {0:?}")]
     OperationTimedOut(Duration),
+    #[error(
+        "another replica's executor holds the singleton advisory lock; this executor is dormant \
+         and performs no authority writes"
+    )]
+    ExecutorDormant,
     #[error("deployment_authority.epoch is outside the executor's domain: {0}")]
     EpochOutOfRange(i64),
 }
@@ -268,6 +431,11 @@ pub struct PgWriterAuthority {
     /// Set by every failed operation and failed connect: the next operation
     /// first waits out a jittered pause and opens a fresh connection.
     reconnect_pending: bool,
+    /// The singleton-executor advisory-lock guard: `None` on a plain port,
+    /// which never attempts the lock, and `Some` on an executor-guarded
+    /// port, whose every connection must acquire the lock before its
+    /// operations run.
+    guard: Option<SingletonExecutorGuard>,
     /// Test seam: how many connections this instance has opened, so tests
     /// can assert the one-connection contract directly.
     #[cfg(test)]
@@ -288,9 +456,29 @@ impl PgWriterAuthority {
             client: None,
             driver: None,
             reconnect_pending: false,
+            guard: None,
             #[cfg(test)]
             connections_opened: 0,
         })
+    }
+
+    /// Build the port guarded by the singleton-executor advisory lock: the
+    /// port's dedicated connection must acquire
+    /// `pg_try_advisory_lock(EXECUTOR_ADVISORY_LOCK_KEY)` when it opens —
+    /// and again after every reconnect, because a session-level lock dies
+    /// with its session — or the port stays dormant, failing every
+    /// operation closed until a later attempt succeeds. `lock_retry_interval`
+    /// paces dormant retries (the executor wiring passes its check
+    /// interval, so lock retries ride the check rounds). The returned role
+    /// cell is the wiring loop's window onto the guard for change logging.
+    fn new_for_executor(
+        database_url: String,
+        lock_retry_interval: Duration,
+    ) -> Result<(Self, SharedExecutorRole), String> {
+        let mut port = Self::new(database_url)?;
+        let (guard, role) = SingletonExecutorGuard::new(lock_retry_interval);
+        port.guard = Some(guard);
+        Ok((port, role))
     }
 
     /// Run one operation on the dedicated connection under the production
@@ -309,6 +497,15 @@ impl PgWriterAuthority {
         ceiling: Duration,
         operation: impl for<'a> FnOnce(&'a mut tokio_postgres::Client) -> BoxedOperation<'a, T>,
     ) -> Result<T, PgAuthorityError> {
+        // Dormancy is checked before anything else — a dormant replica
+        // performs no authority writes and never even opens a connection —
+        // and fails closed without disturbing the pending-reconnect state,
+        // which still applies once dormancy ends.
+        if let Some(guard) = self.guard.as_mut()
+            && matches!(guard.poll(Instant::now()), GuardDecision::Dormant)
+        {
+            return Err(PgAuthorityError::ExecutorDormant);
+        }
         if self.reconnect_pending {
             // The previous failure left the connection unusable; discard it
             // and pause briefly (randomized) before touching the database
@@ -378,7 +575,23 @@ impl PgWriterAuthority {
                 {
                     self.connections_opened = self.connections_opened.saturating_add(1);
                 }
-                Ok(client)
+                match self.acquire_executor_lock(&client) {
+                    Ok(true) => Ok(client),
+                    Ok(false) => {
+                        // The connection is healthy but worthless without
+                        // the lock: discard it and fail the operation
+                        // closed. No reconnect flag is set — the transport
+                        // did not fail, and the guard's retry floor already
+                        // paces the next attempt.
+                        self.discard_connection();
+                        Err(PgAuthorityError::ExecutorDormant)
+                    }
+                    Err(error) => {
+                        self.discard_connection();
+                        self.reconnect_pending = true;
+                        Err(error)
+                    }
+                }
             }
             Err(error) => {
                 self.reconnect_pending = true;
@@ -387,13 +600,58 @@ impl PgWriterAuthority {
         }
     }
 
+    /// Try to take the singleton-executor advisory lock on `client` under
+    /// the connect ceiling and record the outcome in the guard. This is the
+    /// seam where the lock and the authority meet: it runs on the very
+    /// connection later operations ride, so the lock's lifetime is the
+    /// connection's lifetime — the guard re-attempts it after every
+    /// reconnect, and the executor role fails over with the connection,
+    /// with no lease to renew. A plain port (no guard) always proceeds.
+    fn acquire_executor_lock(
+        &mut self,
+        client: &tokio_postgres::Client,
+    ) -> Result<bool, PgAuthorityError> {
+        if self.guard.is_none() {
+            return Ok(true);
+        }
+        let key = EXECUTOR_ADVISORY_LOCK_KEY;
+        let attempted = self.runtime.block_on(wait_bounded(CONNECT_CEILING, async {
+            let row = client
+                .query_one("SELECT pg_try_advisory_lock($1)", &[&key])
+                .await?;
+            Ok(row.get::<_, bool>(0))
+        }));
+        match attempted {
+            Ok(acquired) => {
+                if let Some(guard) = self.guard.as_mut() {
+                    guard.resolved(acquired, Instant::now());
+                }
+                Ok(acquired)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     /// Drop the retained connection and stop its driver task.
     fn discard_connection(&mut self) {
         self.client = None;
+        if let Some(guard) = self.guard.as_mut() {
+            // The lock died with the connection: the next operation must
+            // re-attempt it on the fresh one instead of assuming the role.
+            guard.connection_lost();
+        }
         if let Some(driver) = self.driver.take() {
             // Abort rather than detach: a wedged socket must not outlive the
             // decision to discard it.
             driver.abort();
+            // A current-thread runtime only runs inside `block_on`, so the
+            // abort is otherwise processed — the dropped task closes the
+            // socket, releasing the server-side backend and any advisory
+            // lock it holds — at the next operation, not now. One yield
+            // pumps the runtime immediately: a replica discarding its
+            // connection, a dormant one above all, must not keep a backend
+            // alive while it does nothing.
+            self.runtime.block_on(tokio::task::yield_now());
         }
     }
 }
@@ -753,16 +1011,52 @@ pub struct FailoverExecutorThreads {
     pub reporter: std::thread::JoinHandle<()>,
 }
 
+/// One log line per executor-role change, `None` when the role has not
+/// changed (or nothing has been observed yet): a dormant replica logs its
+/// dormancy once — not once per retry — and an acquisition logs the running
+/// banner exactly once per acquisition, takeover included.
+fn role_change_log(
+    previous: Option<ExecutorRole>,
+    current: ExecutorRole,
+    env: &ExecutorEnv,
+) -> Option<String> {
+    if previous == Some(current) || current == ExecutorRole::Pending {
+        return None;
+    }
+    match current {
+        ExecutorRole::Dormant => Some(format!(
+            "failover quorum executor is dormant: another replica holds the singleton advisory \
+             lock; no authority writes from this replica, retrying every {}ms",
+            env.check_interval_ms()
+        )),
+        ExecutorRole::Active => Some(format!(
+            "failover quorum executor acquired the singleton advisory lock and is running \
+             ({} members, writer site {}, standby site {}, {}ms checks, store {}); no transport \
+             reports into the store in this build, so rounds hold",
+            env.config().members().len(),
+            env.config().writer_site_id(),
+            env.config().standby_site_id(),
+            env.check_interval_ms(),
+            env.store_dir().display(),
+        )),
+        ExecutorRole::Pending => None,
+    }
+}
 /// Spawn the failover executor and reporter threads. `None` env (the
 /// default) spawns nothing at all and never touches `healthy`; `Some` runs
 /// the controller loop and the reporting loop until `shutdown` is set or
-/// the process exits. If the wiring cannot start — the consensus store
-/// cannot open (corrupt, foreign membership, unwritable) — `healthy` is
-/// cleared and nothing is spawned, so the failure is visible to operators
-/// through readiness rather than only as a log line; a writer-authority
-/// port that cannot be built clears `healthy` from inside the executor
-/// thread. The handles are intentionally detached-style: both loops are
-/// best-effort and never block process exit.
+/// the process exits. The executor is a per-database singleton: the
+/// authority's dedicated connection must hold
+/// [`EXECUTOR_ADVISORY_LOCK_KEY`], so a replica that loses the race stays
+/// dormant — logging once, performing no authority writes, and leaving
+/// readiness untouched, exactly like a replica without an executor — and
+/// takes over when the previous owner's connection dies. One store
+/// instance is shared by both loops; it is opened before any thread runs
+/// so a directory that cannot serve this quorum clears `healthy` and
+/// spawns nothing, and a writer-authority port that cannot be built
+/// clears `healthy` from inside the executor thread. The handles are
+/// intentionally detached-style: both loops are best-effort and never
+/// block process exit.
 pub fn spawn_failover_executor(
     env: Option<ExecutorEnv>,
     database_url: String,
@@ -770,37 +1064,25 @@ pub fn spawn_failover_executor(
     healthy: Arc<AtomicBool>,
 ) -> Option<FailoverExecutorThreads> {
     let env = env?;
-    // One store instance is shared by both loops; it is opened here so a
-    // directory that cannot serve this quorum fails before any thread runs.
     let store = open_consensus_store(&env, &healthy)?;
     let store: SharedStore = Arc::new(Mutex::new(store));
     let reporter = spawn_failover_reporter(env.clone(), store.clone(), shutdown.clone());
     let executor = std::thread::Builder::new()
         .name("failover-quorum-executor".to_owned())
         .spawn(move || {
-            let authority = match PgWriterAuthority::new(database_url) {
-                Ok(authority) => authority,
+            let (authority, role) = match PgWriterAuthority::new_for_executor(
+                database_url,
+                Duration::from_millis(env.check_interval_ms()),
+            ) {
+                Ok(pair) => pair,
                 Err(error) => {
                     healthy.store(false, Ordering::Release);
                     eprintln!(
-                        "failover quorum executor: {error}; the executor is not running and \
-                         readiness reports failover_executor_failed"
+                        "failover quorum executor: {error}; the executor is not running and                          readiness reports failover_executor_failed"
                     );
                     return;
                 }
             };
-            eprintln!(
-                "failover quorum executor running ({} members, writer site {}, standby site {}, \
-                 {}ms checks, store {}, reporter {} every {}ms); the reporter has no \
-                 production probe source in this build, so the store stays empty and rounds hold",
-                env.config().members().len(),
-                env.config().writer_site_id(),
-                env.config().standby_site_id(),
-                env.check_interval_ms(),
-                env.store_dir().display(),
-                env.report_member_id(),
-                env.probe_interval_ms(),
-            );
             let mut executor = FailoverExecutor::new(
                 env.config().clone(),
                 SharedStoreSource::new(store),
@@ -808,6 +1090,7 @@ pub fn spawn_failover_executor(
             );
             let interval = Duration::from_millis(env.check_interval_ms());
             let mut last_status = None;
+            let mut last_role = None;
             loop {
                 if shutdown.load(Ordering::Acquire) {
                     break;
@@ -818,6 +1101,11 @@ pub fn spawn_failover_executor(
                     eprintln!("failover quorum executor status: {status:?}");
                     last_status = Some(status);
                 }
+                let current_role = role.load();
+                if let Some(line) = role_change_log(last_role, current_role, &env) {
+                    eprintln!("{line}");
+                }
+                last_role = Some(current_role);
                 std::thread::sleep(interval);
             }
         })

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Tests for the failover executor server wiring: environment parsing (the
-//! default-off path above all), and — against a disposable PostgreSQL
-//! database — the exact SQL semantics of the writer-authority port plus an
-//! end-to-end executor failover with a restart.
+//! default-off path above all), the singleton-executor advisory-lock guard,
+//! and — against a disposable PostgreSQL database — the exact SQL semantics
+//! of the writer-authority port, the executor-role lock, plus an end-to-end
+//! executor failover with a restart.
 
 use super::*;
 use std::collections::VecDeque;
@@ -726,6 +727,174 @@ fn the_wait_ceiling_passes_operation_results_through() {
     );
 }
 
+#[test]
+fn a_failed_lock_attempt_parks_the_guard_dormant_until_the_retry_interval_elapses() {
+    let (mut guard, role) = SingletonExecutorGuard::new(Duration::from_millis(50));
+    let now = Instant::now();
+    assert!(
+        matches!(guard.poll(now), GuardDecision::Proceed),
+        "the first attempt is due immediately"
+    );
+    guard.resolved(false, now);
+    assert_eq!(
+        role.load(),
+        ExecutorRole::Dormant,
+        "the wiring loop must see the dormancy through the shared role cell"
+    );
+    assert!(
+        matches!(guard.poll(now), GuardDecision::Dormant),
+        "an operation inside the retry interval fails closed"
+    );
+    assert!(matches!(
+        guard.poll(now + Duration::from_millis(25)),
+        GuardDecision::Dormant
+    ));
+    assert!(
+        matches!(
+            guard.poll(now + Duration::from_millis(50)),
+            GuardDecision::Proceed
+        ),
+        "the retry is due again after the interval"
+    );
+}
+
+#[test]
+fn an_acquired_lock_runs_operations_until_its_connection_is_lost() {
+    let (mut guard, role) = SingletonExecutorGuard::new(Duration::from_millis(50));
+    let now = Instant::now();
+    guard.resolved(true, now);
+    assert_eq!(role.load(), ExecutorRole::Active);
+    for offset in [0, 25, 50, 100] {
+        assert!(
+            matches!(
+                guard.poll(now + Duration::from_millis(offset)),
+                GuardDecision::Proceed
+            ),
+            "an active connection runs operations without re-attempting the lock"
+        );
+    }
+    guard.connection_lost();
+    assert_eq!(
+        role.load(),
+        ExecutorRole::Pending,
+        "the lock died with the connection: the role is not assumed"
+    );
+    assert!(
+        matches!(guard.poll(now), GuardDecision::Proceed),
+        "the re-attempt is due immediately, on the fresh connection"
+    );
+}
+
+#[test]
+fn a_lost_connection_does_not_wake_a_dormant_guard_early() {
+    let (mut guard, _role) = SingletonExecutorGuard::new(Duration::from_millis(50));
+    let now = Instant::now();
+    guard.resolved(false, now);
+    // An unrelated connection discard must not reset the dormancy floor.
+    guard.connection_lost();
+    assert!(matches!(guard.poll(now), GuardDecision::Dormant));
+    assert!(matches!(
+        guard.poll(now + Duration::from_millis(49)),
+        GuardDecision::Dormant
+    ));
+    assert!(matches!(
+        guard.poll(now + Duration::from_millis(50)),
+        GuardDecision::Proceed
+    ));
+}
+
+#[test]
+fn only_an_executor_constructed_port_carries_the_singleton_lock_guard() {
+    // The plain port never attempts the lock — and the disabled wiring
+    // (proven above: `spawn_returns_none_and_spawns_nothing_while_disabled`)
+    // never constructs a port at all — so the lock path is reached only
+    // through the executor wiring with the flag on.
+    let plain = PgWriterAuthority::new("postgres://plain.example.invalid/db".to_owned()).unwrap();
+    assert!(
+        plain.guard.is_none(),
+        "a plain port never attempts the singleton lock"
+    );
+    let (guarded, role) = PgWriterAuthority::new_for_executor(
+        "postgres://guarded.example.invalid/db".to_owned(),
+        Duration::from_secs(1),
+    )
+    .unwrap();
+    assert!(guarded.guard.is_some());
+    assert_eq!(
+        role.load(),
+        ExecutorRole::Pending,
+        "no role is claimed before the first attempt"
+    );
+}
+
+#[test]
+fn a_dormant_guard_fails_operations_closed_without_a_connection() {
+    // Port 1 refuses connections immediately, so a reached connect would
+    // fail fast with a transport error — anything but dormancy.
+    let (mut authority, _role) = PgWriterAuthority::new_for_executor(
+        "postgres://127.0.0.1:1/postgres".to_owned(),
+        Duration::from_secs(30),
+    )
+    .unwrap();
+    // Park the guard dormant, exactly as a failed lock attempt would.
+    authority
+        .guard
+        .as_mut()
+        .expect("guarded port")
+        .resolved(false, Instant::now());
+    let started = std::time::Instant::now();
+    let Err(error) = authority.load_state("site-a", "site-b") else {
+        panic!("a dormant executor must fail the operation closed");
+    };
+    assert!(
+        matches!(error, PgAuthorityError::ExecutorDormant),
+        "got {error:?}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "the fail-fast path must not wait out any ceiling, took {:?}",
+        started.elapsed()
+    );
+    assert_eq!(
+        authority.connections_opened, 0,
+        "a dormant operation must not open a connection"
+    );
+}
+
+#[test]
+fn role_changes_log_once_per_change_and_nothing_logs_while_pending() {
+    let env = enabled_env(&ScratchDir::new("role-log-store").0);
+    assert_eq!(role_change_log(None, ExecutorRole::Pending, &env), None);
+    assert_eq!(
+        role_change_log(Some(ExecutorRole::Pending), ExecutorRole::Pending, &env),
+        None
+    );
+    assert_eq!(
+        role_change_log(Some(ExecutorRole::Active), ExecutorRole::Active, &env),
+        None,
+        "a steady role logs nothing: no per-tick spam"
+    );
+    assert_eq!(
+        role_change_log(Some(ExecutorRole::Dormant), ExecutorRole::Dormant, &env),
+        None
+    );
+    let dormant = role_change_log(None, ExecutorRole::Dormant, &env).expect("dormancy is logged");
+    assert!(
+        dormant.contains("dormant") && dormant.contains("50ms"),
+        "the dormant line names the state and the retry cadence: {dormant}"
+    );
+    let active = role_change_log(None, ExecutorRole::Active, &env).expect("acquisition is logged");
+    assert!(
+        active.contains("running")
+            && active.contains("3 members")
+            && active.contains("site-a")
+            && active.contains("site-b"),
+        "the acquisition line is the running banner: {active}"
+    );
+    assert!(role_change_log(Some(ExecutorRole::Dormant), ExecutorRole::Active, &env).is_some());
+    assert!(role_change_log(Some(ExecutorRole::Active), ExecutorRole::Dormant, &env).is_some());
+}
+
 /// PIDs of the live backends currently serving connections whose
 /// `application_name` is the authority's, observed through one persistent
 /// admin session so the observer itself never adds a connection.
@@ -958,6 +1127,167 @@ fn pg_writer_authority_reuses_one_connection_across_operations() {
     );
 
     drop(authority);
+    let cleanup_schema = schema.clone();
+    runtime.block_on(async {
+        admin
+            .batch_execute(&format!("DROP SCHEMA {cleanup_schema} CASCADE"))
+            .await
+            .unwrap();
+    });
+    drop(admin);
+    let _ = runtime.block_on(admin_driver);
+}
+
+/// The singleton-executor guard against real PostgreSQL: two guarded
+/// authorities against the same database cannot both be the executor — the
+/// second goes dormant, fails closed without holding a connection, and
+/// cannot retry inside the lock interval — and when the active executor's
+/// connection dies, the dormant replica acquires the lock on a later retry
+/// and then owns the journal, while the demoted first cannot steal the role
+/// back. The database is the observer through `pg_stat_activity` and the
+/// role cells, so the proof does not depend on port internals.
+#[test]
+#[ignore = "requires ZT_FAILOVER_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+fn a_dormant_executor_takes_over_when_the_active_executors_connection_dies() {
+    let base_url = std::env::var("ZT_FAILOVER_TEST_DATABASE_URL")
+        .expect("set ZT_FAILOVER_TEST_DATABASE_URL for PostgreSQL-backed failover tests");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime");
+
+    let writer_site = format!("failover-pg-takeover-w-{}", uuid::Uuid::new_v4().simple());
+    let standby_site = format!("failover-pg-takeover-s-{}", uuid::Uuid::new_v4().simple());
+    let schema = format!(
+        "failover_executor_takeover_{}",
+        uuid::Uuid::new_v4().simple()
+    );
+    let app_first = format!("zt-failover-authority-a-{}", uuid::Uuid::new_v4().simple());
+    let app_second = format!("zt-failover-authority-b-{}", uuid::Uuid::new_v4().simple());
+
+    let (admin, admin_driver) = {
+        let (client, connection) = runtime
+            .block_on(zrotext_postgres_connection::connect(&base_url))
+            .expect("admin connection");
+        let driver = runtime.spawn(connection);
+        (client, driver)
+    };
+    let setup_schema = schema.clone();
+    runtime.block_on(async {
+        admin
+            .batch_execute(&format!(
+                "CREATE SCHEMA {setup_schema}; SET search_path TO {setup_schema}"
+            ))
+            .await
+            .unwrap();
+        admin.batch_execute(MIGRATION_FOUNDATION).await.unwrap();
+        admin
+            .batch_execute(MIGRATION_FAILOVER_JOURNAL)
+            .await
+            .unwrap();
+    });
+    let separator = if base_url.contains('?') { '&' } else { '?' };
+    let url = |app_name: &str| {
+        format!("{base_url}{separator}options=-csearch_path%3D{schema}&application_name={app_name}")
+    };
+
+    let retry_interval = Duration::from_millis(150);
+    let (mut first, first_role) =
+        PgWriterAuthority::new_for_executor(url(&app_first), retry_interval).unwrap();
+    assert_eq!(first_role.load(), ExecutorRole::Pending);
+    first.load_state(&writer_site, &standby_site).unwrap();
+    assert_eq!(first_role.load(), ExecutorRole::Active);
+
+    // The second executor loses the race: it goes dormant, and its
+    // operation fails closed instead of touching the singleton rows.
+    let (mut second, second_role) =
+        PgWriterAuthority::new_for_executor(url(&app_second), retry_interval).unwrap();
+    let Err(error) = second.load_state(&writer_site, &standby_site) else {
+        panic!("a second executor must not run rounds against the singleton journal row");
+    };
+    assert!(
+        matches!(error, PgAuthorityError::ExecutorDormant),
+        "got {error:?}"
+    );
+    assert_eq!(second_role.load(), ExecutorRole::Dormant);
+
+    // A retry inside the lock interval fails fast, without a connection.
+    let started = std::time::Instant::now();
+    assert!(matches!(
+        second.load_state(&writer_site, &standby_site),
+        Err(PgAuthorityError::ExecutorDormant)
+    ));
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "the in-interval retry must fail fast, took {:?}",
+        started.elapsed()
+    );
+    // The dormant replica holds no backend: its one attempt connection is
+    // gone (polled, because backend exit is observed asynchronously).
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if authority_backend_pids(&runtime, &admin, &app_second).is_empty() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(
+        authority_backend_pids(&runtime, &admin, &app_second).is_empty(),
+        "a dormant replica must not hold a writer connection"
+    );
+
+    // The first keeps the role on its one connection.
+    first.load_state(&writer_site, &standby_site).unwrap();
+    assert_eq!(first_role.load(), ExecutorRole::Active);
+
+    // Terminate the first's dedicated connection server-side: the lock
+    // dies with the session, and the second acquires on a later retry.
+    let first_pids = authority_backend_pids(&runtime, &admin, &app_first);
+    assert_eq!(first_pids.len(), 1, "exactly one active-executor backend");
+    runtime.block_on(async {
+        admin
+            .execute("SELECT pg_terminate_backend($1)", &[&first_pids[0]])
+            .await
+            .unwrap();
+    });
+    let mut took_over = false;
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        if second.load_state(&writer_site, &standby_site).is_ok() {
+            took_over = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        took_over,
+        "the dormant executor must take over after the owner's connection dies"
+    );
+    assert_eq!(second_role.load(), ExecutorRole::Active);
+
+    // The takeover executor owns the journal; the demoted first cannot
+    // steal the role back: its broken connection is replaced, but the
+    // lock attempt on the fresh connection fails closed.
+    assert!(
+        first.load_state(&writer_site, &standby_site).is_err(),
+        "an operation on the terminated connection must fail closed"
+    );
+    let Err(error) = first.load_state(&writer_site, &standby_site) else {
+        panic!("the demoted executor must not re-assume the role");
+    };
+    assert!(
+        matches!(error, PgAuthorityError::ExecutorDormant),
+        "got {error:?}"
+    );
+    assert_eq!(first_role.load(), ExecutorRole::Dormant);
+    second.save_controller_state("v1 takeover owner").unwrap();
+    assert_eq!(
+        second.load_controller_state().unwrap().as_deref(),
+        Some("v1 takeover owner")
+    );
+
+    drop(first);
+    drop(second);
     let cleanup_schema = schema.clone();
     runtime.block_on(async {
         admin
