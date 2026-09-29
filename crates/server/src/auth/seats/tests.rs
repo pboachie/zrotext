@@ -339,6 +339,63 @@ async fn invitation_acceptance_verification_and_sign_in_flow() {
 
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; disposable observer seat schema"]
+async fn the_session_lookup_maps_every_column_for_an_owner_and_an_observer() {
+    let mut f = Fixture::new(false).await;
+    let issued = create_invitation(&mut f.db, &f.hasher, &f.owner, "observer@example.test")
+        .await
+        .unwrap();
+    let credentials = accept_and_verify(
+        &mut f.db,
+        &f.hasher,
+        &issued.token,
+        &f.password,
+        "observer@example.test",
+    )
+    .await;
+    let observer = auth::authenticate_session(&f.db, &f.hasher, &credentials.token)
+        .await
+        .unwrap();
+    // Each principal field is compared with the database row it must come
+    // from, so a shifted column offset in the typed lookup cannot pass.
+    for (email, principal, session, role) in [
+        (
+            "owner@example.test",
+            &f.owner,
+            &f.owner_credentials,
+            Role::Owner,
+        ),
+        (
+            "observer@example.test",
+            &observer,
+            &credentials,
+            Role::Observer,
+        ),
+    ] {
+        let row = f
+            .db
+            .query_one(
+                "SELECT u.id,m.account_id,m.role FROM users u JOIN memberships m ON m.user_id=u.id WHERE u.email=$1",
+                &[&email],
+            )
+            .await
+            .unwrap();
+        assert_eq!(principal.user_id, row.get::<_, Uuid>(0));
+        assert_eq!(principal.tenant.account_id(), row.get::<_, Uuid>(1));
+        assert_eq!(principal.session_id, session.id);
+        assert_eq!(principal.role, role);
+        assert_eq!(role == Role::Owner, row.get::<_, String>(2) == "owner");
+        // The CSRF column is read from the right position too.
+        principal
+            .require_csrf_token(&f.hasher, &session.csrf_token, &session.csrf_token)
+            .unwrap();
+    }
+    assert_ne!(f.owner.user_id, observer.user_id);
+    assert_eq!(f.owner.tenant.account_id(), observer.tenant.account_id());
+    f.finish().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; disposable observer seat schema"]
 async fn invitations_are_single_use_cancellable_and_expiry_bound() {
     let mut f = Fixture::new(false).await;
     let issued = create_invitation(&mut f.db, &f.hasher, &f.owner, "first@example.test")
