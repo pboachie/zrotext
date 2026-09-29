@@ -448,9 +448,12 @@ pub async fn dispatch_one(
     .await
 }
 
-/// One lane tick: probe the due index first so an idle tick costs a single
-/// indexed read, close expired leases once, then drain a bounded backlog on
-/// this socket. A deferral that belongs to one delivery - an endpoint secret
+/// One lane tick: one probe statement over the due and expired-lease partial
+/// indexes decides whether there is anything to do, so an idle tick opens no
+/// transaction. Otherwise close expired leases once, then drain a bounded
+/// backlog on this socket. An expired lease alone makes the tick non-idle, so
+/// a crashed worker's delivery is recovered even when nothing else is due.
+/// A deferral that belongs to one delivery - an endpoint secret
 /// the vault cannot decrypt, or a lease that went stale mid-flight - does not
 /// abort the rest of the batch; storage failures do.
 pub async fn dispatch_lane_batch(
@@ -482,7 +485,7 @@ where
     F: Fn(String, Vec<u8>, Zeroizing<Vec<u8>>) -> Fut,
     Fut: Future<Output = Result<webhook_egress::DeliveryResponse, EgressError>>,
 {
-    if !inbound::webhook_due_exists(client).await? {
+    if !inbound::webhook_lane_has_work(client).await? {
         return Ok(0);
     }
     inbound::recover_expired_webhook_leases(client).await?;

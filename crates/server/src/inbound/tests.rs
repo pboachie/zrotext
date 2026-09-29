@@ -3148,6 +3148,10 @@ async fn account_lock_serializes_only_consent_ingest_with_admission() {
         .unwrap();
 }
 
+/// A lane tick probes first (idle means zero work with no claim
+/// transaction), and one endpoint's undecryptable signing secret defers only
+/// its own delivery: the healthy endpoint still delivers in the same tick
+/// (#487).
 #[tokio::test]
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn lane_batch_survives_an_undecryptable_endpoint_secret() {
@@ -3339,4 +3343,365 @@ async fn lane_batch_survives_an_undecryptable_endpoint_secret() {
     ))
     .await
     .unwrap();
+}
+
+/// A fresh schema with the webhook dispatch migrations, for the lane and
+/// claim tests below. The caller drops the returned schema.
+async fn webhook_dispatch_schema(prefix: &str) -> (Client, String, String) {
+    let url = std::env::var("ZT_INBOUND_TEST_DATABASE_URL")
+        .expect("set ZT_INBOUND_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let (db, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let schema = format!("{prefix}_{}", Uuid::new_v4().simple());
+    db.batch_execute(&format!(
+        "CREATE SCHEMA {schema}; SET search_path TO {schema}"
+    ))
+    .await
+    .unwrap();
+    for migration in [
+        include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
+        include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+        include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
+        include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
+        include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+        include_str!("../../../../deploy/compose/migrations/006_usage_metering.sql"),
+        include_str!("../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"),
+        include_str!("../../../../deploy/compose/migrations/009_webhook_manual_replay.sql"),
+        include_str!("../../../../deploy/compose/migrations/015_webhook_kek_commitments.sql"),
+        include_str!("../../../../deploy/compose/migrations/029_webhook_dispatch_fairness.sql"),
+    ] {
+        db.batch_execute(migration).await.unwrap();
+    }
+    (db, schema, url)
+}
+
+async fn drop_webhook_dispatch_schema(db: &Client, schema: &str) {
+    db.batch_execute(&format!(
+        "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
+    ))
+    .await
+    .unwrap();
+}
+
+/// Seal a signing secret the lane vault can open for this endpoint.
+async fn seal_endpoint_secret(
+    db: &Client,
+    vault: &crate::webhook_worker::WebhookSecretVault,
+    account: Uuid,
+    endpoint: Uuid,
+) {
+    let sealed = vault
+        .seal(account, endpoint, &crate::test_keys::key(8))
+        .unwrap();
+    db.execute(
+        "UPDATE webhook_endpoints SET signing_secret_ciphertext=$2 WHERE id=$1",
+        &[&endpoint, &sealed],
+    )
+    .await
+    .unwrap();
+}
+
+fn lane_vault() -> crate::webhook_worker::WebhookSecretVault {
+    crate::webhook_worker::WebhookSecretVault::new(
+        1,
+        zeroize::Zeroizing::new(crate::test_keys::key(7)),
+    )
+    .unwrap()
+}
+
+/// Put one delivery into the state a worker leaves when it crashes (or is
+/// still running): leased with attempt 1 open.
+async fn lease_delivery_as(db: &Client, delivery: Uuid, owner: &str, lease_until_sql: &str) {
+    db.execute(
+        &format!(
+            "UPDATE webhook_deliveries SET status='leased',attempt_count=1,lease_owner=$2, \
+             lease_until={lease_until_sql} WHERE id=$1"
+        ),
+        &[&delivery, &owner],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO webhook_attempts(id,delivery_id,generation,attempt_number) \
+         SELECT $1,id,generation,1 FROM webhook_deliveries WHERE id=$2",
+        &[&Uuid::new_v4(), &delivery],
+    )
+    .await
+    .unwrap();
+}
+
+/// An idle lane must still recover a lease a crashed worker left behind.
+/// Nothing is pending and due, so only the expired lease makes the tick
+/// non-idle; the next tick closes the attempt as a timeout and reschedules
+/// the delivery without dispatching it.
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn idle_lane_tick_recovers_an_expired_lease() {
+    let (mut db, schema, _url) = webhook_dispatch_schema("webhook_idle_recovery").await;
+    let account = Uuid::new_v4();
+    let endpoint = seed_dispatch_account(&db, account, 1, 1).await[0];
+    let delivery: Uuid = db
+        .query_one(
+            "SELECT id FROM webhook_deliveries WHERE endpoint_id=$1",
+            &[&endpoint],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    lease_delivery_as(&db, delivery, "crashed-worker", "now()-interval '1 second'").await;
+    let vault = lane_vault();
+    let processed = crate::webhook_worker::dispatch_lane_batch_with(
+        &mut db,
+        &vault,
+        "idle-lane",
+        16,
+        |_url, _body, _secret| async move {
+            panic!("a recovered lease is rescheduled, not dispatched in the same tick");
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(processed, 0);
+    let row = db
+        .query_one(
+            "SELECT d.status,d.lease_owner,d.attempt_count,d.next_attempt_at>now(), \
+             a.outcome,a.completed_at IS NOT NULL \
+             FROM webhook_deliveries d JOIN webhook_attempts a ON a.delivery_id=d.id \
+             WHERE d.id=$1",
+            &[&delivery],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        row.get::<_, String>(0),
+        "pending",
+        "an idle tick recovers the expired lease"
+    );
+    assert_eq!(row.get::<_, Option<String>>(1), None);
+    assert_eq!(row.get::<_, i16>(2), 1, "recovery does not reset attempts");
+    assert!(row.get::<_, bool>(3), "the retry is backed off");
+    assert_eq!(row.get::<_, Option<String>>(4).as_deref(), Some("timeout"));
+    assert!(row.get::<_, bool>(5));
+    drop_webhook_dispatch_schema(&db, &schema).await;
+}
+
+/// A lease that has not expired belongs to a live worker. Neither an idle
+/// tick nor a tick that recovers and drains other work may take it back.
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn lane_tick_leaves_an_unexpired_lease_alone() {
+    let (mut db, schema, _url) = webhook_dispatch_schema("webhook_live_lease").await;
+    let vault = lane_vault();
+    let live_account = Uuid::new_v4();
+    let live_endpoint = seed_dispatch_account(&db, live_account, 1, 1).await[0];
+    let live: Uuid = db
+        .query_one(
+            "SELECT id FROM webhook_deliveries WHERE endpoint_id=$1",
+            &[&live_endpoint],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    lease_delivery_as(&db, live, "live-worker", "now()+interval '30 seconds'").await;
+    let live_lease = "SELECT status,lease_owner,attempt_count FROM webhook_deliveries WHERE id=$1";
+    // Only the live lease exists: the tick is idle and must not touch it.
+    assert_eq!(
+        crate::webhook_worker::dispatch_lane_batch_with(
+            &mut db,
+            &vault,
+            "idle-lane",
+            16,
+            |_url, _body, _secret| async move {
+                panic!("an idle lane must not dispatch");
+            },
+        )
+        .await
+        .unwrap(),
+        0
+    );
+    // Another account now has due work, so the next tick recovers expired
+    // leases and drains; the live lease must survive that sweep too.
+    let busy_account = Uuid::new_v4();
+    let busy_endpoint = seed_dispatch_account(&db, busy_account, 1, 1).await[0];
+    seal_endpoint_secret(&db, &vault, busy_account, busy_endpoint).await;
+    let processed = crate::webhook_worker::dispatch_lane_batch_with(
+        &mut db,
+        &vault,
+        "lane-1",
+        16,
+        |_url, _body, _secret| async move {
+            Ok(crate::webhook_egress::DeliveryResponse {
+                status: 204,
+                acknowledged: true,
+            })
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(processed, 1, "only the other account's delivery is sent");
+    let row = db.query_one(live_lease, &[&live]).await.unwrap();
+    assert_eq!(
+        (
+            row.get::<_, String>(0),
+            row.get::<_, Option<String>>(1),
+            row.get::<_, i16>(2)
+        ),
+        ("leased".to_string(), Some("live-worker".to_string()), 1),
+        "a live worker's lease is not recovered"
+    );
+    let open: i64 = db
+        .query_one(
+            "SELECT count(*) FROM webhook_attempts WHERE delivery_id=$1 AND completed_at IS NULL",
+            &[&live],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(open, 1, "the live attempt stays open");
+    let busy: String = db
+        .query_one(
+            "SELECT status FROM webhook_deliveries WHERE endpoint_id=$1",
+            &[&busy_endpoint],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(busy, "succeeded");
+    drop_webhook_dispatch_schema(&db, &schema).await;
+}
+
+/// A retry that has come due is the only work anywhere: no fresh delivery
+/// (attempt_count 0) is due. The probe must still see it and the tick must
+/// send it.
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn lane_tick_dispatches_a_due_retry_when_nothing_fresh_is_due() {
+    let (mut db, schema, _url) = webhook_dispatch_schema("webhook_due_retry").await;
+    let vault = lane_vault();
+    let account = Uuid::new_v4();
+    let endpoint = seed_dispatch_account(&db, account, 1, 1).await[0];
+    seal_endpoint_secret(&db, &vault, account, endpoint).await;
+    // Three earlier attempts failed and were closed; the fourth is due now.
+    let delivery: Uuid = db
+        .query_one(
+            "UPDATE webhook_deliveries SET attempt_count=3,next_attempt_at=now()-interval '1 second' \
+             WHERE endpoint_id=$1 RETURNING id",
+            &[&endpoint],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    for attempt_number in 1_i16..=3 {
+        db.execute(
+            "INSERT INTO webhook_attempts(id,delivery_id,generation,attempt_number,completed_at,outcome) \
+             SELECT $1,id,generation,$3,now()-interval '1 hour','network_error' \
+             FROM webhook_deliveries WHERE id=$2",
+            &[&Uuid::new_v4(), &delivery, &attempt_number],
+        )
+        .await
+        .unwrap();
+    }
+    let sent = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = sent.clone();
+    let processed = crate::webhook_worker::dispatch_lane_batch_with(
+        &mut db,
+        &vault,
+        "lane-1",
+        16,
+        move |_url, _body, _secret| {
+            let seen = seen.clone();
+            async move {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(crate::webhook_egress::DeliveryResponse {
+                    status: 204,
+                    acknowledged: true,
+                })
+            }
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(processed, 1, "the due retry makes the tick non-idle");
+    assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let row = db
+        .query_one(
+            "SELECT status,attempt_count FROM webhook_deliveries WHERE id=$1",
+            &[&delivery],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        (row.get::<_, String>(0), row.get::<_, i16>(1)),
+        ("succeeded".to_string(), 4)
+    );
+    drop_webhook_dispatch_schema(&db, &schema).await;
+}
+
+/// Seed one account with two due endpoints and return them in claim order
+/// (both cursors start at 0, so the lower id is tried first).
+async fn two_due_endpoints(db: &Client) -> (Uuid, Uuid) {
+    let account = Uuid::new_v4();
+    let mut endpoints = seed_dispatch_account(db, account, 2, 2).await;
+    endpoints.sort();
+    (endpoints[0], endpoints[1])
+}
+
+/// An endpoint that already holds a lease is skipped even though it sorts
+/// first and still has due work; the claim goes to the next endpoint.
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn claim_skips_an_endpoint_that_already_holds_a_lease() {
+    let (mut db, schema, _url) = webhook_dispatch_schema("webhook_claim_leased").await;
+    let (first, second) = two_due_endpoints(&db).await;
+    let held: Uuid = db
+        .query_one(
+            "SELECT id FROM webhook_deliveries WHERE endpoint_id=$1 ORDER BY id LIMIT 1",
+            &[&first],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    lease_delivery_as(&db, held, "live-worker", "now()+interval '30 seconds'").await;
+    let lease = claim_webhook(&mut db, "claimer")
+        .await
+        .expect("a leased endpoint is skipped, not claimed a second time")
+        .expect("the other endpoint is due");
+    assert_eq!(lease.endpoint_id, second);
+    drop_webhook_dispatch_schema(&db, &schema).await;
+}
+
+/// An endpoint another worker has locked is skipped rather than waited on.
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn claim_skips_an_endpoint_another_worker_has_locked() {
+    let (mut db, schema, url) = webhook_dispatch_schema("webhook_claim_locked").await;
+    let (first, second) = two_due_endpoints(&db).await;
+    let (mut peer, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    peer.batch_execute(&format!("SET search_path TO {schema}"))
+        .await
+        .unwrap();
+    let peer_tx = peer.transaction().await.unwrap();
+    peer_tx
+        .query_one(
+            "SELECT id FROM webhook_endpoints WHERE id=$1 FOR UPDATE",
+            &[&first],
+        )
+        .await
+        .unwrap();
+    let lease = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        claim_webhook(&mut db, "claimer"),
+    )
+    .await
+    .expect("the claim must skip a locked endpoint, not wait for it")
+    .unwrap()
+    .expect("the unlocked endpoint is due");
+    assert_eq!(lease.endpoint_id, second);
+    peer_tx.rollback().await.unwrap();
+    drop_webhook_dispatch_schema(&db, &schema).await;
 }

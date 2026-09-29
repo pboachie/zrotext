@@ -774,14 +774,25 @@ fn retry_delay(attempt_count: i16) -> Option<i32> {
         .copied()
 }
 
-/// One indexed probe answered by `webhook_deliveries_due`: false means no
-/// delivery anywhere is claimable, so an idle lane tick opens no claim
-/// transaction and scans no accounts.
-pub async fn webhook_due_exists(client: &Client) -> Result<bool, InboundError> {
+/// One probe statement with two index arms: a due pending delivery
+/// (`webhook_deliveries_due`) or an expired lease a crashed worker left behind
+/// (`webhook_expired_leases`). False means the lane has nothing to claim and
+/// nothing to recover, so an idle tick opens no transaction and scans no
+/// accounts. The first arm stops at its first due row; an idle tick reads the
+/// head of both partial indexes. Each arm orders by its index key so the
+/// planner stays on the index instead of choosing a sequential scan under a
+/// large pending backlog; a plain OR of the two predicates falls back to one.
+pub async fn webhook_lane_has_work(client: &Client) -> Result<bool, InboundError> {
     Ok(client
         .query_opt(
-            "SELECT 1 FROM webhook_deliveries \
-         WHERE status='pending' AND next_attempt_at<=now() AND attempt_count<7 LIMIT 1",
+            "(SELECT 1 FROM webhook_deliveries \
+              WHERE status='pending' AND next_attempt_at<=now() AND attempt_count<7 \
+              ORDER BY next_attempt_at LIMIT 1) \
+             UNION ALL \
+             (SELECT 1 FROM webhook_deliveries \
+              WHERE status='leased' AND lease_until<=now() \
+              ORDER BY lease_until LIMIT 1) \
+             LIMIT 1",
             &[],
         )
         .await?
@@ -878,18 +889,22 @@ pub async fn claim_webhook(
         return Ok(None);
     };
     let account_id: Uuid = account.get(0);
-    // One pick joins the endpoint cursor order with its earliest due
-    // delivery. Only the endpoint row is locked: holding it until commit is
+    // One pick takes the endpoint cursor order and, per endpoint, only its
+    // earliest due delivery through `webhook_deliveries_endpoint_due`, so the
+    // sort sees one row per endpoint rather than the account's whole due
+    // backlog. Only the endpoint row is locked: holding it until commit is
     // what keeps a second worker off this endpoint, exactly like the
     // two-step pick did.
     let pick = tx
         .query_typed_opt(
             "SELECT e.id,d.id,d.event_id,d.generation,d.attempt_count \
-             FROM webhook_endpoints e JOIN webhook_deliveries d ON d.endpoint_id=e.id \
+             FROM webhook_endpoints e CROSS JOIN LATERAL ( \
+               SELECT d.id,d.event_id,d.generation,d.attempt_count FROM webhook_deliveries d \
+               WHERE d.endpoint_id=e.id AND d.status='pending' AND d.next_attempt_at<=now() \
+               AND d.attempt_count<7 ORDER BY d.next_attempt_at,d.id LIMIT 1) d \
              WHERE e.account_id=$1 AND e.enabled AND e.paused_at IS NULL AND NOT EXISTS ( \
              SELECT 1 FROM webhook_deliveries l WHERE l.endpoint_id=e.id AND l.status='leased') \
-             AND d.status='pending' AND d.next_attempt_at<=now() AND d.attempt_count<7 \
-             ORDER BY e.last_claim_seq,e.id,d.next_attempt_at,d.id \
+             ORDER BY e.last_claim_seq,e.id \
              FOR UPDATE OF e SKIP LOCKED LIMIT 1",
             &[(&account_id, Type::UUID)],
         )
@@ -906,7 +921,9 @@ pub async fn claim_webhook(
     let attempt_id = Uuid::new_v4();
     // One statement leases the delivery, opens its attempt row, takes the
     // fairness sequence and advances both cursors. The status guard makes a
-    // lost race impossible to double-lease; an empty claim advances nothing.
+    // lost race impossible to double-lease; an empty claim advances nothing
+    // and returns no row, so the caller sees None rather than a lease it
+    // does not hold.
     let leased = tx
         .query_typed_opt(
             "WITH claim AS ( \
@@ -924,7 +941,7 @@ pub async fn claim_webhook(
              endpoint_cursor AS ( \
                UPDATE webhook_endpoints SET last_claim_seq=seq.claim_seq FROM seq \
                WHERE id=$7 AND EXISTS (SELECT 1 FROM claim)) \
-             SELECT (SELECT 1 FROM claim)",
+             SELECT 1 FROM claim",
             &[
                 (&delivery_id, Type::UUID),
                 (&worker_id, Type::TEXT),
