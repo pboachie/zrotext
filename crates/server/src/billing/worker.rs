@@ -368,10 +368,22 @@ impl StripeTestWorker {
         // unreachable Stripe must not hold one of the worker slots. The
         // claim's 30-second retry window keeps the row owned meanwhile.
         drop(db);
-        let fetched = self.fetch_subscription(&subscription_id).await;
+        let fetched = match self.fetch_subscription(&subscription_id).await {
+            Ok(snapshot) if snapshot.subscription_id == subscription_id => Ok(snapshot),
+            Err(BillingError::Provider(ProviderFailure::HttpStatus(404))) => Err(None),
+            result => {
+                let error = result
+                    .err()
+                    .unwrap_or(BillingError::Provider(ProviderFailure::InvalidResponse));
+                // Record the failure, and with it any provider pause, before
+                // reconnecting: a failed reconnect must not lose the pause.
+                let class = self.record_failure(&error, &subscription_id, "subscription");
+                Err(Some((error, class)))
+            }
+        };
         let mut db = crate::runtime_db::connect_worker(database_url).await?;
         match fetched {
-            Ok(snapshot) if snapshot.subscription_id == subscription_id => {
+            Ok(snapshot) => {
                 self.subscription_authorized.store(true, Ordering::Release);
                 self.provider_recovered(&mut db).await;
                 if let Err(error) = reconcile_snapshot_with_quotas(
@@ -397,7 +409,7 @@ impl StripeTestWorker {
                     return Err(error);
                 }
             }
-            Err(BillingError::Provider(ProviderFailure::HttpStatus(404))) => {
+            Err(None) => {
                 self.subscription_authorized.store(true, Ordering::Release);
                 self.provider_recovered(&mut db).await;
                 diagnostic(
@@ -426,11 +438,7 @@ impl StripeTestWorker {
                     return Err(error);
                 }
             }
-            result => {
-                let error = result
-                    .err()
-                    .unwrap_or(BillingError::Provider(ProviderFailure::InvalidResponse));
-                let class = self.record_failure(&error, &subscription_id, "subscription");
+            Err(Some((error, class))) => {
                 let state = if let Some(delay_secs) = self.provider_wide_delay_secs(&error) {
                     defer_provider_wide(&db, &subscription_id, generation, class, delay_secs)
                         .await?
@@ -483,15 +491,31 @@ impl StripeTestWorker {
             Ok(charge)
         }
         .await;
-        let mut db = crate::runtime_db::connect_worker(database_url).await?;
         let charge = match charge {
             Ok(charge) => charge,
-            Err(error) => return self.risk_failure(&db, &event_id, error).await,
+            Err(error) => {
+                // Pause before reconnecting so a failed reconnect cannot
+                // lose it.
+                let class = self.record_failure(&error, &event_id, "risk");
+                let db = crate::runtime_db::connect_worker(database_url).await?;
+                return self
+                    .risk_failure_recorded(&db, &event_id, &error, class)
+                    .await;
+            }
         };
-        if !risk::bind_charge_customer(&mut db, &event_id, &charge.customer_id).await? {
-            return self
-                .risk_failure(&db, &event_id, BillingError::InvalidEvent)
-                .await;
+        let mut db = crate::runtime_db::connect_worker(database_url).await?;
+        match risk::bind_charge_customer(&mut db, &event_id, &charge.customer_id).await {
+            Ok(true) => {}
+            Ok(false) => {
+                return self
+                    .risk_failure(&db, &event_id, BillingError::InvalidEvent)
+                    .await;
+            }
+            Err(error) if matches!(error, BillingError::Database(_)) => return Err(error),
+            // A tenant conflict (or an invalid pointer) is a row-level
+            // failure: back off and reach review at the cap instead of
+            // being re-claimed every 30 seconds forever.
+            Err(error) => return self.risk_failure(&db, &event_id, error).await,
         }
         if kind == "refund" && charge.amount_refunded == 0 {
             return self
@@ -510,8 +534,11 @@ impl StripeTestWorker {
         {
             Ok(subscription) => subscription,
             Err(error) => {
+                let class = self.record_failure(&error, &event_id, "risk");
                 let db = crate::runtime_db::connect_worker(database_url).await?;
-                return self.risk_failure(&db, &event_id, error).await;
+                return self
+                    .risk_failure_recorded(&db, &event_id, &error, class)
+                    .await;
             }
         };
         let mut db = crate::runtime_db::connect_worker(database_url).await?;
@@ -546,7 +573,20 @@ impl StripeTestWorker {
         error: BillingError,
     ) -> Result<JobOutcome, BillingError> {
         let class = self.record_failure(&error, event_id, "risk");
-        let state = if let Some(delay_secs) = self.provider_wide_delay_secs(&error) {
+        self.risk_failure_recorded(db, event_id, &error, class)
+            .await
+    }
+
+    /// The database half of `risk_failure`, for callers that already
+    /// recorded the failure (and set any pause) before reconnecting.
+    async fn risk_failure_recorded(
+        &self,
+        db: &crate::runtime_db::PooledClient,
+        event_id: &str,
+        error: &BillingError,
+        class: &'static str,
+    ) -> Result<JobOutcome, BillingError> {
+        let state = if let Some(delay_secs) = self.provider_wide_delay_secs(error) {
             risk::defer_provider_wide(db, event_id, class, delay_secs).await?
         } else {
             risk::backoff(db, event_id, class).await?
@@ -556,7 +596,7 @@ impl StripeTestWorker {
         }
         // A provider read, unresolved binding or attribution failure
         // is retained for retry and later review.
-        Ok(self.outcome_for(&error))
+        Ok(self.outcome_for(error))
     }
 
     async fn fetch_subscription(
@@ -995,6 +1035,46 @@ mod tests {
         assert!(worker.provider_paused());
         assert!(worker.authorization_state().1.load(Ordering::Acquire));
         server.abort();
+        setup
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+    async fn postgres_risk_tenant_conflict_backs_off_to_review() {
+        const CHARGE: &str = r#"{"id":"ch_conflict1","object":"charge","livemode":false,"customer":"cus_conflict1","payment_intent":"pi_conflict1","amount_refunded":100}"#;
+        let (setup, db, scoped_url, schema) = billing_schema("billing_risk_conflict").await;
+        queued_risk_event(&db, "evt_conflict1", "ch_conflict1", "cus_conflict1").await;
+        // The signed event names another customer than the current Charge.
+        db.execute(
+            "UPDATE billing_events SET stripe_customer_id='cus_other1' WHERE stripe_event_id='evt_conflict1'",
+            &[],
+        )
+        .await
+        .unwrap();
+        let worker = test_worker(fake_provider(200, CHARGE).await);
+        assert_eq!(
+            worker.reconcile_risk_one(&scoped_url).await.unwrap(),
+            JobOutcome::WorkDone
+        );
+        assert!(!worker.provider_paused());
+        let row = db.query_one("SELECT failed_attempts,state,last_failure_class,next_attempt_at>now()+interval '50 seconds' FROM billing_risk_events WHERE stripe_event_id='evt_conflict1'", &[]).await.unwrap();
+        assert_eq!(row.get::<_, i32>(0), 1, "tenant conflict must count");
+        assert_eq!(row.get::<_, String>(1), "queued");
+        assert_eq!(row.get::<_, String>(2), "local");
+        assert!(row.get::<_, bool>(3), "row-level backoff, not the claim");
+        db.execute("UPDATE billing_risk_events SET failed_attempts=9,next_attempt_at=now() WHERE stripe_event_id='evt_conflict1'", &[]).await.unwrap();
+        let worker = test_worker(fake_provider(200, CHARGE).await);
+        assert_eq!(
+            worker.reconcile_risk_one(&scoped_url).await.unwrap(),
+            JobOutcome::WorkDone
+        );
+        let row = db.query_one("SELECT failed_attempts,state,last_failure_class FROM billing_risk_events WHERE stripe_event_id='evt_conflict1'", &[]).await.unwrap();
+        assert_eq!(row.get::<_, i32>(0), 10);
+        assert_eq!(row.get::<_, String>(1), "needs_review");
+        assert_eq!(row.get::<_, String>(2), "local");
         setup
             .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
             .await
