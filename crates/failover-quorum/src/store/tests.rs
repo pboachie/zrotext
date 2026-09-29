@@ -68,8 +68,12 @@ fn evidence(member_id: &str, at_ms: u64) -> MemberReport {
     }
 }
 
-/// Scratch directory under the system temp dir; removed on drop, clearing
-/// read-only attributes first so Windows can delete the files.
+/// Scratch directory removed on drop, clearing read-only attributes first so
+/// Windows can delete the files. The root is derived only from the
+/// compile-time manifest directory — never from an environment variable,
+/// argument or the system temp dir — under the workspace `target/`, which
+/// Git ignores; the name is a fixed per-test label plus a process-unique
+/// suffix.
 struct TempDir(PathBuf);
 
 impl TempDir {
@@ -80,10 +84,9 @@ impl TempDir {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_nanos())
             .unwrap_or(0);
-        let path = std::env::temp_dir().join(format!(
-            "zrotext-failover-store-{label}-{}-{unique}-{nanos}",
-            std::process::id()
-        ));
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/zrotext-failover-store-tests");
+        let path = root.join(format!("{label}-{}-{unique}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&path).expect("create scratch store directory");
         Self(path)
     }

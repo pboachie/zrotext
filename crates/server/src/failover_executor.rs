@@ -88,6 +88,20 @@ impl ExecutorEnv {
             .filter(|dir| !dir.is_empty())
             .ok_or("FAILOVER_QUORUM_STORE_DIR is required when FAILOVER_QUORUM_ENABLED=true")?
             .to_owned();
+        // An operator-configured path, never a request-derived one; it must
+        // still name one unambiguous location: absolute, with no `.` or `..`
+        // component that could resolve somewhere other than it reads.
+        // Segments are checked on the raw value (both separators), because
+        // `Path::components` silently drops an interior `.`.
+        let dot_segment = store_dir
+            .split(['/', '\\'])
+            .any(|segment| segment == "." || segment == "..");
+        if !Path::new(&store_dir).is_absolute() || dot_segment {
+            return Err(
+                "FAILOVER_QUORUM_STORE_DIR must be an absolute path without . or .. components"
+                    .to_owned(),
+            );
+        }
         let config =
             FailoverConfig::new(policy.members().to_vec(), writer_site_id, standby_site_id)?;
         Ok(Some(Self {

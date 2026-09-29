@@ -106,15 +106,34 @@ fn executor_env_requires_a_consensus_store_directory_when_enabled() {
     );
 }
 
+/// A platform-absolute directory derived only from the compile-time
+/// manifest directory (the Git-ignored workspace `target/`), so the tests
+/// need no machine-specific path literal. Parsing never touches it.
+fn absolute_root() -> PathBuf {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target");
+    std::fs::create_dir_all(&root).expect("create workspace target directory");
+    root.canonicalize()
+        .expect("canonical workspace target directory")
+}
+
+fn absolute_dir(leaf: &str) -> String {
+    absolute_root()
+        .join(leaf)
+        .to_str()
+        .expect("utf-8 workspace path")
+        .to_owned()
+}
+
 #[test]
 fn executor_env_enabled_builds_a_validated_configuration() {
+    let store_dir = absolute_dir("failover-store");
     let env = ExecutorEnv::parse(
         Some("true"),
         Some("workload-a, workload-b, witness"),
         Some("site-a"),
         Some("site-b"),
         None,
-        Some("/var/lib/zrotext/failover-store"),
+        Some(&store_dir),
     )
     .unwrap()
     .unwrap();
@@ -125,22 +144,53 @@ fn executor_env_enabled_builds_a_validated_configuration() {
     );
     assert_eq!(env.config().writer_site_id(), "site-a");
     assert_eq!(env.config().standby_site_id(), "site-b");
-    assert_eq!(
-        env.store_dir(),
-        std::path::Path::new("/var/lib/zrotext/failover-store")
-    );
+    assert_eq!(env.store_dir(), std::path::Path::new(&store_dir));
+    // The value is taken literally: no variable expansion.
+    let literal_dir = absolute_dir("${STORE_DIR}");
     let env = ExecutorEnv::parse(
         Some("true"),
         Some("workload-a,workload-b,witness"),
         Some("site-a"),
         Some("site-b"),
         Some("250"),
-        Some("D:/${STORE_DIR}"),
+        Some(&literal_dir),
     )
     .unwrap()
     .unwrap();
     assert_eq!(env.check_interval_ms(), 250);
-    assert_eq!(env.store_dir(), std::path::Path::new("D:/${STORE_DIR}"));
+    assert_eq!(env.store_dir(), std::path::Path::new(&literal_dir));
+}
+
+#[test]
+fn executor_env_refuses_a_relative_or_dot_segment_store_directory() {
+    let root = absolute_dir("zrotext");
+    let separator = std::path::MAIN_SEPARATOR;
+    let refused = [
+        "failover-store".to_owned(),
+        "./failover-store".to_owned(),
+        ".\\failover-store".to_owned(),
+        "../failover-store".to_owned(),
+        format!("{root}{separator}..{separator}failover-store"),
+        format!("{root}{separator}.{separator}failover-store"),
+        format!("{root}/../failover-store"),
+        format!("{root}/./failover-store"),
+        format!("{root}{separator}.."),
+    ];
+    for dir in &refused {
+        let error = ExecutorEnv::parse(
+            Some("true"),
+            Some("a,b,c"),
+            Some("a"),
+            Some("b"),
+            None,
+            Some(dir),
+        )
+        .expect_err(dir);
+        assert!(
+            error.contains("absolute path"),
+            "{dir:?} must be refused as a store directory, got {error:?}"
+        );
+    }
 }
 
 #[test]
@@ -161,7 +211,11 @@ fn spawn_returns_none_and_spawns_nothing_while_disabled() {
     );
 }
 
-/// A scratch store directory under the system temp dir, removed on drop.
+/// A scratch store directory, removed on drop. The root is derived only from
+/// the compile-time manifest directory — never from an environment variable,
+/// argument or the system temp dir — under the workspace `target/`, which
+/// Git ignores. It is canonicalized so it satisfies the executor's
+/// absolute-path, no-`..` store-directory rule.
 struct ScratchDir(PathBuf);
 
 impl ScratchDir {
@@ -170,10 +224,13 @@ impl ScratchDir {
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_nanos())
             .unwrap_or(0);
-        let path = std::env::temp_dir().join(format!(
-            "zrotext-failover-executor-{label}-{}-{nanos}",
-            std::process::id()
-        ));
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/zrotext-failover-executor-tests");
+        std::fs::create_dir_all(&root).expect("create scratch root");
+        let path = root
+            .canonicalize()
+            .expect("canonical scratch root")
+            .join(format!("{label}-{}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&path).expect("create scratch directory");
         Self(path)
     }
