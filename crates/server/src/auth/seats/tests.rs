@@ -724,6 +724,60 @@ async fn expired_unverified_observers_are_pending_user_pruning() {
     f.finish().await;
 }
 
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; disposable observer seat schema"]
+async fn a_fresh_observer_principal_never_passes_an_owner_precheck() {
+    let mut f = Fixture::new(true).await;
+    let issued = create_invitation(&mut f.db, &f.hasher, &f.owner, "observer@example.test")
+        .await
+        .unwrap();
+    let credentials = accept_and_verify(
+        &mut f.db,
+        &f.hasher,
+        &issued.token,
+        &f.password,
+        "observer@example.test",
+    )
+    .await;
+    // `authenticate_session` hands each principal a single-use shortcut in
+    // place of one unlocked recheck. Each owner precheck below therefore gets
+    // its own freshly authenticated observer, so a missing role check would
+    // wave it through on that shortcut.
+    let fresh = || async {
+        auth::authenticate_session(&f.db, &f.hasher, &credentials.token)
+            .await
+            .unwrap()
+    };
+    let observer = fresh().await;
+    assert_eq!(observer.role, Role::Observer);
+    assert!(matches!(
+        auth::list_api_keys(&f.db, &observer, None).await,
+        Err(AuthError::Unauthorized)
+    ));
+    let observer = fresh().await;
+    assert!(matches!(
+        auth::revoke_api_key(&f.db, &observer, Uuid::new_v4()).await,
+        Err(AuthError::Unauthorized)
+    ));
+    let observer = fresh().await;
+    assert!(matches!(
+        crate::enrollment::pairing_view(&f.db, &observer, Uuid::new_v4()).await,
+        Err(crate::enrollment::EnrollmentError::Unauthorized)
+    ));
+    // The member checks stay open to the same observer, on the shortcut and
+    // on the recheck alike.
+    let observer = fresh().await;
+    assert!(auth::account::list_sessions(&f.db, &observer).await.is_ok());
+    assert!(auth::account::list_sessions(&f.db, &observer).await.is_ok());
+    let observer = fresh().await;
+    assert!(
+        crate::enrollment::list_account_devices(&f.db, &observer, None)
+            .await
+            .is_ok()
+    );
+    f.finish().await;
+}
+
 /// The complete owner and invitee browser flow over the real HTTP routes:
 /// invite, list, accept, verify, sign in, read device status, and remove.
 #[tokio::test]

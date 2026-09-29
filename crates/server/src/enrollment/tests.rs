@@ -466,6 +466,7 @@ async fn owner_precheck_reuses_one_fresh_validation_and_requeries_after() {
         include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
         include_str!("../../../../deploy/compose/migrations/027_billing_test_config.sql"),
         include_str!("../../../../deploy/compose/migrations/028_billing_provider_failures.sql"),
+        include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
     ] {
         client.batch_execute(sql).await.unwrap();
     }

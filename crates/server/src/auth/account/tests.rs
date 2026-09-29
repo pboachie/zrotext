@@ -1090,6 +1090,7 @@ async fn api_key_issuance_needs_step_up_expires_by_default_and_revoke_others_nee
         include_str!("../../../../../deploy/compose/migrations/013_owner_mfa.sql"),
         include_str!("../../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
         include_str!("../../../../../deploy/compose/migrations/025_account_recovery.sql"),
+        include_str!("../../../../../deploy/compose/migrations/048_observer_memberships.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }
