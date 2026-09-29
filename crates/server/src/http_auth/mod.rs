@@ -43,6 +43,11 @@ pub mod preauth;
 mod seats_http;
 mod sms_lines;
 mod sms_owner_keys;
+pub mod trusted_cidrs;
+
+use std::net::SocketAddr;
+
+pub use trusted_cidrs::TrustedNetworks;
 
 pub(crate) const SESSION_COOKIE: &str = "__Host-zrotext_session";
 pub(crate) const CSRF_COOKIE: &str = "__Host-zrotext_csrf";
@@ -611,6 +616,9 @@ pub struct AuthHttpState {
     pub mfa_enrollment_enabled: bool,
     /// Dormant owner routes for SMS line activation; off by default.
     pub sms_line_activation_enabled: bool,
+    /// Operator-configured networks trusted for the password-reset request
+    /// lane. Empty unless configured; never grants any other route.
+    pub reset_trusted_networks: Arc<TrustedNetworks>,
 }
 
 impl preauth::OwnerAuthState for AuthHttpState {
@@ -651,6 +659,7 @@ impl AuthHttpState {
             mfa_cipher: None,
             mfa_enrollment_enabled: false,
             sms_line_activation_enabled: false,
+            reset_trusted_networks: Arc::new(TrustedNetworks::default()),
         })
     }
 
@@ -666,6 +675,13 @@ impl AuthHttpState {
 
     pub fn with_sms_line_activation_enabled(mut self) -> Self {
         self.sms_line_activation_enabled = true;
+        self
+    }
+
+    /// Trust the configured networks for the reset request lane. Invalid
+    /// configuration is a startup error, never a silently trusted network.
+    pub fn with_reset_trusted_networks(mut self, networks: TrustedNetworks) -> Self {
+        self.reset_trusted_networks = Arc::new(networks);
         self
     }
 
@@ -862,6 +878,31 @@ fn require_origin(headers: &HeaderMap, expected: &str) -> Result<(), AuthHttpErr
     }
 }
 
+/// Every `X-Forwarded-For` line joined in arrival order, or `None` when the
+/// request has no such header. Some proxies append a new header line instead
+/// of extending the first, and a client can inject its own line ahead of the
+/// proxy's, so trusting only the first line would trust the client-controlled
+/// line. Nothing is dropped: a line that is not a visible-ASCII header string
+/// (for example one holding an obs-text byte that an appending proxy merged
+/// with the real client) becomes an empty entry, and empty entries are kept,
+/// so the CIDR walk sees them and fails closed instead of the chain
+/// collapsing onto the proxy's own address.
+fn forwarded_for_chain(headers: &HeaderMap) -> Option<String> {
+    let mut lines = headers
+        .get_all("x-forwarded-for")
+        .iter()
+        .map(|value| value.to_str().unwrap_or(""))
+        .peekable();
+    lines.peek()?;
+    Some(
+        lines
+            .flat_map(|value| value.split(','))
+            .map(str::trim)
+            .collect::<Vec<_>>()
+            .join(","),
+    )
+}
+
 fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     headers
         .get_all(header::COOKIE)
@@ -870,6 +911,29 @@ fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
         .flat_map(|line| line.split(';'))
         .filter_map(|part| part.trim().split_once('='))
         .find_map(|(key, value)| (key == name).then_some(value))
+}
+
+/// The transport peer of the connection a request arrived on, when the server
+/// was started with connection info (tests and non-HTTP callers may have
+/// none). This is the only address the reset lane trusts on its own;
+/// `X-Forwarded-For` is consulted only when this peer is a configured
+/// trusted proxy.
+struct PeerAddr(Option<SocketAddr>);
+
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for PeerAddr {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(Self(
+            parts
+                .extensions
+                .get::<axum::extract::ConnectInfo<SocketAddr>>()
+                .map(|info| info.0),
+        ))
+    }
 }
 
 /// The database-free first step of [`require_owner`]. Owner handlers call it
@@ -1322,6 +1386,7 @@ async fn login(
     if known_client.is_none() {
         remember_login_client(&state.hasher, &body.email, &mut response)?;
     }
+    remember_trusted_browser(&state, &client, &credentials, &headers, &mut response).await;
     Ok(response)
 }
 
@@ -1340,6 +1405,48 @@ fn remember_login_client(
         );
     }
     Ok(())
+}
+
+/// Set the trusted-browser cookie after a completed sign-in, bound to the
+/// session's user, account, and current password hash. A browser that already
+/// holds a valid cookie for this owner keeps it, so repeated sign-ins do not
+/// mint fresh trust. Best effort: a lookup failure must not undo a sign-in.
+async fn remember_trusted_browser(
+    state: &AuthHttpState,
+    client: &Client,
+    credentials: &auth::SessionCredentials,
+    headers: &HeaderMap,
+    response: &mut Response,
+) {
+    let Ok(Some(owner)) = auth::session_owner(client, credentials.id).await else {
+        return;
+    };
+    let now = SystemTime::now();
+    let already_trusted = cookie(headers, auth::TRUSTED_BROWSER_COOKIE).is_some_and(|value| {
+        auth::trusted_browser_valid(
+            &state.hasher,
+            value,
+            owner.user_id,
+            owner.account_id,
+            owner.trusted_browser_epoch,
+            &owner.password_hash,
+            now,
+        )
+    });
+    if already_trusted {
+        return;
+    }
+    let value = auth::trusted_browser_cookie(
+        &state.hasher,
+        owner.user_id,
+        owner.account_id,
+        owner.trusted_browser_epoch,
+        &owner.password_hash,
+        now,
+    );
+    if let Ok(value) = HeaderValue::from_str(&value) {
+        response.headers_mut().append(header::SET_COOKIE, value);
+    }
 }
 
 #[derive(Serialize)]
@@ -1390,6 +1497,7 @@ async fn complete_mfa_login(
     {
         remember_login_client(&state.hasher, &email, &mut response)?;
     }
+    remember_trusted_browser(&state, &client, &credentials, &headers, &mut response).await;
     Ok(response)
 }
 
@@ -1601,6 +1709,7 @@ struct ResetRequestBody {
 async fn request_password_reset(
     State(state): State<Arc<AuthHttpState>>,
     headers: HeaderMap,
+    peer: PeerAddr,
     ApiJson(body): ApiJson<ResetRequestBody>,
 ) -> Result<StatusCode, AuthHttpError> {
     require_origin(&headers, &state.canonical_origin)?;
@@ -1609,8 +1718,17 @@ async fn request_password_reset(
     }
     let mut client = connect(&state.database_url).await?;
     let subject = auth::normalize_email(&body.email).ok();
+    // Evidence beyond naming the address: a trusted-browser cookie (checked
+    // against the probed owner row inside admission) and a transport address
+    // from a trusted network. Neither changes the uniform 202 response.
+    let trust = ResetTrust {
+        trusted_browser: cookie(&headers, auth::TRUSTED_BROWSER_COOKIE),
+        trusted_network: state
+            .reset_trusted_networks
+            .reset_trusted_client(peer.0, forwarded_for_chain(&headers).as_deref()),
+    };
     let admitted = match subject.as_deref() {
-        Some(subject) => admit_password_reset_request(&client, &state.hasher, subject).await,
+        Some(subject) => admit_password_reset_request(&client, &state.hasher, subject, trust).await,
         None => {
             abuse_limits::consume(&client, &state.hasher, Limit::PasswordResetRequest, None).await
         }
@@ -1642,25 +1760,69 @@ fn verified_reset_subject(subject: &str, now: SystemTime) -> String {
     format!("{subject}\0verified\0{window}")
 }
 
+/// The trusted lane's throttle-window subject. It shares the cadence of the
+/// verified lane's window but no counter with it, and it is never spendable
+/// by naming the address: reaching it requires a valid trusted-browser cookie
+/// for that address's owner or a trusted network.
+fn trusted_reset_window_subject(subject: &str, now: SystemTime) -> String {
+    let window = now.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+        / VERIFIED_RESET_WINDOW.as_secs();
+    format!("{subject}\0trusted\0{window}")
+}
+
+/// The trusted lane's daily per-address cap subject. It has the same 12-per-day
+/// cap as the verified lane's daily subject and shares only the route ceiling,
+/// so an email-only attacker exhausting the public lanes cannot reach it.
+fn trusted_reset_daily_subject(subject: &str) -> String {
+    format!("{subject}\0trusted")
+}
+
+/// The verified owner a reset address resolves to, plus the password hash a
+/// trusted-browser cookie is bound to. The row is absent for unknown
+/// addresses.
+struct OwnerResetRow {
+    user_id: Uuid,
+    account_id: Uuid,
+    trusted_browser_epoch: i64,
+    password_hash: String,
+}
+
+/// Everything a reset request can prove beyond naming the address. Both
+/// fields are advisory evidence: they are validated before use and never
+/// change the response shape.
+struct ResetTrust<'a> {
+    /// Raw `__Host-zrotext_trusted_browser` cookie value, if presented.
+    trusted_browser: Option<&'a str>,
+    /// Whether the request's transport address is in a trusted network.
+    trusted_network: bool,
+}
+
 /// Spend the anonymous per-address budget first. When it refuses, a live
 /// verified owner address is charged the verified lane's own subject rather
 /// than the anonymous counter a stranger may have spent, and then the lane's
 /// daily per-address cap (`Limit::PasswordResetVerifiedDaily`, 12 per day),
-/// both before the reset transaction. An unknown address charges the refused
-/// anonymous counter once more and reads its daily budget instead, and a
-/// verified request refused by its window subject also reads the daily budget,
+/// both before the reset transaction. A request that proves more, with a
+/// valid trusted-browser cookie for the probed owner or a trusted network
+/// address, charges the same two statements against the trusted lane's own
+/// subjects instead, so an email-only attacker who spent the public lanes
+/// cannot reach the owner's trusted budget. An unknown address charges the
+/// refused anonymous counter once more and reads its daily budget instead,
+/// and a request refused by its window subject also reads the daily budget,
 /// so every outcome runs the probe and two further counter statements before
-/// the uniform 202. The unknown-address charge admits at most what the
-/// anonymous lane would have.
+/// the uniform 202, whatever evidence it carried. The unknown-address charge
+/// admits at most what the anonymous lane would have.
 async fn admit_password_reset_request(
     client: &Client,
     hasher: &TokenHasher,
     subject: &str,
+    trust: ResetTrust<'_>,
 ) -> Result<bool, tokio_postgres::Error> {
     admit_reset_request_with(
         &ClientResetBudgets { client, hasher },
+        hasher,
         subject,
         SystemTime::now(),
+        trust,
     )
     .await
 }
@@ -1671,11 +1833,15 @@ async fn admit_password_reset_request(
 trait ResetBudgets {
     /// Charge the anonymous per-address counter.
     async fn charge_anonymous(&self, subject: &str) -> Result<bool, tokio_postgres::Error>;
-    /// Whether the address belongs to a verified owner of an enabled account.
-    async fn owner_is_live(&self, subject: &str) -> Result<bool, tokio_postgres::Error>;
-    /// Charge the verified lane's throttle-window subject.
+    /// The verified owner of the address, or `None` when no verified owner of
+    /// a live account holds it.
+    async fn owner_row(
+        &self,
+        subject: &str,
+    ) -> Result<Option<OwnerResetRow>, tokio_postgres::Error>;
+    /// Charge a lane's throttle-window subject.
     async fn charge_window(&self, window_subject: &str) -> Result<bool, tokio_postgres::Error>;
-    /// Charge the verified lane's daily per-address cap.
+    /// Charge a lane's daily per-address cap.
     async fn charge_daily(&self, subject: &str) -> Result<bool, tokio_postgres::Error>;
     /// Read the daily per-address cap without charging it.
     async fn read_daily(&self, subject: &str) -> Result<bool, tokio_postgres::Error>;
@@ -1692,15 +1858,23 @@ impl ResetBudgets for ClientResetBudgets<'_> {
         abuse_limits::consume(self.client, self.hasher, limit, Some(subject)).await
     }
 
-    async fn owner_is_live(&self, subject: &str) -> Result<bool, tokio_postgres::Error> {
+    async fn owner_row(
+        &self,
+        subject: &str,
+    ) -> Result<Option<OwnerResetRow>, tokio_postgres::Error> {
         Ok(self
             .client
-            .query_one(
-                "SELECT EXISTS(SELECT 1 FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE m.role='owner' AND u.email=$1 AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL)",
+            .query_opt(
+                "SELECT u.id,m.account_id,u.password_hash,u.trusted_browser_epoch FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE m.role='owner' AND u.email=$1 AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL",
                 &[&subject],
             )
             .await?
-            .get::<_, bool>(0))
+            .map(|row| OwnerResetRow {
+                user_id: row.get(0),
+                account_id: row.get(1),
+                password_hash: row.get(2),
+                trusted_browser_epoch: row.get(3),
+            }))
     }
 
     async fn charge_window(&self, window_subject: &str) -> Result<bool, tokio_postgres::Error> {
@@ -1724,28 +1898,49 @@ impl ResetBudgets for ClientResetBudgets<'_> {
 
 async fn admit_reset_request_with(
     budgets: &impl ResetBudgets,
+    hasher: &TokenHasher,
     subject: &str,
     now: SystemTime,
+    trust: ResetTrust<'_>,
 ) -> Result<bool, tokio_postgres::Error> {
     if budgets.charge_anonymous(subject).await? {
         return Ok(true);
     }
-    if budgets.owner_is_live(subject).await? {
-        if budgets
-            .charge_window(&verified_reset_subject(subject, now))
-            .await?
-        {
-            // Charged only after the window subject admits, so requests the
-            // window already refuses do not spend the owner's daily cap.
-            return budgets.charge_daily(subject).await;
-        }
-        budgets.read_daily(subject).await?;
-        Ok(false)
-    } else {
+    let Some(owner) = budgets.owner_row(subject).await? else {
         let admitted = budgets.charge_anonymous(subject).await?;
         budgets.read_daily(subject).await?;
-        Ok(admitted)
+        return Ok(admitted);
+    };
+    let trusted = trust.trusted_network
+        || trust.trusted_browser.is_some_and(|value| {
+            auth::trusted_browser_valid(
+                hasher,
+                value,
+                owner.user_id,
+                owner.account_id,
+                owner.trusted_browser_epoch,
+                &owner.password_hash,
+                now,
+            )
+        });
+    // Both lanes run the same statements under the same conditions; only the
+    // subject strings differ, so the statement sequence of every outcome is
+    // unchanged from before the trusted lane existed.
+    let (window_subject, daily_subject) = if trusted {
+        (
+            trusted_reset_window_subject(subject, now),
+            trusted_reset_daily_subject(subject),
+        )
+    } else {
+        (verified_reset_subject(subject, now), subject.to_owned())
+    };
+    if budgets.charge_window(&window_subject).await? {
+        // Charged only after the window subject admits, so requests the
+        // window already refuses do not spend the owner's daily cap.
+        return budgets.charge_daily(&daily_subject).await;
     }
+    budgets.read_daily(&daily_subject).await?;
+    Ok(false)
 }
 
 #[derive(Deserialize)]

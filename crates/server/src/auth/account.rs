@@ -94,6 +94,15 @@ pub async fn revoke_other_sessions(
             &[&account_id, &owner.user_id, &owner.session_id],
         )
         .await?;
+    // Revoking other browsers' sessions also de-trusts their reset-lane
+    // cookies (issue #526): a surviving thief cookie would keep the separate
+    // budget this flow exists to protect. The caller's own cookie is
+    // invalidated too; the next sign-in re-establishes trust.
+    tx.execute(
+        "UPDATE users SET trusted_browser_epoch=trusted_browser_epoch+1 WHERE id=$1",
+        &[&owner.user_id],
+    )
+    .await?;
     tx.execute(
         "UPDATE owner_mfa_login_challenges SET consumed_at=now() WHERE account_id=$1 AND user_id=$2 AND consumed_at IS NULL",
         &[&account_id, &owner.user_id],

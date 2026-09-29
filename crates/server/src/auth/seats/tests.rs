@@ -7,7 +7,7 @@ use tokio_postgres::NoTls;
 use totp_rs::{Builder, Secret};
 
 /// The auth-side schema every seat test needs, applied in order.
-const AUTH_MIGRATIONS: [&str; 9] = [
+const AUTH_MIGRATIONS: [&str; 10] = [
     include_str!("../../../../../deploy/compose/migrations/002_auth.sql"),
     include_str!("../../../../../deploy/compose/migrations/005_verification_outbox.sql"),
     include_str!("../../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
@@ -17,6 +17,7 @@ const AUTH_MIGRATIONS: [&str; 9] = [
     include_str!("../../../../../deploy/compose/migrations/025_account_recovery.sql"),
     include_str!("../../../../../deploy/compose/migrations/048_observer_memberships.sql"),
     include_str!("../../../../../deploy/compose/migrations/053_observer_seat_invitations.sql"),
+    include_str!("../../../../../deploy/compose/migrations/055_trusted_browser_epoch.sql"),
 ];
 
 /// Extra migrations for the observer device-status read, which shares the

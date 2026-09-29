@@ -237,6 +237,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "054_stateless_device_challenges.sql",
         include_str!("../../../../deploy/compose/migrations/054_stateless_device_challenges.sql"),
     ),
+    (
+        "055_trusted_browser_epoch.sql",
+        include_str!("../../../../deploy/compose/migrations/055_trusted_browser_epoch.sql"),
+    ),
 ];
 
 /// Indexes the Compose migrator prepares with CREATE INDEX CONCURRENTLY in

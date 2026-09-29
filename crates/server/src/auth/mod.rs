@@ -1132,6 +1132,36 @@ pub async fn session_email(client: &Client, session_id: Uuid) -> Result<Option<S
         .map(|row| row.get(0)))
 }
 
+/// Identity and current password hash of a live session's owner, for minting
+/// a trusted-browser cookie right after a completed sign-in.
+pub struct SessionOwner {
+    pub user_id: Uuid,
+    pub account_id: Uuid,
+    pub password_hash: String,
+    pub trusted_browser_epoch: i64,
+}
+
+/// The owner row a trusted-browser cookie binds to: the session's user and
+/// account plus the current password hash, or `None` when the session is not
+/// live (in which case no cookie is minted).
+pub async fn session_owner(
+    client: &Client,
+    session_id: Uuid,
+) -> Result<Option<SessionOwner>, AuthError> {
+    Ok(client
+        .query_opt(
+            "SELECT u.id,m.account_id,u.password_hash,u.trusted_browser_epoch FROM sessions s JOIN users u ON u.id=s.user_id JOIN memberships m ON (m.account_id,m.user_id)=(s.account_id,s.user_id) JOIN accounts a ON a.id=s.account_id WHERE s.id=$1 AND m.role='owner' AND s.revoked_at IS NULL AND s.expires_at>clock_timestamp() AND a.disabled_at IS NULL",
+            &[&session_id],
+        )
+        .await?
+        .map(|row| SessionOwner {
+            user_id: row.get(0),
+            account_id: row.get(1),
+            password_hash: row.get(2),
+            trusted_browser_epoch: row.get(3),
+        }))
+}
+
 /// The unlocked, outside-a-transaction form of [`require_current_owner`].
 /// It skips the query only when this request's `authenticate_session`
 /// validation is unspent and under a second old, because an unlocked
@@ -1223,6 +1253,132 @@ pub fn login_client_subject(hasher: &TokenHasher, value: &str, email: &str) -> O
     let tag = URL_SAFE_NO_PAD.decode(tag).ok()?;
     let expected = hasher.digest(b"login-client-v1", &format!("{id}\0{email}"));
     bool::from(expected.as_slice().ct_eq(&tag)).then(|| format!("{email}\0{id}"))
+}
+
+/// Marks a browser that completed a sign-in for one owner, so password-reset
+/// requests from it can spend a budget an email-only attacker cannot reach
+/// (issue #526). Not a credential: it unlocks no account route.
+pub const TRUSTED_BROWSER_COOKIE: &str = "__Host-zrotext_trusted_browser";
+/// Server-side lifetime of a trusted-browser cookie. The cookie's own
+/// `Max-Age` is advisory; verification enforces this bound on the embedded
+/// issue time.
+pub const TRUSTED_BROWSER_DAYS: i64 = 90;
+
+/// Pepper digest binding a trusted-browser cookie to the current password
+/// hash of its user. Password change and reset replace the hash and account
+/// erasure removes the row entirely, so binding to this digest revokes the
+/// cookie on those flows without any stored cookie state. Flows that revoke
+/// sessions without touching the password (revoke-other-sessions and the MFA
+/// changes) bump the trust epoch instead; see [`trusted_browser_tag`].
+fn trusted_browser_password_digest(hasher: &TokenHasher, password_hash: &str) -> String {
+    URL_SAFE_NO_PAD.encode(hasher.digest(b"trusted-browser-pw-v1", password_hash))
+}
+
+/// HMAC tag over every fact a trusted-browser cookie must stay bound to: its
+/// random id, its issue time, the owner's user and account ids, the owner's
+/// current trust epoch, and a digest of the owner's current password hash,
+/// all under the auth pepper. Bumping the epoch (revoke-other-sessions and
+/// the MFA flows that revoke sessions) or replacing the password therefore
+/// invalidates the cookie with no stored cookie state.
+fn trusted_browser_tag(
+    hasher: &TokenHasher,
+    id: &str,
+    issued_at_unix: u64,
+    user_id: Uuid,
+    account_id: Uuid,
+    trusted_browser_epoch: i64,
+    password_hash: &str,
+) -> [u8; 32] {
+    hasher.digest(
+        b"trusted-browser-v1",
+        &format!(
+            "{id}\0{issued_at_unix}\0{user_id}\0{account_id}\0{trusted_browser_epoch}\0{}",
+            trusted_browser_password_digest(hasher, password_hash)
+        ),
+    )
+}
+
+/// The full `Set-Cookie` value marking `password_hash`'s owner's browser as
+/// trusted, issued at `now`. The cookie is bound to the account and user and
+/// carries no readable account data.
+pub fn trusted_browser_cookie(
+    hasher: &TokenHasher,
+    user_id: Uuid,
+    account_id: Uuid,
+    trusted_browser_epoch: i64,
+    password_hash: &str,
+    now: std::time::SystemTime,
+) -> String {
+    let issued_at_unix = now
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let id = random_token("ztb_");
+    let tag = trusted_browser_tag(
+        hasher,
+        &id,
+        issued_at_unix,
+        user_id,
+        account_id,
+        trusted_browser_epoch,
+        password_hash,
+    );
+    format!(
+        "{TRUSTED_BROWSER_COOKIE}={id}.{issued_at_unix}.{}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age={}",
+        URL_SAFE_NO_PAD.encode(tag),
+        TRUSTED_BROWSER_DAYS * 86_400
+    )
+}
+
+/// Whether `value` is a trusted-browser cookie that this exact user, account,
+/// and current password hash issued within its lifetime. A forged, expired,
+/// or other-account value is simply invalid; callers fall back to the normal
+/// lanes with no difference in response.
+pub fn trusted_browser_valid(
+    hasher: &TokenHasher,
+    value: &str,
+    user_id: Uuid,
+    account_id: Uuid,
+    trusted_browser_epoch: i64,
+    password_hash: &str,
+    now: std::time::SystemTime,
+) -> bool {
+    let mut parts = value.split('.');
+    let (Some(id), Some(issued), Some(tag)) = (parts.next(), parts.next(), parts.next()) else {
+        return false;
+    };
+    if parts.next().is_some() || !valid_token(id, "ztb_") {
+        return false;
+    }
+    let Ok(issued_at_unix) = issued.parse::<u64>() else {
+        return false;
+    };
+    let now_unix = now
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    // Not yet issued (beyond trivial clock equality) or past its lifetime.
+    if issued_at_unix > now_unix
+        || now_unix - issued_at_unix
+            > (TRUSTED_BROWSER_DAYS * 86_400)
+                .try_into()
+                .unwrap_or(u64::MAX)
+    {
+        return false;
+    }
+    let Ok(tag) = URL_SAFE_NO_PAD.decode(tag) else {
+        return false;
+    };
+    let expected = trusted_browser_tag(
+        hasher,
+        id,
+        issued_at_unix,
+        user_id,
+        account_id,
+        trusted_browser_epoch,
+        password_hash,
+    );
+    tag.len() == expected.len() && bool::from(tag.as_slice().ct_eq(expected.as_slice()))
 }
 
 /// Pass these only over HTTPS. The session cookie is inaccessible to script;
