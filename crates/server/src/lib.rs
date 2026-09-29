@@ -14,6 +14,7 @@ pub mod http_owner_events;
 pub mod http_owner_export;
 pub mod http_owner_messages;
 pub mod http_owner_review;
+pub mod http_sealed;
 pub mod http_webhooks;
 pub mod inbound;
 pub mod ingress;
