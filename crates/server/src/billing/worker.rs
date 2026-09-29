@@ -807,12 +807,11 @@ mod tests {
 
     /// A fresh schema with every migration the billing worker touches,
     /// including 023's pointer-or-review check and 024's risk states.
-    async fn billing_schema(prefix: &str) -> (Client, Client, String, String) {
+    async fn migrated_schema(schema: &str) -> (Client, Client, String) {
         let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
             .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
         let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
         tokio::spawn(async move { connection.await.unwrap() });
-        let schema = format!("{prefix}_{}", Uuid::new_v4().simple());
         setup
             .batch_execute(&format!("CREATE SCHEMA {schema}"))
             .await
@@ -848,7 +847,7 @@ mod tests {
         ] {
             db.batch_execute(sql).await.unwrap();
         }
-        (setup, db, scoped_url, schema)
+        (setup, db, scoped_url)
     }
 
     /// Account, bound customer and one queued refund risk event.
@@ -987,7 +986,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn postgres_risk_invoice_outage_pauses_without_counting() {
-        let (setup, db, scoped_url, schema) = billing_schema("billing_risk_invoice").await;
+        let schema = format!("billing_risk_invoice_{}", Uuid::new_v4().simple());
+        let (setup, db, scoped_url) = migrated_schema(&schema).await;
         queued_risk_event(&db, "evt_invoice1", "ch_invoice1", "cus_invoice1").await;
         let charges = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let invoices = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -1046,7 +1046,8 @@ mod tests {
     #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn postgres_risk_tenant_conflict_backs_off_to_review() {
         const CHARGE: &str = r#"{"id":"ch_conflict1","object":"charge","livemode":false,"customer":"cus_conflict1","payment_intent":"pi_conflict1","amount_refunded":100}"#;
-        let (setup, db, scoped_url, schema) = billing_schema("billing_risk_conflict").await;
+        let schema = format!("billing_risk_conflict_{}", Uuid::new_v4().simple());
+        let (setup, db, scoped_url) = migrated_schema(&schema).await;
         queued_risk_event(&db, "evt_conflict1", "ch_conflict1", "cus_conflict1").await;
         // The signed event names another customer than the current Charge.
         db.execute(
@@ -1085,7 +1086,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
     async fn postgres_risk_row_level_failures_back_off_per_row() {
-        let (setup, db, scoped_url, schema) = billing_schema("billing_risk_rowlevel").await;
+        let schema = format!("billing_risk_rowlevel_{}", Uuid::new_v4().simple());
+        let (setup, db, scoped_url) = migrated_schema(&schema).await;
         // 400 and 404 are row-level: counted once, backed off one minute,
         // and no provider pause.
         for (status, event, charge, class) in [

@@ -441,7 +441,7 @@ mod tests {
             .await
             .unwrap();
             // Ingestion stores a signed dispute with an unusable charge as a
-            // pointerless review row; migration 023 forbids requeueing it.
+            // pointerless review row; migration 023 keeps it in review.
             db.execute(
                 "INSERT INTO billing_risk_events(stripe_event_id,risk_kind,account_id,state) VALUES('evt_pointerless','dispute',$1,'needs_review')",
                 &[&parked_account],
