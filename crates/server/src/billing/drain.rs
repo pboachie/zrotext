@@ -260,6 +260,14 @@ mod tests {
             .unwrap();
             db.execute("INSERT INTO billing_reconciliations(stripe_subscription_id,account_id,stripe_customer_id) VALUES($1,$2,$3)", &[&subscription_id, &account_id, &customer_id]).await.unwrap();
         }
+        // A worker session's now() can trail this session's slightly (seen
+        // on Docker Desktop); backdate so every row is already due.
+        db.execute(
+            "UPDATE billing_reconciliations SET next_attempt_at=now()-interval '1 minute'",
+            &[],
+        )
+        .await
+        .unwrap();
         let app = Router::new().route("/v1/subscriptions/{subscription_id}", get(|Path(subscription_id): Path<String>| async move {
             let customer_id = subscription_id.replacen("sub_", "cus_", 1);
             Json(json!({
@@ -447,6 +455,10 @@ mod tests {
             )
             .await
             .unwrap();
+            // A worker session's now() can trail this session's slightly
+            // (seen on Docker Desktop); backdate so queued rows are due.
+            db.execute("UPDATE billing_reconciliations SET next_attempt_at=now()-interval '1 minute' WHERE state='queued'", &[]).await.unwrap();
+            db.execute("UPDATE billing_risk_events SET next_attempt_at=now()-interval '1 minute' WHERE state='queued'", &[]).await.unwrap();
             let requests = Arc::new(AtomicUsize::new(0));
             let healthy = Arc::new(AtomicBool::new(false));
             let app = Router::new().route(
@@ -557,7 +569,17 @@ mod tests {
             healthy.store(true, Ordering::SeqCst);
             worker.expire_provider_pause_for_tests();
             assert!(!drain_billing_batch(&worker, &scoped_url, 25, 2, false, &draining).await);
-            assert!(!drain_billing_batch(&worker, &scoped_url, 25, 2, false, &draining).await);
+            // The sweep marks requeued rows due at one worker session's now();
+            // another session's clock can trail it slightly, so drain a
+            // bounded number of times until the requeued row is processed.
+            for _ in 0..20 {
+                assert!(!drain_billing_batch(&worker, &scoped_url, 25, 2, false, &draining).await);
+                let done: bool = db.query_one("SELECT dirty_generation=processed_generation FROM billing_reconciliations WHERE stripe_subscription_id='sub_outageparked'", &[]).await.unwrap().get(0);
+                if done {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
             let parked = db.query_one("SELECT failed_attempts,dirty_generation=processed_generation FROM billing_reconciliations WHERE stripe_subscription_id='sub_outageparked'", &[]).await.unwrap();
             assert_eq!(
                 parked.get::<_, i32>(0),
@@ -638,7 +660,7 @@ mod tests {
             // the 30-second base instead of the grown pause. One job (batch 1,
             // concurrency 1) keeps the streak deterministic.
             healthy.store(false, Ordering::SeqCst);
-            db.execute("UPDATE billing_reconciliations SET dirty_generation=dirty_generation+1,next_attempt_at=now() WHERE stripe_subscription_id='sub_outage00'", &[]).await.unwrap();
+            db.execute("UPDATE billing_reconciliations SET dirty_generation=dirty_generation+1,next_attempt_at=now()-interval '1 minute' WHERE stripe_subscription_id='sub_outage00'", &[]).await.unwrap();
             assert!(drain_billing_batch(&worker, &scoped_url, 1, 1, false, &draining).await);
             let (low, high) = if retry_after.is_some() {
                 (110f64, 130f64)

@@ -864,7 +864,8 @@ mod tests {
         .await
         .unwrap();
         db.execute("INSERT INTO billing_events(stripe_event_id,event_type,account_id,body_sha256,disposition) VALUES($1,'charge.refunded',$2,$3,'queued')", &[&event, &account, &vec![0u8; 32]]).await.unwrap();
-        db.execute("INSERT INTO billing_risk_events(stripe_event_id,stripe_charge_id,risk_kind,account_id) VALUES($1,$2,'refund',$3)", &[&event, &charge, &account]).await.unwrap();
+        // Backdated: a worker session's now() can trail this session's.
+        db.execute("INSERT INTO billing_risk_events(stripe_event_id,stripe_charge_id,risk_kind,account_id,next_attempt_at) VALUES($1,$2,'refund',$3,now()-interval '1 minute')", &[&event, &charge, &account]).await.unwrap();
     }
 
     #[test]
@@ -1065,7 +1066,7 @@ mod tests {
         assert_eq!(row.get::<_, String>(1), "queued");
         assert_eq!(row.get::<_, String>(2), "local");
         assert!(row.get::<_, bool>(3), "row-level backoff, not the claim");
-        db.execute("UPDATE billing_risk_events SET failed_attempts=9,next_attempt_at=now() WHERE stripe_event_id='evt_conflict1'", &[]).await.unwrap();
+        db.execute("UPDATE billing_risk_events SET failed_attempts=9,next_attempt_at=now()-interval '1 minute' WHERE stripe_event_id='evt_conflict1'", &[]).await.unwrap();
         let worker = test_worker(fake_provider(200, CHARGE).await);
         assert_eq!(
             worker.reconcile_risk_one(&scoped_url).await.unwrap(),
@@ -1249,7 +1250,10 @@ mod tests {
         )
         .await
         .unwrap();
-        db.execute("UPDATE billing_reconciliations SET dirty_generation=2 WHERE stripe_subscription_id='sub_fixture1'", &[]).await.unwrap();
+        // Due times written by this session are backdated: a worker session's
+        // now() can trail it slightly (seen on Docker Desktop), and a row due
+        // "now" would then look not yet due to the claim.
+        db.execute("UPDATE billing_reconciliations SET dirty_generation=2,next_attempt_at=now()-interval '1 minute' WHERE stripe_subscription_id='sub_fixture1'", &[]).await.unwrap();
 
         let worker = test_worker(fake_provider(403, "secret response").await);
         assert_eq!(
@@ -1280,7 +1284,7 @@ mod tests {
         assert_eq!(row.get::<_, String>(1), "needs_review");
         assert!(claim(&mut db).await.unwrap().is_none());
 
-        db.execute("UPDATE billing_reconciliations SET state='queued',failed_attempts=0,next_attempt_at=now() WHERE stripe_subscription_id='sub_fixture1'", &[]).await.unwrap();
+        db.execute("UPDATE billing_reconciliations SET state='queued',failed_attempts=0,next_attempt_at=now()-interval '1 minute' WHERE stripe_subscription_id='sub_fixture1'", &[]).await.unwrap();
         let worker = test_worker(fake_provider(404, "secret response").await);
         assert_eq!(
             worker.reconcile_one(&scoped_url).await.unwrap(),
@@ -1296,7 +1300,7 @@ mod tests {
         let row = db.query_one("SELECT reason FROM billing_quota_audit WHERE account_id=$1 ORDER BY id DESC LIMIT 1", &[&account]).await.unwrap();
         assert_eq!(row.get::<_, String>(0), "provider_deleted");
         db.execute("INSERT INTO billing_events(stripe_event_id,event_type,account_id,body_sha256,disposition) VALUES('evt_fixture1','charge.refunded',$1,$2,'queued')", &[&account, &vec![0u8; 32]]).await.unwrap();
-        db.execute("INSERT INTO billing_risk_events(stripe_event_id,stripe_charge_id,risk_kind,account_id) VALUES('evt_fixture1','ch_fixture1','refund',$1)", &[&account]).await.unwrap();
+        db.execute("INSERT INTO billing_risk_events(stripe_event_id,stripe_charge_id,risk_kind,account_id,next_attempt_at) VALUES('evt_fixture1','ch_fixture1','refund',$1,now()-interval '1 minute')", &[&account]).await.unwrap();
         let worker = test_worker(fake_provider(403, "secret risk response").await);
         assert_eq!(
             worker.reconcile_risk_one(&scoped_url).await.unwrap(),
