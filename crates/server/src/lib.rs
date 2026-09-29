@@ -22,6 +22,7 @@ pub mod readiness;
 pub mod retention;
 pub use zrotext_root_material::root_backup;
 pub mod runtime_db;
+pub mod sealed_body;
 pub mod sealed_envelope;
 pub mod sealed_inbound;
 pub mod sealed_manifest;

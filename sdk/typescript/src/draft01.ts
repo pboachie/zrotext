@@ -171,6 +171,15 @@ export type DraftOpenContext = Readonly<{
   recipientRole: 1 | 2 | 3; recipientKeyId: Uint8Array; recipientPrivateKey: CryptoKey;
 }>;
 
+/** ZT-009 Q9 receive rule for authenticated body plaintext: strict UTF-8,
+ * 1-32768 encoded bytes, no BOM, no NUL, no normalization. Shared with the
+ * Rust and Android receivers through the public body-text vector corpus. */
+export function decodeBodyText(textBytes: Uint8Array): string {
+  if (textBytes.length < 1 || textBytes.length > 32_768 || textBytes.includes(0) ||
+      (textBytes.length >= 3 && equal(textBytes.subarray(0, 3), Uint8Array.of(0xef, 0xbb, 0xbf)))) fail("body text bounds");
+  return decoder.decode(textBytes);
+}
+
 /** Caller supplies independently trusted IDs and keys, captured before the first await.
  * Does not validate manifest authorization or replay state. */
 export async function openDraftEnvelope(input: Uint8Array, expected: DraftOpenContext): Promise<string> {
@@ -197,8 +206,5 @@ export async function openDraftEnvelope(input: Uint8Array, expected: DraftOpenCo
   if (cek.length !== 32) fail("content key length");
   const bodyKey = await crypto.subtle.importKey("raw", buffer(cek), "AES-GCM", false, ["decrypt"]);
   const body = await crypto.subtle.decrypt({ name: "AES-GCM", iv: buffer(parsed.nonce), additionalData: buffer(bodyAad(parsed)), tagLength: 128 }, bodyKey, buffer(parsed.bodyCt));
-  const textBytes = new Uint8Array(body);
-  if (textBytes.length < 1 || textBytes.length > 32_768 || textBytes.includes(0) ||
-      (textBytes.length >= 3 && equal(textBytes.subarray(0, 3), Uint8Array.of(0xef, 0xbb, 0xbf)))) fail("body text bounds");
-  return decoder.decode(textBytes);
+  return decodeBodyText(new Uint8Array(body));
 }
