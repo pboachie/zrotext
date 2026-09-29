@@ -300,6 +300,13 @@ async fn reservation_is_idempotent_and_refund_stays_in_original_utc_period() {
 #[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn period_start_truncates_month_boundaries_with_and_without_an_explicit_time() {
     let mut db = TestDb::new().await;
+    // Periods are UTC months whatever the session time zone. A zone east of
+    // UTC puts both explicit instants in February local time, and the local
+    // start of any month in the previous UTC day.
+    db.client
+        .batch_execute("SET TIME ZONE 'Pacific/Kiritimati'")
+        .await
+        .unwrap();
     let (account, device) = db.account_and_device().await;
     db.policy(account, 10).await;
     let expiry = now_ms() + 3_600_000;
@@ -345,10 +352,12 @@ async fn period_start_truncates_month_boundaries_with_and_without_an_explicit_ti
                 .created
         );
     }
+    // Convert to UTC before truncating: truncating a timestamptz uses the
+    // session time zone, which east of UTC lands in the previous month.
     let current_month: String = db
         .client
         .query_one(
-            "SELECT to_char(date_trunc('month', transaction_timestamp()) AT TIME ZONE 'UTC', 'YYYY-MM-DD')",
+            "SELECT to_char(date_trunc('month', transaction_timestamp() AT TIME ZONE 'UTC'), 'YYYY-MM-DD')",
             &[],
         )
         .await
@@ -395,6 +404,109 @@ async fn period_start_truncates_month_boundaries_with_and_without_an_explicit_ti
         ledger.iter().filter(|(p,)| p == &current_month).count(),
         1 + overlap
     );
+    db.close().await;
+}
+
+/// The policy limit is copied only when a month's period row is first
+/// created (docs/ARCHITECTURE.md). Setting the policy to 0 later leaves an
+/// existing period governed by its stored limit, while a month without a row
+/// admits nothing and creates no row.
+#[tokio::test]
+#[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn policy_limit_zero_keeps_an_existing_period_on_its_stored_limit() {
+    let mut db = TestDb::new().await;
+    let (account, device) = db.account_and_device().await;
+    let (full_account, full_device) = db.account_and_device().await;
+    db.policy(account, 10).await;
+    db.policy(full_account, 1).await;
+    let expiry = now_ms() + 3_600_000;
+    let january = timestamp_ms(&db.client, "2026-01-15 12:00:00+00").await;
+    let february = timestamp_ms(&db.client, "2026-02-15 12:00:00+00").await;
+    {
+        let mut store = DeliveryStore::new(&mut db.client);
+        for (acct, dev, key) in [
+            (account, device, "before-zero"),
+            (full_account, full_device, "fills-period"),
+        ] {
+            assert!(
+                store
+                    .accept_metered_at(message(acct, dev, Uuid::new_v4(), key, expiry), january)
+                    .await
+                    .unwrap()
+                    .created
+            );
+        }
+    }
+    db.client
+        .execute(
+            "UPDATE usage_quota_policies SET limit_units=0 WHERE account_id = ANY($1)",
+            &[&vec![account, full_account]],
+        )
+        .await
+        .unwrap();
+    {
+        let mut store = DeliveryStore::new(&mut db.client);
+        // The January row keeps its stored limit of 10.
+        assert!(
+            store
+                .accept_metered_at(
+                    message(account, device, Uuid::new_v4(), "after-zero", expiry),
+                    january
+                )
+                .await
+                .unwrap()
+                .created
+        );
+        // A stored limit that is already used up still refuses.
+        assert!(matches!(
+            store
+                .accept_metered_at(
+                    message(full_account, full_device, Uuid::new_v4(), "full", expiry),
+                    january
+                )
+                .await,
+            Err(StoreError::QuotaExceeded)
+        ));
+        // February has no row yet, so it copies the zero policy limit.
+        assert!(matches!(
+            store
+                .accept_metered_at(
+                    message(account, device, Uuid::new_v4(), "new-month", expiry),
+                    february
+                )
+                .await,
+            Err(StoreError::QuotaExceeded)
+        ));
+    }
+    let periods: Vec<(Uuid, String, i64, i64)> = db
+        .client
+        .query(
+            "SELECT account_id,period_start::text,limit_units,reserved_units FROM usage_periods \
+             WHERE account_id = ANY($1) ORDER BY account_id=$2 DESC,period_start",
+            &[&vec![account, full_account], &account],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| (row.get(0), row.get(1), row.get(2), row.get(3)))
+        .collect();
+    assert_eq!(
+        periods,
+        vec![
+            (account, "2026-01-01".into(), 10, 2),
+            (full_account, "2026-01-01".into(), 1, 1),
+        ]
+    );
+    let ledger: i64 = db
+        .client
+        .query_one(
+            "SELECT count(*) FROM usage_ledger WHERE account_id=$1",
+            &[&account],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(ledger, 2);
     db.close().await;
 }
 

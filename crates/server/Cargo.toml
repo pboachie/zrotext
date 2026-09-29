@@ -16,7 +16,8 @@ zrotext-postgres-connection = { path = "../postgres-connection" }
 zrotext-failover-quorum = { path = "../failover-quorum" }
 axum = { version = "0.8.6", features = ["ws"] }
 tokio = { version = "1.47.1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
-tokio-postgres = { version = "0.7.13", features = ["with-uuid-1"] }
+# 0.7.17 added execute_typed, query_typed_one and query_typed_opt.
+tokio-postgres = { version = "0.7.17", features = ["with-uuid-1"] }
 subtle = "2.6.1"
 serde.workspace = true
 serde_json.workspace = true

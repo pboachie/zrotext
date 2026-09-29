@@ -449,10 +449,11 @@ async fn failed_payment_and_late_paid_event_follow_current_test_subscription() {
     );
     // This contender begins before expiry but waits on the account lock
     // until afterward. Admission must use the post-wait DB clock.
-    db.execute(
-            "UPDATE billing_subscriptions SET payment_grace_started_at=clock_timestamp()-interval '7 days'+interval '1 second' WHERE stripe_subscription_id='sub_lifecycle1'",
-            &[],
-        ).await.unwrap();
+    //
+    // Every step is timed on the database clock, never the test host's. On
+    // Docker Desktop the database VM clock drifts ahead of the host and is
+    // periodically stepped back by about 1.2 s, so a host-side sleep can
+    // cover less database time than it asks for.
     let (mut locker, connection) = tokio_postgres::connect(&scoped_url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
     let lock = locker.transaction().await.unwrap();
@@ -462,14 +463,13 @@ async fn failed_payment_and_late_paid_event_follow_current_test_subscription() {
     )
     .await
     .unwrap();
-    let contender_url = scoped_url.clone();
-    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let contender_name = format!("grace_{schema}");
+    let contender_url = format!("{scoped_url}&application_name={contender_name}");
     let contender = tokio::spawn(async move {
         let (mut client, connection) = tokio_postgres::connect(&contender_url, NoTls)
             .await
             .unwrap();
         tokio::spawn(async move { connection.await.unwrap() });
-        started_tx.send(()).unwrap();
         DeliveryStore::new(&mut client)
             .accept_metered(NewMessage {
                 account_id: account,
@@ -482,13 +482,51 @@ async fn failed_payment_and_late_paid_event_follow_current_test_subscription() {
             })
             .await
     });
-    started_rx.await.unwrap();
-    tokio::time::sleep(std::time::Duration::from_millis(1_300)).await;
+    // Wait until the contender's transaction is blocked on the account lock.
+    let mut blocked = false;
+    for _ in 0..400 {
+        blocked = db
+            .query_one(
+                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE application_name=$1 AND wait_event_type='Lock')",
+                &[&contender_name],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        if blocked {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert!(blocked, "the contender never waited on the account lock");
+    // Grace expires one second after the contender's transaction began, so
+    // its transaction timestamp is still inside grace by construction. The
+    // contender has not read the subscription yet, and sees this commit.
+    let updated = db.execute(
+            "UPDATE billing_subscriptions SET payment_grace_started_at=(SELECT xact_start FROM pg_stat_activity WHERE application_name=$1)-interval '7 days'+interval '1 second' WHERE stripe_subscription_id='sub_lifecycle1' AND EXISTS (SELECT 1 FROM pg_stat_activity WHERE application_name=$1 AND xact_start IS NOT NULL)",
+            &[&contender_name],
+        ).await.unwrap();
+    assert_eq!(updated, 1);
+    // Release the lock only once the database clock is past expiry by more
+    // than the largest backward clock step seen (about 1.2 s).
+    let mut expired = false;
+    for _ in 0..400 {
+        expired = db.query_one(
+                "SELECT payment_grace_started_at+interval '7 days'+interval '2 seconds'<=clock_timestamp() FROM billing_subscriptions WHERE stripe_subscription_id='sub_lifecycle1'",
+                &[],
+            ).await.unwrap().get(0);
+        if expired {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert!(expired, "the database clock never passed the grace expiry");
     lock.commit().await.unwrap();
-    assert!(matches!(
-        contender.await.unwrap(),
-        Err(StoreError::QuotaExceeded)
-    ));
+    let contended = contender.await.unwrap();
+    assert!(
+        matches!(contended, Err(StoreError::QuotaExceeded)),
+        "{contended:?}"
+    );
     db.execute(
             "UPDATE billing_subscriptions SET payment_grace_started_at=transaction_timestamp()-interval '7 days 1 second' WHERE stripe_subscription_id='sub_lifecycle1'",
             &[],
@@ -608,6 +646,13 @@ async fn failed_payment_and_late_paid_event_follow_current_test_subscription() {
 
     // A matching signed failure starts a new interval. A future provider
     // timestamp is capped at database receipt time before persistence.
+    // Model the last active provider read a minute before this failure, as
+    // above: back-to-back clock_timestamp() reads can run backwards when the
+    // database host's clock is stepped.
+    db.execute(
+            "UPDATE billing_subscriptions SET last_non_past_due_at=clock_timestamp()-interval '1 minute' WHERE stripe_subscription_id='sub_lifecycle1'",
+            &[],
+        ).await.unwrap();
     let future_created = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -629,13 +674,16 @@ async fn failed_payment_and_late_paid_event_follow_current_test_subscription() {
     reconcile_snapshot_with_quotas(&mut db, account, &next_past_due, &prices, &plans, 7)
         .await
         .unwrap();
+    // Compare with the receipt time recorded by the same ingest statement,
+    // not a later clock read that a clock step could put earlier.
     let clock = db.query_one(
-            "SELECT extract(epoch FROM payment_grace_started_at)::bigint,extract(epoch FROM transaction_timestamp())::bigint FROM billing_subscriptions WHERE stripe_subscription_id='sub_lifecycle1'",
+            "SELECT extract(epoch FROM s.payment_grace_started_at)::bigint,extract(epoch FROM e.received_at)::bigint FROM billing_subscriptions s JOIN billing_events e ON e.stripe_event_id='evt_lifecyclenewfailed1' WHERE s.stripe_subscription_id='sub_lifecycle1'",
             &[],
         ).await.unwrap();
-    let new_start: i64 = clock.get(0);
-    let observed_now: i64 = clock.get(1);
-    assert!((observed_now - 5..=observed_now).contains(&new_start));
+    let new_start: Option<i64> = clock.get(0);
+    let new_start = new_start.expect("the matching failure must start grace");
+    let received: i64 = clock.get(1);
+    assert!((received - 1..=received).contains(&new_start));
     assert!(new_start < future_created);
     let new_limit: i64 = db.query_one(
             "SELECT limit_units FROM usage_quota_policies WHERE account_id=$1 AND metric='outbound_message'",
@@ -2115,6 +2163,17 @@ async fn reconciled_test_subscription_controls_metered_reservations() {
     db.execute("UPDATE billing_reconciliations SET state='needs_review',failed_attempts=10,last_failure_class='authorization' WHERE stripe_subscription_id='sub_entitlement2'", &[]).await.unwrap();
     db.execute("INSERT INTO billing_events(stripe_event_id,event_type,account_id,body_sha256,disposition) VALUES('evt_ConfigRisk1','charge.refunded',$1,$2,'queued')", &[&account, &vec![0u8; 32]]).await.unwrap();
     db.execute("INSERT INTO billing_risk_events(stripe_event_id,stripe_charge_id,risk_kind,state,account_id,failed_attempts,last_failure_class) VALUES('evt_ConfigRisk1','ch_ConfigRisk1','refund','needs_review',$1,10,'authorization')", &[&account]).await.unwrap();
+    // A PaymentIntent-only review row can be requeued. A pointerless review
+    // row from ingestion must stay in review (migration 023), and must not
+    // make a config change fail startup.
+    for (event, kind) in [
+        ("evt_ConfigRiskPi1", "refund.created"),
+        ("evt_ConfigRiskNone1", "charge.dispute.created"),
+    ] {
+        db.execute("INSERT INTO billing_events(stripe_event_id,event_type,account_id,body_sha256,disposition) VALUES($1,$2,$3,$4,'queued')", &[&event, &kind, &account, &vec![0u8; 32]]).await.unwrap();
+    }
+    db.execute("INSERT INTO billing_risk_events(stripe_event_id,stripe_payment_intent_id,risk_kind,state,account_id,failed_attempts,last_failure_class) VALUES('evt_ConfigRiskPi1','pi_ConfigRiskPi1','refund','needs_review',$1,10,'authorization')", &[&account]).await.unwrap();
+    db.execute("INSERT INTO billing_risk_events(stripe_event_id,risk_kind,state,account_id) VALUES('evt_ConfigRiskNone1','dispute','needs_review',$1)", &[&account]).await.unwrap();
     let before = db.query("SELECT stripe_subscription_id,dirty_generation,processed_generation FROM billing_reconciliations WHERE account_id=$1 ORDER BY stripe_subscription_id", &[&account]).await.unwrap();
     reset_test_quotas_on_start(&scoped_url, true, false, Some(&[1; 32]))
         .await
@@ -2167,6 +2226,18 @@ async fn reconciled_test_subscription_controls_metered_reservations() {
     assert_eq!(risk_review.get::<_, String>(0), "queued");
     assert_eq!(risk_review.get::<_, i32>(1), 0);
     assert_eq!(risk_review.get::<_, Option<String>>(2), None);
+    let pi_review = db.query_one("SELECT state,failed_attempts,last_failure_class FROM billing_risk_events WHERE stripe_event_id='evt_ConfigRiskPi1'", &[]).await.unwrap();
+    assert_eq!(pi_review.get::<_, String>(0), "queued");
+    assert_eq!(pi_review.get::<_, i32>(1), 0);
+    assert_eq!(pi_review.get::<_, Option<String>>(2), None);
+    let pointerless = db
+        .query_one(
+            "SELECT state FROM billing_risk_events WHERE stripe_event_id='evt_ConfigRiskNone1'",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(pointerless.get::<_, String>(0), "needs_review");
     let active_review = db.query_one("SELECT state,failed_attempts,last_failure_class FROM billing_reconciliations WHERE stripe_subscription_id='sub_entitlement1'", &[]).await.unwrap();
     assert_eq!(active_review.get::<_, String>(0), "queued");
     assert_eq!(active_review.get::<_, i32>(1), 0);
