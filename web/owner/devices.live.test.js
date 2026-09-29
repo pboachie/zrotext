@@ -254,6 +254,69 @@ test("turning off automatic refresh closes the stream and arms no timers", async
   assert.equal(page.timers.size, 0);
 });
 
+test("a stream that reconnects after a hidden tab reloads the lists once", async () => {
+  const page = await ownerPage();
+  const first = FakeEventSource.instances[0];
+  first.open();
+  await new Promise(setImmediate);
+  await new Promise(setImmediate);
+  globalThis.document.hidden = true;
+  page.documentListeners.visibilitychange();
+  assert.ok(first.closed, "stream stayed open on a hidden tab");
+  // Data changed while no stream was open; the new stream's baseline
+  // swallows it, so the client must reload once on reconnect.
+  const devicesBefore = page.counts("/v1/enrollment/devices");
+  const messagesBefore = page.counts("/v1/owner/messages");
+  globalThis.document.hidden = false;
+  page.documentListeners.visibilitychange();
+  const second = FakeEventSource.instances[1];
+  assert.ok(second, "visible tab did not restart the stream");
+  second.open();
+  await new Promise(setImmediate);
+  await new Promise(setImmediate);
+  assert.equal(page.counts("/v1/enrollment/devices"), devicesBefore + 1,
+    "reconnect did not reload the device list");
+  assert.equal(page.counts("/v1/owner/messages"), messagesBefore + 1,
+    "reconnect did not reload the message list");
+});
+
+test("the first stream open after sign-in does not trigger an extra reload", async () => {
+  const page = await ownerPage();
+  const source = FakeEventSource.instances[0];
+  const devicesBefore = page.counts("/v1/enrollment/devices");
+  const messagesBefore = page.counts("/v1/owner/messages");
+  source.open();
+  await new Promise(setImmediate);
+  await new Promise(setImmediate);
+  assert.equal(page.counts("/v1/enrollment/devices"), devicesBefore,
+    "first open reloaded the device list");
+  assert.equal(page.counts("/v1/owner/messages"), messagesBefore,
+    "first open reloaded the message list");
+});
+
+test("a stream that reconnects after an error reloads the lists once", async () => {
+  const page = await ownerPage();
+  const first = FakeEventSource.instances[0];
+  first.open();
+  await new Promise(setImmediate);
+  await new Promise(setImmediate);
+  first.error();
+  const retry = page.timerWith(1_000);
+  assert.ok(retry, "first retry not scheduled");
+  const devicesBefore = page.counts("/v1/enrollment/devices");
+  const messagesBefore = page.counts("/v1/owner/messages");
+  retry.callback();
+  const second = FakeEventSource.instances[1];
+  assert.ok(second, "retry did not open a new stream");
+  second.open();
+  await new Promise(setImmediate);
+  await new Promise(setImmediate);
+  assert.equal(page.counts("/v1/enrollment/devices"), devicesBefore + 1,
+    "error reconnect did not reload the device list");
+  assert.equal(page.counts("/v1/owner/messages"), messagesBefore + 1,
+    "error reconnect did not reload the message list");
+});
+
 test("a hidden tab stops the stream and a visible tab restarts it", async () => {
   const page = await ownerPage();
   const source = FakeEventSource.instances[0];

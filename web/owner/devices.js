@@ -52,6 +52,10 @@ let liveRetryTimer = null;
 let liveConnected = false;
 let liveFailures = 0;
 let liveOpenedAt = 0;
+// Distinguishes the first stream of a sign-in (the page just loaded its
+// lists) from a reconnect, whose fresh server baseline hides every change
+// made while no stream was open.
+let liveStreamEverOpened = false;
 let deviceLoads = 0;
 let messageLoads = 0;
 // Live-triggered reloads are coalesced: once a section has reloaded from a
@@ -130,9 +134,15 @@ function startLiveUpdates() {
   liveEvents = source;
   source.addEventListener("open", () => {
     if (liveEvents !== source) return;
+    const reconnected = liveStreamEverOpened;
+    liveStreamEverOpened = true;
     liveConnected = true;
     liveOpenedAt = Date.now();
     stopDashboardRefresh();
+    // A reconnect takes a fresh baseline fingerprint, so anything that
+    // changed while no stream was open would never be signalled. One
+    // guarded reload closes that gap.
+    if (reconnected) refreshDashboard();
   });
   source.addEventListener("changed", (event) => {
     if (liveEvents !== source || !canRefreshDashboard()) return;
@@ -460,6 +470,7 @@ function clearOwnerState() {
   ownerEpoch += 1;
   browsingOlderDevices = false;
   browsingOlderMessages = false;
+  liveStreamEverOpened = false;
   sessionLoadGeneration += 1;
   deviceLoadGeneration += 1;
   messageLoadGeneration += 1;
