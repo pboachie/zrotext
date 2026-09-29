@@ -241,6 +241,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "055_trusted_browser_epoch.sql",
         include_str!("../../../../deploy/compose/migrations/055_trusted_browser_epoch.sql"),
     ),
+    (
+        "056_usage_limit_plans.sql",
+        include_str!("../../../../deploy/compose/migrations/056_usage_limit_plans.sql"),
+    ),
 ];
 
 /// Indexes the Compose migrator prepares with CREATE INDEX CONCURRENTLY in

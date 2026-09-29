@@ -329,12 +329,14 @@
             ["#34", "https://github.com/pboachie/zrotext/pull/34"],
             ["#44", "https://github.com/pboachie/zrotext/pull/44"],
             ["#70", "https://github.com/pboachie/zrotext/pull/70"],
-            ["#184", "https://github.com/pboachie/zrotext/pull/184"]
+            ["#184", "https://github.com/pboachie/zrotext/pull/184"],
+            ["#468", "https://github.com/pboachie/zrotext/pull/468"]
           ],
           "done": [
             "Stripe Checkout and Customer Portal in test mode",
             "Signed event inbox with risk holds for refunds and disputes",
-            "Metered admission for billed pilot tenants"
+            "Metered admission for billed pilot tenants",
+            "First slice of usage limits and plans: quota-only usage-limit plans with enforced metered limits and honest over-limit responses, disabled by default and without any pricing decision"
           ],
           "todo": [
             "Live payments, usage limits and plans",
