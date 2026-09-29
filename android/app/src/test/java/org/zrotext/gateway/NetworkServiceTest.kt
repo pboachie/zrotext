@@ -28,11 +28,24 @@ class NetworkServiceTest {
         val publisher=DeviceStatusPublisher()
         publisher.selectProtocol(DeviceStatusPublisher.PROTOCOL_V2)
         assertEquals(DeviceStatusPublisher.Version.V2,publisher.nextVersion(7,0))
+        publisher.reportSent(0)
         publisher.selectProtocol(DeviceStatusPublisher.PROTOCOL)
         assertNull(publisher.nextVersion(7,1))
-        assertEquals(DeviceStatusPublisher.Version.V1,publisher.nextVersion(7,30000))
+        // A 30 s heartbeat tick with jitter lands slightly under 30 s and must still report.
+        assertEquals(DeviceStatusPublisher.Version.V1,publisher.nextVersion(7,29_990))
+        publisher.reportSent(29_990)
         publisher.selectProtocol("unsupported")
-        assertNull(publisher.nextVersion(7,60000))
+        assertNull(publisher.nextVersion(7,60_000))
+    }
+    @Test fun reportFloorIsStampedAtSendTimeNotAtDecisionTime() {
+        val publisher=DeviceStatusPublisher()
+        publisher.selectProtocol(DeviceStatusPublisher.PROTOCOL)
+        assertEquals(DeviceStatusPublisher.Version.V1,publisher.nextVersion(4,0))
+        // An unsent decision does not consume the slot.
+        assertEquals(DeviceStatusPublisher.Version.V1,publisher.nextVersion(4,100))
+        publisher.reportSent(5_100)
+        assertNull(publisher.nextVersion(4,20_000))
+        assertEquals(DeviceStatusPublisher.Version.V1,publisher.nextVersion(4,30_100))
     }
     @Test fun metadataV2HasOnlyFixedPublicEnums() {
         val observed=DevicePreconditions(DevicePreconditions.SelectedSim.ACTIVE,

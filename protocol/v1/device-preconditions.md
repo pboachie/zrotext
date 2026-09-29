@@ -33,9 +33,13 @@ Both share one report budget, identity and authority checks. Neither accepts
 subscription identifiers, client clocks, unknown fields or readiness flags.
 A later v1 report clears any previously stored network-service value.
 
-The client samples after its regular heartbeat, no more often than every 30
-seconds. The hub ignores excess reports per connection before acquiring a
-database client. Reconnection still consumes the existing shared device
+The client samples after its regular heartbeat, no more often than every 25
+seconds, stamping that floor from the send time rather than the sampling
+decision. The hub enforces the same 25-second floor per connection before
+acquiring a database client; both bounds sit below the default 30-second
+heartbeat so a report sent on every heartbeat tick is admitted despite
+scheduling and capture jitter, while bursts remain refused. Reconnection
+still consumes the existing shared device
 challenge/proof budgets; it does not create an unbounded upload path.
 The writer derives identity from the socket and checks its account, device,
 key, site, lease, connection epoch and deployment epoch for each accepted
