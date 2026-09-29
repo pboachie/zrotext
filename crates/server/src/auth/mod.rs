@@ -1265,10 +1265,11 @@ pub const TRUSTED_BROWSER_COOKIE: &str = "__Host-zrotext_trusted_browser";
 pub const TRUSTED_BROWSER_DAYS: i64 = 90;
 
 /// Pepper digest binding a trusted-browser cookie to the current password
-/// hash of its user. Every flow that revokes all sessions for an owner also
-/// replaces the password hash, and account erasure removes the row entirely,
-/// so binding to this digest revokes the cookie on password change,
-/// revoke-all, and erasure without any stored cookie state.
+/// hash of its user. Password change and reset replace the hash and account
+/// erasure removes the row entirely, so binding to this digest revokes the
+/// cookie on those flows without any stored cookie state. Flows that revoke
+/// sessions without touching the password (revoke-other-sessions and the MFA
+/// changes) bump the trust epoch instead; see [`trusted_browser_tag`].
 fn trusted_browser_password_digest(hasher: &TokenHasher, password_hash: &str) -> String {
     URL_SAFE_NO_PAD.encode(hasher.digest(b"trusted-browser-pw-v1", password_hash))
 }
@@ -1291,7 +1292,7 @@ fn trusted_browser_tag(
     hasher.digest(
         b"trusted-browser-v1",
         &format!(
-            "{id} {issued_at_unix} {user_id} {account_id} {trusted_browser_epoch} {}",
+            "{id}\0{issued_at_unix}\0{user_id}\0{account_id}\0{trusted_browser_epoch}\0{}",
             trusted_browser_password_digest(hasher, password_hash)
         ),
     )
