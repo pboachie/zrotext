@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -21,11 +21,17 @@ use uuid::Uuid;
 
 const MAX_FAILURES: i32 = 10;
 static LAST_DIAGNOSTIC: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+/// Longest provider-wide pause, and the cap on a caller-supplied Retry-After.
+const PROVIDER_PAUSE_CAP_SECS: u64 = 600;
+/// Baseline provider-wide pause before consecutive-failure escalation.
+const PROVIDER_PAUSE_BASE_MS: u64 = 30_000;
 
 #[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderFailure {
     #[error("HTTP {0}")]
     HttpStatus(u16),
+    #[error("HTTP 429")]
+    RateLimited { retry_after_secs: u64 },
     #[error("transport")]
     Transport,
     #[error("invalid response")]
@@ -37,18 +43,74 @@ impl ProviderFailure {
         match self {
             Self::HttpStatus(401 | 403) => ("authorization", 0),
             Self::HttpStatus(404) => ("missing", 1),
-            Self::HttpStatus(500..=599) => ("http", 2),
-            Self::HttpStatus(_) => ("http", 3),
+            // 429 stays in the persisted "http" class (the DB check constraint
+            // enumerates it); the diagnostic log keeps the sharper label.
+            Self::HttpStatus(429) | Self::RateLimited { .. } => ("http", 2),
+            Self::HttpStatus(_) => ("http", 2),
             Self::Transport => ("transport", 4),
             Self::InvalidResponse => ("invalid_response", 5),
         }
     }
+    /// Provider-wide failures affect every row alike, so they pause the whole
+    /// queue instead of accumulating per-row review state.
+    pub(super) fn provider_wide(self) -> Option<u64> {
+        match self {
+            Self::HttpStatus(401 | 403 | 429 | 500..=599) | Self::Transport => Some(0),
+            Self::RateLimited { retry_after_secs } => Some(retry_after_secs),
+            Self::HttpStatus(_) | Self::InvalidResponse => None,
+        }
+    }
+}
+
+/// Pause after a provider-wide failure: the provider's Retry-After when one
+/// was supplied (capped), otherwise an exponential schedule over consecutive
+/// provider-wide failures, always bounded by the cap.
+fn provider_pause_ms(consecutive: u32, retry_after_secs: u64) -> u64 {
+    if retry_after_secs > 0 {
+        return retry_after_secs.clamp(1, PROVIDER_PAUSE_CAP_SECS) * 1_000;
+    }
+    let escalation = 1u64.checked_shl(consecutive.min(5)).unwrap_or(32);
+    PROVIDER_PAUSE_BASE_MS
+        .saturating_mul(escalation)
+        .min(PROVIDER_PAUSE_CAP_SECS * 1_000)
+}
+
+fn unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+/// Classify a non-success response, honouring a numeric Retry-After on 429.
+/// Only the delta-seconds form is read; an HTTP-date or missing header falls
+/// back to the scheduled provider-wide pause. The value is capped regardless
+/// of what the provider sends.
+pub(super) fn provider_failure_from_status(response: &reqwest::Response) -> ProviderFailure {
+    let status = response.status().as_u16();
+    if status == 429
+        && let Some(retry_after) = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.trim().parse::<u64>().ok())
+    {
+        return ProviderFailure::RateLimited {
+            retry_after_secs: retry_after.min(PROVIDER_PAUSE_CAP_SECS),
+        };
+    }
+    ProviderFailure::HttpStatus(status)
 }
 
 fn diagnostic(failure: ProviderFailure, row: &str, job: &str) {
     let (class, slot) = failure.class();
     let status = match failure {
         ProviderFailure::HttpStatus(status) => status.to_string(),
+        // The persisted class is "http"; the log keeps the sharper label.
+        ProviderFailure::RateLimited { .. } => {
+            diagnostic_class("rate_limited", slot, "429", row, job);
+            return;
+        }
         _ => "none".to_owned(),
     };
     diagnostic_class(class, slot, &status, row, job);
@@ -81,6 +143,19 @@ fn opaque_ref(row: &str) -> String {
         .collect()
 }
 
+/// What one reconcile job did, so the drain loop can stop feeding a queue
+/// whose provider just failed everywhere at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobOutcome {
+    /// A row was reconciled, or a row-level failure was recorded for retry.
+    WorkDone,
+    /// Nothing was claimable this tick.
+    Empty,
+    /// A provider-wide failure (401/403/429/5xx/transport): stop this queue's
+    /// drain for the rest of the tick and let the pause gate future probes.
+    ProviderDown,
+}
+
 pub struct StripeTestWorker {
     http: HttpClient,
     secret_key: String,
@@ -89,6 +164,9 @@ pub struct StripeTestWorker {
     subscription_authorized: Arc<AtomicBool>,
     risk_authorized: Arc<AtomicBool>,
     api_base: String,
+    provider_paused_until_ms: AtomicU64,
+    provider_wide_streak: AtomicU32,
+    last_provider_pause_secs: AtomicU64,
 }
 
 impl StripeTestWorker {
@@ -129,6 +207,9 @@ impl StripeTestWorker {
             subscription_authorized: Arc::new(AtomicBool::new(true)),
             risk_authorized: Arc::new(AtomicBool::new(true)),
             api_base: "https://api.stripe.com".into(),
+            provider_paused_until_ms: AtomicU64::new(0),
+            provider_wide_streak: AtomicU32::new(0),
+            last_provider_pause_secs: AtomicU64::new(0),
         })
     }
 
@@ -152,6 +233,45 @@ impl StripeTestWorker {
         )
     }
 
+    fn provider_paused(&self) -> bool {
+        unix_ms() < self.provider_paused_until_ms.load(Ordering::Acquire)
+    }
+
+    /// Test-only: expire an active provider pause so recovery can be
+    /// exercised without waiting out the backoff schedule.
+    #[cfg(test)]
+    pub(super) fn expire_provider_pause_for_tests(&self) {
+        self.provider_paused_until_ms.store(0, Ordering::Release);
+    }
+
+    /// Returns whether this success ended a provider-wide failure streak, so
+    /// callers run the parked-row sweep at most once per outage.
+    fn provider_recovered(&self) -> bool {
+        self.provider_paused_until_ms.store(0, Ordering::Release);
+        self.provider_wide_streak.swap(0, Ordering::AcqRel) > 0
+    }
+
+    fn pause_provider(&self, failure: ProviderFailure) {
+        let streak = self.provider_wide_streak.fetch_add(1, Ordering::AcqRel);
+        let retry_after = failure.provider_wide().unwrap_or(0);
+        let pause_ms = provider_pause_ms(streak, retry_after);
+        let until = unix_ms().saturating_add(pause_ms);
+        self.provider_paused_until_ms
+            .store(until, Ordering::Release);
+        self.last_provider_pause_secs
+            .store((pause_ms / 1_000).max(1), Ordering::Release);
+    }
+
+    /// Deferral applied to the failing row: the same duration as the queue
+    /// pause, so rows and probes restart together after an outage.
+    fn provider_wide_delay_secs(&self, error: &BillingError) -> Option<f64> {
+        let BillingError::Provider(failure) = error else {
+            return None;
+        };
+        failure.provider_wide()?;
+        Some(self.last_provider_pause_secs.load(Ordering::Acquire) as f64)
+    }
+
     fn record_failure(&self, error: &BillingError, row: &str, job: &str) -> &'static str {
         let BillingError::Provider(failure) = error else {
             diagnostic_class("local", 6, "none", row, job);
@@ -165,20 +285,58 @@ impl StripeTestWorker {
                 self.risk_authorized.store(false, Ordering::Release);
             }
         }
+        if failure.provider_wide().is_some() {
+            self.pause_provider(*failure);
+        }
         diagnostic(*failure, row, job);
         failure.class().0
     }
 
-    pub async fn reconcile_one(&self, database_url: &str) -> Result<bool, BillingError> {
+    fn outcome_for(&self, error: &BillingError) -> JobOutcome {
+        if let BillingError::Provider(failure) = error
+            && failure.provider_wide().is_some()
+        {
+            return JobOutcome::ProviderDown;
+        }
+        JobOutcome::WorkDone
+    }
+
+    /// A successful provider communication proves the outage ended: requeue
+    /// rows parked by the outage so operators no longer clear needs_review by
+    /// hand. Only the first success after a provider-wide streak pays for the
+    /// sweep; rows parked by row-level failures keep their review state.
+    async fn requeue_parked_rows(db: &Client) -> Result<(), BillingError> {
+        db.execute(
+            "UPDATE billing_reconciliations SET state='queued',failed_attempts=0,last_failure_class=NULL,next_attempt_at=now(),updated_at=now() WHERE state='needs_review'",
+            &[],
+        )
+        .await?;
+        db.execute(
+            "UPDATE billing_risk_events SET state='queued',failed_attempts=0,last_failure_class=NULL,next_attempt_at=now() WHERE state='needs_review'",
+            &[],
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn reconcile_one(&self, database_url: &str) -> Result<JobOutcome, BillingError> {
+        if self.provider_paused() {
+            // One probe is allowed only once the pause elapses; until then the
+            // queue claims nothing and sends nothing.
+            return Ok(JobOutcome::Empty);
+        }
         let mut db = crate::runtime_db::connect_worker(database_url).await?;
         let Some((account_id, subscription_id, customer_id, generation)) = claim(&mut db).await?
         else {
-            return Ok(false);
+            return Ok(JobOutcome::Empty);
         };
         let fetched = self.fetch_subscription(&subscription_id).await;
         match fetched {
             Ok(snapshot) if snapshot.subscription_id == subscription_id => {
                 self.subscription_authorized.store(true, Ordering::Release);
+                if self.provider_recovered() {
+                    Self::requeue_parked_rows(&db).await?;
+                }
                 if let Err(error) = reconcile_snapshot_with_quotas(
                     &mut db,
                     account_id,
@@ -204,6 +362,9 @@ impl StripeTestWorker {
             }
             Err(BillingError::Provider(ProviderFailure::HttpStatus(404))) => {
                 self.subscription_authorized.store(true, Ordering::Release);
+                if self.provider_recovered() {
+                    Self::requeue_parked_rows(&db).await?;
+                }
                 diagnostic(
                     ProviderFailure::HttpStatus(404),
                     &subscription_id,
@@ -235,23 +396,31 @@ impl StripeTestWorker {
                     .err()
                     .unwrap_or(BillingError::Provider(ProviderFailure::InvalidResponse));
                 let class = self.record_failure(&error, &subscription_id, "subscription");
-                let state = backoff(&db, &subscription_id, generation, class).await?;
+                let state = if let Some(delay_secs) = self.provider_wide_delay_secs(&error) {
+                    defer_provider_wide(&db, &subscription_id, generation, class, delay_secs)
+                        .await?
+                } else {
+                    backoff(&db, &subscription_id, generation, class).await?
+                };
                 if state.as_deref() == Some("needs_review") {
                     diagnostic_class("needs_review", 7, "none", &subscription_id, "subscription");
                 }
-                return Ok(true);
+                return Ok(self.outcome_for(&error));
             }
         }
-        Ok(true)
+        Ok(JobOutcome::WorkDone)
     }
 
     /// One bounded payment-risk job per tick. A known customer's queued risk
     /// blocks new metered reservations while the provider chain is resolved.
-    pub async fn reconcile_risk_one(&self, database_url: &str) -> Result<bool, BillingError> {
+    pub async fn reconcile_risk_one(&self, database_url: &str) -> Result<JobOutcome, BillingError> {
+        if self.provider_paused() {
+            return Ok(JobOutcome::Empty);
+        }
         let mut db = crate::runtime_db::connect_worker(database_url).await?;
         let Some((event_id, charge_id, payment_intent_id, kind)) = risk::claim(&mut db).await?
         else {
-            return Ok(false);
+            return Ok(JobOutcome::Empty);
         };
         let result = async {
             let charge = if let Some(charge_id) = &charge_id {
@@ -301,18 +470,25 @@ impl StripeTestWorker {
         match result {
             Ok(()) => {
                 self.risk_authorized.store(true, Ordering::Release);
-                Ok(true)
+                if self.provider_recovered() {
+                    Self::requeue_parked_rows(&db).await?;
+                }
+                Ok(JobOutcome::WorkDone)
             }
             Err(error) if matches!(error, BillingError::Database(_)) => Err(error),
             Err(error) => {
                 let class = self.record_failure(&error, &event_id, "risk");
-                let state = risk::backoff(&db, &event_id, class).await?;
+                let state = if let Some(delay_secs) = self.provider_wide_delay_secs(&error) {
+                    risk::defer_provider_wide(&db, &event_id, class, delay_secs).await?
+                } else {
+                    risk::backoff(&db, &event_id, class).await?
+                };
                 if state.as_deref() == Some("needs_review") {
                     diagnostic_class("needs_review", 7, "none", &event_id, "risk");
                 }
                 // A provider read, unresolved binding or attribution failure
                 // is retained for retry and later review.
-                Ok(true)
+                Ok(self.outcome_for(&error))
             }
         }
     }
@@ -331,7 +507,7 @@ impl StripeTestWorker {
             .await
             .map_err(|_| ProviderFailure::Transport)?;
         if !response.status().is_success() {
-            return Err(ProviderFailure::HttpStatus(response.status().as_u16()).into());
+            return Err(provider_failure_from_status(&response).into());
         }
         let mut body = Vec::new();
         while let Some(chunk) = response
@@ -437,8 +613,26 @@ async fn backoff(
     class: &str,
 ) -> Result<Option<String>, BillingError> {
     let row = db.query_opt(
-        "UPDATE billing_reconciliations SET failed_attempts=least(failed_attempts+1,$4),state=CASE WHEN failed_attempts+1 >= $4 THEN 'needs_review' ELSE 'queued' END,last_failure_class=$3,next_attempt_at=now()+interval '1 minute',updated_at=now() WHERE stripe_subscription_id=$1 AND dirty_generation=$2 AND processed_generation<$2 AND state='queued' RETURNING state",
+        // Row-level failures back off exponentially: one minute doubling per
+        // attempt, capped at one hour. Provider-wide failures never count here.
+        "UPDATE billing_reconciliations SET failed_attempts=least(failed_attempts+1,$4),state=CASE WHEN failed_attempts+1 >= $4 THEN 'needs_review' ELSE 'queued' END,last_failure_class=$3,next_attempt_at=now()+make_interval(secs => least(3600, 60 * (1 << least(failed_attempts,5)))),updated_at=now() WHERE stripe_subscription_id=$1 AND dirty_generation=$2 AND processed_generation<$2 AND state='queued' RETURNING state",
         &[&subscription_id, &generation, &class, &MAX_FAILURES],
+    ).await?;
+    Ok(row.map(|row| row.get(0)))
+}
+
+/// Provider-wide failures defer the row without counting toward review: the
+/// row stays queued and restarts with the next probe after the pause.
+async fn defer_provider_wide(
+    db: &Client,
+    subscription_id: &str,
+    generation: i64,
+    class: &str,
+    delay_secs: f64,
+) -> Result<Option<String>, BillingError> {
+    let row = db.query_opt(
+        "UPDATE billing_reconciliations SET last_failure_class=$3,next_attempt_at=now()+make_interval(secs => $4),updated_at=now() WHERE stripe_subscription_id=$1 AND dirty_generation=$2 AND processed_generation<$2 AND state='queued' RETURNING state",
+        &[&subscription_id, &generation, &class, &delay_secs],
     ).await?;
     Ok(row.map(|row| row.get(0)))
 }
@@ -602,14 +796,28 @@ mod tests {
         db.execute("UPDATE billing_reconciliations SET dirty_generation=2 WHERE stripe_subscription_id='sub_fixture1'", &[]).await.unwrap();
 
         let worker = test_worker(fake_provider(403, "secret response").await);
-        assert!(worker.reconcile_one(&scoped_url).await.unwrap());
+        assert_eq!(
+            worker.reconcile_one(&scoped_url).await.unwrap(),
+            JobOutcome::ProviderDown
+        );
         assert!(!worker.authorization_state().0.load(Ordering::Acquire));
-        let row = db.query_one("SELECT failed_attempts,state,last_failure_class FROM billing_reconciliations WHERE stripe_subscription_id='sub_fixture1'", &[]).await.unwrap();
-        assert_eq!(row.get::<_, i32>(0), 1);
+        let row = db.query_one("SELECT failed_attempts,state,last_failure_class,next_attempt_at>now()+interval '20 seconds' AND next_attempt_at<now()+interval '40 seconds' FROM billing_reconciliations WHERE stripe_subscription_id='sub_fixture1'", &[]).await.unwrap();
+        // Provider-wide failures never count toward review and defer the row.
+        assert_eq!(row.get::<_, i32>(0), 0);
         assert_eq!(row.get::<_, String>(1), "queued");
         assert_eq!(row.get::<_, String>(2), "authorization");
-        for _ in 1..MAX_FAILURES {
-            backoff(&db, "sub_fixture1", 2, "transport").await.unwrap();
+        assert!(row.get::<_, bool>(3));
+        // A paused queue claims nothing and sends nothing until it elapses.
+        assert_eq!(
+            worker.reconcile_one(&scoped_url).await.unwrap(),
+            JobOutcome::Empty
+        );
+        // Row-level failures still park rows in needs_review at the cap; the
+        // 403 above did not count, so all MAX_FAILURES attempts come from here.
+        for _ in 0..MAX_FAILURES {
+            backoff(&db, "sub_fixture1", 2, "invalid_response")
+                .await
+                .unwrap();
         }
         let row = db.query_one("SELECT failed_attempts,state FROM billing_reconciliations WHERE stripe_subscription_id='sub_fixture1'", &[]).await.unwrap();
         assert_eq!(row.get::<_, i32>(0), MAX_FAILURES);
@@ -618,7 +826,10 @@ mod tests {
 
         db.execute("UPDATE billing_reconciliations SET state='queued',failed_attempts=0,next_attempt_at=now() WHERE stripe_subscription_id='sub_fixture1'", &[]).await.unwrap();
         let worker = test_worker(fake_provider(404, "secret response").await);
-        assert!(worker.reconcile_one(&scoped_url).await.unwrap());
+        assert_eq!(
+            worker.reconcile_one(&scoped_url).await.unwrap(),
+            JobOutcome::WorkDone
+        );
         let row = db.query_one("SELECT dirty_generation=processed_generation,state FROM billing_reconciliations WHERE stripe_subscription_id='sub_fixture1'", &[]).await.unwrap();
         assert!(row.get::<_, bool>(0));
         assert_eq!(row.get::<_, String>(1), "queued");
@@ -631,10 +842,13 @@ mod tests {
         db.execute("INSERT INTO billing_events(stripe_event_id,event_type,account_id,body_sha256,disposition) VALUES('evt_fixture1','charge.refunded',$1,$2,'queued')", &[&account, &vec![0u8; 32]]).await.unwrap();
         db.execute("INSERT INTO billing_risk_events(stripe_event_id,stripe_charge_id,risk_kind,account_id) VALUES('evt_fixture1','ch_fixture1','refund',$1)", &[&account]).await.unwrap();
         let worker = test_worker(fake_provider(403, "secret risk response").await);
-        assert!(worker.reconcile_risk_one(&scoped_url).await.unwrap());
+        assert_eq!(
+            worker.reconcile_risk_one(&scoped_url).await.unwrap(),
+            JobOutcome::ProviderDown
+        );
         assert!(!worker.authorization_state().1.load(Ordering::Acquire));
         let row = db.query_one("SELECT failed_attempts,state,last_failure_class FROM billing_risk_events WHERE stripe_event_id='evt_fixture1'", &[]).await.unwrap();
-        assert_eq!(row.get::<_, i32>(0), 1);
+        assert_eq!(row.get::<_, i32>(0), 0);
         assert_eq!(row.get::<_, String>(1), "queued");
         assert_eq!(row.get::<_, String>(2), "authorization");
         setup

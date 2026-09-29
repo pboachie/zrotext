@@ -4,7 +4,10 @@
 #[cfg(test)]
 mod failure_diagnostics;
 
-use super::{BillingError, worker::StripeTestWorker};
+use super::{
+    BillingError,
+    worker::{JobOutcome, StripeTestWorker},
+};
 use std::{
     future::Future,
     sync::{
@@ -23,11 +26,15 @@ trait BillingJobs: Send + Sync + 'static {
         &self,
         database_url: String,
         risk: bool,
-    ) -> impl Future<Output = Result<bool, BillingError>> + Send;
+    ) -> impl Future<Output = Result<JobOutcome, BillingError>> + Send;
 }
 
 impl BillingJobs for StripeTestWorker {
-    async fn reconcile(&self, database_url: String, risk: bool) -> Result<bool, BillingError> {
+    async fn reconcile(
+        &self,
+        database_url: String,
+        risk: bool,
+    ) -> Result<JobOutcome, BillingError> {
         if risk {
             self.reconcile_risk_one(&database_url).await
         } else {
@@ -142,9 +149,11 @@ async fn drain_jobs<T: BillingJobs>(
         #[cfg(test)]
         failure_diagnostics::emit(&result);
         match result {
-            Ok(Ok(true)) => {}
-            Ok(Ok(false)) => empty = true,
-            Ok(Err(_)) | Err(_) => failed = true,
+            Ok(Ok(JobOutcome::WorkDone)) => {}
+            Ok(Ok(JobOutcome::Empty)) => empty = true,
+            // One provider-wide failure ends this queue's drain for the tick:
+            // already-running jobs finish, but nothing new is spawned.
+            Ok(Ok(JobOutcome::ProviderDown)) | Ok(Err(_)) | Err(_) => failed = true,
         }
         if !empty && !failed && started < batch_size && !draining.load(Ordering::Acquire) {
             spawn_job(
@@ -162,7 +171,7 @@ async fn drain_jobs<T: BillingJobs>(
 }
 
 fn spawn_job<T: BillingJobs>(
-    jobs: &mut JoinSet<Result<bool, BillingError>>,
+    jobs: &mut JoinSet<Result<JobOutcome, BillingError>>,
     worker: Arc<T>,
     database_url: String,
     risk: bool,
@@ -175,7 +184,7 @@ fn spawn_job<T: BillingJobs>(
             .await
             .expect("billing semaphore remains open");
         if draining.load(Ordering::Acquire) {
-            return Ok(false);
+            return Ok(JobOutcome::Empty);
         }
         worker.reconcile(database_url, risk).await
     });
@@ -188,6 +197,7 @@ mod tests {
         Json, Router,
         extract::{Path, State},
         http::StatusCode,
+        response::IntoResponse,
         routing::get,
     };
     use serde_json::json;
@@ -291,6 +301,235 @@ mod tests {
             .unwrap();
     }
 
+    #[tokio::test]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+    async fn postgres_fake_stripe_outage_stops_fan_out_and_keeps_rows_queued() {
+        let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
+        let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        for (status, retry_after) in [(429u16, Some(120u64)), (503, None)] {
+            let schema = format!("billing_outage_{}", Uuid::new_v4().simple());
+            setup
+                .batch_execute(&format!("CREATE SCHEMA {schema}"))
+                .await
+                .unwrap();
+            let separator = if base_url.contains('?') { '&' } else { '?' };
+            let scoped_url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
+            let (db, connection) = tokio_postgres::connect(&scoped_url, NoTls).await.unwrap();
+            tokio::spawn(async move { connection.await.unwrap() });
+            for sql in [
+                include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
+                include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+                include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
+                include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
+                include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+                include_str!("../../../../deploy/compose/migrations/006_usage_metering.sql"),
+                include_str!(
+                    "../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"
+                ),
+                include_str!(
+                    "../../../../deploy/compose/migrations/008_stripe_billing_foundation.sql"
+                ),
+                include_str!("../../../../deploy/compose/migrations/009_webhook_manual_replay.sql"),
+                include_str!(
+                    "../../../../deploy/compose/migrations/010_billing_test_entitlement.sql"
+                ),
+                include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
+                include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
+                include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+                include_str!("../../../../deploy/compose/migrations/027_billing_test_config.sql"),
+                include_str!(
+                    "../../../../deploy/compose/migrations/028_billing_provider_failures.sql"
+                ),
+            ] {
+                db.batch_execute(sql).await.unwrap();
+            }
+            for i in 0..10 {
+                let account_id = Uuid::new_v4();
+                let customer_id = format!("cus_outage{i:02}");
+                let subscription_id = format!("sub_outage{i:02}");
+                db.execute("INSERT INTO accounts(id) VALUES($1)", &[&account_id])
+                    .await
+                    .unwrap();
+                db.execute(
+                    "INSERT INTO billing_customers(account_id,stripe_customer_id) VALUES($1,$2)",
+                    &[&account_id, &customer_id],
+                )
+                .await
+                .unwrap();
+                db.execute("INSERT INTO billing_reconciliations(stripe_subscription_id,account_id,stripe_customer_id) VALUES($1,$2,$3)", &[&subscription_id, &account_id, &customer_id]).await.unwrap();
+            }
+            // A row parked by earlier row-level failures, plus a parked risk
+            // event: recovery must sweep both back into the queue without
+            // operator action.
+            let parked_account = Uuid::new_v4();
+            db.execute("INSERT INTO accounts(id) VALUES($1)", &[&parked_account])
+                .await
+                .unwrap();
+            db.execute(
+                "INSERT INTO billing_customers(account_id,stripe_customer_id) VALUES($1,$2)",
+                &[&parked_account, &"cus_outageparked"],
+            )
+            .await
+            .unwrap();
+            db.execute("INSERT INTO billing_reconciliations(stripe_subscription_id,account_id,stripe_customer_id) VALUES($1,$2,$3)", &[&"sub_outageparked", &parked_account, &"cus_outageparked"]).await.unwrap();
+            db.execute(
+                "UPDATE billing_reconciliations SET state='needs_review',failed_attempts=10 WHERE stripe_subscription_id='sub_outageparked'",
+                &[],
+            )
+            .await
+            .unwrap();
+            db.execute(
+                "INSERT INTO billing_events(stripe_event_id,event_type,account_id,body_sha256,disposition) VALUES('evt_outageparked','charge.refunded',$1,$2,'queued')",
+                &[&parked_account, &vec![0u8; 32]],
+            )
+            .await
+            .unwrap();
+            db.execute(
+                "INSERT INTO billing_risk_events(stripe_event_id,stripe_charge_id,risk_kind,account_id) VALUES('evt_outageparked','ch_outageparked','refund',$1)",
+                &[&parked_account],
+            )
+            .await
+            .unwrap();
+            db.execute(
+                "UPDATE billing_risk_events SET state='needs_review',failed_attempts=10 WHERE stripe_event_id='evt_outageparked'",
+                &[],
+            )
+            .await
+            .unwrap();
+            let requests = Arc::new(AtomicUsize::new(0));
+            let healthy = Arc::new(AtomicBool::new(false));
+            let app = Router::new().route(
+                "/v1/subscriptions/{subscription_id}",
+                get(
+                    move |State((counted, recovered)): State<(
+                        Arc<AtomicUsize>,
+                        Arc<AtomicBool>,
+                    )>,
+                          Path(subscription_id): Path<String>| async move {
+                        counted.fetch_add(1, Ordering::SeqCst);
+                        if recovered.load(Ordering::SeqCst) {
+                            let customer_id =
+                                subscription_id.replacen("sub_", "cus_", 1);
+                            return Json(json!({
+                                "id": subscription_id,
+                                "object": "subscription",
+                                "livemode": false,
+                                "customer": customer_id,
+                                "status": "active",
+                                "items": {"object": "list", "has_more": false, "data": [{"price": {"id": "price_fixture1"}}]}
+                            }))
+                            .into_response();
+                        }
+                        let mut headers = axum::http::HeaderMap::new();
+                        if let Some(seconds) = retry_after {
+                            headers.insert(
+                                axum::http::header::RETRY_AFTER,
+                                axum::http::HeaderValue::from_str(&seconds.to_string())
+                                    .unwrap(),
+                            );
+                        }
+                        (axum::http::StatusCode::from_u16(status).unwrap(), headers)
+                            .into_response()
+                    },
+                ),
+            )
+            .with_state((requests.clone(), healthy.clone()));
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let worker = Arc::new(
+                StripeTestWorker::new_with_quotas(
+                    "rk_test_fixture123456".into(),
+                    vec!["price_fixture1".into()],
+                    vec![super::super::TestQuotaPlan {
+                        price_id: "price_fixture1".into(),
+                        outbound_limit: 100,
+                        device_limit: None,
+                    }],
+                )
+                .unwrap()
+                .with_test_server(format!("http://{address}")),
+            );
+            let draining = Arc::new(AtomicBool::new(false));
+            // First tick: the initial jobs discover the outage; the drain must
+            // stop refilling, so the provider sees at most `concurrency` hits.
+            assert!(drain_billing_batch(&worker, &scoped_url, 25, 2, false, &draining).await);
+            let first_tick = requests.load(Ordering::SeqCst);
+            assert!(first_tick <= 2, "first tick sent {first_tick} requests");
+            let row = db.query_one(
+                "SELECT count(*) FILTER (WHERE state='queued' AND stripe_subscription_id LIKE 'sub_outage%'),count(*) FILTER (WHERE state='queued' AND failed_attempts<>0),min(next_attempt_at) FROM billing_reconciliations",
+                &[],
+            ).await.unwrap();
+            assert_eq!(row.get::<_, i64>(0), 10, "rows must stay queued");
+            assert_eq!(
+                row.get::<_, i64>(1),
+                0,
+                "outage must not count toward review"
+            );
+            let deferred = db.query_one(
+                "SELECT count(*) FROM billing_reconciliations WHERE next_attempt_at > now() + make_interval(secs => $1)",
+                &[&if retry_after.is_some() { 110f64 } else { 20f64 }],
+            ).await.unwrap().get::<_, i64>(0);
+            assert_eq!(
+                deferred, first_tick as i64,
+                "only the failed rows defer, by the provider pause"
+            );
+            // Second tick while paused: no provider contact at all.
+            assert!(!drain_billing_batch(&worker, &scoped_url, 25, 2, false, &draining).await);
+            assert_eq!(
+                requests.load(Ordering::SeqCst),
+                first_tick,
+                "paused queue sent more requests"
+            );
+            // Recovery: the provider answers again; the first successful
+            // request clears the pause state and sweeps parked rows back
+            // into the queue without operator action.
+            healthy.store(true, Ordering::SeqCst);
+            worker.expire_provider_pause_for_tests();
+            assert!(!drain_billing_batch(&worker, &scoped_url, 25, 2, false, &draining).await);
+            assert!(!drain_billing_batch(&worker, &scoped_url, 25, 2, false, &draining).await);
+            let parked = db.query_one("SELECT failed_attempts,dirty_generation=processed_generation FROM billing_reconciliations WHERE stripe_subscription_id='sub_outageparked'", &[]).await.unwrap();
+            assert_eq!(
+                parked.get::<_, i32>(0),
+                0,
+                "parked row must requeue and drain"
+            );
+            assert!(
+                parked.get::<_, bool>(1),
+                "parked row must requeue and drain"
+            );
+            let parked_risk: String = db
+                .query_one(
+                    "SELECT state FROM billing_risk_events WHERE stripe_event_id='evt_outageparked'",
+                    &[],
+                )
+                .await
+                .unwrap()
+                .get(0);
+            assert_eq!(parked_risk, "queued", "parked risk event must requeue");
+            let review: i64 = db
+                .query_one(
+                    "SELECT count(*) FROM billing_reconciliations WHERE state='needs_review'",
+                    &[],
+                )
+                .await
+                .unwrap()
+                .get(0);
+            assert_eq!(review, 0, "no row may remain parked after recovery");
+            assert!(
+                requests.load(Ordering::SeqCst) > first_tick,
+                "recovery must contact the provider"
+            );
+            server.abort();
+            setup
+                .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+                .await
+                .unwrap();
+        }
+    }
+
     #[derive(Default)]
     struct ProviderProbe {
         active: AtomicUsize,
@@ -315,11 +554,15 @@ mod tests {
     }
 
     impl BillingJobs for SlowFakeJobs {
-        async fn reconcile(&self, _database_url: String, risk: bool) -> Result<bool, BillingError> {
+        async fn reconcile(
+            &self,
+            _database_url: String,
+            risk: bool,
+        ) -> Result<JobOutcome, BillingError> {
             if risk {
                 if !self.risk_available.load(Ordering::SeqCst) {
                     self.initial_empty.notify_one();
-                    return Ok(false);
+                    return Ok(JobOutcome::Empty);
                 }
                 let _ = self.risk_started_after.compare_exchange(
                     usize::MAX,
@@ -332,7 +575,7 @@ mod tests {
                     .send()
                     .await
                     .map_err(|_| BillingError::InvalidEvent)?;
-                Ok(false)
+                Ok(JobOutcome::Empty)
             } else {
                 self.http
                     .get(format!("{}/subscription", self.base_url))
@@ -340,7 +583,7 @@ mod tests {
                     .await
                     .map_err(|_| BillingError::InvalidEvent)?;
                 self.subscriptions_done.fetch_add(1, Ordering::SeqCst);
-                Ok(true)
+                Ok(JobOutcome::WorkDone)
             }
         }
     }

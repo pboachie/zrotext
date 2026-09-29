@@ -212,7 +212,7 @@ pub(super) async fn fetch_json(
         .await
         .map_err(|_| ProviderFailure::Transport)?;
     if !response.status().is_success() {
-        return Err(ProviderFailure::HttpStatus(response.status().as_u16()).into());
+        return Err(super::worker::provider_failure_from_status(&response).into());
     }
     let mut body = Vec::new();
     while let Some(chunk) = response
@@ -372,8 +372,22 @@ pub(super) async fn backoff(
     class: &str,
 ) -> Result<Option<String>, BillingError> {
     let row = client.query_opt(
-        "UPDATE billing_risk_events SET failed_attempts=failed_attempts+1,state=CASE WHEN failed_attempts>=9 THEN 'needs_review' ELSE 'queued' END,last_failure_class=$2,next_attempt_at=now()+interval '1 minute' WHERE stripe_event_id=$1 AND state='queued' RETURNING state",
+        "UPDATE billing_risk_events SET failed_attempts=failed_attempts+1,state=CASE WHEN failed_attempts>=9 THEN 'needs_review' ELSE 'queued' END,last_failure_class=$2,next_attempt_at=now()+make_interval(secs => least(3600, 60 * (1 << least(failed_attempts,5)))) WHERE stripe_event_id=$1 AND state='queued' RETURNING state",
         &[&event_id, &class],
+    ).await?;
+    Ok(row.map(|row| row.get(0)))
+}
+
+/// Provider-wide failures defer the event without counting toward review.
+pub(super) async fn defer_provider_wide(
+    client: &Client,
+    event_id: &str,
+    class: &str,
+    delay_secs: f64,
+) -> Result<Option<String>, BillingError> {
+    let row = client.query_opt(
+        "UPDATE billing_risk_events SET last_failure_class=$2,next_attempt_at=now()+make_interval(secs => $3) WHERE stripe_event_id=$1 AND state='queued' RETURNING state",
+        &[&event_id, &class, &delay_secs],
     ).await?;
     Ok(row.map(|row| row.get(0)))
 }

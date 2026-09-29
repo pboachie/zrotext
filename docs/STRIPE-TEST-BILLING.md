@@ -53,7 +53,16 @@ even while a slow subscription batch remains active. With fast provider response
 default batch size need about eight ticks, or 70–80 seconds from the first tick.
 With slower responses, allow roughly `ceil(jobs / batch_size)` ticks plus the
 time for each batch's provider reads and database work. Failed jobs wait for
-their retry time; a provider outage can extend recovery indefinitely. Review
+their retry time. Row-level failures back off exponentially: one minute after
+the first failure, doubling per attempt up to one hour. A provider-wide
+failure — 401/403, 429, any 5xx or a transport error — pauses both queues
+after the request that discovered it: no further jobs are spawned that tick,
+the pause starts at 30 seconds and doubles per consecutive provider-wide
+failure up to 10 minutes, and a numeric `Retry-After` on a 429 replaces the
+schedule up to the same 10-minute cap. Provider-wide failures never count
+toward a row's retry budget, and the first successful provider request after
+the pause requeues every row parked in `needs_review`, so an outage no longer
+parks rows for manual review. Review
 `billing_reconciliations` and `billing_risk_events` for pending rows and
 `next_attempt_at` when recovery is slower than expected.
 
@@ -132,8 +141,12 @@ A subscription 404 is reconciled as `provider_deleted` using the stored tenant
 binding. It is terminal, projects no quota or device capacity when there is no
 other active subscription, clears that reconciliation's pending generation,
 and writes `provider_deleted` to the entitlement audit when quota plans are
-configured. Other provider errors retry at most ten times. The row then moves
-to `needs_review`, remains admission blocking, and stops automatic retries.
+configured. Other provider errors retry at most ten times with exponential backoff. The
+row then moves
+to `needs_review`, remains admission blocking, and stops automatic retries
+until a provider-wide outage recovery requeues it; provider-wide failures
+(401/403, 429, 5xx, transport) never reach this cap because they pause the
+queues instead.
 The owner billing status exposes `reviewReconciliations`, `reviewRiskEvents`,
 and per-subscription `needsReview`; an operator can count all pending review
 rows, including risk events that are not yet tenant-bound, with:
