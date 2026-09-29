@@ -118,7 +118,11 @@ an SMS. See [the line-bound opt-out contract](line-opt-out-contract.md).
 Default-off `sms_line_challenge`, `sms_line_proof`, `sms_line_proof_ack`, and
 `sms_line_activated` frames carry SMS line activation when
 `SMS_LINE_ACTIVATION_ENABLED=true`. They bind a line to this device only after
-the owner approves the device's signed declaration; none authorizes an SMS. See
+the owner approves the device's signed declaration; none authorizes an SMS. The
+hub polls the exchange every 3 s while frames are flowing and every 30 s while
+the device has no open exchange; opening a challenge on the same hub instance
+wakes the sockets immediately, and another instance's sockets see it within one
+idle poll. See
 [the SMS line activation contract](sms-line-activation-contract.md).
 
 The Android app exposes a separate **Start inbound metadata pilot** action. It
