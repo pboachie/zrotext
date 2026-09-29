@@ -90,7 +90,7 @@ async fn isolated_database(prefix: &str) -> (tokio_postgres::Client, String, Str
         ),
         // 049 validates owner queue probe indexes prepared outside this list;
         // usage plans do not depend on it.
-        include_str!("../../../../../deploy/compose/migrations/059_usage_limit_plans.sql"),
+        include_str!("../../../../../deploy/compose/migrations/055_usage_limit_plans.sql"),
     ] {
         db.batch_execute(sql).await.unwrap();
     }

@@ -226,7 +226,7 @@ const TEST_MIGRATIONS: [(&str, &str); 56] = [
     ),
     (
         "055_usage_limit_plans.sql",
-        include_str!("../../../deploy/compose/migrations/055_usage_limit_plans.sql"),
+        migration!("055_usage_limit_plans.sql"),
     ),
 ];
 

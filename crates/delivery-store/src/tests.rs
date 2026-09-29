@@ -2,7 +2,7 @@ use super::*;
 
 // Keep the admission fixtures on the complete, reviewed schema. SQL is
 // embedded at build time so tests never execute files discovered at runtime.
-const TEST_MIGRATIONS: [(&str, &str); 55] = [
+const TEST_MIGRATIONS: [(&str, &str); 56] = [
     (
         "001_foundation.sql",
         include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
@@ -224,6 +224,10 @@ const TEST_MIGRATIONS: [(&str, &str); 55] = [
     (
         "055_trusted_browser_epoch.sql",
         include_str!("../../../deploy/compose/migrations/055_trusted_browser_epoch.sql"),
+    ),
+    (
+        "055_usage_limit_plans.sql",
+        include_str!("../../../deploy/compose/migrations/055_usage_limit_plans.sql"),
     ),
 ];
 
@@ -2983,11 +2987,7 @@ async fn billed_admission_guard_share_locks_every_row_it_reads() {
         "SELECT 1 FROM billing_reconciliations WHERE account_id=$1 FOR UPDATE NOWAIT",
         "SELECT 1 FROM billing_subscriptions WHERE account_id=$1 FOR UPDATE NOWAIT",
         "SELECT 1 FROM usage_quota_policies WHERE account_id=$1 FOR UPDATE NOWAIT",
-        (
-        "055_usage_limit_plans.sql",
-        include_str!("../../../deploy/compose/migrations/055_usage_limit_plans.sql"),
-    ),
-];
+    ];
     // Nothing holds the rows yet: the peer's probe itself is lockable.
     for statement in guarded {
         let probe = peer.transaction().await.unwrap();

@@ -30,7 +30,7 @@ macro_rules! migration {
 
 // Holds are checked by admission and released by inbound, so these routes run
 // on the complete schema. SQL is embedded at build time.
-const TEST_MIGRATIONS: [(&str, &str); 55] = [
+const TEST_MIGRATIONS: [(&str, &str); 56] = [
     migration!("001_foundation.sql"),
     migration!("002_auth.sql"),
     migration!("003_delivery.sql"),
@@ -86,6 +86,7 @@ const TEST_MIGRATIONS: [(&str, &str); 55] = [
     migration!("053_observer_seat_invitations.sql"),
     migration!("054_stateless_device_challenges.sql"),
     migration!("055_trusted_browser_epoch.sql"),
+    migration!("055_usage_limit_plans.sql"),
 ];
 
 #[test]
@@ -365,11 +366,7 @@ async fn owner_holds_and_review_decisions_are_owner_bound_tenant_scoped_and_audi
         owners.push((signup.account_id, device, session));
     }
     let (account_a, device_a, owner_a) = &owners[0];
-    let (account_b, device_b, owner_b) = &owners[1    (
-        "055_usage_limit_plans.sql",
-        include_str!("../../../deploy/compose/migrations/055_usage_limit_plans.sql"),
-    ),
-];
+    let (account_b, device_b, owner_b) = &owners[1];
     let review_a = signed_withdrawal(
         &db,
         (*account_a, *device_a),

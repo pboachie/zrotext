@@ -34,7 +34,7 @@ no device-cap field in this slice; the existing device-cap machinery is
 coupled to Stripe reconciliation and extending it to plans is a separate,
 undecided step.
 
-Apply migration 059 (`059_usage_limit_plans.sql`) before enabling.
+Apply migration 055 (`055_usage_limit_plans.sql`) before enabling.
 
 ## Assignment and projection
 
