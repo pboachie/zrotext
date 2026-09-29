@@ -298,6 +298,108 @@ async fn reservation_is_idempotent_and_refund_stays_in_original_utc_period() {
 
 #[tokio::test]
 #[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn period_start_truncates_month_boundaries_with_and_without_an_explicit_time() {
+    let mut db = TestDb::new().await;
+    let (account, device) = db.account_and_device().await;
+    db.policy(account, 10).await;
+    let expiry = now_ms() + 3_600_000;
+    // The last millisecond of January and the first of February must land in
+    // different UTC periods through the same reservation statement, and an
+    // admission without an explicit instant truncates the transaction's own
+    // timestamp into the current UTC month.
+    let jan_last = timestamp_ms(&db.client, "2026-01-31 23:59:59.999+00").await;
+    let feb_first = timestamp_ms(&db.client, "2026-02-01 00:00:00.000+00").await;
+    {
+        let mut store = DeliveryStore::new(&mut db.client);
+        assert!(
+            store
+                .accept_metered_at(
+                    message(account, device, Uuid::new_v4(), "jan-last", expiry),
+                    jan_last,
+                )
+                .await
+                .unwrap()
+                .created
+        );
+        assert!(
+            store
+                .accept_metered_at(
+                    message(account, device, Uuid::new_v4(), "feb-first", expiry),
+                    feb_first,
+                )
+                .await
+                .unwrap()
+                .created
+        );
+        assert!(
+            store
+                .accept_metered(message(
+                    account,
+                    device,
+                    Uuid::new_v4(),
+                    "implicit-now",
+                    expiry
+                ))
+                .await
+                .unwrap()
+                .created
+        );
+    }
+    let current_month: String = db
+        .client
+        .query_one(
+            "SELECT to_char(date_trunc('month', transaction_timestamp()) AT TIME ZONE 'UTC', 'YYYY-MM-DD')",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    // The implicit reservation may share a period with an explicit one only
+    // if the test happens to run in January or February 2026.
+    let overlap = match current_month.as_str() {
+        "2026-01-01" | "2026-02-01" => 1,
+        _ => 0,
+    };
+    let periods = db
+        .client
+        .query(
+            "SELECT period_start::text,reserved_units FROM usage_periods WHERE account_id=$1 ORDER BY period_start",
+            &[&account],
+        )
+        .await
+        .unwrap();
+    let expected: Vec<(String, i64)> = match current_month.as_str() {
+        "2026-01-01" => vec![("2026-01-01".into(), 2), ("2026-02-01".into(), 1)],
+        "2026-02-01" => vec![("2026-01-01".into(), 1), ("2026-02-01".into(), 2)],
+        _ => vec![
+            ("2026-01-01".into(), 1),
+            ("2026-02-01".into(), 1),
+            (current_month.clone(), 1),
+        ],
+    };
+    let actual: Vec<(String, i64)> = periods.iter().map(|row| (row.get(0), row.get(1))).collect();
+    assert_eq!(actual, expected);
+    let ledger: Vec<(String,)> = db
+        .client
+        .query(
+            "SELECT period_start::text FROM usage_ledger WHERE account_id=$1 ORDER BY period_start",
+            &[&account],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| (row.get(0),))
+        .collect();
+    assert_eq!(ledger.len(), 3);
+    assert_eq!(
+        ledger.iter().filter(|(p,)| p == &current_month).count(),
+        1 + overlap
+    );
+    db.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn one_remaining_unit_accepts_only_one_of_one_hundred_contenders() {
     let db = TestDb::new().await;
     let (account, device) = db.account_and_device().await;

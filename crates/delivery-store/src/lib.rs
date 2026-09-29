@@ -267,10 +267,11 @@ impl<'a> DeliveryStore<'a> {
         let recipient_digest = Sha256::digest(input.recipient_e164.as_bytes()).to_vec();
         let expiry = input.expires_at_ms as f64;
         let tx = self.client.transaction().await?;
-        let require_reservation = if let MeteringTime::Alpha { billing_enabled } = metering {
+        let (require_reservation, bound) = if let MeteringTime::Alpha { billing_enabled } = metering
+        {
             lock_billing_account(&tx, input.account_id, billing_enabled).await?
         } else {
-            !matches!(metering, MeteringTime::Unmetered)
+            (!matches!(metering, MeteringTime::Unmetered), None)
         };
         // Suppression writers take this same account lock. A STOP that wins
         // before admission commits must be visible here, even across sites.
@@ -412,15 +413,15 @@ impl<'a> DeliveryStore<'a> {
         match metering {
             MeteringTime::Unmetered => {}
             MeteringTime::Database => {
-                reserve_outbound(&tx, input.account_id, message_id, None).await?
+                reserve_outbound(&tx, input.account_id, message_id, None, None).await?
             }
             MeteringTime::Alpha { .. } if require_reservation => {
-                reserve_outbound(&tx, input.account_id, message_id, None).await?
+                reserve_outbound(&tx, input.account_id, message_id, None, bound).await?
             }
             MeteringTime::Alpha { .. } => {}
             #[cfg(test)]
             MeteringTime::UnixMillis(unix_ms) => {
-                reserve_outbound(&tx, input.account_id, message_id, Some(unix_ms)).await?
+                reserve_outbound(&tx, input.account_id, message_id, Some(unix_ms), None).await?
             }
         }
         tx.execute(
@@ -1198,11 +1199,14 @@ async fn reservation_exists(
 }
 
 // Shared with dormant sealed admission; preserve billing-customer/account lock order.
+// Returns whether a usage reservation is required, and whether the account has
+// a billing-customer binding (the caller may pass the binding on to
+// `reserve_outbound` so the row is read and locked once per admission).
 async fn lock_billing_account(
     tx: &Transaction<'_>,
     account_id: Uuid,
     billing_enabled: bool,
-) -> Result<bool, StoreError> {
+) -> Result<(bool, Option<bool>), StoreError> {
     // Billing ingress locks an existing customer row before taking
     // account-related FK locks. Follow that order for a bound tenant.
     let bound = tx
@@ -1218,7 +1222,7 @@ async fn lock_billing_account(
             &[&account_id],
         )
         .await?;
-        Ok(true)
+        Ok((true, Some(true)))
     } else {
         // The stronger lock conflicts with a concurrent new binding's
         // FK KEY SHARE. Recheck after acquiring it; if the binding won
@@ -1240,108 +1244,128 @@ async fn lock_billing_account(
         {
             return Err(StoreError::QuotaNotConfigured);
         }
-        Ok(billing_enabled)
+        Ok((billing_enabled, Some(false)))
     }
 }
 
+/// `bound` carries the tenant's billing-customer binding when the caller has
+/// already read (and locked) it in this transaction: `lock_billing_account`
+/// passes `Some`, so the alpha path reads the row once. `None` means the
+/// caller took no billing locks and the binding is queried here.
 async fn reserve_outbound(
     tx: &Transaction<'_>,
     account_id: Uuid,
     message_id: Uuid,
     at_unix_ms: Option<i64>,
+    bound: Option<bool>,
 ) -> Result<(), StoreError> {
     // Hold the tenant binding while checking pending payment risk, subscription
     // reconciliation, and policy. Risk ingestion locks the same customer row.
-    let billed = tx
-        .query_opt(
-            "SELECT 1 FROM billing_customers WHERE account_id=$1 FOR SHARE",
-            &[&account_id],
-        )
-        .await?
-        .is_some();
-    if billed {
-        if tx
+    let billed = match bound {
+        Some(billed) => billed,
+        None => tx
             .query_opt(
-                "SELECT 1 FROM billing_risk_events WHERE account_id=$1 AND state IN ('queued','held','needs_review') LIMIT 1 FOR SHARE",
+                "SELECT 1 FROM billing_customers WHERE account_id=$1 FOR SHARE",
+                &[&account_id],
+            )
+            .await?
+            .is_some(),
+    };
+    let mut past_due_rows = 0i64;
+    let (limit, source) = if billed {
+        // One statement takes the same FOR SHARE locks the sequential reads
+        // took: the account's risk events, every reconciliation row, its
+        // past-due subscription rows and the outbound policy row. The
+        // account lock this transaction already holds serializes writers,
+        // so intra-statement lock order cannot deadlock against them. The
+        // past-due grace clock check deliberately stays its own statement:
+        // it must observe a clock taken after these locks, not with them.
+        let guards = tx
+            .query_one(
+                "SELECT \
+                   EXISTS(SELECT 1 FROM billing_risk_events WHERE account_id=$1 AND state IN ('queued','held','needs_review') FOR SHARE), \
+                   (SELECT count(*) FROM (SELECT 1 FROM billing_reconciliations WHERE account_id=$1 FOR SHARE) recon_lock), \
+                   (SELECT count(*) FROM (SELECT 1 FROM billing_reconciliations WHERE account_id=$1 AND dirty_generation=processed_generation FOR SHARE) recon_done_lock), \
+                   (SELECT count(*) FROM (SELECT 1 FROM billing_subscriptions WHERE account_id=$1 AND stripe_status='past_due' FOR SHARE) past_due_lock), \
+                   (SELECT limit_units FROM usage_quota_policies WHERE account_id=$1 AND metric='outbound_message' FOR SHARE), \
+                   (SELECT source FROM usage_quota_policies WHERE account_id=$1 AND metric='outbound_message' FOR SHARE)",
+                &[&account_id],
+            )
+            .await?;
+        if guards.get::<_, bool>(0) {
+            return Err(StoreError::PaymentHold);
+        }
+        let recon_total: i64 = guards.get(1);
+        let recon_done: i64 = guards.get(2);
+        if recon_total == 0 || recon_done != recon_total {
+            return Err(StoreError::QuotaNotConfigured);
+        }
+        past_due_rows = guards.get(3);
+        (
+            guards.get::<_, Option<i64>>(4),
+            guards.get::<_, Option<String>>(5),
+        )
+    } else {
+        let policy = tx
+            .query_opt(
+                "SELECT limit_units,source FROM usage_quota_policies \
+                 WHERE account_id=$1 AND metric='outbound_message' FOR SHARE",
+                &[&account_id],
+            )
+            .await?;
+        match policy {
+            Some(policy) => (
+                policy.get::<_, Option<i64>>(0),
+                policy.get::<_, Option<String>>(1),
+            ),
+            None => return Err(StoreError::QuotaNotConfigured),
+        }
+    };
+    if past_due_rows > 0
+        && tx
+            .query_opt(
+                "SELECT 1 FROM billing_subscriptions WHERE account_id=$1 AND stripe_status='past_due' AND (payment_grace_started_at IS NULL OR payment_grace_invoice_id IS DISTINCT FROM latest_invoice_id OR payment_grace_started_at+interval '7 days'<=clock_timestamp()) LIMIT 1",
                 &[&account_id],
             )
             .await?
             .is_some()
-        {
-            return Err(StoreError::PaymentHold);
-        }
-        let rows = tx
-            .query(
-                "SELECT dirty_generation,processed_generation FROM billing_reconciliations WHERE account_id=$1 FOR SHARE",
-                &[&account_id],
-            )
-            .await?;
-        if rows.is_empty()
-            || rows
-                .iter()
-                .any(|row| row.get::<_, i64>(0) != row.get::<_, i64>(1))
-        {
-            return Err(StoreError::QuotaNotConfigured);
-        }
-        // Lock the provider projection before checking a fresh DB clock.
-        // transaction_timestamp() and statement_timestamp() may predate a
-        // blocked account or subscription lock near the grace deadline.
-        tx.query(
-            "SELECT stripe_subscription_id FROM billing_subscriptions WHERE account_id=$1 AND stripe_status='past_due' FOR SHARE",
-            &[&account_id],
-        ).await?;
-        if tx.query_opt(
-            "SELECT 1 FROM billing_subscriptions WHERE account_id=$1 AND stripe_status='past_due' AND (payment_grace_started_at IS NULL OR payment_grace_invoice_id IS DISTINCT FROM latest_invoice_id OR payment_grace_started_at+interval '7 days'<=clock_timestamp()) LIMIT 1",
-            &[&account_id],
-        ).await?.is_some() {
-            return Err(StoreError::QuotaExceeded);
-        }
-    }
-    let policy = tx
-        .query_opt(
-            "SELECT limit_units,source FROM usage_quota_policies \
-             WHERE account_id=$1 AND metric='outbound_message' FOR SHARE",
-            &[&account_id],
-        )
-        .await?
-        .ok_or(StoreError::QuotaNotConfigured)?;
-    let limit: i64 = policy.get(0);
-    if billed && policy.get::<_, String>(1) != "stripe_test" {
-        return Err(StoreError::QuotaNotConfigured);
-    }
-    let period_start: String = tx
-        .query_one(
-            "SELECT date_trunc('month', COALESCE(to_timestamp($1::bigint::double precision / 1000), \
-             transaction_timestamp()) AT TIME ZONE 'UTC')::date::text",
-            &[&at_unix_ms],
-        )
-        .await?
-        .get(0);
-    tx.execute(
-        "INSERT INTO usage_periods(account_id,metric,period_start,period_end,limit_units) \
-         VALUES($1,'outbound_message',$2::text::date,($2::text::date + interval '1 month')::date,$3) \
-         ON CONFLICT(account_id,metric,period_start) DO NOTHING",
-        &[&account_id, &period_start, &limit],
-    )
-    .await?;
-    let reserved = tx
-        .query_opt(
-            "UPDATE usage_periods SET reserved_units=reserved_units+1 \
-             WHERE account_id=$1 AND metric='outbound_message' AND period_start=$2::text::date \
-               AND reserved_units-refunded_units < limit_units \
-             RETURNING period_start",
-            &[&account_id, &period_start],
-        )
-        .await?;
-    if reserved.is_none() {
+    {
         return Err(StoreError::QuotaExceeded);
     }
-    tx.execute(
-        "INSERT INTO usage_ledger(account_id,message_id,metric,period_start,entry_kind,units) \
-         VALUES($1,$2,'outbound_message',$3::text::date,'reserve',1)",
-        &[&account_id, &message_id, &period_start],
-    )
-    .await?;
+    let limit: i64 = limit.ok_or(StoreError::QuotaNotConfigured)?;
+    if billed && source.as_deref() != Some("stripe_test") {
+        return Err(StoreError::QuotaNotConfigured);
+    }
+    // One statement truncates the metering instant to its UTC month, creates
+    // or advances the period, and writes the reservation ledger entry. The
+    // upsert's guard keeps the exact once-only reservation semantics: a new
+    // period reserves its first unit only under a positive limit, and an
+    // existing period advances only below its stored limit, so an empty
+    // result means QuotaExceeded exactly as the separate statements did.
+    let reserved = tx
+        .query_one(
+            "WITH period AS ( \
+               SELECT date_trunc('month', COALESCE(to_timestamp($2::bigint::double precision / 1000), \
+                 transaction_timestamp()) AT TIME ZONE 'UTC')::date AS p), \
+             upsert AS ( \
+               INSERT INTO usage_periods(account_id,metric,period_start,period_end,limit_units,reserved_units) \
+               SELECT $1,'outbound_message',p,(p + interval '1 month')::date,$3,1 FROM period WHERE $3::bigint > 0 \
+               ON CONFLICT(account_id,metric,period_start) DO UPDATE \
+                 SET reserved_units=usage_periods.reserved_units+1 \
+                 WHERE usage_periods.reserved_units-usage_periods.refunded_units < usage_periods.limit_units \
+               RETURNING period_start), \
+             ledger AS ( \
+               INSERT INTO usage_ledger(account_id,message_id,metric,period_start,entry_kind,units) \
+               SELECT $1,$4,'outbound_message',period_start,'reserve',1 FROM upsert \
+               RETURNING 1) \
+             SELECT count(*) FROM upsert",
+            &[&account_id, &at_unix_ms, &limit, &message_id],
+        )
+        .await?
+        .get::<_, i64>(0);
+    if reserved == 0 {
+        return Err(StoreError::QuotaExceeded);
+    }
     Ok(())
 }
 
