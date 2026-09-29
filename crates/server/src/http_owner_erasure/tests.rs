@@ -222,14 +222,26 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../../../../deploy/compose/migrations/050_message_attempts_recent_index.sql"),
     ),
     (
+        "051_failover_controller_state.sql",
+        include_str!("../../../../deploy/compose/migrations/051_failover_controller_state.sql"),
+    ),
+    (
+        "052_admission_pending_index.sql",
+        include_str!("../../../../deploy/compose/migrations/052_admission_pending_index.sql"),
+    ),
+    (
         "053_observer_seat_invitations.sql",
         include_str!("../../../../deploy/compose/migrations/053_observer_seat_invitations.sql"),
+    ),
+    (
+        "054_stateless_device_challenges.sql",
+        include_str!("../../../../deploy/compose/migrations/054_stateless_device_challenges.sql"),
     ),
 ];
 
 /// Indexes the Compose migrator prepares with CREATE INDEX CONCURRENTLY in
-/// autocommit mode before the numbered 034, 040, 049 and 050 files record their
-/// checksum gates (deploy/compose/README.md, "Migration 034 is a narrow
+/// autocommit mode before the numbered 034, 040, 049, 050 and 052 files record
+/// their checksum gates (deploy/compose/README.md, "Migration 034 is a narrow
 /// online-index exception"). The gate SQL validates the exact index
 /// definition; a fresh fixture schema builds the identical index with a
 /// plain CREATE INDEX, which differs only in not being concurrent.
@@ -254,7 +266,68 @@ const PREPARED_INDEXES: &[(&str, &str)] = &[
         "050_message_attempts_recent_index.sql",
         "CREATE INDEX message_attempts_device_created ON message_attempts(account_id,device_id,created_at)",
     ),
+    (
+        "052_admission_pending_index.sql",
+        "CREATE INDEX messages_admission_pending ON messages(account_id,device_id)          WHERE state IN ('queued','claimed')",
+    ),
 ];
+
+/// The fixture above must name every checked-in migration, in order. A
+/// skipped file lets the erasure plans drift from the schema production runs
+/// (054 dropped a table the delete plan still named, and no test noticed).
+#[test]
+fn migrations_fixture_is_every_checked_in_migration() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/compose/migrations");
+    let mut discovered = std::fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .filter(|name| name.ends_with(".sql"))
+        .collect::<Vec<_>>();
+    discovered.sort();
+    let embedded = MIGRATIONS
+        .iter()
+        .map(|(name, _)| name.to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        discovered, embedded,
+        "add every migration file to MIGRATIONS, in order"
+    );
+}
+
+/// Every table the erasure deletes from or counts as blocking exists in the
+/// fully migrated schema. A migration that drops or renames one of them makes
+/// every erasure fail with 42P01, roll back and return 503.
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn erasure_plans_name_only_tables_of_the_migrated_schema() {
+    let (admin, db, _database_url, schema) = migrated_schema("tables").await;
+    let mut missing = Vec::new();
+    for table in DELETE_PLAN
+        .iter()
+        .map(|(table, _)| *table)
+        .filter(|table| *table != OBSERVER_USERS_TABLE)
+        .chain(BLOCKED_TABLES.iter().copied())
+        .chain(["users", "accounts"])
+    {
+        let exists: bool = db
+            .query_one("SELECT to_regclass($1) IS NOT NULL", &[&table])
+            .await
+            .unwrap()
+            .get(0);
+        if !exists {
+            missing.push(table);
+        }
+    }
+    admin
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+    assert!(
+        missing.is_empty(),
+        "erasure plans name tables the migrated schema lacks: {missing:?}"
+    );
+}
 
 /// A migrated schema plus its admin connection for teardown. Mirrors the
 /// sibling owner/auth PostgreSQL tests.
@@ -345,7 +418,7 @@ fn blocked_count(report: &Value, table: &str) -> u64 {
 /// Two accounts carrying delivery, enrollment, metering, webhook,
 /// billing and account-recovery fixtures. Returns both signups, both
 /// sessions and the hasher-backed router under test. Neither account
-/// carries enrolled device keys or their auth challenges: migration 044
+/// carries enrolled device keys: migration 044
 /// records immutable signing trust history for every enrolled key, which
 /// blocks erasure (proven by `sealed_trust_history_blocks_erasure`), so
 /// this erasable fixture models accounts without that history.
@@ -743,7 +816,6 @@ async fn erasure_deletes_every_account_row_and_ends_the_session() {
         ("idempotency_keys", 1),
         ("message_attempts", 2),
         ("messages", 2),
-        ("device_auth_challenges", 0),
         ("device_keys", 0),
         ("pairing_requests", 1),
         ("api_keys", 1),
@@ -802,7 +874,6 @@ async fn erasure_deletes_every_account_row_and_ends_the_session() {
         "devices",
         "device_sessions",
         "device_keys",
-        "device_auth_challenges",
         "pairing_requests",
         "api_keys",
         "usage_ledger",

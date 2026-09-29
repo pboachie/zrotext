@@ -170,10 +170,6 @@ const DELETE_PLAN: &[(&str, &str)] = &[
     ),
     ("messages", "DELETE FROM messages WHERE account_id=$1"),
     // Enrollment before its device keys and devices.
-    (
-        "device_auth_challenges",
-        "DELETE FROM device_auth_challenges WHERE account_id=$1",
-    ),
     ("device_keys", "DELETE FROM device_keys WHERE account_id=$1"),
     (
         "pairing_requests",
