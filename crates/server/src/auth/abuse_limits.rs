@@ -79,6 +79,8 @@ limits! {
     BillingSession,
     ApiKeyCreate,
     SmsLineActivation,
+    SeatInvite,
+    SeatAccept,
 }
 
 impl Limit {
@@ -145,6 +147,11 @@ impl Limit {
             Self::MfaStepUp => ("mfa_step_up", 120, 60, Some((5, 900))),
             Self::BillingSession => ("billing_session", 120, 60, Some((8, 60))),
             Self::SmsLineActivation => ("sms_line_activation", 120, 60, Some((30, 900))),
+            // Owner seat management, charged per account.
+            Self::SeatInvite => ("seat_invite", 60, 3_600, Some((30, 86_400))),
+            // Invitation acceptance; a live token probes through
+            // `consume_or_verify` like email verification.
+            Self::SeatAccept => ("seat_accept", 60, 60, None),
         }
     }
 }

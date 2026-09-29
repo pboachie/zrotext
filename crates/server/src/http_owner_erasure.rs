@@ -35,6 +35,22 @@
 //! retained. Metering and billing rows are erased with everything else; only
 //! request-budget counters (keyed hashes shared across accounts) are kept,
 //! and that kept set is reported honestly in the response.
+//!
+//! Observer seats are account-owned people too. Erasing the account deletes
+//! every observer user row of it (email, password hash, verification state),
+//! live or removed, together with its invitations and removal records, using
+//! the guard seat removal uses: only a user whose sole membership is an
+//! observer seat of THIS account, never an owner and never a user with a
+//! membership elsewhere. Before the auth fence the transaction locks the
+//! account's observer memberships and invitation rows in the same order seat
+//! removal and acceptance take them (membership, then invitation), so an
+//! in-flight removal or acceptance finishes first and none can start on
+//! those rows until the erasure ends; the fence's `FOR UPDATE` on the account
+//! row then blocks any membership insert, so an acceptance cannot resurrect
+//! an observer of an erased account (it fails once the account is gone). If a
+//! foreign key refuses an observer user delete the erasure fails closed like
+//! every other blocker: 409 `erasure_blocked` naming `observer_users`, and
+//! nothing is deleted.
 
 use crate::{
     auth::{
@@ -272,12 +288,31 @@ const DELETE_PLAN: &[(&str, &str)] = &[
     ),
     ("owner_mfa", "DELETE FROM owner_mfa WHERE account_id=$1"),
     ("sessions", "DELETE FROM sessions WHERE account_id=$1"),
+    // Invitations and removal records hold invitee addresses. Their user link
+    // is `ON DELETE SET NULL` and the account link cascades, but they are
+    // deleted explicitly so the report and the account-row delete stay honest.
+    (
+        "seat_invitations",
+        "DELETE FROM seat_invitations WHERE account_id=$1",
+    ),
+    // Observer users of this account, by the seat-removal guard: the user is
+    // an observer of THIS account and holds no membership of any other kind
+    // or account. Owners never match. Deleting the user cascades the observer
+    // membership, so the plan's memberships count below is owners only.
+    (OBSERVER_USERS_TABLE, OBSERVER_USERS_SQL),
     ("memberships", "DELETE FROM memberships WHERE account_id=$1"),
 ];
 
-const ERASED_STATEMENT: &str = "One transaction deleted every account-owned row listed under deleted, in foreign-key order, and then the account itself. Rows under retained were kept only for the stated reason: the request-budget rows are pepper-keyed digests shared across accounts, hold no identifiers, and the worker prunes them. This response is the only confirmation. The account and its sessions no longer exist, so later authenticated requests fail, and database backups, replicas and WAL archives keep their own separate lifecycle.";
+/// Report label of the guarded observer user delete in [`DELETE_PLAN`].
+const OBSERVER_USERS_TABLE: &str = "observer_users";
+const OBSERVER_USERS_SQL: &str = "DELETE FROM users u WHERE \
+     EXISTS (SELECT 1 FROM memberships m WHERE m.user_id=u.id AND m.account_id=$1 AND m.role='observer') \
+     AND NOT EXISTS (SELECT 1 FROM memberships m WHERE m.user_id=u.id \
+                     AND NOT (m.account_id=$1 AND m.role='observer'))";
 
-const BLOCKED_STATEMENT: &str = "Nothing was deleted. The listed rows are append-only consent and audit records, line identity tombstones, immutable sealed trust history, operator review decisions, or billing events still referenced by another account's risk records, and their foreign keys still reference the account, so a complete erasure is impossible while they exist. The transaction rolled back unchanged; contact the operator about those records.";
+const ERASED_STATEMENT: &str = "One transaction deleted every account-owned row listed under deleted, in foreign-key order, including the observer users invited to the account and its invitation records, and then the account itself. Rows under retained were kept only for the stated reason: the request-budget rows are pepper-keyed digests shared across accounts, hold no identifiers, and the worker prunes them. This response is the only confirmation. The account and its sessions no longer exist, so later authenticated requests fail, and database backups, replicas and WAL archives keep their own separate lifecycle.";
+
+const BLOCKED_STATEMENT: &str = "Nothing was deleted. The listed rows are append-only consent and audit records, line identity tombstones, immutable sealed trust history, operator review decisions, billing events still referenced by another account's risk records, or an observer user that a foreign key refuses to delete, and their foreign keys still reference the account, so a complete erasure is impossible while they exist. The transaction rolled back unchanged; contact the operator about those records.";
 
 #[derive(Clone)]
 pub struct OwnerErasureState {
@@ -364,6 +399,8 @@ fn auth_error(error: AuthError) -> Response {
             error_response(StatusCode::FORBIDDEN, "forbidden")
         }
         AuthError::RateLimited => error_response(StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
+        // Only the seat-invitation routes raise Conflict; erasure never does.
+        AuthError::Conflict => error_response(StatusCode::CONFLICT, "conflict"),
         AuthError::Database(_) => error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
         AuthError::Password => error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal_error"),
         AuthError::Crypto => error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
@@ -529,6 +566,34 @@ async fn erase_account(
         )
             .into_response();
     }
+    // Quiesce observer seats before the fence, in the order seat removal and
+    // acceptance take these rows (membership, then invitation), so no lock
+    // cycle can form with them: an in-flight removal or acceptance finishes
+    // first, and later ones queue behind this transaction on rows that no
+    // longer exist once it commits. These reads can wait, so they belong
+    // before the fence and never after it. Removed seats whose user row
+    // survived (their membership is revoked, not deleted) are included.
+    let observer_seats = match tx
+        .query(
+            "SELECT user_id FROM memberships \
+             WHERE account_id=$1 AND role='observer' ORDER BY user_id FOR UPDATE",
+            &[&account_id],
+        )
+        .await
+    {
+        Ok(rows) => rows.len() as u64,
+        Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+    };
+    if tx
+        .query(
+            "SELECT id FROM seat_invitations WHERE account_id=$1 ORDER BY id FOR UPDATE",
+            &[&account_id],
+        )
+        .await
+        .is_err()
+    {
+        return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
+    }
     // FINAL AUTH FENCE. Ordering inside this transaction is deliberate:
     // every read that can wait on a row lock — all the blocked-table
     // preflight counts above — has already run, and this fence is the last
@@ -566,6 +631,27 @@ async fn erase_account(
     for &(table, sql) in DELETE_PLAN {
         let rows = match tx.execute(sql, &[&account_id]).await {
             Ok(rows) => rows,
+            // A foreign key refusing an observer user delete is a blocker,
+            // not a transient fault: fail closed and say what blocks it.
+            Err(error)
+                if table == OBSERVER_USERS_TABLE
+                    && error
+                        .code()
+                        .is_some_and(|code| code.code().starts_with("23")) =>
+            {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(BlockedView {
+                        code: "erasure_blocked",
+                        blocked: vec![TableCount {
+                            table: OBSERVER_USERS_TABLE,
+                            rows: observer_seats,
+                        }],
+                        statement: BLOCKED_STATEMENT,
+                    }),
+                )
+                    .into_response();
+            }
             Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
         };
         deleted.push(TableCount { table, rows });

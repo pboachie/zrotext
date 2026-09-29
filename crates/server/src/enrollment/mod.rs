@@ -3,7 +3,7 @@
 //! HTTP callers must authenticate the owner, enforce origin/CSRF, rate limit
 //! pairing operations, and keep pairing tokens and nonces out of logs and URLs.
 
-use crate::auth::SessionPrincipal;
+use crate::auth::{Role, SessionPrincipal};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use hmac::{Hmac, Mac, digest::KeyInit};
 use p256::{
@@ -254,12 +254,35 @@ async fn owner_session_active(
     client: &Client,
     principal: &SessionPrincipal,
 ) -> Result<bool, EnrollmentError> {
+    // authenticate_session also admits observers, so the shortcut must not
+    // stand in for the owner-role check on a non-owner principal.
+    if principal.role == Role::Owner && principal.spend_fresh_verification() {
+        return Ok(true);
+    }
+    Ok(client
+        .query_opt(
+            "SELECT 1 FROM sessions s JOIN users u ON u.id=s.user_id JOIN memberships m ON (m.account_id,m.user_id)=(s.account_id,s.user_id) JOIN accounts a ON a.id=s.account_id WHERE m.role='owner' AND m.revoked_at IS NULL AND s.id=$1 AND s.account_id=$2 AND s.user_id=$3 AND s.revoked_at IS NULL AND s.expires_at>now() AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL",
+            &[&principal.session_id, &principal.tenant.account_id(), &principal.user_id],
+        )
+        .await?
+        .is_some())
+}
+
+/// Any live membership role: the owner dashboard and the read-only observer
+/// status page share this check. Device management routes must additionally
+/// use [`owner_session_active`].
+async fn member_session_active(
+    client: &Client,
+    principal: &SessionPrincipal,
+) -> Result<bool, EnrollmentError> {
+    // Same single-use shortcut as the owner check, valid for any live role:
+    // this request's own `authenticate_session` just validated the membership.
     if principal.spend_fresh_verification() {
         return Ok(true);
     }
     Ok(client
         .query_opt(
-            "SELECT 1 FROM sessions s JOIN users u ON u.id=s.user_id JOIN memberships m ON (m.account_id,m.user_id)=(s.account_id,s.user_id) JOIN accounts a ON a.id=s.account_id WHERE m.role='owner' AND s.id=$1 AND s.account_id=$2 AND s.user_id=$3 AND s.revoked_at IS NULL AND s.expires_at>now() AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL",
+            "SELECT 1 FROM sessions s JOIN users u ON u.id=s.user_id JOIN memberships m ON (m.account_id,m.user_id)=(s.account_id,s.user_id) JOIN accounts a ON a.id=s.account_id WHERE m.revoked_at IS NULL AND s.id=$1 AND s.account_id=$2 AND s.user_id=$3 AND s.revoked_at IS NULL AND s.expires_at>now() AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL",
             &[&principal.session_id, &principal.tenant.account_id(), &principal.user_id],
         )
         .await?
@@ -463,14 +486,15 @@ pub async fn pairing_view(
     }))
 }
 
-/// List only devices enrolled into the authenticated owner's account. A
-/// revoked device remains visible so the UI never implies it disappeared.
-pub async fn list_owner_devices(
+/// List the device-status page of the authenticated member's account, for the
+/// owner dashboard and the read-only observer page alike. A revoked device
+/// remains visible so the UI never implies it disappeared.
+pub async fn list_account_devices(
     client: &Client,
     principal: &SessionPrincipal,
     before: Option<Uuid>,
 ) -> Result<OwnerDevicePage, EnrollmentError> {
-    if !owner_session_active(client, principal).await? {
+    if !member_session_active(client, principal).await? {
         return Err(EnrollmentError::Unauthorized);
     }
     // A standby can lag the writer's lease/epoch state. Never render its view

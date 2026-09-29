@@ -23,7 +23,7 @@ macro_rules! migration {
 
 // Keep this fixture at 033 to exercise activation's defense against legacy
 // cross-role alias rows. Migration 035 rejects those adversarial inserts.
-const TEST_MIGRATIONS: [&str; 33] = [
+const TEST_MIGRATIONS: [&str; 34] = [
     migration!("001_foundation.sql"),
     migration!("002_auth.sql"),
     migration!("003_delivery.sql"),
@@ -42,6 +42,7 @@ const TEST_MIGRATIONS: [&str; 33] = [
     migration!("016_auth_abuse_atomic.sql"),
     migration!("017_billing_device_caps.sql"),
     migration!("018_sealed_inbound_identity.sql"),
+    migration!("048_observer_memberships.sql"),
     migration!("019_line_activation_contract.sql"),
     migration!("020_enrollment_retention_indexes.sql"),
     migration!("021_billing_payment_grace.sql"),
@@ -255,7 +256,7 @@ async fn migration_preserves_pending_generation_high_water_mark() {
     ))
     .await
     .unwrap();
-    for migration in TEST_MIGRATIONS.iter().take(18) {
+    for migration in TEST_MIGRATIONS.iter().take(19) {
         db.batch_execute(migration).await.unwrap();
     }
     let hasher = TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap();
@@ -311,7 +312,7 @@ async fn migration_preserves_pending_generation_high_water_mark() {
     )
     .await
     .unwrap();
-    for migration in TEST_MIGRATIONS.iter().skip(18) {
+    for migration in TEST_MIGRATIONS.iter().skip(19) {
         db.batch_execute(migration).await.unwrap();
     }
     let issued: i64 = db

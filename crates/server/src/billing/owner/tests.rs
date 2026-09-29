@@ -49,6 +49,7 @@ async fn owner_status_omits_provider_ids_and_foreign_tenant_rows() {
         include_str!("../../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
         include_str!("../../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
         include_str!("../../../../../deploy/compose/migrations/028_billing_provider_failures.sql"),
+        include_str!("../../../../../deploy/compose/migrations/048_observer_memberships.sql"),
     ] {
         db.batch_execute(sql).await.unwrap();
     }
@@ -319,6 +320,7 @@ async fn owner_status_reports_projected_entitlement_and_ambiguity() {
         include_str!("../../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
         include_str!("../../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
         include_str!("../../../../../deploy/compose/migrations/028_billing_provider_failures.sql"),
+        include_str!("../../../../../deploy/compose/migrations/048_observer_memberships.sql"),
     ] {
         db.batch_execute(sql).await.unwrap();
     }

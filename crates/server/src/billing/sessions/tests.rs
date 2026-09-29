@@ -500,6 +500,7 @@ async fn owner_checkout_portal_bind_customer_and_reject_cross_tenant() {
         include_str!("../../../../../deploy/compose/migrations/013_owner_mfa.sql"),
         include_str!("../../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
         include_str!("../../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+        include_str!("../../../../../deploy/compose/migrations/048_observer_memberships.sql"),
     ] {
         db.batch_execute(sql).await.unwrap();
     }
@@ -774,6 +775,7 @@ async fn owner_checkout_refused_while_subscription_live_or_pending() {
         include_str!("../../../../../deploy/compose/migrations/013_owner_mfa.sql"),
         include_str!("../../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
         include_str!("../../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+        include_str!("../../../../../deploy/compose/migrations/048_observer_memberships.sql"),
     ] {
         db.batch_execute(sql).await.unwrap();
     }
@@ -1000,6 +1002,7 @@ async fn real_stripe_sandbox_hosted_sessions_smoke() {
         include_str!("../../../../../deploy/compose/migrations/019_line_activation_contract.sql"),
         include_str!("../../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
         include_str!("../../../../../deploy/compose/migrations/028_billing_provider_failures.sql"),
+        include_str!("../../../../../deploy/compose/migrations/048_observer_memberships.sql"),
     ] {
         db.batch_execute(sql).await.unwrap();
     }

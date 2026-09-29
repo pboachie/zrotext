@@ -255,10 +255,11 @@
             "MFA, session revocation and CSRF protection",
             "API keys with scopes, shown once at creation",
             "MFA-bound SMS approval public-key registration and revocation; line activation remains an internal prerequisite ([contract](../protocol/v1/sms-line-activation-contract.md))",
-            "Verified-email and private-operator password recovery revokes sessions, API keys and pending MFA challenges while preserving MFA; authentication only, with production vault/content recovery still pending"
+            "Verified-email and private-operator password recovery revokes sessions, API keys and pending MFA challenges while preserving MFA; authentication only, with production vault/content recovery still pending",
+            "Device-status observer seats: owner-issued, single-use, hashed-token invitations; invitee self-verification and sign-in; read-only device status; irreversible seat removal"
           ],
           "todo": [
-            "Team seats beyond one owner"
+            "Remaining collaboration roles and owner-registration invitations"
           ]
         },
         {

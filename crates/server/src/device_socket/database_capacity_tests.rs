@@ -33,6 +33,7 @@ impl Fixture {
             include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
             include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
             include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+            include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
         ] {
             db.batch_execute(migration).await.unwrap();
         }

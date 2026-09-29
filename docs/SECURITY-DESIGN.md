@@ -73,6 +73,86 @@ The restricted M1 pilot classifies STOP-family keywords and likely free-text wit
 
 OPAQUE is defined in **RFC 9807**, not RFC 9380 (hash-to-curve). It may improve later password-based vault UX, but switching authentication protocols requires explicit migration and security review. Ordinary server-side Argon2 authentication cannot preserve an OPAQUE-derived zero-knowledge-password claim. [OPAQUE](https://www.rfc-editor.org/rfc/rfc9807.html)
 
+## Team seats (device-status observers)
+
+An account has exactly one immutable owner. The first collaboration phase adds
+owner-managed observer seats: the owner invites an address from `/owner/seats`,
+and the server stores only the HMAC of the single-use invitation token under
+the auth pepper. Creating an invitation grants a persistent read seat, so it
+needs the same step-up as minting an API key: the owner's current password and,
+once MFA is on, a fresh authenticator or recovery code, so a stolen session
+cookie alone cannot create one. The route's `SeatInvite` budget is spent
+before the password is hashed, on every attempt including a wrong password, so
+it also bounds password guesses; a wrong code spends the MFA step-up failure
+budget and an exhausted budget answers 429. Cancel and remove only narrow
+access, so a session and CSRF are enough for them. Invitations expire after
+seven days, are bound to one address, are unique per account and address (a
+repeat invitation from the same account replaces the earlier one, and an
+expired one never blocks the address), and are bounded to ten open invitations
+and ten live observer seats per account. Acceptance claims the invitation row
+under a lock (single-use, replay-safe, exactly one winner under concurrency),
+refuses any address that already belongs to a user without touching that
+user's password or membership and without consuming the invitation, and
+creates an unverified observer that must verify its email with its own
+password before signing in - the same password-bound code model as owner
+registration. An accepted-but-unverified observer is pruned after the 24-hour
+pending window, like an unverified owner.
+
+Inviting never acts as an address oracle. For the inviting owner, a registered
+address, an unknown address, an address invited by another account, and an
+address that used to be another account's observer are indistinguishable in
+status (201), body shape and fields (a real single-use token every time), list
+entry, open-invitation slot use, `SeatInvite` budget charge, and database
+work: creation never reads the user table or other accounts' invitations. One
+account's open invitation never blocks another account from inviting the same
+address. A conflict is discovered only by the token holder at acceptance,
+where a taken address answers 409 and, when two accounts' tokens race for one
+address, the loser gets the same 409 instead of a server error.
+
+Observers authenticate with sessions in their own name and can manage only
+their own authentication: change password (which revokes their sessions and
+their API keys, which they cannot create), review and revoke their own
+sessions, and sign out. Every owner-authority route rechecks the owner role in
+the database and answers an observer session with the same 401 as no session,
+so role is not a side channel. Their single read surface,
+`/v1/observer/devices`, returns the account's device status (socket lease,
+queue counts, reported preconditions) with the CSRF header proof, and never
+message content, recipients, credentials, or tokens. Removing a seat is
+irreversible and never blockable: the membership is revoked (a database
+trigger keeps revocation immutable) and the same transaction revokes its
+sessions, API keys, MFA challenges, reset codes, queued verification mail, and
+any still-open invitation for that address, records a tombstone on the
+accepted invitation (email, accepted and removed times) for the owner's list,
+and then deletes the observer's user row, guarded so only a user whose single
+membership is this account's observer seat can be deleted and never an owner,
+so the address is free again and a later invitation or registration creates a
+brand-new identity with nothing carried over. The delete runs in a savepoint:
+if the database refuses it with an integrity error (a restricting reference,
+unreachable for observers today), the revocations still commit, the address
+stays occupied, and both the removal response and the owner's seat list carry
+`address_free: false`.
+Account erasure covers seats: `POST /v1/owner/erasure` deletes the account's
+observer users, invitations and removal records in its one transaction with the
+same single-membership guard (never an owner or another account's user), locks
+the account's observer memberships and then its invitation rows before the
+auth fence in the order removal and acceptance use, and fails closed with
+`erasure_blocked` if a foreign key refuses an observer delete.
+Threats considered: a stolen owner cookie minting a persistent seat (step-up
+proof, password and MFA failure budgets); a leaked invitation token (bounded
+lifetime, single use, owner cancel); cross-tenant address enumeration and
+squatting (uniform owner responses, per-account uniqueness); racing accepts,
+accept-versus-cancel and cross-account accepts of one address (invitation row
+lock, unique-violation mapped to a conflict, exactly one winner); a removed
+seat attempting reuse (every credential dead, identity deleted or, in the
+fallback, revocation immutable); an observer probing owner routes (database
+role recheck, uniform 401); and enumeration or timing probes of the accept
+route (uniform failure with the same password work as a live acceptance).
+
+Not in this phase: observer MFA, emailed password reset for observers,
+bounded pruning and retention of expired or closed invitation rows,
+additional collaboration roles (administrators, billing viewers), and
+owner-registration invitations.
+
 ## Baseline controls
 
 Use 256-bit random API tokens, prefix lookup, constant-time verification, revocation and scopes. HMAC-SHA256 with a separately stored server pepper is suitable for high-entropy token verification; the old allegation that all fast hashes need password-style salts is too broad. Passwords use a password KDF. Password hashing and verification run on blocking workers behind one process-wide two-worker semaphore, including registration, login, verification resend, MFA password proofs, and initialization of the unknown-account verifier. Admission occurs before submitting blocking work; cancellation retains the permit until that work finishes. HTTP admission and abuse limits still bound pending requests, while the worker gate keeps expensive password work off the async runtime. API keys never enter query strings, analytics, QR device enrollment, or logs.

@@ -28,6 +28,7 @@ async fn postgres_operator_bootstrap_creates_one_verified_owner_under_concurrenc
         include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
         include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
         include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
+        include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
     ] {
         first.batch_execute(sql).await.unwrap();
     }
@@ -128,6 +129,7 @@ fn fresh_session_validation_is_spent_once_and_expires() {
         },
         user_id: Uuid::new_v4(),
         session_id: Uuid::new_v4(),
+        role: Role::Owner,
         csrf_hash: [0; 32],
         verification,
     };
@@ -153,6 +155,7 @@ fn token_domains_are_separate_and_csrf_needs_origin() {
         },
         user_id: Uuid::new_v4(),
         session_id: Uuid::new_v4(),
+        role: Role::Owner,
         csrf_hash: hasher.digest(b"csrf-v1", &token),
         verification: FreshVerification::spent(),
     };
@@ -213,6 +216,12 @@ async fn postgres_tenant_revocation_and_scope_contract() {
     client
         .batch_execute(include_str!(
             "../../../../deploy/compose/migrations/002_auth.sql"
+        ))
+        .await
+        .unwrap();
+    client
+        .batch_execute(include_str!(
+            "../../../../deploy/compose/migrations/048_observer_memberships.sql"
         ))
         .await
         .unwrap();
@@ -388,6 +397,7 @@ async fn pending_signup_schema(base_url: &str, schema: &str) -> (Client, Client,
         include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
         include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
         include_str!("../../../../deploy/compose/migrations/022_pending_owner_expiry.sql"),
+        include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
     ] {
         client.batch_execute(migration).await.unwrap();
     }

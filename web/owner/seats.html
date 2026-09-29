@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Team seats · ZROtext</title>
+  <link rel="stylesheet" href="/owner/devices.css">
+  <script defer src="/owner/seats.js"></script>
+</head>
+<body>
+  <main>
+    <header>
+      <div><p class="eyebrow">ZROtext owner account</p><h1>Device-status observers</h1></div>
+      <a href="/owner/devices">Devices and sign in</a>
+    </header>
+    <p>Observers sign in with their own verified email and can view device status only. They cannot send or read messages, manage devices or API keys, see billing or exports, invite others, or change owner settings.</p>
+    <p id="seats-status" role="status" aria-live="polite"></p>
+
+    <section aria-labelledby="invite-title">
+      <h2 id="invite-title">Invite an observer</h2>
+      <p>Inviting an observer grants lasting read access, so confirm it with your password (and your authenticator or recovery code if you use one). The invitation token is shown once. Deliver it to one person out of band; it expires in seven days, works once, and is bound to the invited address. This page never says whether the address already has an account; if the address cannot accept the invitation, only the person holding the token finds out when they try.</p>
+      <form id="invite-form" method="post" action="/v1/auth/seats/invitations">
+        <label for="invite-email">Observer email</label>
+        <input id="invite-email" name="email" type="email" autocomplete="off" required>
+        <label for="invite-password">Your password</label>
+        <input id="invite-password" name="current_password" type="password" autocomplete="current-password" required>
+        <label for="invite-code">Authenticator or recovery code (only if you turned on two-step sign-in)</label>
+        <input id="invite-code" name="code" type="text" inputmode="text" autocomplete="one-time-code" spellcheck="false">
+        <button type="submit">Create invitation</button>
+      </form>
+      <p id="invite-status" role="status" aria-live="polite"></p>
+      <div id="invite-token-panel" hidden>
+        <dl>
+          <dt>Invitation token</dt><dd><code id="invite-token"></code></dd>
+          <dt>Acceptance page</dt><dd><code id="invite-accept-url"></code></dd>
+        </dl>
+        <p><strong>Copy the token now.</strong> The server stores only its hash and cannot show it again.</p>
+        <button id="dismiss-invite-token" type="button">I delivered it</button>
+      </div>
+    </section>
+
+    <section aria-labelledby="invitations-title">
+      <div class="section-head"><h2 id="invitations-title">Invitations</h2><button id="refresh-seats" type="button" class="quiet">Refresh</button></div>
+      <p id="invitation-status" role="status" aria-live="polite"></p>
+      <ul id="invitation-list"></ul>
+    </section>
+
+    <section aria-labelledby="seat-list-title">
+      <h2 id="seat-list-title">Observer seats</h2>
+      <p>Removing a seat signs it out everywhere, cancels its outstanding credentials immediately, and deletes the observer's account so the address is free again. A removed seat cannot be restored; invite the address again to start over. If the account could not be deleted, the seat is still removed but the entry says the address stays occupied.</p>
+      <p id="seat-status" role="status" aria-live="polite"></p>
+      <ul id="seat-list"></ul>
+    </section>
+  </main>
+  <footer><a href="/source">Source code for this server</a> · <a href="/about/version">Build version</a></footer>
+</body>
+</html>

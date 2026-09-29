@@ -51,6 +51,7 @@ use zrotext_server::{
     },
     http_enrollment::{self, EnrollmentHttpState},
     http_messages::{self, MessagesHttpState},
+    http_observer::{self, ObserverState},
     http_owner_erasure::{self, OwnerErasureState},
     http_owner_events::{self, OwnerEventsState, OwnerStreamLimits},
     http_owner_export::{self, OwnerExportState},
@@ -725,9 +726,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             auth_hasher: auth_state.hasher.clone(),
             canonical_origin: auth_state.canonical_origin.clone(),
         };
+        let observer_state = ObserverState {
+            database_url: config.database_url.clone(),
+            auth_hasher: auth_state.hasher.clone(),
+        };
         app = app
             .nest("/v1/auth", http_auth::router(auth_state))
             .nest("/v1/enrollment", http_enrollment::router(enrollment_state))
+            .nest("/v1/observer", http_observer::router(observer_state))
             .merge(http_owner_export::router(owner_export_state))
             .merge(http_owner_erasure::router(owner_erasure_state))
             .merge(http_owner_messages::router(owner_messages_state))

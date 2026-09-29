@@ -618,6 +618,7 @@ async fn failed_mail_worker_reports_each_attempt_and_final_dead_letter() {
     for migration in [
         include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
         include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+        include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
     ] {
         client.batch_execute(migration).await.unwrap();
     }
@@ -931,6 +932,7 @@ async fn verified_password_reset_survives_anonymous_request_and_confirm_exhausti
         include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
         include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
         include_str!("../../../../deploy/compose/migrations/025_account_recovery.sql"),
+        include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }
@@ -1086,6 +1088,7 @@ async fn stranger_spending_address_budget_does_not_block_owner_password_reset() 
         include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
         include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
         include_str!("../../../../deploy/compose/migrations/025_account_recovery.sql"),
+        include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }
@@ -1343,6 +1346,7 @@ async fn verified_reset_lane_refuses_the_thirteenth_code_of_a_day_per_address() 
         include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
         include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
         include_str!("../../../../deploy/compose/migrations/025_account_recovery.sql"),
+        include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }
@@ -1484,6 +1488,12 @@ async fn postgres_http_account_lifecycle_enforces_csrf_and_revocation() {
     test_client
         .batch_execute(include_str!(
             "../../../../deploy/compose/migrations/002_auth.sql"
+        ))
+        .await
+        .unwrap();
+    test_client
+        .batch_execute(include_str!(
+            "../../../../deploy/compose/migrations/048_observer_memberships.sql"
         ))
         .await
         .unwrap();
@@ -2134,6 +2144,7 @@ async fn api_key_issuance_budget_survives_concurrency_revocation_and_new_session
         include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
         include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
         include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+        include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
     ] {
         client.batch_execute(migration).await.unwrap();
     }
@@ -2287,6 +2298,7 @@ async fn postgres_http_expired_pending_signup_is_replaced_with_uniform_responses
         include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
         include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
         include_str!("../../../../deploy/compose/migrations/022_pending_owner_expiry.sql"),
+        include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
     ] {
         client.batch_execute(migration).await.unwrap();
     }
@@ -2394,6 +2406,7 @@ async fn postgres_http_verification_needs_registrant_password_and_collision_canc
         include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
         include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
         include_str!("../../../../deploy/compose/migrations/022_pending_owner_expiry.sql"),
+        include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
     ] {
         client.batch_execute(migration).await.unwrap();
     }
@@ -2570,6 +2583,7 @@ async fn valid_verification_survives_anonymous_invalid_code_exhaustion() {
         include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
         include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
         include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+        include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
     ] {
         client.batch_execute(migration).await.unwrap();
     }
@@ -2690,6 +2704,7 @@ async fn owner_sign_in_survives_anonymous_login_budget_exhaustion() {
         include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
         include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
         include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+        include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
     ] {
         client.batch_execute(migration).await.unwrap();
     }
@@ -2938,6 +2953,7 @@ async fn postgres_http_mfa_never_sets_session_before_factor_and_limits_replay() 
         include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
         include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
         include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+        include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
     ] {
         client.batch_execute(migration).await.unwrap();
     }
@@ -3488,6 +3504,7 @@ async fn concurrent_logins_queue_for_password_work_and_saturation_is_503() {
         include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
         include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
         include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+        include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
     ] {
         client.batch_execute(migration).await.unwrap();
     }

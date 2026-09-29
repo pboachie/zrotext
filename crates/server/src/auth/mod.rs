@@ -39,6 +39,7 @@ pub mod mfa;
 mod password_work;
 #[cfg(test)]
 mod roles_tests;
+pub mod seats;
 mod verification_outbox;
 pub use verification_outbox::{
     VerificationMail, ack_verification_mail, claim_verification_mail, request_verification_resend,
@@ -56,6 +57,8 @@ pub enum AuthError {
     Unauthorized,
     #[error("forbidden")]
     Forbidden,
+    #[error("conflicting account state")]
+    Conflict,
     #[error("revoke the active SMS owner approval key before disabling MFA")]
     SmsOwnerKeyActive,
     #[error("authentication storage failed")]
@@ -169,6 +172,29 @@ impl Scope {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Role {
+    Owner,
+    Observer,
+}
+
+impl Role {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Owner => "owner",
+            Self::Observer => "observer",
+        }
+    }
+
+    fn from_db(value: &str) -> Option<Self> {
+        match value {
+            "owner" => Some(Self::Owner),
+            "observer" => Some(Self::Observer),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Tenant {
     account_id: Uuid,
 }
@@ -189,10 +215,14 @@ impl Tenant {
     }
 }
 
+#[derive(Clone)]
 pub struct SessionPrincipal {
     pub tenant: Tenant,
     pub user_id: Uuid,
     pub session_id: Uuid,
+    /// Current role of the membership this session belongs to. Owner routes
+    /// must recheck it against the database instead of trusting this copy.
+    pub role: Role,
     csrf_hash: [u8; 32],
     /// Unspent proof that [`authenticate_session`] validated this session for
     /// the current request. See [`SessionPrincipal::spend_fresh_verification`].
@@ -209,6 +239,17 @@ const FRESH_VERIFICATION_WINDOW: std::time::Duration = std::time::Duration::from
 struct FreshVerification {
     at: Option<std::time::Instant>,
     unspent: std::sync::atomic::AtomicBool,
+}
+
+/// A clone never inherits the shortcut: only the principal that
+/// `authenticate_session` returned may spend its validation.
+impl Clone for FreshVerification {
+    fn clone(&self) -> Self {
+        Self {
+            at: None,
+            unspent: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
 }
 
 impl FreshVerification {
@@ -564,7 +605,7 @@ pub async fn verification_token_is_live(
         .query_one(
             "SELECT EXISTS(SELECT 1 FROM email_verifications v JOIN users u ON u.id=v.user_id
              JOIN memberships m ON (m.account_id,m.user_id)=(v.account_id,v.user_id)
-             WHERE m.role='owner' AND v.token_hash=$1 AND v.used_at IS NULL AND v.expires_at>now()
+             WHERE m.revoked_at IS NULL AND v.token_hash=$1 AND v.used_at IS NULL AND v.expires_at>now()
              AND (u.email_verified_at IS NOT NULL OR u.created_at>now()-($2::integer * interval '1 hour')))",
             &[&&hash[..], &VERIFICATION_HOURS],
         )
@@ -588,7 +629,7 @@ pub async fn verify_email_with_password(
         let hash = hasher.digest(b"email-verification-v1", token);
         client
             .query_opt(
-                "SELECT u.id,u.password_hash FROM email_verifications v JOIN users u ON u.id=v.user_id JOIN memberships m ON (m.account_id,m.user_id)=(v.account_id,v.user_id) WHERE m.role='owner' AND v.token_hash=$1 AND v.used_at IS NULL AND v.expires_at>now() AND (u.email_verified_at IS NOT NULL OR u.created_at>now()-($2::integer * interval '1 hour'))",
+                "SELECT u.id,u.password_hash FROM email_verifications v JOIN users u ON u.id=v.user_id JOIN memberships m ON (m.account_id,m.user_id)=(v.account_id,v.user_id) WHERE m.revoked_at IS NULL AND v.token_hash=$1 AND v.used_at IS NULL AND v.expires_at>now() AND (u.email_verified_at IS NOT NULL OR u.created_at>now()-($2::integer * interval '1 hour'))",
                 &[&&hash[..], &VERIFICATION_HOURS],
             )
             .await?
@@ -672,7 +713,7 @@ async fn consume_verification_code(
     // the code itself was issued with a later expiry by an older release.
     let row = tx
         .query_opt(
-            "UPDATE email_verifications v SET used_at=now() FROM users u WHERE u.id=v.user_id AND EXISTS(SELECT 1 FROM memberships m WHERE m.account_id=v.account_id AND m.user_id=v.user_id AND m.role='owner') AND v.token_hash=$1 AND v.used_at IS NULL AND v.expires_at>now() AND (u.email_verified_at IS NOT NULL OR u.created_at>now()-($2::integer * interval '1 hour')) AND ($3::uuid IS NULL OR u.id=$3) AND ($4::text IS NULL OR u.password_hash=$4) RETURNING v.id,v.user_id",
+            "UPDATE email_verifications v SET used_at=now() FROM users u WHERE u.id=v.user_id AND EXISTS(SELECT 1 FROM memberships m WHERE m.account_id=v.account_id AND m.user_id=v.user_id AND m.revoked_at IS NULL) AND v.token_hash=$1 AND v.used_at IS NULL AND v.expires_at>now() AND (u.email_verified_at IS NOT NULL OR u.created_at>now()-($2::integer * interval '1 hour')) AND ($3::uuid IS NULL OR u.id=$3) AND ($4::text IS NULL OR u.password_hash=$4) RETURNING v.id,v.user_id",
             &[&&hash[..], &VERIFICATION_HOURS, &bound_user, &bound_hash],
         )
         .await?;
@@ -711,7 +752,7 @@ pub async fn login(
     let email = normalize_email(email).map_err(|_| AuthError::InvalidCredentials)?;
     let row = client
         .query_opt(
-            "SELECT u.id,m.account_id,u.password_hash,u.email_verified_at IS NOT NULL,u.mfa_enabled FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE m.role='owner' AND u.email=$1 AND a.disabled_at IS NULL",
+            "SELECT u.id,m.account_id,u.password_hash,u.email_verified_at IS NOT NULL,u.mfa_enabled,m.role FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE m.revoked_at IS NULL AND u.email=$1 AND a.disabled_at IS NULL",
             &[&email],
         )
         .await?;
@@ -724,11 +765,16 @@ pub async fn login(
     if !row.get::<_, bool>(3) {
         return Err(AuthError::EmailNotVerified);
     }
+    // The second factor belongs to the owner surface. An observer row with
+    // MFA material cannot complete a challenge, so it never signs in at all.
     if row.get::<_, bool>(4) {
-        return Err(AuthError::MfaRequired {
-            account_id,
-            user_id,
-        });
+        if Role::from_db(row.get::<_, String>(5).as_str()) == Some(Role::Owner) {
+            return Err(AuthError::MfaRequired {
+                account_id,
+                user_id,
+            });
+        }
+        return Err(AuthError::InvalidCredentials);
     }
     let token = random_token("zts_");
     let csrf_token = random_token("ztc_");
@@ -737,14 +783,14 @@ pub async fn login(
     let id = Uuid::new_v4();
     let inserted = client
         .execute(
-            "INSERT INTO sessions(id,account_id,user_id,token_hash,csrf_hash,expires_at) SELECT $1,$2,$3,$4,$5,now()+($6::integer * interval '1 day') FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE m.role='owner' AND u.id=$3 AND m.account_id=$2 AND u.password_hash=$7 AND NOT u.mfa_enabled AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL FOR UPDATE OF u",
+            "INSERT INTO sessions(id,account_id,user_id,token_hash,csrf_hash,expires_at) SELECT $1,$2,$3,$4,$5,now()+($6::integer * interval '1 day') FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE m.revoked_at IS NULL AND u.id=$3 AND m.account_id=$2 AND u.password_hash=$7 AND NOT u.mfa_enabled AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL FOR UPDATE OF u",
             &[&id, &account_id, &user_id, &&token_hash[..], &&csrf_hash[..], &SESSION_DAYS, &stored],
         )
         .await?;
     if inserted != 1 {
         let current = client
             .query_opt(
-                "SELECT u.password_hash,u.mfa_enabled FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE m.role='owner' AND u.id=$1 AND m.account_id=$2 AND a.disabled_at IS NULL",
+                "SELECT u.password_hash,u.mfa_enabled,m.role FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE m.revoked_at IS NULL AND u.id=$1 AND m.account_id=$2 AND a.disabled_at IS NULL",
                 &[&user_id, &account_id],
             )
             .await?
@@ -752,14 +798,17 @@ pub async fn login(
         if Some(current.get::<_, String>(0)) != stored {
             return Err(AuthError::InvalidCredentials);
         }
-        return if current.get::<_, bool>(1) {
-            Err(AuthError::MfaRequired {
+        // Only an owner is offered the second-factor challenge; an observer
+        // with stray MFA material keeps failing closed.
+        if current.get::<_, bool>(1)
+            && Role::from_db(current.get::<_, String>(2).as_str()) == Some(Role::Owner)
+        {
+            return Err(AuthError::MfaRequired {
                 account_id,
                 user_id,
-            })
-        } else {
-            Err(AuthError::InvalidCredentials)
-        };
+            });
+        }
+        return Err(AuthError::InvalidCredentials);
     }
     Ok(SessionCredentials {
         id,
@@ -781,17 +830,18 @@ pub async fn authenticate_session(
     // expired. A never-used session is measured from its creation.
     let row = client
         .query_typed_opt(
-            "SELECT s.id,s.account_id,s.user_id,s.csrf_hash,(s.last_used_at IS NULL OR s.last_used_at<now()-($3::integer * interval '1 minute')) FROM sessions s JOIN memberships m ON (m.account_id,m.user_id)=(s.account_id,s.user_id) JOIN users u ON u.id=s.user_id JOIN accounts a ON a.id=s.account_id WHERE m.role='owner' AND s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at>now() AND COALESCE(s.last_used_at,s.created_at)>now()-($2::integer * interval '1 hour') AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL",
+            "SELECT s.id,s.account_id,s.user_id,s.csrf_hash,m.role,(s.last_used_at IS NULL OR s.last_used_at<now()-($3::integer * interval '1 minute')) FROM sessions s JOIN memberships m ON (m.account_id,m.user_id)=(s.account_id,s.user_id) JOIN users u ON u.id=s.user_id JOIN accounts a ON a.id=s.account_id WHERE m.revoked_at IS NULL AND s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at>now() AND COALESCE(s.last_used_at,s.created_at)>now()-($2::integer * interval '1 hour') AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL",
             &[(&&hash[..], Type::BYTEA), (&SESSION_IDLE_HOURS, Type::INT4), (&ACTIVITY_WRITE_MINUTES, Type::INT4)],
         )
         .await?
         .ok_or(AuthError::Unauthorized)?;
     let csrf: Vec<u8> = row.get(3);
     let csrf_hash: [u8; 32] = csrf.try_into().map_err(|_| AuthError::Unauthorized)?;
+    let role = Role::from_db(row.get::<_, String>(4).as_str()).ok_or(AuthError::Unauthorized)?;
     // Coarse activity metadata for the owner's session inventory and the idle
     // timeout. The guard avoids a row rewrite on every authenticated request.
     let session_id: Uuid = row.get(0);
-    if row.get::<_, bool>(4) {
+    if row.get::<_, bool>(5) {
         client.execute_typed(
             "UPDATE sessions SET last_used_at=now() WHERE id=$1 AND revoked_at IS NULL AND (last_used_at IS NULL OR last_used_at<now()-($2::integer * interval '1 minute'))",
             &[(&session_id, Type::UUID), (&ACTIVITY_WRITE_MINUTES, Type::INT4)],
@@ -803,6 +853,7 @@ pub async fn authenticate_session(
             account_id: row.get(1),
         },
         user_id: row.get(2),
+        role,
         csrf_hash,
         verification: FreshVerification::now(),
     })
@@ -813,7 +864,7 @@ pub async fn revoke_session(
     principal: &SessionPrincipal,
     session_id: Uuid,
 ) -> Result<bool, AuthError> {
-    require_unlocked_owner(client, principal).await?;
+    require_unlocked_member(client, principal).await?;
     Ok(client
         .execute(
             "UPDATE sessions SET revoked_at=now() WHERE account_id=$1 AND user_id=$2 AND id=$3 AND revoked_at IS NULL",
@@ -1091,21 +1142,53 @@ pub(crate) async fn require_unlocked_owner(
     client: &Client,
     principal: &SessionPrincipal,
 ) -> Result<(), AuthError> {
-    if principal.spend_fresh_verification() {
+    // authenticate_session also admits observers, so the fast path must not
+    // stand in for the owner-role recheck on a non-owner principal.
+    if principal.role == Role::Owner && principal.spend_fresh_verification() {
         return Ok(());
     }
     require_current_owner(client, principal).await
 }
 
+/// The unlocked, outside-a-transaction form of [`require_current_member`],
+/// with the same fresh-verification shortcut as [`require_unlocked_owner`]
+/// but valid for any live role. Use [`require_current_member`] on a
+/// transaction.
+pub(crate) async fn require_unlocked_member(
+    client: &Client,
+    principal: &SessionPrincipal,
+) -> Result<(), AuthError> {
+    if principal.spend_fresh_verification() {
+        return Ok(());
+    }
+    require_current_member(client, principal).await
+}
+
 /// Recheck a caller's owner role from the database. A previously constructed
 /// principal is not evidence of a current role or live session. Member routes
-/// must use a separate authorization path rather than weakening this boundary.
+/// must use [`require_current_member`] instead; observers must never pass this
+/// check even with a structurally valid session.
 pub(super) async fn require_current_owner(
     client: &(impl tokio_postgres::GenericClient + Sync),
     principal: &SessionPrincipal,
 ) -> Result<(), AuthError> {
     client.query_opt(
-        "SELECT 1 FROM sessions s JOIN memberships m ON (m.account_id,m.user_id)=(s.account_id,s.user_id) JOIN users u ON u.id=s.user_id JOIN accounts a ON a.id=s.account_id WHERE s.id=$1 AND s.account_id=$2 AND s.user_id=$3 AND m.role='owner' AND s.revoked_at IS NULL AND s.expires_at>clock_timestamp() AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL",
+        "SELECT 1 FROM sessions s JOIN memberships m ON (m.account_id,m.user_id)=(s.account_id,s.user_id) JOIN users u ON u.id=s.user_id JOIN accounts a ON a.id=s.account_id WHERE s.id=$1 AND s.account_id=$2 AND s.user_id=$3 AND m.role='owner' AND m.revoked_at IS NULL AND s.revoked_at IS NULL AND s.expires_at>clock_timestamp() AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL",
+        &[&principal.session_id, &principal.tenant.account_id(), &principal.user_id],
+    ).await?.ok_or(AuthError::Unauthorized)?;
+    Ok(())
+}
+
+/// Recheck that the caller's membership is currently live, in any role. This
+/// gates only self-service routes: session inventory, sign-out, password
+/// change, and read-only status scoped to the caller's own account. Every
+/// owner-authority route must additionally use [`require_current_owner`].
+pub(super) async fn require_current_member(
+    client: &(impl tokio_postgres::GenericClient + Sync),
+    principal: &SessionPrincipal,
+) -> Result<(), AuthError> {
+    client.query_opt(
+        "SELECT 1 FROM sessions s JOIN memberships m ON (m.account_id,m.user_id)=(s.account_id,s.user_id) JOIN users u ON u.id=s.user_id JOIN accounts a ON a.id=s.account_id WHERE s.id=$1 AND s.account_id=$2 AND s.user_id=$3 AND m.revoked_at IS NULL AND s.revoked_at IS NULL AND s.expires_at>clock_timestamp() AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL",
         &[&principal.session_id, &principal.tenant.account_id(), &principal.user_id],
     ).await?.ok_or(AuthError::Unauthorized)?;
     Ok(())

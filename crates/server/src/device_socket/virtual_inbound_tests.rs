@@ -72,6 +72,7 @@ async fn authenticated_inbound_replay_retries_one_webhook_delivery() {
         include_str!("../../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
         include_str!("../../../../deploy/compose/migrations/038_owner_opt_out_hold_guards.sql"),
         include_str!("../../../../deploy/compose/migrations/039_inbound_device_clock_offset.sql"),
+        include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }
@@ -409,6 +410,7 @@ async fn socket_handshakes_share_http_enrollment_budgets() {
         include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
         include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
         include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+        include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }
@@ -609,6 +611,7 @@ async fn enrolled_phone_reconnects_after_junk_spends_handshake_budgets() {
         include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
         include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
         include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+        include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }

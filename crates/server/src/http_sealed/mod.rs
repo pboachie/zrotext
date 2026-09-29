@@ -160,7 +160,8 @@ fn map_auth(error: AuthError) -> SealedHttpError {
         AuthError::Forbidden | AuthError::EmailNotVerified | AuthError::SmsOwnerKeyActive => {
             SealedHttpError::Forbidden
         }
-        AuthError::InvalidInput => SealedHttpError::BadRequest,
+        // Only the seat-invitation routes raise Conflict; sealed routes never do.
+        AuthError::InvalidInput | AuthError::Conflict => SealedHttpError::BadRequest,
         AuthError::Database(_) | AuthError::Password | AuthError::Crypto => {
             SealedHttpError::Unavailable
         }

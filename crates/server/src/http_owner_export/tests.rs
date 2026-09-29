@@ -36,7 +36,7 @@ macro_rules! export_schema {
             [$(($name, include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/compose/migrations/", $name)))),+]
         };
     }
-const EXPORT_SCHEMA: [(&str, &str); 52] = export_schema!(
+const EXPORT_SCHEMA: [(&str, &str); 53] = export_schema!(
     "001_foundation.sql",
     "002_auth.sql",
     "003_delivery.sql",
@@ -89,6 +89,7 @@ const EXPORT_SCHEMA: [(&str, &str); 52] = export_schema!(
     "050_message_attempts_recent_index.sql",
     "051_failover_controller_state.sql",
     "052_admission_pending_index.sql",
+    "053_observer_seat_invitations.sql",
 );
 
 #[test]
@@ -481,6 +482,7 @@ async fn export_paginates_full_history_beyond_the_first_page() {
         include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
         include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
         include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
+        include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }

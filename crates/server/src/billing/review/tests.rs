@@ -250,6 +250,7 @@ async fn operator_review_holds_attributed_risks_and_closes_only_failed_refunds()
         include_str!("../../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
         include_str!("../../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
         include_str!("../../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+        include_str!("../../../../../deploy/compose/migrations/048_observer_memberships.sql"),
         include_str!(
             "../../../../../deploy/compose/migrations/023_billing_py_charge_and_unsupported.sql"
         ),
