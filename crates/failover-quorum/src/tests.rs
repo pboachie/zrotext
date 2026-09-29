@@ -778,6 +778,98 @@ fn former_writer_recovery_streak_resets_on_an_unhealthy_round() {
 }
 
 #[test]
+fn restore_resumes_fencing_and_promoted_without_hysteresis_streaks() {
+    // Fencing resumes where it was; the promotion epoch memory survives.
+    let mut controller =
+        FailoverController::restore(test_config(), 6, RestorablePhase::FencingOldWriter);
+    assert_eq!(controller.phase(), &Phase::FencingOldWriter);
+    assert_eq!(controller.max_epoch_seen(), 6);
+    assert_eq!(
+        controller.observe(evidence_round(1_000), 1_000),
+        Decision::PromoteStandby {
+            site_id: "site-b".to_owned(),
+            new_epoch: 7
+        }
+    );
+    // A promoted controller restores with its reconciliation and one-time
+    // rejoin flags, but with restarted hysteresis.
+    let restored = FailoverController::restore(
+        test_config(),
+        6,
+        RestorablePhase::Promoted {
+            new_epoch: 7,
+            reconciled: true,
+            rejoin_emitted: false,
+        },
+    );
+    assert_eq!(
+        restored.phase(),
+        &Phase::Promoted {
+            new_epoch: 7,
+            reconciled: true,
+            rejoin_emitted: false,
+            healthy_streak: 0,
+            stable_since_ms: None
+        }
+    );
+    // Five fresh healthy checks still precede the rejoin: the restart must
+    // not count as stable recovery time.
+    let mut controller = restored;
+    for minute in 0..5_u64 {
+        let now_ms = 1_000 + minute * 60_000;
+        let decision = controller.observe(
+            all(|member| former_writer(reachable(member, 7, now_ms), true)),
+            now_ms,
+        );
+        assert!(matches!(
+            decision,
+            Decision::Hold(HoldReason::FormerWriterRecovering { .. })
+        ));
+    }
+    let now_ms = 1_000 + 5 * 60_000;
+    assert_eq!(
+        controller.observe(
+            all(|member| former_writer(reachable(member, 7, now_ms), true)),
+            now_ms,
+        ),
+        Decision::RejoinFormerWriterAsReplica {
+            site_id: "site-a".to_owned()
+        }
+    );
+}
+
+#[test]
+fn restore_pins_a_promoting_intent_to_its_exact_epoch() {
+    // The journaled intent re-derives the fencing phase with an epoch memory
+    // of new_epoch - 1, so the re-decided promotion names the same epoch
+    // instead of inventing a higher one.
+    let mut controller = FailoverController::restore(
+        test_config(),
+        0,
+        RestorablePhase::Promoting { new_epoch: 9 },
+    );
+    assert_eq!(controller.phase(), &Phase::FencingOldWriter);
+    assert_eq!(controller.max_epoch_seen(), 8);
+    assert_eq!(
+        controller.observe(evidence_round(1_000), 1_000),
+        Decision::PromoteStandby {
+            site_id: "site-b".to_owned(),
+            new_epoch: 9
+        }
+    );
+    // A crafted zero intent leaves the epoch unknown: the controller holds.
+    let mut controller = FailoverController::restore(
+        test_config(),
+        5,
+        RestorablePhase::Promoting { new_epoch: 0 },
+    );
+    assert_eq!(
+        controller.observe(evidence_round(1_000), 1_000),
+        Decision::Hold(HoldReason::EpochUnknown)
+    );
+}
+
+#[test]
 fn thresholds_and_freshness_are_tunable_per_deployment() {
     let config = test_config()
         .with_check_thresholds(1, 1)
