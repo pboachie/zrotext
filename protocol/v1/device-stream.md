@@ -161,42 +161,108 @@ transaction as its acknowledgment. Anything unacknowledged or ambiguous, and
 every local STOP block (`local_recipient_suppressions`, binding-less
 withdrawal records), is never pruned.
 
-## Proposed grant-bound sealed dispatch (roadmap #539; NOT IMPLEMENTED)
+## PROPOSED optional frame: `sealed_execution_grant` v1 (roadmap #539)
 
-**This section is a design proposal for the device side of sealed outbound
-dispatch. No frame below exists on the wire, nothing implements it, and the
-sealed runtime stays disabled end to end.**
+**Status: PROPOSED.** This versioned, optional extension is a design proposal
+for review. No hub emits either frame below, no client offers the negotiation,
+the Android executor that consumes the grant is dormant (nothing calls it), and
+the sealed runtime stays disabled end to end. The schema and shared vectors are
+[`vectors/sealed-execution-grant.schema.json`](vectors/sealed-execution-grant.schema.json)
+and [`vectors/sealed-execution-grant-01.json`](vectors/sealed-execution-grant-01.json).
 
-A sealed outbound envelope is 426..34,213 bytes, far beyond this stream's
-4,096-byte frame budget, so the envelope bytes never ride the stream. The
-proposal separates the grant from the bytes:
+### Negotiation and old clients
 
-- The hub sends one small `sealed_execution_grant` frame per attempt inside
-  the authenticated session: account, device, line, message, attempt and
-  connection-epoch identifiers, the SHA-256 digest of the exact envelope
-  bytes, a short server-time expiry (bounded tens of seconds), and the
-  segment count.
-- The device fetches the exact envelope bytes by digest over the existing
-  authenticated HTTPS API, outside this stream, and re-checks their digest
-  before anything else. Alternatives considered: binary WebSocket frames
-  (this stream rejects binary frames today) and chunked base64 over text
-  frames (multiples the frame count and the replay surface); both rejected
-  for v1.
-- Before any HPKE open, the device validates the grant: every identity
-  binding above must match the authenticated session and the active line,
-  the session epoch must be current, the envelope digest must match the
-  fetched bytes, the expiry must be in the future and within a bounded
-  plausibility window, and the segment count must be 1..6. Any refusal
-  yields no plaintext and no radio call; an expired grant is reported, never
-  retried silently.
-- After the HPKE open, inside the granted attempt, the device enforces the
-  sealed-v1 plaintext rules (strict UTF-8, 1..32,768 bytes, no BOM, no NUL)
-  and journals the attempt through `sealed_preparations` exactly as the
-  candidate preparation path does: journal before submit, ambiguous radio
-  outcomes stay `unknown`, and nothing auto-resends. Plaintext exists only
-  inside zeroized holders of the granted attempt; no key material,
-  plaintext, or envelope bytes enter logs, the evidence journal, or status
-  reports.
+The frame is optional metadata on the existing stream, negotiated like the
+[device preconditions](device-preconditions.md): a phone that implements and
+has enabled sealed dispatch would offer the combined token
+`zrotext-device-status-v2+sealed-dispatch-v1` ahead of its existing
+`Sec-WebSocket-Protocol` offer, and a hub may send the frame only on a session
+where it selected that token. No current phone offers it and no hub selects
+it. The hub must never send the frame on any other session, and the server
+has no emitter for it in any flag state; a later server slice may add one only
+dormant and default-off behind the existing sealed flags
+(`SEALED_ADMISSION_ENABLED`).
+
+A phone that did not negotiate the extension must ignore the frame. From this
+change on, the Android client drops a `sealed_execution_grant` frame unparsed,
+with no Keystore use, no journal row and no session teardown. Clients released
+before this change treat any unknown frame type as a protocol error and close
+the session; that is fail-closed (no decrypt, no journal, no radio) but not
+silent, which is why the hub must never send the frame without negotiation.
+
+### Grant frame (hub to phone)
+
+One frame per attempt, inside the authenticated session:
+
+```json
+{"v":1,"type":"sealed_execution_grant","grant_version":1,
+ "account_id":"UUID","device_id":"UUID","line_id":"UUID",
+ "message_id":"UUID","attempt_id":"UUID",
+ "connection_epoch":1,"deployment_epoch":1,
+ "binding_generation":1,"attempt_generation":1,
+ "reader_role":1,"reader_key_id":"BASE64URL_32_BYTES",
+ "envelope_sha256":"BASE64URL_32_BYTES","unsigned_sha256":"BASE64URL_32_BYTES",
+ "expires_at_ms":1700000015000,"segment_count":1}
+```
+
+`grant_version` versions the grant independently of the stream's `v`. Fields
+are exact: unknown or missing fields, non-integer numbers, non-canonical
+(uppercase) UUIDs, padded or wrong-width base64url and any `grant_version`
+other than 1 reject the whole frame. The frame carries no recipient, body,
+envelope bytes or key material. `reader_role` is the profile-02 wrap role the
+grant authorizes; `reader_key_id` is the key ID of that reader.
+`segment_count` is the most SMS parts the grant authorizes.
+
+Sealed envelopes are 426..34,213 bytes against this stream's 4,096-byte frame
+budget, so the envelope bytes never ride the stream. The phone fetches the
+exact bytes by digest over the authenticated HTTPS API, outside this stream.
+Binary WebSocket frames (this stream rejects them) and chunked base64 text
+frames (more frames and a larger replay surface) were considered and rejected
+for v1. The fetch route is part of this proposal and is not specified or
+implemented yet.
+
+### Phone rules (binding)
+
+The phone never decrypts unless every check passes, in this order, each
+fail-closed:
+
+1. The fetched envelope passes the sealed-v1 profile-02 outbound parser
+   (length caps, profile and kind bytes, protected length, wraps) before the
+   grant is consulted, so a malformed envelope never consumes a grant.
+2. The grant binds, against the authenticated session, the active local line
+   binding, the phone's own Keystore payload key and the routing identity the
+   envelope claims: account, device, line and binding generation, message
+   (non-zero attempt), `reader_role` = 1 (device payload; the archive and
+   integration roles are refused), `reader_key_id` = the phone's own key and
+   the envelope's device wrap, connection and deployment epochs, the SHA-256
+   of the exact fetched bytes, a trusted-time expiry in the future and at most
+   35 seconds ahead, and 1..6 segments.
+3. Only then does the phone enter the existing candidate preparation: it
+   authenticates the envelope signature and manifest authority against the
+   grant's message, journals the attempt in `sealed_preparations` before the
+   Keystore HPKE open, enforces the plaintext rules (strict UTF-8,
+   1..32,768 bytes, no BOM, no NUL), and holds the text only in a one-use
+   zeroizing holder. Every key and plaintext buffer is cleared after use.
+4. A text needing more parts than `segment_count` is cleared and its journal
+   row aborted before any submit intent exists.
+
+A refusal yields no plaintext and no radio call, and a refusal at steps 1 or 2
+writes no journal row. An expired grant is reported, never retried silently.
+Journal-before-submit holds, an ambiguous radio outcome stays `unknown`, and
+nothing auto-resends. No key material, plaintext or envelope bytes enter logs,
+the evidence journal or status reports; the journal keeps identities and
+digests only.
+
+### Refusal report (phone to hub)
+
+```json
+{"v":1,"type":"sealed_execution_refusal","grant_version":1,
+ "attempt_id":"UUID","connection_epoch":1,"reason":"expired"}
+```
+
+`reason` is one fixed code from the schema. The report names only the attempt
+and epoch: no digest, key ID, envelope or content. The hub treats a refused
+attempt as not sent and never re-grants it silently.
 
 ## Optional reported preconditions
 

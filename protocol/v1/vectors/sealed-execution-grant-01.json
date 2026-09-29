@@ -1,0 +1,348 @@
+{
+  "status": "PROPOSED_UNAPPROVED_TEST_ONLY",
+  "kind": "sealed-execution-grant-01",
+  "schema": "sealed-execution-grant.schema.json",
+  "envelopeSource": {
+    "file": "candidate02-preparation.json",
+    "case": "normal",
+    "note": "Synthetic candidate-02 envelope from android/app/src/sharedTest/resources. A case envelope names another case of that file; truncated is the normal envelope without its final byte."
+  },
+  "rules": "Grant version 1 binds account, device, line (and binding generation), message, attempt, device-payload reader role 1 and this device's Keystore key ID, connection and deployment epochs, the SHA-256 of the exact envelope bytes, a trusted-time expiry at most 35,000 ms ahead and 1..6 segments. Every refusal yields no plaintext, no journal row and no radio call.",
+  "frame": {
+    "v": 1,
+    "type": "sealed_execution_grant",
+    "grant_version": 1,
+    "account_id": "01010101-0101-0101-0101-010101010101",
+    "device_id": "02020202-0202-0202-0202-020202020202",
+    "line_id": "03030303-0303-0303-0303-030303030303",
+    "message_id": "04040404-0404-0404-0404-040404040404",
+    "attempt_id": "51515151-5151-4151-8151-515151515151",
+    "connection_epoch": 1,
+    "deployment_epoch": 1,
+    "binding_generation": 1,
+    "attempt_generation": 1,
+    "reader_role": 1,
+    "reader_key_id": "9wny3JJQo96to8fTnz-zsxFEOaKuBNKxH3F4U27EbYw",
+    "envelope_sha256": "TxkQZ11Po_pzgUkvzsq5E2h8TObudZ_JpkvX-U5vpaE",
+    "unsigned_sha256": "7B7AvGU7SrPT13KyPAJtxR3Mz8D5Spphcqev7dQR9v8",
+    "expires_at_ms": 1700000015000,
+    "segment_count": 1
+  },
+  "context": {
+    "authenticatedAccountId": "01010101-0101-0101-0101-010101010101",
+    "authenticatedDeviceId": "02020202-0202-0202-0202-020202020202",
+    "activeLineId": "03030303-0303-0303-0303-030303030303",
+    "activeBindingGeneration": 1,
+    "connectionEpoch": 1,
+    "deploymentEpoch": 1,
+    "pinnedReaderKeyId": "9wny3JJQo96to8fTnz-zsxFEOaKuBNKxH3F4U27EbYw",
+    "trustedNowMs": 1700000000000
+  },
+  "cases": [
+    {
+      "name": "validGrant",
+      "verdict": "accept"
+    },
+    {
+      "name": "grantNamesAnotherAccount",
+      "verdict": "refuse",
+      "reason": "account_mismatch",
+      "framePatch": {
+        "account_id": "0e0e0e0e-0e0e-4e0e-8e0e-0e0e0e0e0e0e"
+      }
+    },
+    {
+      "name": "sessionIsAnotherAccount",
+      "verdict": "refuse",
+      "reason": "account_mismatch",
+      "contextPatch": {
+        "authenticatedAccountId": "0e0e0e0e-0e0e-4e0e-8e0e-0e0e0e0e0e0e"
+      }
+    },
+    {
+      "name": "grantNamesAnotherDevice",
+      "verdict": "refuse",
+      "reason": "device_mismatch",
+      "framePatch": {
+        "device_id": "0e0e0e0e-0e0e-4e0e-8e0e-0e0e0e0e0e0e"
+      }
+    },
+    {
+      "name": "sessionIsAnotherDevice",
+      "verdict": "refuse",
+      "reason": "device_mismatch",
+      "contextPatch": {
+        "authenticatedDeviceId": "0e0e0e0e-0e0e-4e0e-8e0e-0e0e0e0e0e0e"
+      }
+    },
+    {
+      "name": "grantNamesAnotherLine",
+      "verdict": "refuse",
+      "reason": "line_mismatch",
+      "framePatch": {
+        "line_id": "0e0e0e0e-0e0e-4e0e-8e0e-0e0e0e0e0e0e"
+      }
+    },
+    {
+      "name": "activeLineIsAnother",
+      "verdict": "refuse",
+      "reason": "line_mismatch",
+      "contextPatch": {
+        "activeLineId": "0e0e0e0e-0e0e-4e0e-8e0e-0e0e0e0e0e0e"
+      }
+    },
+    {
+      "name": "grantNamesAnotherMessage",
+      "verdict": "refuse",
+      "reason": "message_mismatch",
+      "framePatch": {
+        "message_id": "0e0e0e0e-0e0e-4e0e-8e0e-0e0e0e0e0e0e"
+      }
+    },
+    {
+      "name": "zeroAttempt",
+      "verdict": "refuse",
+      "reason": "message_or_attempt_mismatch",
+      "framePatch": {
+        "attempt_id": "00000000-0000-0000-0000-000000000000"
+      }
+    },
+    {
+      "name": "archiveReaderRole",
+      "verdict": "refuse",
+      "reason": "reader_role_mismatch",
+      "framePatch": {
+        "reader_role": 2
+      }
+    },
+    {
+      "name": "integrationReaderRole",
+      "verdict": "refuse",
+      "reason": "reader_role_mismatch",
+      "framePatch": {
+        "reader_role": 3
+      }
+    },
+    {
+      "name": "grantNamesArchiveKey",
+      "verdict": "refuse",
+      "reason": "reader_key_mismatch",
+      "framePatch": {
+        "reader_key_id": "fY3hQjRIhLbiQLWN2cQ9SCmwEsHAZgAPDURuZhSKQOo"
+      }
+    },
+    {
+      "name": "deviceHoldsAnotherKey",
+      "verdict": "refuse",
+      "reason": "reader_key_mismatch",
+      "contextPatch": {
+        "pinnedReaderKeyId": "fY3hQjRIhLbiQLWN2cQ9SCmwEsHAZgAPDURuZhSKQOo"
+      }
+    },
+    {
+      "name": "staleConnectionEpoch",
+      "verdict": "refuse",
+      "reason": "session_mismatch",
+      "framePatch": {
+        "connection_epoch": 2
+      }
+    },
+    {
+      "name": "otherDeploymentEpoch",
+      "verdict": "refuse",
+      "reason": "deployment_mismatch",
+      "framePatch": {
+        "deployment_epoch": 2
+      }
+    },
+    {
+      "name": "staleBindingGeneration",
+      "verdict": "refuse",
+      "reason": "binding_generation_mismatch",
+      "contextPatch": {
+        "activeBindingGeneration": 2
+      }
+    },
+    {
+      "name": "substitutedEnvelope",
+      "verdict": "refuse",
+      "reason": "envelope_digest_mismatch",
+      "envelope": "wrongNonce"
+    },
+    {
+      "name": "digestOfOtherBytes",
+      "verdict": "refuse",
+      "reason": "envelope_digest_mismatch",
+      "framePatch": {
+        "envelope_sha256": "2SmKENGwc1g33EvYXaxkGw887yekfl1TpU8vP1svz_o"
+      }
+    },
+    {
+      "name": "truncatedEnvelope",
+      "verdict": "refuse",
+      "reason": "envelope_malformed",
+      "envelope": "truncated"
+    },
+    {
+      "name": "expiredAtBoundary",
+      "verdict": "refuse",
+      "reason": "expired",
+      "contextPatch": {
+        "trustedNowMs": 1700000015000
+      }
+    },
+    {
+      "name": "implausiblyFarExpiry",
+      "verdict": "refuse",
+      "reason": "implausible_expiry",
+      "framePatch": {
+        "expires_at_ms": 1700000035001
+      }
+    },
+    {
+      "name": "zeroSegments",
+      "verdict": "refuse",
+      "reason": "segment_count_out_of_range",
+      "framePatch": {
+        "segment_count": 0
+      }
+    },
+    {
+      "name": "sevenSegments",
+      "verdict": "refuse",
+      "reason": "segment_count_out_of_range",
+      "framePatch": {
+        "segment_count": 7
+      }
+    },
+    {
+      "name": "expiryAtPlausibilityCeiling",
+      "verdict": "accept",
+      "framePatch": {
+        "expires_at_ms": 1700000035000
+      }
+    },
+    {
+      "name": "unknownField",
+      "verdict": "malformed",
+      "reason": "frame",
+      "framePatch": {
+        "grant_ttl_ms": 15000
+      }
+    },
+    {
+      "name": "missingReaderKey",
+      "verdict": "malformed",
+      "reason": "frame",
+      "frameRemove": [
+        "reader_key_id"
+      ]
+    },
+    {
+      "name": "missingReaderRole",
+      "verdict": "malformed",
+      "reason": "frame",
+      "frameRemove": [
+        "reader_role"
+      ]
+    },
+    {
+      "name": "unknownReaderRole",
+      "verdict": "malformed",
+      "reason": "frame",
+      "framePatch": {
+        "reader_role": 4
+      }
+    },
+    {
+      "name": "streamVersionTwo",
+      "verdict": "malformed",
+      "reason": "frame",
+      "framePatch": {
+        "v": 2
+      }
+    },
+    {
+      "name": "grantVersionTwo",
+      "verdict": "malformed",
+      "reason": "frame",
+      "framePatch": {
+        "grant_version": 2
+      }
+    },
+    {
+      "name": "uppercaseUuid",
+      "verdict": "malformed",
+      "reason": "frame",
+      "framePatch": {
+        "message_id": "4A4A4A4A-4A4A-4A4A-8A4A-4A4A4A4A4A4A"
+      }
+    },
+    {
+      "name": "paddedDigest",
+      "verdict": "malformed",
+      "reason": "frame",
+      "framePatch": {
+        "envelope_sha256": "TxkQZ11Po_pzgUkvzsq5E2h8TObudZ_JpkvX-U5vpaE="
+      }
+    },
+    {
+      "name": "shortDigest",
+      "verdict": "malformed",
+      "reason": "frame",
+      "framePatch": {
+        "envelope_sha256": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ"
+      }
+    },
+    {
+      "name": "fractionalEpoch",
+      "verdict": "malformed",
+      "reason": "frame",
+      "framePatch": {
+        "connection_epoch": 1.5
+      }
+    },
+    {
+      "name": "stringExpiry",
+      "verdict": "malformed",
+      "reason": "frame",
+      "framePatch": {
+        "expires_at_ms": "1700000015000"
+      }
+    },
+    {
+      "name": "zeroEpoch",
+      "verdict": "malformed",
+      "reason": "frame",
+      "framePatch": {
+        "connection_epoch": 0
+      }
+    },
+    {
+      "name": "plaintextBody",
+      "verdict": "malformed",
+      "reason": "frame",
+      "framePatch": {
+        "body": "synthetic"
+      }
+    }
+  ],
+  "refusalFrames": [
+    {
+      "v": 1,
+      "type": "sealed_execution_refusal",
+      "grant_version": 1,
+      "attempt_id": "51515151-5151-4151-8151-515151515151",
+      "connection_epoch": 1,
+      "reason": "expired"
+    },
+    {
+      "v": 1,
+      "type": "sealed_execution_refusal",
+      "grant_version": 1,
+      "attempt_id": "51515151-5151-4151-8151-515151515151",
+      "connection_epoch": 1,
+      "reason": "envelope_digest_mismatch"
+    }
+  ]
+}
