@@ -2550,19 +2550,20 @@ async fn the_observer_user_delete_never_reaches_owners_or_other_accounts() {
         .await
         .unwrap();
     assert_eq!(deleted, 1, "only account A's observer");
-    for (label, user, survives) in [
-        ("account A observer", a_observer, false),
-        ("account B observer", b_observer, true),
-        ("account A owner", a.user_id, true),
-        ("account B owner", b.user_id, true),
-    ] {
-        let count: i64 = tx
-            .query_one("SELECT count(*) FROM users WHERE id=$1", &[&user])
-            .await
-            .unwrap()
-            .get(0);
-        assert_eq!(count == 1, survives, "{label}");
-    }
+    let exists = |user: Uuid| {
+        let tx = &tx;
+        async move {
+            tx.query_one("SELECT count(*) FROM users WHERE id=$1", &[&user])
+                .await
+                .unwrap()
+                .get::<_, i64>(0)
+                == 1
+        }
+    };
+    assert!(!exists(a_observer).await, "account A observer is deleted");
+    assert!(exists(b_observer).await, "account B observer survives");
+    assert!(exists(a.user_id).await, "account A owner survives");
+    assert!(exists(b.user_id).await, "account B owner survives");
     // An account with no observers of its own reaches nothing, even though
     // observers and owners exist elsewhere.
     tx.rollback().await.unwrap();
