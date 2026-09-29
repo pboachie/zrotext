@@ -755,6 +755,11 @@ async fn abuse_schema() -> (Client, Client, String) {
     ] {
         db.batch_execute(migration).await.unwrap();
     }
+    // Production drops the charge-amplifying updated_at index (migration 058);
+    // prune and charge tests must hold with in-place row updates.
+    db.batch_execute("DROP INDEX IF EXISTS auth_abuse_counters_stale")
+        .await
+        .unwrap();
     (setup, db, schema)
 }
 
@@ -908,6 +913,71 @@ async fn outbound_accepts_share_no_route_row_across_accounts() {
         .unwrap()
         .get(0);
     assert_eq!(rows, 11);
+    setup
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+/// Charging an existing counter row must not touch an indexed column, so the
+/// update is HOT: no new index entries, no index bloat on the shared route
+/// rows (#500).
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn charging_an_existing_counter_row_is_a_hot_update() {
+    let (setup, db, schema) = abuse_schema().await;
+    assert!(
+        db.query_one(
+            "SELECT to_regclass('auth_abuse_counters_stale') IS NULL",
+            &[]
+        )
+        .await
+        .unwrap()
+        .get::<_, bool>(0),
+        "the updated_at index must be gone in the test schema too"
+    );
+    let hasher = TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap();
+    let subject = normalize_email(" hot@example.test ").unwrap();
+    // The first charge inserts the row; every later charge must update it
+    // without touching an indexed column.
+    assert!(
+        consume(&db, &hasher, Limit::Login, Some(&subject))
+            .await
+            .unwrap()
+    );
+    for _ in 0..5 {
+        assert!(
+            consume(&db, &hasher, Limit::Login, Some(&subject))
+                .await
+                .unwrap()
+        );
+    }
+    db.batch_execute("SELECT pg_stat_force_next_flush()")
+        .await
+        .unwrap();
+    let hot: i64 = db
+        .query_one(
+            "SELECT n_tup_hot_upd FROM pg_stat_all_tables \
+             WHERE schemaname=current_schema() AND relname='auth_abuse_counters'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert!(
+        hot >= 5,
+        "charging an existing row must be a HOT update (saw {hot})"
+    );
+    let cold: i64 = db
+        .query_one(
+            "SELECT n_tup_upd-n_tup_hot_upd FROM pg_stat_all_tables \
+             WHERE schemaname=current_schema() AND relname='auth_abuse_counters'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(cold, 0, "no charge may rewrite an indexed column");
     setup
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
         .await
