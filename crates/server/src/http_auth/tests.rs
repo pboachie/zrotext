@@ -4949,3 +4949,77 @@ async fn mfa_changes_invalidate_earlier_trusted_cookies_on_the_reset_path() {
         .await
         .unwrap();
 }
+
+// Pooling is compiled only off-Windows (founder decision, issue #485), so the
+// reuse proof runs on the deployment platform: several mails through one
+// dispatcher must share fewer SMTP connections than mails.
+#[cfg(not(windows))]
+#[tokio::test]
+async fn pooled_smtp_sessions_are_reused_across_mails() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let connections = std::sync::Arc::new(AtomicUsize::new(0));
+    // Minimal plain-SMTP stub: 220 greeting, 250 for everything but DATA
+    // (354 then collect until ".") and QUIT (221).
+    let counted = connections.clone();
+    let server = tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                return;
+            };
+            counted.fetch_add(1, Ordering::SeqCst);
+            tokio::spawn(async move {
+                use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+                let (reader, mut writer) = stream.into_split();
+                let mut lines = BufReader::new(reader).lines();
+                writer.write_all(b"220 stub ready\r\n").await.unwrap();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let upper = line.to_ascii_uppercase();
+                    if upper.starts_with("QUIT") {
+                        writer.write_all(b"221 bye\r\n").await.unwrap();
+                        return;
+                    }
+                    if upper.starts_with("DATA") {
+                        writer.write_all(b"354 go\r\n").await.unwrap();
+                        while let Ok(Some(body)) = lines.next_line().await {
+                            if body == "." {
+                                break;
+                            }
+                        }
+                        writer.write_all(b"250 queued\r\n").await.unwrap();
+                        continue;
+                    }
+                    writer.write_all(b"250 ok\r\n").await.unwrap();
+                }
+            });
+        }
+    });
+    // A plain (non-TLS) transport carrying exactly the production pool
+    // configuration; the stub cannot speak TLS, and the point under test is
+    // the pooling, not the encryption.
+    use lettre::{AsyncTransport, Tokio1Executor};
+    let transport =
+        lettre::AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(address.ip().to_string())
+            .port(address.port())
+            .pool_config(super::smtp_pool_config())
+            .build();
+    let mails = 5;
+    for i in 0..mails {
+        let message = lettre::Message::builder()
+            .from(format!("sender{i}@example.test").parse().unwrap())
+            .to("recipient@example.test".parse().unwrap())
+            .body(format!("message {i}"))
+            .unwrap();
+        transport
+            .send(message)
+            .await
+            .unwrap_or_else(|error| panic!("mail {i} must be accepted by the stub: {error}"));
+    }
+    let opened = connections.load(Ordering::SeqCst);
+    assert!(
+        opened < mails,
+        "{mails} mails opened {opened} connections; sessions must be pooled"
+    );
+    server.abort();
+}

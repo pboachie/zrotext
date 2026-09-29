@@ -687,3 +687,5 @@ in 24 hours for ordinary inbound events, and a separate 10,000 per device for
 opt-out, review and opt-in events, with no account-wide ceiling. When a budget
 is spent the hub closes the device socket with `1013` and the phone retries
 later. See [inbound-pilot-budgets.md](../protocol/v1/inbound-pilot-budgets.md).
+
+On Windows builds the SMTP transport keeps one connection per message: lettre's session pool needs a live Tokio reactor when its transports are built and dropped, and that requirement makes local Windows test binaries abort (issue #485). The deployed Linux server always uses the pooled path.

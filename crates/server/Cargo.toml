@@ -30,7 +30,6 @@ sha2 = { version = "0.11.0", features = ["zeroize"] }
 thiserror = "2.0.16"
 totp-rs = { version = "6.0.0", features = ["gen_secret", "otpauth", "zeroize"] }
 p256 = { version = "0.14.0", features = ["ecdsa", "pkcs8"] }
-lettre = { version = "0.11.23", default-features = false, features = ["builder", "smtp-transport", "tokio1-rustls-tls"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "form"] }
 # Same versions reqwest already pulls in; used to build the webhook TLS config once.
 rustls = { version = "0.23.45", default-features = false, features = ["std", "tls12", "aws-lc-rs"] }
@@ -45,6 +44,16 @@ ring = "0.17.14"
 futures-util = { version = "0.3.31", default-features = false, features = ["std", "sink"] }
 # Already locked through axum/hyper; names `Frame` for the ingress body-deadline wrapper.
 http-body = "1.1.0"
+
+# SMTP session pooling is enabled only off-Windows (founder decision, issue
+# #485): lettre's pool requires a live Tokio reactor at build and drop time,
+# and the resulting drop-time panic aborts local Windows test binaries; the
+# server itself always runs the pooled path in its Linux deployment.
+[target.'cfg(not(windows))'.dependencies]
+lettre = { version = "0.11.23", default-features = false, features = ["builder", "pool", "smtp-transport", "tokio1-rustls-tls"] }
+
+[target.'cfg(windows)'.dependencies]
+lettre = { version = "0.11.23", default-features = false, features = ["builder", "smtp-transport", "tokio1-rustls-tls"] }
 
 [dev-dependencies]
 tokio = { version = "1.47.1", features = ["test-util"] }
