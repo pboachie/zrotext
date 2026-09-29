@@ -98,6 +98,10 @@ android {
     testOptions {
         // Render the real Material fields and semantics in JVM accessibility tests.
         unitTests.isIncludeAndroidResources = true
+        // Robolectric 4.17 reads raw FileDescriptor internals through
+        // jdk.internal.access, which JDK 17+ does not export to test code.
+        // Only this package is opened; see robolectric.org/getting-started.
+        unitTests.all { it.jvmArgs("--add-opens=java.base/jdk.internal.access=ALL-UNNAMED") }
     }
     // The same signature corpus runs in CI's JVM suite and on an Android device.
     for (testSource in listOf("test", "androidTest")) {
@@ -144,7 +148,7 @@ dependencyLocking {
 }
 
 dependencies {
-    implementation(platform("androidx.compose:compose-bom:2025.09.00"))
+    implementation(platform("androidx.compose:compose-bom:2026.09.00"))
     implementation("androidx.activity:activity-compose:1.10.1")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")
@@ -153,7 +157,7 @@ dependencies {
     implementation("androidx.room:room-runtime:2.8.5")
     ksp("androidx.room:room-compiler:2.8.5")
     testImplementation("junit:junit:4.13.2")
-    testImplementation("org.robolectric:robolectric:4.16.1")
+    testImplementation("org.robolectric:robolectric:4.17")
     androidTestImplementation("androidx.test:runner:1.7.0")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
     // Dormant draft-02 provider probe only; no Tink code enters the release runtime.
