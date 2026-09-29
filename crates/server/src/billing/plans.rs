@@ -16,7 +16,7 @@ pub enum UsagePlanError {
     RuntimeDatabase(#[from] crate::runtime_db::ConnectError),
     #[error("usage-limit plan storage unavailable: {0}")]
     Database(#[from] tokio_postgres::Error),
-    #[error("usage-limit plan schema is missing; apply migration 055 first")]
+    #[error("usage-limit plan schema is missing; apply migration 059 first")]
     SchemaMissing,
 }
 

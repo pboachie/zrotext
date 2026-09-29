@@ -91,7 +91,7 @@ const TEST_MIGRATIONS: [(&str, &str); 55] = [
     migration!("054_stateless_device_challenges.sql"),
     migration!("055_trusted_browser_epoch.sql"),
 ];
-    migration!("050_usage_limit_plans.sql"),    (
+    migration!("055_usage_limit_plans.sql"),    (
         "055_usage_limit_plans.sql",
         include_str!("../../../deploy/compose/migrations/055_usage_limit_plans.sql"),
     ),

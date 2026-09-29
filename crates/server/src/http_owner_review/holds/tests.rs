@@ -87,7 +87,7 @@ const TEST_MIGRATIONS: [(&str, &str); 55] = [
     migration!("054_stateless_device_challenges.sql"),
     migration!("055_trusted_browser_epoch.sql"),
 ];
-    migration!("050_usage_limit_plans.sql"),];
+
 #[test]
 fn hold_fixture_tracks_numbered_migrations() {
     let directory =

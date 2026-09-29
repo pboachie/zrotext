@@ -34,7 +34,7 @@ no device-cap field in this slice; the existing device-cap machinery is
 coupled to Stripe reconciliation and extending it to plans is a separate,
 undecided step.
 
-Apply migration 050 (`050_usage_limit_plans.sql`) before enabling.
+Apply migration 059 (`059_usage_limit_plans.sql`) before enabling.
 
 ## Assignment and projection
 
@@ -69,7 +69,7 @@ change** in `usage_plan_audit`. Consequences:
   allowances.
 - Deleting an account removes its assignment and audit history with it
   (`ON DELETE CASCADE`).
-- On a database without migration 050, enabling fails startup with an
+- On a database without migration 059, enabling fails startup with an
   explicit schema error; disabling is a no-op.
 
 ## Enforcement and honest over-limit responses
