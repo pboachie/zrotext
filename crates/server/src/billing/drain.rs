@@ -51,6 +51,8 @@ pub struct BillingQueueConfig<T> {
     pub batch_size: usize,
     pub concurrency: usize,
     pub risk: bool,
+    /// Staggers the first tick so co-periodic queues do not burst together.
+    pub phase: Duration,
     pub draining: Arc<AtomicBool>,
     pub notify: Arc<Notify>,
     pub permits: Arc<Semaphore>,
@@ -67,11 +69,12 @@ async fn run_queue<T: BillingJobs>(config: BillingQueueConfig<T>, interval: Dura
         batch_size,
         concurrency,
         risk,
+        phase,
         draining,
         notify,
         permits,
     } = config;
-    let mut checks = tokio::time::interval(interval);
+    let mut checks = tokio::time::interval_at(tokio::time::Instant::now() + phase, interval);
     checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut unavailable_logged = false;
     loop {
@@ -627,6 +630,7 @@ mod tests {
                 batch_size: 20,
                 concurrency: 1,
                 risk: false,
+                phase: Duration::ZERO,
                 draining: draining.clone(),
                 notify: notify.clone(),
                 permits: permits.clone(),
@@ -640,6 +644,7 @@ mod tests {
                 batch_size: 20,
                 concurrency: 1,
                 risk: true,
+                phase: Duration::ZERO,
                 draining: draining.clone(),
                 notify: notify.clone(),
                 permits,

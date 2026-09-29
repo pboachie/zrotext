@@ -21,14 +21,18 @@ use tokio::{
 };
 use tokio_postgres::Client;
 
-// Two default hubs use at most 72 connections, leaving room on a default
+// Two default hubs use at most 80 connections, leaving room on a default
 // 100-connection PostgreSQL server for migrations, inspection and recovery.
 // Pooled idle sockets count against the same budgets as busy ones.
 // Device slots bound concurrent database work, not connected phones: the
 // stream admits 32 sessions and 32 handshakes without pinning their clients.
 const REQUEST_SLOTS: usize = 16;
 const DEVICE_SLOTS: usize = 16;
-const WORKER_SLOTS: usize = 4;
+/// Worker-class sockets must cover the configured webhook lanes, the Stripe
+/// reconciliation jobs and one socket per periodic worker; startup rejects
+/// configurations that do not fit. Workers must still hold a socket only for
+/// database phases, never across webhook, Stripe or SMTP network I/O.
+pub const WORKER_SLOTS: usize = 8;
 /// Idle sockets are closed after this long so a quiet hub returns its
 /// connections to PostgreSQL.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -285,6 +289,19 @@ pub async fn connect_device(url: &str) -> Result<PooledClient, ConnectError> {
 }
 pub async fn connect_worker(url: &str) -> Result<PooledClient, ConnectError> {
     acquire(&POOLS.workers, url).await
+}
+
+/// Test-only: how many idle worker-class sockets exist for `url`. An entry in
+/// the idle list is reusable by any worker acquire without a permit, so its
+/// presence proves the previous holder released the socket.
+#[cfg(test)]
+pub(crate) fn worker_idle_sockets(url: &str) -> usize {
+    POOLS
+        .workers
+        .idle()
+        .iter()
+        .filter(|entry| &*entry.url == url)
+        .count()
 }
 
 async fn acquire(pool: &Arc<ClassPool>, url: &str) -> Result<PooledClient, ConnectError> {
