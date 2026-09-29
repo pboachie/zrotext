@@ -171,5 +171,6 @@ SELECT count(*) FROM billing_risk_events WHERE state='needs_review';
 
 Migration 028 (`028_billing_provider_failures.sql`) must be applied before starting this worker. A new verified
 subscription event requeues its row. A changed billing configuration also
-requeues subscription and payment-risk review rows through the configuration reset transaction; an ordinary
+requeues subscription and payment-risk review rows through the configuration reset transaction. Risk rows with
+no Charge or PaymentIntent pointer stay in review, because migration 023 allows such a row only in review; an ordinary
 restart retains review state so a permanently failing read cannot loop forever.
