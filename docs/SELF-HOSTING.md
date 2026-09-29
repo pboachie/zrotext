@@ -369,7 +369,12 @@ without them exactly as before.
   `TRUSTED_PROXY_CIDRS`; from any other peer the header is ignored and cannot
   spoof a trusted address. Configure `TRUSTED_PROXY_CIDRS` with the networks
   your reverse proxies connect from, and only trust proxies that append the
-  real client address to the header.
+  real client address to the header. A trusted proxy is never itself treated
+  as the client: the header is walked right to left past trusted proxies to
+  the first other address, and a request from a trusted proxy with no header,
+  an empty or unreadable header, an unparsable entry, or a chain of only
+  trusted proxies gets no trusted-network budget, even when the proxy's own
+  address is inside `RESET_TRUSTED_CIDRS`.
 
 The trusted budget is capped at 12 codes per address per day, on top of the
 normal route ceiling and the one-code-per-15-minutes cadence, and every

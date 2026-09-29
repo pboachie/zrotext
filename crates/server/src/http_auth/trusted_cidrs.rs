@@ -3,7 +3,7 @@
 //! (issue #526). `RESET_TRUSTED_CIDRS` names networks whose reset requests
 //! may use the trusted lane; `TRUSTED_PROXY_CIDRS` names reverse proxies whose
 //! `X-Forwarded-For` header may be believed. The client address is the socket
-// peer unless that peer is a configured proxy, so a caller cannot reach the
+//! peer unless that peer is a configured proxy, so a caller cannot reach the
 //! trusted lane by spoofing the header from outside.
 
 use std::net::{IpAddr, SocketAddr};
@@ -120,37 +120,32 @@ impl TrustedNetworks {
             .any(|cidr| cidr.contains(address))
     }
 
-    /// The client address a reset request came from. It is the socket peer,
-    /// unless that peer is a configured trusted proxy and supplied an
-    /// `X-Forwarded-For` chain; then the chain is walked right to left past
-    /// trusted proxies, because each appending proxy is to the right of the
-    /// address it observed. A chain made only of trusted proxies resolves to
-    /// its leftmost entry. An unparsable entry ends the walk with no address:
-    /// the walk must never fall through to an entry further left, because a
-    /// client can inject arbitrary left entries. An empty header also
-    /// resolves to nothing, so the proxy itself is not treated as a client.
+    /// The client address a reset request came from, or `None` when there is
+    /// no definite one. It is the socket peer, unless that peer is a
+    /// configured trusted proxy; a trusted proxy is never itself the client.
+    /// Its `X-Forwarded-For` chain is then walked right to left past trusted
+    /// proxies, because each appending proxy is to the right of the address
+    /// it observed, and the first untrusted entry is the client. Everything
+    /// else fails closed with no address: a missing or empty header, an empty
+    /// or unparsable entry (the walk must never fall through to an entry
+    /// further left, because a client can inject arbitrary left entries), and
+    /// a chain made only of trusted proxies.
     fn client_address(&self, peer: Option<IpAddr>, forwarded_for: Option<&str>) -> Option<IpAddr> {
         let peer = peer?;
-        // Without a forwarded chain from a trusted proxy, the peer itself is
-        // the client; a header from anyone else is ignored entirely.
-        let list = match forwarded_for {
-            Some(list) if self.is_trusted_proxy(peer) => list,
-            _ => return Some(peer),
-        };
-        let entries: Vec<&str> = list.split(',').map(str::trim).collect();
-        for entry in entries.iter().rev() {
-            let Ok(address) = entry.parse::<IpAddr>() else {
-                // Fail closed: an unparsable entry proves nothing about the
-                // real client, so no address from this chain is returned.
-                return None;
-            };
+        // A header from anyone but a trusted proxy is ignored entirely.
+        if !self.is_trusted_proxy(peer) {
+            return Some(peer);
+        }
+        for entry in forwarded_for?.split(',').rev() {
+            // Fail closed: an empty or unparsable entry proves nothing about
+            // the real client, so no address from this chain is returned.
+            let address = entry.trim().parse::<IpAddr>().ok()?;
             if !self.is_trusted_proxy(address) {
                 return Some(address);
             }
         }
-        // Every entry is a trusted proxy: the chain resolves to its leftmost
-        // entry, and an unparsable leftmost still resolves to nothing.
-        entries.first()?.parse::<IpAddr>().ok()
+        // The chain named only trusted proxies: there is no definite client.
+        None
     }
 
     /// Whether a reset request from `peer` (optionally behind a trusted
@@ -322,8 +317,8 @@ mod tests {
             !networks
                 .reset_trusted_client(Some(socket("203.0.113.5")), Some("192.0.2.8, 203.0.113.4"))
         );
-        // A chain made only of trusted proxies resolves to its leftmost
-        // entry, and an unparsable or empty header trusts nothing.
+        // A chain made only of trusted proxies names no client, and an
+        // unparsable or empty header trusts nothing.
         assert!(networks.reset_trusted_client(
             Some(socket("203.0.113.5")),
             Some("198.51.100.9, 203.0.113.4, 203.0.113.5")
@@ -334,5 +329,91 @@ mod tests {
         ));
         assert!(!networks.reset_trusted_client(Some(socket("203.0.113.5")), Some("")));
         assert!(!networks.reset_trusted_client(Some(socket("203.0.113.5")), Some("garbage")));
+    }
+
+    /// A deployment whose trusted proxies sit inside `RESET_TRUSTED_CIDRS`,
+    /// for example one private range for both. Any walk that falls back to
+    /// a proxy's own address would then wrongly grant the trusted lane.
+    fn proxies_inside_trusted_range() -> TrustedNetworks {
+        TrustedNetworks::parse(
+            Some("198.51.100.0/24"),
+            Some("198.51.100.5/32,198.51.100.6/32"),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_trusted_proxy_is_never_its_own_client() {
+        let networks = proxies_inside_trusted_range();
+        let proxy = Some(socket("198.51.100.5"));
+        // Control: a definite client inside the trusted range, reported by
+        // the proxies, is trusted.
+        assert!(networks.reset_trusted_client(proxy, Some("198.51.100.9")));
+        assert!(networks.reset_trusted_client(proxy, Some("198.51.100.9, 198.51.100.6")));
+        // A proxy that sends no header names no client.
+        assert!(!networks.reset_trusted_client(proxy, None));
+    }
+
+    #[test]
+    fn an_empty_forwarded_chain_fails_closed() {
+        let networks = proxies_inside_trusted_range();
+        let proxy = Some(socket("198.51.100.5"));
+        for chain in ["", " ", ",", " , ", ", ,"] {
+            assert!(
+                !networks.reset_trusted_client(proxy, Some(chain)),
+                "{chain:?} fell back to the proxy"
+            );
+        }
+    }
+
+    #[test]
+    fn an_all_trusted_proxy_chain_fails_closed() {
+        let networks = proxies_inside_trusted_range();
+        let proxy = Some(socket("198.51.100.5"));
+        for chain in [
+            "198.51.100.6",
+            "198.51.100.6, 198.51.100.5",
+            "198.51.100.5,198.51.100.6,198.51.100.5",
+        ] {
+            assert!(
+                !networks.reset_trusted_client(proxy, Some(chain)),
+                "{chain:?} resolved to a proxy"
+            );
+        }
+    }
+
+    #[test]
+    fn a_malformed_forwarded_entry_fails_closed() {
+        let networks = proxies_inside_trusted_range();
+        let proxy = Some(socket("198.51.100.5"));
+        for chain in [
+            "198.51.100.9, 198.51.100.6:51234",
+            "198.51.100.9, [2001:db8::1]",
+            "198.51.100.9, unknown",
+            "198.51.100.9,, 198.51.100.6",
+            "198.51.100.9, 198.51.100.6, ",
+            "198.51.100.9 198.51.100.6",
+            "198.51.100.9, 198.51.100.256",
+        ] {
+            assert!(
+                !networks.reset_trusted_client(proxy, Some(chain)),
+                "{chain:?} was trusted"
+            );
+        }
+    }
+
+    #[test]
+    fn a_spoofed_leftmost_entry_is_never_believed() {
+        let networks = proxies_inside_trusted_range();
+        let proxy = Some(socket("198.51.100.5"));
+        // The client prepends a trusted address; the proxy appends the real,
+        // untrusted client to its right.
+        assert!(!networks.reset_trusted_client(proxy, Some("198.51.100.9, 192.0.2.8")));
+        assert!(
+            !networks.reset_trusted_client(proxy, Some("198.51.100.9, 192.0.2.8, 198.51.100.6"))
+        );
+        // A spoofed proxy address on the left cannot make the chain collapse
+        // onto a proxy either.
+        assert!(!networks.reset_trusted_client(proxy, Some("198.51.100.6, 192.0.2.8")));
     }
 }

@@ -878,25 +878,29 @@ fn require_origin(headers: &HeaderMap, expected: &str) -> Result<(), AuthHttpErr
     }
 }
 
-/// Every `X-Forwarded-For` line joined in arrival order. Some proxies append
-/// a new header line instead of extending the first, and a client can inject
-/// its own line ahead of the proxy's, so trusting only the first line would
-/// trust the client-controlled line. Lines that are not valid header strings
-/// are dropped; the resulting chain is validated by the CIDR walk.
+/// Every `X-Forwarded-For` line joined in arrival order, or `None` when the
+/// request has no such header. Some proxies append a new header line instead
+/// of extending the first, and a client can inject its own line ahead of the
+/// proxy's, so trusting only the first line would trust the client-controlled
+/// line. Nothing is dropped: a line that is not a visible-ASCII header string
+/// (for example one holding an obs-text byte that an appending proxy merged
+/// with the real client) becomes an empty entry, and empty entries are kept,
+/// so the CIDR walk sees them and fails closed instead of the chain
+/// collapsing onto the proxy's own address.
 fn forwarded_for_chain(headers: &HeaderMap) -> Option<String> {
     let mut lines = headers
         .get_all("x-forwarded-for")
         .iter()
-        .filter_map(|value| value.to_str().ok())
-        .flat_map(|value| value.split(','))
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let first = lines.next()?.to_owned();
-    Some(lines.fold(first, |mut joined, next| {
-        joined.push(',');
-        joined.push_str(next);
-        joined
-    }))
+        .map(|value| value.to_str().unwrap_or(""))
+        .peekable();
+    lines.peek()?;
+    Some(
+        lines
+            .flat_map(|value| value.split(','))
+            .map(str::trim)
+            .collect::<Vec<_>>()
+            .join(","),
+    )
 }
 
 fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {

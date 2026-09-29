@@ -4415,6 +4415,164 @@ fn forwarded_for_chain_joins_every_header_line_in_arrival_order() {
     );
 }
 
+/// Proxies inside `RESET_TRUSTED_CIDRS` (one private range for both), where
+/// resolving a collapsed chain to the proxy's own address would grant trust.
+fn overlapping_trusted_networks() -> TrustedNetworks {
+    TrustedNetworks::parse(
+        Some("198.51.100.0/24"),
+        Some("198.51.100.5/32,198.51.100.6/32"),
+    )
+    .unwrap()
+}
+
+fn forwarded_headers(lines: &[&[u8]]) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    for line in lines {
+        headers.append("x-forwarded-for", HeaderValue::from_bytes(line).unwrap());
+    }
+    headers
+}
+
+#[test]
+fn a_collapsed_forwarded_chain_never_trusts_the_proxy_itself() {
+    let networks = overlapping_trusted_networks();
+    let proxy: Option<SocketAddr> = Some("198.51.100.5:443".parse().unwrap());
+    let trusted = |headers: &HeaderMap| {
+        networks.reset_trusted_client(proxy, super::forwarded_for_chain(headers).as_deref())
+    };
+    // Control: a definite client inside the trusted range is trusted.
+    assert!(trusted(&forwarded_headers(&[b"198.51.100.9"])));
+    // A client-supplied line holding an obs-text byte, merged by an
+    // appending proxy with the real client, is unreadable as a whole. It must
+    // not be dropped: the chain would collapse and the proxy become the
+    // client.
+    assert!(!trusted(&forwarded_headers(&[b"x\x80y, 192.0.2.8"])));
+    assert!(!trusted(&forwarded_headers(&[b"\xff"])));
+    // An unreadable line to the right of the client poisons the chain. One
+    // to its left is client-injected content the right-to-left walk never
+    // reaches, like any other spoofed left entry, so the definite client the
+    // proxy appended still decides.
+    assert!(!trusted(&forwarded_headers(&[b"198.51.100.9", b"\x80"])));
+    assert!(!trusted(&forwarded_headers(&[
+        b"198.51.100.9",
+        b"\x80",
+        b"198.51.100.6"
+    ])));
+    assert!(trusted(&forwarded_headers(&[b"\x80", b"198.51.100.9"])));
+    assert!(!trusted(&forwarded_headers(&[b"\x80", b"192.0.2.8"])));
+    // Empty headers and empty entries resolve to no client.
+    assert!(!trusted(&forwarded_headers(&[b""])));
+    assert!(!trusted(&forwarded_headers(&[b" , "])));
+    assert!(!trusted(&forwarded_headers(&[b"", b""])));
+    assert!(!trusted(&forwarded_headers(&[b"198.51.100.9", b""])));
+    // No header at all from a trusted proxy names no client either.
+    assert!(!trusted(&HeaderMap::new()));
+    // A chain of only trusted proxies names no client.
+    assert!(!trusted(&forwarded_headers(&[
+        b"198.51.100.6",
+        b"198.51.100.5"
+    ])));
+    // A spoofed trusted left-most line cannot hide the real client.
+    assert!(!trusted(&forwarded_headers(&[
+        b"198.51.100.9",
+        b"192.0.2.8"
+    ])));
+    // Malformed entries fail closed.
+    assert!(!trusted(&forwarded_headers(&[
+        b"198.51.100.9, 198.51.100.6:51234"
+    ])));
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn collapsed_forwarded_chains_from_a_trusted_proxy_get_no_trusted_lane() {
+    let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+        .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let schema = format!("http_reset_trusted_collapse_{}", Uuid::new_v4().simple());
+    let (setup, mut db, url) = trusted_lane_database(&base_url, &schema).await;
+    let hasher = Arc::new(TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
+    let password = Uuid::new_v4().to_string();
+    let owner = auth::register(&mut db, &hasher, "owner@example.test", &password)
+        .await
+        .unwrap();
+    assert!(
+        auth::verify_email(&mut db, &hasher, &owner.verification_token)
+            .await
+            .unwrap()
+    );
+    let state = AuthHttpState::new(
+        url,
+        hasher.clone(),
+        "https://zrotext.example".to_owned(),
+        Arc::new(CaptureVerification(Mutex::new(None))),
+    )
+    .unwrap()
+    .with_reset_trusted_networks(overlapping_trusted_networks());
+    let app = router(state);
+    async fn issued(db: &Client) -> i64 {
+        db.query_one("SELECT count(*) FROM password_resets", &[])
+            .await
+            .unwrap()
+            .get(0)
+    }
+    let proxy: SocketAddr = "198.51.100.5:443".parse().unwrap();
+    let outside: SocketAddr = "192.0.2.10:443".parse().unwrap();
+    // Exhaust the public lanes from an outside address.
+    for _ in 0..3 {
+        send_reset(&app, "owner@example.test", None, Some(outside), None).await;
+    }
+    assert_eq!(issued(&db).await, 1);
+    trusted_lane_age_codes(&db).await;
+    send_reset(&app, "owner@example.test", None, Some(outside), None).await;
+    assert_eq!(issued(&db).await, 2);
+    trusted_lane_exhaust_verified_daily(&db).await;
+    // Every collapsed or unusable chain through the proxy is refused like any
+    // outside request, with codes aged so that an admission would issue.
+    let lines: [&[&[u8]]; 7] = [
+        &[],
+        &[b""],
+        &[b" , "],
+        &[b"x\x80y, 192.0.2.8"],
+        &[b"198.51.100.6, 198.51.100.5"],
+        &[b"198.51.100.9, 192.0.2.8"],
+        &[b"198.51.100.9", b"\x80"],
+    ];
+    for chain in lines {
+        trusted_lane_age_codes(&db).await;
+        let mut request = reset_request("owner@example.test", None, Some(proxy), None);
+        for line in chain {
+            request
+                .headers_mut()
+                .append("x-forwarded-for", HeaderValue::from_bytes(line).unwrap());
+        }
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert_eq!(
+            issued(&db).await,
+            2,
+            "chain {chain:?} from the proxy must not reach the trusted lane"
+        );
+    }
+    // Control: the same proxy vouching for a definite client inside the
+    // trusted range is admitted through the trusted lane.
+    trusted_lane_age_codes(&db).await;
+    send_reset(
+        &app,
+        "owner@example.test",
+        None,
+        Some(proxy),
+        Some("198.51.100.9, 198.51.100.6"),
+    )
+    .await;
+    assert_eq!(issued(&db).await, 3);
+    setup
+        .batch_execute(&format!(
+            "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
+        ))
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn revoking_other_sessions_invalidates_other_browsers_trusted_cookies() {

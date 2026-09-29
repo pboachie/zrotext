@@ -420,7 +420,10 @@ back to the ordinary lanes with an identical response. Operators may also
 list trusted networks in `RESET_TRUSTED_CIDRS`; the client address is the
 socket peer, or `X-Forwarded-For` only when the immediate peer is inside
 `TRUSTED_PROXY_CIDRS` (the chain is walked right to left past trusted
-proxies), so the header cannot spoof a trusted address from outside. Trusted
+proxies), so the header cannot spoof a trusted address from outside. The
+walk fails closed: a trusted proxy is never itself the client, so a missing,
+empty, unreadable, or unparsable header entry, or a chain of only trusted
+proxies, yields no client address and no trusted lane. Trusted
 requests spend the same trusted lane. No IP address is stored: membership
 checks run in memory, and only the existing HMAC-hidden abuse-counter
 subjects record anything. Unknown addresses charge their exhausted
