@@ -515,6 +515,7 @@ async fn postgres_expired_unverified_signup_releases_its_email() {
             .await
             .unwrap()
     );
+    crate::outbox_test_support::backdate_queued_verification_mail(&client).await;
     let mail = claim_verification_mail(&mut client, &hasher)
         .await
         .unwrap()
@@ -921,6 +922,48 @@ async fn postgres_idle_session_is_rejected_before_absolute_expiry() {
         .unwrap();
     setup
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn queueing_account_mail_wakes_the_mail_worker_without_its_tick() {
+    let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+        .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let schema = format!("mail_wake_{}", Uuid::new_v4().simple());
+    let (setup, mut client, url) = pending_signup_schema(&base_url, &schema).await;
+    let hasher = TokenHasher::new(crate::test_keys::key(213)).unwrap();
+    // This test's own observer replaces the process-wide notify, so another
+    // test's producer cannot supply the wakeup. At the instant of the wake
+    // it counts outbox rows from a separate session: a wake sent before
+    // register commits would see none.
+    let (observer, seen) = crate::wakeups::committed_rows_observer(
+        url,
+        "SELECT count(*) FROM verification_mail_outbox",
+    );
+    let signup = crate::wakeups::observed(
+        observer,
+        register(
+            &mut client,
+            &hasher,
+            "wake@example.test",
+            &crate::test_keys::password(214),
+        ),
+    )
+    .await
+    .unwrap();
+    assert!(!signup.account_id.is_nil());
+    // register woke the mail worker exactly once, after its queued
+    // verification mail became visible to other sessions.
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![(crate::wakeups::Queue::AccountMail, 1)]
+    );
+    setup
+        .batch_execute(&format!(
+            "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
+        ))
         .await
         .unwrap();
 }

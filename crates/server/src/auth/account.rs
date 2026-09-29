@@ -462,6 +462,7 @@ pub async fn request_password_reset(
     )
     .await?;
     tx.commit().await?;
+    crate::wakeups::account_mail_queued();
     Ok(())
 }
 
@@ -667,6 +668,7 @@ pub async fn confirm_password_reset(
     }
     replace_password_and_revoke(&tx, account_id, user_id, &new_hash).await?;
     tx.commit().await?;
+    crate::wakeups::account_mail_queued();
     Ok(true)
 }
 
@@ -700,6 +702,7 @@ pub async fn operator_reset_password(
     let account_id: Uuid = row.get(1);
     replace_password_and_revoke(&tx, account_id, user_id, &new_hash).await?;
     tx.commit().await?;
+    crate::wakeups::account_mail_queued();
     Ok(true)
 }
 

@@ -137,6 +137,33 @@ fn bounded_worker_setting(
     }
 }
 
+/// Periodic workers that each need one worker-class socket per tick.
+const PERIODIC_WORKER_RESERVE: usize = 4;
+
+/// Refuse a configuration whose enabled worker lanes could need more
+/// worker-class sockets than the process budget. Webhook lanes are spawned,
+/// and therefore counted, only when delivery is enabled; Stripe lanes only
+/// when test billing is enabled.
+fn worker_budget_check(
+    webhook_delivery_enabled: bool,
+    webhook_dispatch_concurrency: usize,
+    stripe_reconcile_concurrency: Option<usize>,
+) -> Result<(), String> {
+    let webhook = if webhook_delivery_enabled {
+        webhook_dispatch_concurrency
+    } else {
+        0
+    };
+    let stripe = stripe_reconcile_concurrency.unwrap_or(0);
+    if webhook + stripe + PERIODIC_WORKER_RESERVE <= zrotext_server::runtime_db::WORKER_SLOTS {
+        return Ok(());
+    }
+    Err(format!(
+        "WEBHOOK_DISPATCH_CONCURRENCY ({webhook}) plus STRIPE_TEST_RECONCILE_CONCURRENCY ({stripe}) plus the periodic worker reserve ({PERIODIC_WORKER_RESERVE}) exceed the worker database budget ({}); lower one of the concurrency settings",
+        zrotext_server::runtime_db::WORKER_SLOTS
+    ))
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let hosted_sessions_enabled = optional_bool("STRIPE_TEST_HOSTED_SESSIONS_ENABLED")?;
@@ -189,8 +216,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("Stripe hosted sessions require STRIPE_BILLING_TEST_ENABLED=true".into());
     }
     let (webhook_vault, webhook_delivery_enabled) = webhook_config()?;
-    // The process-wide worker database budget is four connections. Reserve at
-    // least one for billing, recovery and other background work.
+    // The process-wide worker database budget is eight connections. Each
+    // webhook lane, Stripe job and periodic worker (retention, maintenance,
+    // account mail, delivery recovery) needs one socket while it runs its
+    // database phases; workers release their sockets across network I/O, so
+    // this bounds simultaneous claim/finish demand, not I/O concurrency.
     let webhook_dispatch_concurrency = match env::var("WEBHOOK_DISPATCH_CONCURRENCY") {
         Ok(value) => match value.parse::<usize>() {
             Ok(count @ 1..=3) => count,
@@ -199,6 +229,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(env::VarError::NotPresent) => 2,
         Err(_) => return Err("WEBHOOK_DISPATCH_CONCURRENCY must be valid UTF-8".into()),
     };
+    worker_budget_check(
+        webhook_delivery_enabled,
+        webhook_dispatch_concurrency,
+        billing_test.as_ref().map(|billing| billing.7),
+    )?;
     // One account's share of this process's authenticated device sockets.
     let device_sockets_per_account = match env::var("DEVICE_SOCKETS_PER_ACCOUNT") {
         Ok(value) => match value.parse::<usize>() {
@@ -314,7 +349,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let retention_draining = config.draining.clone();
     let retention_notify = config.drain_notify.clone();
     tokio::spawn(async move {
-        let mut checks = tokio::time::interval(Duration::from_secs(15));
+        // Stagger the first tick so retention does not coincide with the
+        // equally periodic recovery and maintenance sweeps at startup.
+        let mut checks = tokio::time::interval_at(
+            tokio::time::Instant::now() + Duration::from_secs(5),
+            Duration::from_secs(15),
+        );
         checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut unavailable_logged = false;
         loop {
@@ -397,22 +437,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let mut unavailable_logged = false;
                         let mut ticks = 0_u32;
                         loop {
+                            // Producers wake the lane at once when a delivery
+                            // is queued; the tick stays the cross-process
+                            // fallback. Either way the same drain runs.
                             tokio::select! {
                                 _ = checks.tick() => {
                                     if worker_draining.load(Ordering::Acquire) { break; }
                                     ticks = ticks.wrapping_add(1);
                                     let result = async {
-                                        let mut client =
-                                            zrotext_server::runtime_db::connect_worker(&worker_database).await
-                                                .map_err(|_| "webhook database unavailable")?;
-                                        // Drain a bounded backlog on one socket rather than
-                                        // one delivery per lane per tick; one delivery's
-                                        // deferral does not abort the batch.
+                                        // Drain a bounded backlog per tick: one
+                                        // probe decides the tick is idle, then each
+                                        // delivery releases its worker socket for
+                                        // the customer's HTTP request and
+                                        // re-acquires one to record the result;
+                                        // one delivery's deferral does not abort
+                                        // the batch.
                                         let sent = if worker_draining.load(Ordering::Acquire) {
                                             0
                                         } else {
                                             webhook_worker::dispatch_lane_batch(
-                                                &mut client,
+                                                &worker_database,
                                                 &worker_vault,
                                                 &worker_id,
                                                 WEBHOOK_DELIVERIES_PER_TICK,
@@ -421,11 +465,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             .map_err(|_| "webhook dispatch failed")?
                                         };
                                         if lane == 0 && ticks % 30 == 1 {
+                                            let client =
+                                                zrotext_server::runtime_db::connect_worker(&worker_database).await
+                                                    .map_err(|_| "webhook metrics unavailable")?;
                                             let (pending, oldest_age_seconds, in_flight) =
                                                 webhook_worker::queue_signal(&client).await
                                                     .map_err(|_| "webhook metrics unavailable")?;
                                             eprintln!("webhook_queue pending={pending} oldest_pending_age_seconds={} in_flight={in_flight}",
                                                 oldest_age_seconds.unwrap_or(0));
+                                        }
+                                        Ok::<usize, &str>(sent)
+                                    }.await;
+                                    match result {
+                                        Ok(_) => unavailable_logged = false,
+                                        Err(_) if !unavailable_logged => {
+                                            eprintln!("webhook delivery worker unavailable");
+                                            unavailable_logged = true;
+                                        }
+                                        Err(_) => {}
+                                    }
+                                }
+                                // A queued delivery in this process wakes the
+                                // lane before the next tick elapses.
+                                _ = zrotext_server::wakeups::webhook_delivery().notified() => {
+                                    if worker_draining.load(Ordering::Acquire) { break; }
+                                    let result = async {
+                                        // Same per-delivery socket release as
+                                        // the tick drain.
+                                        let mut sent = 0;
+                                        while sent < WEBHOOK_DELIVERIES_PER_TICK
+                                            && !worker_draining.load(Ordering::Acquire)
+                                            && webhook_worker::dispatch_one(&worker_database, &worker_vault, &worker_id).await
+                                                .map_err(|_| "webhook dispatch failed")?
+                                        {
+                                            sent += 1;
                                         }
                                         Ok::<usize, &str>(sent)
                                     }.await;
@@ -449,7 +522,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let abuse_draining = config.draining.clone();
         let abuse_drain_notify = config.drain_notify.clone();
         tokio::spawn(async move {
-            let mut checks = tokio::time::interval(Duration::from_secs(60));
+            let mut checks = tokio::time::interval_at(
+                tokio::time::Instant::now() + Duration::from_secs(30),
+                Duration::from_secs(60),
+            );
             checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut failures = maintenance::FailureLog::default();
             loop {
@@ -468,53 +544,82 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mail_draining = config.draining.clone();
         let mail_drain_notify = config.drain_notify.clone();
         tokio::spawn(async move {
-            let mut checks = tokio::time::interval(Duration::from_secs(5));
+            let mut checks = tokio::time::interval_at(
+                tokio::time::Instant::now() + Duration::from_secs(2),
+                Duration::from_secs(5),
+            );
             checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut unavailable_logged = false;
             let mut failure_gate = VerificationWarningGate::default();
             loop {
+                // Producers wake the worker at once when mail is queued; the
+                // tick stays the cross-process fallback.
                 tokio::select! {
-                    _ = checks.tick() => {
-                        if mail_draining.load(Ordering::Acquire) { break; }
-                        // Drain bounded backlogs; a failed send ends that kind's
-                        // batch so an unreachable mail server is not hammered.
-                        let mut verification = Ok(VerificationDispatchOutcome::Idle);
-                        for _ in 0..MAIL_DELIVERIES_PER_TICK {
-                            if mail_draining.load(Ordering::Acquire) { break; }
-                            verification = http_auth::dispatch_one_verification_report(&mail_state).await;
-                            match verification.as_ref() {
-                                Ok(VerificationDispatchOutcome::Idle) | Err(_) => {}
-                                Ok(VerificationDispatchOutcome::Delivered) => failure_gate.on_success(),
-                                Ok(VerificationDispatchOutcome::Failed { category, dead_lettered }) => {
-                                    if let Some(warning) = failure_gate.on_failure(*category, std::time::Instant::now()) {
-                                        eprintln!("{warning}");
-                                    }
-                                    if *dead_lettered {
-                                        eprintln!("verification mail dead-lettered after six failed attempts");
-                                    }
+                    _ = checks.tick() => {}
+                    _ = zrotext_server::wakeups::account_mail().notified() => {}
+                    _ = mail_drain_notify.notified() => break,
+                }
+                if mail_draining.load(Ordering::Acquire) {
+                    break;
+                }
+                {
+                    // Drain bounded backlogs; a failed send ends that kind's
+                    // batch so an unreachable mail server is not hammered.
+                    let mut verification = Ok(VerificationDispatchOutcome::Idle);
+                    for _ in 0..MAIL_DELIVERIES_PER_TICK {
+                        if mail_draining.load(Ordering::Acquire) {
+                            break;
+                        }
+                        verification =
+                            http_auth::dispatch_one_verification_report(&mail_state).await;
+                        match verification.as_ref() {
+                            Ok(VerificationDispatchOutcome::Idle) | Err(_) => {}
+                            Ok(VerificationDispatchOutcome::Delivered) => failure_gate.on_success(),
+                            Ok(VerificationDispatchOutcome::Failed {
+                                category,
+                                dead_lettered,
+                            }) => {
+                                if let Some(warning) =
+                                    failure_gate.on_failure(*category, std::time::Instant::now())
+                                {
+                                    eprintln!("{warning}");
+                                }
+                                if *dead_lettered {
+                                    eprintln!(
+                                        "verification mail dead-lettered after six failed attempts"
+                                    );
                                 }
                             }
-                            if !matches!(verification, Ok(VerificationDispatchOutcome::Delivered)) { break; }
                         }
-                        let mut reset = Ok(false);
-                        for _ in 0..MAIL_DELIVERIES_PER_TICK {
-                            if mail_draining.load(Ordering::Acquire) { break; }
-                            reset = http_auth::dispatch_one_password_reset(&mail_state).await;
-                            if !matches!(reset, Ok(true)) { break; }
+                        if !matches!(verification, Ok(VerificationDispatchOutcome::Delivered)) {
+                            break;
                         }
-                        let mut notice = Ok(false);
-                        for _ in 0..MAIL_DELIVERIES_PER_TICK {
-                            if mail_draining.load(Ordering::Acquire) { break; }
-                            notice = http_auth::dispatch_one_password_reset_notice(&mail_state).await;
-                            if !matches!(notice, Ok(true)) { break; }
-                        }
-                        let unavailable = verification.is_err() || reset.is_err() || notice.is_err();
-                        if unavailable && !unavailable_logged {
-                            eprintln!("account mail delivery worker unavailable");
-                        }
-                        unavailable_logged = unavailable;
                     }
-                    _ = mail_drain_notify.notified() => break,
+                    let mut reset = Ok(false);
+                    for _ in 0..MAIL_DELIVERIES_PER_TICK {
+                        if mail_draining.load(Ordering::Acquire) {
+                            break;
+                        }
+                        reset = http_auth::dispatch_one_password_reset(&mail_state).await;
+                        if !matches!(reset, Ok(true)) {
+                            break;
+                        }
+                    }
+                    let mut notice = Ok(false);
+                    for _ in 0..MAIL_DELIVERIES_PER_TICK {
+                        if mail_draining.load(Ordering::Acquire) {
+                            break;
+                        }
+                        notice = http_auth::dispatch_one_password_reset_notice(&mail_state).await;
+                        if !matches!(notice, Ok(true)) {
+                            break;
+                        }
+                    }
+                    let unavailable = verification.is_err() || reset.is_err() || notice.is_err();
+                    if unavailable && !unavailable_logged {
+                        eprintln!("account mail delivery worker unavailable");
+                    }
+                    unavailable_logged = unavailable;
                 }
             }
         });
@@ -522,7 +627,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let recovery_draining = config.draining.clone();
         let recovery_drain_notify = config.drain_notify.clone();
         tokio::spawn(async move {
-            let mut checks = tokio::time::interval(Duration::from_secs(15));
+            // Stagger the first tick against retention so the two 15-second
+            // sweeps never coincide.
+            let mut checks = tokio::time::interval_at(
+                tokio::time::Instant::now() + Duration::from_secs(10),
+                Duration::from_secs(15),
+            );
             checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut unavailable_logged = false;
             let mut ticks = 0_u32;
@@ -706,12 +816,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let worker = Arc::new(worker);
         let permits = Arc::new(tokio::sync::Semaphore::new(concurrency));
         for risk in [false, true] {
+            // Offset the two co-periodic queues by half a tick so their
+            // claim bursts never coincide.
+            let phase = if risk {
+                Duration::from_secs(6)
+            } else {
+                Duration::from_secs(1)
+            };
             tokio::spawn(run_billing_queue(BillingQueueConfig {
                 worker: worker.clone(),
                 database_url: billing_database.clone(),
                 batch_size,
                 concurrency,
                 risk,
+                phase,
                 draining: billing_draining.clone(),
                 notify: billing_notify.clone(),
                 permits: permits.clone(),
@@ -1222,6 +1340,24 @@ mod tests {
     use super::*;
     use rand::{Rng, rng};
     use uuid::Uuid;
+
+    #[test]
+    fn worker_budget_counts_only_enabled_lanes() {
+        // Delivery disabled: every documented Stripe concurrency (1-4) is
+        // valid whatever WEBHOOK_DISPATCH_CONCURRENCY says.
+        for webhook in 1..=3 {
+            for stripe in 1..=4 {
+                assert!(worker_budget_check(false, webhook, Some(stripe)).is_ok());
+            }
+            assert!(worker_budget_check(true, webhook, None).is_ok());
+        }
+        // Delivery and test billing enabled: the two share four sockets.
+        assert!(worker_budget_check(true, 2, Some(2)).is_ok());
+        assert!(worker_budget_check(true, 1, Some(3)).is_ok());
+        assert!(worker_budget_check(true, 2, Some(3)).is_err());
+        assert!(worker_budget_check(true, 3, Some(2)).is_err());
+        assert!(worker_budget_check(true, 3, Some(4)).is_err());
+    }
 
     #[test]
     fn smtp_aliases_accept_supplied_names_but_reject_conflicts() {

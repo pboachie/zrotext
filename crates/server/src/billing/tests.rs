@@ -2467,9 +2467,18 @@ async fn real_stripe_test_events_reconcile_current_state() {
         );
     }
     let worker = worker::StripeTestWorker::new(secret_key, vec![price_id]).unwrap();
-    assert!(worker.reconcile_one(&scoped_url).await.unwrap());
-    assert!(worker.reconcile_one(&scoped_url).await.unwrap());
-    assert!(!worker.reconcile_one(&scoped_url).await.unwrap());
+    assert_eq!(
+        worker.reconcile_one(&scoped_url).await.unwrap(),
+        worker::JobOutcome::WorkDone
+    );
+    assert_eq!(
+        worker.reconcile_one(&scoped_url).await.unwrap(),
+        worker::JobOutcome::WorkDone
+    );
+    assert_eq!(
+        worker.reconcile_one(&scoped_url).await.unwrap(),
+        worker::JobOutcome::Empty
+    );
     for (_, customer_id, _, expected_status) in &cases {
         let row = db
                 .query_one(

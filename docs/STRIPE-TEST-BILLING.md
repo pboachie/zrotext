@@ -48,12 +48,32 @@ clears its old allowances.
 The subscription and payment-risk queues each run every 10 seconds. Each tick
 claims up to `STRIPE_TEST_RECONCILE_BATCH_SIZE` jobs (default 25, range 1–100)
 with at most `STRIPE_TEST_RECONCILE_CONCURRENCY` simultaneous provider reads
-across both queues (default 2, range 1–4). Risk work is probed every 10 seconds
+across both queues (default 2, range 1–4). When webhook delivery is also
+enabled, `WEBHOOK_DISPATCH_CONCURRENCY` plus this setting must not exceed 4
+(the background database slots left after the periodic workers), or startup
+fails; with webhook delivery disabled the full range is available. Risk work is probed every 10 seconds
 even while a slow subscription batch remains active. With fast provider responses, 200 ready jobs at the
 default batch size need about eight ticks, or 70–80 seconds from the first tick.
 With slower responses, allow roughly `ceil(jobs / batch_size)` ticks plus the
 time for each batch's provider reads and database work. Failed jobs wait for
-their retry time; a provider outage can extend recovery indefinitely. Review
+their retry time. Row-level failures back off exponentially: one minute after
+the first failure, doubling per attempt up to 32 minutes (1, 2, 4, 8, 16, then
+32 minutes for each later attempt), so a row reaches review after about 2.7
+hours of row-level failures. A provider-wide
+failure — 401/403, 429, any 5xx or a transport error — pauses both queues
+after the request that discovered it: no further jobs are spawned that tick,
+the pause starts at 30 seconds and doubles per consecutive provider-wide
+failure up to 10 minutes, and a numeric `Retry-After` on a 429 replaces the
+schedule up to the same 10-minute cap. Provider-wide failures never count
+toward a row's retry budget: the failing row stays queued and is deferred by
+the pause, so an outage no longer parks rows for manual review. Rows that an
+earlier worker version parked because of an outage (review rows whose last
+failure class is `authorization` or `transport`) are requeued by the first
+successful provider request after a provider-wide failure; their failure
+class is kept and their retry count restarts. Rows parked for row-level
+reasons, tenant conflicts, ingestion-time review rows and legacy rows with the
+ambiguous `http` class stay in `needs_review` for an operator. The sweep runs
+in one transaction; if it fails, the next successful request repeats it. Review
 `billing_reconciliations` and `billing_risk_events` for pending rows and
 `next_attempt_at` when recovery is slower than expected.
 
@@ -132,8 +152,13 @@ A subscription 404 is reconciled as `provider_deleted` using the stored tenant
 binding. It is terminal, projects no quota or device capacity when there is no
 other active subscription, clears that reconciliation's pending generation,
 and writes `provider_deleted` to the entitlement audit when quota plans are
-configured. Other provider errors retry at most ten times. The row then moves
-to `needs_review`, remains admission blocking, and stops automatic retries.
+configured. Other provider errors retry at most ten times with exponential backoff. The
+row then moves
+to `needs_review`, remains admission blocking, and stops automatic retries
+until an operator, a new verified subscription event or a billing
+configuration change requeues it; provider-wide failures
+(401/403, 429, 5xx, transport) never reach this cap because they pause the
+queues instead.
 The owner billing status exposes `reviewReconciliations`, `reviewRiskEvents`,
 and per-subscription `needsReview`; an operator can count all pending review
 rows, including risk events that are not yet tenant-bound, with:
