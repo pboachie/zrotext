@@ -175,7 +175,12 @@ impl StripeTestWorker {
         else {
             return Ok(false);
         };
+        // Release the worker socket for the provider read: a slow or
+        // unreachable Stripe must not hold one of the worker slots. The
+        // claim's 30-second retry window keeps the row owned meanwhile.
+        drop(db);
         let fetched = self.fetch_subscription(&subscription_id).await;
+        let mut db = crate::runtime_db::connect_worker(database_url).await?;
         match fetched {
             Ok(snapshot) if snapshot.subscription_id == subscription_id => {
                 self.subscription_authorized.store(true, Ordering::Release);
@@ -253,7 +258,10 @@ impl StripeTestWorker {
         else {
             return Ok(false);
         };
-        let result = async {
+        // Fetch the charge with no worker socket held. The claim's 30-second
+        // retry window keeps the event owned meanwhile.
+        drop(db);
+        let charge = async {
             let charge = if let Some(charge_id) = &charge_id {
                 risk::fetch_charge(&self.http, &self.secret_key, &self.api_base, charge_id).await?
             } else if let Some(payment_intent_id) = &payment_intent_id {
@@ -273,30 +281,50 @@ impl StripeTestWorker {
             {
                 return Err(BillingError::InvalidEvent);
             }
-            if !risk::bind_charge_customer(&mut db, &event_id, &charge.customer_id).await? {
-                return Err(BillingError::InvalidEvent);
-            }
-            if kind == "refund" && charge.amount_refunded == 0 {
-                return Err(BillingError::InvalidEvent);
-            }
-            let subscription = risk::fetch_invoice_subscription(
-                &self.http,
-                &self.secret_key,
-                &self.api_base,
-                &charge,
-            )
-            .await?;
-            risk::apply_hold(
-                &mut db,
-                &event_id,
-                &charge.id,
-                Some(&charge.payment_intent_id),
-                &charge.customer_id,
-                &subscription,
-                &kind,
-            )
-            .await
+            Ok(charge)
         }
+        .await;
+        let mut db = crate::runtime_db::connect_worker(database_url).await?;
+        let charge = match charge {
+            Ok(charge) => charge,
+            Err(error) => return self.risk_failure(&db, &event_id, error).await,
+        };
+        if !risk::bind_charge_customer(&mut db, &event_id, &charge.customer_id).await? {
+            return self
+                .risk_failure(&db, &event_id, BillingError::InvalidEvent)
+                .await;
+        }
+        if kind == "refund" && charge.amount_refunded == 0 {
+            return self
+                .risk_failure(&db, &event_id, BillingError::InvalidEvent)
+                .await;
+        }
+        // Release the socket again for the invoice read.
+        drop(db);
+        let subscription = match risk::fetch_invoice_subscription(
+            &self.http,
+            &self.secret_key,
+            &self.api_base,
+            &charge,
+        )
+        .await
+        {
+            Ok(subscription) => subscription,
+            Err(error) => {
+                let db = crate::runtime_db::connect_worker(database_url).await?;
+                return self.risk_failure(&db, &event_id, error).await;
+            }
+        };
+        let mut db = crate::runtime_db::connect_worker(database_url).await?;
+        let result = risk::apply_hold(
+            &mut db,
+            &event_id,
+            &charge.id,
+            Some(&charge.payment_intent_id),
+            &charge.customer_id,
+            &subscription,
+            &kind,
+        )
         .await;
         match result {
             Ok(()) => {
@@ -304,17 +332,25 @@ impl StripeTestWorker {
                 Ok(true)
             }
             Err(error) if matches!(error, BillingError::Database(_)) => Err(error),
-            Err(error) => {
-                let class = self.record_failure(&error, &event_id, "risk");
-                let state = risk::backoff(&db, &event_id, class).await?;
-                if state.as_deref() == Some("needs_review") {
-                    diagnostic_class("needs_review", 7, "none", &event_id, "risk");
-                }
-                // A provider read, unresolved binding or attribution failure
-                // is retained for retry and later review.
-                Ok(true)
-            }
+            Err(error) => self.risk_failure(&db, &event_id, error).await,
         }
+    }
+
+    /// Records one failed risk job and leaves it queued for bounded retry.
+    async fn risk_failure(
+        &self,
+        db: &crate::runtime_db::PooledClient,
+        event_id: &str,
+        error: BillingError,
+    ) -> Result<bool, BillingError> {
+        let class = self.record_failure(&error, event_id, "risk");
+        let state = risk::backoff(db, event_id, class).await?;
+        if state.as_deref() == Some("needs_review") {
+            diagnostic_class("needs_review", 7, "none", event_id, "risk");
+        }
+        // A provider read, unresolved binding or attribution failure
+        // is retained for retry and later review.
+        Ok(true)
     }
 
     async fn fetch_subscription(

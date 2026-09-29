@@ -34,6 +34,8 @@ pub enum WorkerError {
     Payload,
     #[error("webhook storage failed")]
     Storage(#[from] inbound::InboundError),
+    #[error("webhook worker database unavailable")]
+    Database,
 }
 
 /// Operational endpoint-secret KEK. This is distinct from the M2 content-key
@@ -437,14 +439,20 @@ fn event_body(lease: &WebhookLease, payload: &WebhookPayload) -> Result<Vec<u8>,
 
 /// Claims at most one row. A failed store operation leaves the lease to be
 /// recovered by the outbox; transport failures are recorded for bounded retry.
+/// The pooled worker socket is released for the endpoint request and
+/// re-acquired to record the result, so a slow customer endpoint cannot hold
+/// one of the process's worker slots.
 pub async fn dispatch_one(
-    client: &mut Client,
+    database_url: &str,
     vault: &WebhookSecretVault,
     worker_id: &str,
 ) -> Result<bool, WorkerError> {
-    dispatch_one_with(client, vault, worker_id, |url, body, secret| async move {
-        webhook_egress::post_signed(&url, &body, &secret).await
-    })
+    dispatch_one_with(
+        database_url,
+        vault,
+        worker_id,
+        |url, body, secret| async move { webhook_egress::post_signed(&url, &body, &secret).await },
+    )
     .await
 }
 
@@ -468,7 +476,7 @@ pub async fn queue_signal(
 /// The transport seam keeps the real sender fixed above while a test can
 /// exercise claim, authenticated payload preparation and retry accounting.
 pub(crate) async fn dispatch_one_with<F, Fut>(
-    client: &mut Client,
+    database_url: &str,
     vault: &WebhookSecretVault,
     worker_id: &str,
     sender: F,
@@ -477,11 +485,20 @@ where
     F: FnOnce(String, Vec<u8>, Zeroizing<Vec<u8>>) -> Fut,
     Fut: Future<Output = Result<webhook_egress::DeliveryResponse, EgressError>>,
 {
-    let Some(lease) = inbound::claim_webhook(client, worker_id).await? else {
+    let mut client = crate::runtime_db::connect_worker(database_url)
+        .await
+        .map_err(|_| WorkerError::Database)?;
+    let Some(lease) = inbound::claim_webhook(&mut client, worker_id).await? else {
         return Ok(false);
     };
-    let payload = inbound::load_webhook_payload(client, &lease).await?;
+    let payload = inbound::load_webhook_payload(&client, &lease).await?;
+    // Return the pooled socket before any endpoint I/O: the 30-second lease
+    // keeps the delivery owned while no worker socket is held.
+    drop(client);
     let outcome = dispatch_payload_with(vault, &lease, &payload, sender).await;
+    let mut client = crate::runtime_db::connect_worker(database_url)
+        .await
+        .map_err(|_| WorkerError::Database)?;
     let (result, status) = match outcome {
         Ok(response) if response.acknowledged => {
             (WebhookOutcome::Ack, Some(response.status as i16))
@@ -491,13 +508,13 @@ where
         }
         Ok(_) => (WebhookOutcome::NetworkError, None),
         Err(DispatchError::KeyUnavailable) => {
-            inbound::defer_webhook_key_failure(client, &lease).await?;
+            inbound::defer_webhook_key_failure(&mut client, &lease).await?;
             return Err(WorkerError::Secret);
         }
         Err(DispatchError::Policy) => (WebhookOutcome::PolicyRejected, None),
         Err(DispatchError::Network) => (WebhookOutcome::NetworkError, None),
     };
-    inbound::finish_webhook(client, &lease, result, status).await?;
+    inbound::finish_webhook(&mut client, &lease, result, status).await?;
     Ok(true)
 }
 

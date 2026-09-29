@@ -184,8 +184,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("Stripe hosted sessions require STRIPE_BILLING_TEST_ENABLED=true".into());
     }
     let (webhook_vault, webhook_delivery_enabled) = webhook_config()?;
-    // The process-wide worker database budget is four connections. Reserve at
-    // least one for billing, recovery and other background work.
+    // The process-wide worker database budget is eight connections. Each
+    // webhook lane, Stripe job and periodic worker (retention, maintenance,
+    // account mail, delivery recovery) needs one socket while it runs its
+    // database phases; workers release their sockets across network I/O, so
+    // this bounds simultaneous claim/finish demand, not I/O concurrency.
     let webhook_dispatch_concurrency = match env::var("WEBHOOK_DISPATCH_CONCURRENCY") {
         Ok(value) => match value.parse::<usize>() {
             Ok(count @ 1..=3) => count,
@@ -194,6 +197,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(env::VarError::NotPresent) => 2,
         Err(_) => return Err("WEBHOOK_DISPATCH_CONCURRENCY must be valid UTF-8".into()),
     };
+    /// Periodic workers that each need one worker-class socket per tick.
+    const PERIODIC_WORKER_RESERVE: usize = 4;
+    let stripe_reconcile_concurrency = billing_test.as_ref().map(|billing| billing.7);
+    if webhook_dispatch_concurrency
+        + stripe_reconcile_concurrency.unwrap_or(0)
+        + PERIODIC_WORKER_RESERVE
+        > zrotext_server::runtime_db::WORKER_SLOTS
+    {
+        return Err(format!(
+            "WEBHOOK_DISPATCH_CONCURRENCY ({webhook_dispatch_concurrency}) plus STRIPE_TEST_RECONCILE_CONCURRENCY ({}) plus the periodic worker reserve ({PERIODIC_WORKER_RESERVE}) exceed the worker database budget ({}); lower one of the concurrency settings",
+            stripe_reconcile_concurrency.unwrap_or(0),
+            zrotext_server::runtime_db::WORKER_SLOTS
+        )
+        .into());
+    }
     // One account's share of this process's authenticated device sockets.
     let device_sockets_per_account = match env::var("DEVICE_SOCKETS_PER_ACCOUNT") {
         Ok(value) => match value.parse::<usize>() {
@@ -297,7 +315,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let retention_draining = config.draining.clone();
     let retention_notify = config.drain_notify.clone();
     tokio::spawn(async move {
-        let mut checks = tokio::time::interval(Duration::from_secs(15));
+        // Stagger the first tick so retention does not coincide with the
+        // equally periodic recovery and maintenance sweeps at startup.
+        let mut checks = tokio::time::interval_at(
+            tokio::time::Instant::now() + Duration::from_secs(5),
+            Duration::from_secs(15),
+        );
         checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut unavailable_logged = false;
         loop {
@@ -385,20 +408,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     if worker_draining.load(Ordering::Acquire) { break; }
                                     ticks = ticks.wrapping_add(1);
                                     let result = async {
-                                        let mut client =
-                                            zrotext_server::runtime_db::connect_worker(&worker_database).await
-                                                .map_err(|_| "webhook database unavailable")?;
-                                        // Drain a bounded backlog on one socket rather than
-                                        // one delivery per lane per tick.
+                                        // Drain a bounded backlog per tick. Each
+                                        // delivery releases its worker socket for
+                                        // the customer's HTTP request and
+                                        // re-acquires one to record the result.
                                         let mut sent = 0;
                                         while sent < WEBHOOK_DELIVERIES_PER_TICK
                                             && !worker_draining.load(Ordering::Acquire)
-                                            && webhook_worker::dispatch_one(&mut client, &worker_vault, &worker_id).await
+                                            && webhook_worker::dispatch_one(&worker_database, &worker_vault, &worker_id).await
                                                 .map_err(|_| "webhook dispatch failed")?
                                         {
                                             sent += 1;
                                         }
                                         if lane == 0 && ticks % 30 == 1 {
+                                            let client =
+                                                zrotext_server::runtime_db::connect_worker(&worker_database).await
+                                                    .map_err(|_| "webhook metrics unavailable")?;
                                             let (pending, oldest_age_seconds, in_flight) =
                                                 webhook_worker::queue_signal(&client).await
                                                     .map_err(|_| "webhook metrics unavailable")?;
@@ -427,7 +452,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let abuse_draining = config.draining.clone();
         let abuse_drain_notify = config.drain_notify.clone();
         tokio::spawn(async move {
-            let mut checks = tokio::time::interval(Duration::from_secs(60));
+            let mut checks = tokio::time::interval_at(
+                tokio::time::Instant::now() + Duration::from_secs(30),
+                Duration::from_secs(60),
+            );
             checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut failures = maintenance::FailureLog::default();
             loop {
@@ -445,7 +473,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mail_draining = config.draining.clone();
         let mail_drain_notify = config.drain_notify.clone();
         tokio::spawn(async move {
-            let mut checks = tokio::time::interval(Duration::from_secs(5));
+            let mut checks = tokio::time::interval_at(
+                tokio::time::Instant::now() + Duration::from_secs(2),
+                Duration::from_secs(5),
+            );
             checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut unavailable_logged = false;
             let mut failure_gate = VerificationWarningGate::default();
@@ -499,7 +530,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let recovery_draining = config.draining.clone();
         let recovery_drain_notify = config.drain_notify.clone();
         tokio::spawn(async move {
-            let mut checks = tokio::time::interval(Duration::from_secs(15));
+            // Stagger the first tick against retention so the two 15-second
+            // sweeps never coincide.
+            let mut checks = tokio::time::interval_at(
+                tokio::time::Instant::now() + Duration::from_secs(10),
+                Duration::from_secs(15),
+            );
             checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut unavailable_logged = false;
             let mut ticks = 0_u32;
@@ -672,12 +708,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let worker = Arc::new(worker);
         let permits = Arc::new(tokio::sync::Semaphore::new(concurrency));
         for risk in [false, true] {
+            // Offset the two co-periodic queues by half a tick so their
+            // claim bursts never coincide.
+            let phase = if risk {
+                Duration::from_secs(6)
+            } else {
+                Duration::from_secs(1)
+            };
             tokio::spawn(run_billing_queue(BillingQueueConfig {
                 worker: worker.clone(),
                 database_url: billing_database.clone(),
                 batch_size,
                 concurrency,
                 risk,
+                phase,
                 draining: billing_draining.clone(),
                 notify: billing_notify.clone(),
                 permits: permits.clone(),
