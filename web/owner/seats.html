@@ -19,10 +19,14 @@
 
     <section aria-labelledby="invite-title">
       <h2 id="invite-title">Invite an observer</h2>
-      <p>The invitation token is shown once. Deliver it to one person out of band; it expires in seven days, works once, and is bound to the invited address.</p>
+      <p>Inviting an observer grants lasting read access, so confirm it with your password (and your authenticator or recovery code if you use one). The invitation token is shown once. Deliver it to one person out of band; it expires in seven days, works once, and is bound to the invited address. This page never says whether the address already has an account; if the address cannot accept the invitation, only the person holding the token finds out when they try.</p>
       <form id="invite-form" method="post" action="/v1/auth/seats/invitations">
         <label for="invite-email">Observer email</label>
         <input id="invite-email" name="email" type="email" autocomplete="off" required>
+        <label for="invite-password">Your password</label>
+        <input id="invite-password" name="current_password" type="password" autocomplete="current-password" required>
+        <label for="invite-code">Authenticator or recovery code (only if you turned on two-step sign-in)</label>
+        <input id="invite-code" name="code" type="text" inputmode="text" autocomplete="one-time-code" spellcheck="false">
         <button type="submit">Create invitation</button>
       </form>
       <p id="invite-status" role="status" aria-live="polite"></p>
@@ -44,7 +48,7 @@
 
     <section aria-labelledby="seat-list-title">
       <h2 id="seat-list-title">Observer seats</h2>
-      <p>Removing a seat signs it out everywhere and cancels its outstanding credentials immediately. A removed seat cannot be restored.</p>
+      <p>Removing a seat signs it out everywhere, cancels its outstanding credentials immediately, and deletes the observer's account so the address is free again. A removed seat cannot be restored; invite the address again to start over. If the account could not be deleted, the seat is still removed but the entry says the address stays occupied.</p>
       <p id="seat-status" role="status" aria-live="polite"></p>
       <ul id="seat-list"></ul>
     </section>

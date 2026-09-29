@@ -13,6 +13,7 @@ const errors = Object.freeze({
   401: "Your sign-in expired or the credentials were not accepted.",
   403: "This action was refused. Refresh the page and sign in again.",
   404: "The requested item was not found, expired, or is no longer available.",
+  409: "This address already has an account on this server, so this invitation cannot be used. Ask the person who invited you.",
   429: "Too many attempts. Wait before trying again.",
   503: "The service is unavailable. Try again later.",
 });

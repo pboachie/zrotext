@@ -120,6 +120,18 @@ test("acceptance posts the token once and leads into verification", async () => 
   assert.ok(calls.every(({ path }) => !path.includes("?")));
 });
 
+test("an invitation for an address that already has an account is explained to its holder", async () => {
+  const { element } = await observerPage();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => response(409);
+  element("accept-token").value = "zti_synthetic-invitation";
+  element("accept-password").value = testPassword;
+  await submit(element("accept-form"));
+  globalThis.fetch = originalFetch;
+  assert.match(element("accept-status").textContent, /already has an account/);
+  assert.equal(element("verify-section").hidden, true);
+});
+
 test("sign-in reaches the read-only device status for an observer", async () => {
   const { element, calls } = await observerPage();
   element("login-email").value = "observer@example.test";

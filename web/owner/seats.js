@@ -22,11 +22,11 @@ const seatLabels = Object.freeze({
 });
 
 const errors = Object.freeze({
-  400: "Check the entered values and try again.",
+  400: "Check the entered values, your password, and your code, then try again.",
   401: "Your sign-in expired or the credentials were not accepted.",
   403: "This action was refused. Refresh the page and sign in again.",
   404: "The requested item was not found, expired, or is no longer available.",
-  409: "This address is already registered, or the seat or invitation limit is reached.",
+  409: "The seat or invitation limit is reached.",
   429: "Too many requests. Wait before trying again.",
   503: "The service is unavailable. Try again later.",
 });
@@ -96,6 +96,15 @@ function isUuid(value) {
   return typeof value === "string" && uuidPattern.test(value);
 }
 
+// The server reports whether removing a seat freed its address. In the rare
+// case it could not delete the observer's record, the seat is still removed and
+// every credential revoked, but the address stays occupied.
+function addressNote(free) {
+  return free
+    ? "The address is free and can be invited again."
+    : "The address stays occupied and cannot accept a new invitation.";
+}
+
 function text(kind, value) {
   const node = document.createElement(kind);
   node.textContent = value;
@@ -150,9 +159,11 @@ async function loadSeats() {
     seats.append(text("li", "No observer seats yet."));
   }
   for (const seat of body.seats) {
-    if (!isUuid(seat.user_id) || !validEmail(seat.email)
+    // A removed seat whose user was deleted has no user id.
+    if ((seat.user_id !== null && !isUuid(seat.user_id)) || !validEmail(seat.email)
       || typeof seat.created_at_ms !== "number"
-      || typeof seat.email_verified !== "boolean") {
+      || typeof seat.email_verified !== "boolean"
+      || typeof seat.address_free !== "boolean") {
       throw new Error("A seat entry was invalid.");
     }
     const item = document.createElement("li");
@@ -161,7 +172,10 @@ async function loadSeats() {
       text("strong", seat.email),
       text("span", ` — ${label} since ${timeFormat.format(new Date(seat.created_at_ms))}`),
     );
-    if (seat.status !== "removed") {
+    if (seat.status === "removed") {
+      item.append(text("span", ` — ${addressNote(seat.address_free)}`));
+    }
+    if (seat.status !== "removed" && isUuid(seat.user_id)) {
       const remove = document.createElement("button");
       remove.type = "button";
       remove.className = "quiet";
@@ -169,8 +183,14 @@ async function loadSeats() {
       remove.addEventListener("click", exclusive(async () => {
         status("seat-status", "Removing the seat…");
         try {
-          await request(`/v1/auth/seats/${seat.user_id}`, "DELETE");
-          status("seat-status", "Seat removed. Its sessions and credentials are revoked.");
+          const removed = await request(`/v1/auth/seats/${seat.user_id}`, "DELETE");
+          if (!removed || removed.status !== "removed" || typeof removed.address_free !== "boolean") {
+            throw new Error("The removal response was invalid.");
+          }
+          status(
+            "seat-status",
+            `Seat removed. Its sessions and credentials are revoked. ${addressNote(removed.address_free)}`,
+          );
           await loadSeats();
         } catch (error) {
           status("seat-status", `Could not remove the seat. ${error.message}`);
@@ -185,9 +205,19 @@ async function loadSeats() {
 byId("invite-form").addEventListener("submit", exclusive(async (event) => {
   event.preventDefault();
   const email = byId("invite-email").value.trim().toLowerCase();
+  const password = byId("invite-password").value;
+  const code = byId("invite-code").value.trim();
+  if (password === "") {
+    status("invite-status", "Enter your password to invite an observer.");
+    return;
+  }
   status("invite-status", "Creating invitation…");
   try {
-    const issued = await request("/v1/auth/seats/invitations", "POST", { email });
+    // An invitation grants a persistent read seat, so it needs the same proof
+    // as API-key creation: the current password and, with MFA on, a code.
+    const proof = { email, current_password: password };
+    if (code !== "") proof.code = code;
+    const issued = await request("/v1/auth/seats/invitations", "POST", proof);
     if (!issued || !isUuid(issued.id) || typeof issued.token !== "string"
       || !issued.token.startsWith("zti_")
       || typeof issued.expires_at_ms !== "number") {
@@ -202,6 +232,8 @@ byId("invite-form").addEventListener("submit", exclusive(async (event) => {
     status("invite-status", `Invitation failed. ${error.message}`);
   } finally {
     byId("invite-email").value = "";
+    byId("invite-password").value = "";
+    byId("invite-code").value = "";
   }
 }));
 
