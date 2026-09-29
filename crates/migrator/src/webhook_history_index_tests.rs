@@ -145,7 +145,7 @@ async fn webhook_history_index_builds_concurrently_and_retries_an_interrupted_bu
     );
     observer
         .batch_execute(include_str!(
-            "../../../deploy/compose/migrations/052_webhook_history_index.sql"
+            "../../../deploy/compose/migrations/057_webhook_history_index.sql"
         ))
         .await
         .unwrap();
@@ -192,4 +192,46 @@ async fn webhook_history_index_builds_concurrently_and_retries_an_interrupted_bu
     );
     verify_webhook_history_index(&observer).await.unwrap();
     finish_database(&name, &admin).await;
+}
+
+/// The numbered SQL file is an independent validation gate: without the
+/// prepared index it must fail on its own, and pass once the index exists,
+/// with no migrator involvement (#503, from the review's mutation table).
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB on a disposable PostgreSQL cluster"]
+async fn numbered_gate_fails_without_the_index() {
+    let (name, admin, config) = disposable_database().await;
+    let mut client = connect(&config).await;
+    // A minimal stand-in table: the gate only validates the index shape in
+    // the catalogs, never row data.
+    client
+        .batch_execute(
+            "CREATE TABLE public.webhook_deliveries(                endpoint_id uuid NOT NULL, created_at timestamptz NOT NULL, id uuid NOT NULL)",
+        )
+        .await
+        .unwrap();
+    // Without the index the file must refuse.
+    let gate = client
+        .batch_execute(include_str!(
+            "../../../deploy/compose/migrations/057_webhook_history_index.sql"
+        ))
+        .await;
+    assert!(
+        gate.is_err(),
+        "the numbered file must fail when the index has not been built"
+    );
+    // With the exact index the file must pass.
+    client
+        .batch_execute(CREATE_WEBHOOK_HISTORY_INDEX)
+        .await
+        .unwrap();
+    client
+        .batch_execute(include_str!(
+            "../../../deploy/compose/migrations/057_webhook_history_index.sql"
+        ))
+        .await
+        .expect("the numbered file must pass once the index exists");
+
+    finish_database(&name, &admin).await;
+    drop(client);
 }

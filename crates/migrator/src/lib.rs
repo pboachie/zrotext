@@ -294,6 +294,7 @@ async fn apply_locked(
     }
     if ledger.contains_key(&ADMISSION_PENDING_INDEX_MIGRATION) {
         verify_admission_pending_index(client).await?;
+    }
     if ledger.contains_key(&WEBHOOK_HISTORY_INDEX_MIGRATION) {
         verify_webhook_history_index(client).await?;
     }
@@ -344,6 +345,12 @@ async fn apply_locked(
             if migration.filename != ADMISSION_PENDING_INDEX_FILE {
                 return Err(MigrationError::InvalidDirectory(format!(
                     "migration {ADMISSION_PENDING_INDEX_MIGRATION:03} must be {ADMISSION_PENDING_INDEX_FILE}"
+                )));
+            }
+            // CREATE INDEX CONCURRENTLY cannot run in the numbered migration's
+            // transaction. The advisory lock still serializes migrator jobs.
+            prepare_admission_pending_index(client).await?;
+        }
         if migration.version == WEBHOOK_HISTORY_INDEX_MIGRATION {
             if migration.filename != WEBHOOK_HISTORY_INDEX_FILE {
                 return Err(MigrationError::InvalidDirectory(format!(
@@ -352,7 +359,6 @@ async fn apply_locked(
             }
             // CREATE INDEX CONCURRENTLY cannot run in the numbered migration's
             // transaction. The advisory lock still serializes migrator jobs.
-            prepare_admission_pending_index(client).await?;
             prepare_webhook_history_index(client).await?;
         }
         let tx = client.transaction().await?;
@@ -402,6 +408,9 @@ async fn apply_locked(
         .any(|migration| migration.version == ADMISSION_PENDING_INDEX_MIGRATION)
     {
         verify_admission_pending_index(client).await?;
+    }
+    if migrations
+        .iter()
         .any(|migration| migration.version == WEBHOOK_HISTORY_INDEX_MIGRATION)
     {
         verify_webhook_history_index(client).await?;

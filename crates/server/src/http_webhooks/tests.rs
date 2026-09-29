@@ -1405,7 +1405,7 @@ async fn history_pages_scan_the_endpoint_history_index_without_sorting() {
     .await
     .unwrap();
     db.batch_execute(include_str!(
-        "../../../../deploy/compose/migrations/052_webhook_history_index.sql"
+        "../../../../deploy/compose/migrations/057_webhook_history_index.sql"
     ))
     .await
     .unwrap();

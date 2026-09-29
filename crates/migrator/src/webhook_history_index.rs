@@ -2,8 +2,8 @@
 use super::MigrationError;
 use tokio_postgres::Client;
 
-pub(super) const WEBHOOK_HISTORY_INDEX_MIGRATION: i64 = 52;
-pub(super) const WEBHOOK_HISTORY_INDEX_FILE: &str = "052_webhook_history_index.sql";
+pub(super) const WEBHOOK_HISTORY_INDEX_MIGRATION: i64 = 57;
+pub(super) const WEBHOOK_HISTORY_INDEX_FILE: &str = "057_webhook_history_index.sql";
 // Owner webhook history pages backward by (created_at,id) inside one
 // endpoint; leading with endpoint_id turns every page into a bounded index
 // scan instead of a read-and-sort over the endpoint's retention history.
