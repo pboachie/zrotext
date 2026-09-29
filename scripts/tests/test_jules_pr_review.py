@@ -1,6 +1,7 @@
 """Offline checks for Jules workflow routing and trust boundaries."""
 
 import json
+import os
 from io import BytesIO
 import unittest
 from unittest.mock import patch
@@ -51,36 +52,62 @@ class ReviewRoutingTests(unittest.TestCase):
         event["comment"]["body"] = "/jules review everything"
         self.assertIsNone(review.event_request("issue_comment", event))
 
-    def test_automatic_event_review_only_for_owner_prs(self):
-        event = {"action": "ready_for_review", "pull_request": pull_request()}
-        self.assertEqual(review.event_request("pull_request_target", event),
-                         (74, "review", f"ready-74-{SHA}"))
-        event["pull_request"]["user"]["login"] = "dependabot[bot]"
-        self.assertIsNone(review.event_request("pull_request_target", event))
-        event["pull_request"]["user"]["login"] = "contributor"
-        self.assertIsNone(review.event_request("pull_request_target", event))
-        event["pull_request"]["user"]["login"] = "pboachie"
-        event["pull_request"]["draft"] = True
-        self.assertIsNone(review.event_request("pull_request_target", event))
+    def test_pr_and_review_events_no_longer_start_sessions(self):
+        # Reviews are opt-in: the pull_request_target and pull_request_review
+        # triggers were removed from the workflow, so those events route to
+        # nothing even for trusted authors.
+        for event_name, event in (
+                ("pull_request_target", {"action": "ready_for_review",
+                                         "pull_request": pull_request()}),
+                ("pull_request_target", {"action": "opened",
+                                         "pull_request": pull_request(owner="dependabot[bot]")}),
+                ("pull_request_review", {"action": "submitted",
+                                         "pull_request": pull_request(),
+                                         "review": {"id": 91, "state": "CHANGES_REQUESTED",
+                                                    "author_association": "COLLABORATOR",
+                                                    "user": {"login": "reviewer"}}}),
+        ):
+            self.assertIsNone(review.event_request(event_name, event))
 
-    def test_trusted_human_review_starts_advisory_address_session(self):
-        event = {
-            "action": "submitted", "pull_request": pull_request(),
-            "review": {"id": 91, "state": "CHANGES_REQUESTED",
-                       "author_association": "COLLABORATOR",
-                       "user": {"login": "reviewer"}},
-        }
-        self.assertEqual(review.event_request("pull_request_review", event),
-                         (74, "address", "review-91"))
-        event["review"]["author_association"] = "NONE"
-        self.assertIsNone(review.event_request("pull_request_review", event))
-        event["review"]["author_association"] = "MEMBER"
-        event["review"]["user"]["login"] = "github-actions[bot]"
-        self.assertIsNone(review.event_request("pull_request_review", event))
-        event["review"]["user"]["login"] = "reviewer"
-        event["review"]["state"] = "APPROVED"
-        self.assertIsNone(review.event_request("pull_request_review", event))
+    def test_owner_alias_commands_route(self):
+        event = {"issue": {"number": 74, "pull_request": {"url": "https://example.test"}},
+                 "comment": {"id": 8, "user": {"login": "pboachie"},
+                             "body": "@jules address"}}
+        self.assertEqual(review.event_request("issue_comment", event),
+                         (74, "address", "comment-8"))
+        event["comment"]["body"] = "@jules review"
+        self.assertEqual(review.event_request("issue_comment", event),
+                         (74, "review", "comment-8"))
+        event["comment"]["body"] = "please @jules review"
+        self.assertIsNone(review.event_request("issue_comment", event))
 
+    def test_label_helpers_add_and_remove_jules_pending(self):
+        calls = []
+
+        def fake_request(url, **kwargs):
+            calls.append((url, kwargs.get("method", "GET"), kwargs.get("payload")))
+            return {}
+
+        with patch.object(review, "request_json", side_effect=fake_request):
+            review.add_pending_label(74, "github-test")
+            review.remove_pending_label(74, "github-test")
+        self.assertEqual(calls[0], (f"{review.GITHUB}/issues/74/labels", "POST",
+                                    {"labels": ["jules-pending"]}))
+        self.assertEqual(calls[1][0], f"{review.GITHUB}/issues/74/labels/jules-pending")
+        self.assertEqual(calls[1][1], "DELETE")
+
+    def test_idle_scheduled_run_makes_at_most_one_listing_call(self):
+        calls = []
+
+        def fake_pages(path, _token):
+            calls.append(path)
+            return []
+
+        with patch.object(review, "pages", side_effect=fake_pages),              patch.object(review, "request_json") as req:
+            review.poll_reviews("github-test", "jules-test")
+        self.assertEqual(len(calls), 1)
+        self.assertIn("labels=jules-pending", calls[0])
+        req.assert_not_called()
     def test_only_open_owner_branches_in_this_repo_are_eligible(self):
         self.assertTrue(review.eligible_pr(pull_request()))
         self.assertTrue(review.eligible_pr(pull_request(base_ref="codex/m2-parent")))
@@ -110,6 +137,8 @@ class ReviewRoutingTests(unittest.TestCase):
             if url == f"{review.GITHUB}/issues/74/comments":
                 posted.append(kwargs["payload"])
                 return {}
+            if "/labels" in url:
+                return {}
             raise AssertionError(url)
 
         with patch.object(review, "pages", return_value=[]), \
@@ -136,6 +165,8 @@ class ReviewRoutingTests(unittest.TestCase):
                         "githubRepo": {"owner": "pboachie", "repo": "zrotext",
                                        "branches": [{"displayName": "main"},
                                                     {"displayName": "codex/owner-ui"}]}}
+            if "/labels" in url:
+                return {}
             raise AssertionError(url)
 
         with patch.object(review, "request_json", side_effect=fake_request):
@@ -153,6 +184,8 @@ class ReviewRoutingTests(unittest.TestCase):
                                      "githubRepo": {"owner": "pboachie", "repo": "zrotext"}},
                                     {"name": "sources/github/pboachie/zrotext",
                                      "githubRepo": {"owner": "pboachie", "repo": "zrotext"}}]}
+            if "/labels" in url:
+                return {}
             raise AssertionError(url)
 
         with patch.object(review, "request_json", side_effect=fake_request):
@@ -173,6 +206,8 @@ class ReviewRoutingTests(unittest.TestCase):
                 return {"name": SOURCE_NAME,
                         "githubRepo": {"owner": "pboachie", "repo": "zrotext",
                                        "branches": [{"displayName": "main"}]}}
+            if "/labels" in url:
+                return {}
             raise AssertionError(url)
 
         with patch.object(review, "pages", return_value=[]), \
@@ -212,29 +247,264 @@ class ReviewRoutingTests(unittest.TestCase):
                           BytesIO(b'{"error":{"status":"RESOURCE_EXHAUSTED","message":"Daily quota exceeded"}}'))
         self.assertEqual(review.jules_error_category(quota), "RESOURCE_EXHAUSTED; capacity")
 
-    def test_schedule_starts_one_missing_review_and_skips_existing_head(self):
-        ready = pull_request(owner="dependabot[bot]")
-        ready["number"] = 75
-        already_reviewed = pull_request()
-        existing = {"user": {"login": "github-actions[bot]"},
-                    "body": (f"<!-- zrotext-jules-start:v1 session=sessions/123 head={SHA} "
-                             "mode=review trigger=dispatch-1 -->")}
-        started = []
+    def test_backfill_labels_only_open_prs_with_unfinished_sessions(self):
+        unfinished = {"user": {"login": "github-actions[bot]"},
+                      "body": (f"<!-- zrotext-jules-start:v1 session=sessions/123 head={SHA} "
+                               "mode=review trigger=comment-7 -->")}
+        finished = {"user": {"login": "github-actions[bot]"},
+                    "body": (f"<!-- zrotext-jules-start:v1 session=sessions/122 head={SHA} "
+                               "mode=review trigger=comment-6 -->"
+                               " " + "<!-- zrotext-jules-result:v1 session=sessions/122 -->")}
+        labelled = []
 
         def fake_pages(path, _token):
             return {
-                "/pulls?state=open": [ready, already_reviewed],
-                "/issues/74/comments": [existing],
-                "/issues/75/comments": [],
+                "/pulls?state=open": [{"number": 74}, {"number": 75}],
+                "/issues/74/comments": [unfinished],
+                "/pulls/74/reviews": [],
+                "/issues/75/comments": [finished],
+                "/pulls/75/reviews": [],
+            }[path]
+
+        with patch.object(review, "pages", side_effect=fake_pages),              patch.object(review, "add_pending_label",
+                          side_effect=lambda number, _token: labelled.append(number)):
+            result = review.backfill_pending_labels("github-test")
+        self.assertEqual(result, [74])
+        self.assertEqual(labelled, [74])
+    def test_backfill_skips_prs_whose_only_result_was_posted_as_a_review(self):
+        start = {"user": {"login": "github-actions[bot]"},
+                 "body": (f"<!-- zrotext-jules-start:v1 session=sessions/122 head={SHA} "
+                          "mode=review trigger=comment-6 -->")}
+        review_result = {"user": {"login": "github-actions[bot]"},
+                         "body": "Jules review for `abcdef`" + chr(10) + chr(10) + "<!-- zrotext-jules-result:v1 session=sessions/122 -->"}
+        labelled = []
+
+        def fake_pages(path, _token):
+            return {
+                "/pulls?state=open": [{"number": 76}],
+                "/issues/76/comments": [start],
+                "/pulls/76/reviews": [review_result],
+            }[path]
+
+        with patch.object(review, "pages", side_effect=fake_pages),              patch.object(review, "add_pending_label",
+                          side_effect=lambda number, _token: labelled.append(number)):
+            result = review.backfill_pending_labels("github-test")
+        self.assertEqual(result, [])
+        self.assertEqual(labelled, [])
+
+    def test_poll_keeps_the_label_while_another_session_is_unfinished(self):
+        posted = []
+        removed = []
+        running_start = {"user": {"login": "github-actions[bot]"},
+                         "body": ("<!-- zrotext-jules-start:v1 session=sessions/456 head="
+                                  + SHA + " mode=address trigger=comment-9 -->")}
+        finished_start = {"user": {"login": "github-actions[bot]"},
+                          "body": ("<!-- zrotext-jules-start:v1 session=sessions/123 head="
+                                   + SHA + " mode=review trigger=comment-7 -->")}
+
+        def fake_pages(path, _token):
+            return {
+                "/issues?labels=jules-pending&state=open": [{"number": 74, "pull_request": {}}],
+                "/issues/74/comments": [finished_start, running_start],
+                "/pulls/74/reviews": [],
+            }[path]
+
+        def fake_request(url, **kwargs):
+            if url == f"{review.JULES}/sessions/123":
+                return {"state": "COMPLETED", "url": "https://jules.google.com/session/123"}
+            if url == f"{review.JULES}/sessions/456":
+                return {"state": "RUNNING"}
+            if url == f"{review.GITHUB}/pulls/74" and kwargs.get("method", "GET") == "GET":
+                return pull_request()
+            if url.startswith(f"{review.JULES}/sessions/123/activities?"):
+                return {"activities": [{"agentMessaged": {"agentMessage": report_json()}}]}
+            if url == f"{review.GITHUB}/pulls/74/reviews" and kwargs["method"] == "POST":
+                posted.append(kwargs["payload"])
+                return {}
+            raise AssertionError(url)
+
+        with patch.object(review, "pages", side_effect=fake_pages),              patch.object(review, "request_json", side_effect=fake_request),              patch.object(review, "remove_pending_label",
+                          side_effect=lambda number, _token: removed.append(number)):
+            review.poll_reviews("github-test", "jules-test")
+
+        self.assertEqual(len(posted), 1)
+        self.assertEqual(removed, [], "the second, running session must keep the label")
+
+    def test_poll_heals_a_stale_label_when_every_session_already_finished(self):
+        removed = []
+        posted = []
+        start = {"user": {"login": "github-actions[bot]"},
+                 "body": (f"<!-- zrotext-jules-start:v1 session=sessions/123 head={SHA} "
+                          "mode=review trigger=comment-7 -->")}
+        review_result = {"user": {"login": "github-actions[bot]"},
+                         "body": "Jules review for `abcdef`" + chr(10) + chr(10) + "<!-- zrotext-jules-result:v1 session=sessions/123 -->"}
+
+        def fake_pages(path, _token):
+            return {
+                "/issues?labels=jules-pending&state=open": [{"number": 74, "pull_request": {}}],
+                "/issues/74/comments": [start],
+                "/pulls/74/reviews": [review_result],
+            }[path]
+
+        def fake_request(url, **kwargs):
+            if "/labels" in url:
+                return {}
+            if url == f"{review.GITHUB}/issues/74/comments" and kwargs.get("method") == "POST":
+                posted.append(kwargs["payload"])
+                return {}
+            raise AssertionError(f"unexpected provider call: {url}")
+
+        with patch.object(review, "pages", side_effect=fake_pages),              patch.object(review, "request_json", side_effect=fake_request),              patch.object(review, "remove_pending_label",
+                          side_effect=lambda number, _token: removed.append(number)):
+            review.poll_reviews("github-test", "jules-test")
+
+        self.assertEqual(posted, [], "an already-finished session publishes nothing")
+        self.assertEqual(removed, [74])
+
+    def test_schedule_run_of_main_never_starts_a_review(self):
+        saved = {key: os.environ.get(key) for key in
+                 ("GITHUB_REPOSITORY", "GITHUB_EVENT_NAME", "GH_TOKEN", "JULES_API_KEY")}
+        os.environ.update(GITHUB_REPOSITORY=review.REPO, GITHUB_EVENT_NAME="schedule",
+                          GH_TOKEN="SYNTHETIC_GITHUB_TOKEN",
+                          JULES_API_KEY="SYNTHETIC_JULES_API_KEY")
+        provider_posts = []
+        running = {"user": {"login": "github-actions[bot]"},
+                   "body": (f"<!-- zrotext-jules-start:v1 session=sessions/123 head={SHA} "
+                            "mode=review trigger=comment-7 -->")}
+
+        def fake_pages(path, _token):
+            return {
+                "/issues?labels=jules-pending&state=open": [{"number": 74, "pull_request": {}}],
+                "/issues/74/comments": [running],
+                "/pulls/74/reviews": [],
+            }[path]
+
+        def fake_request(url, **kwargs):
+            if url.startswith(review.JULES) and kwargs.get("method") == "POST":
+                provider_posts.append(url)
+                return {}
+            if url == f"{review.JULES}/sessions/123":
+                return {"state": "RUNNING"}
+            raise AssertionError(f"unexpected call: {url}")
+
+        try:
+            with patch.object(review, "pages", side_effect=fake_pages), \
+                 patch.object(review, "request_json", side_effect=fake_request):
+                code = review.main()
+        finally:
+            for key, value in saved.items():
+                if value is None:
+                    del os.environ[key]
+                else:
+                    os.environ[key] = value
+        self.assertEqual(code, 0)
+        self.assertEqual(provider_posts, [],
+                         "a scheduled run must never start or message a Jules session")
+
+    def test_poll_restores_the_label_when_a_session_starts_during_collection(self):
+        removed = []
+        readded = []
+        finished_start = {"user": {"login": "github-actions[bot]"},
+                          "body": (f"<!-- zrotext-jules-start:v1 session=sessions/123 head={SHA} "
+                                   "mode=review trigger=comment-7 -->")}
+        concurrent_start = {"user": {"login": "github-actions[bot]"},
+                            "body": ("<!-- zrotext-jules-start:v1 session=sessions/999 head="
+                                     + SHA + " mode=review trigger=comment-42 -->")}
+        result_review = {"user": {"login": "github-actions[bot]"},
+                         "body": ("Jules review for `abcdef`" + chr(10) + chr(10) +
+                                  "<!-- zrotext-jules-result:v1 session=sessions/123 -->")}
+        comment_fetches = []
+
+        def fake_pages(path, _token):
+            if path == "/issues/74/comments":
+                comment_fetches.append(path)
+                # The first two fetches (marker scan, pre-DELETE re-check) see
+                # the finished session only; a concurrent owner command posts
+                # a second START before the post-DELETE re-check runs.
+                late = len(comment_fetches) >= 3
+                return [finished_start, concurrent_start] if late else [finished_start]
+            return {
+                "/issues?labels=jules-pending&state=open": [{"number": 74, "pull_request": {}}],
+                "/pulls/74/reviews": [result_review],
             }[path]
 
         with patch.object(review, "pages", side_effect=fake_pages), \
-             patch.object(review, "source_branches", return_value=(SOURCE_NAME, {"codex/owner-ui"})), \
-             patch.object(review, "start_review", side_effect=lambda *args, **kwargs: started.append(args) or True):
-            review.start_missing_reviews("github-test", "jules-test")
+             patch.object(review, "remove_pending_label",
+                          side_effect=lambda n, _t: removed.append(n)), \
+             patch.object(review, "add_pending_label",
+                          side_effect=lambda n, _t: readded.append(n)):
+            review.poll_reviews("github-test", "jules-test")
+        self.assertEqual(removed, [74])
+        self.assertEqual(readded, [74],
+                         "a session started during collection must get its label back")
 
-        self.assertEqual(len(started), 1)
-        self.assertEqual(started[0][:2], (75, "review"))
+    def test_poll_skips_the_label_deletion_when_a_session_started_before_the_recheck(self):
+        removed = []
+        finished_start = {"user": {"login": "github-actions[bot]"},
+                          "body": (f"<!-- zrotext-jules-start:v1 session=sessions/123 head={SHA} "
+                                   "mode=review trigger=comment-7 -->")}
+        concurrent_start = {"user": {"login": "github-actions[bot]"},
+                            "body": ("<!-- zrotext-jules-start:v1 session=sessions/999 head="
+                                     + SHA + " mode=review trigger=comment-42 -->")}
+        result_review = {"user": {"login": "github-actions[bot]"},
+                         "body": ("Jules review for `abcdef`" + chr(10) + chr(10) +
+                                  "<!-- zrotext-jules-result:v1 session=sessions/123 -->")}
+
+        comment_fetches = []
+
+        def fake_pages(path, _token):
+            # The concurrent START appears between the marker scan and the
+            # pre-DELETE re-check, so only the re-check can see it and the
+            # label must never be removed.
+            if path == "/issues/74/comments":
+                comment_fetches.append(path)
+                late = len(comment_fetches) >= 2
+                return [finished_start, concurrent_start] if late else [finished_start]
+            return {
+                "/issues?labels=jules-pending&state=open": [{"number": 74, "pull_request": {}}],
+                "/pulls/74/reviews": [result_review],
+            }[path]
+
+        def fake_request(url, **kwargs):
+            # The concurrent session is still running on the provider.
+            if url == f"{review.JULES}/sessions/999":
+                return {"state": "RUNNING"}
+            raise AssertionError(f"unexpected call: {url}")
+
+        with patch.object(review, "pages", side_effect=fake_pages), \
+             patch.object(review, "request_json", side_effect=fake_request), \
+             patch.object(review, "remove_pending_label",
+                          side_effect=lambda n, _t: removed.append(n)):
+            review.poll_reviews("github-test", "jules-test")
+        self.assertEqual(removed, [], "a session visible before the re-check keeps the label")
+
+    def test_poll_skips_labelled_plain_issues_and_keeps_collecting_prs(self):
+        removed = []
+        finished_start = {"user": {"login": "github-actions[bot]"},
+                          "body": (f"<!-- zrotext-jules-start:v1 session=sessions/123 head={SHA} "
+                                   "mode=review trigger=comment-7 -->")}
+        result_review = {"user": {"login": "github-actions[bot]"},
+                         "body": ("Jules review for `abcdef`" + chr(10) + chr(10) +
+                                  "<!-- zrotext-jules-result:v1 session=sessions/123 -->")}
+
+        def fake_pages(path, _token):
+            # Issue 77 carries the label but is not a PR: asking for its
+            # comments or reviews must never happen.
+            if "77" in path:
+                raise AssertionError(f"plain issue must be skipped, asked: {path}")
+            return {
+                "/issues?labels=jules-pending&state=open": [
+                    {"number": 77},
+                    {"number": 74, "pull_request": {}}],
+                "/issues/74/comments": [finished_start],
+                "/pulls/74/reviews": [result_review],
+            }[path]
+
+        with patch.object(review, "pages", side_effect=fake_pages), \
+             patch.object(review, "remove_pending_label",
+                          side_effect=lambda n, _t: removed.append(n)):
+            review.poll_reviews("github-test", "jules-test")
+        self.assertEqual(removed, [74])
 
     def test_control_markers_must_be_authored_by_actions(self):
         self.assertTrue(review.from_actions({"user": {"login": "github-actions[bot]"}}))
@@ -260,7 +530,7 @@ class ReviewRoutingTests(unittest.TestCase):
 
         def fake_pages(path, _token):
             return {
-                "/pulls?state=open": [{"number": 74}],
+                "/issues?labels=jules-pending&state=open": [{"number": 74, "pull_request": {}}],
                 "/issues/74/comments": [start],
                 "/pulls/74/reviews": [{"user": {"login": "pboachie"}, "body": None}],
             }[path]
@@ -274,6 +544,8 @@ class ReviewRoutingTests(unittest.TestCase):
                 return {"activities": [{"agentMessaged": {"agentMessage": report_json()}}]}
             if url == f"{review.GITHUB}/pulls/74/reviews" and kwargs["method"] == "POST":
                 posted.append(kwargs["payload"])
+                return {}
+            if "/labels" in url:
                 return {}
             raise AssertionError(url)
 
@@ -296,7 +568,7 @@ class ReviewRoutingTests(unittest.TestCase):
 
         def fake_pages(path, _token):
             return {
-                "/pulls?state=open": [{"number": 74}],
+                "/issues?labels=jules-pending&state=open": [{"number": 74, "pull_request": {}}],
                 "/issues/74/comments": [start],
                 "/pulls/74/reviews": [],
             }[path]
@@ -310,6 +582,8 @@ class ReviewRoutingTests(unittest.TestCase):
                 return {"activities": [{"agentMessaged": {"agentMessage": "No findings."}}]}
             if url == f"{review.GITHUB}/issues/74/comments" and kwargs["method"] == "POST":
                 posted.append(kwargs["payload"])
+                return {}
+            if "/labels" in url:
                 return {}
             raise AssertionError(url)
 
@@ -328,7 +602,7 @@ class ReviewRoutingTests(unittest.TestCase):
 
         def fake_pages(path, _token):
             return {
-                "/pulls?state=open": [{"number": 74}],
+                "/issues?labels=jules-pending&state=open": [{"number": 74, "pull_request": {}}],
                 "/issues/74/comments": [start, *start_comments],
                 "/pulls/74/reviews": [],
             }[path]
@@ -382,7 +656,7 @@ class ReviewRoutingTests(unittest.TestCase):
 
         def fake_pages(path, _token):
             return {
-                "/pulls?state=open": [{"number": 74}],
+                "/issues?labels=jules-pending&state=open": [{"number": 74, "pull_request": {}}],
                 "/issues/74/comments": [start],
                 "/pulls/74/reviews": [],
             }[path]
@@ -394,6 +668,8 @@ class ReviewRoutingTests(unittest.TestCase):
                 return pull_request(base_sha="c" * 40)
             if url == f"{review.GITHUB}/issues/74/comments" and kwargs["method"] == "POST":
                 posted.append(kwargs["payload"])
+                return {}
+            if "/labels" in url:
                 return {}
             raise AssertionError(url)
 
@@ -447,11 +723,11 @@ class JulesCapacityTests(unittest.TestCase):
             return review.main()
 
     def test_event_review_at_task_limit_is_deferred_without_failing(self):
-        event = {"action": "ready_for_review", "pull_request": pull_request()}
+        event = {"issue": {"number": 74, "pull_request": {"url": "https://example.test"}},
+                 "comment": {"id": 7, "user": {"login": "pboachie"}, "body": "/jules review"}}
         requests = []
-        self.assertEqual(self.run_main("pull_request_target", event, requests), 0)
+        self.assertEqual(self.run_main("issue_comment", event, requests), 0)
         self.assertEqual(requests, [])
-
     def test_owner_address_at_task_limit_is_reported_on_the_pr(self):
         event = {"issue": {"number": 74, "pull_request": {"url": "https://example.test"}},
                  "comment": {"id": 7, "user": {"login": "pboachie"}, "body": "/jules address"}}
@@ -462,25 +738,6 @@ class JulesCapacityTests(unittest.TestCase):
         self.assertEqual((url, method), (f"{review.GITHUB}/issues/74/comments", "POST"))
         self.assertIn("task limit", payload["body"])
         self.assertIsNone(review.START.search(payload["body"]))
-
-    def test_schedule_stops_starting_reviews_at_task_limit(self):
-        first, second = pull_request(), pull_request()
-        first["number"], second["number"] = 75, 76
-        attempted = []
-
-        def fake_pages(path, _token):
-            return {"/pulls?state=open": [first, second],
-                    "/issues/75/comments": [], "/issues/76/comments": []}[path]
-
-        def refuse(number, *args, **kwargs):
-            attempted.append(number)
-            raise review.JulesCapacity("at limit")
-
-        with patch.object(review, "pages", side_effect=fake_pages), \
-             patch.object(review, "source_branches", return_value=(SOURCE_NAME, {"codex/owner-ui"})), \
-             patch.object(review, "start_review", side_effect=refuse):
-            review.start_missing_reviews("github-test", "jules-test")
-        self.assertEqual(len(attempted), 1)
 
 
 ACTIONS_USER = {"login": "github-actions[bot]", "id": review.ACTIONS_BOT_ID, "type": "Bot"}
@@ -594,6 +851,8 @@ class AddressFeedbackTrustTests(unittest.TestCase):
                 prompts.append(kwargs["payload"]["prompt"])
                 return {"name": "sessions/790"}
             if url == f"{review.GITHUB}/issues/74/comments":
+                return {}
+            if "/labels" in url:
                 return {}
             raise AssertionError(url)
 
