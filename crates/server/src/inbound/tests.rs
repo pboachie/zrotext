@@ -90,6 +90,7 @@ async fn postgres_webhook_claims_rotate_accounts_and_serialize_each_endpoint() {
         include_str!("../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"),
         include_str!("../../../../deploy/compose/migrations/009_webhook_manual_replay.sql"),
         include_str!("../../../../deploy/compose/migrations/015_webhook_kek_commitments.sql"),
+        include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }
@@ -444,6 +445,7 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
         include_str!("../../../../deploy/compose/migrations/020_enrollment_retention_indexes.sql"),
         include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
         include_str!("../../../../deploy/compose/migrations/022_pending_owner_expiry.sql"),
+        include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
         include_str!(
             "../../../../deploy/compose/migrations/023_billing_py_charge_and_unsupported.sql"
         ),
@@ -1905,6 +1907,7 @@ async fn signed_stop_after_content_retention_still_suppresses_recipient() {
         include_str!("../../../../deploy/compose/migrations/020_enrollment_retention_indexes.sql"),
         include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
         include_str!("../../../../deploy/compose/migrations/022_pending_owner_expiry.sql"),
+        include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
         include_str!(
             "../../../../deploy/compose/migrations/023_billing_py_charge_and_unsupported.sql"
         ),
@@ -2212,6 +2215,7 @@ async fn fresh_signed_events_share_a_durable_budget_and_replays_are_free() {
         include_str!("../../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
         include_str!("../../../../deploy/compose/migrations/038_owner_opt_out_hold_guards.sql"),
         include_str!("../../../../deploy/compose/migrations/039_inbound_device_clock_offset.sql"),
+        include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }
@@ -2801,6 +2805,7 @@ async fn consent_changes_are_not_deferred_by_a_spent_storage_budget() {
         include_str!("../../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
         include_str!("../../../../deploy/compose/migrations/038_owner_opt_out_hold_guards.sql"),
         include_str!("../../../../deploy/compose/migrations/039_inbound_device_clock_offset.sql"),
+        include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }

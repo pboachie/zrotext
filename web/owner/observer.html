@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Observer · ZROtext</title>
+  <link rel="stylesheet" href="/owner/devices.css">
+  <script defer src="/owner/observer.js"></script>
+</head>
+<body>
+  <main>
+    <header>
+      <div><p class="eyebrow">ZROtext device-status observer</p><h1>Device status</h1></div>
+      <button id="logout" type="button" hidden>Sign out</button>
+    </header>
+    <p>This read-only view shows gateway device status for the account that invited you. It never shows message content, recipients, or credentials.</p>
+    <p id="observer-status" role="status" aria-live="polite"></p>
+
+    <section id="accept-section" aria-labelledby="accept-title">
+      <h2 id="accept-title">Accept an invitation</h2>
+      <p>Paste the invitation token your account owner gave you and choose your own password. The invitation works once and is bound to your email address.</p>
+      <form id="accept-form" method="post" action="/v1/auth/seats/accept">
+        <label for="accept-token">Invitation token</label>
+        <input id="accept-token" name="token" type="text" autocomplete="off" spellcheck="false" required>
+        <label for="accept-password">Choose a password</label>
+        <input id="accept-password" name="password" type="password" autocomplete="new-password" minlength="12" required>
+        <button type="submit">Accept invitation</button>
+      </form>
+      <p id="accept-status" role="status" aria-live="polite"></p>
+    </section>
+
+    <section id="sign-in-section" aria-labelledby="observer-sign-in-title" hidden>
+      <h2 id="observer-sign-in-title">Sign in</h2>
+      <p>Use your verified observer email and password.</p>
+      <form id="login-form" method="post" action="/v1/auth/login">
+        <label for="login-email">Email</label><input id="login-email" name="email" type="email" autocomplete="username" required>
+        <label for="login-password">Password</label><input id="login-password" name="password" type="password" autocomplete="current-password" required>
+        <button type="submit">Sign in</button>
+      </form>
+      <p id="login-status" role="status" aria-live="polite"></p>
+    </section>
+
+    <section id="verify-section" aria-labelledby="observer-verify-title" hidden>
+      <h2 id="observer-verify-title">Verify your email</h2>
+      <p>Enter the code from your ZROtext verification email together with the password you chose. You must verify before you can sign in.</p>
+      <form id="verify-form" method="post" action="/v1/auth/verify-email">
+        <label for="verify-code">Verification code</label>
+        <input id="verify-code" name="token" type="text" autocomplete="one-time-code" spellcheck="false" required>
+        <label for="verify-password">Password</label>
+        <input id="verify-password" name="password" type="password" autocomplete="current-password" required>
+        <button type="submit">Verify email</button>
+      </form>
+      <p id="verify-status" role="status" aria-live="polite"></p>
+    </section>
+
+    <section id="status-section" aria-labelledby="device-status-title" hidden>
+      <div class="section-head"><h2 id="device-status-title">Gateway devices</h2><button id="refresh-devices" type="button" class="quiet">Refresh</button></div>
+      <p>An authenticated socket lease is a server observation that can lag a dropped connection by up to 90 seconds. It does not prove SMS permission, SIM service, or dispatch readiness. Pending and in-flight counts are writer states, not sendability.</p>
+      <p id="device-status" role="status" aria-live="polite"></p>
+      <ul id="device-list"></ul>
+    </section>
+
+    <section id="password-section" aria-labelledby="observer-password-title" hidden>
+      <h2 id="observer-password-title">Change your password</h2>
+      <p>Changing your password signs out this and every other observer session.</p>
+      <form id="password-form" method="post" action="/v1/auth/password">
+        <label for="current-password">Current password</label>
+        <input id="current-password" name="current_password" type="password" autocomplete="current-password" required>
+        <label for="new-password">New password</label>
+        <input id="new-password" name="new_password" type="password" autocomplete="new-password" minlength="12" required>
+        <button type="submit">Change password</button>
+      </form>
+      <p id="password-status" role="status" aria-live="polite"></p>
+    </section>
+  </main>
+  <footer><a href="/source">Source code for this server</a> · <a href="/about/version">Build version</a></footer>
+</body>
+</html>

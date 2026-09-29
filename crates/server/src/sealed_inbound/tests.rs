@@ -70,6 +70,7 @@ async fn sealed_identity_requires_live_writer_and_active_same_tenant_line() {
         include_str!("../../../../deploy/compose/migrations/020_enrollment_retention_indexes.sql"),
         include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
         include_str!("../../../../deploy/compose/migrations/022_pending_owner_expiry.sql"),
+        include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
         include_str!(
             "../../../../deploy/compose/migrations/023_billing_py_charge_and_unsupported.sql"
         ),

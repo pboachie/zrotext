@@ -221,6 +221,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "050_message_attempts_recent_index.sql",
         include_str!("../../../../deploy/compose/migrations/050_message_attempts_recent_index.sql"),
     ),
+    (
+        "053_observer_seat_invitations.sql",
+        include_str!("../../../../deploy/compose/migrations/053_observer_seat_invitations.sql"),
+    ),
 ];
 
 /// Indexes the Compose migrator prepares with CREATE INDEX CONCURRENTLY in
@@ -1913,4 +1917,663 @@ fn runtime_role_covers_every_erased_table() {
             "runtime-role.sql revokes {table}, which the erasure deletes"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Observer seats: erasing an account must erase its observers' accounts too.
+// ---------------------------------------------------------------------------
+
+use crate::auth::seats;
+
+async fn principal_of(
+    db: &tokio_postgres::Client,
+    hasher: &Arc<TokenHasher>,
+    session: &crate::auth::SessionCredentials,
+) -> crate::auth::SessionPrincipal {
+    authenticate_session(db, hasher, &session.token)
+        .await
+        .unwrap()
+}
+
+/// Invite, accept and (optionally) verify one observer through the real
+/// seat functions; returns its user id and the password it chose.
+async fn seat_observer(
+    db: &mut tokio_postgres::Client,
+    hasher: &Arc<TokenHasher>,
+    owner: &crate::auth::SessionPrincipal,
+    owner_password: &str,
+    email: &str,
+    verified: bool,
+) -> (Uuid, String) {
+    let issued =
+        seats::create_invitation_with_proof(db, None, hasher, owner, owner_password, None, email)
+            .await
+            .unwrap();
+    let password = crate::test_keys::password(7);
+    let acceptance = seats::accept_invitation(db, hasher, &issued.token, &password)
+        .await
+        .unwrap();
+    if verified {
+        assert!(
+            crate::auth::verify_email_with_password(
+                db,
+                hasher,
+                &acceptance.verification_token,
+                &password
+            )
+            .await
+            .unwrap()
+        );
+    }
+    (acceptance.user_id, password)
+}
+
+async fn rows(db: &tokio_postgres::Client, sql: &str, id: Uuid) -> i64 {
+    db.query_one(sql, &[&id]).await.unwrap().get(0)
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn erasure_deletes_the_accounts_observers_invitations_and_tombstones_only() {
+    let (admin, mut db, database_url, schema) = migrated_schema("observers").await;
+    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(41)).unwrap());
+    let (a, session_a, b, session_b, app) = fixture(&mut db, &hasher, &database_url, None).await;
+    let owner_a = principal_of(&db, &hasher, &session_a).await;
+    let owner_b = principal_of(&db, &hasher, &session_b).await;
+    let (pw_a, pw_b) = (crate::test_keys::password(1), crate::test_keys::password(2));
+
+    // Account A: a live verified observer with a session and an API key, an
+    // accepted but unverified observer, a removed observer (tombstone, user
+    // deleted), a removed observer whose user survived because a restricting
+    // reference refused the delete, and one open invitation.
+    let (live_id, live_pw) = seat_observer(
+        &mut db,
+        &hasher,
+        &owner_a,
+        &pw_a,
+        "live-observer@example.test",
+        true,
+    )
+    .await;
+    let (pending_id, _) = seat_observer(
+        &mut db,
+        &hasher,
+        &owner_a,
+        &pw_a,
+        "pending-observer@example.test",
+        false,
+    )
+    .await;
+    let (removed_id, _) = seat_observer(
+        &mut db,
+        &hasher,
+        &owner_a,
+        &pw_a,
+        "removed-observer@example.test",
+        true,
+    )
+    .await;
+    assert!(
+        seats::remove_observer(&mut db, &owner_a, removed_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .address_freed
+    );
+    let (fallback_id, _) = seat_observer(
+        &mut db,
+        &hasher,
+        &owner_a,
+        &pw_a,
+        "fallback-observer@example.test",
+        true,
+    )
+    .await;
+    db.execute(
+        "INSERT INTO pairing_requests(id,account_id,created_by_user_id,token_digest,display_name,expires_at) VALUES($1,$2,$3,$4,'synthetic',now()+interval '1 hour')",
+        &[
+            &Uuid::new_v4(),
+            &a.account_id,
+            &fallback_id,
+            &crate::test_keys::key(43),
+        ],
+    )
+    .await
+    .unwrap();
+    assert!(
+        !seats::remove_observer(&mut db, &owner_a, fallback_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .address_freed
+    );
+    seats::create_invitation_with_proof(
+        &mut db,
+        None,
+        &hasher,
+        &owner_a,
+        &pw_a,
+        None,
+        "open-invite@example.test",
+    )
+    .await
+    .unwrap();
+    let live_session = login(&db, &hasher, "live-observer@example.test", &live_pw)
+        .await
+        .unwrap();
+    let key_prefix = Uuid::new_v4().simple().to_string();
+    let key_hash = crate::test_keys::key(42);
+    db.execute(
+        "INSERT INTO api_keys(id,account_id,created_by_user_id,public_prefix,token_hash,scopes) VALUES($1,$2,$3,$4,$5,ARRAY['devices:read'])",
+        &[&Uuid::new_v4(), &a.account_id, &live_id, &key_prefix, &key_hash],
+    )
+    .await
+    .unwrap();
+
+    // Account B keeps a verified observer and an open invitation.
+    let (b_observer, b_observer_pw) = seat_observer(
+        &mut db,
+        &hasher,
+        &owner_b,
+        &pw_b,
+        "b-observer@example.test",
+        true,
+    )
+    .await;
+    let b_open = seats::create_invitation_with_proof(
+        &mut db,
+        None,
+        &hasher,
+        &owner_b,
+        &pw_b,
+        None,
+        "b-open@example.test",
+    )
+    .await
+    .unwrap();
+
+    let response = app
+        .clone()
+        .oneshot(erasure_post(
+            Some(&session_a.token),
+            Some(&session_a.csrf_token),
+            Some(ORIGIN),
+            &pw_a,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let report = body(response).await;
+
+    // The report says what happened: three surviving observer users (live,
+    // pending, fallback) plus the owner, five invitation rows including both
+    // tombstones and the open one, and only the owner's membership left for
+    // the membership delete because the user deletes cascaded the rest.
+    assert_eq!(deleted_count(&report, "observer_users"), 3);
+    assert_eq!(deleted_count(&report, "seat_invitations"), 5);
+    assert_eq!(deleted_count(&report, "memberships"), 1);
+    assert_eq!(deleted_count(&report, "users"), 1);
+    assert_eq!(deleted_count(&report, "accounts"), 1);
+    let raw = serde_json::to_string(&report).unwrap();
+    assert!(!raw.contains("observer@example.test"));
+
+    // Nothing of the erased account's observers survives: user rows (email,
+    // password hash), sessions, keys, verification state, invitations.
+    let emails = [
+        "live-observer@example.test",
+        "pending-observer@example.test",
+        "removed-observer@example.test",
+        "fallback-observer@example.test",
+        "open-invite@example.test",
+        "erase-a@example.test",
+    ];
+    let left: i64 = db
+        .query_one(
+            "SELECT count(*) FROM users WHERE email = ANY($1) OR id = ANY($2)",
+            &[
+                &emails.to_vec(),
+                &vec![a.user_id, live_id, pending_id, removed_id, fallback_id],
+            ],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(left, 0, "users of the erased account survive");
+    for sql in [
+        "SELECT count(*) FROM seat_invitations WHERE account_id=$1",
+        "SELECT count(*) FROM memberships WHERE account_id=$1",
+        "SELECT count(*) FROM sessions WHERE account_id=$1",
+        "SELECT count(*) FROM api_keys WHERE account_id=$1",
+        "SELECT count(*) FROM email_verifications WHERE account_id=$1",
+        "SELECT count(*) FROM verification_mail_outbox o JOIN email_verifications v ON v.id=o.verification_id WHERE v.account_id=$1",
+    ] {
+        assert_eq!(rows(&db, sql, a.account_id).await, 0, "{sql}");
+    }
+    assert!(
+        crate::auth::authenticate_session(&db, &hasher, &live_session.token)
+            .await
+            .is_err()
+    );
+    assert!(
+        login(&db, &hasher, "live-observer@example.test", &live_pw)
+            .await
+            .is_err()
+    );
+
+    // The addresses are free again: the person can register their own
+    // account, and another account can invite and seat a former address.
+    register(
+        &mut db,
+        &hasher,
+        "live-observer@example.test",
+        &crate::test_keys::password(8),
+    )
+    .await
+    .unwrap();
+    let elsewhere = seats::create_invitation_with_proof(
+        &mut db,
+        None,
+        &hasher,
+        &owner_b,
+        &pw_b,
+        None,
+        "pending-observer@example.test",
+    )
+    .await
+    .unwrap();
+    seats::accept_invitation(
+        &mut db,
+        &hasher,
+        &elsewhere.token,
+        &crate::test_keys::password(9),
+    )
+    .await
+    .unwrap();
+
+    // Account B is untouched: owner, observer, sessions, and its open
+    // invitation with a still-live token.
+    for user in [b.user_id, b_observer] {
+        assert_eq!(
+            rows(&db, "SELECT count(*) FROM users WHERE id=$1", user).await,
+            1
+        );
+    }
+    assert!(
+        login(&db, &hasher, "b-observer@example.test", &b_observer_pw)
+            .await
+            .is_ok()
+    );
+    assert!(
+        login(&db, &hasher, "erase-b@example.test", &pw_b)
+            .await
+            .is_ok()
+    );
+    assert!(
+        seats::invitation_token_is_live(&db, &hasher, &b_open.token)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        rows(
+            &db,
+            "SELECT count(*) FROM seat_invitations WHERE account_id=$1 AND email='b-observer@example.test' AND accepted_at IS NOT NULL",
+            b.account_id
+        )
+        .await,
+        1
+    );
+    admin
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn erasure_fails_closed_when_an_observer_user_cannot_be_deleted() {
+    let (admin, mut db, database_url, schema) = migrated_schema("observer_block").await;
+    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(44)).unwrap());
+    let (a, session_a, _b, _session_b, app) = fixture(&mut db, &hasher, &database_url, None).await;
+    let owner_a = principal_of(&db, &hasher, &session_a).await;
+    let (observer, _) = seat_observer(
+        &mut db,
+        &hasher,
+        &owner_a,
+        &crate::test_keys::password(1),
+        "pinned-observer@example.test",
+        true,
+    )
+    .await;
+    // A restricting reference to the observer's user row that no erasure
+    // step clears, standing in for any future table that pins a user.
+    db.batch_execute(
+        "CREATE TABLE observer_user_pin(user_id uuid PRIMARY KEY REFERENCES users(id))",
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO observer_user_pin(user_id) VALUES($1)",
+        &[&observer],
+    )
+    .await
+    .unwrap();
+    let response = app
+        .clone()
+        .oneshot(erasure_post(
+            Some(&session_a.token),
+            Some(&session_a.csrf_token),
+            Some(ORIGIN),
+            &crate::test_keys::password(1),
+            None,
+        ))
+        .await
+        .unwrap();
+    // Fail closed like every other blocker: a 409 naming what blocks it,
+    // never a 503 that looks retryable and never a half-erased account.
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let report = body(response).await;
+    assert_eq!(report["code"], "erasure_blocked");
+    assert_eq!(blocked_count(&report, "observer_users"), 1);
+    for (sql, expected) in [
+        ("SELECT count(*) FROM accounts WHERE id=$1", 1),
+        ("SELECT count(*) FROM messages WHERE account_id=$1", 2),
+        ("SELECT count(*) FROM memberships WHERE account_id=$1", 2),
+        ("SELECT count(*) FROM sessions WHERE account_id=$1", 1),
+        (
+            "SELECT count(*) FROM seat_invitations WHERE account_id=$1",
+            1,
+        ),
+    ] {
+        assert_eq!(
+            rows(&db, sql, a.account_id).await,
+            expected,
+            "a blocked erasure must delete nothing: {sql}"
+        );
+    }
+    assert_eq!(
+        rows(&db, "SELECT count(*) FROM users WHERE id=$1", observer).await,
+        1
+    );
+    admin
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn an_acceptance_in_flight_during_erasure_cannot_leave_an_observer_behind() {
+    let (admin, mut db, database_url, schema) = migrated_schema("observer_accept").await;
+    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(45)).unwrap());
+    let handler_database_url = handler_url(&database_url, "zt_erasure_accept_race");
+    let (a, session_a, _b, _session_b, app) =
+        fixture(&mut db, &hasher, &handler_database_url, None).await;
+    let owner_a = principal_of(&db, &hasher, &session_a).await;
+    let issued = seats::create_invitation_with_proof(
+        &mut db,
+        None,
+        &hasher,
+        &owner_a,
+        &crate::test_keys::password(1),
+        None,
+        "race-observer@example.test",
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "UPDATE sessions SET last_used_at=now() WHERE id=$1",
+        &[&session_a.id],
+    )
+    .await
+    .unwrap();
+    // Act as an acceptance that has claimed its invitation and created the
+    // observer but not yet committed.
+    let blocker_pid: i32 = db
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await
+        .unwrap()
+        .get(0);
+    let observer = Uuid::new_v4();
+    let acceptance = db.transaction().await.unwrap();
+    acceptance
+        .query_one(
+            "SELECT id FROM seat_invitations WHERE account_id=$1 AND email='race-observer@example.test' AND accepted_at IS NULL FOR UPDATE",
+            &[&a.account_id],
+        )
+        .await
+        .unwrap();
+    let token = session_a.token.clone();
+    let csrf = session_a.csrf_token.clone();
+    let request = tokio::spawn(async move {
+        app.oneshot(erasure_post(
+            Some(&token),
+            Some(&csrf),
+            Some(ORIGIN),
+            &crate::test_keys::password(1),
+            None,
+        ))
+        .await
+        .unwrap()
+    });
+    // The erasure parks on the invitation row before its fence, so it waits
+    // for the acceptance instead of racing it.
+    wait_until_handler_is_blocked_by(&admin, "zt_erasure_accept_race", blocker_pid).await;
+    // Only now does the acceptance create the observer. Were the erasure past
+    // its fence, this membership insert would queue behind the fence's lock on
+    // the account row while the erasure queued behind this invitation row: a
+    // deadlock. Parked before the fence, it completes first.
+    acceptance
+        .execute(
+            "INSERT INTO users(id,email,password_hash) SELECT $1,'race-observer@example.test',password_hash FROM users WHERE id=$2",
+            &[&observer, &a.user_id],
+        )
+        .await
+        .unwrap();
+    acceptance
+        .execute(
+            "INSERT INTO memberships(account_id,user_id,role) VALUES($1,$2,'observer')",
+            &[&a.account_id, &observer],
+        )
+        .await
+        .unwrap();
+    acceptance
+        .execute(
+            "UPDATE seat_invitations SET accepted_at=now(),accepted_user_id=$2 WHERE account_id=$1 AND email='race-observer@example.test'",
+            &[&a.account_id, &observer],
+        )
+        .await
+        .unwrap();
+    acceptance.commit().await.unwrap();
+    let response = request.await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let report = body(response).await;
+    // The observer created by the acceptance is erased with the account, not
+    // orphaned, and its token is dead.
+    assert_eq!(deleted_count(&report, "observer_users"), 1);
+    assert_eq!(
+        rows(&db, "SELECT count(*) FROM users WHERE id=$1", observer).await,
+        0
+    );
+    assert_eq!(
+        rows(
+            &db,
+            "SELECT count(*) FROM seat_invitations WHERE account_id=$1",
+            a.account_id
+        )
+        .await,
+        0
+    );
+    assert!(matches!(
+        seats::accept_invitation(
+            &mut db,
+            &hasher,
+            &issued.token,
+            &crate::test_keys::password(9)
+        )
+        .await,
+        Err(AuthError::InvalidCredentials)
+    ));
+    admin
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn a_seat_removal_in_flight_during_erasure_finishes_first_without_a_deadlock() {
+    let (admin, mut db, database_url, schema) = migrated_schema("observer_remove").await;
+    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(46)).unwrap());
+    let handler_database_url = handler_url(&database_url, "zt_erasure_remove_race");
+    let (a, session_a, _b, _session_b, app) =
+        fixture(&mut db, &hasher, &handler_database_url, None).await;
+    let owner_a = principal_of(&db, &hasher, &session_a).await;
+    let (observer, observer_pw) = seat_observer(
+        &mut db,
+        &hasher,
+        &owner_a,
+        &crate::test_keys::password(1),
+        "removal-race@example.test",
+        true,
+    )
+    .await;
+    let observer_session = login(&db, &hasher, "removal-race@example.test", &observer_pw)
+        .await
+        .unwrap();
+    db.execute(
+        "UPDATE sessions SET last_used_at=now() WHERE id=$1",
+        &[&session_a.id],
+    )
+    .await
+    .unwrap();
+    // Act as seat removal: it locks the observer's membership first and only
+    // then touches the observer's sessions and invitation.
+    let blocker_pid: i32 = db
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await
+        .unwrap()
+        .get(0);
+    let removal = db.transaction().await.unwrap();
+    removal
+        .query_one(
+            "SELECT user_id FROM memberships WHERE user_id=$1 FOR UPDATE",
+            &[&observer],
+        )
+        .await
+        .unwrap();
+    let token = session_a.token.clone();
+    let csrf = session_a.csrf_token.clone();
+    let request = tokio::spawn(async move {
+        app.oneshot(erasure_post(
+            Some(&token),
+            Some(&csrf),
+            Some(ORIGIN),
+            &crate::test_keys::password(1),
+            None,
+        ))
+        .await
+        .unwrap()
+    });
+    wait_until_handler_is_blocked_by(&admin, "zt_erasure_remove_race", blocker_pid).await;
+    // The erasure has taken no session or invitation lock yet, so the removal
+    // can finish its remaining statements without waiting on it.
+    removal
+        .execute(
+            "UPDATE memberships SET revoked_at=now() WHERE user_id=$1",
+            &[&observer],
+        )
+        .await
+        .unwrap();
+    removal
+        .execute(
+            "UPDATE sessions SET revoked_at=now() WHERE id=$1",
+            &[&observer_session.id],
+        )
+        .await
+        .unwrap();
+    removal
+        .execute(
+            "UPDATE seat_invitations SET canceled_at=now() WHERE account_id=$1 AND email='removal-race@example.test' AND accepted_at IS NULL",
+            &[&a.account_id],
+        )
+        .await
+        .unwrap();
+    removal.commit().await.unwrap();
+    let response = request.await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let report = body(response).await;
+    // The removal's revoked membership still belonged to an observer user, so
+    // the erasure deleted that user too.
+    assert_eq!(deleted_count(&report, "observer_users"), 1);
+    assert_eq!(
+        rows(&db, "SELECT count(*) FROM users WHERE id=$1", observer).await,
+        0
+    );
+    admin
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn the_observer_user_delete_never_reaches_owners_or_other_accounts() {
+    let (admin, mut db, database_url, schema) = migrated_schema("observer_guard").await;
+    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(47)).unwrap());
+    let (a, session_a, b, session_b, _app) = fixture(&mut db, &hasher, &database_url, None).await;
+    let owner_a = principal_of(&db, &hasher, &session_a).await;
+    let owner_b = principal_of(&db, &hasher, &session_b).await;
+    let (a_observer, _) = seat_observer(
+        &mut db,
+        &hasher,
+        &owner_a,
+        &crate::test_keys::password(1),
+        "guard-a@example.test",
+        true,
+    )
+    .await;
+    let (b_observer, _) = seat_observer(
+        &mut db,
+        &hasher,
+        &owner_b,
+        &crate::test_keys::password(2),
+        "guard-b@example.test",
+        true,
+    )
+    .await;
+    // Run exactly the erasure's observer statement for account A inside a
+    // transaction and inspect what it reaches.
+    let tx = db.transaction().await.unwrap();
+    let deleted = tx
+        .execute(OBSERVER_USERS_SQL, &[&a.account_id])
+        .await
+        .unwrap();
+    assert_eq!(deleted, 1, "only account A's observer");
+    let exists = |user: Uuid| {
+        let tx = &tx;
+        async move {
+            tx.query_one("SELECT count(*) FROM users WHERE id=$1", &[&user])
+                .await
+                .unwrap()
+                .get::<_, i64>(0)
+                == 1
+        }
+    };
+    assert!(!exists(a_observer).await, "account A observer is deleted");
+    assert!(exists(b_observer).await, "account B observer survives");
+    assert!(exists(a.user_id).await, "account A owner survives");
+    assert!(exists(b.user_id).await, "account B owner survives");
+    // An account with no observers of its own reaches nothing, even though
+    // observers and owners exist elsewhere.
+    tx.rollback().await.unwrap();
+    let nothing = db
+        .execute(OBSERVER_USERS_SQL, &[&Uuid::new_v4()])
+        .await
+        .unwrap();
+    assert_eq!(nothing, 0);
+    admin
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
 }

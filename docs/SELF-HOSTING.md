@@ -271,6 +271,45 @@ show no recent use. Keys created without a lifetime never expire, so prefer a
 lifetime for new keys. See
 [SECURITY-DESIGN.md](SECURITY-DESIGN.md#owner-session-and-api-key-lifetime).
 
+### Device-status observers
+
+After signing in at `/owner/devices`, open `/owner/seats` to invite a
+device-status observer. Creating an invitation grants lasting read access, so
+it asks for your current password and, if you turned on two-step sign-in, an
+authenticator or recovery code, exactly as creating an API key does; a session
+cookie alone cannot mint a seat. The invitation token is shown once, expires
+after seven days, works once, and is bound to the invited address; deliver it
+out of band. The invitee opens `/owner/observer`, accepts the token with a
+password they choose, verifies their email with the mailed code, and then
+signs in to a read-only device-status page. Observers can change their own
+password, review their sessions, and sign out, and nothing else: message
+content, device management, API keys, billing, exports, webhooks, and further
+invitations stay owner-only.
+
+An owner is always told the same thing when inviting: the server never reveals
+whether an address already has an account, is invited by another account, or
+is free. Every invitation succeeds with a real token (up to ten open
+invitations and ten live observer seats per account), and only the person who
+holds the token can find out at acceptance that the address already has an
+account, in which case nothing about that account is touched and the
+invitation is not consumed. Inviting an address you already invited replaces
+the earlier invitation, and an expired invitation never blocks the address. Two
+accounts can invite the same address at the same time; whichever token is
+accepted first gets the address.
+
+Removing a seat on `/owner/seats` signs it out everywhere, revokes every
+outstanding credential immediately, and deletes the observer's account so the
+address is free again: the same person can be invited afresh (as a new account
+with a new password) or register their own owner account. A removed seat cannot
+be restored, and the list keeps a record of it. Removal is a security action
+and is never blocked: if the database ever refuses to delete the observer's
+account, the seat is still removed and every credential revoked, but the
+address stays occupied, and the removal response and the seat list say so with
+an address-free flag of false. An accepted-but-unverified observer is pruned
+after the same 24-hour pending window as an unverified owner, which also frees
+the address. Observer MFA, password reset by email, and additional
+collaboration roles are not part of this phase.
+
 ### Owner password recovery
 
 With SMTP configured, a signed-out owner can request a one-hour, one-use reset
@@ -536,6 +575,20 @@ retained set (the request-budget counters, which are pepper-keyed digests
 shared across accounts and hold no identifiers); this response is the only
 confirmation, because the account and its sessions no longer exist.
 
+Observers are erased with the account. Their user rows (email, password hash,
+verification state), including removed seats whose user row survived, and the
+account's invitations and removal records (which hold invitee addresses) are
+deleted in the same transaction, using the guard seat removal uses: only a
+user whose sole membership is an observer seat of this account is deleted,
+never an owner and never a user of another account. The report lists
+`observer_users` and `seat_invitations`, and their addresses are free
+afterwards. An acceptance or removal racing the erasure cannot leave an
+observer behind: the erasure waits for one already in flight, and a later
+acceptance cannot create a membership once the account row is locked. If the
+database refuses an observer user delete because another row references it,
+the erasure fails closed like any other blocker (HTTP 409 `erasure_blocked`
+naming `observer_users`, nothing deleted).
+
 Erasure is local and bounded. It applies only to this server's database. It
 does not cancel Stripe subscriptions or customers, does not release carrier
 or phone-line identities outside the database, does not delete anything in
@@ -552,7 +605,7 @@ history (`known_signing_point_reservations`, `known_signing_role_claims`,
 `sealed_root_enrollments`, `sealed_root_receipts`), which exists for every
 account that ever enrolled a device key or approval key; a live owner-key
 ceremony; an operator billing review action over the account's risk events;
-or a billing event still referenced by another account's risk record. Owners
+a billing event still referenced by another account's risk record; or an observer user row that a foreign key refuses to delete. Owners
 of accounts with such rows must contact the operator about those records
 first; the endpoint never deletes part of an account.
 

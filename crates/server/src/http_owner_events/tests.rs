@@ -148,6 +148,7 @@ async fn stream_requires_a_session_and_signals_only_tenant_changes_until_it_ends
         include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
         include_str!("../../../../deploy/compose/migrations/041_device_preconditions.sql"),
         include_str!("../../../../deploy/compose/migrations/047_device_network_service.sql"),
+        include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }

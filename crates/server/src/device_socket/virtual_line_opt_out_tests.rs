@@ -183,6 +183,7 @@ async fn authenticated_line_opt_out_replays_and_rejects_wrong_line_epoch_and_seq
         include_str!("../../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
         include_str!("../../../../deploy/compose/migrations/038_owner_opt_out_hold_guards.sql"),
         include_str!("../../../../deploy/compose/migrations/039_inbound_device_clock_offset.sql"),
+        include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }

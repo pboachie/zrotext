@@ -145,6 +145,9 @@ fn map_auth(error: AuthError) -> MessageHttpError {
         AuthError::Forbidden | AuthError::EmailNotVerified | AuthError::SmsOwnerKeyActive => {
             MessageHttpError::Forbidden
         }
+        // API-key routes never consult seat state; a conflict is not a
+        // credential failure, so it fails closed as an authorization error.
+        AuthError::Conflict => MessageHttpError::Forbidden,
         AuthError::InvalidInput => MessageHttpError::BadRequest,
         AuthError::Database(_) | AuthError::Password | AuthError::Crypto => {
             MessageHttpError::Unavailable

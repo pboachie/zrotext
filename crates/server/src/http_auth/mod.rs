@@ -4,7 +4,7 @@
 
 use crate::api_json::ApiJson;
 use crate::auth::{
-    self, ApiKeyLifetime, AuthError, Scope, SessionPrincipal, TokenHasher,
+    self, ApiKeyLifetime, AuthError, Role, Scope, SessionPrincipal, TokenHasher,
     abuse_limits::{self, Limit},
     account,
     mfa::{self, MfaCipher},
@@ -23,7 +23,7 @@ use lettre::{
     AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
     transport::smtp::authentication::Credentials,
 };
-use preauth::OwnerMutation;
+use preauth::{MemberMutation, OwnerMutation};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::{
@@ -40,6 +40,7 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 pub mod preauth;
+mod seats_http;
 mod sms_lines;
 mod sms_owner_keys;
 
@@ -694,6 +695,14 @@ pub fn router(state: AuthHttpState) -> Router {
         .route("/mfa/disable", post(disable_mfa))
         .route("/api-keys", get(list_api_keys).post(create_api_key))
         .route("/api-keys/{key_id}", delete(revoke_api_key))
+        .route("/seats", get(seats_http::list))
+        .route("/seats/{user_id}", delete(seats_http::remove))
+        .route("/seats/invitations", post(seats_http::create))
+        .route(
+            "/seats/invitations/{invitation_id}",
+            delete(seats_http::cancel),
+        )
+        .route("/seats/accept", post(seats_http::accept))
         .route(
             "/sms-line-owner-keys/challenge",
             post(sms_owner_keys::challenge),
@@ -732,6 +741,7 @@ pub enum AuthHttpError {
     BadRequest,
     Unauthorized,
     Forbidden,
+    Conflict,
     SmsOwnerKeyActive,
     NotFound,
     TooManyRequests,
@@ -749,6 +759,7 @@ impl IntoResponse for AuthHttpError {
             Self::BadRequest => (StatusCode::BAD_REQUEST, "invalid_request"),
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized"),
             Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden"),
+            Self::Conflict => (StatusCode::CONFLICT, "conflict"),
             Self::SmsOwnerKeyActive => (StatusCode::CONFLICT, "revoke_sms_owner_key_first"),
             Self::NotFound => (StatusCode::NOT_FOUND, "not_found"),
             Self::TooManyRequests => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
@@ -806,6 +817,7 @@ fn map_auth(error: AuthError) -> AuthHttpError {
             AuthHttpError::Unauthorized
         }
         AuthError::EmailNotVerified | AuthError::Forbidden => AuthHttpError::Forbidden,
+        AuthError::Conflict => AuthHttpError::Conflict,
         AuthError::SmsOwnerKeyActive => AuthHttpError::SmsOwnerKeyActive,
         AuthError::Database(_) => AuthHttpError::Unavailable,
         AuthError::Password => AuthHttpError::Internal,
@@ -871,7 +883,26 @@ pub fn require_session_cookie(headers: &HeaderMap) -> Result<(), AuthHttpError> 
 
 /// Shared by account and enrollment HTTP handlers. `mutation=true` enforces
 /// the exact Origin and CSRF header/cookie, in addition to the session cookie.
+/// The caller must hold the owner role; an observer session fails closed with
+/// the same 401 as an absent session so owner routes leak no role signal.
 pub async fn require_owner(
+    client: &Client,
+    hasher: &TokenHasher,
+    canonical_origin: &str,
+    headers: &HeaderMap,
+    mutation: bool,
+) -> Result<SessionPrincipal, AuthHttpError> {
+    let principal = require_member(client, hasher, canonical_origin, headers, mutation).await?;
+    if principal.role != Role::Owner {
+        return Err(AuthHttpError::Unauthorized);
+    }
+    Ok(principal)
+}
+
+/// Any live membership role (owner or observer). Gates only self-service
+/// authentication routes and read-only status scoped to the caller's own
+/// account; every owner-authority route must use [`require_owner`] instead.
+pub async fn require_member(
     client: &Client,
     hasher: &TokenHasher,
     canonical_origin: &str,
@@ -933,6 +964,21 @@ pub fn require_owner_read_headers(headers: &HeaderMap) -> Result<(), AuthHttpErr
 /// cannot learn the CSRF cookie value. Session metadata the page needs before
 /// it reads the CSRF cookie (`/v1/auth/session`) stays cookie-only.
 pub async fn require_owner_read(
+    client: &Client,
+    hasher: &TokenHasher,
+    headers: &HeaderMap,
+) -> Result<SessionPrincipal, AuthHttpError> {
+    let principal = require_member_read(client, hasher, headers).await?;
+    if principal.role != Role::Owner {
+        return Err(AuthHttpError::Unauthorized);
+    }
+    Ok(principal)
+}
+
+/// Any live membership role for content-bearing GETs scoped to the caller's
+/// own account: observer device status and the observer's own session
+/// inventory. The CSRF proof is identical to [`require_owner_read`].
+pub async fn require_member_read(
     client: &Client,
     hasher: &TokenHasher,
     headers: &HeaderMap,
@@ -1370,6 +1416,7 @@ struct SessionBody {
     account_id: Uuid,
     user_id: Uuid,
     session_id: Uuid,
+    role: &'static str,
 }
 
 async fn session(
@@ -1378,7 +1425,7 @@ async fn session(
 ) -> Result<Response, AuthHttpError> {
     require_session_cookie(&headers)?;
     let client = connect(&state.database_url).await?;
-    let owner = require_owner(
+    let member = require_member(
         &client,
         &state.hasher,
         &state.canonical_origin,
@@ -1387,9 +1434,10 @@ async fn session(
     )
     .await?;
     let mut response = Json(SessionBody {
-        account_id: owner.tenant.account_id(),
-        user_id: owner.user_id,
-        session_id: owner.session_id,
+        account_id: member.tenant.account_id(),
+        user_id: member.user_id,
+        session_id: member.session_id,
+        role: member.role.as_str(),
     })
     .into_response();
     no_store(&mut response);
@@ -1416,7 +1464,7 @@ async fn list_sessions(
 ) -> Result<Json<SessionsBody>, AuthHttpError> {
     require_session_cookie(&headers)?;
     let client = connect(&state.database_url).await?;
-    let owner = require_owner(
+    let member = require_member(
         &client,
         &state.hasher,
         &state.canonical_origin,
@@ -1424,7 +1472,7 @@ async fn list_sessions(
         false,
     )
     .await?;
-    let sessions = account::list_sessions(&client, &owner)
+    let sessions = account::list_sessions(&client, &member)
         .await
         .map_err(map_auth)?
         .into_iter()
@@ -1452,7 +1500,7 @@ struct RevokeOtherSessionsBody {
 
 async fn revoke_other_sessions(
     State(state): State<Arc<AuthHttpState>>,
-    OwnerMutation(owner, _slot): OwnerMutation,
+    MemberMutation(member, _slot): MemberMutation,
     ApiJson(body): ApiJson<RevokeOtherSessionsBody>,
 ) -> Result<StatusCode, AuthHttpError> {
     let mut client = connect(&state.database_url).await?;
@@ -1460,7 +1508,7 @@ async fn revoke_other_sessions(
         &client,
         &state.hasher,
         Limit::SessionsRevokeOthers,
-        Some(&owner.user_id.to_string()),
+        Some(&member.user_id.to_string()),
     )
     .await
     .map_err(|_| AuthHttpError::Unavailable)?
@@ -1472,7 +1520,7 @@ async fn revoke_other_sessions(
         &mut client,
         state.mfa_cipher.as_deref(),
         &state.hasher,
-        &owner,
+        &member,
         &body.current_password,
         body.code.as_deref(),
         body.revoke_api_keys,
@@ -1495,11 +1543,11 @@ struct ChangePasswordBody {
 
 async fn change_password(
     State(state): State<Arc<AuthHttpState>>,
-    OwnerMutation(owner, _slot): OwnerMutation,
+    MemberMutation(member, _slot): MemberMutation,
     ApiJson(body): ApiJson<ChangePasswordBody>,
 ) -> Result<Response, AuthHttpError> {
     let mut client = connect(&state.database_url).await?;
-    let subject = owner.user_id.to_string();
+    let subject = member.user_id.to_string();
     if !abuse_limits::consume(
         &client,
         &state.hasher,
@@ -1516,7 +1564,7 @@ async fn change_password(
         &mut client,
         state.mfa_cipher.as_deref(),
         &state.hasher,
-        &owner,
+        &member,
         &body.current_password,
         &body.new_password,
         body.code.as_deref(),
@@ -1913,7 +1961,7 @@ async fn logout(
 ) -> Result<Response, AuthHttpError> {
     require_session_cookie(&headers)?;
     let client = connect(&state.database_url).await?;
-    let owner = require_owner(
+    let member = require_member(
         &client,
         &state.hasher,
         &state.canonical_origin,
@@ -1921,7 +1969,7 @@ async fn logout(
         true,
     )
     .await?;
-    auth::revoke_session(&client, &owner, owner.session_id)
+    auth::revoke_session(&client, &member, member.session_id)
         .await
         .map_err(map_auth)?;
     cleared_session_response()

@@ -88,6 +88,7 @@ impl Fixture {
             },
             user_id: observer_id,
             session_id: observer_credentials.id,
+            role: Role::Observer,
             csrf_hash,
             verification: FreshVerification::spent(),
         };
@@ -196,16 +197,26 @@ async fn membership_roles_preserve_one_owner_and_irreversible_observer_identity(
 
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; disposable role schema"]
-async fn observers_cannot_use_owner_sessions_keys_or_direct_helpers() {
+async fn observers_authenticate_but_cannot_use_owner_authority_helpers() {
     let mut f = Fixture::new().await;
-    assert!(matches!(
-        authenticate_session(&f.db, &f.hasher, &f.observer_credentials.token).await,
-        Err(AuthError::Unauthorized)
-    ));
-    assert!(matches!(
-        login(&f.db, &f.hasher, "observer@example.test", &f.password).await,
-        Err(AuthError::InvalidCredentials)
-    ));
+    // A live observer session authenticates and reports the observer role...
+    let observer_principal = authenticate_session(&f.db, &f.hasher, &f.observer_credentials.token)
+        .await
+        .unwrap();
+    assert_eq!(observer_principal.role, Role::Observer);
+    assert_eq!(
+        observer_principal.tenant.account_id(),
+        f.owner.tenant.account_id()
+    );
+    // ...and the observer signs in with its own password like the owner does.
+    let observer_session = login(&f.db, &f.hasher, "observer@example.test", &f.password)
+        .await
+        .unwrap();
+    assert!(
+        authenticate_session(&f.db, &f.hasher, &observer_session.token)
+            .await
+            .is_ok()
+    );
     let owner_key = create_api_key(
         &mut f.db,
         &f.hasher,
@@ -239,12 +250,14 @@ async fn observers_cannot_use_owner_sessions_keys_or_direct_helpers() {
             .await
             .is_err()
     );
+    // Self-service revocation is scoped to the caller's own sessions: the
+    // owner's session is not the observer's to revoke.
     assert!(
-        revoke_session(&f.db, &f.observer, f.owner.session_id)
+        !revoke_session(&f.db, &f.observer, f.owner.session_id)
             .await
-            .is_err()
+            .unwrap()
     );
-    assert!(account::list_sessions(&f.db, &f.observer).await.is_err());
+    assert!(account::list_sessions(&f.db, &f.observer).await.is_ok());
     assert!(
         account::revoke_other_sessions(
             &mut f.db,
@@ -256,8 +269,9 @@ async fn observers_cannot_use_owner_sessions_keys_or_direct_helpers() {
             true
         )
         .await
-        .is_err()
+        .is_ok()
     );
+    let rotated = Uuid::new_v4().to_string();
     assert!(
         account::change_password(
             &mut f.db,
@@ -265,12 +279,22 @@ async fn observers_cannot_use_owner_sessions_keys_or_direct_helpers() {
             &f.hasher,
             &f.observer,
             &f.password,
-            &Uuid::new_v4().to_string(),
+            &rotated,
             None
         )
         .await
-        .is_err()
+        .is_ok()
     );
+    // The rotated password signs the observer in; the old one no longer does.
+    assert!(
+        login(&f.db, &f.hasher, "observer@example.test", &rotated)
+            .await
+            .is_ok()
+    );
+    assert!(matches!(
+        login(&f.db, &f.hasher, "observer@example.test", &f.password).await,
+        Err(AuthError::InvalidCredentials)
+    ));
     assert!(mfa::status(&f.db, &f.observer).await.is_err());
     let enrollment_hasher =
         crate::enrollment::EnrollmentHasher::new(crate::test_keys::key(38)).unwrap();
@@ -375,12 +399,26 @@ async fn observer_identity_is_not_reclaimed_by_owner_registration_or_recovery() 
             .await
             .is_ok()
     );
+    // Once the pending window has fully elapsed, the unverified observer is
+    // pending-user pruning: its rows cascade away and the address is free for
+    // a later sign-up or a fresh invitation. Verified seats are never pruned.
+    assert_eq!(
+        seats::prune_expired_pending_observers(&mut f.db)
+            .await
+            .unwrap(),
+        1
+    );
+    assert!(
+        register(&mut f.db, &f.hasher, "observer@example.test", &f.password)
+            .await
+            .is_ok()
+    );
     f.finish().await;
 }
 
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; disposable role schema"]
-async fn observer_legacy_verification_reset_and_mfa_challenges_do_not_admit() {
+async fn observer_resets_and_mfa_challenges_do_not_admit_but_verification_does() {
     let mut f = Fixture::new().await;
     let reset = random_token("ztr_");
     let reset_hash = f.hasher.digest(b"password-reset-v1", &reset);
@@ -419,8 +457,13 @@ async fn observer_legacy_verification_reset_and_mfa_challenges_do_not_admit() {
         mfa::complete_login(&mut f.db, None, &f.hasher, &challenge, "000000").await,
         Err(AuthError::Unauthorized)
     ));
+    // An observer carrying stray MFA material cannot sign in at all.
+    assert!(matches!(
+        login(&f.db, &f.hasher, "observer@example.test", &f.password).await,
+        Err(AuthError::InvalidCredentials)
+    ));
     f.db.execute(
-        "UPDATE users SET email_verified_at=NULL WHERE id=$1",
+        "UPDATE users SET mfa_enabled=false,email_verified_at=NULL WHERE id=$1",
         &[&f.observer.user_id],
     )
     .await
@@ -436,11 +479,13 @@ async fn observer_legacy_verification_reset_and_mfa_challenges_do_not_admit() {
     .await
     .unwrap();
     assert!(
-        !verification_token_is_live(&f.db, &f.hasher, &token)
+        verification_token_is_live(&f.db, &f.hasher, &token)
             .await
             .unwrap()
     );
-    assert!(!verify_email(&mut f.db, &f.hasher, &token).await.unwrap());
+    // Observers verify their own address with their own password-bound code.
+    assert!(verify_email(&mut f.db, &f.hasher, &token).await.unwrap());
+    // Consumption canceled the queued mail, so nothing is left to claim.
     assert!(
         claim_verification_mail(&mut f.db, &f.hasher)
             .await
@@ -456,6 +501,11 @@ async fn observer_legacy_verification_reset_and_mfa_challenges_do_not_admit() {
         .unwrap()
         .get::<_, i64>(0),
         1
+    );
+    assert!(
+        login(&f.db, &f.hasher, "observer@example.test", &f.password)
+            .await
+            .is_ok()
     );
     assert!(
         login(&f.db, &f.hasher, "owner@example.test", &f.password)
@@ -548,14 +598,9 @@ async fn observer_http_requests_fail_closed_on_existing_owner_routes() {
         .encode(signing_key.verifying_key().to_sec1_point(false).as_bytes());
     let password_body = serde_json::json!({"current_password":f.password,"password":f.password,"new_password":Uuid::new_v4().to_string(),"code":"000000","scopes":["devices:read"],"display_name":"Synthetic gateway"}).to_string();
     for (method, path) in [
-        ("GET", "/auth/session".to_owned()),
-        ("GET", "/auth/sessions".to_owned()),
         ("GET", "/auth/api-keys".to_owned()),
         ("GET", "/auth/mfa".to_owned()),
         ("POST", "/auth/api-keys".to_owned()),
-        ("POST", "/auth/logout".to_owned()),
-        ("POST", "/auth/sessions/revoke-others".to_owned()),
-        ("POST", "/auth/password".to_owned()),
         ("POST", "/auth/mfa/enroll".to_owned()),
         ("POST", "/auth/mfa/confirm".to_owned()),
         ("POST", "/auth/mfa/disable".to_owned()),
@@ -600,6 +645,12 @@ async fn observer_http_requests_fail_closed_on_existing_owner_routes() {
             "POST",
             format!("/auth/sms-lines/{id}/activations/{id}/approve"),
         ),
+        // Seat management is owner authority: listing, inviting, canceling,
+        // and removing all refuse an observer session.
+        ("GET", "/auth/seats".to_owned()),
+        ("POST", "/auth/seats/invitations".to_owned()),
+        ("DELETE", format!("/auth/seats/invitations/{id}")),
+        ("DELETE", format!("/auth/seats/{id}")),
     ] {
         let body = if path == "/enrollment/pairings" {
             serde_json::json!({"display_name":"Synthetic gateway"}).to_string()
@@ -628,6 +679,8 @@ async fn observer_http_requests_fail_closed_on_existing_owner_routes() {
             serde_json::json!({"owner_signature_der_b64":base64::engine::general_purpose::STANDARD.encode([0_u8; 8])}).to_string()
         } else if path.starts_with("/billing/") {
             String::new()
+        } else if path == "/auth/seats/invitations" {
+            serde_json::json!({"email":"invitee@example.test"}).to_string()
         } else {
             password_body.clone()
         };

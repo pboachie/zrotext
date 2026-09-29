@@ -342,7 +342,8 @@ Keep message content out of reach of the server, and give owners control of thei
 - [x] API keys with scopes, shown once at creation
 - [x] MFA-bound SMS approval public-key registration and revocation; line activation remains an internal prerequisite ([contract](../protocol/v1/sms-line-activation-contract.md))
 - [x] Verified-email and private-operator password recovery revokes sessions, API keys and pending MFA challenges while preserving MFA; authentication only, with production vault/content recovery still pending
-- [ ] Team seats beyond one owner
+- [x] Device-status observer seats: owner-issued, single-use, hashed-token invitations; invitee self-verification and sign-in; read-only device status; irreversible seat removal
+- [ ] Remaining collaboration roles and owner-registration invitations
 
 </details>
 

@@ -642,7 +642,7 @@ async fn list_devices(
         Ok(principal) => principal,
         Err(error) => return error.into_response(),
     };
-    match enrollment::list_owner_devices(&client, &principal, query.before).await {
+    match enrollment::list_account_devices(&client, &principal, query.before).await {
         Ok(page) => Json(OwnerDevicePageResponse {
             devices: page
                 .devices
