@@ -8,17 +8,23 @@ Status is per module, and the boundaries are deliberate:
   inputs and returns the exact bytes with the SHA-256 digest of the unsigned
   envelope. It is verified byte-for-byte against the cross-client vectors the
   Rust verifier lane consumes (see below).
+- **Production-shaped: sealed submission client** (`src/sealed-client.ts`,
+  issue #537 slice B). `SealedClient.submitSealedMessage` posts one composed
+  envelope to `POST /v1/sealed/messages` as the exact raw request body, with
+  contract-pinned retries and a typed error taxonomy, exercised against an
+  in-process mock server that asserts the wire format (see below).
 - **Still test-only:** the draft-01 reader, the profile-02 manifest
   verifier/trust store, the draft-02 envelope preparation helper, and the
   message-plane client described in the sections below.
-- **Does not exist yet:** an HTTP client for `/v1/sealed/messages`
-  (`SealedMessagePlaneClient` is a test-only contract exercise, not the
-  production client), inbound kind-02 composition in the production module,
-  and any npm publication. This package is not published anywhere.
+- **Does not exist yet:** inbound kind-02 composition in the production
+  module, and any npm publication. This package is not published anywhere.
 
 The profile-02 byte format itself remains an unaccepted candidate and the
 server's sealed route stays disabled by default; nothing in this SDK enables
-a server route, and composing an envelope is never carrier submission.
+a server route, and composing an envelope is never carrier submission. An
+operator can mount the admission route with `SEALED_ADMISSION_ENABLED=true`,
+so the production client is only usable against such an operator-enabled
+deployment; against a default deployment every submission fails, by design.
 
 ## Production envelope composition (issue #537 slice A)
 
@@ -69,7 +75,58 @@ equality and the parser-mirror walk are the local evidence.
 
 `SEALED_CONTENT_TYPE` (`application/vnd.zrotext.sealed.v1`) is exported for
 callers that transport the bytes themselves. This module contains no network
-client, no send path and no server dependency; slice B is the HTTP client.
+client, no send path and no server dependency; the HTTP client is
+`src/sealed-client.ts` (slice B).
+
+## Production sealed submission client (issue #537 slice B)
+
+`new SealedClient({ baseUrl, apiToken, timeoutMs?, retry? })` submits one
+composed envelope to `POST /v1/sealed/messages`. The constructor refuses
+anything but a bare HTTPS origin (no path, query, fragment or embedded
+credentials) and a printable nonempty API token. The token is sent only in the
+`Authorization: Bearer` header: it never enters a URL, a query string or any
+error output.
+
+`submitSealedMessage(envelope, unsignedDigest)` sends the exact bytes from
+`composeSealedOutboundEnvelope` as the entire request body — never
+JSON-encoded, never base64, never anything alongside — with `Content-Type:
+application/vnd.zrotext.sealed.v1` byte-exact and **no `idempotency-key`
+header**: the Q6 identity is the unsigned digest carried inside the bytes, and
+the server refuses a caller-supplied key. The digest is verified locally
+against the unsigned envelope before anything leaves, so a mismatched pair
+whose reported identity would lie is refused with no request. A `202` returns
+`{ messageId, created }`; `created: false` is the exact-digest replay no-op.
+
+Retry semantics: only network failures that never got a response, `503`
+(`unavailable`/`billing_pending`) and `429 rate_limited` are retried, bounded
+by `maxAttempts` with the server's `Retry-After` honored up to the
+`maxDelayMs` ceiling, and every retry resends the very same `Uint8Array`
+object. All 4xx admission failures — including `queue_full` and
+`quota_exceeded`, which immediate retries cannot help and only worsen — are
+terminal, as is a per-attempt timeout: the outcome is then unknown, so the
+client surfaces it instead of auto-retrying and lets the caller decide
+whether to replay the same digest identity. Exhausted retries throw the last
+typed error. `409 idempotency_conflict` exposes both the sent digest and the
+server code, and the client never recomposes or resends after it.
+
+Failures are typed `SealedClientError` values (guarded by
+`isSealedClientError`) mirroring the server's codes — `invalid_request`,
+`unauthorized`, `forbidden`, `idempotency_conflict`,
+`unsupported_media_type`, `rate_limited`, `queue_full`, `quota_exceeded`,
+`billing_pending`, `unavailable` — plus `network`, `timeout` and the
+fail-closed `unexpected_response` for off-taxonomy statuses, unknown codes
+and malformed bodies: never a crash, never a silent success.
+
+Verification: `test/sealed-client.test.mjs` runs the client against an
+in-process `node:http` server that asserts the exact wire format (byte-exact
+content type with no parameters, exactly one such header, no idempotency
+header in any casing, raw body byte identity, Bearer-only authentication, no
+token in URLs or error output) and scripts every response — replays, each
+terminal code, Retry-After handling and bounding, retry exhaustion, socket
+destruction, timeouts and malformed bodies. No live server is involved, and
+none can be by default: the real route is mounted only behind the operator
+flag, acceptance remains durable storage and queueing, and it is never
+carrier evidence.
 
 ## Test-only sealed draft-01 TypeScript reader
 

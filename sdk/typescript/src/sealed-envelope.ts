@@ -25,8 +25,9 @@
  * bytes and the digest — never body plaintext or key material.
  *
  * This module has no network client, no send path and no server dependency;
- * slice B adds the HTTP client. The server route stays disabled by default,
- * and composing an envelope is never carrier submission.
+ * the HTTP client is `sealed-client.ts` (issue #537 slice B). The server
+ * route stays disabled by default, and composing an envelope is never
+ * carrier submission.
  */
 import { keyId } from "./draft01.js";
 import type { Manifest02 } from "./draft02-manifest.js";
