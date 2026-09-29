@@ -44,6 +44,8 @@ use uuid::Uuid;
 use zrotext_delivery_store::{DeliveryStore, GrantRecord, RadioEvent, SessionRecord, StoreError};
 use zrotext_domain::{Evidence, MessageState};
 
+mod mms_spike_policy;
+pub use mms_spike_policy::MmsSpikePolicy;
 mod preconditions;
 mod stream_diagnostic;
 
@@ -247,6 +249,9 @@ pub struct DeviceSocketState {
     pub line_opt_out_enabled: bool,
     /// Dormant SMS line activation frames; off unless explicitly configured.
     pub sms_line_activation_enabled: bool,
+    /// Founder gating for the outbound MMS spike grant; disabled unless the
+    /// one device and recipient allowlist are configured.
+    pub mms_spike_policy: Arc<mms_spike_policy::MmsSpikePolicy>,
     pub draining: Arc<AtomicBool>,
     pub drain_notify: Arc<Notify>,
 }
@@ -454,6 +459,19 @@ enum ServerFrame {
         expires_at_ms: i64,
         recipient_e164: String,
         body: String,
+    },
+    /// Founder-gated one-attempt MMS spike grant (#438). Issued only when the
+    /// server is configured with the single gateway device and the controlled
+    /// recipient, and the recipient has not stopped. Default-off.
+    #[serde(rename = "mms_spike_grant")]
+    MmsSpikeGrant {
+        v: u8,
+        grant_id: Uuid,
+        device_id: Uuid,
+        connection_epoch: i64,
+        recipient_digest: String,
+        expires_at_ms: i64,
+        recipient_e164: String,
     },
     #[serde(rename = "radio_event_ack")]
     RadioEventAck {
@@ -983,6 +1001,15 @@ async fn run_socket(
         },
     )
     .await
+    {
+        release_socket_session(&state, session).await;
+        return;
+    }
+    // The MMS spike grant rides immediately behind the session frame so the
+    // phone's armed window is consumed deterministically; at most one grant
+    // per connection, and a send failure ends the session as usual.
+    if let Some(frame) = mms_spike_grant_if_due(session, &state).await
+        && !send_frame(&mut socket, frame).await
     {
         release_socket_session(&state, session).await;
         return;
@@ -1661,6 +1688,48 @@ async fn poll_synthetic_grant(
         return Err(StoreError::InvalidInput);
     }
     Ok(Some(grant_frame(grant, recipient, body)))
+}
+
+/// Build the founder-gated MMS spike grant for this session, if one is due.
+/// Returns `None` unless the feature is on, this is the named device, and the
+/// first allowlisted recipient passes the STOP check: no active suppression
+/// and no active owner hold for the account. Any doubt (unknown recipient
+/// state, storage error) refuses, exactly like the phone-side preflight.
+async fn mms_spike_grant_if_due(
+    session: DeviceSession,
+    state: &DeviceSocketState,
+) -> Option<ServerFrame> {
+    if state.mms_spike_policy.gated_device() != Some(session.device_id) {
+        return None;
+    }
+    let client = runtime_db::connect_device(&state.database_url).await.ok()?;
+    for recipient in state.mms_spike_policy.recipients() {
+        let stopped: Option<bool> = client
+            .query_one(
+                "SELECT EXISTS(SELECT 1 FROM recipient_suppressions \
+                 WHERE account_id=$1 AND recipient_e164=$2 AND active) \
+                 OR EXISTS(SELECT 1 FROM owner_recipient_holds \
+                 WHERE account_id=$1 AND recipient_e164=$2 AND released_at IS NULL)",
+                &[&session.account_id, &recipient],
+            )
+            .await
+            .ok()
+            .map(|row| row.get::<_, bool>(0));
+        if stopped != Some(false) {
+            continue;
+        }
+        let digest = Sha256::digest(recipient.as_bytes());
+        return Some(ServerFrame::MmsSpikeGrant {
+            v: 1,
+            grant_id: Uuid::new_v4(),
+            device_id: session.device_id,
+            connection_epoch: session.connection_epoch,
+            recipient_digest: URL_SAFE_NO_PAD.encode(digest),
+            expires_at_ms: now_ms() + mms_spike_policy::MMS_SPIKE_GRANT_TTL_MS,
+            recipient_e164: recipient.to_string(),
+        });
+    }
+    None
 }
 
 fn now_ms() -> i64 {

@@ -253,11 +253,13 @@ async fn sms_line_activation_frames_are_gated_bound_to_the_connection_and_resent
         inbound_pilot_enabled: false,
         line_opt_out_enabled: false,
         sms_line_activation_enabled: true,
+        mms_spike_policy: std::sync::Arc::new(super::mms_spike_policy::MmsSpikePolicy::disabled()),
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),
     };
     let disabled = DeviceSocketState {
         sms_line_activation_enabled: false,
+        mms_spike_policy: std::sync::Arc::new(super::mms_spike_policy::MmsSpikePolicy::disabled()),
         ..enabled.clone()
     };
     let serve = |state: DeviceSocketState| async move {

@@ -13,6 +13,7 @@
   {"type":"session","v":1,"connection_epoch":7,"heartbeat_seconds":30},
   {"type":"heartbeat_ack","v":1,"connection_epoch":7},
   {"type":"synthetic_grant","v":1,"message_id":"00000000-0000-4000-8000-000000000001","attempt_id":"00000000-0000-4000-8000-000000000001","device_id":"00000000-0000-4000-8000-000000000001","generation":1,"connection_epoch":7,"deployment_epoch":1,"recipient_digest":"AQ","expires_at_ms":1700000000000,"recipient_e164":"+15555550101","body":"ZROtext synthetic test: case_1"},
+  {"type":"mms_spike_grant","v":1,"grant_id":"00000000-0000-4000-8000-000000000001","device_id":"00000000-0000-4000-8000-000000000001","connection_epoch":7,"recipient_digest":"AQ","expires_at_ms":1700000000000,"recipient_e164":"+15555550101"},
   {"type":"radio_event_ack","v":1,"event_id":"00000000-0000-4000-8000-000000000001","state":"submitting","submit_permitted":true},
   {"type":"inbound_event_ack","v":1,"event_id":"00000000-0000-4000-8000-000000000001","created":true,"queued_deliveries":0},
   {"type":"line_opt_out_ack","v":1,"event_id":"00000000-0000-4000-8000-000000000001","created":true},

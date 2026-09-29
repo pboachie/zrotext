@@ -51,6 +51,32 @@ locally approved recipient before any radio call. It persists the attempt ID
 and one-use radio start before calling `SmsManager`. It never retries a radio call
 for the same attempt after an ambiguous return or crash.
 
+## MMS spike grant
+
+Separately from synthetic SMS, the hub can issue the founder-gated
+one-attempt MMS spike grant for [issue #438](https://github.com/pboachie/zrotext/issues/438).
+The hub sends it only when `MMS_SPIKE_GRANT_ENABLED=true`, the session's
+device is the one named in `MMS_SPIKE_GRANT_DEVICE`, and the recipient is on
+`MMS_SPIKE_GRANT_RECIPIENTS`; all three are founder-held deployment settings
+and the default is off. At most one grant is sent per connection, directly
+behind the `session` frame, so the phone's five-minute arm window is consumed
+deterministically:
+
+```json
+{"v":1,"type":"mms_spike_grant","grant_id":"UUID","device_id":"UUID","connection_epoch":1,"recipient_digest":"BASE64URL_NO_PAD_SHA256","expires_at_ms":0,"recipient_e164":"+15555550101"}
+```
+
+The recipient is chosen as the first allowlisted entry that passes the STOP
+check: no active `recipient_suppressions` row and no unreleased
+`owner_recipient_holds` row for the account and recipient. A storage error or
+unknown state withholds the grant (fail closed). `expires_at_ms` is 30
+seconds ahead, within the phone validator's 35-second bound. There is no
+queued message, journal row or retry: the grant authorizes exactly the one
+debug-build radio attempt whose local preflight already passed, and the phone
+journals the outcome like any SMS attempt. The phone still enforces its own
+build allowlist and confirmed-recipient checks, so the two sides must agree;
+see `docs/ANDROID-TESTING.md`.
+
 ## Evidence and acknowledgement
 
 The phone sends one durable event at a time and keeps its `event_id` until the

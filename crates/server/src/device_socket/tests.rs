@@ -109,6 +109,7 @@ async fn handshake_closes_with_retry_code_when_database_is_down() {
         inbound_pilot_enabled: false,
         line_opt_out_enabled: false,
         sms_line_activation_enabled: false,
+        mms_spike_policy: std::sync::Arc::new(super::mms_spike_policy::MmsSpikePolicy::disabled()),
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),
     };
@@ -167,7 +168,7 @@ fn stream_schema_examples_match_serde_frames() {
         "../../../../protocol/v1/device-stream.examples.json"
     ))
     .unwrap();
-    assert_eq!(examples.len(), 20);
+    assert_eq!(examples.len(), 21);
     for frame in &examples[..10] {
         let parsed: ClientFrame = serde_json::from_value(frame.clone()).unwrap();
         assert_eq!(frame["v"], 1);
@@ -215,6 +216,15 @@ fn stream_schema_examples_match_serde_frames() {
             expires_at_ms: 1_700_000_000_000,
             recipient_e164: "+15555550101".into(),
             body: "ZROtext synthetic test: case_1".into(),
+        },
+        ServerFrame::MmsSpikeGrant {
+            v: 1,
+            grant_id: id,
+            device_id: id,
+            connection_epoch: 7,
+            recipient_digest: "AQ".into(),
+            expires_at_ms: 1_700_000_000_000,
+            recipient_e164: "+15555550101".into(),
         },
         ServerFrame::RadioEventAck {
             v: 1,
@@ -267,6 +277,7 @@ fn stream_schema_examples_match_serde_frames() {
             ServerFrame::Session { .. } => "session",
             ServerFrame::HeartbeatAck { .. } => "heartbeat_ack",
             ServerFrame::SyntheticGrant { .. } => "synthetic_grant",
+            ServerFrame::MmsSpikeGrant { .. } => "mms_spike_grant",
             ServerFrame::RadioEventAck { .. } => "radio_event_ack",
             ServerFrame::InboundEventAck { .. } => "inbound_event_ack",
             ServerFrame::LineOptOutAck { .. } => "line_opt_out_ack",
@@ -498,6 +509,7 @@ async fn lost_intent_ack_across_hubs_needs_no_radio_proof_before_regrant() {
         inbound_pilot_enabled: false,
         line_opt_out_enabled: false,
         sms_line_activation_enabled: false,
+        mms_spike_policy: std::sync::Arc::new(super::mms_spike_policy::MmsSpikePolicy::disabled()),
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),
     };
@@ -739,6 +751,7 @@ async fn writer_claim_replay_epoch_and_revocation() {
         inbound_pilot_enabled: false,
         line_opt_out_enabled: false,
         sms_line_activation_enabled: false,
+        mms_spike_policy: std::sync::Arc::new(super::mms_spike_policy::MmsSpikePolicy::disabled()),
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),
     };

@@ -77,9 +77,14 @@ of these must pass:
    `recipient_digest`, `expires_at_ms` and `recipient_e164`, and match the
    authenticated device and connection epoch, the confirmed and allowlisted
    recipient, and an expiry at most 35 seconds ahead. An unarmed or invalid
-   grant fails the session. **No server issues this frame yet**, and it is not
-   part of `protocol/v1`; until a server issuer exists, the spike is armed but
-   never sends.
+   grant fails the session. The server issues the frame (spec:
+   `protocol/v1/device-stream.md`) only when the founder has enabled it with
+   `MMS_SPIKE_GRANT_ENABLED=true`, named the one gateway device in
+   `MMS_SPIKE_GRANT_DEVICE`, and allowlisted the recipient in
+   `MMS_SPIKE_GRANT_RECIPIENTS`; it arrives once per connection, directly
+   behind the `session` frame, and is withheld when the recipient has an
+   active suppression or owner hold on the server. With the feature off (the
+   default) no frame is ever sent, so the spike stays armed-but-silent.
 5. **STOP suppression.** The keyed `sender-v1` token (the Android Keystore
    HMAC used by the SMS path) is looked up in the local suppression list, and a
    lookup failure counts as suppressed. The lookup is repeated under the local

@@ -87,6 +87,7 @@ struct Config {
     mfa_recovery_only: bool,
     mfa_enrollment_enabled: bool,
     sms_line_activation_enabled: bool,
+    mms_spike_policy: Arc<device_socket::MmsSpikePolicy>,
     sealed_admission_enabled: bool,
     retention: RetentionPolicy,
     draining: Arc<AtomicBool>,
@@ -267,6 +268,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .ok()
             .as_deref(),
     )?);
+    // Founder gating for the outbound MMS spike (#438): default-off, and a
+    // malformed setting refuses startup rather than quietly arming a send.
+    let mms_spike_policy = Arc::new(device_socket::MmsSpikePolicy::parse(
+        env::var("MMS_SPIKE_GRANT_ENABLED").ok().as_deref(),
+        env::var("MMS_SPIKE_GRANT_DEVICE").ok().as_deref(),
+        env::var("MMS_SPIKE_GRANT_RECIPIENTS").ok().as_deref(),
+    )?);
     let dispatch_runtime_enabled = match required("DISPATCH_ENABLED")?.as_str() {
         "false" => false,
         "true" if alpha_policy.enabled() => true,
@@ -337,6 +345,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         mfa_recovery_only,
         mfa_enrollment_enabled,
         sms_line_activation_enabled,
+        mms_spike_policy,
         sealed_admission_enabled,
         retention: RetentionPolicy::from_env()?,
         draining: Arc::new(AtomicBool::new(false)),
@@ -722,6 +731,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             inbound_pilot_enabled,
             line_opt_out_enabled,
             sms_line_activation_enabled: config.sms_line_activation_enabled,
+            mms_spike_policy: config.mms_spike_policy.clone(),
             draining: config.draining.clone(),
             drain_notify: config.drain_notify.clone(),
         };
@@ -1475,6 +1485,7 @@ mod tests {
             mfa_recovery_only: false,
             mfa_enrollment_enabled: false,
             sms_line_activation_enabled: false,
+            mms_spike_policy: Arc::new(device_socket::MmsSpikePolicy::disabled()),
             sealed_admission_enabled: false,
             retention: RetentionPolicy::default(),
             draining: Arc::new(AtomicBool::new(false)),
@@ -1641,6 +1652,7 @@ mod tests {
             mfa_recovery_only: false,
             mfa_enrollment_enabled: false,
             sms_line_activation_enabled: false,
+            mms_spike_policy: Arc::new(device_socket::MmsSpikePolicy::disabled()),
             sealed_admission_enabled: false,
             retention: RetentionPolicy::default(),
             draining: Arc::new(AtomicBool::new(false)),
