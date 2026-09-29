@@ -35,6 +35,9 @@ class MmsSpikeReleaseBoundaryTest {
         val debug = File(src, "debug/AndroidManifest.xml").readText()
         assertTrue(debug.contains("MmsSpikeReceiver"))
         assertTrue(debug.contains("mms-spike-files"))
+        // The isolated preparation probe must stay component-free (android_preparation_probe.py).
+        val probe = File(src, "preparationProbe/DebugAndroidManifest.xml").readText()
+        assertFalse(probe.contains("<receiver") || probe.contains("<provider"))
     }
 
     @Test fun releaseStubsRejectGrantsAndDrawNoSection() {

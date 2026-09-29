@@ -107,6 +107,8 @@ android {
     }
     if (isolatedPreparationProbe) {
         sourceSets.getByName("main").manifest.srcFile("src/preparationProbe/AndroidManifest.xml")
+        // The probe APK must declare no components, so it skips the debug MMS spike manifest.
+        sourceSets.getByName("debug").manifest.srcFile("src/preparationProbe/DebugAndroidManifest.xml")
         sourceSets.getByName("androidTest") {
             manifest.srcFile("src/preparationProbeTest/AndroidManifest.xml")
             java.setSrcDirs(listOf("src/preparationProbeTest/java", layout.buildDirectory.dir("generated/preparationProbeFixtures")))
