@@ -49,7 +49,7 @@ object AuthenticatedGatewayStatus {
 /** Authenticated heartbeat and one manually armed, private synthetic-alpha attempt. */
 class AuthenticatedGatewayService : Service() {
     private val scheduler = Executors.newSingleThreadScheduledExecutor()
-    private val client = OkHttpClient.Builder().pingInterval(30, TimeUnit.SECONDS).build()
+    private val client = streamClient()
     private var socket: WebSocket? = null
     private var heartbeat: ScheduledFuture<*>? = null
     private var watchdog: ScheduledFuture<*>? = null
@@ -1104,6 +1104,13 @@ class AuthenticatedGatewayService : Service() {
         const val EXTRA_INBOUND_UPLOAD = "inbound_upload"
         const val EXTRA_LINE_OPT_OUT_UPLOAD = "line_opt_out_upload"
         const val EXTRA_HEARTBEAT_TIMING_TRACE = "heartbeat_timing_trace"
+
+        /**
+         * Stream liveness is the heartbeat and its 90 s ack watchdog alone; the hub
+         * ignores ping/pong. A protocol ping would only duplicate the heartbeat's
+         * frames and add a second, redundant failure path.
+         */
+        fun streamClient(): OkHttpClient = OkHttpClient.Builder().build()
         private const val CHANNEL = "authenticated_gateway"
         private const val NOTIFICATION_ID = 1002
         private const val EVIDENCE_REJECTED_CLOSE = 4409
