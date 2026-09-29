@@ -2115,6 +2115,17 @@ async fn reconciled_test_subscription_controls_metered_reservations() {
     db.execute("UPDATE billing_reconciliations SET state='needs_review',failed_attempts=10,last_failure_class='authorization' WHERE stripe_subscription_id='sub_entitlement2'", &[]).await.unwrap();
     db.execute("INSERT INTO billing_events(stripe_event_id,event_type,account_id,body_sha256,disposition) VALUES('evt_ConfigRisk1','charge.refunded',$1,$2,'queued')", &[&account, &vec![0u8; 32]]).await.unwrap();
     db.execute("INSERT INTO billing_risk_events(stripe_event_id,stripe_charge_id,risk_kind,state,account_id,failed_attempts,last_failure_class) VALUES('evt_ConfigRisk1','ch_ConfigRisk1','refund','needs_review',$1,10,'authorization')", &[&account]).await.unwrap();
+    // A PaymentIntent-only review row can be requeued. A pointerless review
+    // row from ingestion must stay in review (migration 023), and must not
+    // make a config change fail startup.
+    for (event, kind) in [
+        ("evt_ConfigRiskPi1", "refund.created"),
+        ("evt_ConfigRiskNone1", "charge.dispute.created"),
+    ] {
+        db.execute("INSERT INTO billing_events(stripe_event_id,event_type,account_id,body_sha256,disposition) VALUES($1,$2,$3,$4,'queued')", &[&event, &kind, &account, &vec![0u8; 32]]).await.unwrap();
+    }
+    db.execute("INSERT INTO billing_risk_events(stripe_event_id,stripe_payment_intent_id,risk_kind,state,account_id,failed_attempts,last_failure_class) VALUES('evt_ConfigRiskPi1','pi_ConfigRiskPi1','refund','needs_review',$1,10,'authorization')", &[&account]).await.unwrap();
+    db.execute("INSERT INTO billing_risk_events(stripe_event_id,risk_kind,state,account_id) VALUES('evt_ConfigRiskNone1','dispute','needs_review',$1)", &[&account]).await.unwrap();
     let before = db.query("SELECT stripe_subscription_id,dirty_generation,processed_generation FROM billing_reconciliations WHERE account_id=$1 ORDER BY stripe_subscription_id", &[&account]).await.unwrap();
     reset_test_quotas_on_start(&scoped_url, true, false, Some(&[1; 32]))
         .await
@@ -2167,6 +2178,18 @@ async fn reconciled_test_subscription_controls_metered_reservations() {
     assert_eq!(risk_review.get::<_, String>(0), "queued");
     assert_eq!(risk_review.get::<_, i32>(1), 0);
     assert_eq!(risk_review.get::<_, Option<String>>(2), None);
+    let pi_review = db.query_one("SELECT state,failed_attempts,last_failure_class FROM billing_risk_events WHERE stripe_event_id='evt_ConfigRiskPi1'", &[]).await.unwrap();
+    assert_eq!(pi_review.get::<_, String>(0), "queued");
+    assert_eq!(pi_review.get::<_, i32>(1), 0);
+    assert_eq!(pi_review.get::<_, Option<String>>(2), None);
+    let pointerless = db
+        .query_one(
+            "SELECT state FROM billing_risk_events WHERE stripe_event_id='evt_ConfigRiskNone1'",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(pointerless.get::<_, String>(0), "needs_review");
     let active_review = db.query_one("SELECT state,failed_attempts,last_failure_class FROM billing_reconciliations WHERE stripe_subscription_id='sub_entitlement1'", &[]).await.unwrap();
     assert_eq!(active_review.get::<_, String>(0), "queued");
     assert_eq!(active_review.get::<_, i32>(1), 0);

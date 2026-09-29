@@ -764,8 +764,10 @@ pub async fn reset_test_quotas_on_start(
             "UPDATE billing_reconciliations r SET dirty_generation=r.dirty_generation+1,state='queued',failed_attempts=0,last_failure_class=NULL,next_attempt_at=now(),updated_at=now() WHERE NOT EXISTS (SELECT 1 FROM billing_subscriptions s WHERE s.stripe_subscription_id=r.stripe_subscription_id AND s.stripe_status IN ('canceled','incomplete_expired','provider_deleted'))",
             &[],
         ).await?;
+        // Migration 023 keeps pointerless risk events in needs_review, as in
+        // the worker's outage sweep: requeueing one would fail startup.
         tx.execute(
-            "UPDATE billing_risk_events SET state='queued',failed_attempts=0,last_failure_class=NULL,next_attempt_at=now() WHERE state='needs_review'",
+            "UPDATE billing_risk_events SET state='queued',failed_attempts=0,last_failure_class=NULL,next_attempt_at=now() WHERE state='needs_review' AND (stripe_charge_id IS NOT NULL OR stripe_payment_intent_id IS NOT NULL)",
             &[],
         ).await?;
     }
