@@ -2,11 +2,30 @@ name: Sealed cross-client tests
 
 on:
   pull_request:
+    # Not a required check. Main runs it for every push; a pull request runs it
+    # only when a file the cross-client build or tests read changes.
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'deploy/compose/migrations/**'
+      - 'web/owner/**'
+      - 'protocol/**'
+      - 'sdk/typescript/**'
+      - 'android/**'
+      - '.github/workflows/sealed-interop.yml'
   push:
     branches: [main]
 
 permissions:
   contents: read
+
+# A new push to a pull request cancels that pull request's older run. Every
+# push to main gets its own group, so main runs are never canceled or queued.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   sealed-interop:
@@ -47,6 +66,12 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
+      - name: Cache Gradle distribution and dependencies
+        # Open-source GitHub Actions cache provider; only main writes it.
+        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        with:
+          cache-provider: basic
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
       - uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
       - name: Install existing toolchain versions
         run: |
