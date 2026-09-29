@@ -1007,7 +1007,7 @@ async fn invitation_creation_requires_owner_step_up() {
             Some(&cipher),
             &f.hasher,
             &f.owner,
-            "not-the-owner-password",
+            &format!("wrong-{}", Uuid::new_v4()),
             None,
             "observer@example.test",
         )
@@ -1066,7 +1066,7 @@ async fn invitation_creation_requires_owner_step_up() {
             Some(&cipher),
             &f.hasher,
             &f.owner,
-            "not-the-owner-password",
+            &format!("wrong-{}", Uuid::new_v4()),
             Some(&recovery.codes[0]),
             "second@example.test",
         )
@@ -1355,7 +1355,7 @@ async fn invitation_route_demands_password_and_mfa_and_charges_budgets() {
         &app,
         &f,
         "observer@example.test",
-        "wrong-owner-password",
+        &format!("wrong-{}", Uuid::new_v4()),
         None,
     )
     .await;
