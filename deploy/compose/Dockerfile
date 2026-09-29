@@ -1,7 +1,25 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-FROM rust:1.98.1-bookworm@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e AS build
+# The Rust image tag must equal the channel in rust-toolchain.toml. The build
+# stage checks this, and rustup auto-install is off, so a mismatch fails the
+# build instead of downloading a second toolchain. Move both together.
+FROM rust:1.97.1-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97 AS rust-base
+ENV RUSTUP_AUTO_INSTALL=0
+
+# cargo-about is built from its pinned crates.io release with its own lockfile.
+# This stage does not depend on the ZROtext sources, so a source change reuses
+# its cached layer, and BuildKit builds it in parallel with the server.
+FROM rust-base AS cargo-about
+RUN cargo install --locked --features cli --version 0.9.2 --root /opt/cargo-about cargo-about && \
+    rm -rf "$CARGO_HOME/registry" "$CARGO_HOME/git"
+
+FROM rust-base AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+RUN channel="$(grep '^channel = ' rust-toolchain.toml | cut -d '"' -f 2)" && \
+    if [ "$channel" != "$RUST_VERSION" ]; then \
+      echo "rust-toolchain.toml pins $channel but the build image has $RUST_VERSION" >&2; exit 1; \
+    fi && \
+    cargo --version
 COPY about.toml about.hbs ./
 COPY crates ./crates
 COPY web/owner ./web/owner
@@ -16,8 +34,8 @@ ENV GIT_COMMIT=${GIT_COMMIT} \
     DEVICE_STREAM_SCHEMA_SHA256=${DEVICE_STREAM_SCHEMA_SHA256} \
     MIGRATION_LAST=${MIGRATION_LAST}
 RUN cargo build --locked --release -p zrotext-server -p zrotext-migrator
-RUN cargo install --locked --features cli --version 0.9.2 cargo-about && \
-    mkdir -p /tmp/zrotext-notices && \
+COPY --from=cargo-about /opt/cargo-about/bin/cargo-about /usr/local/cargo/bin/cargo-about
+RUN mkdir -p /tmp/zrotext-notices && \
     cargo about generate --locked --fail --manifest-path crates/server/Cargo.toml \
       -o /tmp/zrotext-notices/SERVER about.hbs && \
     cargo about generate --locked --fail --manifest-path crates/migrator/Cargo.toml \

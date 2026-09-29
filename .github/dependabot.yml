@@ -16,3 +16,11 @@ updates:
     directory: /deploy/compose
     schedule:
       interval: weekly
+    ignore:
+      # The rust build image version must equal rust-toolchain.toml, so it
+      # moves only in a toolchain bump PR (the image build fails otherwise).
+      - dependency-name: rust
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
+          - version-update:semver-patch
