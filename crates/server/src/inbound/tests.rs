@@ -1609,6 +1609,11 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
     let disabled_event = InboundEvent {
         event_id: Uuid::new_v4(),
         sequence: 2004,
+        // The disable fence keeps blocking consent transitions, which still
+        // queue on the account row lock before touching suppression. A
+        // capture event no longer takes that lock, so it must not be the one
+        // proving this fence.
+        classification: Classification::OptOut,
         signature_der: &[],
         ..unsigned
     };
@@ -2900,6 +2905,238 @@ async fn consent_changes_are_not_deferred_by_a_spent_storage_budget() {
         };
         assert_eq!(row.get::<_, i32>(1), expected);
     }
+    db.batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+/// Only consent transitions queue on the account row lock. A capture ingest
+/// must not wait behind an admission transaction, an admission must not wait
+/// behind an open capture ingest, and a STOP must still wait exactly as
+/// before (#497).
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn account_lock_serializes_only_consent_ingest_with_admission() {
+    let url = std::env::var("ZT_INBOUND_TEST_DATABASE_URL")
+        .expect("set ZT_INBOUND_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let (mut db, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let schema = format!("inbound_lock_scope_{}", Uuid::new_v4().simple());
+    db.batch_execute(&format!(
+        "CREATE SCHEMA {schema}; SET search_path TO {schema}"
+    ))
+    .await
+    .unwrap();
+    for migration in [
+        include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
+        include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+        include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
+        include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
+        include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+        include_str!("../../../../deploy/compose/migrations/006_usage_metering.sql"),
+        include_str!("../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"),
+        include_str!("../../../../deploy/compose/migrations/008_stripe_billing_foundation.sql"),
+        include_str!("../../../../deploy/compose/migrations/009_webhook_manual_replay.sql"),
+        include_str!("../../../../deploy/compose/migrations/010_billing_test_entitlement.sql"),
+        include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
+        include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
+        include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
+        include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
+        include_str!("../../../../deploy/compose/migrations/015_webhook_kek_commitments.sql"),
+        include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+        include_str!("../../../../deploy/compose/migrations/029_webhook_dispatch_fairness.sql"),
+        include_str!("../../../../deploy/compose/migrations/030_terminal_dispatch_jobs.sql"),
+        include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
+        include_str!("../../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
+        include_str!("../../../../deploy/compose/migrations/038_owner_opt_out_hold_guards.sql"),
+        include_str!("../../../../deploy/compose/migrations/039_inbound_device_clock_offset.sql"),
+    ] {
+        db.batch_execute(migration).await.unwrap();
+    }
+    let account = Uuid::new_v4();
+    db.execute("INSERT INTO accounts(id) VALUES($1)", &[&account])
+        .await
+        .unwrap();
+    db.execute("INSERT INTO sites(site_id) VALUES('test')", &[])
+        .await
+        .unwrap();
+    let fixture = seed_budget_device(&db, account, "+15550000003").await;
+
+    // An admission-shaped transaction holds the account row lock. A capture
+    // event must still complete: nothing it writes conflicts with that lock,
+    // and its account fence stays the key-lookup snapshot check.
+    let (mut holder_db, holder_connection) =
+        tokio_postgres::connect(&url, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+    tokio::spawn(async move { holder_connection.await.unwrap() });
+    holder_db
+        .batch_execute(&format!("SET search_path TO {schema}"))
+        .await
+        .unwrap();
+    let holder = holder_db.transaction().await.unwrap();
+    holder
+        .query_one(
+            "SELECT id FROM accounts WHERE id=$1 FOR NO KEY UPDATE",
+            &[&account],
+        )
+        .await
+        .unwrap();
+    let capture = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        ingest_budget_event(&mut db, account, &fixture, 1, Classification::CapturedLocal),
+    )
+    .await
+    .expect("capture ingest must not wait behind the admission account lock")
+    .unwrap();
+    assert!(capture.created);
+    holder.rollback().await.unwrap();
+
+    // Park a capture ingest inside its transaction by holding its source
+    // attempt row, then prove a real admission for the same account
+    // completes while that ingest is open.
+    let (mut park_db, park_connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move { park_connection.await.unwrap() });
+    park_db
+        .batch_execute(&format!("SET search_path TO {schema}"))
+        .await
+        .unwrap();
+    let park = park_db.transaction().await.unwrap();
+    park.query_one(
+        "SELECT id FROM message_attempts WHERE id=$1 FOR UPDATE",
+        &[&fixture.attempt],
+    )
+    .await
+    .unwrap();
+    let ingest_pid: i32 = db
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await
+        .unwrap()
+        .get(0);
+    let (parked, ()) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        tokio::join!(
+            ingest_budget_event(&mut db, account, &fixture, 2, Classification::CapturedLocal),
+            async {
+                // The only row lock this ingest can wait on is the parked
+                // source lookup.
+                loop {
+                    let waiting: bool = park
+                        .query_one(
+                            "SELECT cardinality(pg_blocking_pids($1))>0",
+                            &[&ingest_pid],
+                        )
+                        .await
+                        .unwrap()
+                        .get(0);
+                    if waiting {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+                let (mut accept_db, accept_connection) =
+                    tokio_postgres::connect(&url, tokio_postgres::NoTls)
+                        .await
+                        .unwrap();
+                tokio::spawn(async move { accept_connection.await.unwrap() });
+                accept_db
+                    .batch_execute(&format!("SET search_path TO {schema}"))
+                    .await
+                    .unwrap();
+                let mut store = zrotext_delivery_store::DeliveryStore::new(&mut accept_db);
+                let accepted = store
+                    .accept(zrotext_delivery_store::NewMessage {
+                        account_id: account,
+                        client_message_id: Uuid::new_v4(),
+                        device_id: fixture.device,
+                        idempotency_key: "capture-race",
+                        recipient_e164: "+15550000004",
+                        synthetic_payload: b"synthetic",
+                        expires_at_ms: SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap()
+                            .as_millis() as i64
+                            + 60_000,
+                    })
+                    .await
+                    .unwrap();
+                assert!(
+                    accepted.created,
+                    "admission must complete while a capture ingest is open"
+                );
+                park.rollback().await.unwrap();
+            }
+        )
+    })
+    .await
+    .expect("parked capture ingest and admission both finish");
+    assert!(parked.unwrap().created);
+
+    // A STOP still queues on the account row lock exactly as before: it must
+    // fail fast behind a lock holder instead of silently proceeding, then
+    // land once the holder releases.
+    let holder = holder_db.transaction().await.unwrap();
+    holder
+        .query_one(
+            "SELECT id FROM accounts WHERE id=$1 FOR NO KEY UPDATE",
+            &[&account],
+        )
+        .await
+        .unwrap();
+    db.batch_execute("SET lock_timeout='2s'").await.unwrap();
+    let session = InboundSession {
+        account_id: account,
+        device_id: fixture.device,
+        site_id: "test",
+        instance_id: "instance",
+        connection_epoch: 2,
+        deployment_epoch: 1,
+    };
+    let stop_unsigned = InboundEvent {
+        event_id: Uuid::new_v4(),
+        sequence: 3,
+        message_id: fixture.message,
+        attempt_id: fixture.attempt,
+        classification: Classification::OptOut,
+        observed_at_ms: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64,
+        part_count: 1,
+        content: Content::MetadataOnly,
+        signature_der: &[],
+    };
+    let stop_signature: Signature = fixture
+        .signing
+        .sign(&signed_event_bytes(session, &stop_unsigned));
+    let stop_der = stop_signature.to_der();
+    let stop = InboundEvent {
+        signature_der: stop_der.as_bytes(),
+        ..stop_unsigned
+    };
+    let stop_id = stop.event_id;
+    let blocked = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        ingest(&mut db, session, &stop),
+    )
+    .await
+    .expect("STOP returns on lock timeout instead of hanging");
+    assert!(matches!(blocked, Err(InboundError::Database(_))));
+    assert!(
+        db.query_opt("SELECT 1 FROM inbound_events WHERE id=$1", &[&stop_id])
+            .await
+            .unwrap()
+            .is_none()
+    );
+    holder.rollback().await.unwrap();
+    assert!(ingest(&mut db, session, &stop).await.unwrap().created);
+    assert_eq!(
+        suppression_active(&db, account, "+15550000003").await,
+        Some(true)
+    );
     db.batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
         .await
         .unwrap();

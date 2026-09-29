@@ -873,7 +873,8 @@ impl<'a> DeliveryStore<'a> {
         .await?
         .ok_or(StoreError::StaleFence)?;
         // No session fields change here. SHARE fences reconnects while staying
-        // compatible with signed inbound readers that take the account lock.
+        // compatible with consent-changing signed inbound ingest, which takes
+        // the account lock only for STOP/START transitions.
         let current_session = tx
             .query_typed_opt(
                 "SELECT ds.connection_epoch,ds.site_id,ds.instance_id,ds.lease_until>clock_timestamp() AS live, \
