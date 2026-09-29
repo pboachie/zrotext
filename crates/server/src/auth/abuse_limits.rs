@@ -12,6 +12,11 @@
 //! counter that anyone naming a public identifier can exhaust, plus a
 //! separate, larger verified-route ceiling that made-up subjects never reach.
 //! Email verification probes live one-use codes the same way.
+//!
+//! Limits whose every spender is already authenticated (`subject_only`) charge
+//! only the caller's own per-subject row and skip the shared route counter
+//! entirely, so one tenant's traffic can neither rate-limit nor serialize
+//! another's.
 
 use super::TokenHasher;
 use std::future::Future;
@@ -88,6 +93,18 @@ impl Limit {
         matches!(self, Self::MfaChallenge | Self::PasswordResetConfirm)
     }
 
+    /// Whether every spender of this limit is an authenticated caller whose
+    /// per-subject counter is the intended bound. Such limits charge no shared
+    /// route row: one hot counter would serialize the whole deployment on its
+    /// row lock and cap all tenants together at the route maximum, so tenants
+    /// could rate-limit each other. `OutboundAccept` is spent only by
+    /// API-key-authenticated admission paths with a server-derived account
+    /// subject; the per-account policy plus billing quotas and device caps
+    /// remain the per-tenant bounds.
+    fn subject_only(self) -> bool {
+        matches!(self, Self::OutboundAccept)
+    }
+
     /// The longest window, route or subject, that this limit's rows track.
     fn longest_window_seconds(self) -> i32 {
         let (_, _, global_seconds, subject) = self.policy();
@@ -100,6 +117,9 @@ impl Limit {
         // (scope, global attempts, global window seconds, subject policy)
         match self {
             Self::ApiKeyCreate => ("api_key_create", 600, 60, Some((20, 86_400))),
+            // Subject-only: authenticated accepts charge just their account
+            // row, so the route pair here stays available as the backstop an
+            // anonymous lane would spend and sizes prune retention.
             Self::OutboundAccept => ("alpha_send", 600, 60, Some((60, 60))),
             Self::Registration => ("registration", 120, 3_600, Some((3, 86_400))),
             Self::Login => ("login", 240, 60, Some((12, 900))),
@@ -317,25 +337,44 @@ async fn charge(
     lane: Lane,
 ) -> Result<bool, tokio_postgres::Error> {
     let (scope, global_max, global_seconds, subject_policy) = limit.policy();
-    let (route_hash, route_max) = match lane {
-        Lane::Anonymous => (hasher.digest(b"abuse-global-v1", scope), global_max),
-        Lane::Verified => (
-            hasher.digest(b"abuse-verified-v1", scope),
-            global_max * VERIFIED_CEILING_FACTOR,
-        ),
-    };
-    let subject_hash = subject.and_then(|subject| subject_hash(hasher, limit, subject, lane));
     let (subject_max, subject_seconds) = subject_policy.unwrap_or((0, 0));
-    let subject_bytes: Option<&[u8]> = subject_hash.as_ref().map(|hash| &hash[..]);
+    let subject_hash = subject.and_then(|subject| subject_hash(hasher, limit, subject, lane));
+    // A subject-only limit charges one row: its authenticated caller's own
+    // counter, keyed exactly as the per-subject row above, with the per-subject
+    // policy as the ceiling and no second shared row. The upsert semantics are
+    // identical to the subject branch of auth_abuse_consume, so an account's
+    // live window keeps counting across the change.
+    let subject_only = limit.subject_only() && subject_hash.is_some();
+    let route_key = if subject_only {
+        subject_hash.unwrap()
+    } else {
+        match lane {
+            Lane::Anonymous => hasher.digest(b"abuse-global-v1", scope),
+            Lane::Verified => hasher.digest(b"abuse-verified-v1", scope),
+        }
+    };
+    let (route_max, route_seconds) = if subject_only {
+        (subject_max, subject_seconds)
+    } else if lane == Lane::Verified {
+        (global_max * VERIFIED_CEILING_FACTOR, global_seconds)
+    } else {
+        (global_max, global_seconds)
+    };
+    let route_bytes: &[u8] = &route_key[..];
+    let subject_bytes: Option<&[u8]> = if subject_only {
+        None
+    } else {
+        subject_hash.as_ref().map(|hash| &hash[..])
+    };
     let row = client
         .query_typed_one(
             "SELECT auth_abuse_consume($1,$2,$3,$4,$5,$6,$7)",
             &[
                 (&scope, Type::TEXT),
-                (&&route_hash[..], Type::BYTEA),
+                (&route_bytes, Type::BYTEA),
                 (&subject_bytes, Type::BYTEA),
                 (&route_max, Type::INT4),
-                (&global_seconds, Type::INT4),
+                (&route_seconds, Type::INT4),
                 (&subject_max, Type::INT4),
                 (&subject_seconds, Type::INT4),
             ],
