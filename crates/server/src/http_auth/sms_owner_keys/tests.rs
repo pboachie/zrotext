@@ -18,7 +18,7 @@ macro_rules! migration {
 
 // The ceremony runs on the complete schema. SQL is embedded at build time so
 // the test never executes files discovered at runtime.
-const TEST_MIGRATIONS: [(&str, &str); 56] = [
+const TEST_MIGRATIONS: [(&str, &str); 57] = [
     ("001_foundation.sql", migration!("001_foundation.sql")),
     ("002_auth.sql", migration!("002_auth.sql")),
     ("003_delivery.sql", migration!("003_delivery.sql")),
@@ -228,6 +228,10 @@ const TEST_MIGRATIONS: [(&str, &str); 56] = [
         "056_usage_limit_plans.sql",
         migration!("056_usage_limit_plans.sql"),
     ),
+    (
+        "057_webhook_history_index.sql",
+        migration!("057_webhook_history_index.sql"),
+    ),
 ];
 
 #[test]
@@ -385,6 +389,14 @@ async fn postgres_owner_key_ceremony_requires_possession_mfa_and_revokes_only_sm
                 "CREATE INDEX CONCURRENTLY messages_admission_pending \
                      ON messages(account_id,device_id) \
                      WHERE state IN ('queued','claimed')",
+            )
+            .await
+            .unwrap();
+        }
+        if name == "057_webhook_history_index.sql" {
+            db.batch_execute(
+                "CREATE INDEX CONCURRENTLY webhook_deliveries_history \
+                     ON webhook_deliveries(endpoint_id,created_at DESC,id DESC)",
             )
             .await
             .unwrap();

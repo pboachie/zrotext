@@ -245,6 +245,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "056_usage_limit_plans.sql",
         include_str!("../../../../deploy/compose/migrations/056_usage_limit_plans.sql"),
     ),
+    (
+        "057_webhook_history_index.sql",
+        include_str!("../../../../deploy/compose/migrations/057_webhook_history_index.sql"),
+    ),
 ];
 
 /// Indexes the Compose migrator prepares with CREATE INDEX CONCURRENTLY in
@@ -277,6 +281,10 @@ const PREPARED_INDEXES: &[(&str, &str)] = &[
     (
         "052_admission_pending_index.sql",
         "CREATE INDEX messages_admission_pending ON messages(account_id,device_id)          WHERE state IN ('queued','claimed')",
+    ),
+    (
+        "057_webhook_history_index.sql",
+        "CREATE INDEX webhook_deliveries_history ON webhook_deliveries(endpoint_id,created_at DESC,id DESC)",
     ),
 ];
 

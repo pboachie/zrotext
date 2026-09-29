@@ -30,7 +30,7 @@ macro_rules! migration {
 
 // Holds are checked by admission and released by inbound, so these routes run
 // on the complete schema. SQL is embedded at build time.
-const TEST_MIGRATIONS: [(&str, &str); 56] = [
+const TEST_MIGRATIONS: [(&str, &str); 57] = [
     migration!("001_foundation.sql"),
     migration!("002_auth.sql"),
     migration!("003_delivery.sql"),
@@ -87,6 +87,7 @@ const TEST_MIGRATIONS: [(&str, &str); 56] = [
     migration!("054_stateless_device_challenges.sql"),
     migration!("055_trusted_browser_epoch.sql"),
     migration!("056_usage_limit_plans.sql"),
+    migration!("057_webhook_history_index.sql"),
 ];
 
 #[test]
@@ -299,6 +300,11 @@ async fn owner_holds_and_review_decisions_are_owner_bound_tenant_scoped_and_audi
             )
             .await
             .unwrap();
+        }
+        if name == "057_webhook_history_index.sql" {
+            db.batch_execute("CREATE INDEX CONCURRENTLY webhook_deliveries_history ON webhook_deliveries(endpoint_id,created_at DESC,id DESC)")
+                .await
+                .unwrap();
         }
         if name == "034_delivery_sweep_index.sql" {
             // Mirror the migrator's autocommit preparation before 034.

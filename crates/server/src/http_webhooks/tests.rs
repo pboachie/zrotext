@@ -1364,3 +1364,169 @@ async fn endpoint_lifecycle_is_tenant_bound_and_retires_queued_deliveries() {
         .await
         .unwrap();
 }
+
+/// History pages, with and without a cursor, must read the endpoint's
+/// deliveries through the endpoint-keyed history index with a Limit and no
+/// Sort over the endpoint's retention history (#503).
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn history_pages_scan_the_endpoint_history_index_without_sorting() {
+    let url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+        .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let (db, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let schema = format!("webhook_history_plan_{}", Uuid::new_v4().simple());
+    db.batch_execute(&format!(
+        "CREATE SCHEMA {schema}; SET search_path TO {schema}"
+    ))
+    .await
+    .unwrap();
+    for migration in [
+        include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
+        include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+        include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
+        include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
+        include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+        include_str!("../../../../deploy/compose/migrations/006_usage_metering.sql"),
+        include_str!("../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"),
+        include_str!("../../../../deploy/compose/migrations/009_webhook_manual_replay.sql"),
+        include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
+        include_str!("../../../../deploy/compose/migrations/015_webhook_kek_commitments.sql"),
+        include_str!("../../../../deploy/compose/migrations/029_webhook_dispatch_fairness.sql"),
+    ] {
+        db.batch_execute(migration).await.unwrap();
+    }
+    db.batch_execute(
+        "CREATE INDEX CONCURRENTLY webhook_deliveries_history \
+         ON webhook_deliveries(endpoint_id,created_at DESC,id DESC)",
+    )
+    .await
+    .unwrap();
+    db.batch_execute(include_str!(
+        "../../../../deploy/compose/migrations/057_webhook_history_index.sql"
+    ))
+    .await
+    .unwrap();
+
+    let account = Uuid::new_v4();
+    let endpoint = Uuid::new_v4();
+    let other_endpoint = Uuid::new_v4();
+    let device = Uuid::new_v4();
+    let message = Uuid::new_v4();
+    let attempt = Uuid::new_v4();
+    db.execute("INSERT INTO accounts(id) VALUES($1)", &[&account])
+        .await
+        .unwrap();
+    db.execute("INSERT INTO sites(site_id) VALUES('test')", &[])
+        .await
+        .unwrap();
+    db.execute(
+        "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'plan fixture')",
+        &[&device, &account],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO messages(id,account_id,device_id,recipient_e164,recipient_digest, \
+         transport_mode,transport_payload,request_digest,state,expires_at) \
+         VALUES($1,$2,$3,'+15551234567',$4,'synthetic_alpha',$5,$6,'submitted',now()+interval '1 hour')",
+        &[&message, &account, &device, &vec![2u8; 32], &b"fixture".as_slice(), &vec![3u8; 32]],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO message_attempts(id,account_id,message_id,device_id,generation, \
+         session_epoch,deployment_epoch,status) VALUES($1,$2,$3,$4,1,2,1,'submitted')",
+        &[&attempt, &account, &message, &device],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO webhook_endpoints(id,account_id,callback_url,signing_secret_ciphertext, \
+         signing_secret_key_version,enabled) VALUES($1,$2,'https://hooks.example.org/hook',$3,1,true), \
+         ($4,$2,'https://hooks.example.org/hook',$3,1,true)",
+        &[&endpoint, &account, &vec![6u8; 32], &other_endpoint],
+    )
+    .await
+    .unwrap();
+    // Retention keeps terminal rows around: a busy endpoint's history is far
+    // larger than a page.
+    db.execute(
+        "INSERT INTO inbound_events(id,account_id,device_id,message_id,attempt_id, \
+         device_sequence,classification,observed_at,part_count,content_kind,event_digest,signature_der) \
+         SELECT gen_random_uuid(),$1,$2,$3,$4,n,'captured_local',now(),1,'metadata_only',decode(md5(n::text)||md5(random()::text),'hex'),decode(substr(md5(n::text),17,16),'hex') \
+         FROM generate_series(1,6000) n",
+        &[&account, &device, &message, &attempt],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO webhook_deliveries(id,account_id,endpoint_id,event_id,next_attempt_at,created_at) \
+         SELECT gen_random_uuid(),$1,$2,id,now()-interval '2 hours', \
+         now()-interval '2 hours'+(n*interval '1 second') \
+         FROM (SELECT id,row_number() OVER (ORDER BY id) n FROM inbound_events WHERE account_id=$1) recent",
+        &[&account, &endpoint],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO webhook_deliveries(id,account_id,endpoint_id,event_id,next_attempt_at,created_at) \
+         SELECT gen_random_uuid(),$1,$2,id,now()-interval '2 hours',now()-interval '2 hours' \
+         FROM (SELECT id FROM inbound_events WHERE account_id=$1 LIMIT 3000) recent",
+        &[&account, &other_endpoint],
+    )
+    .await
+    .unwrap();
+    db.batch_execute("ANALYZE webhook_deliveries")
+        .await
+        .unwrap();
+
+    let mut cursor: Option<(std::time::SystemTime, Uuid)> = None;
+    for label in ["first page", "next page"] {
+        let anchor_time = cursor.map(|(time, _)| time);
+        let anchor_id = cursor.map(|(_, id)| id);
+        let lines: Vec<String> = db
+            .query(
+                "EXPLAIN (COSTS OFF) \
+                 SELECT id,event_id,status,generation,terminal_reason,attempt_count \
+                 FROM webhook_deliveries WHERE account_id=$1 AND endpoint_id=$2 \
+                 AND ($3::timestamptz IS NULL OR (created_at,id)<($3,$4)) \
+                 ORDER BY created_at DESC,id DESC LIMIT $5",
+                &[&account, &endpoint, &anchor_time, &anchor_id, &21_i64],
+            )
+            .await
+            .unwrap()
+            .iter()
+            .map(|row| row.get::<_, String>(0))
+            .collect();
+        let plan = lines.join(" ");
+        assert!(
+            plan.contains("Index Scan using webhook_deliveries_history"),
+            "{label}: plan must use the endpoint history index: {plan}"
+        );
+        assert!(
+            plan.contains("Limit"),
+            "{label}: plan must be bounded: {plan}"
+        );
+        assert!(
+            !plan.contains("Sort"),
+            "{label}: plan must not sort the endpoint's history: {plan}"
+        );
+        // Page again from the newest row the first page returned.
+        let anchor = db
+            .query_one(
+                "SELECT created_at,id FROM webhook_deliveries                  WHERE account_id=$1 AND endpoint_id=$2                  ORDER BY created_at DESC,id DESC OFFSET 20 LIMIT 1",
+                &[&account, &endpoint],
+            )
+            .await
+            .unwrap();
+        cursor = Some((anchor.get(0), anchor.get(1)));
+    }
+    db.batch_execute(&format!(
+        "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
+    ))
+    .await
+    .unwrap();
+}
