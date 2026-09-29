@@ -1,4 +1,77 @@
-# Experimental sealed draft-01 TypeScript reader
+# ZROtext sealed TypeScript SDK
+
+Status is per module, and the boundaries are deliberate:
+
+- **Production-shaped: envelope composition** (`src/sealed-envelope.ts`,
+  issue #537 slice A). `composeSealedOutboundEnvelope` composes one complete
+  sealed outbound kind-01 profile-02 candidate envelope from explicit caller
+  inputs and returns the exact bytes with the SHA-256 digest of the unsigned
+  envelope. It is verified byte-for-byte against the cross-client vectors the
+  Rust verifier lane consumes (see below).
+- **Still test-only:** the draft-01 reader, the profile-02 manifest
+  verifier/trust store, the draft-02 envelope preparation helper, and the
+  message-plane client described in the sections below.
+- **Does not exist yet:** an HTTP client for `/v1/sealed/messages`
+  (`SealedMessagePlaneClient` is a test-only contract exercise, not the
+  production client), inbound kind-02 composition in the production module,
+  and any npm publication. This package is not published anywhere.
+
+The profile-02 byte format itself remains an unaccepted candidate and the
+server's sealed route stays disabled by default; nothing in this SDK enables
+a server route, and composing an envelope is never carrier submission.
+
+## Production envelope composition (issue #537 slice A)
+
+`composeSealedOutboundEnvelope(input)` performs fail-closed validation with
+typed `SealedEnvelopeError` failures (a `code` discriminator plus stable
+detail strings mirroring the Rust parser's own refusal reasons), authorizes
+the request against the exact manifest object `verifyManifest02` returned,
+and only then composes: strict UTF-8 body (1–32,768 bytes, no BOM, no NUL,
+no normalization) under AES-256-GCM with the `ZTSE/body/v2` transcript, HPKE
+P-256 recipient wraps in strict `(role, key_id)` wire order with the
+`ZTSE/wrap/v2` transcript, and a canonical low-`s` ECDSA P-256 signature over
+`"ZTSE/sign/v2\0" || u32(len(unsigned)) || unsigned`. The result is bounded
+to the server parser's kind-01 window (426..=34,213 bytes inside the
+36,864-byte cap) with exactly one device wrap and one archive wrap; anything
+that cannot produce an admissible envelope — wrong identity widths, a
+non-E.164 peer, out-of-range or misspaced timestamps, an empty or oversized
+body, malformed key material, duplicate or misroled recipients, a wrap count
+outside 2..=8, or an unauthorized signer or reader set — is refused, never
+coerced. The wire layout is produced by delegating to the reviewed
+`prepareOutboundEnvelope02` helper, so the bytes are exactly the ones the
+cross-client CI lane feeds to the Rust admission parser.
+
+The returned object carries only the `envelope` bytes and the
+`unsignedDigest`. That digest is the Q6 idempotency identity: retries must
+resend the same exact envelope bytes and reuse this digest, never
+`idempotency-key` headers. Two compositions of the same message are two
+different identities by design, because the content key, body nonce and every
+HPKE ephemeral IKM are drawn fresh from `crypto.getRandomValues`. The
+optional `deterministicKeyMaterial` input exists only to reproduce
+cross-client vectors; production callers must omit it. Local key-material
+copies are zeroed on every exit path, but JavaScript gives no erasure
+guarantee — the engine may have copied those buffers, the delegated helper
+holds its own snapshot until the promise settles, and the body `content`
+string cannot be zeroed at all. No plaintext or key material is retained on
+the returned object.
+
+Verification: `test/sealed-envelope.test.mjs` walks every parser rule
+byte-by-byte against the dormant Rust reader
+(`crates/server/src/sealed_envelope`, `sealed_body`), verifies the signature
+over the exact unsigned bytes with the existing draft-02 helpers, reopens
+wraps and body as an independent consumer from envelope bytes alone, pins the
+deterministic unsigned transcript, and regenerates the cross-client fixture
+through `test/support/generate-cross-client.mjs` — the generator the Rust CI
+lane drives — proving the production module reproduces the exact unsigned
+bytes and digest of envelopes the Rust lane admits, persists and replays.
+That Rust lane itself was not executed as part of this slice; the byte
+equality and the parser-mirror walk are the local evidence.
+
+`SEALED_CONTENT_TYPE` (`application/vnd.zrotext.sealed.v1`) is exported for
+callers that transport the bytes themselves. This module contains no network
+client, no send path and no server dependency; slice B is the HTTP client.
+
+## Test-only sealed draft-01 TypeScript reader
 
 This is a **test-only implementation of the unapproved ZT-009 byte candidate**.
 It must not be published as a production SDK or connected to a send, inbound,
@@ -121,15 +194,18 @@ the pinned draft-01 vectors against a recording transport and no network.
 
 `src/draft02-envelope-prep.ts` composes complete candidate-02 sealed envelopes
 for tests. It is **not a production SDK path** and is connected to no send,
-inbound, webhook, or radio route. `prepareOutboundEnvelope02` and
-`prepareInboundEnvelope02` require the exact `Manifest02` object returned by
-`verifyManifest02` and call `authorizeOutbound02` / `authorizeInbound02` with
-claims derived from that manifest before any body encryption, HPKE wrap, or
-signature is produced: a revoked signer, wrong role/scope, stale manifest,
-copied manifest object, or unauthorized reader set refuses fail-closed.
-Authorization is reused from `draft02-manifest.ts`, never re-implemented here;
-key IDs are reused from the draft-01 `keyId` helper (`ZTSE/key/v1\0`,
-`0x0010` for KEM recipients, `0x0101` for signers).
+inbound, webhook, or radio route. The production composition API above
+delegates to it after its own validation, so its reviewed byte layout and
+authorization ordering are the single source of both test and production
+bytes. `prepareOutboundEnvelope02` and `prepareInboundEnvelope02` require the
+exact `Manifest02` object returned by `verifyManifest02` and call
+`authorizeOutbound02` / `authorizeInbound02` with claims derived from that
+manifest before any body encryption, HPKE wrap, or signature is produced: a
+revoked signer, wrong role/scope, stale manifest, copied manifest object, or
+unauthorized reader set refuses fail-closed. Authorization is reused from
+`draft02-manifest.ts`, never re-implemented here; key IDs are reused from the
+draft-01 `keyId` helper (`ZTSE/key/v1\0`, `0x0010` for KEM recipients,
+`0x0101` for signers).
 
 The bytes follow the dormant profile-02 rules exactly: wire `profile:u8 = 02`,
 HPKE `info = "ZTSE/wrap/v2\0" || header || protected || role || key_id` with an
@@ -157,6 +233,15 @@ transcripts, reopen a wrap and the body as an independent consumer, verify the
 signature and its low-`s` form, and exercise the denial corpus, including
 post-call input mutation. No Rust cross-verification or
 Android run is part of this slice; those remain separate gates.
+
+`test/support/generate-cross-client.mjs` builds the cross-client fixture the
+Rust CI lane consumes: it verifies a fully signed synthetic manifest,
+composes the fixture envelopes through `prepareOutboundEnvelope02`, re-signs
+adversarial mutations so each one exercises its intended check, and
+cross-checks that `composeSealedOutboundEnvelope` fed the same material
+reproduces the exact unsigned bytes and digest. Setup JSON arrives on stdin
+and the fixture leaves on stdout; optional pinned key-material fields let a
+caller reproduce the fixture deterministically, and the Rust lane omits them.
 
 This is one slice of ZT-010 evidence. Independent Rust cross-open, full manifest
 chain/rollback vectors, production key lifecycle, and the Q1–Q11 decisions
