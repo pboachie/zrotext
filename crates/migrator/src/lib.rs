@@ -11,9 +11,11 @@ mod owner_queue_index;
 mod radio_evidence_index;
 mod recent_attempt_index;
 use admission_pending_index::*;
+mod webhook_history_index;
 use owner_queue_index::*;
 use radio_evidence_index::*;
 use recent_attempt_index::*;
+use webhook_history_index::*;
 
 // Fixed, project-specific advisory lock. Held on one connection for the full run.
 const MIGRATION_LOCK: i64 = 0x5a_52_4f_54_45_58_54;
@@ -112,6 +114,12 @@ pub enum MigrationError {
     OwnerQueueIndexBuildInProgress(&'static str),
     #[error("message_attempts_device_created is absent, invalid, or has the wrong definition")]
     RecentAttemptIndexUnavailable,
+    #[error("webhook_deliveries_history index is absent, invalid, or has the wrong definition")]
+    WebhookHistoryIndexUnavailable,
+    #[error("webhook_deliveries_history exists with an unexpected definition")]
+    WebhookHistoryIndexConflict,
+    #[error("webhook_deliveries_history concurrent build already in progress")]
+    WebhookHistoryIndexBuildInProgress,
     #[error("message_attempts_device_created has an unexpected definition; refusing to replace it")]
     RecentAttemptIndexConflict,
     #[error("message_attempts_device_created is still being built; refusing to interrupt it")]
@@ -287,6 +295,9 @@ async fn apply_locked(
     if ledger.contains_key(&ADMISSION_PENDING_INDEX_MIGRATION) {
         verify_admission_pending_index(client).await?;
     }
+    if ledger.contains_key(&WEBHOOK_HISTORY_INDEX_MIGRATION) {
+        verify_webhook_history_index(client).await?;
+    }
 
     for migration in migrations {
         if ledger.contains_key(&migration.version) {
@@ -340,6 +351,16 @@ async fn apply_locked(
             // transaction. The advisory lock still serializes migrator jobs.
             prepare_admission_pending_index(client).await?;
         }
+        if migration.version == WEBHOOK_HISTORY_INDEX_MIGRATION {
+            if migration.filename != WEBHOOK_HISTORY_INDEX_FILE {
+                return Err(MigrationError::InvalidDirectory(format!(
+                    "migration {WEBHOOK_HISTORY_INDEX_MIGRATION:03} must be {WEBHOOK_HISTORY_INDEX_FILE}"
+                )));
+            }
+            // CREATE INDEX CONCURRENTLY cannot run in the numbered migration's
+            // transaction. The advisory lock still serializes migrator jobs.
+            prepare_webhook_history_index(client).await?;
+        }
         let tx = client.transaction().await?;
         if let Err(error) = tx.batch_execute(&migration.sql).await {
             // Dropping the transaction closes it without committing the failed file.
@@ -387,6 +408,12 @@ async fn apply_locked(
         .any(|migration| migration.version == ADMISSION_PENDING_INDEX_MIGRATION)
     {
         verify_admission_pending_index(client).await?;
+    }
+    if migrations
+        .iter()
+        .any(|migration| migration.version == WEBHOOK_HISTORY_INDEX_MIGRATION)
+    {
+        verify_webhook_history_index(client).await?;
     }
     Ok(applied)
 }
@@ -760,6 +787,8 @@ mod owner_queue_index_tests;
 mod radio_evidence_index_tests;
 #[cfg(test)]
 mod recent_attempt_index_tests;
+#[cfg(test)]
+mod webhook_history_index_tests;
 
 #[cfg(test)]
 mod tests {

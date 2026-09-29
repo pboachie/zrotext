@@ -2,7 +2,7 @@ use super::*;
 
 // Keep the admission fixtures on the complete, reviewed schema. SQL is
 // embedded at build time so tests never execute files discovered at runtime.
-const TEST_MIGRATIONS: [(&str, &str); 56] = [
+const TEST_MIGRATIONS: [(&str, &str); 57] = [
     (
         "001_foundation.sql",
         include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
@@ -229,6 +229,10 @@ const TEST_MIGRATIONS: [(&str, &str); 56] = [
         "056_usage_limit_plans.sql",
         include_str!("../../../deploy/compose/migrations/056_usage_limit_plans.sql"),
     ),
+    (
+        "057_webhook_history_index.sql",
+        include_str!("../../../deploy/compose/migrations/057_webhook_history_index.sql"),
+    ),
 ];
 
 /// Applies every numbered migration in order. Shared by the PostgreSQL-backed
@@ -280,6 +284,15 @@ pub(crate) async fn apply_test_migrations(client: &Client) {
                     "CREATE INDEX CONCURRENTLY messages_owner_in_flight_state \
                  ON messages(device_id,state,created_at) \
                  WHERE state IN ('submitting','submitted')",
+                )
+                .await
+                .unwrap();
+        }
+        if name == "057_webhook_history_index.sql" {
+            client
+                .batch_execute(
+                    "CREATE INDEX CONCURRENTLY webhook_deliveries_history \
+                     ON webhook_deliveries(endpoint_id,created_at DESC,id DESC)",
                 )
                 .await
                 .unwrap();
