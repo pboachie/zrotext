@@ -510,7 +510,7 @@ async fn candidate_queue_rechecks_expiry_after_blocked_budget_write_and_rolls_ev
     let bytes = envelope(&f, Uuid::new_v4(), clock, 1200);
     let operation = admit_candidate02(&mut db, &f.principal, &f.hasher, f.writer(), &bytes);
     let release = async {
-        waiting(&f, pid, "UPDATE usage_periods").await;
+        waiting(&f, pid, "INSERT INTO usage_periods").await;
         reach_clock(&f.db, clock + 1200).await;
         lock.commit().await.unwrap();
     };
@@ -655,7 +655,7 @@ async fn candidate_queue_rechecks_api_expiry_after_blocked_budget_write() {
     f.db.execute("UPDATE api_keys SET expires_at=to_timestamp($2::bigint::double precision/1000) WHERE id=$1", &[&f.principal.key_id,&deadline]).await.unwrap();
     let operation = admit_candidate02(&mut db, &f.principal, &f.hasher, f.writer(), &bytes);
     let release = async {
-        waiting(&f, pid, "UPDATE usage_periods").await;
+        waiting(&f, pid, "INSERT INTO usage_periods").await;
         reach_clock(&f.db, deadline).await;
         lock.commit().await.unwrap();
     };
@@ -873,7 +873,7 @@ async fn candidate_queue_rechecks_manifest_expiry_after_blocked_budget_write() {
         .get(0);
     let operation = admit_candidate02(&mut db, &f.principal, &f.hasher, f.writer(), &bytes);
     let release = async {
-        waiting(&f, pid, "UPDATE usage_periods").await;
+        waiting(&f, pid, "INSERT INTO usage_periods").await;
         reach_clock(&f.db, deadline).await;
         lock.commit().await.unwrap();
     };
