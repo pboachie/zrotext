@@ -250,6 +250,57 @@ class SealedSdkPostgresInteropTest {
 
     @Test fun wrongPreviousDigestManifestIsRejected() = rejectManifest("manifestWrongPreviousDigest")
 
+    /** Roadmap #539: a PROPOSED execution grant over the exact database-returned envelope bytes. */
+    private class GrantCase(val fixture: Fixture) {
+        val persisted = hex(fixture.input.getString("persistedOutboundEnvelope"))
+        val attempt = java.util.UUID.fromString("51515151-5151-4151-8151-515151515151")
+        fun uuid(name: String) = java.util.UUID.fromString(Draft02OutboundPreparation.uuid(fixture.bytes(name)))
+        fun fields(
+            account: java.util.UUID = uuid("accountId"), device: java.util.UUID = uuid("deviceId"),
+            line: java.util.UUID = uuid("lineId"), message: java.util.UUID = uuid("messageId"),
+            role: Int = 1, reader: ByteArray = fixture.bytes("deviceKeyId"),
+            digest: ByteArray = SealedExecutionGrantValidator.sha256(persisted),
+        ) = SealedExecutionGrantValidator.Fields(account, device, line, message, attempt, 1L, digest,
+            fixture.now + 15_000, 1, role, reader, 1L, 1L, 1L, fixture.bytes("unsignedDigest"))
+        fun verdict(fields: SealedExecutionGrantValidator.Fields, bytes: ByteArray = persisted): Any {
+            val routing = Draft02OutboundEnvelope.routingClaims(bytes)
+            fun id(raw: ByteArray) = java.util.UUID.fromString(Draft02OutboundPreparation.uuid(raw))
+            val claims = SealedExecutionGrantValidator.EnvelopeClaims(id(routing.accountId), id(routing.messageId),
+                id(routing.deviceId), id(routing.lineId), routing.deviceReaderKeyId)
+            return SealedExecutionGrantValidator.validate(fields, bytes, claims, uuid("accountId"), uuid("deviceId"),
+                uuid("lineId"), 1L, 1L, 1L, fixture.bytes("deviceKeyId"), fixture.now)
+        }
+    }
+
+    @Test fun grantBoundToThePersistedEnvelopeAuthorizesTheShippingDecrypt() {
+        val grant = GrantCase(Fixture())
+        assertTrue(grant.verdict(grant.fields()) is SealedExecutionGrantValidator.Verdict.Valid)
+        val proof = grant.fixture.proof()
+        assertArrayEquals(grant.fixture.bytes("unsignedDigest"), proof.unsignedDigest)
+        val clear = Draft02Body.open(proof, grant.fixture.cek(proof))
+        try {
+            assertEquals(grant.fixture.expected.getString("expectedText"), String(clear))
+        } finally { clear.fill('\u0000') }
+    }
+
+    @Test fun everyGrantBindingRefusesTheDatabaseCiphertextBeforeRecipientUnwrap() {
+        val grant = GrantCase(Fixture())
+        val other = java.util.UUID.fromString("0e0e0e0e-0e0e-4e0e-8e0e-0e0e0e0e0e0e")
+        val changed = grant.persisted.copyOf().also { it[it.size - 70] = (it[it.size - 70].toInt() xor 1).toByte() }
+        val cases = listOf(
+            SealedExecutionGrantValidator.Verdict.Refused.ACCOUNT_MISMATCH to grant.verdict(grant.fields(account = other)),
+            SealedExecutionGrantValidator.Verdict.Refused.DEVICE_MISMATCH to grant.verdict(grant.fields(device = other)),
+            SealedExecutionGrantValidator.Verdict.Refused.LINE_MISMATCH to grant.verdict(grant.fields(line = other)),
+            SealedExecutionGrantValidator.Verdict.Refused.MESSAGE_MISMATCH to grant.verdict(grant.fields(message = other)),
+            SealedExecutionGrantValidator.Verdict.Refused.READER_ROLE_MISMATCH to grant.verdict(grant.fields(role = 2)),
+            SealedExecutionGrantValidator.Verdict.Refused.READER_KEY_MISMATCH to
+                grant.verdict(grant.fields(reader = grant.fixture.bytes("archiveKeyId"))),
+            SealedExecutionGrantValidator.Verdict.Refused.ENVELOPE_DIGEST_MISMATCH to
+                grant.verdict(grant.fields(), bytes = changed),
+        )
+        for ((expected, actual) in cases) assertEquals(expected.name, expected, actual)
+    }
+
     companion object {
         private const val MAX_FIXTURE_BYTES = 1_048_576
 
