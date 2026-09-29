@@ -104,8 +104,10 @@ test("truncated and oversized manifests fail closed without partial trust", asyn
   const good = await manifest(f);
   await assert.rejects(() => verifyManifest02(good.slice(0, good.length - 1), pin(f.root), now), /ZTSE draft-02 manifest:/);
   await assert.rejects(() => verifyManifest02(good.slice(1), pin(f.root), now), /ZTSE draft-02 manifest:/);
-  const oversized = join(good, new Uint8Array(4096));
-  await assert.rejects(() => verifyManifest02(oversized, pin(f.root), now), /ZTSE draft-02 manifest:/);
+  // Past the 9751-byte bound (215 + 149 * 64 records), so the size guard
+  // itself rejects before any record is parsed.
+  const oversized = join(good, new Uint8Array(9_752));
+  await assert.rejects(() => verifyManifest02(oversized, pin(f.root), now), /ZTSE draft-02 manifest: size/);
 });
 
 test("envelope authorization rejects misaddressed, misroled and mismatched claims", async () => {
@@ -121,7 +123,6 @@ test("envelope authorization rejects misaddressed, misroled and mismatched claim
   const stranger = await sha(encoder.encode("stranger-recipient"));
   for (const [why, changed] of [
     ["unknown recipient key", { ...claims, wraps: [{ role: 1, keyId: stranger }, claims.wraps[1]] }],
-    ["ungranted extra role", { ...claims, wraps: [...claims.wraps, { role: 3, keyId: stranger }] }],
     ["dropped reader", { ...claims, wraps: [claims.wraps[0]] }],
     ["foreign account", { ...claims, accountId: Uint8Array.from({ length: 16 }, (_, i) => i + 90) }],
     ["root as envelope signer", { ...claims, signerKeyId: f.records[3].keyId }],
@@ -130,4 +131,12 @@ test("envelope authorization rejects misaddressed, misroled and mismatched claim
   ]) {
     assert.throws(() => authorizeOutbound02(first, changed, now), /ZTSE draft-02 manifest:/, why);
   }
+  // An extra wrap keyed to the archive key the manifest grants under role 2
+  // keeps the key real and active, so only the ungranted role can reject it.
+  // A stranger key id would collapse into the unknown-key case.
+  assert.throws(
+    () => authorizeOutbound02(first, { ...claims, wraps: [...claims.wraps, { role: 3, keyId: f.records[1].keyId }] }, now),
+    /ZTSE draft-02 manifest: reader authority/,
+    "ungranted extra role",
+  );
 });

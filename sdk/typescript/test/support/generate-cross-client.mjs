@@ -168,14 +168,17 @@ const outboundWrongRole = await mut(outbound, (u) => {
   // so this vector pins the parser's ordering rejection, not grant checks.
   u[outboundCountAt(u) + 1] = 3;
 }, outboundSigner);
-// A third wrap with a parser-legal role the manifest never grants. The wrap
-// order stays valid and recipient cardinality holds (one device, one archive),
-// so this reaches the manifest authority check instead of the parser.
+// A third wrap with a parser-legal role the manifest never grants, keyed to
+// the archive key the manifest DOES grant under role 2: (3, archiveKeyId)
+// sorts after (2, archiveKeyId), so wrap order, recipient cardinality (one
+// device, one archive) and key existence all hold and only the role grant
+// fails. A random key id would collapse into the unknown-key case and could
+// not tell a grant-check bug from an unknown-key rejection.
 const ungrantedUnsigned = (() => {
   const u = Uint8Array.from(outbound.unsigned);
   const countAt = outboundCountAt(u);
   u[countAt] = 3;
-  return concat(u, concat(Uint8Array.of(3), randomBytes(32), archiveKey.point, new Uint8Array(48)));
+  return concat(u, concat(Uint8Array.of(3), archiveKey.id, archiveKey.point, new Uint8Array(48)));
 })();
 const outboundUngrantedThirdWrap = await resign(ungrantedUnsigned, outboundSigner);
 const outboundWrongAccount = await mut(outbound, (u) => { u[protectedAt(u, 0)] ^= 1; }, outboundSigner);

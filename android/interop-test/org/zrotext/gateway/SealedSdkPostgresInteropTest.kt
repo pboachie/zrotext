@@ -42,11 +42,15 @@ class SealedSdkPostgresInteropTest {
             bytes("rootPin"), manifest, Draft02ManifestAuthority.Trust(
                 bytes("accountId"), bytes("rootFingerprint"), expected.getLong("generation"),
                 Draft02ManifestAuthority.Position.after(expected.getLong("previousVersion"), bytes("previousDigest"))), now)
-        fun request(message: ByteArray = bytes("messageId")) = Draft02ManifestAuthority.Request(
+        fun request(
+            message: ByteArray = bytes("messageId"),
+            readers: List<Draft02ManifestAuthority.Reader> = listOf(
+                Draft02ManifestAuthority.Reader(1, bytes("deviceKeyId")),
+                Draft02ManifestAuthority.Reader(2, bytes("archiveKeyId"))),
+        ) = Draft02ManifestAuthority.Request(
             Draft02ManifestAuthority.Direction.OUTBOUND, bytes("accountId"), message,
             bytes("deviceId"), bytes("lineId"), expected.getString("peer").toByteArray(Charsets.US_ASCII),
-            bytes("signerKeyId"), listOf(Draft02ManifestAuthority.Reader(1, bytes("deviceKeyId")),
-                Draft02ManifestAuthority.Reader(2, bytes("archiveKeyId"))))
+            bytes("signerKeyId"), readers)
         fun proof(message: ByteArray = bytes("messageId")): Draft02OutboundEnvelope {
             val source = hex(input.getString("outboundEnvelope"))
             val persisted = hex(input.getString("persistedOutboundEnvelope"))
@@ -191,9 +195,21 @@ class SealedSdkPostgresInteropTest {
         rejectEnvelope(hex(fixture.input.getString("outboundMisorderedWrap")))
     }
 
-    @Test fun ungrantedThirdWrapRoleIsRejected() {
+    @Test fun ungrantedThirdWrapRoleIsRejectedByTheManifestGrantCheck() {
         val fixture = Fixture()
-        rejectEnvelope(hex(fixture.input.getString("outboundUngrantedThirdWrap")))
+        // The vector's third wrap keys the archive key the manifest grants
+        // under role 2, so key existence cannot explain the rejection. Select
+        // every wrap in the envelope to pass the exact-reader-set check, and
+        // the manifest authority itself must reject the ungranted role.
+        val request = fixture.request(readers = listOf(
+            Draft02ManifestAuthority.Reader(1, fixture.bytes("deviceKeyId")),
+            Draft02ManifestAuthority.Reader(2, fixture.bytes("archiveKeyId")),
+            Draft02ManifestAuthority.Reader(3, fixture.bytes("archiveKeyId"))))
+        val error = assertThrows(IllegalArgumentException::class.java) {
+            Draft02OutboundEnvelope.verify(hex(fixture.input.getString("outboundUngrantedThirdWrap")),
+                fixture.authority(), request) { fixture.now }
+        }
+        assertEquals("Reader authority", error.message)
     }
 
     @Test fun foreignAccountEnvelopeIsRejected() {
@@ -203,7 +219,22 @@ class SealedSdkPostgresInteropTest {
 
     @Test fun expiredEnvelopeIntentIsRejected() {
         val fixture = Fixture()
-        rejectEnvelope(hex(fixture.input.getString("outboundExpired")))
+        val error = assertThrows(IllegalArgumentException::class.java) {
+            Draft02OutboundEnvelope.verify(hex(fixture.input.getString("outboundExpired")),
+                fixture.authority(), fixture.request()) { fixture.now }
+        }
+        assertEquals("Envelope freshness", error.message)
+    }
+
+    @Test fun futureEnvelopeIntentIsRejected() {
+        val fixture = Fixture()
+        // A future-dated observation is not only a server-side concern: the
+        // shipping envelope verifier enforces the observation window locally.
+        val error = assertThrows(IllegalArgumentException::class.java) {
+            Draft02OutboundEnvelope.verify(hex(fixture.input.getString("outboundFuture")),
+                fixture.authority(), fixture.request()) { fixture.now }
+        }
+        assertEquals("Envelope freshness", error.message)
     }
 
     @Test fun tamperedManifestSignatureIsRejected() {

@@ -83,9 +83,9 @@ jobs:
           import xml.etree.ElementTree as ET
           path = pathlib.Path('android/app/build/test-results/testDebugUnitTest/TEST-org.zrotext.gateway.SealedSdkPostgresInteropTest.xml')
           result = ET.parse(path).getroot()
-          expected = {'tests': '20', 'failures': '0', 'errors': '0', 'skipped': '0'}
+          expected = {'tests': '21', 'failures': '0', 'errors': '0', 'skipped': '0'}
           for key, value in expected.items():
               if result.get(key) != value:
                   raise SystemExit(f'Unexpected {key}: {result.get(key)}')
-          print('All twenty cross-client Android cases passed without skips')
+          print('All twenty-one cross-client Android cases passed without skips')
           PY

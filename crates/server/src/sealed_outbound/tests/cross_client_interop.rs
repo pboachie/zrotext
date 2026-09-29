@@ -247,7 +247,15 @@ async fn actual_sdk_ciphertext_verifies_persists_and_replays_without_extra_effec
         (
             "ungranted third wrap role",
             bytes(&fixture, "outboundUngrantedThirdWrap"),
-            |e: &AdmitError| matches!(e, AdmitError::Authority(_)),
+            // The third wrap keys the archive key the manifest grants under
+            // role 2, so only the role grant can reject it; pinning the
+            // reason keeps this from collapsing into the unknown-key case.
+            |e: &AdmitError| {
+                matches!(
+                    e,
+                    AdmitError::Authority(AdmissionError::Rejected("reader authority"))
+                )
+            },
         ),
         (
             "unknown recipient key",
