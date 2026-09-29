@@ -47,6 +47,66 @@ manifest retains `allowBackup=false` for older versions. The virtual suite
 checks the installed schema and local routing behavior; actual device-to-device
 transfer and carrier behavior remain separate hardware checks.
 
+## Outbound MMS spike
+
+The "Controlled MMS spike" screen is the stage-one tool from [issue #438](https://github.com/pboachie/zrotext/issues/438).
+It exists only in **debug builds**: the screen section, the sent-callback
+receiver, the file provider and the only `sendMultimediaMessage` call live in
+the `debug` source set, and the `release` source set replaces the entry points
+with stubs that draw nothing and reject the grant frame. A release APK cannot
+reach it.
+
+It composes one `m-send.req` PDU (an OMA-MMS minimal envelope whose byte shape
+mirrors AOSP's `com.google.android.mms.pdu.PduComposer`) around a
+synthetically generated 1x1 PNG and submits it through
+`SmsManager.sendMultimediaMessage` with a null location URL, so the
+carrier-configured MMSC is used. Before the one-use gate is spent, every one
+of these must pass:
+
+1. **Debug build** (`BuildConfig.DEBUG`).
+2. **Build allowlist.** The recipient must appear exactly in the
+   `zrotextMmsSpikeAllowlist` Gradle property of the debug build
+   (`-PzrotextMmsSpikeAllowlist=+E164[,+E164]`). The default is empty, which
+   refuses every recipient; one malformed entry empties the whole list.
+3. **Confirmation dialog.** The operator reviews the exact recipient and SIM
+   in a dialog and arms one attempt. The arm is held in memory for five
+   minutes and consumed by the first grant.
+4. **Server grant.** The phone sends only after an `mms_spike_grant` frame
+   arrives on the authenticated device stream. Like `synthetic_grant`, it must
+   carry exactly `v`, `type`, `grant_id`, `device_id`, `connection_epoch`,
+   `recipient_digest`, `expires_at_ms` and `recipient_e164`, and match the
+   authenticated device and connection epoch, the confirmed and allowlisted
+   recipient, and an expiry at most 35 seconds ahead. An unarmed or invalid
+   grant fails the session. **No server issues this frame yet**, and it is not
+   part of `protocol/v1`; until a server issuer exists, the spike is armed but
+   never sends.
+5. **STOP suppression.** The keyed `sender-v1` token (the Android Keystore
+   HMAC used by the SMS path) is looked up in the local suppression list, and a
+   lookup failure counts as suppressed. The lookup is repeated under the local
+   suppression lock immediately before the radio call.
+
+One attempt is allowed per installation. The gate is committed before any
+radio call, and an uncertain result is journaled as unknown and never retried
+automatically.
+
+Privacy: the local journal (`files/mms_spike/journal.log`) records only the
+attempt and transaction IDs, event kinds and fixed result codes; it holds no
+recipient, recipient token or hash, subject or media, and its validator
+rejects any other detail text. The composed PDU
+(`files/mms_spike/<attempt>.pdu`) necessarily contains the plaintext recipient
+and subject while the platform MMS service may read it. It is deleted when the
+sent callback arrives, when the five-minute timeout fires, when the radio call
+throws, and on every exit before the radio call. If the process dies in
+between, the next time the screen opens it deletes any PDU whose attempt is no
+longer awaiting its callback. The recipient and subject are otherwise held
+only in memory and are not logged.
+
+This tool is JVM-tested for composition, journaling, gating and PDU cleanup
+only. The emulator cannot prove MMS. A physical-device spike must still find
+out whether the platform MMS service can read the FileProvider URI and whether
+the carrier's MMSC accepts the PDU; both are recorded as device findings in the
+issue, not as claims of this repository.
+
 ## Inbound SMS transport
 
 The inbound pilot receives carrier SMS through Android's `SMS_RECEIVED` broadcast. An RCS message visible in Google Messages does not exercise this receiver. The [Android SMS API](https://developer.android.com/reference/android/provider/Telephony.Sms.Intents) defines the broadcast for SMS; the app cannot turn Google Messages RCS on or off through that API.

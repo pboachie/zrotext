@@ -426,6 +426,12 @@ class AuthenticatedGatewayService : Service() {
                                 }
                             }
                         }
+                        MmsSpikeGrantValidator.FRAME_TYPE -> {
+                            // Debug builds only (#438); the release implementation rejects the frame.
+                            check(machine.phase == DeviceStreamMachine.Phase.ACTIVE)
+                            MmsSpikeGrants.onGrantFrame(applicationContext, frame, deviceId,
+                                machine.heartbeatEpoch())
+                        }
                         "radio_event_ack" -> {
                             requireFields(frame, setOf("v", "type", "event_id", "state", "submit_permitted"))
                             check(frame.opt("state") is String && frame.opt("submit_permitted") is Boolean)

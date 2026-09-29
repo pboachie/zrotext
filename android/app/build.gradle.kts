@@ -43,6 +43,11 @@ val preparationProbeFixtures = if (isolatedPreparationProbe) tasks.register<Sync
     into(layout.buildDirectory.dir("generated/preparationProbeFixtures"))
 } else null
 
+val mmsSpikeAllowlist = providers.gradleProperty("zrotextMmsSpikeAllowlist").orNull.orEmpty()
+require(Regex("[+0-9,]*").matches(mmsSpikeAllowlist)) {
+    "zrotextMmsSpikeAllowlist must be comma-separated +E.164 numbers"
+}
+
 tasks.named<CyclonedxDirectTask>("cyclonedxDirectBom") {
     // This inventory describes dependencies resolved for the shipped release APK.
     includeConfigs = listOf("releaseRuntimeClasspath")
@@ -72,6 +77,11 @@ android {
         release {
             isMinifyEnabled = false
         }
+        debug {
+            // MMS spike (#438) recipients, set only by whoever builds the debug APK:
+            // -PzrotextMmsSpikeAllowlist=+E164[,+E164]. Empty (the default) refuses all.
+            buildConfigField("String", "MMS_SPIKE_ALLOWLIST", "\"$mmsSpikeAllowlist\"")
+        }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -79,6 +89,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
     testOptions {
         // Render the real Material fields and semantics in JVM accessibility tests.
@@ -96,6 +107,8 @@ android {
     }
     if (isolatedPreparationProbe) {
         sourceSets.getByName("main").manifest.srcFile("src/preparationProbe/AndroidManifest.xml")
+        // The probe APK must declare no components, so it skips the debug MMS spike manifest.
+        sourceSets.getByName("debug").manifest.srcFile("src/preparationProbe/DebugAndroidManifest.xml")
         sourceSets.getByName("androidTest") {
             manifest.srcFile("src/preparationProbeTest/AndroidManifest.xml")
             java.setSrcDirs(listOf("src/preparationProbeTest/java", layout.buildDirectory.dir("generated/preparationProbeFixtures")))
