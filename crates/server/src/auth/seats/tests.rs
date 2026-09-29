@@ -800,8 +800,11 @@ async fn seat_management_is_tenant_scoped() {
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; disposable observer seat schema"]
 async fn seat_and_invitation_budgets_are_bounded() {
+    // The caps are pinned to their documented value of ten rather than to the
+    // constants, so raising either constant fails this test.
+    assert_eq!((MAX_OPEN_INVITATIONS, MAX_ACTIVE_OBSERVERS), (10, 10));
     let mut f = Fixture::new(false).await;
-    for index in 0..MAX_OPEN_INVITATIONS {
+    for index in 0..10 {
         create_invitation(
             &mut f.db,
             &f.hasher,
@@ -816,7 +819,7 @@ async fn seat_and_invitation_budgets_are_bounded() {
         Err(AuthError::Conflict)
     ));
     let page = list_seats(&f.db, &f.owner).await.unwrap();
-    assert_eq!(page.invitations.len() as i64, MAX_OPEN_INVITATIONS);
+    assert_eq!(page.invitations.len() as i64, 10);
     // Canceling one opens exactly one slot again.
     let victim = page.invitations.last().unwrap().id;
     assert!(
@@ -839,7 +842,7 @@ async fn seat_and_invitation_budgets_are_bounded() {
         .unwrap();
 
     // The live-observer seat cap also bounds invitation creation.
-    for index in 0..MAX_ACTIVE_OBSERVERS {
+    for index in 0..10 {
         let user_id = Uuid::new_v4();
         f.db
             .execute(
