@@ -36,7 +36,7 @@ macro_rules! export_schema {
             [$(($name, include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/compose/migrations/", $name)))),+]
         };
     }
-const EXPORT_SCHEMA: [(&str, &str); 51] = export_schema!(
+const EXPORT_SCHEMA: [(&str, &str); 52] = export_schema!(
     "001_foundation.sql",
     "002_auth.sql",
     "003_delivery.sql",
@@ -88,6 +88,7 @@ const EXPORT_SCHEMA: [(&str, &str); 51] = export_schema!(
     "049_owner_queue_probe_indexes.sql",
     "050_message_attempts_recent_index.sql",
     "051_failover_controller_state.sql",
+    "052_admission_pending_index.sql",
 );
 
 #[test]
@@ -165,6 +166,15 @@ async fn export_is_tenant_bound_and_carries_owner_content() {
         // out-of-band preparation here or the validation DO block in
         // these two files raises "... is absent, invalid, or has the
         // wrong definition" against a schema that never built the index.
+        if name == "052_admission_pending_index.sql" {
+            db.batch_execute(
+                "CREATE INDEX CONCURRENTLY messages_admission_pending \
+                     ON messages(account_id,device_id) \
+                     WHERE state IN ('queued','claimed')",
+            )
+            .await
+            .unwrap();
+        }
         if name == "034_delivery_sweep_index.sql" {
             db.batch_execute(
                 "CREATE INDEX CONCURRENTLY messages_in_flight_updated \

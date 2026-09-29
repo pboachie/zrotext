@@ -448,6 +448,70 @@ pub async fn dispatch_one(
     .await
 }
 
+/// One lane tick: one probe statement over the due and expired-lease partial
+/// indexes decides whether there is anything to do, so an idle tick opens no
+/// transaction. Otherwise close expired leases once, then drain a bounded
+/// backlog on this socket. An expired lease alone makes the tick non-idle, so
+/// a crashed worker's delivery is recovered even when nothing else is due.
+/// A deferral that belongs to one delivery - an endpoint secret
+/// the vault cannot decrypt, or a lease that went stale mid-flight - does not
+/// abort the rest of the batch; storage failures do.
+pub async fn dispatch_lane_batch(
+    client: &mut Client,
+    vault: &WebhookSecretVault,
+    worker_id: &str,
+    limit: usize,
+) -> Result<usize, WorkerError> {
+    dispatch_lane_batch_with(
+        client,
+        vault,
+        worker_id,
+        limit,
+        |url, body, secret| async move { webhook_egress::post_signed(&url, &body, &secret).await },
+    )
+    .await
+}
+
+/// The seam a test uses to exercise the probe, recovery and drain loop without
+/// external DNS. See `dispatch_lane_batch` for the lane contract.
+pub(crate) async fn dispatch_lane_batch_with<F, Fut>(
+    client: &mut Client,
+    vault: &WebhookSecretVault,
+    worker_id: &str,
+    limit: usize,
+    sender: F,
+) -> Result<usize, WorkerError>
+where
+    F: Fn(String, Vec<u8>, Zeroizing<Vec<u8>>) -> Fut,
+    Fut: Future<Output = Result<webhook_egress::DeliveryResponse, EgressError>>,
+{
+    if !inbound::webhook_lane_has_work(client).await? {
+        return Ok(0);
+    }
+    inbound::recover_expired_webhook_leases(client).await?;
+    let mut processed = 0;
+    while processed < limit {
+        match dispatch_one_with(client, vault, worker_id, |url, body, secret| {
+            sender(url, body, secret)
+        })
+        .await
+        {
+            Ok(true) => processed += 1,
+            Ok(false) => break,
+            Err(WorkerError::Secret) => {
+                // The delivery was claimed and deferred; it cannot come back
+                // this tick, so it still counts against the bound.
+                processed += 1;
+            }
+            Err(WorkerError::Storage(inbound::InboundError::StaleLease)) => {
+                processed += 1;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(processed)
+}
+
 /// A payload-free operational signal for private process logs.
 pub async fn queue_signal(
     client: &Client,

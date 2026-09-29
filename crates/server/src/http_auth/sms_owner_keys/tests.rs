@@ -18,7 +18,7 @@ macro_rules! migration {
 
 // The ceremony runs on the complete schema. SQL is embedded at build time so
 // the test never executes files discovered at runtime.
-const TEST_MIGRATIONS: [(&str, &str); 51] = [
+const TEST_MIGRATIONS: [(&str, &str); 52] = [
     ("001_foundation.sql", migration!("001_foundation.sql")),
     ("002_auth.sql", migration!("002_auth.sql")),
     ("003_delivery.sql", migration!("003_delivery.sql")),
@@ -208,6 +208,10 @@ const TEST_MIGRATIONS: [(&str, &str); 51] = [
         "051_failover_controller_state.sql",
         migration!("051_failover_controller_state.sql"),
     ),
+    (
+        "052_admission_pending_index.sql",
+        migration!("052_admission_pending_index.sql"),
+    ),
 ];
 
 #[test]
@@ -360,6 +364,15 @@ async fn postgres_owner_key_ceremony_requires_possession_mfa_and_revokes_only_sm
     let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
     for (name, migration) in TEST_MIGRATIONS {
+        if name == "052_admission_pending_index.sql" {
+            db.batch_execute(
+                "CREATE INDEX CONCURRENTLY messages_admission_pending \
+                     ON messages(account_id,device_id) \
+                     WHERE state IN ('queued','claimed')",
+            )
+            .await
+            .unwrap();
+        }
         if name == "034_delivery_sweep_index.sql" {
             // Mirror the migrator's autocommit preparation before the
             // numbered, checksummed validation file.

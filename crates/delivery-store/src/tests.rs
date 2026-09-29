@@ -2,7 +2,7 @@ use super::*;
 
 // Keep the admission fixtures on the complete, reviewed schema. SQL is
 // embedded at build time so tests never execute files discovered at runtime.
-const TEST_MIGRATIONS: [(&str, &str); 51] = [
+const TEST_MIGRATIONS: [(&str, &str); 52] = [
     (
         "001_foundation.sql",
         include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
@@ -209,6 +209,10 @@ const TEST_MIGRATIONS: [(&str, &str); 51] = [
         "051_failover_controller_state.sql",
         include_str!("../../../deploy/compose/migrations/051_failover_controller_state.sql"),
     ),
+    (
+        "052_admission_pending_index.sql",
+        include_str!("../../../deploy/compose/migrations/052_admission_pending_index.sql"),
+    ),
 ];
 
 /// Applies every numbered migration in order. Shared by the PostgreSQL-backed
@@ -232,6 +236,16 @@ pub(crate) async fn apply_test_migrations(client: &Client) {
                 .batch_execute(
                     "CREATE INDEX CONCURRENTLY message_events_attempt_evidence \
                  ON message_events(attempt_id,evidence_code)",
+                )
+                .await
+                .unwrap();
+        }
+        if name == "052_admission_pending_index.sql" {
+            client
+                .batch_execute(
+                    "CREATE INDEX CONCURRENTLY messages_admission_pending \
+                     ON messages(account_id,device_id) \
+                     WHERE state IN ('queued','claimed')",
                 )
                 .await
                 .unwrap();
@@ -1210,6 +1224,10 @@ async fn postgres_fences_unknown_and_tenant_idempotency() {
             .unwrap();
         assert_eq!(payload.recipient_e164, "+15551234567");
         assert_eq!(payload.body, "test only");
+        store
+            .confirm_synthetic_grant(&grant, &session)
+            .await
+            .unwrap();
         let event = |evidence, event_id| RadioEvent {
             event_id,
             account_id: account,
@@ -1251,6 +1269,11 @@ async fn postgres_fences_unknown_and_tenant_idempotency() {
             .unwrap();
         assert!(matches!(
             store.synthetic_payload_for_grant(&grant, &session).await,
+            Err(StoreError::StaleFence)
+        ));
+        // The content-free confirmation enforces the same fence.
+        assert!(matches!(
+            store.confirm_synthetic_grant(&grant, &session).await,
             Err(StoreError::StaleFence)
         ));
         assert!(matches!(
@@ -2353,6 +2376,570 @@ async fn recent_grant_precheck_is_one_bounded_index_probe() {
         );
         client.batch_execute("ROLLBACK").await.unwrap();
     }
+    client
+        .batch_execute(&format!(
+            "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
+        ))
+        .await
+        .unwrap();
+}
+
+/// A byte-pipe between the client and PostgreSQL that counts Sync-terminated
+/// batches the client sends. Every extended-protocol round trip ends with a
+/// Sync message, so the count is the number of client waits per operation:
+/// the legacy `query(&str)` path needs a Parse/Describe wait before each
+/// Bind/Execute, while the typed API sends Parse+Bind+Execute in one flight.
+struct DescribeCountingProxy {
+    url: String,
+    round_trips: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl DescribeCountingProxy {
+    /// Forwards one client connection to `target` and reports its URL plus the
+    /// shared round-trip counter.
+    async fn start(target: &str) -> (Self, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::{TcpListener, TcpStream};
+
+        let (authority, rest) = target
+            .split_once("://")
+            .expect("database URL with scheme")
+            .1
+            .split_once('/')
+            .expect("database URL with a path");
+        let userinfo = match authority.rsplit_once('@') {
+            Some((userinfo, _)) => format!("{userinfo}@"),
+            None => String::new(),
+        };
+        let upstream = authority
+            .rsplit_once('@')
+            .map_or(authority, |(_, host)| host)
+            .to_string();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let url = format!("postgres://{userinfo}127.0.0.1:{port}/{rest}");
+        let round_trips = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = round_trips.clone();
+        let task = tokio::spawn(async move {
+            let (mut client, _) = listener.accept().await.unwrap();
+            let mut server = TcpStream::connect(upstream).await.unwrap();
+            // The counting direction is client to server. The first message
+            // is the untagged startup frame; every later one is a one-byte
+            // tag followed by a big-endian length that counts itself.
+            let mut from_client = Vec::new();
+            let mut startup_skipped = false;
+            let mut client_buf = [0u8; 8192];
+            let mut server_buf = [0u8; 8192];
+            loop {
+                tokio::select! {
+                    read = client.read(&mut client_buf) => {
+                        let read = match read { Ok(0) | Err(_) => break, Ok(read) => read };
+                        from_client.extend_from_slice(&client_buf[..read]);
+                        let mut cursor = 0;
+                        if !startup_skipped {
+                            let startup = from_client
+                                .get(..4)
+                                .map(|prefix| u32::from_be_bytes(prefix.try_into().unwrap()) as usize);
+                            match startup {
+                                Some(length) if from_client.len() >= length && length >= 8 => {
+                                    cursor = length;
+                                    startup_skipped = true;
+                                }
+                                // The rest of the startup frame has not
+                                // arrived yet; nothing is countable so far.
+                                _ => cursor = 0,
+                            }
+                        }
+                        while from_client.len() - cursor >= 5 {
+                            let length =
+                                u32::from_be_bytes(from_client[cursor + 1..cursor + 5].try_into().unwrap())
+                                    as usize;
+                            if from_client.len() - cursor < 1 + length {
+                                break;
+                            }
+                            if from_client[cursor] == b'S' {
+                                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            }
+                            cursor += 1 + length;
+                        }
+                        from_client.drain(..cursor);
+                        if server.write_all(&client_buf[..read]).await.is_err() {
+                            break;
+                        }
+                    }
+                    read = server.read(&mut server_buf) => {
+                        let read = match read { Ok(0) | Err(_) => break, Ok(read) => read };
+                        if client.write_all(&server_buf[..read]).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+            let _ = client.shutdown().await;
+            let _ = server.shutdown().await;
+        });
+        (Self { url, round_trips }, task)
+    }
+}
+
+/// The admission transaction must pay exactly one round trip per statement:
+/// six extended-protocol statements for a fresh unmetered accept, and the
+/// control query shows the legacy path pays two (#476).
+#[tokio::test]
+#[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn admission_pending_count_reads_the_account_pending_index_only() {
+    let url = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL")
+        .expect("set ZT_DELIVERY_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let (client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let schema = format!("admission_pending_test_{}", Uuid::new_v4().simple());
+    client
+        .batch_execute(&format!(
+            "CREATE SCHEMA {schema}; SET search_path TO {schema}"
+        ))
+        .await
+        .unwrap();
+    apply_test_migrations(&client).await;
+    let account = Uuid::new_v4();
+    let device = Uuid::new_v4();
+    let other_account = Uuid::new_v4();
+    let other_device = Uuid::new_v4();
+    for id in [&account, &other_account] {
+        client
+            .execute("INSERT INTO accounts(id) VALUES($1)", &[id])
+            .await
+            .unwrap();
+    }
+    for (id, owner) in [(&device, &account), (&other_device, &other_account)] {
+        client
+            .execute(
+                "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'synthetic phone')",
+                &[id, owner],
+            )
+            .await
+            .unwrap();
+    }
+    // The counted tenant keeps a large terminal history. Retention only redacts
+    // content, so these rows stay forever and must never feed the count.
+    client
+        .execute(
+            "INSERT INTO messages(id,account_id,device_id,recipient_e164,recipient_digest,transport_mode,transport_payload,request_digest,state,expires_at) \
+             SELECT gen_random_uuid(),$1,$2,'+15551234567',decode(repeat('11',32),'hex'),\
+             'synthetic_alpha',decode('01','hex'),decode(repeat('22',32),'hex'),\
+             'delivered',now()-interval '1 day' FROM generate_series(1,8000)",
+            &[&account, &device],
+        )
+        .await
+        .unwrap();
+    // Two live pending messages for the counted device.
+    for _ in 0..2 {
+        client
+            .execute(
+                "INSERT INTO messages(id,account_id,device_id,recipient_e164,recipient_digest,transport_mode,transport_payload,request_digest,state,expires_at) \
+                 VALUES(gen_random_uuid(),$1,$2,'+15551234567',decode(repeat('11',32),'hex'),\
+                 'synthetic_alpha',decode('01','hex'),decode(repeat('22',32),'hex'),\
+                 'queued',now()+interval '1 hour')",
+                &[&account, &device],
+            )
+            .await
+            .unwrap();
+    }
+    // Other tenants hold large live queues. A global pending walk, the plan the
+    // expiry-keyed index serves, would visit all of their rows.
+    client
+        .execute(
+            "INSERT INTO messages(id,account_id,device_id,recipient_e164,recipient_digest,transport_mode,transport_payload,request_digest,state,expires_at) \
+             SELECT gen_random_uuid(),$1,$2,'+15551234567',decode(repeat('11',32),'hex'),\
+             'synthetic_alpha',decode('01','hex'),decode(repeat('22',32),'hex'),\
+             'queued',now()+interval '1 hour' FROM generate_series(1,16000)",
+            &[&other_account, &other_device],
+        )
+        .await
+        .unwrap();
+    client.batch_execute("ANALYZE messages").await.unwrap();
+
+    let counts = client
+        .query_one(
+            "SELECT COUNT(*) FILTER (WHERE device_id=$2), COUNT(*) FROM messages \
+             WHERE account_id=$1 AND state IN ('queued','claimed') AND expires_at>now()",
+            &[&account, &device],
+        )
+        .await
+        .unwrap();
+    assert_eq!(counts.get::<_, i64>(0), 2);
+    assert_eq!(counts.get::<_, i64>(1), 2);
+
+    // The admission count is the exact accept_inner query, run inside the
+    // account-locked admission transaction on every accept.
+    let plan: Vec<String> = client
+        .query(
+            "EXPLAIN (ANALYZE, BUFFERS, COSTS OFF) \
+             SELECT COUNT(*) FILTER (WHERE device_id=$2), COUNT(*) FROM messages \
+             WHERE account_id=$1 AND state IN ('queued','claimed') AND expires_at>now()",
+            &[&account, &device],
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| row.get::<_, String>(0))
+        .collect();
+    let shown = plan.join("\n");
+    // The scan must go through the account-keyed partial index and none of the
+    // history, expiry-keyed, or device-keyed alternatives.
+    assert!(shown.contains("messages_admission_pending"), "{shown}");
+    for wrong in [
+        "Seq Scan on messages",
+        "messages_account_created",
+        "messages_pending_expiry",
+        "messages_owner_pending_state",
+    ] {
+        assert!(!shown.contains(wrong), "{wrong} in: {shown}");
+    }
+    // Neither the tenant's terminal history nor other tenants' queues were
+    // fetched and filtered away: the heap saw only the account's pending rows.
+    for line in &plan {
+        if let Some(rest) = line.trim().strip_prefix("Rows Removed by Filter: ") {
+            let removed: i64 = rest.trim().parse().unwrap_or(0);
+            assert_eq!(removed, 0, "{shown}");
+        }
+    }
+    let blocks: u64 = plan
+        .iter()
+        .filter_map(|line| line.trim().strip_prefix("Buffers: shared "))
+        .flat_map(|rest| rest.split(' '))
+        .filter_map(|part| {
+            part.split_once('=')
+                .and_then(|(_, n)| n.parse::<u64>().ok())
+        })
+        .sum();
+    assert!(blocks <= 16, "count touched {blocks} blocks: {shown}");
+    client
+        .batch_execute(&format!(
+            "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
+        ))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn admission_pays_one_round_trip_per_statement() {
+    let url = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL")
+        .expect("set ZT_DELIVERY_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let (setup, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let schema = format!("round_trip_test_{}", Uuid::new_v4().simple());
+    setup
+        .batch_execute(&format!(
+            "CREATE SCHEMA {schema}; SET search_path TO {schema}"
+        ))
+        .await
+        .unwrap();
+    apply_test_migrations(&setup).await;
+    let account_id = Uuid::new_v4();
+    let device_id = Uuid::new_v4();
+    setup
+        .execute("INSERT INTO accounts(id) VALUES($1)", &[&account_id])
+        .await
+        .unwrap();
+    setup
+        .execute(
+            "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'wire fixture')",
+            &[&device_id, &account_id],
+        )
+        .await
+        .unwrap();
+
+    let (proxy, proxy_task) = DescribeCountingProxy::start(&url).await;
+    let (mut client, connection) = tokio_postgres::connect(&proxy.url, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    client
+        .batch_execute(&format!("SET search_path TO {schema}"))
+        .await
+        .unwrap();
+    let before = proxy.round_trips.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(before, 0, "setup runs outside the proxied connection");
+    let mut store = DeliveryStore::new(&mut client);
+    store
+        .accept(NewMessage {
+            account_id,
+            device_id,
+            client_message_id: Uuid::new_v4(),
+            idempotency_key: "round-trip",
+            recipient_e164: "+15551234567",
+            synthetic_payload: b"synthetic wire count",
+            expires_at_ms: now_ms() + 60_000,
+        })
+        .await
+        .unwrap();
+    // One Sync-terminated batch per statement: account lock, suppression
+    // check, idempotency insert, pending counts, message insert, dispatch job
+    // insert. BEGIN/COMMIT use the simple protocol and add none.
+    let after_accept = proxy.round_trips.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(
+        after_accept, 6,
+        "fresh unmetered admission must pay exactly one round trip per statement"
+    );
+    // Control: the legacy `query(&str)` path waits on Parse/Describe before
+    // Bind/Execute, so the same single statement costs at least two batches.
+    client
+        .query_opt("SELECT $1::text", &[&"legacy-control"])
+        .await
+        .unwrap();
+    let after_control = proxy.round_trips.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        after_control >= after_accept + 2,
+        "legacy query(&str) must still pay a separate prepare round trip"
+    );
+    proxy_task.abort();
+    setup
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+#[tokio::test]
+#[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn one_evidence_aggregate_keeps_conflict_segment_and_proof_rules() {
+    let url = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL")
+        .expect("set ZT_DELIVERY_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let (mut client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let schema = format!("evidence_aggregate_test_{}", Uuid::new_v4().simple());
+    client
+        .batch_execute(&format!(
+            "CREATE SCHEMA {schema}; SET search_path TO {schema}"
+        ))
+        .await
+        .unwrap();
+    apply_test_migrations(&client).await;
+    let account_id = Uuid::new_v4();
+    let device_id = Uuid::new_v4();
+    let message_id = Uuid::new_v4();
+    client
+        .execute("INSERT INTO accounts(id) VALUES($1)", &[&account_id])
+        .await
+        .unwrap();
+    client
+        .execute(
+            "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'synthetic phone')",
+            &[&device_id, &account_id],
+        )
+        .await
+        .unwrap();
+    client
+        .execute("UPDATE deployment_authority SET dispatch_enabled=TRUE", &[])
+        .await
+        .unwrap();
+    let mut store = DeliveryStore::new(&mut client);
+    store
+        .accept(NewMessage {
+            account_id,
+            device_id,
+            client_message_id: message_id,
+            idempotency_key: "evidence-aggregate",
+            recipient_e164: "+15551234567",
+            synthetic_payload: b"synthetic regression",
+            expires_at_ms: now_ms() + 60_000,
+        })
+        .await
+        .unwrap();
+    let session = store
+        .connect_session(account_id, device_id, "test", "test", 60)
+        .await
+        .unwrap();
+    let digest: [u8; 32] = Sha256::digest(b"+15551234567").into();
+    // The synthetic claim returns the message content from its own
+    // transaction, so the socket never reads it separately.
+    let (claim, content) = store
+        .claim_synthetic_for_device_and_recipient("test", account_id, device_id, &digest)
+        .await
+        .unwrap()
+        .unwrap();
+    let content = content.unwrap();
+    assert_eq!(content.recipient_e164, "+15551234567");
+    assert_eq!(content.transport_payload, b"synthetic regression");
+    assert_eq!(content.transport_mode, "synthetic_alpha");
+    let attempt_id = Uuid::new_v4();
+    let grant = store
+        .issue_grant(&claim, &session, attempt_id)
+        .await
+        .unwrap();
+    store
+        .confirm_synthetic_grant(&grant, &session)
+        .await
+        .unwrap();
+    let event = |evidence, segment: Option<(i32, i32)>| RadioEvent {
+        event_id: Uuid::new_v4(),
+        account_id,
+        device_id,
+        message_id,
+        attempt_id,
+        evidence,
+        observed_at_ms: now_ms(),
+        segment_index: segment.map(|(index, _)| index),
+        segment_count: segment.map(|(_, count)| count),
+    };
+    // A sent callback needs a durable intent first.
+    assert!(matches!(
+        store
+            .record_radio_event(event(Evidence::SentCallbackOk, Some((0, 3))))
+            .await,
+        Err(StoreError::InvalidTransition)
+    ));
+    store
+        .record_radio_event(event(Evidence::DurableSubmitIntent, None))
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .record_radio_event(event(Evidence::SentCallbackOk, Some((0, 3))))
+            .await
+            .unwrap(),
+        MessageState::Submitting
+    );
+    // A later segment must declare the same count as the first.
+    assert!(matches!(
+        store
+            .record_radio_event(event(Evidence::SentCallbackOk, Some((1, 2))))
+            .await,
+        Err(StoreError::InvalidInput)
+    ));
+    // A radio callback on the attempt forbids a no-submit proof.
+    assert!(matches!(
+        store
+            .record_radio_event(event(Evidence::ProvenNoSubmit, None))
+            .await,
+        Err(StoreError::InvalidTransition)
+    ));
+    // The same aggregate also sees the intent a conflict requires, and the
+    // conflict then refuses every later callback on this attempt.
+    assert_eq!(
+        store
+            .record_radio_event(event(Evidence::CallbackConflict, None))
+            .await
+            .unwrap(),
+        MessageState::Unknown
+    );
+    for (evidence, segment) in [
+        (Evidence::SentCallbackOk, Some((1, 3))),
+        (Evidence::DeliveryCallbackOk, None),
+        (Evidence::ProvenNoSubmit, None),
+    ] {
+        assert!(matches!(
+            store.record_radio_event(event(evidence, segment)).await,
+            Err(StoreError::InvalidTransition)
+        ));
+    }
+    let recorded: Vec<String> = client
+        .query(
+            "SELECT evidence_code FROM message_events WHERE attempt_id=$1 ORDER BY observed_at,id",
+            &[&attempt_id],
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| row.get(0))
+        .collect();
+    assert_eq!(recorded.len(), 3);
+    client
+        .batch_execute(&format!(
+            "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
+        ))
+        .await
+        .unwrap();
+}
+
+/// The folded billing guard statement must keep every FOR SHARE lock the
+/// sequential reads took: while an admission holds them, billing ingress and
+/// reconciliation cannot change the risk event, the unfinished
+/// reconciliation, the past-due subscription or the policy row it just read.
+/// Each row is set up so only the guard statement locks it (the
+/// reconciliation is not done, so `recon_done_lock` does not cover it).
+#[tokio::test]
+#[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn billed_admission_guard_share_locks_every_row_it_reads() {
+    let url = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL")
+        .expect("set ZT_DELIVERY_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let (mut client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let schema = format!("billing_guard_lock_test_{}", Uuid::new_v4().simple());
+    client
+        .batch_execute(&format!(
+            "CREATE SCHEMA {schema}; SET search_path TO {schema}"
+        ))
+        .await
+        .unwrap();
+    apply_test_migrations(&client).await;
+    let account = Uuid::new_v4();
+    client
+        .execute("INSERT INTO accounts(id) VALUES($1)", &[&account])
+        .await
+        .unwrap();
+    for statement in [
+        "INSERT INTO billing_customers(account_id,stripe_customer_id) VALUES($1,'cus_guardlock')",
+        "INSERT INTO billing_reconciliations(stripe_subscription_id,account_id,stripe_customer_id, \
+         dirty_generation,processed_generation) VALUES('sub_guardlock',$1,'cus_guardlock',2,1)",
+        "INSERT INTO billing_subscriptions(stripe_subscription_id,account_id,stripe_customer_id,stripe_status) \
+         VALUES('sub_guardlock',$1,'cus_guardlock','past_due')",
+        "INSERT INTO billing_events(stripe_event_id,event_type,account_id,body_sha256,disposition) \
+         VALUES('evt_guardlock','charge.refunded',$1,decode(repeat('ab',32),'hex'),'queued')",
+        "INSERT INTO billing_risk_events(stripe_event_id,stripe_charge_id,risk_kind,account_id) \
+         VALUES('evt_guardlock','ch_guardlock','refund',$1)",
+        "INSERT INTO usage_quota_policies(account_id,metric,limit_units,source) \
+         VALUES($1,'outbound_message',10,'stripe_test')",
+    ] {
+        client.execute(statement, &[&account]).await.unwrap();
+    }
+    let (mut peer, peer_connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move { peer_connection.await.unwrap() });
+    peer.batch_execute(&format!("SET search_path TO {schema}"))
+        .await
+        .unwrap();
+    let guarded = [
+        "SELECT 1 FROM billing_risk_events WHERE account_id=$1 FOR UPDATE NOWAIT",
+        "SELECT 1 FROM billing_reconciliations WHERE account_id=$1 FOR UPDATE NOWAIT",
+        "SELECT 1 FROM billing_subscriptions WHERE account_id=$1 FOR UPDATE NOWAIT",
+        "SELECT 1 FROM usage_quota_policies WHERE account_id=$1 FOR UPDATE NOWAIT",
+    ];
+    // Nothing holds the rows yet: the peer's probe itself is lockable.
+    for statement in guarded {
+        let probe = peer.transaction().await.unwrap();
+        assert_eq!(probe.query(statement, &[&account]).await.unwrap().len(), 1);
+        probe.rollback().await.unwrap();
+    }
+    let tx = client.transaction().await.unwrap();
+    let (_, bound) = lock_billing_account(&tx, account, true).await.unwrap();
+    assert_eq!(bound, Some(true));
+    // The queued risk event makes this admission a payment hold, but only
+    // after the guard statement has read, and locked, all four rows.
+    assert!(matches!(
+        reserve_outbound(&tx, account, Uuid::new_v4(), None, bound).await,
+        Err(StoreError::PaymentHold)
+    ));
+    for statement in guarded {
+        let error = peer
+            .query(statement, &[&account])
+            .await
+            .expect_err(statement);
+        assert_eq!(
+            error.code(),
+            Some(&SqlState::LOCK_NOT_AVAILABLE),
+            "{statement}: {error:?}"
+        );
+    }
+    tx.rollback().await.unwrap();
     client
         .batch_execute(&format!(
             "SET search_path TO public; DROP SCHEMA {schema} CASCADE"

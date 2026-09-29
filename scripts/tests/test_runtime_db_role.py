@@ -59,6 +59,10 @@ class RuntimeRoleTest(unittest.TestCase):
             if migration.name == "050_message_attempts_recent_index.sql":
                 cls.sql("CREATE INDEX CONCURRENTLY message_attempts_device_created "
                         "ON public.message_attempts(account_id,device_id,created_at);")
+            if migration.name == "052_admission_pending_index.sql":
+                cls.sql("CREATE INDEX CONCURRENTLY messages_admission_pending "
+                        "ON public.messages(account_id,device_id) "
+                        "WHERE state IN ('queued','claimed');")
             cls.sql("BEGIN;\n" + migration.read_text(encoding="utf-8") + "\nCOMMIT;")
 
     @classmethod

@@ -22,6 +22,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(test)]
 use tokio_postgres::Client;
+use tokio_postgres::types::Type;
 use uuid::Uuid;
 use zrotext_delivery_store::{DeliveryStore, NewMessage, StoreError};
 use zrotext_domain::MessageState;
@@ -304,9 +305,9 @@ async fn accept(
         return Err(MessageHttpError::NotFound);
     }
     let active = client
-        .query_opt(
+        .query_typed_opt(
             "SELECT 1 FROM devices WHERE account_id=$1 AND id=$2 AND revoked_at IS NULL",
-            &[&account_id, &body.device_id],
+            &[(&account_id, Type::UUID), (&body.device_id, Type::UUID)],
         )
         .await
         .map_err(|_| MessageHttpError::Unavailable)?
