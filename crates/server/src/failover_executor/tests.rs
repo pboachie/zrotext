@@ -13,7 +13,7 @@ use zrotext_failover_quorum::executor::Application;
 const MIGRATION_FOUNDATION: &str =
     include_str!("../../../../deploy/compose/migrations/001_foundation.sql");
 const MIGRATION_FAILOVER_JOURNAL: &str =
-    include_str!("../../../../deploy/compose/migrations/050_failover_controller_state.sql");
+    include_str!("../../../../deploy/compose/migrations/051_failover_controller_state.sql");
 
 #[test]
 fn executor_env_is_disabled_by_default_and_reads_nothing_else() {
