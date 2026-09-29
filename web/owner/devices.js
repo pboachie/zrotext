@@ -401,7 +401,17 @@ async function completeSignIn() {
 }
 
 function loadOwnerData() {
-  return Promise.all([loadDevices(), loadDeviceCapacity(), loadMessages(), loadOptOutReview(), loadOwnerHolds(), loadKeys(), loadWebhookEndpoints(), loadSessions()]);
+  // The above-the-fold sections load first and alone; the below-the-fold
+  // panels wait for them so a sign-in never occupies half the request pool.
+  return Promise.all([loadDevices(), loadMessages()]).finally(() => loadBelowFoldSections());
+}
+
+function loadBelowFoldSections() {
+  // Below-the-fold panels fill in one at a time after the visible lists,
+  // keeping a sign-in at two concurrent requests for the data the owner
+  // sees first and one for everything after.
+  const sections = [loadOptOutReview, loadOwnerHolds, loadKeys, loadWebhookEndpoints, loadSessions];
+  return sections.reduce((chain, load) => chain.then(() => load()), Promise.resolve());
 }
 
 function clearPairing() {
@@ -818,7 +828,7 @@ async function loadDeviceCapacity() {
   prompt.hidden = true;
   prompt.textContent = "";
   try {
-    const result = await api("/v1/billing/status");
+    const result = await api("/v1/billing/device-capacity");
     const capacity = result.deviceCapacity;
     if (result.mode !== "test" || !capacity ||
         !Number.isSafeInteger(capacity.limit) || capacity.limit < 0 ||
