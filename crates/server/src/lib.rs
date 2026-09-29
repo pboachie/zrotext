@@ -5,6 +5,7 @@ pub mod auth;
 pub mod billing;
 pub mod device_socket;
 pub mod enrollment;
+pub mod failover_executor;
 pub mod http_auth;
 pub mod http_enrollment;
 pub mod http_messages;
