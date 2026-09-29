@@ -1,9 +1,24 @@
 {
   "schema_version": 2,
   "note": "Machine-readable supported-device list for the ZROtext Android gateway. scripts/check_device_compatibility.py re-verifies this file against android/app/build.gradle.kts, the repository tree, docs/DEVICE-COMPATIBILITY.md, and the CI allowlist in scripts/android_device_smoke.py. Validation checks the consistency of recorded claims and that referenced tests and jobs exist; it does not run any device, emulator, or simulator. The no_radio_run and radio_run fields link the procedure that re-verifies a configuration; the status and evidence fields record what has actually been proven.",
-  "statuses": ["supported", "partial", "excluded", "unevaluated"],
-  "sim_types": ["physical", "esim", "none", "unknown"],
-  "evidence_levels": ["physical", "emulator", "device-sim", "none"],
+  "statuses": [
+    "supported",
+    "partial",
+    "excluded",
+    "unevaluated"
+  ],
+  "sim_types": [
+    "physical",
+    "esim",
+    "none",
+    "unknown"
+  ],
+  "evidence_levels": [
+    "physical",
+    "emulator",
+    "device-sim",
+    "none"
+  ],
   "repeatable_runs": [
     {
       "id": "selected-device-tests",
@@ -58,7 +73,9 @@
       "workflow": ".github/workflows/ci.yml",
       "job": "rust",
       "runs": "crates/device-sim/src/main.rs",
-      "tests": ["crates/device-sim/src/main.rs"],
+      "tests": [
+        "crates/device-sim/src/main.rs"
+      ],
       "notes": "The rust job in .github/workflows/ci.yml runs cargo test --locked --workspace, which includes the inline tests of crates/device-sim, plus the simulator timeline through cargo run -p zrotext-device-sim. Host-side evidence for delivery-state logic only: it represents no phone hardware, Android level, SIM, or carrier."
     },
     {
@@ -90,20 +107,28 @@
     {
       "id": "samsung-galaxy-s24-ultra",
       "name": "Samsung Galaxy S24 Ultra (SM-S928U)",
-      "api": {"min": 36, "max": 36},
+      "api": {
+        "min": 36,
+        "max": 36
+      },
       "sim": "unknown",
       "status": "partial",
       "evidence": "physical",
       "tests": [],
-      "no_radio_run": ["physical-no-radio-classes"],
+      "no_radio_run": [
+        "physical-no-radio-classes"
+      ],
       "radio_run": "opt-in-radio-instrumentation",
       "source": "docs/DEVICE-COMPATIBILITY.md",
-      "notes": "One controlled physical run on Android 16 recorded in the source document: one authorized send with positive sent and delivery callbacks and recipient confirmation, one captured inbound upload, a roughly 275-second screen-off socket run, and recovery after a loopback TLS proxy cut. This is a manual record, not a repeatable repository test, so the status stays partial. The record states one active SIM without stating physical SIM or eSIM. The linked no_radio_run and radio_run procedures define re-verification for this configuration; neither has been executed on this device yet, so no no-radio hardware result and no opt-in radio instrumentation result is claimed here. The only claimed evidence stays the manual physical record in the source document."
+      "notes": "One controlled physical run on Android 16 recorded in the source document: one authorized send with positive sent and delivery callbacks and recipient confirmation, one captured inbound upload, a roughly 275-second screen-off socket run, and recovery after a loopback TLS proxy cut. This is a manual record, not a repeatable repository test, so the status stays partial. The record states one active SIM without stating physical SIM or eSIM. The linked no_radio_run and radio_run procedures define re-verification for this configuration; neither has been executed on this device yet, so no no-radio hardware result and no opt-in radio instrumentation result is claimed here. The only claimed evidence stays the manual physical record in the source document; a separate no-radio run on a two-active-eSIM configuration observed the activation gate decline before any signature and the physical-SIM checks skip on that configuration. Neither run performed an activation."
     },
     {
       "id": "emulator-api-36-ci",
       "name": "Android Virtual Device, API 36 (CI selected-device-tests configuration)",
-      "api": {"min": 36, "max": 36},
+      "api": {
+        "min": 36,
+        "max": 36
+      },
       "sim": "none",
       "status": "supported",
       "evidence": "emulator",
@@ -118,7 +143,9 @@
         "android/app/src/androidTest/java/org/zrotext/gateway/SealedPreparationDeviceTest.kt",
         "android/app/src/preparationProbeTest/java/org/zrotext/gateway/PreparationProbeDeviceTest.kt"
       ],
-      "no_radio_run": ["selected-device-tests"],
+      "no_radio_run": [
+        "selected-device-tests"
+      ],
       "radio_run": null,
       "source": ".github/workflows/android-device-smoke.yml",
       "notes": "The exact virtual configuration CI executes: a disposable API 36 google_apis x86_64 AVD with no SIM, recreated fresh on every run, running the no-radio allowlist and preparation probe selected by scripts/android_device_smoke.py. Supported as a regression environment: the run repeats on every android-touching pull request. Emulator evidence proves nothing about carrier delivery, OEM power management, Keystore hardware behavior, or physical hardware."
@@ -126,7 +153,10 @@
     {
       "id": "emulator-api-28",
       "name": "Android Virtual Device, API 28 (Android 9)",
-      "api": {"min": 28, "max": 28},
+      "api": {
+        "min": 28,
+        "max": 28
+      },
       "sim": "none",
       "status": "supported",
       "evidence": "emulator",
@@ -136,7 +166,9 @@
         "android/app/src/androidTest/java/org/zrotext/gateway/VirtualInboundSmsDeviceTest.kt",
         "android/tools/virtual_inbound_sms.py"
       ],
-      "no_radio_run": ["api-28-emulator-suites"],
+      "no_radio_run": [
+        "api-28-emulator-suites"
+      ],
       "radio_run": null,
       "source": "docs/ANDROID-TESTING.md",
       "notes": "Supported as a virtual regression environment: the foreground-refusal and stale-evidence suites and the virtual inbound receiver check run on API 28 emulators through the documented commands in the source document. An emulator proves nothing about carrier delivery, OEM power management, or Keystore hardware behavior, and is not a production gateway."
@@ -144,7 +176,10 @@
     {
       "id": "emulator-api-34-plus",
       "name": "Android Virtual Device, API 34 or later",
-      "api": {"min": 34, "max": 36},
+      "api": {
+        "min": 34,
+        "max": 36
+      },
       "sim": "none",
       "status": "supported",
       "evidence": "emulator",
@@ -154,7 +189,9 @@
         "android/app/src/androidTest/java/org/zrotext/gateway/VirtualInboundSmsDeviceTest.kt",
         "android/tools/virtual_inbound_sms.py"
       ],
-      "no_radio_run": ["api-34-emulator-suites"],
+      "no_radio_run": [
+        "api-34-emulator-suites"
+      ],
       "radio_run": null,
       "source": "docs/ANDROID-TESTING.md",
       "notes": "The same documented suites on API 34 or later emulators. The recorded upper bound follows the app targetSdk, the newest Android level the app targets and has exercised; levels above it are unevaluated. API 36 is additionally exercised on every android-touching pull request by the separate selected-device-tests CI run recorded as its own entry. The virtual inbound check does not pin one API level. Emulator evidence does not cover carrier behavior or real hardware."
@@ -166,8 +203,12 @@
       "sim": "none",
       "status": "supported",
       "evidence": "device-sim",
-      "tests": ["crates/device-sim/src/main.rs"],
-      "no_radio_run": ["device-sim-suite"],
+      "tests": [
+        "crates/device-sim/src/main.rs"
+      ],
+      "no_radio_run": [
+        "device-sim-suite"
+      ],
       "radio_run": null,
       "source": "crates/device-sim/src/main.rs",
       "notes": "The deterministic two-hub fault model with inline Rust tests and a simulator-timeline run in the CI rust job. It models writer and radio-ambiguity decisions on the host and represents no phone hardware, Android level, SIM, or carrier, so it carries no API range."
@@ -209,7 +250,7 @@
       "no_radio_run": [],
       "radio_run": null,
       "source": "docs/DEVICE-COMPATIBILITY.md",
-      "notes": "No eSIM line has been exercised. The single physical record states one active SIM without naming its type."
+      "notes": "No eSIM line activation has been exercised. On a dual-eSIM configuration (two active embedded lines; see the Samsung Galaxy S24 Ultra entry) the activation gate declined before any signature was requested. A dedicated eSIM-only device remains unevaluated."
     }
   ]
 }
