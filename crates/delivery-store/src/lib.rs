@@ -276,11 +276,12 @@ impl<'a> DeliveryStore<'a> {
         let recipient_digest = Sha256::digest(input.recipient_e164.as_bytes()).to_vec();
         let expiry = input.expires_at_ms as f64;
         let tx = self.client.transaction().await?;
-        let require_reservation = if let MeteringTime::Alpha { billing_enabled } = metering {
-            lock_billing_account(&tx, input.account_id, billing_enabled).await?
-        } else {
-            !matches!(metering, MeteringTime::Unmetered)
-        };
+        let (require_reservation, billed_tenant) =
+            if let MeteringTime::Alpha { billing_enabled } = metering {
+                lock_billing_account(&tx, input.account_id, billing_enabled).await?
+            } else {
+                (!matches!(metering, MeteringTime::Unmetered), false)
+            };
         // Suppression writers take this same account lock. A STOP that wins
         // before admission commits must be visible here, even across sites.
         // Take it before idempotency lookup so an exact retry cannot return
@@ -430,15 +431,16 @@ impl<'a> DeliveryStore<'a> {
         match metering {
             MeteringTime::Unmetered => {}
             MeteringTime::Database => {
-                reserve_outbound(&tx, input.account_id, message_id, None).await?
+                reserve_outbound(&tx, input.account_id, message_id, None, None).await?
             }
             MeteringTime::Alpha { .. } if require_reservation => {
-                reserve_outbound(&tx, input.account_id, message_id, None).await?
+                reserve_outbound(&tx, input.account_id, message_id, None, Some(billed_tenant))
+                    .await?
             }
             MeteringTime::Alpha { .. } => {}
             #[cfg(test)]
             MeteringTime::UnixMillis(unix_ms) => {
-                reserve_outbound(&tx, input.account_id, message_id, Some(unix_ms)).await?
+                reserve_outbound(&tx, input.account_id, message_id, Some(unix_ms), None).await?
             }
         }
         tx.execute_typed(
@@ -1268,11 +1270,15 @@ async fn reservation_exists(
 }
 
 // Shared with dormant sealed admission; preserve billing-customer/account lock order.
+// Returns whether a reservation is required and whether the tenant is bound,
+// so `reserve_outbound` never re-reads `billing_customers` in the same
+// transaction. The unbound branch's `FOR UPDATE` on the account row blocks a
+// concurrent binding's foreign-key share, keeping the answer stable here.
 async fn lock_billing_account(
     tx: &Transaction<'_>,
     account_id: Uuid,
     billing_enabled: bool,
-) -> Result<bool, StoreError> {
+) -> Result<(bool, bool), StoreError> {
     // Billing ingress locks an existing customer row before taking
     // account-related FK locks. Follow that order for a bound tenant.
     let bound = tx
@@ -1288,7 +1294,7 @@ async fn lock_billing_account(
             &[(&account_id, Type::UUID)],
         )
         .await?;
-        Ok(true)
+        Ok((true, true))
     } else {
         // The stronger lock conflicts with a concurrent new binding's
         // FK KEY SHARE. Recheck after acquiring it; if the binding won
@@ -1310,7 +1316,7 @@ async fn lock_billing_account(
         {
             return Err(StoreError::QuotaNotConfigured);
         }
-        Ok(billing_enabled)
+        Ok((billing_enabled, false))
     }
 }
 
@@ -1319,16 +1325,23 @@ async fn reserve_outbound(
     account_id: Uuid,
     message_id: Uuid,
     at_unix_ms: Option<i64>,
+    billed_from_lock: Option<bool>,
 ) -> Result<(), StoreError> {
     // Hold the tenant binding while checking pending payment risk, subscription
     // reconciliation, and policy. Risk ingestion locks the same customer row.
-    let billed = tx
-        .query_typed_opt(
-            "SELECT 1 FROM billing_customers WHERE account_id=$1 FOR SHARE",
-            &[(&account_id, Type::UUID)],
-        )
-        .await?
-        .is_some();
+    // A caller that already ran `lock_billing_account` passes the binding it
+    // observed: its account-row lock keeps that answer stable, and the second
+    // customer read would return the same row the transaction still holds.
+    let billed = match billed_from_lock {
+        Some(billed) => billed,
+        None => tx
+            .query_typed_opt(
+                "SELECT 1 FROM billing_customers WHERE account_id=$1 FOR SHARE",
+                &[(&account_id, Type::UUID)],
+            )
+            .await?
+            .is_some(),
+    };
     if billed {
         if tx
             .query_typed_opt(
@@ -1379,43 +1392,34 @@ async fn reserve_outbound(
     if billed && policy.get::<_, String>(1) != "stripe_test" {
         return Err(StoreError::QuotaNotConfigured);
     }
-    let period_start: String = tx
+    // One statement reserves the month period: it derives the UTC month from
+    // the metering clock inline, creates the period on first use with the
+    // first reservation, increments under the same exactly-once guard the
+    // separate UPDATE carried (refunds excluded, limit respected), and writes
+    // the matching ledger row only when a unit was actually reserved. An empty
+    // upsert result means no unit was reserved and reports QuotaExceeded.
+    // One statement reserves the month period: it derives the UTC month from
+    // the metering clock inline, creates the period on first use (with the
+    // first reservation only when the policy limit admits it), increments
+    // under the same exactly-once guard the separate UPDATE carried (refunds
+    // excluded, limit respected), and writes the matching ledger row only
+    // when a unit was actually reserved. An upsert that reserved nothing
+    // reports no unit and maps to QuotaExceeded.
+    let reserved: bool = tx
         .query_typed_one(
-            "SELECT date_trunc('month', COALESCE(to_timestamp($1::bigint::double precision / 1000), \
-             transaction_timestamp()) AT TIME ZONE 'UTC')::date::text",
-            &[(&at_unix_ms, Type::INT8)],
+            "WITH period AS (                SELECT date_trunc('month', COALESCE(to_timestamp($2::bigint::double precision / 1000),                 transaction_timestamp()) AT TIME ZONE 'UTC')::date AS period_start),              upsert AS (                INSERT INTO usage_periods(account_id,metric,period_start,period_end,limit_units,reserved_units)                SELECT $1,'outbound_message',period_start,(period_start+interval '1 month')::date,$3,                       CASE WHEN $3>0 THEN 1 ELSE 0 END FROM period                ON CONFLICT(account_id,metric,period_start) DO UPDATE SET reserved_units=usage_periods.reserved_units+1                  WHERE usage_periods.reserved_units-usage_periods.refunded_units < usage_periods.limit_units                RETURNING reserved_units,period_start),              ledger AS (                INSERT INTO usage_ledger(account_id,message_id,metric,period_start,entry_kind,units)                SELECT $1,$4,'outbound_message',upsert.period_start,'reserve',1 FROM upsert WHERE upsert.reserved_units>0)              SELECT EXISTS(SELECT 1 FROM upsert WHERE reserved_units>0)",
+            &[
+                (&account_id, Type::UUID),
+                (&at_unix_ms, Type::INT8),
+                (&limit, Type::INT8),
+                (&message_id, Type::UUID),
+            ],
         )
         .await?
         .get(0);
-    tx.execute_typed(
-        "INSERT INTO usage_periods(account_id,metric,period_start,period_end,limit_units) \
-         VALUES($1,'outbound_message',$2::text::date,($2::text::date + interval '1 month')::date,$3) \
-         ON CONFLICT(account_id,metric,period_start) DO NOTHING",
-        &[(&account_id, Type::UUID), (&period_start, Type::TEXT), (&limit, Type::INT8)],
-    )
-    .await?;
-    let reserved = tx
-        .query_typed_opt(
-            "UPDATE usage_periods SET reserved_units=reserved_units+1 \
-             WHERE account_id=$1 AND metric='outbound_message' AND period_start=$2::text::date \
-               AND reserved_units-refunded_units < limit_units \
-             RETURNING period_start",
-            &[(&account_id, Type::UUID), (&period_start, Type::TEXT)],
-        )
-        .await?;
-    if reserved.is_none() {
+    if !reserved {
         return Err(StoreError::QuotaExceeded);
     }
-    tx.execute_typed(
-        "INSERT INTO usage_ledger(account_id,message_id,metric,period_start,entry_kind,units) \
-         VALUES($1,$2,'outbound_message',$3::text::date,'reserve',1)",
-        &[
-            (&account_id, Type::UUID),
-            (&message_id, Type::UUID),
-            (&period_start, Type::TEXT),
-        ],
-    )
-    .await?;
     Ok(())
 }
 

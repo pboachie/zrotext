@@ -32,6 +32,7 @@ pub struct AccountAdmission<'tx, 'connection> {
     tx: &'tx Transaction<'connection>,
     account: Uuid,
     reserve: bool,
+    billed: bool,
 }
 
 pub async fn lock_account<'tx, 'connection>(
@@ -39,7 +40,7 @@ pub async fn lock_account<'tx, 'connection>(
     account: Uuid,
     billing_enabled: bool,
 ) -> Result<AccountAdmission<'tx, 'connection>, StoreError> {
-    let reserve = lock_billing_account(tx, account, billing_enabled).await?;
+    let (reserve, billed) = lock_billing_account(tx, account, billing_enabled).await?;
     if tx
         .query_opt(
             "SELECT 1 FROM accounts WHERE id=$1 AND disabled_at IS NULL",
@@ -54,6 +55,7 @@ pub async fn lock_account<'tx, 'connection>(
         tx,
         account,
         reserve,
+        billed,
     })
 }
 
@@ -139,7 +141,7 @@ impl AccountAdmission<'_, '_> {
             return Err(StoreError::MessageIdConflict);
         }
         if self.reserve {
-            reserve_outbound(tx, self.account, input.message_id, None).await?;
+            reserve_outbound(tx, self.account, input.message_id, None, Some(self.billed)).await?;
         }
         tx.execute(
             "INSERT INTO dispatch_jobs(message_id,account_id,device_id) VALUES($1,$2,$3)",

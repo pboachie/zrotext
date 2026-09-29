@@ -2538,3 +2538,231 @@ async fn admission_pays_one_round_trip_per_statement() {
         .await
         .unwrap();
 }
+
+/// A billed alpha admission for a bound, healthy tenant must pay exactly one
+/// round trip per statement: thirteen statements inside the account-locked
+/// transaction after the duplicate customer read and the four-statement usage
+/// reservation were folded away (#479).
+#[tokio::test]
+#[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn billed_alpha_admission_pays_thirteen_round_trips() {
+    let url = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL")
+        .expect("set ZT_DELIVERY_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let (setup, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let schema = format!("billed_round_trip_{}", Uuid::new_v4().simple());
+    setup
+        .batch_execute(&format!(
+            "CREATE SCHEMA {schema}; SET search_path TO {schema}"
+        ))
+        .await
+        .unwrap();
+    apply_test_migrations(&setup).await;
+    let account = Uuid::new_v4();
+    let device = Uuid::new_v4();
+    setup
+        .execute("INSERT INTO accounts(id) VALUES($1)", &[&account])
+        .await
+        .unwrap();
+    setup
+        .execute(
+            "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'wire fixture')",
+            &[&device, &account],
+        )
+        .await
+        .unwrap();
+    setup
+        .execute(
+            "INSERT INTO billing_customers(account_id,stripe_customer_id) VALUES($1,'cus_wirefixture')",
+            &[&account],
+        )
+        .await
+        .unwrap();
+    setup
+        .execute(
+            "INSERT INTO billing_reconciliations(stripe_subscription_id,account_id,stripe_customer_id,dirty_generation,processed_generation) \
+             VALUES('sub_wirefixture',$1,'cus_wirefixture',1,1)",
+            &[&account],
+        )
+        .await
+        .unwrap();
+    setup
+        .execute(
+            "INSERT INTO usage_quota_policies(account_id,metric,limit_units,source) VALUES($1,'outbound_message',10,'stripe_test')",
+            &[&account],
+        )
+        .await
+        .unwrap();
+
+    let (proxy, proxy_task) = DescribeCountingProxy::start(&url).await;
+    let (mut client, connection) = tokio_postgres::connect(&proxy.url, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    client
+        .batch_execute(&format!("SET search_path TO {schema}"))
+        .await
+        .unwrap();
+    DeliveryStore::new(&mut client)
+        .accept_alpha(
+            NewMessage {
+                account_id: account,
+                client_message_id: Uuid::new_v4(),
+                device_id: device,
+                idempotency_key: "billed-round-trip",
+                recipient_e164: "+15551234567",
+                synthetic_payload: b"synthetic billed wire count",
+                expires_at_ms: now_ms() + 60_000,
+            },
+            true,
+        )
+        .await
+        .unwrap();
+    // Customer share plus account lock, suppression check, idempotency insert,
+    // pending counts, message insert, risk, reconciliation, past-due lock,
+    // grace check, policy, the one-statement usage reservation, dispatch job.
+    assert_eq!(
+        proxy.round_trips.load(std::sync::atomic::Ordering::SeqCst),
+        13,
+        "billed admission must read billing_customers once and reserve in one statement"
+    );
+    proxy_task.abort();
+    setup
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+/// Reservation periods follow the UTC month of the metering clock, split at
+/// the month boundary, and increment within a month; without an explicit
+/// metering clock the transaction timestamp picks the current month (#479).
+#[tokio::test]
+#[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn reserved_periods_split_on_the_utc_month_boundary() {
+    let url = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL")
+        .expect("set ZT_DELIVERY_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let (mut client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let schema = format!("month_boundary_{}", Uuid::new_v4().simple());
+    client
+        .batch_execute(&format!(
+            "CREATE SCHEMA {schema}; SET search_path TO {schema}"
+        ))
+        .await
+        .unwrap();
+    apply_test_migrations(&client).await;
+    let account = Uuid::new_v4();
+    let device = Uuid::new_v4();
+    client
+        .execute("INSERT INTO accounts(id) VALUES($1)", &[&account])
+        .await
+        .unwrap();
+    client
+        .execute(
+            "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'boundary fixture')",
+            &[&device, &account],
+        )
+        .await
+        .unwrap();
+    client
+        .execute(
+            "INSERT INTO usage_quota_policies(account_id,metric,limit_units) VALUES($1,'outbound_message',10)",
+            &[&account],
+        )
+        .await
+        .unwrap();
+    let mut store = DeliveryStore::new(&mut client);
+    // 2026-01-31T23:59:59.999Z is the last millisecond of its UTC month;
+    // the next millisecond starts February. Both explicit clocks and the
+    // transaction-timestamp fallback must agree on the boundary.
+    for (sequence, at_unix_ms) in [(1, 1_769_903_999_999_i64), (2, 1_769_904_000_000_i64)] {
+        store
+            .accept_metered_at(
+                NewMessage {
+                    account_id: account,
+                    client_message_id: Uuid::new_v4(),
+                    device_id: device,
+                    idempotency_key: &format!("boundary-{sequence}"),
+                    recipient_e164: "+15551234567",
+                    synthetic_payload: b"synthetic boundary",
+                    expires_at_ms: now_ms() + 60_000,
+                },
+                at_unix_ms,
+            )
+            .await
+            .unwrap();
+    }
+    store
+        .accept_metered(NewMessage {
+            account_id: account,
+            client_message_id: Uuid::new_v4(),
+            device_id: device,
+            idempotency_key: "boundary-clockless",
+            recipient_e164: "+15551234567",
+            synthetic_payload: b"synthetic boundary",
+            expires_at_ms: now_ms() + 60_000,
+        })
+        .await
+        .unwrap();
+    // A second reservation inside January proves the upsert increments the
+    // existing period instead of opening a duplicate row.
+    store
+        .accept_metered_at(
+            NewMessage {
+                account_id: account,
+                client_message_id: Uuid::new_v4(),
+                device_id: device,
+                idempotency_key: "boundary-january-again",
+                recipient_e164: "+15551234567",
+                synthetic_payload: b"synthetic boundary",
+                expires_at_ms: now_ms() + 60_000,
+            },
+            1_769_903_999_999,
+        )
+        .await
+        .unwrap();
+    let current_month: String = client
+        .query_one(
+            "SELECT date_trunc('month', transaction_timestamp() AT TIME ZONE 'UTC')::date::text",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    let periods: Vec<(String, i64)> = client
+        .query(
+            "SELECT period_start::text,reserved_units FROM usage_periods WHERE account_id=$1 ORDER BY period_start",
+            &[&account],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| (row.get(0), row.get(1)))
+        .collect();
+    assert_eq!(
+        periods,
+        vec![
+            ("2026-01-01".to_string(), 2),
+            ("2026-02-01".to_string(), 1),
+            (current_month, 1),
+        ],
+        "periods must split at the UTC month boundary and increment within a month"
+    );
+    let ledger: i64 = client
+        .query_one(
+            "SELECT count(*) FROM usage_ledger WHERE account_id=$1 AND entry_kind='reserve'",
+            &[&account],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(ledger, 4, "every reservation wrote exactly one ledger row");
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
