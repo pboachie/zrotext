@@ -271,13 +271,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Sealed v1 message admission. Disabled by default; off leaves the
     // route unmounted so no sealed code path runs.
     let sealed_admission_enabled = optional_bool("SEALED_ADMISSION_ENABLED")?;
-    // Independent-quorum failover executor. Disabled by default; when off
-    // (or absent) nothing further is read and no thread, database or store
-    // access exists. When on, the validated configuration runs the controller
-    // loop against the authoritative writer database with its observation
-    // source backed by the durable consensus store directory; no transport
-    // reports into that store in this build, so every round holds
-    // fail-closed (see docs/MULTI-LOCATION.md).
+    // Independent-quorum failover executor and member-side reporting loop.
+    // Disabled by default; when off (or absent) nothing further is read and
+    // no thread, database or store access exists. When on, the validated
+    // configuration runs the controller loop against the authoritative
+    // writer database with its observation source backed by the durable
+    // consensus store directory, while this instance's reporting loop
+    // records its own probe rounds into the same store; no production
+    // probe source exists yet, so those rounds abstain and the executor
+    // holds fail-closed (see docs/MULTI-LOCATION.md).
     let failover_executor_env = failover_executor::ExecutorEnv::parse(
         env::var("FAILOVER_QUORUM_ENABLED").ok().as_deref(),
         env::var("FAILOVER_QUORUM_MEMBERS").ok().as_deref(),
@@ -287,6 +289,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .ok()
             .as_deref(),
         env::var("FAILOVER_QUORUM_STORE_DIR").ok().as_deref(),
+        env::var("FAILOVER_QUORUM_PROBE_INTERVAL_MS")
+            .ok()
+            .as_deref(),
+        env::var("FAILOVER_QUORUM_PROBE_TIMEOUT_MS").ok().as_deref(),
+        env::var("FAILOVER_QUORUM_REPORT_MEMBER_ID").ok().as_deref(),
     )?;
     if mfa_recovery_only && mfa_enrollment_enabled {
         return Err("MFA enrollment cannot be enabled in recovery-only mode".into());

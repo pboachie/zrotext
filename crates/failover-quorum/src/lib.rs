@@ -32,12 +32,25 @@
 //!   a future external authority (monotonic, refuses backward promotions).
 //!   It is an interface only: this build ships a test implementation and no
 //!   external anchoring.
+//! * [`observe`] forms one member's quorum report per round from raw probe
+//!   outcomes — the reporter half of the member-reporting transport — with
+//!   fail-closed rules for member-local probe faults.
+//! * [`report`] is the member-side probe-and-report loop: each round it
+//!   gathers probes through an injected [`report::ProbeSource`], forms the
+//!   observation with [`observe::MemberObserver`], and submits the round's
+//!   report — never an abstention — to an injected
+//!   [`report::ObservationSink`], the thin adapter over the consensus
+//!   store's append path. A sink failure fails the loop closed sticky for
+//!   reporting (mirroring the store's own poisoning) until an explicit
+//!   recovery.
 //!
 //! What this crate deliberately does **not** do yet: it listens on no
-//! network and runs no consensus service — no transport carries member
-//! reports into the store, so in production the store stays empty and every
-//! round fails closed — it observes no database itself, it does not stop or
-//! reseed PostgreSQL hosts (external watchdog integration), the epoch anchor
+//! network and runs no consensus service — no cross-member transport
+//! carries reports between machines, and no production probe source exists
+//! (the deterministic probe implementations in this build abstain), so in
+//! production the store stays empty and every round fails closed — it
+//! observes no database itself, it does not stop or reseed PostgreSQL hosts
+//! (external watchdog integration), the epoch anchor
 //! has no real implementation, and the store journals are never rotated or
 //! compacted; later increments per the implementation-status notes in
 //! `docs/MULTI-LOCATION.md`.
@@ -45,7 +58,9 @@
 pub mod anchor;
 pub mod decision;
 pub mod executor;
+pub mod observe;
 pub mod policy;
+pub mod report;
 pub mod store;
 
 #[cfg(test)]

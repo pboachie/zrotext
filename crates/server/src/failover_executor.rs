@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Server wiring for the independent-quorum failover executor.
+//! Server wiring for the independent-quorum failover executor and the
+//! member-side reporting loop.
 //!
 //! [`ExecutorEnv::parse`] mirrors the `AlphaPolicy::parse` convention: a pure
 //! function over raw environment values, so the default-off behavior stays
@@ -17,43 +18,60 @@
 //! The observation source is the durable consensus store
 //! (`FAILOVER_QUORUM_STORE_DIR`): one membership record plus append-only
 //! per-member journals, served through the decision model's freshness
-//! window. No transport carries member reports into it in this build, so
-//! the store stays empty and every round holds fail-closed; a store that is
-//! corrupt, truncated or belongs to another membership fails the executor
-//! closed at startup instead of serving uncertain evidence (see
-//! `docs/MULTI-LOCATION.md`).
+//! window; a store that is corrupt, truncated or belongs to another
+//! membership fails the executor closed at startup instead of serving
+//! uncertain evidence (see `docs/MULTI-LOCATION.md`). Alongside the
+//! executor thread, the member-side reporting loop records this member's
+//! rounds into the same shared store (`FAILOVER_QUORUM_REPORT_MEMBER_ID`),
+//! through the crate's sink adapter — the store stays the only writer of
+//! its journals. No production probe source exists in this build: the
+//! deterministic placeholder behind the `ProbeSource` seam abstains every
+//! round, so nothing is recorded in production and every round still holds
+//! fail-closed until that probe lands (a documented follow-up).
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicBool, Ordering},
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use zrotext_failover_quorum::decision::{FailoverConfig, SiteFenceState};
+use zrotext_failover_quorum::decision::{FailoverConfig, Round, SiteFenceState};
 use zrotext_failover_quorum::executor::{
-    AuthoritySnapshot, FailoverExecutor, FenceOutcome, PromoteOutcome, WriterAuthority,
+    AuthoritySnapshot, FailoverExecutor, FenceOutcome, ObservationSource, PromoteOutcome,
+    WriterAuthority,
 };
+use zrotext_failover_quorum::observe::{MemberObserver, ProbeFault, RoundProbes, WriterProbe};
 use zrotext_failover_quorum::policy::QuorumPolicy;
-use zrotext_failover_quorum::store::{ConsensusStore, StoreObservationSource};
+use zrotext_failover_quorum::report::{ConsensusStoreSink, ProbeSource, ReportLoop, RoundOutcome};
+use zrotext_failover_quorum::store::ConsensusStore;
 
 /// Default `FAILOVER_QUORUM_CHECK_INTERVAL_MS`.
 pub const DEFAULT_CHECK_INTERVAL_MS: u64 = 5_000;
 
-/// Parsed `FAILOVER_QUORUM_*` wiring for the executor loop.
+/// Parsed `FAILOVER_QUORUM_*` wiring for the executor loop and the
+/// member-side reporting loop.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExecutorEnv {
     config: FailoverConfig,
     check_interval_ms: u64,
     store_dir: PathBuf,
+    probe_interval_ms: u64,
+    probe_timeout_ms: u64,
+    report_member_id: String,
 }
 
 impl ExecutorEnv {
-    /// Parse the executor wiring. Every argument is the raw environment
-    /// value; `None` means unset. `Ok(None)` means the module is disabled
-    /// and the caller must not construct or spawn anything — while the flag
-    /// is off nothing else is read, the store directory included. Invalid
-    /// values fail closed with an error instead of guessing.
+    /// Parse the executor and reporting wiring. Every argument is the raw
+    /// environment value; `None` means unset. `Ok(None)` means the module is
+    /// disabled and the caller must not construct or spawn anything — while
+    /// the flag is off nothing else is read, the store directory and the
+    /// reporting variables included. Invalid values fail closed with an
+    /// error instead of guessing. Nine arguments is the cost of parsing one
+    /// strictly-validated variable per parameter; grouping them would let a
+    /// caller pass partially-read environment state.
+    #[allow(clippy::too_many_arguments)]
     pub fn parse(
         enabled: Option<&str>,
         members: Option<&str>,
@@ -61,6 +79,9 @@ impl ExecutorEnv {
         standby_site: Option<&str>,
         check_interval_ms: Option<&str>,
         store_dir: Option<&str>,
+        probe_interval_ms: Option<&str>,
+        probe_timeout_ms: Option<&str>,
+        report_member_id: Option<&str>,
     ) -> Result<Option<Self>, String> {
         let policy = QuorumPolicy::parse(enabled, members)?;
         if !policy.enabled() {
@@ -102,12 +123,51 @@ impl ExecutorEnv {
                     .to_owned(),
             );
         }
+        let probe_interval_ms = match probe_interval_ms {
+            // The reporting loop defaults to lockstep with the executor's
+            // checks: one probe round per check round.
+            None => check_interval_ms,
+            Some(raw) => raw.parse::<u64>().map_err(|_| {
+                "FAILOVER_QUORUM_PROBE_INTERVAL_MS must be a number of milliseconds".to_owned()
+            })?,
+        };
+        if probe_interval_ms == 0 {
+            return Err("FAILOVER_QUORUM_PROBE_INTERVAL_MS must be greater than zero".to_owned());
+        }
+        let probe_timeout_ms = probe_timeout_ms
+            .filter(|raw| !raw.is_empty())
+            .ok_or(
+                "FAILOVER_QUORUM_PROBE_TIMEOUT_MS is required when FAILOVER_QUORUM_ENABLED=true",
+            )?
+            .parse::<u64>()
+            .map_err(|_| {
+                "FAILOVER_QUORUM_PROBE_TIMEOUT_MS must be a number of milliseconds".to_owned()
+            })?;
+        if probe_timeout_ms == 0 {
+            return Err("FAILOVER_QUORUM_PROBE_TIMEOUT_MS must be greater than zero".to_owned());
+        }
+        let report_member_id = report_member_id
+            .filter(|member| !member.is_empty())
+            .ok_or(
+                "FAILOVER_QUORUM_REPORT_MEMBER_ID is required when FAILOVER_QUORUM_ENABLED=true",
+            )?
+            .to_owned();
+        if !policy.members().contains(&report_member_id) {
+            return Err(
+                "FAILOVER_QUORUM_REPORT_MEMBER_ID must be one of the configured \
+                 FAILOVER_QUORUM_MEMBERS"
+                    .to_owned(),
+            );
+        }
         let config =
             FailoverConfig::new(policy.members().to_vec(), writer_site_id, standby_site_id)?;
         Ok(Some(Self {
             config,
             check_interval_ms,
             store_dir: PathBuf::from(store_dir),
+            probe_interval_ms,
+            probe_timeout_ms,
+            report_member_id,
         }))
     }
 
@@ -124,6 +184,21 @@ impl ExecutorEnv {
     /// The consensus store directory observations are journaled under.
     pub fn store_dir(&self) -> &Path {
         &self.store_dir
+    }
+
+    /// The reporting loop's probe interval.
+    pub fn probe_interval_ms(&self) -> u64 {
+        self.probe_interval_ms
+    }
+
+    /// The probe timeout the (future) production probe source will enforce.
+    pub fn probe_timeout_ms(&self) -> u64 {
+        self.probe_timeout_ms
+    }
+
+    /// The member identity this instance's reporting loop reports as.
+    pub fn report_member_id(&self) -> &str {
+        &self.report_member_id
     }
 }
 
@@ -372,22 +447,147 @@ fn open_consensus_store(env: &ExecutorEnv, healthy: &AtomicBool) -> Option<Conse
     }
 }
 
-/// Spawn the failover executor thread. `None` env (the default) spawns
-/// nothing at all and never touches `healthy`; `Some` runs the controller
-/// loop until `shutdown` is set or the process exits. If the executor cannot
-/// start — the writer-authority port or the consensus store fails — the
-/// thread clears `healthy` before it exits, so the failure is visible to
-/// operators through readiness rather than only as a log line. The handle
-/// is intentionally detached-style: the loop is best-effort and never
-/// blocks process exit.
+/// The store handle shared by the executor thread (reads rounds) and the
+/// reporting thread (appends reports): one [`ConsensusStore`], one lock, so
+/// the store stays the only writer of its journals while both loops run.
+type SharedStore = Arc<Mutex<ConsensusStore>>;
+
+/// Serves executor rounds from the shared store with exactly the
+/// [`zrotext_failover_quorum::store::StoreObservationSource`] semantics:
+/// each collect serves only the fresh records appended since the last
+/// record served per member (a high-water sequence), so a report counts in
+/// at most one check round.
+struct SharedStoreSource {
+    store: SharedStore,
+    served: HashMap<String, u64>,
+}
+
+impl SharedStoreSource {
+    fn new(store: SharedStore) -> Self {
+        Self {
+            store,
+            served: HashMap::new(),
+        }
+    }
+}
+
+impl ObservationSource for SharedStoreSource {
+    fn collect(&mut self, now_ms: u64) -> Round {
+        let store = self
+            .store
+            .lock()
+            .expect("the consensus store mutex was poisoned");
+        store.unserved_round(now_ms, &mut self.served)
+    }
+}
+
+/// The deterministic placeholder behind the reporting loop's
+/// `ProbeSource` seam: every probe is indeterminate, so the observer
+/// abstains every round and the loop records nothing. No production probe
+/// source exists in this build — a real one (writer epoch read, site fence,
+/// watchdog stop confirmation, standby readiness, former-writer health,
+/// bounded by `FAILOVER_QUORUM_PROBE_TIMEOUT_MS`) is deliberately deferred;
+/// an abstaining member is the fail-closed stand-in, never fabricated
+/// evidence.
+struct AbstainingProbeSource;
+
+impl ProbeSource for AbstainingProbeSource {
+    fn probe(&mut self) -> RoundProbes {
+        RoundProbes {
+            writer: WriterProbe::Indeterminate,
+            writer_site_fence: Err(ProbeFault::Indeterminate),
+            writer_stop: Err(ProbeFault::Indeterminate),
+            standby: Err(ProbeFault::Indeterminate),
+            former_writer: Err(ProbeFault::Indeterminate),
+        }
+    }
+}
+
+/// Spawn the member-side reporting thread: one probe round per
+/// `FAILOVER_QUORUM_PROBE_INTERVAL_MS`, formed by the crate's observer and
+/// recorded through the store sink until `shutdown` is set (the same
+/// graceful-drain flag the executor loop obeys). A sticky sink failure — the
+/// loop fails closed for reporting and keeps probing — is logged once; it
+/// does not clear `healthy`: a reporter that records nothing can only lose
+/// quorum and hold (never fabricate evidence), so it stays a log-line
+/// condition, cleared by a process restart.
+fn spawn_failover_reporter(
+    env: ExecutorEnv,
+    store: SharedStore,
+    shutdown: Arc<AtomicBool>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::Builder::new()
+        .name("failover-quorum-reporter".to_owned())
+        .spawn(move || {
+            eprintln!(
+                "failover quorum reporter running (reporting as {} every {}ms, {}ms probe \
+                 timeout; no production probe source in this build, so every round abstains \
+                 and nothing is recorded)",
+                env.report_member_id(),
+                env.probe_interval_ms(),
+                env.probe_timeout_ms(),
+            );
+            let observer = MemberObserver::new(env.report_member_id())
+                .expect("the report member id was validated at parse");
+            let mut reporting = ReportLoop::new(
+                observer,
+                AbstainingProbeSource,
+                ConsensusStoreSink::new(store),
+            );
+            let interval = Duration::from_millis(env.probe_interval_ms());
+            let mut failure_logged = false;
+            loop {
+                if shutdown.load(Ordering::Acquire) {
+                    break;
+                }
+                match reporting.run_round(now_ms()) {
+                    RoundOutcome::SinkFailed if !failure_logged => {
+                        eprintln!(
+                            "failover quorum reporter: recording a report failed; reporting is \
+                             fail-closed until the process restarts (probes continue, the \
+                             executor can only lose quorum and hold)"
+                        );
+                        failure_logged = true;
+                    }
+                    _ => {}
+                }
+                std::thread::sleep(interval);
+            }
+        })
+        .expect("spawn failover-quorum-reporter thread")
+}
+
+/// The threads of the enabled failover wiring: the executor loop applying
+/// decisions, and the member-side reporter recording rounds into the same
+/// store. Both stop at the shared drain flag.
+pub struct FailoverExecutorThreads {
+    pub executor: std::thread::JoinHandle<()>,
+    pub reporter: std::thread::JoinHandle<()>,
+}
+
+/// Spawn the failover executor and reporter threads. `None` env (the
+/// default) spawns nothing at all and never touches `healthy`; `Some` runs
+/// the controller loop and the reporting loop until `shutdown` is set or
+/// the process exits. If the wiring cannot start — the consensus store
+/// cannot open (corrupt, foreign membership, unwritable) — `healthy` is
+/// cleared and nothing is spawned, so the failure is visible to operators
+/// through readiness rather than only as a log line; a writer-authority
+/// port that cannot be built clears `healthy` from inside the executor
+/// thread. The handles are intentionally detached-style: both loops are
+/// best-effort and never block process exit.
 pub fn spawn_failover_executor(
     env: Option<ExecutorEnv>,
     database_url: String,
     shutdown: Arc<AtomicBool>,
     healthy: Arc<AtomicBool>,
-) -> Option<std::thread::JoinHandle<()>> {
+) -> Option<FailoverExecutorThreads> {
     let env = env?;
-    let handle = std::thread::Builder::new()
+    // One store instance is shared by both loops; it is opened here so a
+    // directory that cannot serve this quorum fails before any thread runs.
+    let store = open_consensus_store(&env, &healthy)?;
+    let store: SharedStore = Arc::new(Mutex::new(store));
+    let reporter = spawn_failover_reporter(env.clone(), store.clone(), shutdown.clone());
+    let executor = std::thread::Builder::new()
         .name("failover-quorum-executor".to_owned())
         .spawn(move || {
             let authority = match PgWriterAuthority::new(database_url) {
@@ -401,22 +601,21 @@ pub fn spawn_failover_executor(
                     return;
                 }
             };
-            let Some(store) = open_consensus_store(&env, &healthy) else {
-                return;
-            };
             eprintln!(
                 "failover quorum executor running ({} members, writer site {}, standby site {}, \
-                 {}ms checks, store {}); no transport reports into the store in this build, so \
-                 rounds hold",
+                 {}ms checks, store {}, reporter {} every {}ms); the reporter has no \
+                 production probe source in this build, so the store stays empty and rounds hold",
                 env.config().members().len(),
                 env.config().writer_site_id(),
                 env.config().standby_site_id(),
                 env.check_interval_ms(),
                 env.store_dir().display(),
+                env.report_member_id(),
+                env.probe_interval_ms(),
             );
             let mut executor = FailoverExecutor::new(
                 env.config().clone(),
-                StoreObservationSource::new(store),
+                SharedStoreSource::new(store),
                 authority,
             );
             let interval = Duration::from_millis(env.check_interval_ms());
@@ -435,7 +634,7 @@ pub fn spawn_failover_executor(
             }
         })
         .expect("spawn failover-quorum-executor thread");
-    Some(handle)
+    Some(FailoverExecutorThreads { executor, reporter })
 }
 
 fn now_ms() -> u64 {

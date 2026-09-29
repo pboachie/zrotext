@@ -40,8 +40,9 @@
 //! unit-testable. The [`InProcessSource`](crate::executor::InProcessSource)
 //! default collects nothing; the durable consensus store and its
 //! [`StoreObservationSource`](crate::store::StoreObservationSource) adapter
-//! are the source production wiring uses, and until a member-reporting
-//! transport exists that store stays empty, so every round fails closed.
+//! are the source production wiring uses, and until a production probe
+//! source and a cross-member transport exist that store stays empty, so
+//! every round fails closed.
 
 use crate::decision::{
     Decision, FailoverConfig, FailoverController, Phase, RestorablePhase, Round, SiteFenceState,
