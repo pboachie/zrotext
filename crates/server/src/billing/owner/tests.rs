@@ -117,6 +117,28 @@ async fn owner_status_omits_provider_ids_and_foreign_tenant_rows() {
     assert_eq!(empty["pendingReconciliations"], 0);
     assert_eq!(empty["subscriptions"].as_array().unwrap().len(), 0);
     assert_eq!(empty["deviceCapacity"]["enrollmentBlocked"], true);
+    // The lightweight endpoint returns the same capacity view, and nothing else.
+    let light = app
+        .clone()
+        .oneshot(get("/v1/billing/device-capacity", Some(&owner_a.token)))
+        .await
+        .unwrap();
+    assert_eq!(light.status(), StatusCode::OK);
+    assert_eq!(light.headers()[header::CACHE_CONTROL], "no-store");
+    let light: Value =
+        serde_json::from_slice(&to_bytes(light.into_body(), 4096).await.unwrap()).unwrap();
+    assert_eq!(light["mode"], "test");
+    assert_eq!(light["deviceCapacity"], empty["deviceCapacity"]);
+    assert_eq!(light.as_object().unwrap().len(), 2);
+    // An anonymous request is refused before any billing statement runs.
+    assert_eq!(
+        app.clone()
+            .oneshot(get("/v1/billing/device-capacity", None))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
 
     for (account, customer, subscription, status, recognized, dirty, processed) in [
         (

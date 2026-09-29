@@ -65,6 +65,7 @@ async function ownerPage({ eventSource = FakeEventSource } = {}) {
     if (url === "/v1/enrollment/devices" && (!options || options.method === "GET"))
       return response(200, { devices: state.devices, next_cursor: null });
     if (url === "/v1/billing/status") return response(404);
+    if (url === "/v1/billing/device-capacity") return response(404);
     if (url === "/v1/owner/messages") return response(200, { messages: state.messages, next_cursor: null });
     if (url === "/v1/owner/opt-out-review") return response(200, { holds: [], next_cursor: null });
     if (url === "/v1/owner/opt-out-holds") return response(200, { holds: [], next_cursor: null });

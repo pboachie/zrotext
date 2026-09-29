@@ -74,6 +74,7 @@ pub fn page_router(auth: AuthHttpState) -> Router {
 pub fn status_router(auth: AuthHttpState) -> Router {
     Router::new()
         .route("/status", get(status))
+        .route("/device-capacity", get(device_capacity))
         .layer(middleware::from_fn(no_store_response))
         .with_state(Arc::new(auth))
 }
@@ -121,14 +122,6 @@ async fn status(
         .await
         .map_err(|_| AuthHttpError::Unavailable)?
         .is_some();
-    let pending_reconciliations: i64 = db
-        .query_one(
-            "SELECT count(*) FROM billing_reconciliations WHERE account_id=$1 AND dirty_generation>processed_generation",
-            &[&account_id],
-        )
-        .await
-        .map_err(|_| AuthHttpError::Unavailable)?
-        .get(0);
     let review_reconciliations: i64 = db
         .query_one("SELECT count(*) FROM billing_reconciliations WHERE account_id=$1 AND state='needs_review' AND dirty_generation>processed_generation", &[&account_id])
         .await
@@ -142,20 +135,8 @@ async fn status(
         .await
         .map_err(|_| AuthHttpError::Unavailable)?
         .get(0);
-    let capacity = db
-        .query_one(
-            "SELECT (SELECT limit_devices FROM billing_device_caps WHERE account_id=$1), (SELECT count(*) FROM devices WHERE account_id=$1 AND revoked_at IS NULL), (SELECT enabled FROM billing_device_cap_config WHERE singleton=true)",
-            &[&account_id],
-        )
-        .await
-        .map_err(|_| AuthHttpError::Unavailable)?;
-    let cap_policy_enabled: bool = capacity.get(2);
-    let limit: Option<i64> = if cap_policy_enabled {
-        capacity.get(0)
-    } else {
-        None
-    };
-    let active: i64 = capacity.get(1);
+    let (device_capacity, pending_reconciliations) = device_capacity_view(&db, account_id).await?;
+    let limit = device_capacity.limit;
     let projection = db
         .query_one(
             "SELECT (SELECT count(*) FROM billing_subscriptions WHERE account_id=$1 AND stripe_status NOT IN ('canceled','incomplete_expired','provider_deleted')), (SELECT reason FROM billing_quota_audit WHERE account_id=$1 ORDER BY changed_at DESC, id DESC LIMIT 1), (SELECT limit_units FROM usage_quota_policies WHERE account_id=$1 AND metric='outbound_message' AND source='stripe_test'), (SELECT EXISTS(SELECT 1 FROM billing_payment_holds WHERE account_id=$1))",
@@ -193,14 +174,7 @@ async fn status(
         nonterminal_subscriptions,
         subscriptions,
         more_subscriptions,
-        device_capacity: DeviceCapacityView {
-            limit,
-            active,
-            over_limit: limit.is_some_and(|value| active > value),
-            enrollment_blocked: limit.is_some_and(|value| active >= value)
-                || (limit.is_some() && pending_reconciliations > 0)
-                || (limit.is_none() && cap_policy_enabled),
-        },
+        device_capacity,
         projected_entitlement: ProjectedEntitlementView {
             reason: projection.get(1),
             outbound_limit: projection.get(2),
@@ -209,6 +183,61 @@ async fn status(
                 .get::<_, Option<bool>>(3)
                 .is_some_and(|held| held),
         },
+    }))
+}
+
+/// The device capacity and its blocking inputs in one statement, shared by
+/// the full status handler and the lightweight device-capacity endpoint.
+async fn device_capacity_view(
+    db: &tokio_postgres::Client,
+    account_id: Uuid,
+) -> Result<(DeviceCapacityView, i64), AuthHttpError> {
+    let row = db
+        .query_one(
+            "SELECT (SELECT limit_devices FROM billing_device_caps WHERE account_id=$1), (SELECT count(*) FROM devices WHERE account_id=$1 AND revoked_at IS NULL), (SELECT enabled FROM billing_device_cap_config WHERE singleton=true), (SELECT count(*) FROM billing_reconciliations WHERE account_id=$1 AND dirty_generation>processed_generation)",
+            &[&account_id],
+        )
+        .await
+        .map_err(|_| AuthHttpError::Unavailable)?;
+    let cap_policy_enabled: bool = row.get(2);
+    let limit: Option<i64> = if cap_policy_enabled { row.get(0) } else { None };
+    let active: i64 = row.get(1);
+    let pending_reconciliations: i64 = row.get(3);
+    Ok((
+        DeviceCapacityView {
+            limit,
+            active,
+            over_limit: limit.is_some_and(|value| active > value),
+            enrollment_blocked: limit.is_some_and(|value| active >= value)
+                || (limit.is_some() && pending_reconciliations > 0)
+                || (limit.is_none() && cap_policy_enabled),
+        },
+        pending_reconciliations,
+    ))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeviceCapacityStatus {
+    mode: &'static str,
+    device_capacity: DeviceCapacityView,
+}
+
+/// Just the device-capacity inputs the owner devices page renders; the full
+/// status handler stays on the billing page.
+async fn device_capacity(
+    State(state): State<Arc<AuthHttpState>>,
+    headers: HeaderMap,
+) -> Result<Json<DeviceCapacityStatus>, AuthHttpError> {
+    http_auth::require_session_cookie(&headers)?;
+    let db = connect(&state.database_url).await?;
+    let owner =
+        http_auth::require_owner(&db, &state.hasher, &state.canonical_origin, &headers, false)
+            .await?;
+    let (device_capacity, _) = device_capacity_view(&db, owner.tenant.account_id()).await?;
+    Ok(Json(DeviceCapacityStatus {
+        mode: "test",
+        device_capacity,
     }))
 }
 
