@@ -106,6 +106,23 @@ only. The emulator cannot prove MMS. A physical-device spike must still find
 out whether the platform MMS service can read the FileProvider URI and whether
 the carrier's MMSC accepts the PDU; both are recorded as device findings in the
 issue, not as claims of this repository.
+## SMS line activation device checks
+
+`SmsLineActivationPhysicalSimDeviceTest` and `SmsLineActivationEsimDeviceTest` read real telephony state on hardware. They never call the radio, never send an SMS, and leave the app's device key, settings and stored data untouched: the physical-SIM class signs with a throwaway software key against an in-memory journal, and the eSIM class never signs. Build both APKs, install them on the phone under test, run the class, and remove the test package afterwards:
+
+```sh
+cd android
+./gradlew :app:assembleDebug :app:assembleDebugAndroidTest
+adb -s SERIAL install -r -t app/build/outputs/apk/debug/app-debug.apk
+adb -s SERIAL install -r -t app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+adb -s SERIAL shell am instrument -w -e class org.zrotext.gateway.SmsLineActivationEsimDeviceTest \
+  org.zrotext.gateway.test/androidx.test.runner.AndroidJUnitRunner
+adb -s SERIAL uninstall org.zrotext.gateway.test
+```
+
+Use `gradlew.bat` on Windows. Grant only the phone-state permission the app already holds; never grant SMS permissions for these checks.
+
+Each check states its own gate. The only skip in the physical-SIM class is `readSinglePhysicalLine`'s: it proceeds only when telephony is readable and exactly one active, non-embedded line is present, so a phone whose active lines are all eSIMs — for example a dual-eSIM device — skips every check that reads a physical line. A single physical line whose card ID or subscription ID is unreadable or negative is not a skip: the eligibility `assertNotNull` fails, because a line that cannot be identified cannot back a signed declaration. The reboot and different-card checks additionally need `-e expected_sub N -e expected_card M`, copied from the `reference` line the activation test logs while the original card is inserted; without a baseline they skip, and a partial or malformed baseline fails instead of passing vacuously. The absence check has its own gate: it needs that baseline plus a readable telephony read that reports zero active lines — it never asks for a physical line — and asserts the recorded card no longer matches anything observed. The eSIM class requires readable telephony where every active line is embedded and asserts that the activation candidate stays null and `prepare()` declines before any signature. On eSIM-only hardware, line activation stays off by design: an eUICC card ID identifies the chip, not an individual profile. These checks prove the gate's behavior on the observed hardware; they do not validate an activation with carrier service or a physical-SIM swap. The opt-in radio leg and the STOP-reply leg have not been run on any dual-eSIM configuration.
 
 ## Inbound SMS transport
 
