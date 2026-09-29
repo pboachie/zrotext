@@ -8,7 +8,7 @@ use super::*;
 use zrotext_failover_quorum::decision::{
     Decision, FailoverConfig, HoldReason, MemberReport, Round, SiteFenceState, WriterObservation,
 };
-use zrotext_failover_quorum::executor::Application;
+use zrotext_failover_quorum::executor::{Application, InProcessSource};
 
 const MIGRATION_FOUNDATION: &str =
     include_str!("../../../../deploy/compose/migrations/001_foundation.sql");
@@ -18,15 +18,17 @@ const MIGRATION_FAILOVER_JOURNAL: &str =
 #[test]
 fn executor_env_is_disabled_by_default_and_reads_nothing_else() {
     for enabled in [None, Some("false")] {
-        let env = ExecutorEnv::parse(enabled, None, None, None, None).unwrap();
+        let env = ExecutorEnv::parse(enabled, None, None, None, None, None).unwrap();
         assert!(env.is_none(), "no executor while the flag is off");
-        // Garbage in every other variable is not even read while off.
+        // Garbage in every other variable is not even read while off,
+        // including the consensus store directory.
         let env = ExecutorEnv::parse(
             enabled,
             Some("not,three"),
             Some(""),
             Some("nope"),
             Some("zero"),
+            Some("relative/../unsafe\0dir"),
         )
         .unwrap();
         assert!(env.is_none());
@@ -35,12 +37,21 @@ fn executor_env_is_disabled_by_default_and_reads_nothing_else() {
 
 #[test]
 fn executor_env_fails_closed_on_incomplete_or_invalid_configuration() {
-    assert!(ExecutorEnv::parse(Some("true"), Some("a,b,c"), None, None, None).is_err());
-    assert!(ExecutorEnv::parse(Some("true"), Some("a,b,c"), Some(""), None, None).is_err());
-    assert!(ExecutorEnv::parse(Some("true"), Some("a,b,c"), Some("a"), Some("a"), None).is_err());
-    assert!(ExecutorEnv::parse(Some("true"), Some("a,b"), Some("a"), Some("b"), None).is_err());
+    assert!(ExecutorEnv::parse(Some("true"), Some("a,b,c"), None, None, None, None).is_err());
+    assert!(ExecutorEnv::parse(Some("true"), Some("a,b,c"), Some(""), None, None, None).is_err());
     assert!(
-        ExecutorEnv::parse(Some("true"), Some("a,b,c"), Some("a"), Some("b"), Some("0")).is_err()
+        ExecutorEnv::parse(
+            Some("true"),
+            Some("a,b,c"),
+            Some("a"),
+            Some("a"),
+            None,
+            None
+        )
+        .is_err()
+    );
+    assert!(
+        ExecutorEnv::parse(Some("true"), Some("a,b"), Some("a"), Some("b"), None, None).is_err()
     );
     assert!(
         ExecutorEnv::parse(
@@ -48,21 +59,81 @@ fn executor_env_fails_closed_on_incomplete_or_invalid_configuration() {
             Some("a,b,c"),
             Some("a"),
             Some("b"),
-            Some("soon")
+            Some("0"),
+            None
         )
         .is_err()
     );
-    assert!(ExecutorEnv::parse(Some("maybe"), None, None, None, None).is_err());
+    assert!(
+        ExecutorEnv::parse(
+            Some("true"),
+            Some("a,b,c"),
+            Some("a"),
+            Some("b"),
+            Some("soon"),
+            None
+        )
+        .is_err()
+    );
+    assert!(ExecutorEnv::parse(Some("maybe"), None, None, None, None, None).is_err());
+}
+
+#[test]
+fn executor_env_requires_a_consensus_store_directory_when_enabled() {
+    // The store directory is explicit configuration, never a silent default
+    // that writes somewhere surprising.
+    assert!(
+        ExecutorEnv::parse(
+            Some("true"),
+            Some("a,b,c"),
+            Some("a"),
+            Some("b"),
+            None,
+            None
+        )
+        .is_err()
+    );
+    assert!(
+        ExecutorEnv::parse(
+            Some("true"),
+            Some("a,b,c"),
+            Some("a"),
+            Some("b"),
+            None,
+            Some("")
+        )
+        .is_err()
+    );
+}
+
+/// A platform-absolute directory derived only from the compile-time
+/// manifest directory (the Git-ignored workspace `target/`), so the tests
+/// need no machine-specific path literal. Parsing never touches it.
+fn absolute_root() -> PathBuf {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target");
+    std::fs::create_dir_all(&root).expect("create workspace target directory");
+    root.canonicalize()
+        .expect("canonical workspace target directory")
+}
+
+fn absolute_dir(leaf: &str) -> String {
+    absolute_root()
+        .join(leaf)
+        .to_str()
+        .expect("utf-8 workspace path")
+        .to_owned()
 }
 
 #[test]
 fn executor_env_enabled_builds_a_validated_configuration() {
+    let store_dir = absolute_dir("failover-store");
     let env = ExecutorEnv::parse(
         Some("true"),
         Some("workload-a, workload-b, witness"),
         Some("site-a"),
         Some("site-b"),
         None,
+        Some(&store_dir),
     )
     .unwrap()
     .unwrap();
@@ -73,28 +144,160 @@ fn executor_env_enabled_builds_a_validated_configuration() {
     );
     assert_eq!(env.config().writer_site_id(), "site-a");
     assert_eq!(env.config().standby_site_id(), "site-b");
+    assert_eq!(env.store_dir(), std::path::Path::new(&store_dir));
+    // The value is taken literally: no variable expansion.
+    let literal_dir = absolute_dir("${STORE_DIR}");
     let env = ExecutorEnv::parse(
         Some("true"),
         Some("workload-a,workload-b,witness"),
         Some("site-a"),
         Some("site-b"),
         Some("250"),
+        Some(&literal_dir),
     )
     .unwrap()
     .unwrap();
     assert_eq!(env.check_interval_ms(), 250);
+    assert_eq!(env.store_dir(), std::path::Path::new(&literal_dir));
+}
+
+#[test]
+fn executor_env_refuses_a_relative_or_dot_segment_store_directory() {
+    let root = absolute_dir("zrotext");
+    let separator = std::path::MAIN_SEPARATOR;
+    let refused = [
+        "failover-store".to_owned(),
+        "./failover-store".to_owned(),
+        ".\\failover-store".to_owned(),
+        "../failover-store".to_owned(),
+        format!("{root}{separator}..{separator}failover-store"),
+        format!("{root}{separator}.{separator}failover-store"),
+        format!("{root}/../failover-store"),
+        format!("{root}/./failover-store"),
+        format!("{root}{separator}.."),
+    ];
+    for dir in &refused {
+        let error = ExecutorEnv::parse(
+            Some("true"),
+            Some("a,b,c"),
+            Some("a"),
+            Some("b"),
+            None,
+            Some(dir),
+        )
+        .expect_err(dir);
+        assert!(
+            error.contains("absolute path"),
+            "{dir:?} must be refused as a store directory, got {error:?}"
+        );
+    }
 }
 
 #[test]
 fn spawn_returns_none_and_spawns_nothing_while_disabled() {
     // The disabled path must not create the thread at all; None is the
     // proof the caller relies on (the flag-off zero-behavior contract).
+    let healthy = Arc::new(AtomicBool::new(true));
     let handle = spawn_failover_executor(
         None,
         "postgres://disabled.example.invalid/db".to_owned(),
         Arc::new(AtomicBool::new(true)),
+        healthy.clone(),
     );
     assert!(handle.is_none());
+    assert!(
+        healthy.load(Ordering::Acquire),
+        "the disabled path never reports an executor failure"
+    );
+}
+
+/// A scratch store directory, removed on drop. The root is derived only from
+/// the compile-time manifest directory — never from an environment variable,
+/// argument or the system temp dir — under the workspace `target/`, which
+/// Git ignores. It is canonicalized so it satisfies the executor's
+/// absolute-path, no-`..` store-directory rule.
+struct ScratchDir(PathBuf);
+
+impl ScratchDir {
+    fn new(label: &str) -> Self {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/zrotext-failover-executor-tests");
+        std::fs::create_dir_all(&root).expect("create scratch root");
+        let path = root
+            .canonicalize()
+            .expect("canonical scratch root")
+            .join(format!("{label}-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&path).expect("create scratch directory");
+        Self(path)
+    }
+}
+
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn enabled_env(store_dir: &Path) -> ExecutorEnv {
+    ExecutorEnv::parse(
+        Some("true"),
+        Some("workload-a,workload-b,witness"),
+        Some("site-a"),
+        Some("site-b"),
+        Some("50"),
+        Some(store_dir.to_str().expect("utf-8 scratch path")),
+    )
+    .unwrap()
+    .unwrap()
+}
+
+#[test]
+fn a_consensus_store_that_cannot_open_fails_the_executor_visibly() {
+    let scratch = ScratchDir::new("corrupt-store");
+    // A torn membership record: the store must fail closed on open.
+    std::fs::write(scratch.0.join("membership"), "v1 members=workload-a").unwrap();
+    let healthy = Arc::new(AtomicBool::new(true));
+    // Building the authority port does not connect, so no database is
+    // needed to reach the store-open failure.
+    let handle = spawn_failover_executor(
+        Some(enabled_env(&scratch.0)),
+        "postgres://unused.example.invalid/db".to_owned(),
+        Arc::new(AtomicBool::new(false)),
+        healthy.clone(),
+    )
+    .expect("the enabled executor spawns its thread");
+    handle.join().expect("the executor thread exits cleanly");
+    assert!(
+        !healthy.load(Ordering::Acquire),
+        "a store-open failure must be visible to operators, not only logged"
+    );
+}
+
+#[test]
+fn a_consensus_store_that_opens_keeps_the_executor_healthy() {
+    let scratch = ScratchDir::new("fresh-store");
+    let healthy = AtomicBool::new(true);
+    let store = open_consensus_store(&enabled_env(&scratch.0), &healthy);
+    assert!(store.is_some(), "a fresh directory initializes a store");
+    assert!(healthy.load(Ordering::Acquire));
+    // A second open of a foreign membership fails closed and is visible.
+    drop(store);
+    let foreign = ExecutorEnv::parse(
+        Some("true"),
+        Some("workload-a,workload-b,witness-2"),
+        Some("site-a"),
+        Some("site-b"),
+        None,
+        Some(scratch.0.to_str().expect("utf-8 scratch path")),
+    )
+    .unwrap()
+    .unwrap();
+    assert!(open_consensus_store(&foreign, &healthy).is_none());
+    assert!(!healthy.load(Ordering::Acquire));
 }
 
 fn report(member_id: &str, writer: WriterObservation, now_ms: u64) -> MemberReport {

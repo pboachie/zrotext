@@ -14,12 +14,17 @@
 //! tick) on its own single-threaded runtime, because the executor itself is
 //! synchronous and deliberately independent of the main async runtime.
 //!
-//! The observation source is the in-process placeholder: no quorum members
-//! report through it in this build, so every round holds fail-closed and the
-//! executor only ever reaches the authority for its initial load until the
-//! member-reporting increment lands (see `docs/MULTI-LOCATION.md`).
+//! The observation source is the durable consensus store
+//! (`FAILOVER_QUORUM_STORE_DIR`): one membership record plus append-only
+//! per-member journals, served through the decision model's freshness
+//! window. No transport carries member reports into it in this build, so
+//! the store stays empty and every round holds fail-closed; a store that is
+//! corrupt, truncated or belongs to another membership fails the executor
+//! closed at startup instead of serving uncertain evidence (see
+//! `docs/MULTI-LOCATION.md`).
 
 use std::future::Future;
+use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -27,10 +32,10 @@ use std::sync::{
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use zrotext_failover_quorum::decision::{FailoverConfig, SiteFenceState};
 use zrotext_failover_quorum::executor::{
-    AuthoritySnapshot, FailoverExecutor, FenceOutcome, InProcessSource, PromoteOutcome,
-    WriterAuthority,
+    AuthoritySnapshot, FailoverExecutor, FenceOutcome, PromoteOutcome, WriterAuthority,
 };
 use zrotext_failover_quorum::policy::QuorumPolicy;
+use zrotext_failover_quorum::store::{ConsensusStore, StoreObservationSource};
 
 /// Default `FAILOVER_QUORUM_CHECK_INTERVAL_MS`.
 pub const DEFAULT_CHECK_INTERVAL_MS: u64 = 5_000;
@@ -40,19 +45,22 @@ pub const DEFAULT_CHECK_INTERVAL_MS: u64 = 5_000;
 pub struct ExecutorEnv {
     config: FailoverConfig,
     check_interval_ms: u64,
+    store_dir: PathBuf,
 }
 
 impl ExecutorEnv {
     /// Parse the executor wiring. Every argument is the raw environment
     /// value; `None` means unset. `Ok(None)` means the module is disabled
-    /// and the caller must not construct or spawn anything. Invalid values
-    /// fail closed with an error instead of guessing.
+    /// and the caller must not construct or spawn anything — while the flag
+    /// is off nothing else is read, the store directory included. Invalid
+    /// values fail closed with an error instead of guessing.
     pub fn parse(
         enabled: Option<&str>,
         members: Option<&str>,
         writer_site: Option<&str>,
         standby_site: Option<&str>,
         check_interval_ms: Option<&str>,
+        store_dir: Option<&str>,
     ) -> Result<Option<Self>, String> {
         let policy = QuorumPolicy::parse(enabled, members)?;
         if !policy.enabled() {
@@ -76,11 +84,30 @@ impl ExecutorEnv {
         if check_interval_ms == 0 {
             return Err("FAILOVER_QUORUM_CHECK_INTERVAL_MS must be greater than zero".to_owned());
         }
+        let store_dir = store_dir
+            .filter(|dir| !dir.is_empty())
+            .ok_or("FAILOVER_QUORUM_STORE_DIR is required when FAILOVER_QUORUM_ENABLED=true")?
+            .to_owned();
+        // An operator-configured path, never a request-derived one; it must
+        // still name one unambiguous location: absolute, with no `.` or `..`
+        // component that could resolve somewhere other than it reads.
+        // Segments are checked on the raw value (both separators), because
+        // `Path::components` silently drops an interior `.`.
+        let dot_segment = store_dir
+            .split(['/', '\\'])
+            .any(|segment| segment == "." || segment == "..");
+        if !Path::new(&store_dir).is_absolute() || dot_segment {
+            return Err(
+                "FAILOVER_QUORUM_STORE_DIR must be an absolute path without . or .. components"
+                    .to_owned(),
+            );
+        }
         let config =
             FailoverConfig::new(policy.members().to_vec(), writer_site_id, standby_site_id)?;
         Ok(Some(Self {
             config,
             check_interval_ms,
+            store_dir: PathBuf::from(store_dir),
         }))
     }
 
@@ -92,6 +119,11 @@ impl ExecutorEnv {
     /// The check-round interval.
     pub fn check_interval_ms(&self) -> u64 {
         self.check_interval_ms
+    }
+
+    /// The consensus store directory observations are journaled under.
+    pub fn store_dir(&self) -> &Path {
+        &self.store_dir
     }
 }
 
@@ -316,14 +348,43 @@ impl WriterAuthority for PgWriterAuthority {
     }
 }
 
+/// Open the executor's consensus store. A store that cannot open — corrupt,
+/// truncated, foreign membership, unwritable — fails the executor closed
+/// rather than serving uncertain evidence: the failure is logged and
+/// `healthy` is cleared so readiness reports it to operators until a restart
+/// (or an operator repair of the directory and a restart).
+fn open_consensus_store(env: &ExecutorEnv, healthy: &AtomicBool) -> Option<ConsensusStore> {
+    match ConsensusStore::open(
+        env.store_dir(),
+        env.config().members().to_vec(),
+        env.config().observation_freshness_ms(),
+    ) {
+        Ok(store) => Some(store),
+        Err(error) => {
+            healthy.store(false, Ordering::Release);
+            eprintln!(
+                "failover quorum executor: consensus store at {} failed to open: {error}; \
+                 the executor is not running and readiness reports failover_executor_failed",
+                env.store_dir().display()
+            );
+            None
+        }
+    }
+}
+
 /// Spawn the failover executor thread. `None` env (the default) spawns
-/// nothing at all; `Some` runs the controller loop until `shutdown` is set
-/// or the process exits. The handle is intentionally detached-style: the
-/// loop is best-effort and never blocks process exit.
+/// nothing at all and never touches `healthy`; `Some` runs the controller
+/// loop until `shutdown` is set or the process exits. If the executor cannot
+/// start — the writer-authority port or the consensus store fails — the
+/// thread clears `healthy` before it exits, so the failure is visible to
+/// operators through readiness rather than only as a log line. The handle
+/// is intentionally detached-style: the loop is best-effort and never
+/// blocks process exit.
 pub fn spawn_failover_executor(
     env: Option<ExecutorEnv>,
     database_url: String,
     shutdown: Arc<AtomicBool>,
+    healthy: Arc<AtomicBool>,
 ) -> Option<std::thread::JoinHandle<()>> {
     let env = env?;
     let handle = std::thread::Builder::new()
@@ -332,20 +393,32 @@ pub fn spawn_failover_executor(
             let authority = match PgWriterAuthority::new(database_url) {
                 Ok(authority) => authority,
                 Err(error) => {
-                    eprintln!("failover quorum executor: {error}");
+                    healthy.store(false, Ordering::Release);
+                    eprintln!(
+                        "failover quorum executor: {error}; the executor is not running and \
+                         readiness reports failover_executor_failed"
+                    );
                     return;
                 }
             };
+            let Some(store) = open_consensus_store(&env, &healthy) else {
+                return;
+            };
             eprintln!(
                 "failover quorum executor running ({} members, writer site {}, standby site {}, \
-                 {}ms checks; no quorum members report in this build, so rounds hold)",
+                 {}ms checks, store {}); no transport reports into the store in this build, so \
+                 rounds hold",
                 env.config().members().len(),
                 env.config().writer_site_id(),
                 env.config().standby_site_id(),
                 env.check_interval_ms(),
+                env.store_dir().display(),
             );
-            let mut executor =
-                FailoverExecutor::new(env.config().clone(), InProcessSource::default(), authority);
+            let mut executor = FailoverExecutor::new(
+                env.config().clone(),
+                StoreObservationSource::new(store),
+                authority,
+            );
             let interval = Duration::from_millis(env.check_interval_ms());
             let mut last_status = None;
             loop {
