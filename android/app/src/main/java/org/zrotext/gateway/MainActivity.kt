@@ -194,6 +194,7 @@ class MainActivity : ComponentActivity() {
                         }
                     }) { Text("Arm one test SMS") }
                     HorizontalDivider()
+                    MmsSpikeSection(selectedSim, sims.map { it.first })
                     GatewaySectionTitle("Device pairing")
                     Text("Enter the one-use pairing ID and token from the owner account. The phone will prove possession of its Keystore key. Compare both values below with the browser before approving there.")
                     OutlinedTextField(value = pairingOrigin, onValueChange = { pairingOrigin = it },
