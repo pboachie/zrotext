@@ -16,7 +16,7 @@ pub enum UsagePlanError {
     RuntimeDatabase(#[from] crate::runtime_db::ConnectError),
     #[error("usage-limit plan storage unavailable: {0}")]
     Database(#[from] tokio_postgres::Error),
-    #[error("usage-limit plan schema is missing; apply migration 059 first")]
+    #[error("usage-limit plan schema is missing; apply migration 056 first")]
     SchemaMissing,
 }
 
@@ -110,7 +110,7 @@ pub async fn apply_usage_plan_assignments(
         .await?
         .get(0);
     if !schema_ready {
-        // A pre-050 database keeps its current behavior while the feature is
+        // A pre-056 database keeps its current behavior while the feature is
         // off; enabling requires the schema.
         return if enabled {
             Err(UsagePlanError::SchemaMissing)

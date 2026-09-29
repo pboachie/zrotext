@@ -226,8 +226,8 @@ const TEST_MIGRATIONS: [(&str, &str); 56] = [
         include_str!("../../../deploy/compose/migrations/055_trusted_browser_epoch.sql"),
     ),
     (
-        "055_usage_limit_plans.sql",
-        include_str!("../../../deploy/compose/migrations/055_usage_limit_plans.sql"),
+        "056_usage_limit_plans.sql",
+        include_str!("../../../deploy/compose/migrations/056_usage_limit_plans.sql"),
     ),
 ];
 

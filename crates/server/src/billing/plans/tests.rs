@@ -90,7 +90,7 @@ async fn isolated_database(prefix: &str) -> (tokio_postgres::Client, String, Str
         ),
         // 049 validates owner queue probe indexes prepared outside this list;
         // usage plans do not depend on it.
-        include_str!("../../../../../deploy/compose/migrations/055_usage_limit_plans.sql"),
+        include_str!("../../../../../deploy/compose/migrations/056_usage_limit_plans.sql"),
     ] {
         db.batch_execute(sql).await.unwrap();
     }
@@ -513,7 +513,7 @@ async fn postgres_concurrent_sends_cannot_exceed_the_plan_limit() {
 
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
-async fn postgres_without_migration_050_feature_stays_disabled() {
+async fn postgres_without_migration_056_feature_stays_disabled() {
     let (db, scoped_url, schema) = isolated_database("noschema").await;
     db.batch_execute(
         "DROP TABLE usage_plan_audit CASCADE; \
@@ -521,7 +521,7 @@ async fn postgres_without_migration_050_feature_stays_disabled() {
     )
     .await
     .unwrap();
-    // Pre-050 databases: disabling is a no-op and enabling fails closed with
+    // Pre-056 databases: disabling is a no-op and enabling fails closed with
     // an explicit schema error instead of silently ignoring configuration.
     apply_usage_plan_assignments(&scoped_url, false, &[])
         .await

@@ -239,7 +239,7 @@ const QUEUE_SCHEMA: [(&str, &str); 56] = queue_schema!(
     "053_observer_seat_invitations.sql",
     "054_stateless_device_challenges.sql",
     "055_trusted_browser_epoch.sql",
-    "055_usage_limit_plans.sql",
+    "056_usage_limit_plans.sql",
 );
 #[test]
 fn queue_fixture_includes_every_checked_in_migration() {

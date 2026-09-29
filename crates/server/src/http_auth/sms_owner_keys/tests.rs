@@ -225,8 +225,8 @@ const TEST_MIGRATIONS: [(&str, &str); 56] = [
         migration!("055_trusted_browser_epoch.sql"),
     ),
     (
-        "055_usage_limit_plans.sql",
-        migration!("055_usage_limit_plans.sql"),
+        "056_usage_limit_plans.sql",
+        migration!("056_usage_limit_plans.sql"),
     ),
 ];
 
