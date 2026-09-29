@@ -36,7 +36,7 @@ macro_rules! export_schema {
             [$(($name, include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/compose/migrations/", $name)))),+]
         };
     }
-const EXPORT_SCHEMA: [(&str, &str); 50] = export_schema!(
+const EXPORT_SCHEMA: [(&str, &str); 51] = export_schema!(
     "001_foundation.sql",
     "002_auth.sql",
     "003_delivery.sql",
@@ -87,6 +87,7 @@ const EXPORT_SCHEMA: [(&str, &str); 50] = export_schema!(
     "048_observer_memberships.sql",
     "049_owner_queue_probe_indexes.sql",
     "050_message_attempts_recent_index.sql",
+    "051_admission_pending_index.sql",
 );
 
 #[test]
@@ -201,6 +202,15 @@ async fn export_is_tenant_bound_and_carries_owner_content() {
             db.batch_execute(
                 "CREATE INDEX CONCURRENTLY message_attempts_device_created \
                  ON message_attempts(account_id,device_id,created_at)",
+            )
+            .await
+            .unwrap();
+        }
+        if name == "051_admission_pending_index.sql" {
+            db.batch_execute(
+                "CREATE INDEX CONCURRENTLY messages_admission_pending \
+                 ON messages(account_id,device_id) \
+                 WHERE state IN ('queued','claimed')",
             )
             .await
             .unwrap();

@@ -183,7 +183,7 @@ macro_rules! queue_schema {
         [$(($name, include_str!(concat!("../../../../deploy/compose/migrations/", $name)))),+]
     };
 }
-const QUEUE_SCHEMA: [(&str, &str); 50] = queue_schema!(
+const QUEUE_SCHEMA: [(&str, &str); 51] = queue_schema!(
     "001_foundation.sql",
     "002_auth.sql",
     "003_delivery.sql",
@@ -234,6 +234,7 @@ const QUEUE_SCHEMA: [(&str, &str); 50] = queue_schema!(
     "048_observer_memberships.sql",
     "049_owner_queue_probe_indexes.sql",
     "050_message_attempts_recent_index.sql",
+    "051_admission_pending_index.sql",
 );
 
 #[test]
@@ -266,6 +267,9 @@ async fn apply_queue_schema(db: &Client) {
             }
             "050_message_attempts_recent_index.sql" => {
                 db.batch_execute("CREATE INDEX message_attempts_device_created ON message_attempts(account_id,device_id,created_at)").await.unwrap();
+            }
+            "051_admission_pending_index.sql" => {
+                db.batch_execute("CREATE INDEX messages_admission_pending ON messages(account_id,device_id) WHERE state IN ('queued','claimed')").await.unwrap();
             }
             _ => {}
         }

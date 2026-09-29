@@ -34,7 +34,7 @@ macro_rules! migration {
 }
 
 // Complete reviewed schema, embedded at build time.
-const TEST_MIGRATIONS: [(&str, &str); 50] = [
+const TEST_MIGRATIONS: [(&str, &str); 51] = [
     migration!("001_foundation.sql"),
     migration!("002_auth.sql"),
     migration!("003_delivery.sql"),
@@ -85,6 +85,7 @@ const TEST_MIGRATIONS: [(&str, &str); 50] = [
     migration!("048_observer_memberships.sql"),
     migration!("049_owner_queue_probe_indexes.sql"),
     migration!("050_message_attempts_recent_index.sql"),
+    migration!("051_admission_pending_index.sql"),
 ];
 
 #[test]
@@ -209,6 +210,15 @@ async fn migrated_schema(prefix: &str) -> (Client, String, String, Client) {
             db.batch_execute(
                 "CREATE INDEX CONCURRENTLY message_attempts_device_created \
                  ON message_attempts(account_id,device_id,created_at)",
+            )
+            .await
+            .unwrap();
+        }
+        if name == "051_admission_pending_index.sql" {
+            db.batch_execute(
+                "CREATE INDEX CONCURRENTLY messages_admission_pending \
+                 ON messages(account_id,device_id) \
+                 WHERE state IN ('queued','claimed')",
             )
             .await
             .unwrap();

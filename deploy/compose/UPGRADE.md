@@ -167,7 +167,7 @@ migration credential in an API environment.
 - Editing an applied migration file makes the next run fail with
   "applied migration NNN differs from its file; restore the original file and
   add a new migration". Do not repair `schema_migrations` by hand.
-- Migrations 034, 040, 049 and 050 are documented exceptions: they build their indexes with
+- Migrations 034, 040, 049, 050 and 051 are documented exceptions: they build their indexes with
   `CREATE INDEX CONCURRENTLY` before recording the numbered file; see the
   [Compose guide](README.md) for the interrupted-build and rollback rules that
   apply to them.
