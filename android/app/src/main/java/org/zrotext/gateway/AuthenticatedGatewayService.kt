@@ -55,7 +55,10 @@ class AuthenticatedGatewayService : Service() {
     private var watchdog: ScheduledFuture<*>? = null
     private var handshakeDeadline: ScheduledFuture<*>? = null
     private var eventPump: ScheduledFuture<*>? = null
+    private var grantExpiry: ScheduledFuture<*>? = null
+    private var resend: ScheduledFuture<*>? = null
     private var retry: ScheduledFuture<*>? = null
+    private val alphaPump = AlphaPumpGate()
     private val reconnect = DeviceReconnectPolicy { Random.nextDouble() }
     private val timingTrace = HeartbeatTimingTrace()
     private val networkServiceSampler by lazy { NetworkServiceSampler(applicationContext) }
@@ -71,6 +74,8 @@ class AuthenticatedGatewayService : Service() {
     }
     @Volatile private var generation = 0
     @Volatile private var lastAckAtNanos = 0L
+    /** Computed once per authenticated session; the inputs cannot change within it. */
+    @Volatile private var sessionIdentity: EvidenceIdentity? = null
     @Volatile private var awaitingEventId: String? = null
     @Volatile private var awaitingEventSentAtNanos = 0L
     @Volatile private var awaitingInboundId: String? = null
@@ -240,6 +245,8 @@ class AuthenticatedGatewayService : Service() {
         socket?.cancel()
         socket = null
         retry?.cancel(false)
+        alphaPump.onConnectionReset()
+        sessionIdentity = null
         awaitingEventId = null
         awaitingEventSentAtNanos = 0L
         awaitingInboundId = null
@@ -370,19 +377,34 @@ class AuthenticatedGatewayService : Service() {
                                     disconnect(currentGeneration, DeviceReconnectPolicy.Loss.TRANSPORT)
                                 }
                             }, 15, 15, TimeUnit.SECONDS)
-                            eventPump = scheduler.scheduleAtFixedRate({
-                                if (generation == currentGeneration) {
-                                    if (!inboundUploadRequested && !lineOptOutUploadRequested) {
+                            sessionIdentity = EvidenceIdentity.fromStream(
+                                machine.activeAccountId(), machine.activeDeviceId(), url)
+                            if (inboundUploadRequested || lineOptOutUploadRequested) {
+                                eventPump = scheduler.scheduleAtFixedRate({
+                                    if (generation == currentGeneration) {
+                                        if (inboundUploadRequested) {
+                                            pumpInboundEvents(webSocket, machine, keys, url,
+                                                currentGeneration)
+                                        }
+                                        if (lineOptOutUploadRequested) {
+                                            pumpLineOptOutEvents(webSocket, machine, keys,
+                                                currentGeneration)
+                                        }
+                                    }
+                                }, 0, 3, TimeUnit.SECONDS)
+                            } else {
+                                // No periodic pump: an idle session must not touch the
+                                // journal. Writers, grants, acks and the resend timer
+                                // drive every query instead.
+                                alphaPump.onSessionStart()
+                                JournalWriteSignal.replace {
+                                    if (generation == currentGeneration) {
+                                        alphaPump.requestQuery()
                                         pumpAlphaEvents(webSocket, machine, url, currentGeneration)
                                     }
-                                    if (inboundUploadRequested) {
-                                        pumpInboundEvents(webSocket, machine, keys, url, currentGeneration)
-                                    }
-                                    if (lineOptOutUploadRequested) {
-                                        pumpLineOptOutEvents(webSocket, machine, keys, currentGeneration)
-                                    }
                                 }
-                            }, 0, 3, TimeUnit.SECONDS)
+                                pumpAlphaEvents(webSocket, machine, url, currentGeneration)
+                            }
                         }
                         "heartbeat_ack" -> {
                             requireFields(frame, setOf("v", "type", "connection_epoch"))
@@ -408,6 +430,16 @@ class AuthenticatedGatewayService : Service() {
                                 .putBoolean("attempt_used", true).commit())
                             grantSeen = true
                             activeGrant = grant
+                            // Retirement must also run when a grant expires without an
+                            // ack, so no reserved intent can survive as an orphan.
+                            grantExpiry?.cancel(false)
+                            grantExpiry = scheduler.schedule({
+                                if (generation == currentGeneration) {
+                                    alphaPump.onGrantExpiry()
+                                    pumpAlphaEvents(webSocket, machine, url, currentGeneration)
+                                }
+                            }, maxOf(0L, grant.expiresAtMs - System.currentTimeMillis()),
+                                TimeUnit.MILLISECONDS)
                             JournalRuntime.io.execute {
                                 try {
                                     if (generation != currentGeneration) return@execute
@@ -417,9 +449,10 @@ class AuthenticatedGatewayService : Service() {
                                         System.currentTimeMillis(),
                                         InboundVault.token("sender-v1",
                                             grant.recipientE164.toByteArray(Charsets.US_ASCII)),
-                                        EvidenceIdentity.fromStream(machine.activeAccountId(),
-                                            deviceId, url))
+                                        sessionIdentity ?: EvidenceIdentity.fromStream(
+                                            machine.activeAccountId(), deviceId, url))
                                     AuthenticatedGatewayStatus.value = "Grant reserved; waiting for writer ack"
+                                    alphaPump.requestQuery()
                                     pumpAlphaEvents(webSocket, machine, url, currentGeneration)
                                 } catch (_: Exception) {
                                     fail(webSocket, currentGeneration)
@@ -429,7 +462,7 @@ class AuthenticatedGatewayService : Service() {
                         "radio_event_ack" -> {
                             requireFields(frame, setOf("v", "type", "event_id", "state", "submit_permitted"))
                             check(frame.opt("state") is String && frame.opt("submit_permitted") is Boolean)
-                            handleAlphaAck(webSocket, machine, currentGeneration,
+                            handleAlphaAck(webSocket, machine, url, currentGeneration,
                                 uuid(frame, "event_id").toString(), frame.getString("state"),
                                 frame.getBoolean("submit_permitted"))
                         }
@@ -523,16 +556,17 @@ class AuthenticatedGatewayService : Service() {
         JournalRuntime.io.execute {
             if (generation != currentGeneration) return@execute
             try {
+                val work = alphaPump.takeWork() ?: return@execute
+                val identity = sessionIdentity ?: return@execute
                 val epoch = machine.heartbeatEpoch()
-                val identity = EvidenceIdentity.fromStream(machine.activeAccountId(),
-                    machine.activeDeviceId(), url)
                 val dao = SmsJournalDatabase.get(applicationContext).attempts()
                 val grant = activeGrant
-                if (grant == null || grant.connectionEpoch != epoch ||
-                    System.currentTimeMillis() >= grant.expiresAtMs) {
+                if (work.retireOrphans && (grant == null || grant.connectionEpoch != epoch ||
+                        System.currentTimeMillis() >= grant.expiresAtMs)) {
                     dao.retireOrphanedAlphaIntents(System.currentTimeMillis())
                 }
-                if (dao.quarantineForeignAlpha(identity.accountId, identity.deviceId,
+                if (work.quarantineForeign &&
+                    dao.quarantineForeignAlpha(identity.accountId, identity.deviceId,
                         identity.originHash, System.currentTimeMillis()) > 0) {
                     quarantinedEvidenceNotice = true
                     AuthenticatedGatewayStatus.value =
@@ -561,12 +595,33 @@ class AuthenticatedGatewayService : Service() {
                 }
                 awaitingEventId = event.eventId
                 awaitingEventSentAtNanos = System.nanoTime()
-                if (!webSocket.send(frame.toString()))
+                if (!webSocket.send(frame.toString())) {
                     disconnect(currentGeneration, DeviceReconnectPolicy.Loss.TRANSPORT)
+                } else {
+                    armResendTimer(webSocket, machine, url, currentGeneration)
+                }
             } catch (_: Exception) {
                 fail(webSocket, currentGeneration)
             }
         }
+    }
+
+    /** Resends an unacknowledged event every 30 s; armed only while one is awaiting. */
+    private fun armResendTimer(webSocket: WebSocket, machine: DeviceStreamMachine,
+                               url: String, currentGeneration: Int) {
+        resend?.cancel(false)
+        var armed: ScheduledFuture<*>? = null
+        armed = scheduler.scheduleAtFixedRate({
+            val self = armed
+            if (generation != currentGeneration || awaitingEventId == null) {
+                self?.cancel(false)
+                if (resend === self) resend = null
+            } else {
+                alphaPump.requestQuery()
+                pumpAlphaEvents(webSocket, machine, url, currentGeneration)
+            }
+        }, 30, 30, TimeUnit.SECONDS)
+        resend = armed
     }
 
     private fun pumpInboundEvents(webSocket: WebSocket, machine: DeviceStreamMachine,
@@ -577,7 +632,7 @@ class AuthenticatedGatewayService : Service() {
                 val epoch = machine.heartbeatEpoch()
                 val accountId = machine.activeAccountId()
                 val deviceId = machine.activeDeviceId()
-                val identity = EvidenceIdentity.fromStream(accountId, deviceId, url)
+                val identity = sessionIdentity ?: return@execute
                 val dao = SmsJournalDatabase.get(applicationContext).attempts()
                 if (dao.quarantineForeignInbound(identity.accountId, identity.deviceId,
                         identity.originHash, System.currentTimeMillis()) > 0) {
@@ -810,8 +865,8 @@ class AuthenticatedGatewayService : Service() {
     }
 
     private fun handleAlphaAck(
-        webSocket: WebSocket, machine: DeviceStreamMachine, currentGeneration: Int,
-        eventId: String, state: String, permitted: Boolean
+        webSocket: WebSocket, machine: DeviceStreamMachine, url: String,
+        currentGeneration: Int, eventId: String, state: String, permitted: Boolean
     ) {
         JournalRuntime.io.execute {
             if (generation != currentGeneration) return@execute
@@ -860,6 +915,9 @@ class AuthenticatedGatewayService : Service() {
                     awaitingEventSentAtNanos = 0L
                     reconnect.clearEvidenceCloseStreak()
                 }
+                // An ack clears the awaited event; more evidence may already be queued.
+                alphaPump.requestQuery()
+                pumpAlphaEvents(webSocket, machine, url, currentGeneration)
             } catch (_: Exception) {
                 fail(webSocket, currentGeneration)
             }
@@ -1014,6 +1072,7 @@ class AuthenticatedGatewayService : Service() {
     private fun halt() {
         reconnect.pause()
         generation += 1
+        JournalWriteSignal.replace(null)
         cancelTimers()
         retry?.cancel(false)
         socket?.cancel()
@@ -1033,6 +1092,8 @@ class AuthenticatedGatewayService : Service() {
         watchdog?.cancel(false)
         handshakeDeadline?.cancel(false)
         eventPump?.cancel(false)
+        grantExpiry?.cancel(false)
+        resend?.cancel(false)
     }
 
     @Synchronized
