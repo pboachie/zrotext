@@ -678,7 +678,7 @@ async fn outbound_accepts_share_no_route_row_across_accounts() {
                 consume(&db, &hasher, Limit::OutboundAccept, Some(account))
                     .await
                     .unwrap(),
-                "account {account} must keep its own budget"
+                "every account must keep spending its own budget"
             );
         }
     }
