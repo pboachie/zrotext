@@ -1,10 +1,31 @@
 name: Root bundle Windows
 on:
   pull_request:
+    # Not a required check. Main runs it for every push; a pull request runs it
+    # only when the Windows crates, their workspace dependencies, the shared
+    # vectors they test against, or the native CI harness change.
+    paths:
+      - 'crates/root-bundle/**'
+      - 'crates/root-terminal/**'
+      - 'crates/owner-cli/**'
+      - 'crates/root-material/**'
+      - 'crates/*/Cargo.toml'
+      - 'protocol/v1/vectors/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'scripts/windows_native_ci.ps1'
+      - 'scripts/windows_native_ci.cs'
+      - '.github/workflows/root-bundle-windows.yml'
   push:
     branches: [main]
 permissions:
   contents: read
+# A new push to a pull request cancels that pull request's older run. Every
+# push to main gets its own group, so main runs are never canceled or queued.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   native-bundle:
     runs-on: windows-2025

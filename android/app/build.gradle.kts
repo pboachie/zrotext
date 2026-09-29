@@ -75,7 +75,11 @@ android {
     }
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // R8 removes unused code and resources from the release APK. The
+            // libraries ship their own keep rules; proguard-rules.pro adds ours.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
         debug {
             // MMS spike (#438) recipients, set only by whoever builds the debug APK:

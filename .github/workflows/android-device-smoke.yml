@@ -23,6 +23,11 @@ on:
       - '.github/workflows/android-device-smoke.yml'
 permissions:
   contents: read
+# A new push to a pull request cancels that pull request's older run. Every
+# push to main gets its own group, so main runs are never canceled or queued.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   selected-device-tests:
     runs-on: ubuntu-24.04
@@ -36,6 +41,12 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
+      - name: Cache Gradle distribution and dependencies
+        # Open-source GitHub Actions cache provider; only main writes it.
+        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        with:
+          cache-provider: basic
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
       - uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
       - name: Install existing target-level emulator and compile platform
         run: sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0' 'emulator' 'system-images;android-36;google_apis;x86_64'
