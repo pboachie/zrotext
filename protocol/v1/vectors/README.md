@@ -42,6 +42,24 @@ adb -s EMULATOR_SERIAL shell am instrument -w -r \
   org.zrotext.gateway.test/androidx.test.runner.AndroidJUnitRunner
 ```
 
+`ztse-body-text-01.json` is a synthetic, unapproved corpus for the ZT-009 Q9
+strict body-text receive rules: strict UTF-8, 1-32,768 encoded bytes, no NUL
+byte, no leading UTF-8 BOM and no Unicode normalization. `textCases` pins
+plaintext bytes and accept/reject verdicts (empty, over-long by one, exactly
+32,768, NUL, BOM, overlong/truncated/surrogate/out-of-range UTF-8, multi-byte
+accepts and an interior BOM that stays data). `authenticatedCases` pins
+independently signed draft-01/profile-02 sealed envelopes whose bodies were
+AES-GCM encrypted with fixed synthetic CEKs, including cases that
+authenticate correctly and still violate the text rules and one wrong-CEK
+case that must fail authentication. The Rust suite
+([zt_body_text_vectors.rs](../../crates/server/tests/zt_body_text_vectors.rs)),
+the TypeScript suite ([body-text-vector.test.mjs](../../sdk/typescript/test/body-text-vector.test.mjs)),
+the Android JVM corpus (`BodyTextCorpusTest`) and the Python suite
+(`test_ztse_body_text_vectors.py`) consume these same bytes and must reach
+identical verdicts. The keys are deterministic public test scalars from the
+same construction as `android/test-fixtures/generate-sealed-preparation.mjs`;
+no production client may accept any of these bytes as an authorized message.
+
 The shared contract uses the signature verifier called by the test-only
 Android manifest parser and the existing Android DER converter. This
 owner-only fixture proves signature and digest behavior, not complete
