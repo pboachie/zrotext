@@ -2694,6 +2694,65 @@ async fn admission_pays_one_round_trip_per_statement() {
         after_accept, 6,
         "fresh unmetered admission must pay exactly one round trip per statement"
     );
+    // A billed alpha admission adds the billing statements: the tenant is
+    // bound, its reconciliation is done, it has no risk event or past-due
+    // subscription (so the conditional grace read is skipped), and its
+    // stripe_test policy has room.
+    let billed_account = Uuid::new_v4();
+    let billed_device = Uuid::new_v4();
+    setup
+        .execute("INSERT INTO accounts(id) VALUES($1)", &[&billed_account])
+        .await
+        .unwrap();
+    setup
+        .execute(
+            "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'billed wire fixture')",
+            &[&billed_device, &billed_account],
+        )
+        .await
+        .unwrap();
+    for statement in [
+        "INSERT INTO billing_customers(account_id,stripe_customer_id) VALUES($1,'cus_roundtrip')",
+        "INSERT INTO billing_reconciliations(stripe_subscription_id,account_id,stripe_customer_id, \
+         dirty_generation,processed_generation) VALUES('sub_roundtrip',$1,'cus_roundtrip',1,1)",
+        "INSERT INTO usage_quota_policies(account_id,metric,limit_units,source) \
+         VALUES($1,'outbound_message',10,'stripe_test')",
+    ] {
+        setup.execute(statement, &[&billed_account]).await.unwrap();
+    }
+    DeliveryStore::new(&mut client)
+        .accept_alpha(
+            NewMessage {
+                account_id: billed_account,
+                device_id: billed_device,
+                client_message_id: Uuid::new_v4(),
+                idempotency_key: "billed-round-trip",
+                recipient_e164: "+15551234567",
+                synthetic_payload: b"synthetic billed wire count",
+                expires_at_ms: now_ms() + 60_000,
+            },
+            true,
+        )
+        .await
+        .unwrap();
+    // Customer binding FOR SHARE, account lock, suppression check,
+    // idempotency insert, pending counts, message insert, billing guards,
+    // period upsert with its ledger entry, dispatch job insert.
+    let after_billed = proxy.round_trips.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(
+        after_billed - after_accept,
+        9,
+        "fresh billed admission must pay exactly one round trip per statement"
+    );
+    let reserved: i64 = setup
+        .query_one(
+            "SELECT reserved_units FROM usage_periods WHERE account_id=$1",
+            &[&billed_account],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(reserved, 1, "the billed admission must reserve its unit");
     // Control: the legacy `query(&str)` path waits on Parse/Describe before
     // Bind/Execute, so the same single statement costs at least two batches.
     client
@@ -2702,7 +2761,7 @@ async fn admission_pays_one_round_trip_per_statement() {
         .unwrap();
     let after_control = proxy.round_trips.load(std::sync::atomic::Ordering::SeqCst);
     assert!(
-        after_control >= after_accept + 2,
+        after_control >= after_billed + 2,
         "legacy query(&str) must still pay a separate prepare round trip"
     );
     proxy_task.abort();

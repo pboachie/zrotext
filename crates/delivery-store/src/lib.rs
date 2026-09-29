@@ -1550,6 +1550,10 @@ async fn reserve_outbound(
     // period reserves its first unit only under a positive limit, and an
     // existing period advances only below its stored limit, so an empty
     // result means QuotaExceeded exactly as the separate statements did.
+    // The policy limit is copied only when the month's row is first
+    // created: once a period exists, its stored limit governs even if the
+    // policy has since dropped to 0, so the candidate row must still reach
+    // ON CONFLICT. Every usage_periods inserter holds the account lock.
     let reserved = tx
         .query_typed_one(
             "WITH period AS ( \
@@ -1557,7 +1561,9 @@ async fn reserve_outbound(
                  transaction_timestamp()) AT TIME ZONE 'UTC')::date AS p), \
              upsert AS ( \
                INSERT INTO usage_periods(account_id,metric,period_start,period_end,limit_units,reserved_units) \
-               SELECT $1,'outbound_message',p,(p + interval '1 month')::date,$3,1 FROM period WHERE $3::bigint > 0 \
+               SELECT $1,'outbound_message',p,(p + interval '1 month')::date,$3,1 FROM period \
+                 WHERE $3::bigint > 0 OR EXISTS (SELECT 1 FROM usage_periods \
+                   WHERE account_id=$1 AND metric='outbound_message' AND period_start=p) \
                ON CONFLICT(account_id,metric,period_start) DO UPDATE \
                  SET reserved_units=usage_periods.reserved_units+1 \
                  WHERE usage_periods.reserved_units-usage_periods.refunded_units < usage_periods.limit_units \

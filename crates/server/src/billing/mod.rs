@@ -764,10 +764,25 @@ pub async fn reset_test_quotas_on_start(
             "UPDATE billing_reconciliations r SET dirty_generation=r.dirty_generation+1,state='queued',failed_attempts=0,last_failure_class=NULL,next_attempt_at=now(),updated_at=now() WHERE NOT EXISTS (SELECT 1 FROM billing_subscriptions s WHERE s.stripe_subscription_id=r.stripe_subscription_id AND s.stripe_status IN ('canceled','incomplete_expired','provider_deleted'))",
             &[],
         ).await?;
+        // Migration 023 keeps pointerless risk events in needs_review, as in
+        // the worker's outage sweep, so moving one to queued would fail
+        // startup. Before 023 every risk event has a charge pointer.
+        let payment_intent_available: bool = tx
+            .query_one(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='billing_risk_events' AND column_name='stripe_payment_intent_id')",
+                &[],
+            )
+            .await?
+            .get(0);
         tx.execute(
-            "UPDATE billing_risk_events SET state='queued',failed_attempts=0,last_failure_class=NULL,next_attempt_at=now() WHERE state='needs_review'",
+            if payment_intent_available {
+                "UPDATE billing_risk_events SET state='queued',failed_attempts=0,last_failure_class=NULL,next_attempt_at=now() WHERE state='needs_review' AND (stripe_charge_id IS NOT NULL OR stripe_payment_intent_id IS NOT NULL)"
+            } else {
+                "UPDATE billing_risk_events SET state='queued',failed_attempts=0,last_failure_class=NULL,next_attempt_at=now() WHERE state='needs_review'"
+            },
             &[],
-        ).await?;
+        )
+        .await?;
     }
     tx.execute(
         "INSERT INTO billing_quota_audit(account_id,reconciliation_generation,previous_limit_units,limit_units,reason) SELECT account_id,0,limit_units,0,'startup_reset' FROM usage_quota_policies WHERE source='stripe_test' AND limit_units<>0",
