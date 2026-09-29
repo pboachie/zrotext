@@ -21,11 +21,12 @@ internal enum class NetworkService(val wire: String) {
 /** A one-shot observation cannot outlive its subscription or monotonic deadline. */
 internal class NetworkServiceCapture(private val selected: Int, private val startedMs: Long) {
     private var completed = false
-    fun complete(current: Int?, nowMs: Long, value: NetworkService): NetworkService? {
+    fun complete(activeSubscriptionIds: List<Int>?, nowMs: Long, value: NetworkService): NetworkService? {
         if (completed) return null
         completed = true
-        return if (current == selected && startedMs >= 0 && nowMs >= startedMs &&
-            nowMs - startedMs <= MAX_CAPTURE_MS) value else NetworkService.UNAVAILABLE
+        return if (activeSubscriptionIds?.contains(selected) == true && startedMs >= 0 &&
+            nowMs >= startedMs && nowMs - startedMs <= MAX_CAPTURE_MS) value
+        else NetworkService.UNAVAILABLE
     }
     fun cancel() { completed = true }
     companion object { const val MAX_CAPTURE_MS = 5_000L }
