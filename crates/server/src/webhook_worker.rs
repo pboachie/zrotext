@@ -489,8 +489,7 @@ where
     let mut processed = 0;
     while processed < limit {
         match dispatch_one_with(client, vault, worker_id, |url, body, secret| {
-            let sender = sender(url, body, secret);
-            async move { sender.await }
+            sender(url, body, secret)
         })
         .await
         {
