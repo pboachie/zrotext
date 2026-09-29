@@ -52,8 +52,25 @@ let liveRetryTimer = null;
 let liveConnected = false;
 let liveFailures = 0;
 let liveOpenedAt = 0;
+// Distinguishes the first stream of a sign-in (the page just loaded its
+// lists) from a reconnect, whose fresh server baseline hides every change
+// made while no stream was open.
+let liveStreamEverOpened = false;
 let deviceLoads = 0;
 let messageLoads = 0;
+// Live-triggered reloads are coalesced: once a section has reloaded from a
+// change signal, further signals inside this floor merge into a single
+// trailing reload, so a busy tenant cannot rebuild its lists on every poll.
+const liveReloadFloorMs = dashboardRefreshMs;
+let devicesLiveReloadedAt = 0;
+let messagesLiveReloadedAt = 0;
+let devicesTrailingReload = null;
+let messagesTrailingReload = null;
+// A signal that arrives while a live-triggered reload is still in flight is
+// remembered and answered with one guarded follow-up reload when that load
+// completes, so the freshest state is never silently dropped.
+let devicesSignalDuringLoad = false;
+let messagesSignalDuringLoad = false;
 let browsingOlderDevices = false;
 let browsingOlderMessages = false;
 const preconditionFreshMs = 90_000;
@@ -93,9 +110,21 @@ function stopDashboardRefresh() {
   dashboardTimer = null;
 }
 
+function cancelPendingLiveReloads() {
+  if (devicesTrailingReload !== null) window.clearTimeout(devicesTrailingReload);
+  if (messagesTrailingReload !== null) window.clearTimeout(messagesTrailingReload);
+  devicesTrailingReload = null;
+  messagesTrailingReload = null;
+  // A signal queued during an in-flight reload belongs to the stream that
+  // sent it; once that stream drops, the fallback refresh takes over.
+  devicesSignalDuringLoad = false;
+  messagesSignalDuringLoad = false;
+}
+
 function stopLiveUpdates() {
   if (liveRetryTimer !== null) window.clearTimeout(liveRetryTimer);
   liveRetryTimer = null;
+  cancelPendingLiveReloads();
   if (liveEvents) liveEvents.close();
   liveEvents = null;
   liveConnected = false;
@@ -114,9 +143,15 @@ function startLiveUpdates() {
   liveEvents = source;
   source.addEventListener("open", () => {
     if (liveEvents !== source) return;
+    const reconnected = liveStreamEverOpened;
+    liveStreamEverOpened = true;
     liveConnected = true;
     liveOpenedAt = Date.now();
     stopDashboardRefresh();
+    // A reconnect takes a fresh baseline fingerprint, so anything that
+    // changed while no stream was open would never be signalled. One
+    // guarded reload closes that gap.
+    if (reconnected) refreshDashboard();
   });
   source.addEventListener("changed", (event) => {
     if (liveEvents !== source || !canRefreshDashboard()) return;
@@ -127,14 +162,15 @@ function startLiveUpdates() {
       return;
     }
     if (!Array.isArray(sections)) return;
-    if (sections.includes("devices") && !deviceLoads && !browsingOlderDevices && !viewingList("device-list")) loadDevices(true, true);
-    if (sections.includes("messages") && !messageLoads && !browsingOlderMessages && !viewingList("message-list")) loadMessages(true, true);
+    if (sections.includes("devices")) requestLiveDevicesReload();
+    if (sections.includes("messages")) requestLiveMessagesReload();
   });
   source.addEventListener("error", () => {
     if (liveEvents !== source) return;
     source.close();
     liveEvents = null;
     liveConnected = false;
+    cancelPendingLiveReloads();
     if (Date.now() - liveOpenedAt >= liveHealthyMs) liveFailures = 0;
     scheduleDashboardRefresh();
     scheduleLiveRetry();
@@ -158,6 +194,48 @@ function syncLiveUpdates() {
 
 function canRefreshDashboard() {
   return dashboardSignedIn && dashboardPageActive && !document.hidden && byId("auto-refresh").checked;
+}
+
+function requestLiveDevicesReload() {
+  if (browsingOlderDevices || viewingList("device-list")) return;
+  if (deviceLoads) {
+    devicesSignalDuringLoad = true;
+    return;
+  }
+  const now = Date.now();
+  if (devicesTrailingReload !== null) return;
+  if (now - devicesLiveReloadedAt < liveReloadFloorMs) {
+    devicesTrailingReload = window.setTimeout(() => {
+      devicesTrailingReload = null;
+      if (!canRefreshDashboard() || deviceLoads || browsingOlderDevices || viewingList("device-list")) return;
+      devicesLiveReloadedAt = Date.now();
+      loadDevices(true, true);
+    }, devicesLiveReloadedAt + liveReloadFloorMs - now);
+    return;
+  }
+  devicesLiveReloadedAt = now;
+  loadDevices(true, true);
+}
+
+function requestLiveMessagesReload() {
+  if (browsingOlderMessages || viewingList("message-list")) return;
+  if (messageLoads) {
+    messagesSignalDuringLoad = true;
+    return;
+  }
+  const now = Date.now();
+  if (messagesTrailingReload !== null) return;
+  if (now - messagesLiveReloadedAt < liveReloadFloorMs) {
+    messagesTrailingReload = window.setTimeout(() => {
+      messagesTrailingReload = null;
+      if (!canRefreshDashboard() || messageLoads || browsingOlderMessages || viewingList("message-list")) return;
+      messagesLiveReloadedAt = Date.now();
+      loadMessages(true, true);
+    }, messagesLiveReloadedAt + liveReloadFloorMs - now);
+    return;
+  }
+  messagesLiveReloadedAt = now;
+  loadMessages(true, true);
 }
 
 function scheduleDashboardRefresh() {
@@ -340,7 +418,17 @@ async function completeSignIn() {
 }
 
 function loadOwnerData() {
-  return Promise.all([loadDevices(), loadDeviceCapacity(), loadMessages(), loadOptOutReview(), loadOwnerHolds(), loadKeys(), loadWebhookEndpoints(), loadSessions()]);
+  // The above-the-fold sections load first and alone; the below-the-fold
+  // panels wait for them so a sign-in never occupies half the request pool.
+  return Promise.all([loadDevices(), loadMessages()]).finally(() => loadBelowFoldSections());
+}
+
+function loadBelowFoldSections() {
+  // Below-the-fold panels fill in one at a time after the visible lists,
+  // keeping a sign-in at two concurrent requests for the data the owner
+  // sees first and one for everything after.
+  const sections = [loadOptOutReview, loadOwnerHolds, loadKeys, loadWebhookEndpoints, loadSessions];
+  return sections.reduce((chain, load) => chain.then(() => load()), Promise.resolve());
 }
 
 function clearPairing() {
@@ -409,6 +497,7 @@ function clearOwnerState() {
   ownerEpoch += 1;
   browsingOlderDevices = false;
   browsingOlderMessages = false;
+  liveStreamEverOpened = false;
   sessionLoadGeneration += 1;
   deviceLoadGeneration += 1;
   messageLoadGeneration += 1;
@@ -756,7 +845,7 @@ async function loadDeviceCapacity() {
   prompt.hidden = true;
   prompt.textContent = "";
   try {
-    const result = await api("/v1/billing/status");
+    const result = await api("/v1/billing/device-capacity");
     const capacity = result.deviceCapacity;
     if (result.mode !== "test" || !capacity ||
         !Number.isSafeInteger(capacity.limit) || capacity.limit < 0 ||
@@ -931,6 +1020,11 @@ async function loadDevices(reset = true, automatic = false) {
     message("device-status", `Could not load devices. ${automatic ? "Showing the previous snapshot; counts may be stale. " : ""}${error.message}`);
   } finally {
     deviceLoads -= 1;
+    if (deviceLoads === 0 && devicesSignalDuringLoad) {
+      // Answer a signal that arrived while this reload was in flight.
+      devicesSignalDuringLoad = false;
+      if (canRefreshDashboard()) requestLiveDevicesReload();
+    }
     if (!stale()) moreButton.disabled = false;
   }
 }
@@ -1031,6 +1125,11 @@ async function loadMessages(reset = true, automatic = false) {
     message("message-status", `Could not load messages. ${error.message}`);
   } finally {
     messageLoads -= 1;
+    if (messageLoads === 0 && messagesSignalDuringLoad) {
+      // Answer a signal that arrived while this reload was in flight.
+      messagesSignalDuringLoad = false;
+      if (canRefreshDashboard()) requestLiveMessagesReload();
+    }
     if (!stale()) moreButton.disabled = false;
   }
 }

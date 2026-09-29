@@ -93,12 +93,57 @@ fn refusals_are_distinct_no_store_statuses_with_retry_after() {
     }
 }
 
+#[test]
+fn unchanged_polls_back_off_to_the_snapshot_cadence_cap() {
+    let mut cadence = PollCadence::new();
+    assert_eq!(cadence.interval, Duration::from_secs(2));
+    cadence.after_unchanged_poll();
+    assert_eq!(cadence.interval, Duration::from_secs(4));
+    cadence.after_unchanged_poll();
+    assert_eq!(cadence.interval, Duration::from_secs(8));
+    cadence.after_unchanged_poll();
+    assert_eq!(cadence.interval, Duration::from_secs(15));
+    cadence.after_unchanged_poll();
+    assert_eq!(cadence.interval, Duration::from_secs(15));
+}
+
+#[test]
+fn the_cadence_reset_applies_to_the_poll_right_after_the_change() {
+    let mut cadence = PollCadence::new();
+    for _ in 0..5 {
+        cadence.after_unchanged_poll();
+    }
+    assert_eq!(cadence.interval, Duration::from_secs(15));
+    // A change-detecting poll schedules its successor at the fast interval,
+    // not at the backed-off interval the reset replaces.
+    assert_eq!(next_poll_delay(&mut cadence, true), Duration::from_secs(2));
+    // An unchanged poll right after the change continues backing off from
+    // the reset base.
+    assert_eq!(next_poll_delay(&mut cadence, false), Duration::from_secs(4));
+    assert_eq!(next_poll_delay(&mut cadence, false), Duration::from_secs(8));
+}
+
+#[test]
+fn any_observed_change_resets_the_poll_cadence() {
+    let mut cadence = PollCadence::new();
+    for _ in 0..5 {
+        cadence.after_unchanged_poll();
+    }
+    assert_eq!(cadence.interval, Duration::from_secs(15));
+    cadence.after_change();
+    assert_eq!(cadence.interval, Duration::from_secs(2));
+    // An active tenant keeps the fast cadence while changes keep arriving.
+    cadence.after_change();
+    assert_eq!(cadence.interval, Duration::from_secs(2));
+}
+
 /// Waits for a `changed` event naming `section`, asserting every changed
-/// payload carries only section names.
+/// payload carries only section names. Frame gaps can reach the 15 s poll
+/// backoff ceiling between keepalives, so each frame wait outlives it.
 async fn wait_for_change(frames: &mut BodyDataStream, section: &str) -> bool {
-    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
     while std::time::Instant::now() < deadline {
-        let Ok(Some(bytes)) = tokio::time::timeout(Duration::from_secs(5), frames.next()).await
+        let Ok(Some(bytes)) = tokio::time::timeout(Duration::from_secs(16), frames.next()).await
         else {
             return false;
         };

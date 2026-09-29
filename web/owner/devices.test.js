@@ -66,6 +66,8 @@ async function ownerPage() {
     }
     if (url === "/v1/billing/status") return state.billingCapacity
       ? response(200, { mode: "test", deviceCapacity: state.billingCapacity }) : response(404);
+    if (url === "/v1/billing/device-capacity") return state.billingCapacity
+      ? response(200, { mode: "test", deviceCapacity: state.billingCapacity }) : response(404);
     if (url === "/v1/enrollment/pairings" && options.method === "POST")
       return response(201, { pairing_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", token: "synthetic" });
     if (url.endsWith("/approve") && options.method === "POST") return state.approveResponse;
@@ -217,6 +219,8 @@ test("content-bearing reads send the CSRF header while session probes stay cooki
   const { element, state } = await ownerPage();
   state.endpoints = [{ endpoint_id: endpointId, callback_url: "https://callback.example.test/hook", enabled: true }];
   await element("refresh-webhook-endpoints").listeners.click();
+  // A device refresh also exercises the cookie-only capacity probe.
+  await element("refresh-devices").listeners.click();
   element("webhook-endpoint").value = endpointId;
   await element("webhook-endpoint").listeners.change();
   element("inbound-message-id").value = eventId;
@@ -241,9 +245,41 @@ test("content-bearing reads send the CSRF header while session probes stay cooki
   }
   // The page reads these to learn whether it is signed in; they carry no
   // account content and the server accepts them with the session cookie only.
-  for (const path of ["/v1/auth/session", "/v1/auth/sessions", "/v1/billing/status"]) {
+  for (const path of ["/v1/auth/session", "/v1/auth/sessions", "/v1/billing/device-capacity"]) {
     for (const value of header(path)) assert.equal(value, undefined, path);
   }
+});
+
+test("sign-in loads the visible lists first and the below-the-fold panels after", async () => {
+  const { state } = await ownerPage();
+  const urls = state.requests;
+  // No billing call at all on sign-in; capacity loads only from the light
+  // endpoint on approve, revoke or an explicit refresh.
+  assert.ok(!urls.some((url) => url.startsWith("/v1/billing/")), "sign-in hit billing");
+  const devices = urls.indexOf("/v1/enrollment/devices");
+  const messages = urls.indexOf("/v1/owner/messages");
+  assert.ok(devices >= 0 && messages >= 0, "visible lists did not load");
+  for (const path of ["/v1/owner/opt-out-review", "/v1/owner/opt-out-holds", "/v1/auth/api-keys", "/v1/webhooks", "/v1/auth/sessions"]) {
+    assert.ok(urls.indexOf(path) > devices && urls.indexOf(path) > messages,
+      `${path} did not wait for the visible lists`);
+  }
+  // The below-the-fold panels also load one at a time.
+  const after = urls.slice(Math.max(devices, messages) + 1).filter((url) =>
+    ["/v1/owner/opt-out-review", "/v1/owner/opt-out-holds", "/v1/auth/api-keys", "/v1/webhooks", "/v1/auth/sessions"].includes(url));
+  assert.deepEqual(after, [
+    "/v1/owner/opt-out-review", "/v1/owner/opt-out-holds", "/v1/auth/api-keys", "/v1/webhooks", "/v1/auth/sessions",
+  ]);
+});
+
+test("a device refresh reloads capacity through the light endpoint only", async () => {
+  const { element, state } = await ownerPage();
+  state.billingCapacity = { limit: 5, active: 1 };
+  state.requests = [];
+  element("refresh-devices").listeners.click();
+  await new Promise(setImmediate);
+  await new Promise(setImmediate);
+  const billing = state.requests.filter((url) => url.startsWith("/v1/billing/"));
+  assert.deepEqual(billing, ["/v1/billing/device-capacity"]);
 });
 
 test("password reset keeps the token out of URLs and clears entered passwords", async () => {

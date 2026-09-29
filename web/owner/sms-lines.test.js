@@ -63,8 +63,11 @@ async function smsLinesPage({ signedIn = true, tamper = null, register = "ok", l
     put: async (value) => { stored = value; },
     remove: async () => { stored = null; },
   };
-  globalThis.document = { cookie: "__Host-zrotext_csrf=ztc_synthetic", getElementById: element, createElement: makeElement };
-  globalThis.ZtSmsLinesSchedule = (fn) => { timers.push(fn); return timers.length; };
+  const documentListeners = {};
+  globalThis.document = { cookie: "__Host-zrotext_csrf=ztc_synthetic", hidden: false,
+    getElementById: element, createElement: makeElement,
+    addEventListener(name, callback) { documentListeners[name] = callback; } };
+  globalThis.ZtSmsLinesSchedule = (fn, ms) => { timers.push({ fn, ms }); return timers.length; };
   globalThis.fetch = async (path, options = {}) => {
     const method = options.method || "GET";
     if (path === "/v1/auth/session") return signedIn
@@ -113,6 +116,7 @@ async function smsLinesPage({ signedIn = true, tamper = null, register = "ok", l
       return response(server.ownerSignatureValid ? 204 : 403);
     }
     if (path.includes("/activations/")) {
+      server.viewRequests = (server.viewRequests || 0) + 1;
       if (server.failNextView) {
         server.failNextView = false;
         return response(503);
@@ -127,7 +131,7 @@ async function smsLinesPage({ signedIn = true, tamper = null, register = "ok", l
   await globalThis.ZtSmsLinesReady;
   // One polling round: run only the timers pending now.
   const runTimers = async () => {
-    for (const fn of timers.splice(0)) await fn();
+    for (const { fn } of timers.splice(0)) await fn();
   };
   const click = async (id) => element(id).listeners.click({ preventDefault() {} });
   const submit = async (id) => element(id).listeners.submit({ preventDefault() {} });
@@ -144,7 +148,8 @@ async function smsLinesPage({ signedIn = true, tamper = null, register = "ok", l
       device_statement_b64: signing.base64(statement), device_signature_der_b64: signing.base64(deviceSignature),
       owner_statement_b64: signing.base64(ownerForServer) };
   };
-  return { element, server, click, submit, runTimers, prepareDeclaration, stored: () => stored };
+  return { element, server, click, submit, runTimers, prepareDeclaration, stored: () => stored,
+    documentListeners, scheduledDelays: () => timers.map((timer) => timer.ms) };
 }
 
 test("signed-out owners are sent to sign in", async () => {
@@ -266,6 +271,55 @@ test("a second activation can be approved without reloading the page", async () 
     assert.equal(page.element("activation-status").textContent, "The line is active on this phone.");
   }
   assert.equal(page.server.approvals.length, 2);
+});
+
+test("polling pauses on a hidden tab and resumes when it returns", async () => {
+  const page = await smsLinesPage();
+  page.element("key-mfa").value = "123456";
+  await page.submit("key-form");
+  await page.click("activation-new-line");
+  const line = page.element("activation-line").value;
+  page.element("activation-device").value = DEVICE;
+  page.server.views.push({ status: "awaiting_device", device_id: DEVICE, generation: 3, expires_at_ms: 0 });
+  await page.submit("activation-form");
+  const before = page.server.viewRequests;
+  globalThis.document.hidden = true;
+  page.documentListeners.visibilitychange();
+  // A poll timer armed before hiding must not issue another request.
+  await page.runTimers();
+  assert.equal(page.server.viewRequests, before, "hidden tab kept polling");
+  globalThis.document.hidden = false;
+  page.server.views.push({ status: "awaiting_device", device_id: DEVICE, generation: 3, expires_at_ms: 0 });
+  page.documentListeners.visibilitychange();
+  await page.runTimers();
+  assert.equal(page.server.viewRequests, before + 1, "visible tab did not resume polling");
+});
+
+test("poll errors back off exponentially and a verified statement polls slowly", async () => {
+  const page = await smsLinesPage();
+  page.element("key-mfa").value = "123456";
+  await page.submit("key-form");
+  await page.click("activation-new-line");
+  const line = page.element("activation-line").value;
+  page.element("activation-device").value = DEVICE;
+  page.server.views.push({ status: "awaiting_device", device_id: DEVICE, generation: 3, expires_at_ms: 0 });
+  await page.submit("activation-form");
+  assert.deepEqual(page.scheduledDelays(), [2000], "fresh activation does not poll every 2 s");
+  page.server.failNextView = true;
+  await page.runTimers();
+  assert.deepEqual(page.scheduledDelays(), [4000], "first error did not double the delay");
+  page.server.failNextView = true;
+  await page.runTimers();
+  assert.deepEqual(page.scheduledDelays(), [8000]);
+  page.server.failNextView = true;
+  await page.runTimers();
+  page.server.failNextView = true;
+  await page.runTimers();
+  assert.deepEqual(page.scheduledDelays(), [30000], "backoff is not capped at 30 s");
+  // A successful poll resets the backoff; the verified statement slows to 10 s.
+  page.server.views.push(await page.prepareDeclaration(line));
+  await page.runTimers();
+  assert.deepEqual(page.scheduledDelays(), [10000], "verified statement still polls every 2 s");
 });
 
 test("a transient status error keeps polling", async () => {
