@@ -121,7 +121,7 @@ range scan over the device's recent attempts rather than its whole attempt
 history, which is never pruned. The same wrong-shape refusal, active-build
 protection, invalid-build retry, and post-recording verification rules apply.
 
-Migration 051 uses the same online preparation and transactional validation for
+Migration 052 uses the same online preparation and transactional validation for
 `messages_admission_pending`, a partial btree index on
 `(account_id, device_id)` covering queued/claimed messages. The admission count
 inside the account-locked accept transaction asks how many pending messages an
@@ -133,7 +133,7 @@ invalid-build retry, and post-recording verification rules apply.
 A concurrent build permits message writes but may wait for older transactions;
 monitor `pg_stat_progress_create_index` and allow migration to finish before
 starting API workers. If application rollback is needed, the valid index can
-remain; keep the migration package containing the applied 034, 040, 049, 050 and 051 files so a rolled-back
+remain; keep the migration package containing the applied 034, 040, 049, 050 and 052 files so a rolled-back
 API does not rerun an older migrator with a mismatched checksum. Removing the
 index later requires a separately planned
 `DROP INDEX CONCURRENTLY` outside a transaction, after workers that depend on
