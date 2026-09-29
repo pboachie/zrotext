@@ -141,6 +141,7 @@ async fn assert_reset_preserves_mfa(path: ResetPath) {
         .await
         .unwrap();
     // Claim the synthetic outbox entry directly. No SMTP is used in either path.
+    crate::outbox_test_support::backdate_queued_reset_mail(&db).await;
     let emailed = claim_reset_mail(&mut db, &hasher).await.unwrap().unwrap();
     match path {
         ResetPath::Email => assert!(
@@ -218,6 +219,7 @@ async fn assert_reset_preserves_mfa(path: ResetPath) {
             .await
             .is_ok()
     );
+    crate::outbox_test_support::backdate_queued_reset_notice(&db).await;
     assert_eq!(
         claim_reset_notice(&mut db).await.unwrap().unwrap().email,
         "owner@example.test"
@@ -286,6 +288,7 @@ async fn expired_reset_mail_is_pruned_in_bounded_batches_before_live_mail() {
     )
     .await
     .unwrap();
+    crate::outbox_test_support::backdate_queued_reset_mail(&db).await;
     let mail = claim_reset_mail(&mut db, &hasher).await.unwrap().unwrap();
     assert_eq!(mail.reset_id, live_id);
     let stale: i64 = db.query_one(
@@ -554,6 +557,7 @@ async fn postgres_password_session_and_reset_lifecycle() {
     request_password_reset(&mut db, &hasher, "owner@example.test")
         .await
         .unwrap();
+    crate::outbox_test_support::backdate_queued_reset_mail(&db).await;
     let reset = claim_reset_mail(&mut db, &hasher).await.unwrap().unwrap();
     assert_eq!(reset.email, "owner@example.test");
     assert!(ack_reset_mail(&db, &reset, true).await.unwrap());
@@ -562,6 +566,7 @@ async fn postgres_password_session_and_reset_lifecycle() {
             .await
             .unwrap()
     );
+    crate::outbox_test_support::backdate_queued_reset_notice(&db).await;
     let notice = claim_reset_notice(&mut db).await.unwrap().unwrap();
     assert_eq!(notice.email, "owner@example.test");
     assert!(ack_reset_notice(&db, &notice, true).await.unwrap());
@@ -606,9 +611,10 @@ async fn postgres_password_session_and_reset_lifecycle() {
     request_password_reset(&mut db, &hasher, "owner@example.test")
         .await
         .unwrap();
+    crate::outbox_test_support::backdate_queued_reset_mail(&db).await;
     let expired = claim_reset_mail(&mut db, &hasher).await.unwrap().unwrap();
     db.execute(
-        "UPDATE password_resets SET expires_at=now()-interval '1 second' WHERE id=$1",
+        "UPDATE password_resets SET expires_at=now()-interval '5 minutes' WHERE id=$1",
         &[&expired.reset_id],
     )
     .await
@@ -808,6 +814,7 @@ async fn postgres_operator_reset_revokes_all_owner_credentials() {
     request_password_reset(&mut db, &hasher, "owner@example.test")
         .await
         .unwrap();
+    crate::outbox_test_support::backdate_queued_reset_mail(&db).await;
     let emailed = claim_reset_mail(&mut db, &hasher).await.unwrap().unwrap();
     assert!(ack_reset_mail(&db, &emailed, false).await.unwrap());
 
@@ -853,6 +860,7 @@ async fn postgres_operator_reset_revokes_all_owner_credentials() {
         .unwrap()
         .get(0);
     assert_eq!(canceled, 1);
+    crate::outbox_test_support::backdate_queued_reset_notice(&db).await;
     let notice = claim_reset_notice(&mut db).await.unwrap().unwrap();
     assert_eq!(notice.email, "owner@example.test");
     setup

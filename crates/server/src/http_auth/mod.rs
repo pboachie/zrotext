@@ -1070,12 +1070,19 @@ pub async fn dispatch_one_verification_report(
     else {
         return Ok(VerificationDispatchOutcome::Idle);
     };
+    // Release the worker socket for the SMTP send: a slow mail server must
+    // not hold one of the worker slots. The claim's five-minute lease keeps
+    // the mail owned while no socket is held.
+    drop(client);
     let result = tokio::time::timeout(
         Duration::from_secs(30),
         state.dispatcher.dispatch(&mail.email, &mail.token),
     )
     .await;
     let delivered = matches!(&result, Ok(Ok(())));
+    let client = crate::runtime_db::connect_worker(&state.database_url)
+        .await
+        .map_err(|_| AuthHttpError::Unavailable)?;
     let acknowledged = auth::ack_verification_mail(&client, &mail, delivered)
         .await
         .map_err(map_auth)?;
@@ -1108,6 +1115,9 @@ pub async fn dispatch_one_password_reset(state: &AuthHttpState) -> Result<bool, 
     else {
         return Ok(false);
     };
+    // Release the worker socket across the SMTP send; the leased claim keeps
+    // the code owned while no socket is held.
+    drop(client);
     let delivered = tokio::time::timeout(
         Duration::from_secs(30),
         state
@@ -1116,6 +1126,9 @@ pub async fn dispatch_one_password_reset(state: &AuthHttpState) -> Result<bool, 
     )
     .await
     .is_ok_and(|result| result.is_ok());
+    let client = crate::runtime_db::connect_worker(&state.database_url)
+        .await
+        .map_err(|_| AuthHttpError::Unavailable)?;
     let _ = account::ack_reset_mail(&client, &mail, delivered)
         .await
         .map_err(map_auth)?;
@@ -1138,6 +1151,9 @@ pub async fn dispatch_one_password_reset_notice(
     else {
         return Ok(false);
     };
+    // Release the worker socket across the SMTP send; the leased claim keeps
+    // the notice owned while no socket is held.
+    drop(client);
     let delivered = tokio::time::timeout(
         Duration::from_secs(30),
         state
@@ -1146,6 +1162,9 @@ pub async fn dispatch_one_password_reset_notice(
     )
     .await
     .is_ok_and(|result| result.is_ok());
+    let client = crate::runtime_db::connect_worker(&state.database_url)
+        .await
+        .map_err(|_| AuthHttpError::Unavailable)?;
     let _ = account::ack_reset_notice(&client, &notice, delivered)
         .await
         .map_err(map_auth)?;

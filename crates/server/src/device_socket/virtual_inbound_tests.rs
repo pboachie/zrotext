@@ -53,7 +53,7 @@ async fn authenticated_inbound_replay_retries_one_webhook_delivery() {
         .unwrap();
     let separator = if url.contains('?') { '&' } else { '?' };
     let schema_url = format!("{url}{separator}options=-csearch_path%3D{schema}");
-    let (mut db, connection) = tokio_postgres::connect(&schema_url, NoTls).await.unwrap();
+    let (db, connection) = tokio_postgres::connect(&schema_url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
     for migration in [
         include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
@@ -137,7 +137,9 @@ async fn authenticated_inbound_replay_retries_one_webhook_delivery() {
     .unwrap();
 
     let state = DeviceSocketState {
-        database_url: schema_url,
+        // The dispatch path acquires its own worker-class sockets through the
+        // runtime pool; keep the schema-scoped URL for those calls.
+        database_url: schema_url.clone(),
         site_id: "socket-test".into(),
         instance_id: "virtual-server".into(),
         deployment_epoch: 1,
@@ -253,7 +255,7 @@ async fn authenticated_inbound_replay_retries_one_webhook_delivery() {
         let received = received.clone();
         assert!(
             dispatch_one_with(
-                &mut db,
+                &schema_url,
                 &vault,
                 "virtual-receiver",
                 move |url, body, secret| async move {
@@ -311,7 +313,7 @@ async fn authenticated_inbound_replay_retries_one_webhook_delivery() {
         assert_eq!(outcome, expected_outcome);
         if attempt < 2 {
             assert!(
-                !dispatch_one_with(&mut db, &vault, "early-retry", |_, _, _| async {
+                !dispatch_one_with(&schema_url, &vault, "early-retry", |_, _, _| async {
                     unreachable!("retry must observe backoff")
                 })
                 .await
@@ -350,7 +352,7 @@ async fn authenticated_inbound_replay_retries_one_webhook_delivery() {
     assert_eq!(row.get::<_, String>(2), "succeeded");
     assert_eq!(row.get::<_, i16>(3), 3);
     assert!(
-        !dispatch_one_with(&mut db, &vault, "virtual-receiver", |_, _, _| async {
+        !dispatch_one_with(&schema_url, &vault, "virtual-receiver", |_, _, _| async {
             unreachable!("a completed delivery must not be sent again")
         })
         .await

@@ -2,11 +2,14 @@
 //! Test-only failure classes; never format error messages, sources or panic payloads.
 
 use super::BillingError;
-use crate::{billing::worker::ProviderFailure, runtime_db::ConnectError};
+use crate::{
+    billing::worker::{JobOutcome, ProviderFailure},
+    runtime_db::ConnectError,
+};
 use std::cell::RefCell;
 use tokio::task::JoinError;
 
-type JobResult = Result<Result<bool, BillingError>, JoinError>;
+type JobResult = Result<Result<JobOutcome, BillingError>, JoinError>;
 
 const PREFIX: &str = "billing drain test failure: ";
 
@@ -67,6 +70,7 @@ pub(super) fn classify(result: &JobResult) -> Option<String> {
         BillingError::Database(error) => database("database", error),
         BillingError::Provider(error) => match error {
             ProviderFailure::HttpStatus(_) => "provider_http_status",
+            ProviderFailure::RateLimited { .. } => "provider_rate_limited",
             ProviderFailure::Transport => "provider_transport",
             ProviderFailure::InvalidResponse => "provider_invalid_response",
         }
@@ -140,8 +144,8 @@ mod tests {
             assert_eq!(actual, expected);
             assert!(!actual.contains(SENTINEL));
         }
-        assert_eq!(classify(&Ok(Ok(true))), None);
-        assert_eq!(classify(&Ok(Ok(false))), None);
+        assert_eq!(classify(&Ok(Ok(JobOutcome::WorkDone))), None);
+        assert_eq!(classify(&Ok(Ok(JobOutcome::Empty))), None);
     }
 
     #[test]
@@ -208,7 +212,11 @@ mod tests {
 
         struct CapacityJobs;
         impl BillingJobs for CapacityJobs {
-            async fn reconcile(&self, _url: String, _risk: bool) -> Result<bool, BillingError> {
+            async fn reconcile(
+                &self,
+                _url: String,
+                _risk: bool,
+            ) -> Result<JobOutcome, BillingError> {
                 Err(BillingError::RuntimeDatabase(ConnectError::Capacity))
             }
         }
