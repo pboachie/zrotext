@@ -2,7 +2,7 @@ use super::*;
 
 // Keep the admission fixtures on the complete, reviewed schema. SQL is
 // embedded at build time so tests never execute files discovered at runtime.
-const TEST_MIGRATIONS: [(&str, &str); 57] = [
+const TEST_MIGRATIONS: [(&str, &str); 58] = [
     (
         "001_foundation.sql",
         include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
@@ -233,6 +233,12 @@ const TEST_MIGRATIONS: [(&str, &str); 57] = [
         "057_webhook_history_index.sql",
         include_str!("../../../deploy/compose/migrations/057_webhook_history_index.sql"),
     ),
+    (
+        "058_drop_abuse_counters_updated_index.sql",
+        include_str!(
+            "../../../deploy/compose/migrations/058_drop_abuse_counters_updated_index.sql"
+        ),
+    ),
 ];
 
 /// Applies every numbered migration in order. Shared by the PostgreSQL-backed
@@ -267,6 +273,12 @@ pub(crate) async fn apply_test_migrations(client: &Client) {
                      ON messages(account_id,device_id) \
                      WHERE state IN ('queued','claimed')",
                 )
+                .await
+                .unwrap();
+        }
+        if name == "058_drop_abuse_counters_updated_index.sql" {
+            client
+                .batch_execute("DROP INDEX IF EXISTS auth_abuse_counters_stale")
                 .await
                 .unwrap();
         }

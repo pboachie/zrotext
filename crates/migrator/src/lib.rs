@@ -6,10 +6,12 @@ use std::{collections::BTreeMap, fs, path::Path};
 use thiserror::Error;
 use tokio_postgres::Client;
 
+mod abuse_counters_index_drop;
 mod admission_pending_index;
 mod owner_queue_index;
 mod radio_evidence_index;
 mod recent_attempt_index;
+use abuse_counters_index_drop::*;
 use admission_pending_index::*;
 mod webhook_history_index;
 use owner_queue_index::*;
@@ -120,6 +122,8 @@ pub enum MigrationError {
     WebhookHistoryIndexConflict,
     #[error("webhook_deliveries_history concurrent build already in progress")]
     WebhookHistoryIndexBuildInProgress,
+    #[error("auth_abuse_counters_stale index is still present")]
+    AbuseCountersStaleIndexPresent,
     #[error("message_attempts_device_created has an unexpected definition; refusing to replace it")]
     RecentAttemptIndexConflict,
     #[error("message_attempts_device_created is still being built; refusing to interrupt it")]
@@ -298,6 +302,9 @@ async fn apply_locked(
     if ledger.contains_key(&WEBHOOK_HISTORY_INDEX_MIGRATION) {
         verify_webhook_history_index(client).await?;
     }
+    if ledger.contains_key(&ABUSE_COUNTERS_INDEX_DROP_MIGRATION) {
+        verify_abuse_counters_index_dropped(client).await?;
+    }
 
     for migration in migrations {
         if ledger.contains_key(&migration.version) {
@@ -361,6 +368,17 @@ async fn apply_locked(
             // transaction. The advisory lock still serializes migrator jobs.
             prepare_webhook_history_index(client).await?;
         }
+        if migration.version == ABUSE_COUNTERS_INDEX_DROP_MIGRATION {
+            if migration.filename != ABUSE_COUNTERS_INDEX_DROP_FILE {
+                return Err(MigrationError::InvalidDirectory(format!(
+                    "migration {ABUSE_COUNTERS_INDEX_DROP_MIGRATION:03} must be {ABUSE_COUNTERS_INDEX_DROP_FILE}"
+                )));
+            }
+            // DROP INDEX CONCURRENTLY cannot run in the numbered migration's
+            // transaction; IF EXISTS keeps a retry after an interrupted drop
+            // idempotent.
+            prepare_abuse_counters_index_drop(client).await?;
+        }
         let tx = client.transaction().await?;
         if let Err(error) = tx.batch_execute(&migration.sql).await {
             // Dropping the transaction closes it without committing the failed file.
@@ -414,6 +432,12 @@ async fn apply_locked(
         .any(|migration| migration.version == WEBHOOK_HISTORY_INDEX_MIGRATION)
     {
         verify_webhook_history_index(client).await?;
+    }
+    if migrations
+        .iter()
+        .any(|migration| migration.version == ABUSE_COUNTERS_INDEX_DROP_MIGRATION)
+    {
+        verify_abuse_counters_index_dropped(client).await?;
     }
     Ok(applied)
 }
@@ -777,6 +801,8 @@ async fn verify_m0_shape(tx: &tokio_postgres::Transaction<'_>) -> Result<(), Mig
     Ok(())
 }
 
+#[cfg(test)]
+mod abuse_counters_index_drop_tests;
 #[cfg(test)]
 mod admission_pending_index_tests;
 #[cfg(test)]

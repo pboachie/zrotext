@@ -183,7 +183,7 @@ macro_rules! queue_schema {
         [$(($name, include_str!(concat!("../../../../deploy/compose/migrations/", $name)))),+]
     };
 }
-const QUEUE_SCHEMA: [(&str, &str); 57] = queue_schema!(
+const QUEUE_SCHEMA: [(&str, &str); 58] = queue_schema!(
     "001_foundation.sql",
     "002_auth.sql",
     "003_delivery.sql",
@@ -241,6 +241,7 @@ const QUEUE_SCHEMA: [(&str, &str); 57] = queue_schema!(
     "055_trusted_browser_epoch.sql",
     "056_usage_limit_plans.sql",
     "057_webhook_history_index.sql",
+    "058_drop_abuse_counters_updated_index.sql",
 );
 #[test]
 fn queue_fixture_includes_every_checked_in_migration() {
@@ -275,6 +276,11 @@ async fn apply_queue_schema(db: &Client) {
             }
             "057_webhook_history_index.sql" => {
                 db.batch_execute("CREATE INDEX webhook_deliveries_history ON webhook_deliveries(endpoint_id,created_at DESC,id DESC)").await.unwrap();
+            }
+            "058_drop_abuse_counters_updated_index.sql" => {
+                db.batch_execute("DROP INDEX IF EXISTS auth_abuse_counters_stale")
+                    .await
+                    .unwrap();
             }
             "050_message_attempts_recent_index.sql" => {
                 db.batch_execute("CREATE INDEX message_attempts_device_created ON message_attempts(account_id,device_id,created_at)").await.unwrap();
