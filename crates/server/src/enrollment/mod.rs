@@ -2,6 +2,8 @@
 //! One-use device enrollment and per-connection proof of possession.
 //! HTTP callers must authenticate the owner, enforce origin/CSRF, rate limit
 //! pairing operations, and keep pairing tokens and nonces out of logs and URLs.
+//! Socket challenges are stateless HMAC values under the enrollment pepper,
+//! so issuing one costs no write and no per-device budget.
 
 use crate::auth::{Role, SessionPrincipal};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -17,23 +19,23 @@ use tokio_postgres::Client;
 use uuid::Uuid;
 
 const PAIRING_LIFETIME_SECS: i32 = 300;
-const AUTH_CHALLENGE_LIFETIME_SECS: i32 = 60;
+/// A stateless socket challenge stays verifiable this long after issuance.
+const SOCKET_CHALLENGE_LIFETIME_MS: u64 = 60_000;
+/// Issuing and proving may land on different server instances behind one
+/// origin, so verification tolerates this much clock skew in either direction.
+const SOCKET_CHALLENGE_SKEW_MS: u64 = 10_000;
 const PAST_DUE_OUTSIDE_GRACE_SQL: &str = "SELECT 1 FROM billing_subscriptions WHERE account_id=$1 AND stripe_status='past_due' AND (payment_grace_started_at IS NULL OR payment_grace_invoice_id IS DISTINCT FROM latest_invoice_id OR payment_grace_started_at+interval '7 days'<=clock_timestamp()) LIMIT 1";
 
-/// Remove at most 500 rows from each table per maintenance tick. Challenges
-/// have a one-hour grace period; pairing requests are retained for 24 hours
-/// after expiry (or cancellation, if that happened later). Approved pairings
-/// use the same window: the durable device/key records hold their active state.
+/// Remove at most 500 rows per maintenance tick. Pairing requests are retained
+/// for 24 hours after expiry (or cancellation, if that happened later).
+/// Approved pairings use the same window: the durable device/key records hold
+/// their active state. Socket challenges are stateless and leave no rows.
 pub async fn prune_expired(client: &Client) -> Result<u64, tokio_postgres::Error> {
-    let challenges = client.execute(
-        "WITH stale AS (SELECT id FROM device_auth_challenges WHERE expires_at < now()-interval '1 hour' ORDER BY expires_at,id LIMIT 500 FOR UPDATE SKIP LOCKED) DELETE FROM device_auth_challenges c USING stale s WHERE c.id=s.id",
-        &[],
-    ).await?;
     let pairings = client.execute(
         "WITH stale AS (SELECT id FROM pairing_requests WHERE expires_at < now()-interval '24 hours' AND (cancelled_at IS NULL OR cancelled_at < now()-interval '24 hours') ORDER BY expires_at,id LIMIT 500 FOR UPDATE SKIP LOCKED) DELETE FROM pairing_requests p USING stale s WHERE p.id=s.id",
         &[],
     ).await?;
-    Ok(challenges + pairings)
+    Ok(pairings)
 }
 
 #[derive(Debug, Error)]
@@ -363,25 +365,107 @@ pub async fn pairing_proof_is_live(
     ).await?.get(0))
 }
 
-/// True when `issue_device_challenge` would issue a challenge for this device.
-pub async fn device_is_live(client: &Client, device_id: Uuid) -> Result<bool, EnrollmentError> {
-    Ok(client.query_one(
-        "SELECT EXISTS(SELECT 1 FROM devices d JOIN device_keys k ON (k.account_id,k.device_id)=(d.account_id,d.id) JOIN accounts a ON a.id=d.account_id WHERE d.id=$1 AND d.revoked_at IS NULL AND k.revoked_at IS NULL AND a.disabled_at IS NULL)",
-        &[&device_id],
-    ).await?.get(0))
+/// The account a socket challenge would be issued for, or `None` when the
+/// device, its key, or its account is missing, revoked, or disabled. This is
+/// the only read issuance needs; the challenge itself is stateless.
+pub async fn live_device_account(
+    client: &Client,
+    device_id: Uuid,
+) -> Result<Option<Uuid>, EnrollmentError> {
+    Ok(client
+        .query_opt(
+            "SELECT d.account_id FROM devices d JOIN device_keys k ON (k.account_id,k.device_id)=(d.account_id,d.id) JOIN accounts a ON a.id=d.account_id WHERE d.id=$1 AND d.revoked_at IS NULL AND k.revoked_at IS NULL AND a.disabled_at IS NULL",
+            &[&device_id],
+        )
+        .await?
+        .map(|row| row.get(0)))
 }
 
-/// True while this exact challenge and nonce are unused and unexpired.
-pub async fn device_challenge_is_live(
-    client: &Client,
+/// Wall-clock milliseconds since the Unix epoch. Challenge timestamps use
+/// this source on both the issuing and the verifying path.
+pub fn unix_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as u64)
+}
+
+/// A version-7-shaped UUID whose first 48 bits are the issuance time in
+/// milliseconds and whose remaining bits are random. Verification reads the
+/// timestamp back to bound the challenge's validity window.
+fn timestamped_challenge_id(now_ms: u64) -> Uuid {
+    let mut bytes = [0u8; 16];
+    bytes[..6].copy_from_slice(&now_ms.to_be_bytes()[2..]);
+    let random: [u8; 10] = rand::random();
+    bytes[6..].copy_from_slice(&random);
+    bytes[6] = 0x70 | (bytes[6] & 0x0F);
+    bytes[8] = 0x80 | (bytes[8] & 0x3F);
+    Uuid::from_bytes(bytes)
+}
+
+fn challenge_id_timestamp_ms(challenge_id: Uuid) -> u64 {
+    let bytes = challenge_id.as_bytes();
+    u64::from(bytes[0]) << 40
+        | u64::from(bytes[1]) << 32
+        | u64::from(bytes[2]) << 24
+        | u64::from(bytes[3]) << 16
+        | u64::from(bytes[4]) << 8
+        | u64::from(bytes[5])
+}
+
+/// Derives the nonce bound to this exact challenge. Only the enrollment
+/// pepper can produce it, so an unauthenticated caller naming the device
+/// cannot mint a verifiable challenge or spend the phone's handshake.
+fn socket_challenge_nonce(
+    hasher: &EnrollmentHasher,
+    account_id: Uuid,
+    device_id: Uuid,
+    challenge_id: Uuid,
+) -> [u8; 32] {
+    let mut bound = Vec::with_capacity(48);
+    bound.extend_from_slice(account_id.as_bytes());
+    bound.extend_from_slice(device_id.as_bytes());
+    bound.extend_from_slice(challenge_id.as_bytes());
+    hasher.digest(b"device-socket-challenge-v1", &bound)
+}
+
+/// Issues the pre-proof challenge for the device stream without touching the
+/// database: the nonce is an HMAC under the enrollment pepper over the
+/// account, device, and a fresh timestamped challenge ID. The wire frame and
+/// the signed bytes are unchanged from the persisted-challenge protocol.
+pub fn issue_socket_challenge(
+    hasher: &EnrollmentHasher,
+    account_id: Uuid,
+    device_id: Uuid,
+    now_ms: u64,
+) -> DeviceChallenge {
+    let id = timestamped_challenge_id(now_ms);
+    DeviceChallenge {
+        id,
+        account_id,
+        device_id,
+        nonce: socket_challenge_nonce(hasher, account_id, device_id, id),
+    }
+}
+
+/// Whether the challenge carries the nonce this server would have issued and
+/// is still inside its validity window. Constant-time on the nonce.
+pub fn socket_challenge_is_current(
     hasher: &EnrollmentHasher,
     challenge: &DeviceChallenge,
-) -> Result<bool, EnrollmentError> {
-    let digest = hasher.digest(b"device-auth-nonce-v1", &challenge.nonce);
-    Ok(client.query_one(
-        "SELECT EXISTS(SELECT 1 FROM device_auth_challenges WHERE id=$1 AND account_id=$2 AND device_id=$3 AND nonce_digest=$4 AND used_at IS NULL AND expires_at>now())",
-        &[&challenge.id, &challenge.account_id, &challenge.device_id, &&digest[..]],
-    ).await?.get(0))
+    now_ms: u64,
+) -> bool {
+    let expected = socket_challenge_nonce(
+        hasher,
+        challenge.account_id,
+        challenge.device_id,
+        challenge.id,
+    );
+    if !bool::from(expected.ct_eq(&challenge.nonce)) {
+        return false;
+    }
+    let issued_ms = challenge_id_timestamp_ms(challenge.id);
+    now_ms + SOCKET_CHALLENGE_SKEW_MS >= issued_ms
+        && issued_ms + SOCKET_CHALLENGE_LIFETIME_MS + SOCKET_CHALLENGE_SKEW_MS >= now_ms
 }
 
 /// Consumes the QR token once and binds the candidate Keystore public key.
@@ -705,57 +789,32 @@ pub async fn cancel_pairing(
     ).await? == 1)
 }
 
-/// A public challenge may be issued for an active device. It cannot authorize
-/// a socket without a one-use P-256 proof from the enrolled Keystore key.
-pub async fn issue_device_challenge(
+/// Verifies a stateless socket challenge and its P-256 proof. The nonce is
+/// re-derived from the enrollment pepper, the issuance time embedded in the
+/// challenge ID bounds replay to a short window, and the enrolled key must
+/// still be active. A valid proof authorizes `claim_session`; an invalid
+/// nonce, an expired challenge, or a bad signature all return `Unauthorized`
+/// without distinguishing which check failed.
+pub(crate) async fn authenticate_socket_proof(
     client: &Client,
-    hasher: &EnrollmentHasher,
-    device_id: Uuid,
-) -> Result<DeviceChallenge, EnrollmentError> {
-    let nonce = random_bytes();
-    let digest = hasher.digest(b"device-auth-nonce-v1", &nonce);
-    let challenge_id = Uuid::new_v4();
-    let row = client.query_opt(
-        "INSERT INTO device_auth_challenges(id,account_id,device_id,nonce_digest,expires_at) SELECT $1,d.account_id,d.id,$3,now()+($4::integer * interval '1 second') FROM devices d JOIN device_keys k ON (k.account_id,k.device_id)=(d.account_id,d.id) JOIN accounts a ON a.id=d.account_id WHERE d.id=$2 AND d.revoked_at IS NULL AND k.revoked_at IS NULL AND a.disabled_at IS NULL RETURNING account_id",
-        &[&challenge_id, &device_id, &&digest[..], &AUTH_CHALLENGE_LIFETIME_SECS],
-    ).await?;
-    let Some(row) = row else {
-        return Err(EnrollmentError::Unauthorized);
-    };
-    Ok(DeviceChallenge {
-        id: challenge_id,
-        account_id: row.get(0),
-        device_id,
-        nonce,
-    })
-}
-
-/// Consumes the one-use socket challenge even when the provided signature is
-/// invalid. Existing sockets must also call `device_still_active` before work.
-pub async fn authenticate_device_challenge(
-    client: &mut Client,
     hasher: &EnrollmentHasher,
     challenge: &DeviceChallenge,
     signature_der: &[u8],
+    now_ms: u64,
 ) -> Result<AuthenticatedDevice, EnrollmentError> {
-    let digest = hasher.digest(b"device-auth-nonce-v1", &challenge.nonce);
-    let tx = client.transaction().await?;
-    let row = tx.query_opt(
-        "SELECT k.signing_key_sec1 FROM device_auth_challenges c JOIN devices d ON (d.account_id,d.id)=(c.account_id,c.device_id) JOIN device_keys k ON (k.account_id,k.device_id)=(d.account_id,d.id) JOIN accounts a ON a.id=d.account_id WHERE c.id=$1 AND c.account_id=$2 AND c.device_id=$3 AND c.nonce_digest=$4 AND c.used_at IS NULL AND c.expires_at>now() AND d.revoked_at IS NULL AND k.revoked_at IS NULL AND a.disabled_at IS NULL FOR UPDATE OF c",
-        &[&challenge.id, &challenge.account_id, &challenge.device_id, &&digest[..]],
-    ).await?;
-    let Some(row) = row else {
+    if !socket_challenge_is_current(hasher, challenge, now_ms) {
+        return Err(EnrollmentError::Unauthorized);
+    }
+    let row = client
+        .query_opt(
+            "SELECT k.signing_key_sec1 FROM devices d JOIN device_keys k ON (k.account_id,k.device_id)=(d.account_id,d.id) JOIN accounts a ON a.id=d.account_id WHERE (d.account_id,d.id)=($1,$2) AND d.revoked_at IS NULL AND k.revoked_at IS NULL AND a.disabled_at IS NULL",
+            &[&challenge.account_id, &challenge.device_id],
+        )
+        .await?;
+    let Some(sec1) = row.map(|row| row.get::<_, Vec<u8>>(0)) else {
         return Err(EnrollmentError::Unauthorized);
     };
-    let sec1: Vec<u8> = row.get(0);
-    let valid = verify_signature(&sec1, &device_challenge_bytes(challenge), signature_der);
-    tx.execute(
-        "UPDATE device_auth_challenges SET used_at=now() WHERE id=$1",
-        &[&challenge.id],
-    )
-    .await?;
-    tx.commit().await?;
-    if !valid {
+    if !verify_signature(&sec1, &device_challenge_bytes(challenge), signature_der) {
         return Err(EnrollmentError::Unauthorized);
     }
     Ok(AuthenticatedDevice {
@@ -774,9 +833,10 @@ pub async fn device_still_active(
     ).await?.is_some())
 }
 
-/// Revocation takes effect for new socket challenges immediately and removes
-/// the current database session lease. Socket handlers must check active state
-/// before accepting events or issuing dispatch grants.
+/// Revocation refuses new socket proofs immediately (stateless challenges
+/// verify against the enrolled key at proof time) and removes the current
+/// database session lease. Socket handlers must check active state before
+/// accepting events or issuing dispatch grants.
 pub async fn revoke_device(
     client: &mut Client,
     principal: &SessionPrincipal,
@@ -797,11 +857,6 @@ pub async fn revoke_device(
         "UPDATE device_keys SET revoked_at=now() WHERE device_id=$1 AND account_id=$2 AND revoked_at IS NULL",
         &[&device_id, &principal.tenant.account_id()],
     ).await?;
-    tx.execute(
-        "DELETE FROM device_auth_challenges WHERE device_id=$1 AND account_id=$2",
-        &[&device_id, &principal.tenant.account_id()],
-    )
-    .await?;
     tx.execute(
         "DELETE FROM device_sessions WHERE device_id=$1 AND account_id=$2",
         &[&device_id, &principal.tenant.account_id()],

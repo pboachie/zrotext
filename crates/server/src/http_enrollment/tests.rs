@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     auth::{TokenHasher, login, register, verify_email},
-    enrollment::{device_challenge_bytes, enrollment_challenge_bytes},
+    enrollment::enrollment_challenge_bytes,
 };
 use axum::{
     body::{Body, to_bytes},
@@ -450,6 +450,8 @@ async fn http_pairing_requires_csrf_proves_key_and_revokes_device() {
         .unwrap();
     assert_eq!(forbidden_revoke.status(), StatusCode::NOT_FOUND);
 
+    // The device handshake routes are removed: the device stream issues its
+    // own stateless challenges, and no HTTP proof exists to replay.
     let response = app
         .clone()
         .oneshot(request(
@@ -460,44 +462,18 @@ async fn http_pairing_requires_csrf_proves_key_and_revokes_device() {
         ))
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let challenge = json_response(response).await;
-    let device_challenge = DeviceChallenge {
-        id: challenge["challenge_id"].as_str().unwrap().parse().unwrap(),
-        account_id: a.account_id,
-        device_id,
-        nonce: decode_nonce(challenge["nonce"].as_str().unwrap()).unwrap(),
-    };
-    let signature: Signature = signing.sign(&device_challenge_bytes(&device_challenge));
-    let auth_body = json!({
-        "challenge_id":device_challenge.id,
-        "account_id":device_challenge.account_id,
-        "device_id":device_challenge.device_id,
-        "nonce":challenge["nonce"],
-        "signature_der":URL_SAFE_NO_PAD.encode(signature.to_der().as_bytes()),
-    });
-    let response = app
-        .clone()
-        .oneshot(request(
-            Method::POST,
-            "/devices/authenticate",
-            auth_body.clone(),
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
-    let response = app
-        .clone()
-        .oneshot(request(
-            Method::POST,
-            "/devices/authenticate",
-            auth_body,
-            None,
-        ))
-        .await
-        .unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let response = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            "/devices/authenticate",
+            json!({}),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
     let response = app
         .clone()
         .oneshot(request(
@@ -697,7 +673,8 @@ async fn phones_pair_and_reconnect_after_anonymous_budgets_are_spent() {
     let token = created["token"].as_str().unwrap().to_owned();
 
     // One anonymous source spends every public enrollment route budget
-    // with made-up pairing and device IDs; the last few go over HTTP.
+    // with made-up pairing IDs; the last few go over HTTP. The device
+    // handshake steps have no HTTP route and no per-device budget any more.
     let signing = SigningKey::generate_from_rng(&mut rng());
     let spki = URL_SAFE_NO_PAD.encode(
         signing
@@ -717,32 +694,15 @@ async fn phones_pair_and_reconnect_after_anonymous_budgets_are_spent() {
                 json!({"token":format!("ztp_{zero}"),"public_key_spki":spki}),
                 None,
             ),
-            1 => request(
+            _ => request(
                 Method::POST,
                 &format!("/pairings/{id}/prove"),
                 json!({"challenge_nonce":zero,"signature_der":junk_signature}),
                 None,
             ),
-            2 => request(
-                Method::POST,
-                &format!("/devices/{id}/challenge"),
-                json!({}),
-                None,
-            ),
-            _ => request(
-                Method::POST,
-                "/devices/authenticate",
-                json!({"challenge_id":Uuid::new_v4(),"account_id":owner.account_id,"device_id":id,"nonce":zero,"signature_der":junk_signature}),
-                None,
-            ),
         }
     };
-    let limits = [
-        Limit::PairClaim,
-        Limit::PairProof,
-        Limit::DeviceChallenge,
-        Limit::DeviceAuthenticate,
-    ];
+    let limits = [Limit::PairClaim, Limit::PairProof];
     for (route, limit) in limits.into_iter().enumerate() {
         for _ in 0..298 {
             assert!(
@@ -825,29 +785,9 @@ async fn phones_pair_and_reconnect_after_anonymous_budgets_are_spent() {
         .parse()
         .unwrap();
 
-    // The device ID is public, so an anonymous caller has also spent the
-    // phone's anonymous per-device budget on both device routes.
-    for (limit, scope) in [
-        (Limit::DeviceChallenge, "device_challenge"),
-        (Limit::DeviceAuthenticate, "device_authenticate"),
-    ] {
-        let hash = abuse_limits::subject_hash(
-            &auth_hasher,
-            limit,
-            &device_id.to_string(),
-            abuse_limits::Lane::Anonymous,
-        )
-        .unwrap();
-        admin
-            .execute(
-                "INSERT INTO auth_abuse_counters(scope,subject_hash,window_started_at,attempts,updated_at)
-                     VALUES($1,$2,now(),30,now())",
-                &[&scope, &&hash[..]],
-            )
-            .await
-            .unwrap();
-    }
-    // The enrolled phone still reconnects.
+    // The device handshake HTTP routes are gone: the socket issues its own
+    // stateless challenges, so no unauthenticated POST can spend anything
+    // keyed to the enrolled device.
     let response = app
         .clone()
         .oneshot(request(
@@ -858,48 +798,20 @@ async fn phones_pair_and_reconnect_after_anonymous_budgets_are_spent() {
         ))
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let challenge = json_response(response).await;
-    let device_challenge = DeviceChallenge {
-        id: challenge["challenge_id"].as_str().unwrap().parse().unwrap(),
-        account_id: owner.account_id,
-        device_id,
-        nonce: decode_nonce(challenge["nonce"].as_str().unwrap()).unwrap(),
-    };
-    // A stale nonce for the real device does not pass the probe.
-    let stale = json!({
-        "challenge_id":device_challenge.id,
-        "account_id":owner.account_id,
-        "device_id":device_id,
-        "nonce":zero,
-        "signature_der":junk_signature,
-    });
-    let response = app
-        .clone()
-        .oneshot(request(Method::POST, "/devices/authenticate", stale, None))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
-    let signature: Signature = signing.sign(&device_challenge_bytes(&device_challenge));
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
     let response = app
         .clone()
         .oneshot(request(
             Method::POST,
             "/devices/authenticate",
-            json!({
-                "challenge_id":device_challenge.id,
-                "account_id":owner.account_id,
-                "device_id":device_id,
-                "nonce":challenge["nonce"],
-                "signature_der":URL_SAFE_NO_PAD.encode(signature.to_der().as_bytes()),
-            }),
+            json!({"challenge_id":Uuid::new_v4(),"account_id":owner.account_id,"device_id":device_id,"nonce":zero,"signature_der":junk_signature}),
             None,
         ))
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
     // Junk is still refused and left no rows behind.
-    for route in 0..4 {
+    for route in 0..2 {
         assert_eq!(
             app.clone().oneshot(junk(route)).await.unwrap().status(),
             StatusCode::TOO_MANY_REQUESTS
@@ -911,11 +823,10 @@ async fn phones_pair_and_reconnect_after_anonymous_budgets_are_spent() {
         .unwrap()
         .get(0);
     // Per route: the anonymous budget row and 300 admitted junk subjects,
-    // plus a verified ceiling and the one real pairing or device subject.
-    // Creating the real pairing above also spends the owner's `pair_create`
-    // budget once, adding its own global and per-account subject row, and
-    // the two anonymous per-device rows were seeded above.
-    assert_eq!(rows, 4 * (1 + 300) + 4 * 2 + 2 + 2);
+    // plus a verified ceiling and the one real pairing subject. Creating the
+    // real pairing above also spends the owner's `pair_create` budget once,
+    // adding its own global and per-account subject row.
+    assert_eq!(rows, 2 * (1 + 300) + 2 * 2 + 2);
     admin
         .batch_execute(&format!(
             "SET search_path TO public; DROP SCHEMA {schema} CASCADE"

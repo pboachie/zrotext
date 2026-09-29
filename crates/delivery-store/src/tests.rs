@@ -2,7 +2,7 @@ use super::*;
 
 // Keep the admission fixtures on the complete, reviewed schema. SQL is
 // embedded at build time so tests never execute files discovered at runtime.
-const TEST_MIGRATIONS: [(&str, &str); 53] = [
+const TEST_MIGRATIONS: [(&str, &str); 54] = [
     (
         "001_foundation.sql",
         include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
@@ -216,6 +216,10 @@ const TEST_MIGRATIONS: [(&str, &str); 53] = [
     (
         "053_observer_seat_invitations.sql",
         include_str!("../../../deploy/compose/migrations/053_observer_seat_invitations.sql"),
+    ),
+    (
+        "054_stateless_device_challenges.sql",
+        include_str!("../../../deploy/compose/migrations/054_stateless_device_challenges.sql"),
     ),
 ];
 

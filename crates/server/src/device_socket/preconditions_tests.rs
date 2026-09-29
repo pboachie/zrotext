@@ -416,14 +416,6 @@ async fn negotiated_status_is_bounded_session_fenced_and_old_clients_keep_heartb
         .unwrap();
     fixture
         .db
-        .execute(
-            "DELETE FROM device_auth_challenges WHERE device_id=$1",
-            &[&device],
-        )
-        .await
-        .unwrap();
-    fixture
-        .db
         .execute("DELETE FROM device_keys WHERE device_id=$1", &[&device])
         .await
         .unwrap();

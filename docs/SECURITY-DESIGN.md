@@ -20,7 +20,7 @@ Protected against in sealed mode: passive database/backup theft of bodies, accid
 
 Visible metadata includes account/device IDs, recipient and sender numbers, direction, time, size, segment information, network connection metadata, status, usage and billing. Minimize retention and log exposure. Plaintext phone numbers are a **chosen v1 routing/abuse design**, not an inherent requirement of end-to-end payload encryption or billing.
 
-Enrollment maintenance runs every 60 seconds and deletes up to 500 rows per table per batch, repeating while a batch comes back full, for at most 10 batches per pass. Device authentication challenges are removed one hour after expiry, including used challenges. Pairing requests, including approved requests, are removed 24 hours after expiry, or 24 hours after cancellation if later. Active device identity and signing keys live in the separate `devices` and `device_keys` tables. Larger backlogs take multiple passes. A failed prune logs `maintenance prune unavailable (task=...)` once per failure streak, without SQL error text or row data; database backups follow their own retention policy.
+Enrollment maintenance runs every 60 seconds and deletes up to 500 rows per table per batch, repeating while a batch comes back full, for at most 10 batches per pass. Pairing requests, including approved requests, are removed 24 hours after expiry, or 24 hours after cancellation if later. Active device identity and signing keys live in the separate `devices` and `device_keys` tables. Socket handshake challenges are stateless HMAC values under the enrollment pepper and leave no rows to prune. Larger backlogs take multiple passes. A failed prune logs `maintenance prune unavailable (task=...)` once per failure streak, without SQL error text or row data; database backups follow their own retention policy.
 
 ## Key separation
 
@@ -179,8 +179,8 @@ The API admits HTTP handlers per process through five separate permit pools,
 chosen from the request path before authentication, body extraction, or database
 connection setup: 16 for provider callbacks (`/v1/billing/stripe-events`), 16
 for device WebSocket upgrades (`/v1/device-stream`), 32 for anonymous routes
-(login, MFA login, registration, verification, password reset, enrollment
-claim/prove, and device challenge/authenticate), 8 for the bodiless probes
+(login, MFA login, registration, verification, password reset, and enrollment
+claim/prove), 8 for the bodiless probes
 (`/healthz`, `/readyz`, `/about/version`), and 64 for everything else,
 including owner and API-key routes. A full pool rejects further requests of that
 class with 503 and Retry-After while the other classes keep admitting, so a
@@ -292,40 +292,71 @@ confirmation.
 
 ### Public sign-in and enrollment budgets
 
-Password sign-in, second-factor completion, pairing claim and proof, and device
-challenge and proof (HTTP and the device WebSocket) spend atomic PostgreSQL
-budgets before password, factor or signature work. Each has a per-subject
-budget (address, challenge token, pairing or device) and a route-wide budget
-shared by all API instances. Budgets are not keyed by client IP address: behind
-the TLS edge the server has no trustworthy client address.
+Password sign-in, second-factor completion, and pairing claim and proof spend
+atomic PostgreSQL budgets before password, factor or signature work. Each has a
+per-subject budget (address, challenge token, or pairing) and a route-wide
+budget shared by all API instances. Budgets are not keyed by client IP address:
+behind the TLS edge the server has no trustworthy client address.
 
 Anyone can spend a route-wide budget with made-up subjects, and anyone who
-knows a public identifier such as a device or pairing ID can spend that
-subject's anonymous budget, so the anonymous lane only decides admission for
+knows a public identifier such as a pairing ID can spend that subject's
+anonymous budget, so the anonymous lane only decides admission for
 anonymous requests. When it refuses a request, the request is still admitted if
-the caller shows it is not anonymous: an enrolled, unrevoked device ID for a
-device challenge; the unused challenge ID and nonce for a device proof; the
-one-use QR token for a pairing claim and the claim nonce for its proof; a live
-second-factor challenge token; or, for password sign-in, a login-client cookie
-issued for that address. Each check is a single indexed read with no password
-or signature work. Admitted requests spend a second, verified per-subject
-counter with the same size as the anonymous one, keyed separately, plus a
-verified-route ceiling ten times the anonymous one. Neither is reachable
-without a live subject, so unauthenticated requests that name a real pairing
-ID cannot use up the budget the pairing's holder needs. Refused requests leave
-no counter rows. The exception is a subject that is itself a secret, such as
-a sign-in second-factor challenge or a password reset link. Only its holder can
-spend its anonymous counter, so it keeps one per-subject counter across both
+the caller shows it is not anonymous: the one-use QR token for a pairing claim
+and the claim nonce for its proof; a live second-factor challenge token; or,
+for password sign-in, a login-client cookie issued for that address. Each
+check is a single indexed read with no password or signature work. Admitted
+requests spend a second, verified per-subject counter with the same size as
+the anonymous one, keyed separately, plus a verified-route ceiling ten times
+the anonymous one. Neither is reachable without a live subject, so
+unauthenticated requests that name a real pairing ID cannot use up the budget
+the pairing's holder needs. Refused requests leave no counter rows. The
+exception is a subject that is itself a secret, such as a sign-in
+second-factor challenge or a password reset link. Only its holder can spend
+its anonymous counter, so it keeps one per-subject counter across both
 lanes, and a challenge still allows five code attempts per five minutes in
 total rather than five per lane.
 
-The device liveness check itself needs only the device ID, and the socket
-`hello` carries no secret, so a caller who knows an enrolled device's ID can
-still spend that device's verified counter after its anonymous one; the split
-doubles the cost of taking a phone offline rather than removing the vector.
-Closing it needs a per-device reconnect secret in the device stream, akin to
-the login-client cookie, which is a protocol change this design does not yet
-include.
+The device WebSocket handshake keeps no anonymous per-device budget. Its
+challenge is a stateless HMAC under the enrollment pepper over the account,
+device, and a timestamped challenge UUID, verifiable for 60 seconds, so
+issuance costs one indexed liveness read and no write. The device ID is public
+information, so an anonymous counter keyed to it could be spent by an
+unauthenticated caller who knows it, which used to let such a caller refuse
+the enrolled phone's handshake with 1013 without any other traffic. Issuance
+and proof each spend an anonymous route-wide ceiling (300 per 60 seconds,
+across all instances), with handshake slots bounding concurrency. When the
+anonymous ceiling refuses a hello, the hub still issues a challenge if the
+named device is enrolled and live, charging a verified issuance ceiling ten
+times the anonymous one (3,000 per 60 seconds), of which any one device ID may
+use at most 60 per 60 seconds. When the anonymous ceiling refuses a proof, the
+proof is still admitted if it verifies, charging a verified proof ceiling
+with no per-device share, because only the device key can produce one. Made-up
+device IDs and proofs that fail verification never reach a verified ceiling,
+so junk traffic that fills the anonymous ceilings, from however many sources,
+cannot refuse an enrolled phone.
+
+The per-device share is a trade-off. Traffic naming one known live device ID
+can, while junk also keeps the anonymous issuance ceiling full, use up that
+device's 60-per-minute share and delay that one phone with a retryable 1013
+until the window rolls over; it cannot affect any other phone. Delaying the
+whole fleet now takes sustained traffic naming about 50 known live device IDs,
+each at its full share, on top of the anonymous flood. The per-device rows
+live in the existing abuse-counter table, keyed by an HMAC of the device ID
+under the verified lane's domain; they are written only for enrolled, live
+devices admitted through the verified lane, so made-up IDs create none and
+the anonymous lane keeps no per-device row at all. Operators should still
+rate-limit WebSocket upgrades per source address at the edge, in addition to
+the per-source connection limit, because a connection limit alone does not
+bound sequential hello/close cycles.
+
+A proof is accepted only when its challenge ID, account, device and nonce
+equal the challenge issued on the same connection. Challenges are stateless
+and not marked used, so this binding is what stops a proof captured from one
+connection, or replayed after a reconnect, from opening a session on another.
+Within one connection's 60-second window a captured proof could be replayed
+only against that same challenge; sessions are still fenced by the
+writer-owned connection epoch, and observing a proof requires breaking TLS.
 A background worker deletes idle counter rows only after the longest window of
 their budget, plus one minute, has passed, so pruning never resets a budget
 that is still in force. Retention is derived from the same policy table the

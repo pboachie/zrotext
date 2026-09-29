@@ -84,8 +84,6 @@ fn classify(path: &str) -> RouteClass {
         let segments: Vec<&str> = rest.split('/').collect();
         return match segments.as_slice() {
             ["pairings", id, "claim" | "prove"] if !id.is_empty() => RouteClass::Anonymous,
-            ["devices", "authenticate"] => RouteClass::Anonymous,
-            ["devices", id, "challenge"] if !id.is_empty() => RouteClass::Anonymous,
             _ => RouteClass::Default,
         };
     }
@@ -354,8 +352,6 @@ mod tests {
             "/v1/auth/password/reset/confirm",
             "/v1/enrollment/pairings/p1/claim",
             "/v1/enrollment/pairings/p1/prove",
-            "/v1/enrollment/devices/authenticate",
-            "/v1/enrollment/devices/d1/challenge",
         ] {
             assert_eq!(classify(path), RouteClass::Anonymous, "{path}");
         }
@@ -376,6 +372,8 @@ mod tests {
             "/v1/enrollment/pairings//claim",
             "/v1/enrollment/devices",
             "/v1/enrollment/devices/d1",
+            "/v1/enrollment/devices/authenticate",
+            "/v1/enrollment/devices/d1/challenge",
             "/v1/billing/stripe-events/extra",
             "/v1/device-stream/extra",
             "/v1/owner/messages",
