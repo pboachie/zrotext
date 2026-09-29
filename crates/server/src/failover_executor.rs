@@ -334,14 +334,43 @@ impl WriterAuthority for PgWriterAuthority {
     }
 }
 
+/// Open the executor's consensus store. A store that cannot open — corrupt,
+/// truncated, foreign membership, unwritable — fails the executor closed
+/// rather than serving uncertain evidence: the failure is logged and
+/// `healthy` is cleared so readiness reports it to operators until a restart
+/// (or an operator repair of the directory and a restart).
+fn open_consensus_store(env: &ExecutorEnv, healthy: &AtomicBool) -> Option<ConsensusStore> {
+    match ConsensusStore::open(
+        env.store_dir(),
+        env.config().members().to_vec(),
+        env.config().observation_freshness_ms(),
+    ) {
+        Ok(store) => Some(store),
+        Err(error) => {
+            healthy.store(false, Ordering::Release);
+            eprintln!(
+                "failover quorum executor: consensus store at {} failed to open: {error}; \
+                 the executor is not running and readiness reports failover_executor_failed",
+                env.store_dir().display()
+            );
+            None
+        }
+    }
+}
+
 /// Spawn the failover executor thread. `None` env (the default) spawns
-/// nothing at all; `Some` runs the controller loop until `shutdown` is set
-/// or the process exits. The handle is intentionally detached-style: the
-/// loop is best-effort and never blocks process exit.
+/// nothing at all and never touches `healthy`; `Some` runs the controller
+/// loop until `shutdown` is set or the process exits. If the executor cannot
+/// start — the writer-authority port or the consensus store fails — the
+/// thread clears `healthy` before it exits, so the failure is visible to
+/// operators through readiness rather than only as a log line. The handle
+/// is intentionally detached-style: the loop is best-effort and never
+/// blocks process exit.
 pub fn spawn_failover_executor(
     env: Option<ExecutorEnv>,
     database_url: String,
     shutdown: Arc<AtomicBool>,
+    healthy: Arc<AtomicBool>,
 ) -> Option<std::thread::JoinHandle<()>> {
     let env = env?;
     let handle = std::thread::Builder::new()
@@ -350,27 +379,16 @@ pub fn spawn_failover_executor(
             let authority = match PgWriterAuthority::new(database_url) {
                 Ok(authority) => authority,
                 Err(error) => {
-                    eprintln!("failover quorum executor: {error}");
-                    return;
-                }
-            };
-            // A consensus store that cannot open — corrupt, truncated,
-            // foreign membership — fails the executor closed here rather
-            // than serving uncertain evidence. Reopening needs a restart or
-            // an operator repair of the directory.
-            let store = match ConsensusStore::open(
-                env.store_dir(),
-                env.config().members().to_vec(),
-                env.config().observation_freshness_ms(),
-            ) {
-                Ok(store) => store,
-                Err(error) => {
+                    healthy.store(false, Ordering::Release);
                     eprintln!(
-                        "failover quorum executor: consensus store at {} failed to open: {error}",
-                        env.store_dir().display()
+                        "failover quorum executor: {error}; the executor is not running and \
+                         readiness reports failover_executor_failed"
                     );
                     return;
                 }
+            };
+            let Some(store) = open_consensus_store(&env, &healthy) else {
+                return;
             };
             eprintln!(
                 "failover quorum executor running ({} members, writer site {}, standby site {}, \

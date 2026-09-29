@@ -699,9 +699,12 @@ fn store_history_survives_restart() {
 fn store_backed_source_drives_a_full_failover_unchanged() {
     let temp = TempDir::new("end-to-end");
     let mut store = open(temp.path()).unwrap();
-    // The whole timeline is recorded up front, spaced beyond the freshness
-    // window so each tick's round is exactly that phase's observations; the
-    // store's job is to serve the right window from durable records.
+    // The whole timeline is recorded up front. Records dated after a tick
+    // are future-dated at that tick and not yet evidence, and the source
+    // serves each record at most once, so every tick's round is exactly the
+    // records dated at that tick: at tick 14_000 the 12_000 and 13_000
+    // records are still inside the freshness window but were already served
+    // (and counted) at their own ticks, so they are not counted again.
     for member in MEMBERS {
         store.record(&reachable(member, 5, 1_000)).unwrap();
     }
@@ -836,6 +839,189 @@ fn corrupted_store_source_holds_fail_closed() {
     assert!(
         authority.promote_calls().is_empty(),
         "no promotion without a quorum"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #512: hysteresis counts distinct member reports, not executor ticks.
+// ---------------------------------------------------------------------------
+
+fn former_healthy(member_id: &str, at_ms: u64) -> MemberReport {
+    MemberReport {
+        former_writer_healthy: Some(true),
+        ..reachable(member_id, 6, at_ms)
+    }
+}
+
+/// A controller restored straight into a reconciled promotion, so the next
+/// rounds exercise only the rejoin hysteresis (5 successful checks). The
+/// stable-duration gate is zero so the check count alone decides.
+fn reconciled_promotion() -> FailoverController {
+    FailoverController::restore(
+        test_config().with_recovery_stable_ms(0),
+        6,
+        crate::decision::RestorablePhase::Promoted {
+            new_epoch: 6,
+            reconciled: true,
+            rejoin_emitted: false,
+        },
+    )
+}
+
+#[test]
+fn source_serves_each_record_in_at_most_one_round() {
+    let temp = TempDir::new("serve-once");
+    let mut store = open(temp.path()).unwrap();
+    for member in MEMBERS {
+        store.record(&unreachable(member, 10_000)).unwrap();
+    }
+    let mut source = StoreObservationSource::new(store);
+    assert_eq!(source.collect(10_000).reports.len(), 3);
+    for now in [10_001_u64, 15_000, 20_000] {
+        assert_eq!(
+            source.collect(now),
+            Round::default(),
+            "a report already served must not be served again inside its window"
+        );
+    }
+    // A new report is served once, alongside nothing already served.
+    source
+        .store_mut()
+        .record(&unreachable("witness", 20_000))
+        .unwrap();
+    assert_eq!(
+        source.collect(20_000).reports,
+        vec![unreachable("witness", 20_000)]
+    );
+    assert_eq!(source.collect(20_000), Round::default());
+    // The pure windowed view is unchanged by serving.
+    assert_eq!(source.store().round(20_000).reports.len(), 4);
+}
+
+#[test]
+fn issue_512_one_stored_report_per_member_must_not_satisfy_three_failed_checks() {
+    // Reproducer from the PR 439 pre-review (hub note 1013).
+    let temp = TempDir::new("issue-512");
+    let mut store = open(temp.path()).unwrap();
+    for member in MEMBERS {
+        store.record(&unreachable(member, 10_000)).unwrap();
+    }
+    let mut executor = FailoverExecutor::new(
+        test_config(),
+        StoreObservationSource::new(store),
+        MemoryAuthority::new(5),
+    );
+    let mut decisions = Vec::new();
+    for now in [10_000_u64, 15_000, 20_000] {
+        decisions.push(executor.tick(now).decision);
+    }
+    let (_, _, authority) = executor.into_parts();
+    assert_eq!(
+        authority.fence_calls(),
+        0,
+        "one report per member fenced the writer: {decisions:?}"
+    );
+    assert!(
+        !decisions
+            .iter()
+            .any(|decision| matches!(decision, Some(Decision::FenceOldWriter { .. }))),
+        "one report per member must never decide a fence: {decisions:?}"
+    );
+}
+
+#[test]
+fn issue_512_three_distinct_successive_reports_per_member_still_fence() {
+    let temp = TempDir::new("issue-512-distinct");
+    let mut store = open(temp.path()).unwrap();
+    // One report per member per check, recorded up front: each is
+    // future-dated (not yet evidence) until its own check.
+    let checks = [10_000_u64, 15_000, 20_000];
+    for at_ms in checks {
+        for member in MEMBERS {
+            store.record(&unreachable(member, at_ms)).unwrap();
+        }
+    }
+    let mut executor = FailoverExecutor::new(
+        test_config(),
+        StoreObservationSource::new(store),
+        MemoryAuthority::new(5),
+    );
+    let decisions: Vec<_> = checks
+        .into_iter()
+        .map(|now| executor.tick(now).decision)
+        .collect();
+    assert_eq!(
+        decisions,
+        vec![
+            Some(Decision::Hold(
+                crate::decision::HoldReason::WriterFailureSuspected {
+                    consecutive_failures: 1
+                }
+            )),
+            Some(Decision::Hold(
+                crate::decision::HoldReason::WriterFailureSuspected {
+                    consecutive_failures: 2
+                }
+            )),
+            Some(Decision::FenceOldWriter {
+                site_id: "site-a".to_owned()
+            }),
+        ]
+    );
+    let (_, _, authority) = executor.into_parts();
+    assert_eq!(authority.fence_calls(), 1, "three distinct checks fence");
+}
+
+#[test]
+fn issue_512_one_stored_report_per_member_must_not_satisfy_five_recovery_checks() {
+    let temp = TempDir::new("issue-512-rejoin");
+    let mut store = open(temp.path()).unwrap();
+    for member in MEMBERS {
+        store.record(&former_healthy(member, 10_000)).unwrap();
+    }
+    let mut source = StoreObservationSource::new(store);
+    let mut controller = reconciled_promotion();
+    // Six checks inside the one report's freshness window.
+    let decisions: Vec<Decision> = [10_000_u64, 12_000, 14_000, 16_000, 18_000, 20_000]
+        .into_iter()
+        .map(|now| controller.observe(source.collect(now), now))
+        .collect();
+    assert!(
+        !decisions
+            .iter()
+            .any(|decision| matches!(decision, Decision::RejoinFormerWriterAsReplica { .. })),
+        "one healthy report per member must never satisfy the rejoin hysteresis: {decisions:?}"
+    );
+}
+
+#[test]
+fn issue_512_five_distinct_successive_recovery_reports_still_rejoin() {
+    let temp = TempDir::new("issue-512-rejoin-distinct");
+    let store = open(temp.path()).unwrap();
+    let mut source = StoreObservationSource::new(store);
+    let mut controller = reconciled_promotion();
+    let mut decisions = Vec::new();
+    for now in [10_000_u64, 12_000, 14_000, 16_000, 18_000] {
+        for member in MEMBERS {
+            source
+                .store_mut()
+                .record(&former_healthy(member, now))
+                .unwrap();
+        }
+        decisions.push(controller.observe(source.collect(now), now));
+    }
+    assert_eq!(
+        decisions.last(),
+        Some(&Decision::RejoinFormerWriterAsReplica {
+            site_id: "site-a".to_owned()
+        }),
+        "five distinct successful checks rejoin: {decisions:?}"
+    );
+    assert!(
+        !decisions[..4]
+            .iter()
+            .any(|decision| matches!(decision, Decision::RejoinFormerWriterAsReplica { .. })),
+        "no rejoin before the fifth distinct check: {decisions:?}"
     );
 }
 

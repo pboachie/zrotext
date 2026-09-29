@@ -147,12 +147,100 @@ fn executor_env_enabled_builds_a_validated_configuration() {
 fn spawn_returns_none_and_spawns_nothing_while_disabled() {
     // The disabled path must not create the thread at all; None is the
     // proof the caller relies on (the flag-off zero-behavior contract).
+    let healthy = Arc::new(AtomicBool::new(true));
     let handle = spawn_failover_executor(
         None,
         "postgres://disabled.example.invalid/db".to_owned(),
         Arc::new(AtomicBool::new(true)),
+        healthy.clone(),
     );
     assert!(handle.is_none());
+    assert!(
+        healthy.load(Ordering::Acquire),
+        "the disabled path never reports an executor failure"
+    );
+}
+
+/// A scratch store directory under the system temp dir, removed on drop.
+struct ScratchDir(PathBuf);
+
+impl ScratchDir {
+    fn new(label: &str) -> Self {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        let path = std::env::temp_dir().join(format!(
+            "zrotext-failover-executor-{label}-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&path).expect("create scratch directory");
+        Self(path)
+    }
+}
+
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn enabled_env(store_dir: &Path) -> ExecutorEnv {
+    ExecutorEnv::parse(
+        Some("true"),
+        Some("workload-a,workload-b,witness"),
+        Some("site-a"),
+        Some("site-b"),
+        Some("50"),
+        Some(store_dir.to_str().expect("utf-8 scratch path")),
+    )
+    .unwrap()
+    .unwrap()
+}
+
+#[test]
+fn a_consensus_store_that_cannot_open_fails_the_executor_visibly() {
+    let scratch = ScratchDir::new("corrupt-store");
+    // A torn membership record: the store must fail closed on open.
+    std::fs::write(scratch.0.join("membership"), "v1 members=workload-a").unwrap();
+    let healthy = Arc::new(AtomicBool::new(true));
+    // Building the authority port does not connect, so no database is
+    // needed to reach the store-open failure.
+    let handle = spawn_failover_executor(
+        Some(enabled_env(&scratch.0)),
+        "postgres://unused.example.invalid/db".to_owned(),
+        Arc::new(AtomicBool::new(false)),
+        healthy.clone(),
+    )
+    .expect("the enabled executor spawns its thread");
+    handle.join().expect("the executor thread exits cleanly");
+    assert!(
+        !healthy.load(Ordering::Acquire),
+        "a store-open failure must be visible to operators, not only logged"
+    );
+}
+
+#[test]
+fn a_consensus_store_that_opens_keeps_the_executor_healthy() {
+    let scratch = ScratchDir::new("fresh-store");
+    let healthy = AtomicBool::new(true);
+    let store = open_consensus_store(&enabled_env(&scratch.0), &healthy);
+    assert!(store.is_some(), "a fresh directory initializes a store");
+    assert!(healthy.load(Ordering::Acquire));
+    // A second open of a foreign membership fails closed and is visible.
+    drop(store);
+    let foreign = ExecutorEnv::parse(
+        Some("true"),
+        Some("workload-a,workload-b,witness-2"),
+        Some("site-a"),
+        Some("site-b"),
+        None,
+        Some(scratch.0.to_str().expect("utf-8 scratch path")),
+    )
+    .unwrap()
+    .unwrap();
+    assert!(open_consensus_store(&foreign, &healthy).is_none());
+    assert!(!healthy.load(Ordering::Acquire));
 }
 
 fn report(member_id: &str, writer: WriterObservation, now_ms: u64) -> MemberReport {

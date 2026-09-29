@@ -30,7 +30,11 @@
 //!   future-dated (skewed) observations are never evidence and stale
 //!   pre-restart observations are not resurrected after a restart. Duplicate
 //!   or out-of-order submissions are preserved and left to the controller's
-//!   per-member folding, which already fails closed on them.
+//!   per-member folding, which already fails closed on them;
+//! * the executor's [`StoreObservationSource`] serves each record in at most
+//!   one check round (a per-member high-water sequence), so the controller's
+//!   failed-check and successful-check hysteresis counts distinct member
+//!   reports, not executor ticks inside one report's freshness window.
 //!
 //! Not in this increment: a network transport that carries member reports
 //! into the store (no listener exists, so a production store stays empty and
@@ -214,6 +218,45 @@ impl ConsensusStore {
         Round { reports }
     }
 
+    /// The fresh observations as of `now_ms` that were appended after each
+    /// member's entry in `served` (the last sequence already handed to the
+    /// controller; absent means none), in the same order as [`Self::round`].
+    /// `served` advances to the highest sequence returned per member, so a
+    /// record is served at most once however many checks fall inside its
+    /// freshness window. A record that is not fresh when a later record of
+    /// the same member is served — a future-dated (clock-skewed) record
+    /// overtaken by a fresh one — is skipped for good: it never becomes
+    /// evidence. A failed store returns an empty round and advances nothing.
+    pub fn unserved_round(&self, now_ms: u64, served: &mut HashMap<String, u64>) -> Round {
+        if self.failure.is_some() {
+            return Round::default();
+        }
+        let mut reports = Vec::new();
+        for member in &self.members {
+            let Some(journal) = self.journals.get(member) else {
+                continue;
+            };
+            let cursor = served.get(member).copied().unwrap_or(0);
+            let mut last_served = cursor;
+            // Sequence numbers are the record index plus one, so records
+            // after `cursor` start at index `cursor`.
+            let skip = usize::try_from(cursor).unwrap_or(usize::MAX);
+            for (index, report) in journal.records.iter().enumerate().skip(skip) {
+                if is_fresh(report.observed_at_ms, now_ms, self.observation_freshness_ms) {
+                    reports.push(report.clone());
+                    last_served = u64::try_from(index)
+                        .ok()
+                        .and_then(|index| index.checked_add(1))
+                        .unwrap_or(u64::MAX);
+                }
+            }
+            if last_served > cursor {
+                served.insert(member.clone(), last_served);
+            }
+        }
+        Round { reports }
+    }
+
     /// Whether the store failed earlier and now fails closed.
     pub fn failed(&self) -> bool {
         self.failure.is_some()
@@ -243,18 +286,39 @@ impl ConsensusStore {
     }
 }
 
-/// The [`ObservationSource`] adapter: rounds recorded into a
+/// The [`ObservationSource`] adapter: reports recorded into a
 /// [`ConsensusStore`] flow into the existing [`crate::executor::FailoverExecutor`]
-/// unchanged — no report is synthesized, filtered beyond the freshness window
-/// or re-attributed.
+/// without being synthesized or re-attributed, and each report is served in
+/// at most one check round.
+///
+/// Each collect serves only the fresh records a member appended since the
+/// last record of that member this source served (a per-member high-water
+/// sequence, see [`ConsensusStore::unserved_round`]). The controller counts
+/// one failed or successful check per round, so re-serving a record on every
+/// tick of its freshness window would let one report per member satisfy the
+/// "3 failed checks" fence hysteresis or the "5 successful checks" rejoin
+/// hysteresis on its own (issue #512). A check at which no member appended a
+/// new fresh report is an empty round — quorum lost — which restarts any
+/// incomplete streak, exactly as the in-process source's empty rounds do.
+///
+/// The high-water marks live in memory: after a restart the first round
+/// serves the still-fresh journal records once more. That cannot double-count
+/// a streak, because the controller never persists an incomplete streak — a
+/// restored controller starts suspecting from zero and a restored promotion
+/// starts its healthy streak from zero.
 pub struct StoreObservationSource {
     store: ConsensusStore,
+    served: HashMap<String, u64>,
 }
 
 impl StoreObservationSource {
-    /// Wrap a store as the executor's observation source.
+    /// Wrap a store as the executor's observation source. Nothing has been
+    /// served yet, so the first round holds every fresh record.
     pub fn new(store: ConsensusStore) -> Self {
-        Self { store }
+        Self {
+            store,
+            served: HashMap::new(),
+        }
     }
 
     /// Read-only access to the backing store.
@@ -277,7 +341,7 @@ impl StoreObservationSource {
 
 impl ObservationSource for StoreObservationSource {
     fn collect(&mut self, now_ms: u64) -> Round {
-        self.store.round(now_ms)
+        self.store.unserved_round(now_ms, &mut self.served)
     }
 }
 

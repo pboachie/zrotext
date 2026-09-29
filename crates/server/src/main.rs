@@ -88,6 +88,9 @@ struct Config {
     draining: Arc<AtomicBool>,
     drain_notify: Arc<Notify>,
     billing_provider_authorized: Option<(Arc<AtomicBool>, Arc<AtomicBool>)>,
+    /// `Some` only while the failover executor is enabled; cleared by the
+    /// executor thread when it cannot start (store or authority failure).
+    failover_executor_healthy: Option<Arc<AtomicBool>>,
     readiness: Arc<ReadinessCache>,
 }
 
@@ -255,6 +258,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // would only report the database as unavailable.
     zrotext_postgres_connection::check_url(&database_url)
         .map_err(|error| format!("DATABASE_URL: {error}"))?;
+    // Readiness tracks the failover executor only when it is enabled; the
+    // default-off path adds no signal and changes nothing.
+    let failover_executor_healthy = failover_executor_env
+        .as_ref()
+        .map(|_| Arc::new(AtomicBool::new(true)));
     let config = Arc::new(Config {
         database_url,
         site_id: required("SITE_ID")?,
@@ -272,6 +280,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),
         billing_provider_authorized,
+        failover_executor_healthy: failover_executor_healthy.clone(),
         readiness: Arc::new(ReadinessCache::new()),
     });
     let bind: SocketAddr = env::var("BIND_ADDR")
@@ -690,6 +699,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         failover_executor_env,
         config.database_url.clone(),
         config.draining.clone(),
+        failover_executor_healthy.unwrap_or_default(),
     );
     eprintln!(
         "zrotext site={} instance={} listening={bind}",
@@ -1029,6 +1039,21 @@ async fn ready(
             }),
         );
     }
+    // An enabled failover executor that could not start (its consensus
+    // store or writer-authority port failed) is reported, not hidden behind
+    // one log line: operators believe automatic failover is armed.
+    if config
+        .failover_executor_healthy
+        .as_ref()
+        .is_some_and(|healthy| !healthy.load(Ordering::Acquire))
+    {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(Health {
+                status: "failover_executor_failed",
+            }),
+        );
+    }
     if config
         .billing_provider_authorized
         .as_ref()
@@ -1248,8 +1273,32 @@ mod tests {
             draining: Arc::new(AtomicBool::new(false)),
             drain_notify: Arc::new(Notify::new()),
             billing_provider_authorized: None,
+            failover_executor_healthy: None,
             readiness: Arc::new(ReadinessCache::new()),
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn readiness_reports_a_failed_failover_executor_only_when_enabled() {
+        // Disabled (the default): no signal, readiness follows the database.
+        let config = unreachable_config();
+        assert!(config.readiness.get_or_refresh(|| async { true }).await);
+        let disabled = Arc::new(config);
+        let (status, body) = ready(State(disabled)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.0.status, "ready");
+        // Enabled and running (or still starting): ready.
+        let healthy = Arc::new(AtomicBool::new(true));
+        let mut config = unreachable_config();
+        config.failover_executor_healthy = Some(healthy.clone());
+        assert!(config.readiness.get_or_refresh(|| async { true }).await);
+        let enabled = Arc::new(config);
+        assert_eq!(ready(State(enabled.clone())).await.0, StatusCode::OK);
+        // The executor thread could not open its store: visible, distinct.
+        healthy.store(false, Ordering::Release);
+        let (status, body) = ready(State(enabled)).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body.0.status, "failover_executor_failed");
     }
 
     #[tokio::test(start_paused = true)]
@@ -1389,6 +1438,7 @@ mod tests {
             draining: Arc::new(AtomicBool::new(false)),
             drain_notify: Arc::new(Notify::new()),
             billing_provider_authorized: None,
+            failover_executor_healthy: None,
             readiness: Arc::new(ReadinessCache::new()),
         };
         ensure_local_site(&config).await.unwrap();
