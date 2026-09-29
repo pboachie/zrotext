@@ -575,6 +575,20 @@ retained set (the request-budget counters, which are pepper-keyed digests
 shared across accounts and hold no identifiers); this response is the only
 confirmation, because the account and its sessions no longer exist.
 
+Observers are erased with the account. Their user rows (email, password hash,
+verification state), including removed seats whose user row survived, and the
+account's invitations and removal records (which hold invitee addresses) are
+deleted in the same transaction, using the guard seat removal uses: only a
+user whose sole membership is an observer seat of this account is deleted,
+never an owner and never a user of another account. The report lists
+`observer_users` and `seat_invitations`, and their addresses are free
+afterwards. An acceptance or removal racing the erasure cannot leave an
+observer behind: the erasure waits for one already in flight, and a later
+acceptance cannot create a membership once the account row is locked. If the
+database refuses an observer user delete because another row references it,
+the erasure fails closed like any other blocker (HTTP 409 `erasure_blocked`
+naming `observer_users`, nothing deleted).
+
 Erasure is local and bounded. It applies only to this server's database. It
 does not cancel Stripe subscriptions or customers, does not release carrier
 or phone-line identities outside the database, does not delete anything in
@@ -591,7 +605,7 @@ history (`known_signing_point_reservations`, `known_signing_role_claims`,
 `sealed_root_enrollments`, `sealed_root_receipts`), which exists for every
 account that ever enrolled a device key or approval key; a live owner-key
 ceremony; an operator billing review action over the account's risk events;
-or a billing event still referenced by another account's risk record. Owners
+a billing event still referenced by another account's risk record; or an observer user row that a foreign key refuses to delete. Owners
 of accounts with such rows must contact the operator about those records
 first; the endpoint never deletes part of an account.
 

@@ -131,6 +131,12 @@ if the database refuses it with an integrity error (a restricting reference,
 unreachable for observers today), the revocations still commit, the address
 stays occupied, and both the removal response and the owner's seat list carry
 `address_free: false`.
+Account erasure covers seats: `POST /v1/owner/erasure` deletes the account's
+observer users, invitations and removal records in its one transaction with the
+same single-membership guard (never an owner or another account's user), locks
+the account's observer memberships and then its invitation rows before the
+auth fence in the order removal and acceptance use, and fails closed with
+`erasure_blocked` if a foreign key refuses an observer delete.
 Threats considered: a stolen owner cookie minting a persistent seat (step-up
 proof, password and MFA failure budgets); a leaked invitation token (bounded
 lifetime, single use, owner cancel); cross-tenant address enumeration and

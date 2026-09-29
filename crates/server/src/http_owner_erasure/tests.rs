@@ -2343,20 +2343,6 @@ async fn an_acceptance_in_flight_during_erasure_cannot_leave_an_observer_behind(
         )
         .await
         .unwrap();
-    acceptance
-        .execute(
-            "INSERT INTO users(id,email,password_hash) SELECT $1,'race-observer@example.test',password_hash FROM users WHERE id=$2",
-            &[&observer, &a.user_id],
-        )
-        .await
-        .unwrap();
-    acceptance
-        .execute(
-            "INSERT INTO memberships(account_id,user_id,role) VALUES($1,$2,'observer')",
-            &[&a.account_id, &observer],
-        )
-        .await
-        .unwrap();
     let token = session_a.token.clone();
     let csrf = session_a.csrf_token.clone();
     let request = tokio::spawn(async move {
@@ -2373,6 +2359,24 @@ async fn an_acceptance_in_flight_during_erasure_cannot_leave_an_observer_behind(
     // The erasure parks on the invitation row before its fence, so it waits
     // for the acceptance instead of racing it.
     wait_until_handler_is_blocked_by(&admin, "zt_erasure_accept_race", blocker_pid).await;
+    // Only now does the acceptance create the observer. Were the erasure past
+    // its fence, this membership insert would queue behind the fence's lock on
+    // the account row while the erasure queued behind this invitation row: a
+    // deadlock. Parked before the fence, it completes first.
+    acceptance
+        .execute(
+            "INSERT INTO users(id,email,password_hash) SELECT $1,'race-observer@example.test',password_hash FROM users WHERE id=$2",
+            &[&observer, &a.user_id],
+        )
+        .await
+        .unwrap();
+    acceptance
+        .execute(
+            "INSERT INTO memberships(account_id,user_id,role) VALUES($1,$2,'observer')",
+            &[&a.account_id, &observer],
+        )
+        .await
+        .unwrap();
     acceptance
         .execute(
             "UPDATE seat_invitations SET accepted_at=now(),accepted_user_id=$2 WHERE account_id=$1 AND email='race-observer@example.test'",
