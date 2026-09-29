@@ -9,11 +9,14 @@
 //! nothing: zero behavior change while the flag is off.
 //!
 //! [`PgWriterAuthority`] is the PostgreSQL implementation of the
-//! `zrotext_failover_quorum::executor::WriterAuthority` port. It opens one
-//! dedicated connection per operation (the executor must survive writer
-//! restarts and writer moves, and its call rate is one small query set per
-//! tick) on its own single-threaded runtime, because the executor itself is
-//! synchronous and deliberately independent of the main async runtime.
+//! `zrotext_failover_quorum::executor::WriterAuthority` port. It keeps one
+//! dedicated, long-lived connection to the writer database — opened under a
+//! bounded connect ceiling and reopened, after a small randomized pause,
+//! whenever an operation fails — on its own single-threaded runtime, because
+//! the executor itself is synchronous and deliberately independent of the
+//! main async runtime. Every operation waits under a generous ceiling: a
+//! timeout is a failed operation like any transport or SQL error, and the
+//! executor's idempotent replay turns it into a retry instead of a hang.
 //!
 //! The observation source is the durable consensus store
 //! (`FAILOVER_QUORUM_STORE_DIR`): one membership record plus append-only
@@ -30,8 +33,11 @@
 //! fail-closed until that probe lands (a documented follow-up).
 
 use std::collections::HashMap;
+use std::collections::hash_map::RandomState;
 use std::future::Future;
+use std::hash::{BuildHasher, Hasher};
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -49,6 +55,29 @@ use zrotext_failover_quorum::store::ConsensusStore;
 
 /// Default `FAILOVER_QUORUM_CHECK_INTERVAL_MS`.
 pub const DEFAULT_CHECK_INTERVAL_MS: u64 = 5_000;
+
+/// Ceiling for opening — and reopening — the authority's dedicated
+/// PostgreSQL connection: one bound around TCP, TLS and authentication
+/// together. No `FAILOVER_QUORUM_*` wiring configures a connect budget
+/// today, so rather than add configuration surface the port fixes a
+/// generous constant; an operator's URL-level `connect_timeout`, when
+/// present, still applies underneath and can only tighten it.
+const CONNECT_CEILING: Duration = Duration::from_secs(10);
+
+/// Ceiling for waiting on one writer-authority operation (snapshot read,
+/// fence write, promote transaction, journal round-trip). The promote
+/// transaction is a handful of small statements on locked singleton rows,
+/// so 30 seconds comfortably exceeds any healthy worst case — including a
+/// brief `FOR UPDATE` wait behind an operator's manual epoch bump — while
+/// still turning a wedged server into a failed operation instead of an
+/// executor blocked forever.
+const OPERATION_CEILING: Duration = Duration::from_secs(30);
+
+/// Upper bound of the randomized pause taken before a reconnect, so that
+/// processes recovering from a shared writer bounce do not reconnect in
+/// lockstep. Kept small next to the executor's check interval: it staggers
+/// reconnect attempts, nothing more.
+const RECONNECT_JITTER_CEILING: Duration = Duration::from_millis(250);
 
 /// Parsed `FAILOVER_QUORUM_*` wiring for the executor loop and the
 /// member-side reporting loop.
@@ -207,21 +236,47 @@ impl ExecutorEnv {
 pub enum PgAuthorityError {
     #[error("PostgreSQL connection failed: {0}")]
     Connect(#[from] zrotext_postgres_connection::ConnectError),
+    #[error("PostgreSQL connection did not open within {0:?}")]
+    ConnectTimedOut(Duration),
     #[error("writer authority operation failed: {0}")]
     Database(#[from] tokio_postgres::Error),
+    #[error("writer authority operation did not finish within {0:?}")]
+    OperationTimedOut(Duration),
     #[error("deployment_authority.epoch is outside the executor's domain: {0}")]
     EpochOutOfRange(i64),
 }
 
-/// PostgreSQL implementation of the `WriterAuthority` port. One connection
-/// per operation on a private single-threaded runtime.
+/// One boxed authority-operation future. The box is what lets an operation
+/// borrow the dedicated client (`&mut`) while [`PgWriterAuthority::call`]
+/// stays a single generic entry point; async closures would express this
+/// natively but are not stable.
+type BoxedOperation<'a, T> = Pin<Box<dyn Future<Output = Result<T, PgAuthorityError>> + 'a>>;
+
+/// PostgreSQL implementation of the `WriterAuthority` port. One dedicated,
+/// long-lived connection on a private single-threaded runtime: opened under
+/// [`CONNECT_CEILING`], reused across operations, and discarded and reopened
+/// (after a small random pause) whenever an operation fails, so the next
+/// operation always starts from a known-good transport.
 pub struct PgWriterAuthority {
     database_url: String,
     runtime: tokio::runtime::Runtime,
+    /// The retained client handle: `None` until the first operation, and
+    /// while a broken connection awaits its jittered reconnect.
+    client: Option<tokio_postgres::Client>,
+    /// The runtime task driving the retained client's socket.
+    driver: Option<tokio::task::JoinHandle<Result<(), tokio_postgres::Error>>>,
+    /// Set by every failed operation and failed connect: the next operation
+    /// first waits out a jittered pause and opens a fresh connection.
+    reconnect_pending: bool,
+    /// Test seam: how many connections this instance has opened, so tests
+    /// can assert the one-connection contract directly.
+    #[cfg(test)]
+    connections_opened: u32,
 }
 
 impl PgWriterAuthority {
-    /// Build the port. Fails only when the local runtime cannot be created.
+    /// Build the port. Fails only when the local runtime cannot be created;
+    /// the connection itself is opened lazily by the first operation.
     pub fn new(database_url: String) -> Result<Self, String> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -230,25 +285,147 @@ impl PgWriterAuthority {
         Ok(Self {
             database_url,
             runtime,
+            client: None,
+            driver: None,
+            reconnect_pending: false,
+            #[cfg(test)]
+            connections_opened: 0,
         })
     }
 
-    fn call<T, F, Fut>(&mut self, operation: F) -> Result<T, PgAuthorityError>
-    where
-        F: FnOnce(tokio_postgres::Client) -> Fut,
-        Fut: Future<Output = Result<T, PgAuthorityError>>,
-    {
-        let url = self.database_url.clone();
-        self.runtime.block_on(async move {
-            let (client, connection) = zrotext_postgres_connection::connect(&url).await?;
-            let driver = tokio::spawn(connection);
-            // The client is consumed by the operation; when it drops, the
-            // driver ends with a Closed error that does not matter here.
-            let result = operation(client).await;
-            let _ = driver.await;
-            result
-        })
+    /// Run one operation on the dedicated connection under the production
+    /// wait ceiling.
+    fn call<T>(
+        &mut self,
+        operation: impl for<'a> FnOnce(&'a mut tokio_postgres::Client) -> BoxedOperation<'a, T>,
+    ) -> Result<T, PgAuthorityError> {
+        self.call_bounded(OPERATION_CEILING, operation)
     }
+
+    /// [`Self::call`] with an explicit wait ceiling, so a test can prove the
+    /// bound without waiting out [`OPERATION_CEILING`].
+    fn call_bounded<T>(
+        &mut self,
+        ceiling: Duration,
+        operation: impl for<'a> FnOnce(&'a mut tokio_postgres::Client) -> BoxedOperation<'a, T>,
+    ) -> Result<T, PgAuthorityError> {
+        if self.reconnect_pending {
+            // The previous failure left the connection unusable; discard it
+            // and pause briefly (randomized) before touching the database
+            // again, so recoveries from a shared writer bounce do not
+            // reconnect in lockstep. The failed operation itself has already
+            // returned its error; nothing is retried inside the port.
+            self.discard_connection();
+            self.reconnect_pending = false;
+            std::thread::sleep(reconnect_jitter());
+        }
+        let mut client = match self.client.take() {
+            Some(client) => client,
+            None => self.open_connection(CONNECT_CEILING)?,
+        };
+        // The client is lent to the operation only inside this block_on:
+        // the port's runtime drives the operation and the socket together,
+        // and the connection is never held across an await that is not the
+        // port's own.
+        let result = self
+            .runtime
+            .block_on(wait_bounded(ceiling, operation(&mut client)));
+        match result {
+            Ok(value) => {
+                self.client = Some(client);
+                Ok(value)
+            }
+            Err(error) => {
+                // Any failure may have broken the socket — a timeout can
+                // even have left it mid-response — so the connection is
+                // discarded and the next operation reconnects. This
+                // operation fails closed exactly as it would have on a
+                // per-operation connection.
+                self.discard_connection();
+                self.reconnect_pending = true;
+                Err(error)
+            }
+        }
+    }
+
+    /// Open the dedicated connection under `ceiling` and start its driver
+    /// task. A failure still marks a jittered reconnect before the next
+    /// operation, so even a connect attempt cannot hang the executor.
+    fn open_connection(
+        &mut self,
+        ceiling: Duration,
+    ) -> Result<tokio_postgres::Client, PgAuthorityError> {
+        let url = self.database_url.clone();
+        let opened = self.runtime.block_on(async move {
+            let connecting = zrotext_postgres_connection::connect(&url);
+            match tokio::time::timeout(ceiling, connecting).await {
+                Ok(connected) => {
+                    let (client, connection) = connected?;
+                    // The driver task lives on the port's own runtime and
+                    // stays alive between operations; it ends — as before —
+                    // when the last client handle goes away.
+                    let driver = tokio::spawn(connection);
+                    Ok((client, driver))
+                }
+                Err(_elapsed) => Err(PgAuthorityError::ConnectTimedOut(ceiling)),
+            }
+        });
+        match opened {
+            Ok((client, driver)) => {
+                self.discard_connection();
+                self.driver = Some(driver);
+                #[cfg(test)]
+                {
+                    self.connections_opened = self.connections_opened.saturating_add(1);
+                }
+                Ok(client)
+            }
+            Err(error) => {
+                self.reconnect_pending = true;
+                Err(error)
+            }
+        }
+    }
+
+    /// Drop the retained connection and stop its driver task.
+    fn discard_connection(&mut self) {
+        self.client = None;
+        if let Some(driver) = self.driver.take() {
+            // Abort rather than detach: a wedged socket must not outlive the
+            // decision to discard it.
+            driver.abort();
+        }
+    }
+}
+
+/// Await one operation under its wait ceiling. A timeout is a *failed*
+/// operation, not a retry trigger: the executor's decisions are idempotent —
+/// pending ones replay through the durable journal, and the promote
+/// transaction's epoch compare-and-set makes an interrupted promote (say, a
+/// timeout after the commit was sent but before the reply was read) safe to
+/// replay on a later tick, converging instead of double-applying.
+async fn wait_bounded<T, Fut>(ceiling: Duration, operation: Fut) -> Result<T, PgAuthorityError>
+where
+    Fut: Future<Output = Result<T, PgAuthorityError>>,
+{
+    match tokio::time::timeout(ceiling, operation).await {
+        Ok(result) => result,
+        Err(_elapsed) => Err(PgAuthorityError::OperationTimedOut(ceiling)),
+    }
+}
+
+/// A random reconnect pause in `[0, RECONNECT_JITTER_CEILING)`. Std-only
+/// randomness: `RandomState` is seeded from the OS, so hashing the current
+/// nanosecond through a fresh one draws unpredictably without a new
+/// dependency.
+fn reconnect_jitter() -> Duration {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|moment| moment.subsec_nanos() as u64)
+        .unwrap_or(0);
+    let mut draw = RandomState::new().build_hasher();
+    draw.write_u64(nanos);
+    Duration::from_nanos(draw.finish() % RECONNECT_JITTER_CEILING.as_nanos() as u64)
 }
 
 impl WriterAuthority for PgWriterAuthority {
@@ -261,63 +438,67 @@ impl WriterAuthority for PgWriterAuthority {
     ) -> Result<AuthoritySnapshot, Self::Error> {
         let writer_site = writer_site.to_owned();
         let standby_site = standby_site.to_owned();
-        self.call(move |client| async move {
-            let row = client
-                .query_one(
-                    "SELECT p.epoch, p.dispatch_enabled, wa.enabled, wa.draining, \
-                     st.enabled, st.draining \
-                     FROM deployment_authority p \
-                     LEFT JOIN sites wa ON wa.site_id=$1 \
-                     LEFT JOIN sites st ON st.site_id=$2 \
-                     WHERE p.singleton=TRUE",
-                    &[&writer_site, &standby_site],
-                )
-                .await?;
-            let epoch: i64 = row.get(0);
-            let epoch =
-                u64::try_from(epoch).map_err(|_| PgAuthorityError::EpochOutOfRange(epoch))?;
-            let site = |enabled: Option<bool>, draining: Option<bool>| {
-                enabled
-                    .zip(draining)
-                    .map(|(enabled, draining)| SiteFenceState { enabled, draining })
-            };
-            let writer_enabled: Option<bool> = row.try_get(2).unwrap_or(None);
-            let writer_draining: Option<bool> = row.try_get(3).unwrap_or(None);
-            let standby_enabled: Option<bool> = row.try_get(4).unwrap_or(None);
-            let standby_draining: Option<bool> = row.try_get(5).unwrap_or(None);
-            Ok(AuthoritySnapshot {
-                epoch,
-                dispatch_enabled: row.get(1),
-                writer_site: site(writer_enabled, writer_draining),
-                standby_site: site(standby_enabled, standby_draining),
+        self.call(move |client| {
+            Box::pin(async move {
+                let row = client
+                    .query_one(
+                        "SELECT p.epoch, p.dispatch_enabled, wa.enabled, wa.draining, \
+                         st.enabled, st.draining \
+                         FROM deployment_authority p \
+                         LEFT JOIN sites wa ON wa.site_id=$1 \
+                         LEFT JOIN sites st ON st.site_id=$2 \
+                         WHERE p.singleton=TRUE",
+                        &[&writer_site, &standby_site],
+                    )
+                    .await?;
+                let epoch: i64 = row.get(0);
+                let epoch =
+                    u64::try_from(epoch).map_err(|_| PgAuthorityError::EpochOutOfRange(epoch))?;
+                let site = |enabled: Option<bool>, draining: Option<bool>| {
+                    enabled
+                        .zip(draining)
+                        .map(|(enabled, draining)| SiteFenceState { enabled, draining })
+                };
+                let writer_enabled: Option<bool> = row.try_get(2).unwrap_or(None);
+                let writer_draining: Option<bool> = row.try_get(3).unwrap_or(None);
+                let standby_enabled: Option<bool> = row.try_get(4).unwrap_or(None);
+                let standby_draining: Option<bool> = row.try_get(5).unwrap_or(None);
+                Ok(AuthoritySnapshot {
+                    epoch,
+                    dispatch_enabled: row.get(1),
+                    writer_site: site(writer_enabled, writer_draining),
+                    standby_site: site(standby_enabled, standby_draining),
+                })
             })
         })
     }
 
     fn fence_writer_site(&mut self, site_id: &str) -> Result<FenceOutcome, Self::Error> {
         let site_id = site_id.to_owned();
-        self.call(move |client| async move {
-            let row = client
-                .query_opt(
-                    "SELECT enabled, draining FROM sites WHERE site_id=$1",
-                    &[&site_id],
-                )
-                .await?;
-            let Some(row) = row else {
-                return Ok(FenceOutcome::SiteRowMissing);
-            };
-            let enabled: bool = row.get(0);
-            let draining: bool = row.get(1);
-            if !enabled || draining {
-                return Ok(FenceOutcome::AlreadyFenced);
-            }
-            client
-                .execute(
-                    "UPDATE sites SET draining=TRUE WHERE site_id=$1",
-                    &[&site_id],
-                )
-                .await?;
-            Ok(FenceOutcome::Fenced)
+        self.call(move |client| {
+            Box::pin(async move {
+                let row = client
+                    .query_opt(
+                        "SELECT enabled, draining FROM sites WHERE site_id=$1",
+                        &[&site_id],
+                    )
+                    .await?;
+                let Some(row) = row else {
+                    return Ok(FenceOutcome::SiteRowMissing);
+                };
+                let enabled: bool = row.get(0);
+                let draining: bool = row.get(1);
+                if !enabled || draining {
+                    return Ok(FenceOutcome::AlreadyFenced);
+                }
+                client
+                    .execute(
+                        "UPDATE sites SET draining=TRUE WHERE site_id=$1",
+                        &[&site_id],
+                    )
+                    .await?;
+                Ok(FenceOutcome::Fenced)
+            })
         })
     }
 
@@ -331,94 +512,101 @@ impl WriterAuthority for PgWriterAuthority {
         let fenced_writer_site = fenced_writer_site.to_owned();
         let new_epoch_i64 =
             i64::try_from(new_epoch).map_err(|_| PgAuthorityError::EpochOutOfRange(i64::MAX))?;
-        self.call(move |mut client| async move {
-            let transaction = client.transaction().await?;
-            // Hold the authority row so a concurrent manual bump either
-            // happens before this read or after our commit.
-            let authority = transaction
-                .query_one(
-                    "SELECT epoch FROM deployment_authority WHERE singleton=TRUE FOR UPDATE",
-                    &[],
-                )
-                .await?;
-            let current: i64 = authority.get(0);
-            if current > new_epoch_i64 {
-                transaction.rollback().await?;
-                return Ok(PromoteOutcome::RefusedHigherEpoch {
-                    current: u64::try_from(current)
-                        .map_err(|_| PgAuthorityError::EpochOutOfRange(current))?,
-                });
-            }
-            // The promotion is conditional on the old writer's site row
-            // still showing a fence, held against concurrent changes. The
-            // checks run before the equal-epoch answer too: an external
-            // same-epoch bump is only ever confirmed together with the
-            // full promoted state, never with dispatch still enabled.
-            let fenced = transaction
-                .query_opt(
-                    "SELECT 1 FROM sites WHERE site_id=$1 AND (NOT enabled OR draining) FOR SHARE",
-                    &[&fenced_writer_site],
-                )
-                .await?;
-            if fenced.is_none() {
-                transaction.rollback().await?;
-                return Ok(PromoteOutcome::RefusedWriterUnfenced);
-            }
-            let promoted = transaction
-                .query_opt("SELECT 1 FROM sites WHERE site_id=$1", &[&promoted_site])
-                .await?;
-            if promoted.is_none() {
-                transaction.rollback().await?;
-                return Ok(PromoteOutcome::SiteRowMissing);
-            }
-            transaction
-                .execute(
-                    "UPDATE sites SET enabled=TRUE WHERE site_id=$1",
-                    &[&promoted_site],
-                )
-                .await?;
-            // At an equal epoch this write is the idempotent convergence:
-            // the epoch stays put and dispatch is forced paused.
-            transaction
-                .execute(
-                    "UPDATE deployment_authority SET epoch=$1, dispatch_enabled=FALSE \
-                     WHERE singleton=TRUE",
-                    &[&new_epoch_i64],
-                )
-                .await?;
-            transaction.commit().await?;
-            Ok(if current == new_epoch_i64 {
-                PromoteOutcome::AlreadyAtEpoch
-            } else {
-                PromoteOutcome::Promoted
+        self.call(move |client| {
+            Box::pin(async move {
+                let transaction = client.transaction().await?;
+                // Hold the authority row so a concurrent manual bump either
+                // happens before this read or after our commit.
+                let authority = transaction
+                    .query_one(
+                        "SELECT epoch FROM deployment_authority WHERE singleton=TRUE FOR UPDATE",
+                        &[],
+                    )
+                    .await?;
+                let current: i64 = authority.get(0);
+                if current > new_epoch_i64 {
+                    transaction.rollback().await?;
+                    return Ok(PromoteOutcome::RefusedHigherEpoch {
+                        current: u64::try_from(current)
+                            .map_err(|_| PgAuthorityError::EpochOutOfRange(current))?,
+                    });
+                }
+                // The promotion is conditional on the old writer's site row
+                // still showing a fence, held against concurrent changes. The
+                // checks run before the equal-epoch answer too: an external
+                // same-epoch bump is only ever confirmed together with the
+                // full promoted state, never with dispatch still enabled.
+                let fenced = transaction
+                    .query_opt(
+                        "SELECT 1 FROM sites WHERE site_id=$1 AND (NOT enabled OR draining) \
+                         FOR SHARE",
+                        &[&fenced_writer_site],
+                    )
+                    .await?;
+                if fenced.is_none() {
+                    transaction.rollback().await?;
+                    return Ok(PromoteOutcome::RefusedWriterUnfenced);
+                }
+                let promoted = transaction
+                    .query_opt("SELECT 1 FROM sites WHERE site_id=$1", &[&promoted_site])
+                    .await?;
+                if promoted.is_none() {
+                    transaction.rollback().await?;
+                    return Ok(PromoteOutcome::SiteRowMissing);
+                }
+                transaction
+                    .execute(
+                        "UPDATE sites SET enabled=TRUE WHERE site_id=$1",
+                        &[&promoted_site],
+                    )
+                    .await?;
+                // At an equal epoch this write is the idempotent convergence:
+                // the epoch stays put and dispatch is forced paused.
+                transaction
+                    .execute(
+                        "UPDATE deployment_authority SET epoch=$1, dispatch_enabled=FALSE \
+                         WHERE singleton=TRUE",
+                        &[&new_epoch_i64],
+                    )
+                    .await?;
+                transaction.commit().await?;
+                Ok(if current == new_epoch_i64 {
+                    PromoteOutcome::AlreadyAtEpoch
+                } else {
+                    PromoteOutcome::Promoted
+                })
             })
         })
     }
 
     fn save_controller_state(&mut self, encoded: &str) -> Result<(), Self::Error> {
         let encoded = encoded.to_owned();
-        self.call(move |client| async move {
-            client
-                .execute(
-                    "INSERT INTO failover_controller_state (singleton, state) VALUES (TRUE, $1) \
-                     ON CONFLICT (singleton) DO UPDATE \
-                     SET state=EXCLUDED.state, updated_at=now()",
-                    &[&encoded],
-                )
-                .await?;
-            Ok(())
+        self.call(move |client| {
+            Box::pin(async move {
+                client
+                    .execute(
+                        "INSERT INTO failover_controller_state (singleton, state) VALUES \
+                         (TRUE, $1) ON CONFLICT (singleton) DO UPDATE \
+                         SET state=EXCLUDED.state, updated_at=now()",
+                        &[&encoded],
+                    )
+                    .await?;
+                Ok(())
+            })
         })
     }
 
     fn load_controller_state(&mut self) -> Result<Option<String>, Self::Error> {
-        self.call(|client| async move {
-            let row = client
-                .query_opt(
-                    "SELECT state FROM failover_controller_state WHERE singleton=TRUE",
-                    &[],
-                )
-                .await?;
-            Ok(row.map(|row| row.get(0)))
+        self.call(|client| {
+            Box::pin(async move {
+                let row = client
+                    .query_opt(
+                        "SELECT state FROM failover_controller_state WHERE singleton=TRUE",
+                        &[],
+                    )
+                    .await?;
+                Ok(row.map(|row| row.get(0)))
+            })
         })
     }
 }
