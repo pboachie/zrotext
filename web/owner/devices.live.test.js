@@ -62,8 +62,10 @@ async function ownerPage({ eventSource = FakeEventSource } = {}) {
     if (url === "/v1/auth/sessions" && (!options || options.method === "GET"))
       return response(200, { sessions: [{ id: "11111111-1111-4111-8111-111111111111", current: true,
         created_at_ms: 1000, expires_at_ms: 100000, last_used_at_ms: 2000 }] });
-    if (url === "/v1/enrollment/devices" && (!options || options.method === "GET"))
+    if (url === "/v1/enrollment/devices" && (!options || options.method === "GET")) {
+      if (state.pendingDevices) return state.pendingDevices;
       return response(200, { devices: state.devices, next_cursor: null });
+    }
     if (url === "/v1/billing/status") return response(404);
     if (url === "/v1/billing/device-capacity") return response(404);
     if (url === "/v1/owner/messages") return response(200, { messages: state.messages, next_cursor: null });
@@ -171,6 +173,42 @@ test("a change after the floor passes reloads immediately again", async () => {
   }
   assert.equal(page.counts("/v1/enrollment/devices"), devicesBefore + 2,
     "change after the floor did not reload immediately");
+});
+
+test("a signal arriving during an in-flight reload triggers one follow-up reload", async () => {
+  const page = await ownerPage();
+  const source = FakeEventSource.instances[0];
+  source.open();
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  await settle();
+  await settle();
+  // The first signal starts an immediate reload that stays in flight.
+  let resolveDevices;
+  page.state.pendingDevices = new Promise((resolve) => { resolveDevices = resolve; });
+  source.changed(["devices"]);
+  await settle();
+  const inFlight = page.counts("/v1/enrollment/devices");
+  // A second signal while that reload is in flight must not start a second
+  // concurrent fetch, and must not be dropped.
+  source.changed(["devices"]);
+  await settle();
+  assert.equal(page.counts("/v1/enrollment/devices"), inFlight,
+    "signal during an in-flight reload started a concurrent fetch");
+  resolveDevices(response(200, { devices: [], next_cursor: null }));
+  await settle();
+  await settle();
+  await settle();
+  // The queued follow-up is inside the reload floor, so it coalesced into a
+  // single trailing reload rather than fetching a third time immediately.
+  assert.equal(page.counts("/v1/enrollment/devices"), inFlight,
+    "queued follow-up bypassed the reload floor");
+  assert.equal(page.timers.size, 1, "queued follow-up did not coalesce into one trailing reload");
+  const trailing = [...page.timers.values()][0];
+  trailing.callback();
+  await settle();
+  await settle();
+  assert.equal(page.counts("/v1/enrollment/devices"), inFlight + 1,
+    "the trailing reload did not run");
 });
 
 test("a dropped stream cancels a pending trailing reload", async () => {

@@ -22,7 +22,10 @@
 //! Polls back off while the fingerprint is unchanged — doubling from 2 s up
 //! to 15 s — so an idle dashboard costs no more database work than its
 //! periodic snapshot fallback, and any observed change restores the 2 s
-//! cadence.
+//! cadence for the next poll. Every poll still re-authenticates, so a
+//! revoked or expired session ends the stream at the next poll: revocation
+//! takes effect within one poll interval, which is 2 s while changes are
+//! flowing and at most 15 s on an idle stream.
 
 use crate::{
     auth::TokenHasher,
@@ -360,6 +363,19 @@ impl Default for PollCadence {
     }
 }
 
+/// Advances the cadence for one completed poll and returns the wait until the
+/// next one. The reset (or further backoff) applies to this poll's successor,
+/// so a change is followed by the fast interval immediately, not one poll
+/// later.
+fn next_poll_delay(cadence: &mut PollCadence, changed: bool) -> Duration {
+    if changed {
+        cadence.after_change();
+    } else {
+        cadence.after_unchanged_poll();
+    }
+    cadence.interval
+}
+
 async fn events(State(state): State<Arc<OwnerEventsState>>, headers: HeaderMap) -> Response {
     // Authenticate, take a stream permit and capture the baseline fingerprint
     // before streaming, so failures and refusals return ordinary statuses.
@@ -375,7 +391,6 @@ async fn events(State(state): State<Arc<OwnerEventsState>>, headers: HeaderMap) 
                 _ = tokio::time::sleep_until(watch.next_poll) => {}
                 _ = tokio::time::sleep_until(watch.ends_at) => return None,
             }
-            watch.next_poll = tokio::time::Instant::now() + watch.cadence.interval;
             // Each poll checks out a pooled client instead of holding one for
             // the stream's lifetime, so an idle dashboard tab never occupies a
             // request-slot between polls. Any failure ends the stream; the
@@ -411,11 +426,10 @@ async fn events(State(state): State<Arc<OwnerEventsState>>, headers: HeaderMap) 
                 changed.push("messages");
             }
             watch.previous = observed;
-            if changed.is_empty() {
-                watch.cadence.after_unchanged_poll();
-            } else {
-                watch.cadence.after_change();
-            }
+            // The wait to the next poll is chosen after this poll's verdict,
+            // so a change resets the cadence for the very next poll.
+            watch.next_poll = tokio::time::Instant::now()
+                + next_poll_delay(&mut watch.cadence, !changed.is_empty());
             let event = if changed.is_empty() {
                 // A comment keeps intermediate polls invisible to clients and
                 // makes a disconnected client's write fail promptly.

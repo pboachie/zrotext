@@ -108,6 +108,22 @@ fn unchanged_polls_back_off_to_the_snapshot_cadence_cap() {
 }
 
 #[test]
+fn the_cadence_reset_applies_to_the_poll_right_after_the_change() {
+    let mut cadence = PollCadence::new();
+    for _ in 0..5 {
+        cadence.after_unchanged_poll();
+    }
+    assert_eq!(cadence.interval, Duration::from_secs(15));
+    // A change-detecting poll schedules its successor at the fast interval,
+    // not at the backed-off interval the reset replaces.
+    assert_eq!(next_poll_delay(&mut cadence, true), Duration::from_secs(2));
+    // An unchanged poll right after the change continues backing off from
+    // the reset base.
+    assert_eq!(next_poll_delay(&mut cadence, false), Duration::from_secs(4));
+    assert_eq!(next_poll_delay(&mut cadence, false), Duration::from_secs(8));
+}
+
+#[test]
 fn any_observed_change_resets_the_poll_cadence() {
     let mut cadence = PollCadence::new();
     for _ in 0..5 {

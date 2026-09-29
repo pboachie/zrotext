@@ -66,6 +66,11 @@ let devicesLiveReloadedAt = 0;
 let messagesLiveReloadedAt = 0;
 let devicesTrailingReload = null;
 let messagesTrailingReload = null;
+// A signal that arrives while a live-triggered reload is still in flight is
+// remembered and answered with one guarded follow-up reload when that load
+// completes, so the freshest state is never silently dropped.
+let devicesSignalDuringLoad = false;
+let messagesSignalDuringLoad = false;
 let browsingOlderDevices = false;
 let browsingOlderMessages = false;
 const preconditionFreshMs = 90_000;
@@ -188,7 +193,11 @@ function canRefreshDashboard() {
 }
 
 function requestLiveDevicesReload() {
-  if (deviceLoads || browsingOlderDevices || viewingList("device-list")) return;
+  if (browsingOlderDevices || viewingList("device-list")) return;
+  if (deviceLoads) {
+    devicesSignalDuringLoad = true;
+    return;
+  }
   const now = Date.now();
   if (devicesTrailingReload !== null) return;
   if (now - devicesLiveReloadedAt < liveReloadFloorMs) {
@@ -205,7 +214,11 @@ function requestLiveDevicesReload() {
 }
 
 function requestLiveMessagesReload() {
-  if (messageLoads || browsingOlderMessages || viewingList("message-list")) return;
+  if (browsingOlderMessages || viewingList("message-list")) return;
+  if (messageLoads) {
+    messagesSignalDuringLoad = true;
+    return;
+  }
   const now = Date.now();
   if (messagesTrailingReload !== null) return;
   if (now - messagesLiveReloadedAt < liveReloadFloorMs) {
@@ -1003,6 +1016,11 @@ async function loadDevices(reset = true, automatic = false) {
     message("device-status", `Could not load devices. ${automatic ? "Showing the previous snapshot; counts may be stale. " : ""}${error.message}`);
   } finally {
     deviceLoads -= 1;
+    if (deviceLoads === 0 && devicesSignalDuringLoad) {
+      // Answer a signal that arrived while this reload was in flight.
+      devicesSignalDuringLoad = false;
+      requestLiveDevicesReload();
+    }
     if (!stale()) moreButton.disabled = false;
   }
 }
@@ -1103,6 +1121,11 @@ async function loadMessages(reset = true, automatic = false) {
     message("message-status", `Could not load messages. ${error.message}`);
   } finally {
     messageLoads -= 1;
+    if (messageLoads === 0 && messagesSignalDuringLoad) {
+      // Answer a signal that arrived while this reload was in flight.
+      messagesSignalDuringLoad = false;
+      requestLiveMessagesReload();
+    }
     if (!stale()) moreButton.disabled = false;
   }
 }
