@@ -423,6 +423,7 @@ pub async fn register(
         )
         .await?;
     transaction.commit().await?;
+    crate::wakeups::account_mail_queued();
     Ok(Signup {
         account_id,
         user_id,

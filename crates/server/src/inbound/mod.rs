@@ -557,6 +557,10 @@ pub async fn ingest_with_clock(
         return Err(InboundError::Unauthorized);
     }
     tx.commit().await?;
+    if queued > 0 {
+        // Same-process delivery workers wait out a fixed poll otherwise.
+        crate::wakeups::webhook_delivery_queued();
+    }
     Ok(IngestOutcome {
         created: true,
         queued_deliveries: queued,

@@ -847,6 +847,14 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
             .queued_deliveries,
         1
     );
+    // Committing that delivery stored a wakeup permit, so an in-process
+    // delivery lane wakes at once instead of waiting out its poll interval.
+    tokio::time::timeout(
+        std::time::Duration::from_millis(50),
+        crate::wakeups::webhook_delivery().notified(),
+    )
+    .await
+    .expect("queued delivery wakes the delivery lanes at once");
     assert_eq!(
         ingest(&mut db, session, &retryable)
             .await
