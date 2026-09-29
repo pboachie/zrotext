@@ -2967,10 +2967,9 @@ async fn account_lock_serializes_only_consent_ingest_with_admission() {
     // An admission-shaped transaction holds the account row lock. A capture
     // event must still complete: nothing it writes conflicts with that lock,
     // and its account fence stays the key-lookup snapshot check.
-    let (mut holder_db, holder_connection) =
-        tokio_postgres::connect(&url, tokio_postgres::NoTls)
-            .await
-            .unwrap();
+    let (mut holder_db, holder_connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+        .await
+        .unwrap();
     tokio::spawn(async move { holder_connection.await.unwrap() });
     holder_db
         .batch_execute(&format!("SET search_path TO {schema}"))
@@ -3025,10 +3024,7 @@ async fn account_lock_serializes_only_consent_ingest_with_admission() {
                 // source lookup.
                 loop {
                     let waiting: bool = park
-                        .query_one(
-                            "SELECT cardinality(pg_blocking_pids($1))>0",
-                            &[&ingest_pid],
-                        )
+                        .query_one("SELECT cardinality(pg_blocking_pids($1))>0", &[&ingest_pid])
                         .await
                         .unwrap()
                         .get(0);
