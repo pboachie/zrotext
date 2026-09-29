@@ -840,28 +840,40 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
         signature_der: &retry_der,
         ..retryable
     };
+    // Committing that delivery wakes an in-process delivery lane at once
+    // instead of leaving it to its poll interval. This test's own observer
+    // replaces the process-wide notify (no other test can supply the wake)
+    // and counts deliveries from a separate session at the instant of the
+    // wake: a wake sent before the commit would not see the new row.
+    let before: i64 = db
+        .query_one("SELECT count(*) FROM webhook_deliveries", &[])
+        .await
+        .unwrap()
+        .get(0);
+    let (observer, seen) = crate::wakeups::committed_rows_observer(
+        scoped_url.clone(),
+        "SELECT count(*) FROM webhook_deliveries",
+    );
     assert_eq!(
-        ingest(&mut db, session, &retryable)
+        crate::wakeups::observed(observer.clone(), ingest(&mut db, session, &retryable))
             .await
             .unwrap()
             .queued_deliveries,
         1
     );
-    // Committing that delivery stored a wakeup permit, so an in-process
-    // delivery lane wakes at once instead of waiting out its poll interval.
-    tokio::time::timeout(
-        std::time::Duration::from_millis(50),
-        crate::wakeups::webhook_delivery().notified(),
-    )
-    .await
-    .expect("queued delivery wakes the delivery lanes at once");
     assert_eq!(
-        ingest(&mut db, session, &retryable)
+        *seen.lock().unwrap(),
+        vec![(crate::wakeups::Queue::WebhookDelivery, before + 1)]
+    );
+    // A duplicate queues nothing and wakes nobody.
+    assert_eq!(
+        crate::wakeups::observed(observer, ingest(&mut db, session, &retryable))
             .await
             .unwrap()
             .queued_deliveries,
         0
     );
+    assert_eq!(seen.lock().unwrap().len(), 1);
     let retry_event_id = retryable.event_id;
     let observed = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Vec<u8>>::new()));
     for (worker, status, acknowledged) in [("worker-fail", 500, false), ("worker-ack", 204, true)] {

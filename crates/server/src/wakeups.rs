@@ -24,13 +24,91 @@ pub fn account_mail() -> &'static Notify {
 
 /// A producer committed at least one claimable webhook delivery row.
 pub fn webhook_delivery_queued() {
-    webhook_delivery().notify_one();
+    wake(Queue::WebhookDelivery);
 }
 
 /// A producer committed at least one claimable account mail row
 /// (verification, reset code or reset notice).
 pub fn account_mail_queued() {
-    account_mail().notify_one();
+    wake(Queue::AccountMail);
+}
+
+/// The queue a producer woke.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Queue {
+    WebhookDelivery,
+    AccountMail,
+}
+
+fn wake(queue: Queue) {
+    #[cfg(test)]
+    if OBSERVER.try_with(|observe| observe(queue)).is_ok() {
+        return;
+    }
+    match queue {
+        Queue::WebhookDelivery => webhook_delivery(),
+        Queue::AccountMail => account_mail(),
+    }
+    .notify_one();
+}
+
+#[cfg(test)]
+type Observer = std::sync::Arc<dyn Fn(Queue) + Send + Sync>;
+
+#[cfg(test)]
+tokio::task_local! {
+    static OBSERVER: Observer;
+}
+
+/// Test-only: run `future` with its producers' wakeups routed to `observer`
+/// instead of the process-wide notify handles. The test then sees exactly
+/// its own wakeups; a parallel test's producer can neither satisfy nor
+/// disturb it.
+#[cfg(test)]
+pub(crate) async fn observed<F: std::future::Future>(observer: Observer, future: F) -> F::Output {
+    OBSERVER.scope(observer, future).await
+}
+
+/// Test-only observer that, at the instant of each wakeup, runs `count_sql`
+/// on a separate database session and records the queue and the count.
+/// A wakeup sent before the producer's commit cannot see the producer's rows,
+/// so the recorded count pins the wake after the commit.
+#[cfg(test)]
+pub(crate) fn committed_rows_observer(
+    database_url: String,
+    count_sql: &'static str,
+) -> (
+    Observer,
+    std::sync::Arc<std::sync::Mutex<Vec<(Queue, i64)>>>,
+) {
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let record = seen.clone();
+    let observer: Observer = std::sync::Arc::new(move |queue| {
+        let url = database_url.clone();
+        // The producer's runtime is blocked inside this synchronous call, so
+        // the check runs on its own thread and runtime.
+        let count = std::thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async move {
+                    let (client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+                        .await
+                        .unwrap();
+                    tokio::spawn(connection);
+                    client
+                        .query_one(count_sql, &[])
+                        .await
+                        .unwrap()
+                        .get::<_, i64>(0)
+                })
+        })
+        .join()
+        .unwrap();
+        record.lock().unwrap().push((queue, count));
+    });
+    (observer, seen)
 }
 
 #[cfg(test)]

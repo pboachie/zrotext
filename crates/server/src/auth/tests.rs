@@ -932,26 +932,34 @@ async fn queueing_account_mail_wakes_the_mail_worker_without_its_tick() {
     let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
         .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
     let schema = format!("mail_wake_{}", Uuid::new_v4().simple());
-    let (setup, mut client, _url) = pending_signup_schema(&base_url, &schema).await;
+    let (setup, mut client, url) = pending_signup_schema(&base_url, &schema).await;
     let hasher = TokenHasher::new(crate::test_keys::key(213)).unwrap();
-    let signup = register(
-        &mut client,
-        &hasher,
-        "wake@example.test",
-        &crate::test_keys::password(214),
+    // This test's own observer replaces the process-wide notify, so another
+    // test's producer cannot supply the wakeup. At the instant of the wake
+    // it counts outbox rows from a separate session: a wake sent before
+    // register commits would see none.
+    let (observer, seen) = crate::wakeups::committed_rows_observer(
+        url,
+        "SELECT count(*) FROM verification_mail_outbox",
+    );
+    let signup = crate::wakeups::observed(
+        observer,
+        register(
+            &mut client,
+            &hasher,
+            "wake@example.test",
+            &crate::test_keys::password(214),
+        ),
     )
     .await
     .unwrap();
     assert!(!signup.account_id.is_nil());
-    // register committed a queued verification mail, so the worker's notify
-    // hold a stored permit: the mail worker wakes at once instead of waiting
-    // out its five-second poll interval.
-    tokio::time::timeout(
-        std::time::Duration::from_millis(50),
-        crate::wakeups::account_mail().notified(),
-    )
-    .await
-    .expect("queued mail wakes the account-mail worker at once");
+    // register woke the mail worker exactly once, after its queued
+    // verification mail became visible to other sessions.
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![(crate::wakeups::Queue::AccountMail, 1)]
+    );
     setup
         .batch_execute(&format!(
             "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
