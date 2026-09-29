@@ -29,6 +29,10 @@ jobs:
       ZT_DELIVERY_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/postgres
       ZT_INBOUND_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/postgres
       DATABASE_ALLOW_PLAINTEXT: 'true'
+      # Smaller, reusable build artifacts: no incremental churn, symbols only
+      # deep enough for line-numbered backtraces.
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       - name: Select temporary fixture paths
         run: |
@@ -48,6 +52,12 @@ jobs:
         run: |
           rustup toolchain install 1.97.1 --profile minimal --component clippy --component rustfmt
           sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0'
+      - name: Cache Rust build artifacts
+        # Dependency cache shared with the CI rust job; PR runs only read it.
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: linux-cargo-deps
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build and test the SDK
         working-directory: sdk/typescript
         run: npm ci --ignore-scripts && npm test
