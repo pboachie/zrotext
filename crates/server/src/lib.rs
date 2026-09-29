@@ -67,5 +67,49 @@ pub(crate) mod test_keys {
     }
 }
 
+/// Outbox claims pick rows with `next_attempt_at <= now()`, and the runtime
+/// queue paths insert that column with its `now()` default. PostgreSQL reads
+/// `now()` from the host wall clock, which container and CI hosts step
+/// backwards periodically, so a row queued in one transaction can be
+/// not-yet-due for a claim a few statements later. Tests that queue mail
+/// through the runtime paths and then immediately claim it backdate the
+/// queued rows first, the same state a retry that is already due produces.
+/// The claim still has to find, lock and lease the row, so the delivery
+/// contract stays fully exercised and no assertion is weakened. Each test
+/// schema runs only the migrations it needs, so callers backdate exactly the
+/// outbox tables their schema contains.
+#[cfg(test)]
+pub(crate) mod outbox_test_support {
+    pub(crate) async fn backdate_queued_reset_mail(client: &tokio_postgres::Client) {
+        client
+            .execute(
+                "UPDATE password_reset_mail_outbox SET next_attempt_at=now()-interval '1 minute' WHERE delivered_at IS NULL AND canceled_at IS NULL AND dead_at IS NULL",
+                &[],
+            )
+            .await
+            .unwrap();
+    }
+
+    pub(crate) async fn backdate_queued_reset_notice(client: &tokio_postgres::Client) {
+        client
+            .execute(
+                "UPDATE password_reset_notice_outbox SET next_attempt_at=now()-interval '1 minute' WHERE delivered_at IS NULL AND dead_at IS NULL",
+                &[],
+            )
+            .await
+            .unwrap();
+    }
+
+    pub(crate) async fn backdate_queued_verification_mail(client: &tokio_postgres::Client) {
+        client
+            .execute(
+                "UPDATE verification_mail_outbox SET next_attempt_at=now()-interval '1 minute' WHERE delivered_at IS NULL AND canceled_at IS NULL AND dead_at IS NULL",
+                &[],
+            )
+            .await
+            .unwrap();
+    }
+}
+
 #[cfg(test)]
 mod sealed_root_roles_tests;

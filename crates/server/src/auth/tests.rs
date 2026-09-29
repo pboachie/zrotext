@@ -515,6 +515,7 @@ async fn postgres_expired_unverified_signup_releases_its_email() {
             .await
             .unwrap()
     );
+    crate::outbox_test_support::backdate_queued_verification_mail(&client).await;
     let mail = claim_verification_mail(&mut client, &hasher)
         .await
         .unwrap()
