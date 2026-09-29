@@ -58,6 +58,11 @@ jobs:
         with:
           shared-key: linux-cargo-deps
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Remove a fixture directory restored from the cache
+        # The shared Rust cache can restore target/zrotext-sealed-interop from an
+        # earlier run. The test refuses an existing directory so it never hands a
+        # stale fixture to Android, so clear it here and let every run make a new one.
+        run: rm -rf "$GITHUB_WORKSPACE/target/zrotext-sealed-interop"
       - name: Build and test the SDK
         working-directory: sdk/typescript
         run: npm ci --ignore-scripts && npm test
