@@ -106,6 +106,7 @@ pub async fn request_verification_resend(
         .await?;
     }
     tx.commit().await?;
+    crate::wakeups::account_mail_queued();
     Ok(true)
 }
 

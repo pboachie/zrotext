@@ -391,6 +391,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let mut unavailable_logged = false;
                         let mut ticks = 0_u32;
                         loop {
+                            // Producers wake the lane at once when a delivery
+                            // is queued; the tick stays the cross-process
+                            // fallback. Either way the same drain runs.
                             tokio::select! {
                                 _ = checks.tick() => {
                                     if worker_draining.load(Ordering::Acquire) { break; }
@@ -415,6 +418,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     .map_err(|_| "webhook metrics unavailable")?;
                                             eprintln!("webhook_queue pending={pending} oldest_pending_age_seconds={} in_flight={in_flight}",
                                                 oldest_age_seconds.unwrap_or(0));
+                                        }
+                                        Ok::<usize, &str>(sent)
+                                    }.await;
+                                    match result {
+                                        Ok(_) => unavailable_logged = false,
+                                        Err(_) if !unavailable_logged => {
+                                            eprintln!("webhook delivery worker unavailable");
+                                            unavailable_logged = true;
+                                        }
+                                        Err(_) => {}
+                                    }
+                                }
+                                // A queued delivery in this process wakes the
+                                // lane before the next tick elapses.
+                                _ = zrotext_server::wakeups::webhook_delivery().notified() => {
+                                    if worker_draining.load(Ordering::Acquire) { break; }
+                                    let result = async {
+                                        let mut client =
+                                            zrotext_server::runtime_db::connect_worker(&worker_database).await
+                                                .map_err(|_| "webhook database unavailable")?;
+                                        let mut sent = 0;
+                                        while sent < WEBHOOK_DELIVERIES_PER_TICK
+                                            && !worker_draining.load(Ordering::Acquire)
+                                            && webhook_worker::dispatch_one(&mut client, &worker_vault, &worker_id).await
+                                                .map_err(|_| "webhook dispatch failed")?
+                                        {
+                                            sent += 1;
                                         }
                                         Ok::<usize, &str>(sent)
                                     }.await;
@@ -461,48 +491,74 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut unavailable_logged = false;
             let mut failure_gate = VerificationWarningGate::default();
             loop {
+                // Producers wake the worker at once when mail is queued; the
+                // tick stays the cross-process fallback.
                 tokio::select! {
-                    _ = checks.tick() => {
-                        if mail_draining.load(Ordering::Acquire) { break; }
-                        // Drain bounded backlogs; a failed send ends that kind's
-                        // batch so an unreachable mail server is not hammered.
-                        let mut verification = Ok(VerificationDispatchOutcome::Idle);
-                        for _ in 0..MAIL_DELIVERIES_PER_TICK {
-                            if mail_draining.load(Ordering::Acquire) { break; }
-                            verification = http_auth::dispatch_one_verification_report(&mail_state).await;
-                            match verification.as_ref() {
-                                Ok(VerificationDispatchOutcome::Idle) | Err(_) => {}
-                                Ok(VerificationDispatchOutcome::Delivered) => failure_gate.on_success(),
-                                Ok(VerificationDispatchOutcome::Failed { category, dead_lettered }) => {
-                                    if let Some(warning) = failure_gate.on_failure(*category, std::time::Instant::now()) {
-                                        eprintln!("{warning}");
-                                    }
-                                    if *dead_lettered {
-                                        eprintln!("verification mail dead-lettered after six failed attempts");
-                                    }
+                    _ = checks.tick() => {}
+                    _ = zrotext_server::wakeups::account_mail().notified() => {}
+                    _ = mail_drain_notify.notified() => break,
+                }
+                if mail_draining.load(Ordering::Acquire) {
+                    break;
+                }
+                {
+                    // Drain bounded backlogs; a failed send ends that kind's
+                    // batch so an unreachable mail server is not hammered.
+                    let mut verification = Ok(VerificationDispatchOutcome::Idle);
+                    for _ in 0..MAIL_DELIVERIES_PER_TICK {
+                        if mail_draining.load(Ordering::Acquire) {
+                            break;
+                        }
+                        verification =
+                            http_auth::dispatch_one_verification_report(&mail_state).await;
+                        match verification.as_ref() {
+                            Ok(VerificationDispatchOutcome::Idle) | Err(_) => {}
+                            Ok(VerificationDispatchOutcome::Delivered) => failure_gate.on_success(),
+                            Ok(VerificationDispatchOutcome::Failed {
+                                category,
+                                dead_lettered,
+                            }) => {
+                                if let Some(warning) =
+                                    failure_gate.on_failure(*category, std::time::Instant::now())
+                                {
+                                    eprintln!("{warning}");
+                                }
+                                if *dead_lettered {
+                                    eprintln!(
+                                        "verification mail dead-lettered after six failed attempts"
+                                    );
                                 }
                             }
-                            if !matches!(verification, Ok(VerificationDispatchOutcome::Delivered)) { break; }
                         }
-                        let mut reset = Ok(false);
-                        for _ in 0..MAIL_DELIVERIES_PER_TICK {
-                            if mail_draining.load(Ordering::Acquire) { break; }
-                            reset = http_auth::dispatch_one_password_reset(&mail_state).await;
-                            if !matches!(reset, Ok(true)) { break; }
+                        if !matches!(verification, Ok(VerificationDispatchOutcome::Delivered)) {
+                            break;
                         }
-                        let mut notice = Ok(false);
-                        for _ in 0..MAIL_DELIVERIES_PER_TICK {
-                            if mail_draining.load(Ordering::Acquire) { break; }
-                            notice = http_auth::dispatch_one_password_reset_notice(&mail_state).await;
-                            if !matches!(notice, Ok(true)) { break; }
-                        }
-                        let unavailable = verification.is_err() || reset.is_err() || notice.is_err();
-                        if unavailable && !unavailable_logged {
-                            eprintln!("account mail delivery worker unavailable");
-                        }
-                        unavailable_logged = unavailable;
                     }
-                    _ = mail_drain_notify.notified() => break,
+                    let mut reset = Ok(false);
+                    for _ in 0..MAIL_DELIVERIES_PER_TICK {
+                        if mail_draining.load(Ordering::Acquire) {
+                            break;
+                        }
+                        reset = http_auth::dispatch_one_password_reset(&mail_state).await;
+                        if !matches!(reset, Ok(true)) {
+                            break;
+                        }
+                    }
+                    let mut notice = Ok(false);
+                    for _ in 0..MAIL_DELIVERIES_PER_TICK {
+                        if mail_draining.load(Ordering::Acquire) {
+                            break;
+                        }
+                        notice = http_auth::dispatch_one_password_reset_notice(&mail_state).await;
+                        if !matches!(notice, Ok(true)) {
+                            break;
+                        }
+                    }
+                    let unavailable = verification.is_err() || reset.is_err() || notice.is_err();
+                    if unavailable && !unavailable_logged {
+                        eprintln!("account mail delivery worker unavailable");
+                    }
+                    unavailable_logged = unavailable;
                 }
             }
         });

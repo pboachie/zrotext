@@ -32,6 +32,7 @@ pub mod sealed_manifest_store;
 pub mod sealed_outbound;
 pub mod sealed_root_ceremony;
 pub use zrotext_root_material::sealed_root_enrollment;
+pub mod wakeups;
 pub mod webhook_egress;
 pub mod webhook_worker;
 
