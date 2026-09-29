@@ -56,6 +56,7 @@ use zrotext_server::{
     http_owner_export::{self, OwnerExportState},
     http_owner_messages::{self, OwnerMessagesState},
     http_owner_review::{self, OwnerReviewState},
+    http_sealed::{self, SealedHttpState},
     http_webhooks::{self, WebhookHttpState},
     maintenance, owner_ui,
     readiness::ReadinessCache,
@@ -84,6 +85,7 @@ struct Config {
     mfa_recovery_only: bool,
     mfa_enrollment_enabled: bool,
     sms_line_activation_enabled: bool,
+    sealed_admission_enabled: bool,
     retention: RetentionPolicy,
     draining: Arc<AtomicBool>,
     drain_notify: Arc<Notify>,
@@ -230,6 +232,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mfa_recovery_only = optional_bool("MFA_RECOVERY_ONLY")?;
     let mfa_enrollment_enabled = optional_bool("MFA_ENROLLMENT_ENABLED")?;
     let sms_line_activation_enabled = optional_bool("SMS_LINE_ACTIVATION_ENABLED")?;
+    // Sealed v1 message admission. Disabled by default; off leaves the
+    // route unmounted so no sealed code path runs.
+    let sealed_admission_enabled = optional_bool("SEALED_ADMISSION_ENABLED")?;
     // Independent-quorum failover executor. Disabled by default; when off
     // (or absent) nothing further is read and no thread, database or store
     // access exists. When on, the validated configuration runs the controller
@@ -276,6 +281,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         mfa_recovery_only,
         mfa_enrollment_enabled,
         sms_line_activation_enabled,
+        sealed_admission_enabled,
         retention: RetentionPolicy::from_env()?,
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),
@@ -453,6 +459,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
         let mail_state = auth_state.clone();
         let message_hasher = auth_state.hasher.clone();
+        let sealed_hasher = auth_state.hasher.clone();
         let mail_draining = config.draining.clone();
         let mail_drain_notify = config.drain_notify.clone();
         tokio::spawn(async move {
@@ -626,10 +633,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .with_idempotency_days(config.retention.idempotency_days);
             app = app.nest("/v1/alpha", http_messages::router(message_state));
         }
+        if config.sealed_admission_enabled {
+            let sealed_state = SealedHttpState::new(
+                config.database_url.clone(),
+                sealed_hasher,
+                config.site_id.clone(),
+                config.deployment_epoch,
+                billing_test.is_some(),
+            )?;
+            app = app.nest("/v1/sealed", http_sealed::router(sealed_state));
+        }
     } else if config.alpha_policy.enabled()
         || inbound_pilot_enabled
         || line_opt_out_enabled
         || config.sms_line_activation_enabled
+        || config.sealed_admission_enabled
         || webhook_delivery_enabled
         || webhook_management_configured
     {
@@ -1269,6 +1287,7 @@ mod tests {
             mfa_recovery_only: false,
             mfa_enrollment_enabled: false,
             sms_line_activation_enabled: false,
+            sealed_admission_enabled: false,
             retention: RetentionPolicy::default(),
             draining: Arc::new(AtomicBool::new(false)),
             drain_notify: Arc::new(Notify::new()),
@@ -1434,6 +1453,7 @@ mod tests {
             mfa_recovery_only: false,
             mfa_enrollment_enabled: false,
             sms_line_activation_enabled: false,
+            sealed_admission_enabled: false,
             retention: RetentionPolicy::default(),
             draining: Arc::new(AtomicBool::new(false)),
             drain_notify: Arc::new(Notify::new()),
