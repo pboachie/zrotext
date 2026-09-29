@@ -1,10 +1,6 @@
 name: Jules PR review
 
 on:
-  pull_request_target:
-    types: [opened, ready_for_review]
-  pull_request_review:
-    types: [submitted]
   issue_comment:
     types: [created]
   schedule:
@@ -12,14 +8,19 @@ on:
   workflow_dispatch:
     inputs:
       pr_number:
-        description: Same-repository pull request number
-        required: true
+        description: Same-repository pull request number (not needed for backfill)
+        required: false
         type: number
       mode:
-        description: Review changes or address review comments
-        required: true
+        description: Review changes or address review comments (not needed for backfill)
+        required: false
         type: choice
         options: [review, address]
+      backfill:
+        description: One-time rollout scan that labels in-flight sessions
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -34,16 +35,14 @@ concurrency:
 
 jobs:
   jules:
-    # Dependabot-triggered runs cannot use the Actions secret; the trusted
-    # scheduled run picks up those same-repository PRs. Comment and review
-    # events from other accounts never start the job that holds the secret;
-    # scripts/jules_pr_review.py repeats these checks.
+    # Reviews are opt-in: only an owner comment command, an explicit dispatch,
+    # or the scheduled collector starts a session. Comment events from other
+    # accounts never start the job that holds the secret; the script repeats
+    # these checks.
     if: >-
       github.actor != 'dependabot[bot]' &&
       (github.event_name != 'issue_comment' ||
-       (github.event.issue.pull_request && github.event.comment.user.login == 'pboachie')) &&
-      (github.event_name != 'pull_request_review' ||
-       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association))
+       (github.event.issue.pull_request && github.event.comment.user.login == 'pboachie'))
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
