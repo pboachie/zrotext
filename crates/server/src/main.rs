@@ -473,13 +473,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 _ = zrotext_server::wakeups::webhook_delivery().notified() => {
                                     if worker_draining.load(Ordering::Acquire) { break; }
                                     let result = async {
-                                        let mut client =
-                                            zrotext_server::runtime_db::connect_worker(&worker_database).await
-                                                .map_err(|_| "webhook database unavailable")?;
+                                        // Same per-delivery socket release as
+                                        // the tick drain.
                                         let mut sent = 0;
                                         while sent < WEBHOOK_DELIVERIES_PER_TICK
                                             && !worker_draining.load(Ordering::Acquire)
-                                            && webhook_worker::dispatch_one(&mut client, &worker_vault, &worker_id).await
+                                            && webhook_worker::dispatch_one(&worker_database, &worker_vault, &worker_id).await
                                                 .map_err(|_| "webhook dispatch failed")?
                                         {
                                             sent += 1;
