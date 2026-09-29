@@ -283,7 +283,7 @@ async fn junk_subjects_cannot_spend_the_budget_of_verified_subjects() {
 
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
-async fn device_handshake_scopes_keep_no_subject_budget() {
+async fn device_handshake_keeps_no_anonymous_device_budget_and_caps_verified_shares() {
     let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
         .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
     let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
@@ -341,49 +341,133 @@ async fn device_handshake_scopes_keep_no_subject_budget() {
         .get(0);
     assert_eq!(rows, 1, "only the route row; no per-device subject rows");
     // An enrolled device refused by the full anonymous ceiling falls through
-    // to the verified-route ceiling. It is separate from the anonymous row,
-    // ten times its size, and still keeps no per-device row.
-    for _ in 0..3_000 {
+    // to the verified issuance ceiling. One device ID may use only 60 of it
+    // per window, so traffic naming one known ID leaves room for every other
+    // phone, and its share opens again when the window rolls over.
+    for _ in 0..60 {
         assert!(
-            consume_verified_route(&db, &hasher, Limit::DeviceChallenge)
+            consume_verified(&db, &hasher, Limit::DeviceChallenge, "known-device")
                 .await
                 .unwrap()
         );
     }
     assert!(
-        !consume_verified_route(&db, &hasher, Limit::DeviceChallenge)
+        !consume_verified(&db, &hasher, Limit::DeviceChallenge, "known-device")
             .await
             .unwrap(),
-        "the verified-route ceiling still bounds enrolled devices"
+        "one device ID is capped at its share of the verified ceiling"
+    );
+    assert!(
+        consume_verified(&db, &hasher, Limit::DeviceChallenge, "other-device")
+            .await
+            .unwrap(),
+        "another enrolled device keeps its own share"
+    );
+    db.execute(
+        "UPDATE auth_abuse_counters SET window_started_at=clock_timestamp()-interval '61 seconds'
+         WHERE scope='device_challenge' AND subject_hash=$1",
+        &[&&subject_hash(
+            &hasher,
+            Limit::DeviceChallenge,
+            "known-device",
+            Lane::Verified,
+        )
+        .unwrap()[..]],
+    )
+    .await
+    .unwrap();
+    assert!(
+        consume_verified(&db, &hasher, Limit::DeviceChallenge, "known-device")
+            .await
+            .unwrap(),
+        "the device's share resets with its window"
+    );
+    // Filling the fleet-wide verified ceiling (3,000) takes 50 device IDs:
+    // 62 attempts are spent above, so 48 more full shares and 58 attempts.
+    for device in 0..48 {
+        for _ in 0..60 {
+            assert!(
+                consume_verified(
+                    &db,
+                    &hasher,
+                    Limit::DeviceChallenge,
+                    &format!("device-{device}")
+                )
+                .await
+                .unwrap()
+            );
+        }
+    }
+    for _ in 0..58 {
+        assert!(
+            consume_verified(&db, &hasher, Limit::DeviceChallenge, "device-last")
+                .await
+                .unwrap()
+        );
+    }
+    assert!(
+        !consume_verified(&db, &hasher, Limit::DeviceChallenge, "fresh-device")
+            .await
+            .unwrap(),
+        "the verified-route ceiling still bounds all enrolled devices together"
     );
     let route_rows: Vec<(Vec<u8>, i32)> = db
         .query(
             "SELECT subject_hash, attempts FROM auth_abuse_counters
-             WHERE scope IN ('device_challenge','device_authenticate') ORDER BY attempts",
-            &[],
+             WHERE scope='device_challenge' AND subject_hash = ANY($1)",
+            &[&vec![
+                hasher
+                    .digest(b"abuse-global-v1", "device_challenge")
+                    .to_vec(),
+                hasher
+                    .digest(b"abuse-verified-v1", "device_challenge")
+                    .to_vec(),
+            ]],
         )
         .await
         .unwrap()
         .iter()
         .map(|row| (row.get(0), row.get(1)))
         .collect();
-    assert_eq!(
-        route_rows,
-        vec![
-            (
-                hasher
-                    .digest(b"abuse-global-v1", "device_challenge")
-                    .to_vec(),
-                300
-            ),
-            (
-                hasher
-                    .digest(b"abuse-verified-v1", "device_challenge")
-                    .to_vec(),
-                3_000
-            ),
-        ],
-        "one anonymous and one verified route row; no per-device subject rows"
+    assert_eq!(route_rows.len(), 2);
+    assert!(route_rows.iter().any(|(_, attempts)| *attempts == 300));
+    assert!(route_rows.iter().any(|(_, attempts)| *attempts == 3_000));
+    // Per-device rows exist only in the verified lane, one per live device
+    // that was admitted there; the anonymous lane still keeps none, and a
+    // refused charge leaves no row.
+    let subject_rows: i64 = db
+        .query_one(
+            "SELECT count(*) FROM auth_abuse_counters WHERE scope='device_challenge'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(subject_rows, 2 + 2 + 48 + 1);
+    // Verified proofs keep no per-device row: only the device key can produce
+    // one, so there is no share for anyone else to spend.
+    assert!(
+        consume_verified_route(&db, &hasher, Limit::DeviceAuthenticate)
+            .await
+            .unwrap()
+    );
+    assert!(
+        subject_hash(
+            &hasher,
+            Limit::DeviceAuthenticate,
+            "known-device",
+            Lane::Verified
+        )
+        .is_none()
+    );
+    assert!(
+        subject_hash(
+            &hasher,
+            Limit::DeviceChallenge,
+            "known-device",
+            Lane::Anonymous
+        )
+        .is_none()
     );
     setup
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
@@ -486,8 +570,14 @@ fn verified_lane_keys_its_own_subject_counter() {
     for limit in Limit::ALL {
         let anonymous = subject_hash(&hasher, *limit, "phone", Lane::Anonymous);
         let verified = subject_hash(&hasher, *limit, "phone", Lane::Verified);
-        assert_eq!(anonymous.is_some(), limit.policy().3.is_some());
-        assert_eq!(verified.is_some(), limit.policy().3.is_some());
+        assert_eq!(
+            anonymous.is_some(),
+            limit.subject_policy(Lane::Anonymous).is_some()
+        );
+        assert_eq!(
+            verified.is_some(),
+            limit.subject_policy(Lane::Verified).is_some()
+        );
         if anonymous.is_some() && !limit.subject_is_secret() {
             assert_ne!(
                 anonymous, verified,

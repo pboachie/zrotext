@@ -317,29 +317,38 @@ its anonymous counter, so it keeps one per-subject counter across both
 lanes, and a challenge still allows five code attempts per five minutes in
 total rather than five per lane.
 
-The device WebSocket handshake is deliberately exempt from per-subject
-budgets. Its challenge is a stateless HMAC under the enrollment pepper over
-the account, device, and a timestamped challenge UUID, verifiable for 60
-seconds, so issuance costs one indexed liveness read and no write. The device
-ID is public information, so any counter keyed to it could be spent by an
+The device WebSocket handshake keeps no anonymous per-device budget. Its
+challenge is a stateless HMAC under the enrollment pepper over the account,
+device, and a timestamped challenge UUID, verifiable for 60 seconds, so
+issuance costs one indexed liveness read and no write. The device ID is public
+information, so an anonymous counter keyed to it could be spent by an
 unauthenticated caller who knows it, which used to let such a caller refuse
-the enrolled phone's handshake with 1013. Issuance and proof each spend an
-anonymous route-wide ceiling (300 per 60 seconds, across all instances), with
-handshake slots bounding concurrency. When the anonymous ceiling refuses a
-hello, the hub still issues a challenge if the named device is enrolled and
-live, charging a subjectless verified-route ceiling ten times the anonymous
-one; when it refuses a proof, the proof is still admitted if it verifies,
-charging the matching verified-route ceiling. Made-up device IDs and proofs
-that fail verification never reach a verified ceiling, so junk traffic that
-fills the anonymous ceilings, from however many sources, cannot refuse an
-enrolled phone. The residual is traffic naming a real, live device ID: at a
-sustained rate above roughly 3,300 hellos per minute (about 55 per second)
-it can fill the verified issuance ceiling too, and every phone then receives
-a retryable 1013 until the window rolls over, for as long as that rate is
-sustained. No per-device counter exists for such a caller to single out one
-phone. Operators should therefore rate-limit WebSocket upgrades per source
-address at the edge, in addition to the per-source connection limit, because
-a connection limit alone does not bound sequential hello/close cycles.
+the enrolled phone's handshake with 1013 without any other traffic. Issuance
+and proof each spend an anonymous route-wide ceiling (300 per 60 seconds,
+across all instances), with handshake slots bounding concurrency. When the
+anonymous ceiling refuses a hello, the hub still issues a challenge if the
+named device is enrolled and live, charging a verified issuance ceiling ten
+times the anonymous one (3,000 per 60 seconds), of which any one device ID may
+use at most 60 per 60 seconds. When the anonymous ceiling refuses a proof, the
+proof is still admitted if it verifies, charging a verified proof ceiling
+with no per-device share, because only the device key can produce one. Made-up
+device IDs and proofs that fail verification never reach a verified ceiling,
+so junk traffic that fills the anonymous ceilings, from however many sources,
+cannot refuse an enrolled phone.
+
+The per-device share is a trade-off. Traffic naming one known live device ID
+can, while junk also keeps the anonymous issuance ceiling full, use up that
+device's 60-per-minute share and delay that one phone with a retryable 1013
+until the window rolls over; it cannot affect any other phone. Delaying the
+whole fleet now takes sustained traffic naming about 50 known live device IDs,
+each at its full share, on top of the anonymous flood. The per-device rows
+live in the existing abuse-counter table, keyed by an HMAC of the device ID
+under the verified lane's domain; they are written only for enrolled, live
+devices admitted through the verified lane, so made-up IDs create none and
+the anonymous lane keeps no per-device row at all. Operators should still
+rate-limit WebSocket upgrades per source address at the edge, in addition to
+the per-source connection limit, because a connection limit alone does not
+bound sequential hello/close cycles.
 
 A proof is accepted only when its challenge ID, account, device and nonce
 equal the challenge issued on the same connection. Challenges are stateless

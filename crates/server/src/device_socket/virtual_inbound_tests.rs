@@ -484,32 +484,59 @@ impl HandshakeFixture {
         socket
     }
 
+    /// Enrolls a second device on the fixture's account.
+    async fn enroll(&self) -> (Uuid, SigningKey) {
+        let device_id = Uuid::new_v4();
+        let signing = SigningKey::generate_from_rng(&mut rng());
+        let public_key = signing.verifying_key().to_sec1_point(false);
+        let fingerprint: [u8; 32] = Sha256::digest(public_key.as_bytes()).into();
+        self.db
+            .execute(
+                "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'second fixture')",
+                &[&device_id, &self.account_id],
+            )
+            .await
+            .unwrap();
+        self.db.execute("INSERT INTO device_keys(device_id,account_id,signing_key_sec1,fingerprint) VALUES($1,$2,$3,$4)", &[&device_id,&self.account_id,&public_key.as_bytes(),&&fingerprint[..]]).await.unwrap();
+        (device_id, signing)
+    }
+
     /// Opens a socket for the enrolled phone and returns its challenge frame.
     async fn challenge(&self) -> (TestSocket, Value) {
-        let mut socket = self.hello(self.device_id).await;
+        self.challenge_for(self.device_id).await
+    }
+
+    /// Opens a socket for enrolled `device_id` and returns its challenge.
+    async fn challenge_for(&self, device_id: Uuid) -> (TestSocket, Value) {
+        let mut socket = self.hello(device_id).await;
         let challenge = receive_json(&mut socket).await;
         assert_eq!(challenge["type"], "challenge");
         assert_eq!(challenge["account_id"], json!(self.account_id));
-        assert_eq!(challenge["device_id"], json!(self.device_id));
+        assert_eq!(challenge["device_id"], json!(device_id));
         (socket, challenge)
     }
 
     /// The phone's proof frame for `challenge`, signed with its device key.
     fn proof(&self, challenge: &Value) -> Value {
+        self.proof_for(challenge, self.device_id, &self.signing)
+    }
+
+    /// A proof frame for `challenge` signed by `device_id`'s `signing` key.
+    fn proof_for(&self, challenge: &Value, device_id: Uuid, signing: &SigningKey) -> Value {
         let typed = DeviceChallenge {
             id: Uuid::parse_str(challenge["challenge_id"].as_str().unwrap()).unwrap(),
             account_id: self.account_id,
-            device_id: self.device_id,
+            device_id,
             nonce: URL_SAFE_NO_PAD
                 .decode(challenge["nonce"].as_str().unwrap())
                 .unwrap()
                 .try_into()
                 .unwrap(),
         };
-        let signature: Signature = self.signing.sign(&device_challenge_bytes(&typed));
+        let signature: Signature = signing.sign(&device_challenge_bytes(&typed));
         json!({
             "v":1,"type":"proof","challenge_id":challenge["challenge_id"],
-            "account_id":self.account_id,"device_id":self.device_id,
+            "account_id":self.account_id,"device_id":device_id,
             "nonce":challenge["nonce"],
             "signature_der":URL_SAFE_NO_PAD.encode(signature.to_der().as_bytes())
         })
@@ -650,9 +677,11 @@ async fn junk_filling_both_anonymous_ceilings_cannot_refuse_the_enrolled_phone()
     send_json(&mut socket, fixture.proof(&challenge)).await;
     assert_eq!(receive_json(&mut socket).await["type"], "session");
     drop(socket);
+    // The phone's hello spent the verified route row and its own device
+    // share once each; junk created no verified row at all.
     assert_eq!(
         fixture.route_attempts("device_challenge").await,
-        vec![1, 300]
+        vec![1, 1, 300]
     );
     assert_eq!(
         fixture.route_attempts("device_authenticate").await,
@@ -706,6 +735,65 @@ async fn a_proof_for_another_connections_challenge_is_refused() {
     expect_close(&mut third, close_code::POLICY).await;
     // The refusals were about binding, not the phone: its own proof on a new
     // connection still opens a session.
+    let (mut socket, challenge) = fixture.challenge().await;
+    send_json(&mut socket, fixture.proof(&challenge)).await;
+    assert_eq!(receive_json(&mut socket).await["type"], "session");
+    drop(socket);
+    fixture.finish().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn one_known_device_id_cannot_starve_another_enrolled_phone() {
+    let fixture = HandshakeFixture::start("socket_share").await;
+    let (other_device, other_signing) = fixture.enroll().await;
+    // Junk has filled the anonymous issuance ceiling, so every enrolled
+    // device is being admitted through the verified ceiling.
+    fixture.fill_anonymous(Limit::DeviceChallenge).await;
+    // An attacker who knows one live device ID hammers hellos naming it. It
+    // gets that device's share of the verified ceiling (60 per window) and
+    // no more: the 61st hello is a retryable refusal.
+    for _ in 0..60 {
+        let mut probe = fixture.hello(fixture.device_id).await;
+        assert_eq!(receive_json(&mut probe).await["type"], "challenge");
+    }
+    let mut refused = fixture.hello(fixture.device_id).await;
+    expect_close(&mut refused, RETRY_LATER).await;
+    // Junk naming unknown device IDs still never reaches the verified ceiling.
+    let mut junk = fixture.hello(Uuid::new_v4()).await;
+    expect_close(&mut junk, RETRY_LATER).await;
+    // Another enrolled phone is untouched: it completes its handshake.
+    let (mut socket, challenge) = fixture.challenge_for(other_device).await;
+    send_json(
+        &mut socket,
+        fixture.proof_for(&challenge, other_device, &other_signing),
+    )
+    .await;
+    assert_eq!(receive_json(&mut socket).await["type"], "session");
+    drop(socket);
+    // Rows: the other phone's share (1), the targeted device's share (60),
+    // the verified route (61) and the anonymous route (300). No junk row.
+    assert_eq!(
+        fixture.route_attempts("device_challenge").await,
+        vec![1, 60, 61, 300]
+    );
+    // The targeted device's share resets with its window, while the
+    // anonymous ceiling is still full: the phone is admitted again.
+    let share = abuse_limits::subject_hash(
+        &fixture.auth_hasher,
+        Limit::DeviceChallenge,
+        &fixture.device_id.to_string(),
+        abuse_limits::Lane::Verified,
+    )
+    .unwrap();
+    fixture
+        .db
+        .execute(
+            "UPDATE auth_abuse_counters SET window_started_at=clock_timestamp()-interval '61 seconds' WHERE scope='device_challenge' AND subject_hash=$1",
+            &[&&share[..]],
+        )
+        .await
+        .unwrap();
     let (mut socket, challenge) = fixture.challenge().await;
     send_json(&mut socket, fixture.proof(&challenge)).await;
     assert_eq!(receive_json(&mut socket).await["type"], "session");

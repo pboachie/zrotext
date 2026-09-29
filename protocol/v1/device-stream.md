@@ -40,10 +40,13 @@ request budget of 300 attempts globally per 60 seconds, across all hub
 instances. When it is exhausted, a hello naming an enrolled, live device and
 a proof that verifies are still admitted through a separate verified budget
 of 3,000 attempts per 60 seconds that made-up device IDs and failed proofs
-never reach. There is deliberately no per-device budget: the device ID is
-public, so a counter keyed to it could be spent by anyone who knows it and
-would let an unauthenticated caller keep the enrolled phone's handshake
-refused. The hub closes the socket with code `1013` (Try Again Later) when
+never reach. One device ID may use at most 60 hellos per 60 seconds of the
+verified budget, so traffic naming one known device ID can delay only that
+device, never the others. There is deliberately no anonymous per-device
+budget: the device ID is public, so a counter keyed to it could be spent by
+anyone who knows it and would let an unauthenticated caller keep the enrolled
+phone's handshake refused without any other traffic. The hub closes the
+socket with code `1013` (Try Again Later) when
 both budgets for a step are exhausted or its storage is unavailable; the
 phone retries with backoff and the window rolls over within a minute.
 A proof must echo the challenge issued on the same connection; a proof for

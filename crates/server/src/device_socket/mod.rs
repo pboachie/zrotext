@@ -765,7 +765,8 @@ async fn authenticate(
     // the anonymous route ceiling bounds issuance reads fleet-wide. When
     // made-up device IDs have filled it, an enrolled device is still admitted
     // through the separate verified-route ceiling, which unknown IDs never
-    // reach.
+    // reach. Each device ID may use only a small share of that ceiling, so
+    // traffic naming one known ID can delay only that device, never the fleet.
     let Ok(anonymous) =
         abuse_limits::consume(&client, &state.auth_hasher, Limit::DeviceChallenge, None).await
     else {
@@ -779,10 +780,11 @@ async fn authenticate(
     };
     if !anonymous
         && !matches!(
-            abuse_limits::consume_verified_route(
+            abuse_limits::consume_verified(
                 &client,
                 &state.auth_hasher,
-                Limit::DeviceChallenge
+                Limit::DeviceChallenge,
+                &device_id.to_string(),
             )
             .await,
             Ok(true)

@@ -12,11 +12,14 @@
 //! counter that anyone naming a public identifier can exhaust, plus a
 //! separate, larger verified-route ceiling that made-up subjects never reach.
 //! Email verification probes live one-use codes the same way. The device
-//! socket handshake deliberately keeps no per-subject budget at all: the
-//! device ID is public, so a per-device counter could be spent by anyone who
-//! knows it. Its steps spend the anonymous route ceiling first; an enrolled
-//! device the anonymous ceiling refuses falls through to the subjectless
-//! verified-route ceiling through `consume_verified_route`.
+//! socket handshake keeps no anonymous per-device budget: the device ID is
+//! public, so such a counter could be spent by anyone who knows it. Its steps
+//! spend the anonymous route ceiling first. A hello for an enrolled, live
+//! device that the anonymous ceiling refuses falls through to the verified
+//! issuance ceiling, of which one device ID may use only a small share, so
+//! traffic naming one known ID cannot fill it for every phone. A refused proof
+//! that verifies falls through to the subjectless verified proof ceiling
+//! through `consume_verified_route`; only the device key can produce one.
 //!
 //! Limits whose every spender is already authenticated (`subject_only`) charge
 //! only the caller's own per-subject row and skip the shared route counter
@@ -30,6 +33,12 @@ use tokio_postgres::{Client, GenericClient, Transaction, types::Type};
 /// Verified subjects share a route ceiling this many times the anonymous one.
 /// It is a backstop against many real subjects, not the per-subject limit.
 const VERIFIED_CEILING_FACTOR: i32 = 10;
+
+/// Attempts and window seconds one device ID may spend of the verified
+/// challenge-issuance ceiling (3,000 per 60 seconds). Traffic naming one known
+/// device ID can therefore affect only that device's own handshake; filling
+/// the fleet-wide verified ceiling takes about 50 known live device IDs.
+const DEVICE_VERIFIED_SHARE: (i32, i32) = (60, 60);
 
 /// Counter rows idle this much longer than their longest window are pruned.
 /// The slack absorbs the gap between the prune query's `now()` and the
@@ -112,12 +121,26 @@ impl Limit {
         matches!(self, Self::OutboundAccept)
     }
 
+    /// The per-subject policy `lane` charges. It is the table's subject
+    /// policy, except that device challenges keep no anonymous per-device
+    /// counter but cap each device's share of the verified issuance ceiling
+    /// at `DEVICE_VERIFIED_SHARE`.
+    fn subject_policy(self, lane: Lane) -> Option<(i32, i32)> {
+        match (self, lane) {
+            (Self::DeviceChallenge, Lane::Verified) => Some(DEVICE_VERIFIED_SHARE),
+            _ => self.policy().3,
+        }
+    }
+
     /// The longest window, route or subject, that this limit's rows track.
     fn longest_window_seconds(self) -> i32 {
-        let (_, _, global_seconds, subject) = self.policy();
-        subject.map_or(global_seconds, |(_, subject_seconds)| {
-            global_seconds.max(subject_seconds)
-        })
+        let (_, _, global_seconds, _) = self.policy();
+        [Lane::Anonymous, Lane::Verified]
+            .into_iter()
+            .filter_map(|lane| self.subject_policy(lane))
+            .fold(global_seconds, |longest, (_, subject_seconds)| {
+                longest.max(subject_seconds)
+            })
     }
 
     fn policy(self) -> (&'static str, i32, i32, Option<(i32, i32)>) {
@@ -144,11 +167,12 @@ impl Limit {
             Self::PairCreate => ("pair_create", 120, 60, Some((10, 900))),
             Self::PairClaim => ("pair_claim", 300, 60, Some((20, 60))),
             Self::PairProof => ("pair_proof", 300, 60, Some((20, 60))),
-            // Device socket handshake steps are subjectless by design: the
-            // device ID is public information, so a per-device counter would
-            // let anyone who knows it refuse the enrolled phone's handshake.
+            // Device socket handshake steps keep no anonymous per-device
+            // counter: the device ID is public information, so one would let
+            // anyone who knows it refuse the enrolled phone's handshake.
             // Route ceilings bound these scopes: the anonymous one, and for
-            // an enrolled device it refuses, the verified one.
+            // an enrolled device it refuses, the verified one, of which one
+            // device may use only `DEVICE_VERIFIED_SHARE` (`subject_policy`).
             Self::DeviceChallenge => ("device_challenge", 300, 60, None),
             Self::DeviceAuthenticate => ("device_authenticate", 300, 60, None),
             Self::MfaChallenge => ("mfa_challenge", 300, 60, Some((5, 300))),
@@ -192,11 +216,11 @@ pub async fn consume_verified(
     charge(client, hasher, limit, Some(subject), Lane::Verified).await
 }
 
-/// Admit a request for a limit with no per-subject policy through the
-/// verified-route ceiling only, after the anonymous lane refused it and the
-/// caller showed its target is real (an enrolled device). It keeps no subject
-/// row, so naming a public identifier cannot spend a budget tied to it, and
-/// requests that name no real target never reach this ceiling.
+/// Admit a request for a limit with no verified per-subject policy through
+/// the verified-route ceiling only, after the anonymous lane refused it and
+/// the caller proved its claim (a device proof that verified). It keeps no
+/// subject row, so naming a public identifier cannot spend a budget tied to
+/// it, and requests that prove nothing never reach this ceiling.
 pub async fn consume_verified_route(
     client: &Client,
     hasher: &TokenHasher,
@@ -252,8 +276,8 @@ pub(crate) fn subject_hash(
     subject: &str,
     lane: Lane,
 ) -> Option<[u8; 32]> {
-    let (scope, _, _, subject_policy) = limit.policy();
-    subject_policy?;
+    let (scope, _, _, _) = limit.policy();
+    limit.subject_policy(lane)?;
     let domain = match lane {
         Lane::Verified if !limit.subject_is_secret() => {
             format!("abuse-subject-{scope}-verified-v1")
@@ -307,8 +331,8 @@ pub(crate) async fn subject_budget_open(
     subject: &str,
     lane: Lane,
 ) -> Result<bool, tokio_postgres::Error> {
-    let (scope, _, _, subject_policy) = limit.policy();
-    let (maximum, seconds) = subject_policy.unwrap_or((0, 0));
+    let (scope, _, _, _) = limit.policy();
+    let (maximum, seconds) = limit.subject_policy(lane).unwrap_or((0, 0));
     let hash = subject_hash(hasher, limit, subject, lane).unwrap_or_default();
     let row = client
         .query_opt(
@@ -366,8 +390,8 @@ async fn charge(
     subject: Option<&str>,
     lane: Lane,
 ) -> Result<bool, tokio_postgres::Error> {
-    let (scope, global_max, global_seconds, subject_policy) = limit.policy();
-    let (subject_max, subject_seconds) = subject_policy.unwrap_or((0, 0));
+    let (scope, global_max, global_seconds, _) = limit.policy();
+    let (subject_max, subject_seconds) = limit.subject_policy(lane).unwrap_or((0, 0));
     let subject_hash = subject.and_then(|subject| subject_hash(hasher, limit, subject, lane));
     // A subject-only limit charges one row: its authenticated caller's own
     // counter, keyed exactly as the per-subject row above, with the per-subject
