@@ -19,18 +19,34 @@
 //!   (never backward, never twice, never past an unfenced writer), enabling
 //!   the promoted site and forcing dispatch paused — with a durable
 //!   write-ahead journal so restarts resume instead of re-applying.
+//! * [`store`] is the durable consensus store the executor reads rounds
+//!   from: a membership record plus one append-only journal file per member
+//!   under a configurable directory, with store-assigned contiguous
+//!   sequences, per-record identities (spoofing fails the load) and the
+//!   decision model's freshness window. Corruption, truncation, membership
+//!   changes mid-flight and concurrent appends all fail closed — an `Err`
+//!   store or a poisoned one serves only empty rounds, so the controller
+//!   loses quorum and holds. [`store::StoreObservationSource`] adapts it to
+//!   the executor's observation seam without touching the rounds.
+//! * [`anchor`] defines the interface for anchoring the operational epoch to
+//!   a future external authority (monotonic, refuses backward promotions).
+//!   It is an interface only: this build ships a test implementation and no
+//!   external anchoring.
 //!
-//! What this crate deliberately does **not** do yet: it talks to no quorum or
-//! consensus store and observes no database itself (the executor's default
-//! in-process source contributes no reports until real members exist), it
-//! does not stop or reseed PostgreSQL hosts (external watchdog integration),
-//! and the operational epoch is not yet anchored to an external authority —
-//! later increments per the implementation-status notes in
+//! What this crate deliberately does **not** do yet: it listens on no
+//! network and runs no consensus service — no transport carries member
+//! reports into the store, so in production the store stays empty and every
+//! round fails closed — it observes no database itself, it does not stop or
+//! reseed PostgreSQL hosts (external watchdog integration), the epoch anchor
+//! has no real implementation, and the store journals are never rotated or
+//! compacted; later increments per the implementation-status notes in
 //! `docs/MULTI-LOCATION.md`.
 
+pub mod anchor;
 pub mod decision;
 pub mod executor;
 pub mod policy;
+pub mod store;
 
 #[cfg(test)]
 mod executor_tests;

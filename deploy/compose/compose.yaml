@@ -142,6 +142,11 @@ services:
       FAILOVER_QUORUM_WRITER_SITE_ID:
       FAILOVER_QUORUM_STANDBY_SITE_ID:
       FAILOVER_QUORUM_CHECK_INTERVAL_MS:
+      # Only read when FAILOVER_QUORUM_ENABLED=true. Each app owns a separate
+      # volume: two executors must never share one consensus store directory.
+      FAILOVER_QUORUM_STORE_DIR: /var/lib/zrotext/failover-store
+    volumes:
+      - failover_store_a:/var/lib/zrotext/failover-store
     ports:
       - "127.0.0.1:${APP_PORT:-8080}:8080"
   app_b:
@@ -217,6 +222,10 @@ services:
       FAILOVER_QUORUM_WRITER_SITE_ID:
       FAILOVER_QUORUM_STANDBY_SITE_ID:
       FAILOVER_QUORUM_CHECK_INTERVAL_MS:
+      # Only read when FAILOVER_QUORUM_ENABLED=true; never app's store volume.
+      FAILOVER_QUORUM_STORE_DIR: /var/lib/zrotext/failover-store
+    volumes:
+      - failover_store_b:/var/lib/zrotext/failover-store
     ports:
       - "127.0.0.1:8081:8080"
     networks: [private]
@@ -245,6 +254,8 @@ volumes:
   pgdata:
   caddy_data:
   caddy_config:
+  failover_store_a:
+  failover_store_b:
 networks:
   private:
     internal: false

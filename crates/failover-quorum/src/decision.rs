@@ -141,6 +141,13 @@ impl FailoverConfig {
         self.observation_freshness_ms = observation_freshness_ms;
         self
     }
+
+    /// How long a member observation counts as fresh evidence. The consensus
+    /// store serves rounds through the same window, so durable and live
+    /// evidence age out identically.
+    pub fn observation_freshness_ms(&self) -> u64 {
+        self.observation_freshness_ms
+    }
 }
 
 /// What one quorum member observed about the current PostgreSQL writer.
