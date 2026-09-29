@@ -3,7 +3,7 @@
 
 use axum::{
     Router,
-    http::{HeaderValue, StatusCode, header},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{Html, IntoResponse, Redirect, Response},
     routing::get,
 };
@@ -25,6 +25,29 @@ const TEMPLATE_SCRIPT: &str = include_str!("../../../web/owner/template-preview.
 const TEMPLATE_CORE: &str = include_str!("../../../web/owner/template-preview-core.js");
 const TEMPLATE_STYLE: &str = include_str!("../../../web/owner/template-preview.css");
 const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
+
+/// Strong validator for a compile-time-constant asset, computed once.
+fn asset_etag(body: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(body.as_bytes());
+    let mut etag = String::with_capacity(digest.len() * 2 + 2);
+    etag.push('"');
+    for byte in digest {
+        etag.push_str(&format!("{byte:02x}"));
+    }
+    etag.push('"');
+    etag
+}
+
+fn if_none_match_matches(if_none_match: Option<&HeaderValue>, etag: &str) -> bool {
+    let Some(value) = if_none_match.and_then(|value| value.to_str().ok()) else {
+        return false;
+    };
+    value.split(',').any(|candidate| {
+        let candidate = candidate.trim();
+        candidate == etag || candidate == format!("W/{etag}")
+    })
+}
 
 pub fn router() -> Router {
     Router::new()
@@ -84,10 +107,9 @@ pub fn source_destination(
     Ok(url)
 }
 
-fn secure_response(mut response: Response, content_type: &'static str) -> Response {
+fn secure_headers(mut response: Response, content_type: &'static str) -> Response {
     let headers = response.headers_mut();
     headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
-    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     headers.insert(
         header::CONTENT_SECURITY_POLICY,
         HeaderValue::from_static(CSP),
@@ -101,9 +123,43 @@ fn secure_response(mut response: Response, content_type: &'static str) -> Respon
         HeaderValue::from_static("max-age=63072000; includeSubDomains"),
     );
     headers.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
+    response
+}
+
+/// Rendered HTML stays uncacheable.
+fn secure_response(response: Response, content_type: &'static str) -> Response {
+    let mut response = secure_headers(response, content_type);
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
+/// Compile-time-constant JS/CSS assets revalidate with a strong ETag:
+/// `no-cache` keeps every load checked, and a matching `If-None-Match`
+/// answers `304` with no body. The assets contain no account data.
+fn cached_asset(
+    body: &'static str,
+    content_type: &'static str,
+    etag: &str,
+    if_none_match: Option<&HeaderValue>,
+) -> Response {
+    if if_none_match_matches(if_none_match, etag) {
+        let mut response = StatusCode::NOT_MODIFIED.into_response();
+        let headers = response.headers_mut();
+        headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+        headers.insert(
+            header::ETAG,
+            HeaderValue::from_str(etag).expect("quoted hex etag"),
+        );
+        return response;
+    }
+    let mut response = secure_headers((StatusCode::OK, body).into_response(), content_type);
+    let headers = response.headers_mut();
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     headers.insert(
-        header::STRICT_TRANSPORT_SECURITY,
-        HeaderValue::from_static("max-age=63072000; includeSubDomains"),
+        header::ETAG,
+        HeaderValue::from_str(etag).expect("quoted hex etag"),
     );
     response
 }
@@ -112,17 +168,23 @@ async fn page() -> Response {
     secure_response(Html(PAGE).into_response(), "text/html; charset=utf-8")
 }
 
-async fn script() -> Response {
-    secure_response(
-        (StatusCode::OK, SCRIPT).into_response(),
+async fn script(headers: HeaderMap) -> Response {
+    static ETAG: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| asset_etag(SCRIPT));
+    cached_asset(
+        SCRIPT,
         "text/javascript; charset=utf-8",
+        &ETAG,
+        headers.get(header::IF_NONE_MATCH),
     )
 }
 
-async fn style() -> Response {
-    secure_response(
-        (StatusCode::OK, STYLE).into_response(),
+async fn style(headers: HeaderMap) -> Response {
+    static ETAG: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| asset_etag(STYLE));
+    cached_asset(
+        STYLE,
         "text/css; charset=utf-8",
+        &ETAG,
+        headers.get(header::IF_NONE_MATCH),
     )
 }
 
@@ -133,10 +195,14 @@ async fn account_page() -> Response {
     )
 }
 
-async fn account_script() -> Response {
-    secure_response(
-        (StatusCode::OK, ACCOUNT_SCRIPT).into_response(),
+async fn account_script(headers: HeaderMap) -> Response {
+    static ETAG: std::sync::LazyLock<String> =
+        std::sync::LazyLock::new(|| asset_etag(ACCOUNT_SCRIPT));
+    cached_asset(
+        ACCOUNT_SCRIPT,
         "text/javascript; charset=utf-8",
+        &ETAG,
+        headers.get(header::IF_NONE_MATCH),
     )
 }
 
@@ -147,17 +213,25 @@ async fn sms_lines_page() -> Response {
     )
 }
 
-async fn sms_lines_script() -> Response {
-    secure_response(
-        (StatusCode::OK, SMS_LINES_SCRIPT).into_response(),
+async fn sms_lines_script(headers: HeaderMap) -> Response {
+    static ETAG: std::sync::LazyLock<String> =
+        std::sync::LazyLock::new(|| asset_etag(SMS_LINES_SCRIPT));
+    cached_asset(
+        SMS_LINES_SCRIPT,
         "text/javascript; charset=utf-8",
+        &ETAG,
+        headers.get(header::IF_NONE_MATCH),
     )
 }
 
-async fn sms_line_signing_script() -> Response {
-    secure_response(
-        (StatusCode::OK, SMS_LINE_SIGNING_SCRIPT).into_response(),
+async fn sms_line_signing_script(headers: HeaderMap) -> Response {
+    static ETAG: std::sync::LazyLock<String> =
+        std::sync::LazyLock::new(|| asset_etag(SMS_LINE_SIGNING_SCRIPT));
+    cached_asset(
+        SMS_LINE_SIGNING_SCRIPT,
         "text/javascript; charset=utf-8",
+        &ETAG,
+        headers.get(header::IF_NONE_MATCH),
     )
 }
 
@@ -197,22 +271,37 @@ async fn template_page() -> Response {
     response
 }
 
-async fn template_script() -> Response {
-    secure_response(
-        TEMPLATE_SCRIPT.into_response(),
+async fn template_script(headers: HeaderMap) -> Response {
+    static ETAG: std::sync::LazyLock<String> =
+        std::sync::LazyLock::new(|| asset_etag(TEMPLATE_SCRIPT));
+    cached_asset(
+        TEMPLATE_SCRIPT,
         "text/javascript; charset=utf-8",
+        &ETAG,
+        headers.get(header::IF_NONE_MATCH),
     )
 }
 
-async fn template_core() -> Response {
-    secure_response(
-        TEMPLATE_CORE.into_response(),
+async fn template_core(headers: HeaderMap) -> Response {
+    static ETAG: std::sync::LazyLock<String> =
+        std::sync::LazyLock::new(|| asset_etag(TEMPLATE_CORE));
+    cached_asset(
+        TEMPLATE_CORE,
         "text/javascript; charset=utf-8",
+        &ETAG,
+        headers.get(header::IF_NONE_MATCH),
     )
 }
 
-async fn template_style() -> Response {
-    secure_response(TEMPLATE_STYLE.into_response(), "text/css; charset=utf-8")
+async fn template_style(headers: HeaderMap) -> Response {
+    static ETAG: std::sync::LazyLock<String> =
+        std::sync::LazyLock::new(|| asset_etag(TEMPLATE_STYLE));
+    cached_asset(
+        TEMPLATE_STYLE,
+        "text/css; charset=utf-8",
+        &ETAG,
+        headers.get(header::IF_NONE_MATCH),
+    )
 }
 
 #[cfg(test)]
@@ -408,7 +497,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn owner_assets_are_same_origin_and_never_cached() {
+    async fn owner_html_is_never_cached_and_assets_revalidate_with_etags() {
         assert!(PAGE.contains("href=\"/owner/account\""));
         assert!(PAGE.contains("href=\"/owner/sms-lines\""));
         // The activation form never submits natively to a URL with parameters.
@@ -418,27 +507,50 @@ mod tests {
             )
         );
         assert!(ACCOUNT_PAGE.contains("id=\"verify\""));
-        for (path, content_type) in [
-            ("/owner/devices", "text/html; charset=utf-8"),
-            ("/owner/devices.js", "text/javascript; charset=utf-8"),
-            ("/owner/devices.css", "text/css; charset=utf-8"),
-            ("/owner/account", "text/html; charset=utf-8"),
-            ("/owner/account.js", "text/javascript; charset=utf-8"),
-            ("/owner/template-preview", "text/html; charset=utf-8"),
+        for (path, content_type, cache_control) in [
+            ("/owner/devices", "text/html; charset=utf-8", "no-store"),
+            (
+                "/owner/devices.js",
+                "text/javascript; charset=utf-8",
+                "no-cache",
+            ),
+            ("/owner/devices.css", "text/css; charset=utf-8", "no-cache"),
+            ("/owner/account", "text/html; charset=utf-8", "no-store"),
+            (
+                "/owner/account.js",
+                "text/javascript; charset=utf-8",
+                "no-cache",
+            ),
+            (
+                "/owner/template-preview",
+                "text/html; charset=utf-8",
+                "no-store",
+            ),
             (
                 "/owner/template-preview.js",
                 "text/javascript; charset=utf-8",
+                "no-cache",
             ),
             (
                 "/owner/template-preview-core.js",
                 "text/javascript; charset=utf-8",
+                "no-cache",
             ),
-            ("/owner/template-preview.css", "text/css; charset=utf-8"),
-            ("/owner/sms-lines", "text/html; charset=utf-8"),
-            ("/owner/sms-lines.js", "text/javascript; charset=utf-8"),
+            (
+                "/owner/template-preview.css",
+                "text/css; charset=utf-8",
+                "no-cache",
+            ),
+            ("/owner/sms-lines", "text/html; charset=utf-8", "no-store"),
+            (
+                "/owner/sms-lines.js",
+                "text/javascript; charset=utf-8",
+                "no-cache",
+            ),
             (
                 "/owner/sms-line-signing.js",
                 "text/javascript; charset=utf-8",
+                "no-cache",
             ),
             ("/owner/seats", "text/html; charset=utf-8"),
             ("/owner/seats.js", "text/javascript; charset=utf-8"),
@@ -451,7 +563,7 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), StatusCode::OK);
             assert_eq!(response.headers()[header::CONTENT_TYPE], content_type);
-            assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+            assert_eq!(response.headers()[header::CACHE_CONTROL], cache_control);
             assert_eq!(response.headers()["x-content-type-options"], "nosniff");
             assert_eq!(response.headers()["referrer-policy"], "no-referrer");
             assert_eq!(
@@ -464,6 +576,55 @@ mod tests {
                     .unwrap()
                     .contains("connect-src 'self'")
             );
+            if cache_control == "no-cache" {
+                let etag = response.headers()[header::ETAG].to_str().unwrap();
+                assert!(etag.starts_with('"') && etag.ends_with('"') && etag.len() == 66);
+                // A matching If-None-Match revalidates to 304 with no body.
+                let revalidated = router()
+                    .oneshot(
+                        Request::builder()
+                            .uri(path)
+                            .header(header::IF_NONE_MATCH, etag)
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(revalidated.status(), StatusCode::NOT_MODIFIED);
+                assert_eq!(revalidated.headers()[header::ETAG], etag);
+                assert_eq!(revalidated.headers()[header::CACHE_CONTROL], "no-cache");
+                let bytes = axum::body::to_bytes(revalidated.into_body(), 1)
+                    .await
+                    .unwrap();
+                assert!(bytes.is_empty());
+                // A stale validator still returns the full asset.
+                let stale = router()
+                    .oneshot(
+                        Request::builder()
+                            .uri(path)
+                            .header(header::IF_NONE_MATCH, "\"stale\"")
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(stale.status(), StatusCode::OK);
+            } else {
+                // Rendered HTML keeps no validator: it always re-renders in full.
+                assert!(!response.headers().contains_key(header::ETAG));
+            }
         }
+    }
+
+    #[test]
+    fn if_none_match_parsing_accepts_lists_and_weak_validators() {
+        let etag = asset_etag("synthetic-asset");
+        let header = HeaderValue::from_str(&format!("\"other\", W/{etag}")).unwrap();
+        assert!(if_none_match_matches(Some(&header), &etag));
+        assert!(!if_none_match_matches(
+            Some(&HeaderValue::from_static("\"stale\"")),
+            &etag
+        ));
+        assert!(!if_none_match_matches(None, &etag));
     }
 }
