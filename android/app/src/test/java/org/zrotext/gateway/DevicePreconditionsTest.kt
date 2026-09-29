@@ -29,9 +29,9 @@ class DevicePreconditionsTest {
         publisher.selectProtocol(DeviceStatusPublisher.PROTOCOL)
         val expected = """{"v":1,"type":"device_status","connection_epoch":4,"selected_sim":"active","sms_permission":"granted","airplane_mode":"disabled"}"""
         assertEquals(expected, publisher.nextFrame(4, 100) { snapshot })
-        assertNull(publisher.nextFrame(4, 30_099) { error("Must throttle before sampling") })
+        assertNull(publisher.nextFrame(4, 25_099) { error("Must throttle before sampling") })
         assertNull(publisher.nextFrame(4, 99) { error("Monotonic time reversal must not bypass throttle") })
-        assertEquals(expected, publisher.nextFrame(4, 30_100) { snapshot })
+        assertEquals(expected, publisher.nextFrame(4, 25_100) { snapshot })
         assertTrue(expected.toByteArray().size < 256)
     }
 
