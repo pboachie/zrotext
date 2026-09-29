@@ -304,7 +304,7 @@ async fn manifest_store_persists_chain_and_rejects_fork_gap_rollback_and_bad_sig
     let mut f = Fixture::new().await;
     let mut db = f.connect().await;
     let tx = db.transaction().await.unwrap();
-    let admission = admit(&tx, f.session(), f.line, 1, &f.bytes).await.unwrap();
+    let mut admission = admit(&tx, f.session(), f.line, 1, &f.bytes).await.unwrap();
     assert_eq!(admission.change(), AdmissionChange::Advanced);
     assert_eq!(
         admission.context(&f.wanted()).await.unwrap().keyset_version,
@@ -392,7 +392,7 @@ async fn manifest_store_serializes_revocation_in_both_lock_orders() {
                 assert!(future.await.is_err(), "{update}");
                 admission_tx.rollback().await.unwrap();
             } else {
-                let admission = admit(&admission_tx, f.session(), f.line, 1, &f.bytes)
+                let mut admission = admit(&admission_tx, f.session(), f.line, 1, &f.bytes)
                     .await
                     .unwrap();
                 let mut future = Box::pin(revocation.execute(update, &[]));
@@ -506,7 +506,7 @@ async fn manifest_store_rechecks_expiry_after_lock_wait_and_before_effects() {
     let f = Fixture::new().await;
     let mut db = f.connect().await;
     let tx = db.transaction().await.unwrap();
-    let admission = admit(&tx, f.session(), f.line, 1, &f.bytes).await.unwrap();
+    let mut admission = admit(&tx, f.session(), f.line, 1, &f.bytes).await.unwrap();
     tx.execute(
         "UPDATE device_sessions SET lease_until=clock_timestamp()-interval '1 millisecond'",
         &[],
@@ -569,7 +569,7 @@ async fn manifest_store_enforces_scope_high_water_and_immutable_trust_without_bl
     let f = Fixture::new().await;
     let mut db = f.connect().await;
     let tx = db.transaction().await.unwrap();
-    let admission = admit(&tx, f.session(), f.line, 1, &f.bytes).await.unwrap();
+    let mut admission = admit(&tx, f.session(), f.line, 1, &f.bytes).await.unwrap();
     tx.execute(
         "UPDATE sealed_manifest_authorities SET last_verified_ms=last_verified_ms+60000",
         &[],
@@ -723,7 +723,7 @@ async fn manifest_store_isolation_missing_pin_and_transaction_rollback_fail_clos
             .is_err()
     );
     assert!(admit(&tx, f.session(), f.line, 2, &f.bytes).await.is_err());
-    let admission = admit(&tx, f.session(), f.line, 1, &f.bytes).await.unwrap();
+    let mut admission = admit(&tx, f.session(), f.line, 1, &f.bytes).await.unwrap();
     let mut wanted = f.wanted();
     wanted.kind = Kind::Outbound;
     assert!(admission.context(&wanted).await.is_err());
@@ -754,14 +754,14 @@ async fn manifest_store_current_revocation_invalidates_earlier_admission_in_same
     let mut f = Fixture::new().await;
     let mut db = f.connect().await;
     let tx = db.transaction().await.unwrap();
-    let original = admit(&tx, f.session(), f.line, 1, &f.bytes).await.unwrap();
+    let mut original = admit(&tx, f.session(), f.line, 1, &f.bytes).await.unwrap();
     original.context(&f.wanted()).await.unwrap();
     f.advance();
     // The device signer is the second ordered record. A signed revocation must
     // be persistable, while it must never produce an authorized signer context.
     f.bytes[151 + 149 + 148] = 2;
     f.resign();
-    let revoked = admit(&tx, f.session(), f.line, 1, &f.bytes).await.unwrap();
+    let mut revoked = admit(&tx, f.session(), f.line, 1, &f.bytes).await.unwrap();
     assert!(revoked.context(&f.wanted()).await.is_err());
     assert!(original.context(&f.wanted()).await.is_err());
     drop(revoked);
@@ -780,7 +780,7 @@ async fn manifest_store_current_revocation_invalidates_earlier_admission_in_same
     f.bytes[53..85].fill(0);
     f.bytes[151 + 149 + 148] = 1;
     f.resign();
-    let admission = admit(&tx, f.session(), f.line, 1, &f.bytes).await.unwrap();
+    let mut admission = admit(&tx, f.session(), f.line, 1, &f.bytes).await.unwrap();
     tx.execute(
         "UPDATE sealed_manifest_authorities SET revoked_at=clock_timestamp()",
         &[],
@@ -790,5 +790,43 @@ async fn manifest_store_current_revocation_invalidates_earlier_admission_in_same
     assert!(admission.context(&f.wanted()).await.is_err());
     drop(admission);
     tx.rollback().await.unwrap();
+    f.cleanup().await;
+}
+
+/// One admission rechecks context at most once per row write: the high-water
+/// UPDATE happens in `admit` and in the FIRST `context` only, while later
+/// rechecks in the same transaction re-read the row without rewriting it
+/// (#509). Without the guard, two context calls rewrote the hot row twice.
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn context_rechecks_write_last_verified_once() {
+    let mut f = Fixture::new().await;
+    let mut db = f.connect().await;
+    let tx = db.transaction().await.unwrap();
+    let mut admission = admit(&tx, f.session(), f.line, 1, &f.bytes).await.unwrap();
+    let first_version = admission.context(&f.wanted()).await.unwrap().keyset_version;
+    // The second recheck (the pre-commit one ingest performs) must re-read
+    // identity and freshness without another row write.
+    let second_version = admission.context(&f.wanted()).await.unwrap().keyset_version;
+    assert_eq!(first_version, second_version);
+    drop(admission);
+    tx.commit().await.unwrap();
+
+    db.batch_execute("SELECT pg_stat_force_next_flush()")
+        .await
+        .unwrap();
+    let updates: i64 = db
+        .query_one(
+            "SELECT n_tup_upd FROM pg_stat_all_tables \
+             WHERE schemaname=current_schema() AND relname='sealed_manifest_authorities'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        updates, 2,
+        "admit plus one context must be the only row writes"
+    );
     f.cleanup().await;
 }

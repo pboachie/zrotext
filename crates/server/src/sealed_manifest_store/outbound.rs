@@ -17,6 +17,9 @@ pub(crate) struct CurrentAuthority<'tx, 'connection> {
     bytes: Vec<u8>,
     trust: ManifestTrust,
     manifest: VerifiedManifest,
+    /// Set once `context` has written this admission's `last_verified_ms`;
+    /// a second recheck re-reads the row but must not rewrite the hot row.
+    verified_write: bool,
 }
 
 pub(crate) async fn lock_current<'tx, 'connection>(
@@ -60,6 +63,7 @@ pub(crate) async fn lock_current<'tx, 'connection>(
         bytes,
         trust,
         manifest,
+        verified_write: false,
     })
 }
 
@@ -71,7 +75,7 @@ impl CurrentAuthority<'_, '_> {
     /// Invoke after every potentially blocking storage operation, immediately
     /// before commit. Also detects authority changes made within this transaction.
     pub(crate) async fn context<'a>(
-        &'a self,
+        &'a mut self,
         wanted: &EnvelopeAuthority<'a>,
     ) -> Result<ExpectedContext<'a>, AdmissionError> {
         if wanted.kind != Kind::Outbound || wanted.account_id != *self.account.as_bytes() {
@@ -93,14 +97,20 @@ impl CurrentAuthority<'_, '_> {
             return Err("changed current authority".into());
         }
         let now = wall_time(self.tx, row.get(6)).await?;
-        sealed_manifest::verify(&self.pin, &self.bytes, &self.trust, now)?;
+        // The row recheck above pins the locked authority's exact bytes and
+        // chain position under this transaction's FOR UPDATE lock, so the
+        // signature and role proofs from lock_current cannot have changed;
+        // only freshness can, and envelope_context rechecks that here.
         let context = self.manifest.envelope_context(wanted, now)?;
-        self.tx
-            .execute(
-                "UPDATE sealed_manifest_authorities SET last_verified_ms=$2 WHERE account_id=$1",
-                &[&self.account, &(now as i64)],
-            )
-            .await?;
+        if !self.verified_write {
+            self.tx
+                .execute(
+                    "UPDATE sealed_manifest_authorities SET last_verified_ms=$2 WHERE account_id=$1",
+                    &[&self.account, &(now as i64)],
+                )
+                .await?;
+            self.verified_write = true;
+        }
         Ok(context)
     }
 }

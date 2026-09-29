@@ -111,7 +111,7 @@ pub async fn ingest_candidate02(
         recipients: &recipients,
     };
     let tx = client.transaction().await?;
-    let admission =
+    let mut admission =
         sealed_manifest_store::admit(&tx, session, line, binding_generation, manifest_bytes)
             .await?;
     let context = admission.context(&wanted).await?;

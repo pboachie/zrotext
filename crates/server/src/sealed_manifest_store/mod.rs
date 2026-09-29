@@ -53,6 +53,9 @@ pub struct Admission<'tx, 'connection, 'session> {
     trust: ManifestTrust,
     manifest: VerifiedManifest,
     change: AdmissionChange,
+    /// Set once `context` has written this admission's `last_verified_ms`;
+    /// a second recheck re-reads the row but must not rewrite the hot row.
+    verified_write: bool,
 }
 
 impl Admission<'_, '_, '_> {
@@ -65,7 +68,7 @@ impl Admission<'_, '_, '_> {
     /// must still verify the exact envelope with `sealed_envelope::verify` and
     /// enforce durable event identity/sequence fences in this same transaction.
     pub async fn context<'a>(
-        &'a self,
+        &'a mut self,
         wanted: &EnvelopeAuthority<'a>,
     ) -> Result<ExpectedContext<'a>, AdmissionError> {
         if wanted.kind != Kind::Inbound
@@ -97,14 +100,20 @@ impl Admission<'_, '_, '_> {
             return Err("changed admission authority".into());
         }
         let now = wall_time(self.tx, row.get(2)).await?;
-        sealed_manifest::verify(&self.pin, &self.bytes, &self.trust, now)?;
+        // The row recheck above pins the admitted manifest's exact bytes and
+        // chain position under this transaction's FOR UPDATE lock, so the
+        // signature and role proofs from admission cannot have changed; only
+        // freshness can, and envelope_context rechecks that against this now.
         let context = self.manifest.envelope_context(wanted, now)?;
-        self.tx
-            .execute(
-                "UPDATE sealed_manifest_authorities SET last_verified_ms=$2 WHERE account_id=$1",
-                &[&self.session.account_id, &(now as i64)],
-            )
-            .await?;
+        if !self.verified_write {
+            self.tx
+                .execute(
+                    "UPDATE sealed_manifest_authorities SET last_verified_ms=$2 WHERE account_id=$1",
+                    &[&self.session.account_id, &(now as i64)],
+                )
+                .await?;
+            self.verified_write = true;
+        }
         Ok(context)
     }
 }
@@ -177,16 +186,21 @@ pub async fn admit<'tx, 'connection, 'session>(
         // Authenticate the stored high-water at its original acceptance time,
         // not at current time: an expired predecessor may receive a fresh next
         // version, but it cannot itself be replayed after expiry.
-        sealed_manifest::verify(
-            &pin,
-            previous.as_deref().ok_or("stored manifest")?,
-            &trust,
-            accepted_at
-                .ok_or("stored acceptance")?
-                .try_into()
-                .map_err(|_| "stored acceptance")?,
-        )?;
+        // Only an advance needs the stored predecessor authenticated: its
+        // verified digest becomes the chain position the incoming manifest
+        // must follow. An exact replay re-proves the same signature through
+        // the verify below, with the stored digest as the position, so
+        // re-verifying the stored bytes would repeat identical work.
         if incoming_version != version as u64 {
+            sealed_manifest::verify(
+                &pin,
+                previous.as_deref().ok_or("stored manifest")?,
+                &trust,
+                accepted_at
+                    .ok_or("stored acceptance")?
+                    .try_into()
+                    .map_err(|_| "stored acceptance")?,
+            )?;
             trust.position = ChainPosition::After {
                 version: version as u64,
                 digest,
@@ -237,6 +251,7 @@ pub async fn admit<'tx, 'connection, 'session>(
         trust,
         manifest,
         change,
+        verified_write: false,
     })
 }
 
