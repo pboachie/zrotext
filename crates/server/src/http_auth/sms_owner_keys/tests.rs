@@ -18,7 +18,7 @@ macro_rules! migration {
 
 // The ceremony runs on the complete schema. SQL is embedded at build time so
 // the test never executes files discovered at runtime.
-const TEST_MIGRATIONS: [(&str, &str); 58] = [
+const TEST_MIGRATIONS: [(&str, &str); 59] = [
     ("001_foundation.sql", migration!("001_foundation.sql")),
     ("002_auth.sql", migration!("002_auth.sql")),
     ("003_delivery.sql", migration!("003_delivery.sql")),
@@ -236,6 +236,10 @@ const TEST_MIGRATIONS: [(&str, &str); 58] = [
         "058_drop_abuse_counters_updated_index.sql",
         migration!("058_drop_abuse_counters_updated_index.sql"),
     ),
+    (
+        "059_erasure_fk_indexes.sql",
+        migration!("059_erasure_fk_indexes.sql"),
+    ),
 ];
 
 #[test]
@@ -407,6 +411,11 @@ async fn postgres_owner_key_ceremony_requires_possession_mfa_and_revokes_only_sm
         }
         if name == "058_drop_abuse_counters_updated_index.sql" {
             db.batch_execute("DROP INDEX IF EXISTS auth_abuse_counters_stale")
+                .await
+                .unwrap();
+        }
+        if name == "059_erasure_fk_indexes.sql" {
+            db.batch_execute("CREATE INDEX erasure_fk_webhook_deliveries_event ON webhook_deliveries(account_id,event_id); CREATE INDEX erasure_fk_suppressions_attempt ON recipient_suppressions(source_attempt_id); CREATE INDEX erasure_fk_suppressions_event ON recipient_suppressions(account_id,source_event_id); CREATE INDEX erasure_fk_holds_release_event ON owner_recipient_holds(account_id,release_event_id) WHERE release_event_id IS NOT NULL; CREATE INDEX erasure_fk_opt_out_audit_release_event ON owner_opt_out_audit(account_id,release_event_id) WHERE release_event_id IS NOT NULL")
                 .await
                 .unwrap();
         }
