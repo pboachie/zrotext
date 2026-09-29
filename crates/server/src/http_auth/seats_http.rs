@@ -27,6 +27,10 @@ use uuid::Uuid;
 #[derive(Deserialize)]
 pub(crate) struct CreateInvitationBody {
     email: String,
+    /// Step-up proof, exactly as for API-key creation: an invitation grants a
+    /// persistent read seat, so a session cookie alone cannot mint one.
+    current_password: String,
+    code: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -44,8 +48,11 @@ pub(crate) async fn create(
     ApiJson(body): ApiJson<CreateInvitationBody>,
 ) -> Result<Response, AuthHttpError> {
     let mut client = connect(&state.database_url).await?;
-    // Charge the account: re-issuing after cancel or removal must not reset
-    // the database growth budget by signing in again.
+    // Charge the account before the password is hashed, as API-key creation
+    // does: re-issuing after cancel or removal must not reset the database
+    // growth budget by signing in again, and every attempt, including a wrong
+    // password, spends it, so it also bounds password guesses on this route.
+    // A wrong authenticator code additionally spends the MFA step-up budget.
     if !abuse_limits::consume(
         &client,
         &state.hasher,
@@ -57,9 +64,22 @@ pub(crate) async fn create(
     {
         return Err(AuthHttpError::TooManyRequests);
     }
-    let invitation = seats::create_invitation(&mut client, &state.hasher, &owner, &body.email)
-        .await
-        .map_err(map_auth)?;
+    let _permit = state.hash_permit().await?;
+    let invitation = match seats::create_invitation_with_proof(
+        &mut client,
+        state.mfa_cipher.as_deref(),
+        &state.hasher,
+        &owner,
+        &body.current_password,
+        body.code.as_deref(),
+        &body.email,
+    )
+    .await
+    {
+        Ok(invitation) => invitation,
+        Err(AuthError::InvalidCredentials) => return Err(AuthHttpError::BadRequest),
+        Err(error) => return Err(map_auth(error)),
+    };
     let mut response = (
         StatusCode::CREATED,
         Json(CreatedInvitationBody {

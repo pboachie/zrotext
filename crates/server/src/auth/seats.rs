@@ -7,10 +7,11 @@
 //! later request.
 
 use super::{
-    AuthError, SessionPrincipal, TokenHasher, VERIFICATION_HOURS, normalize_email, password_work,
-    random_token, require_current_owner, valid_token, verification_token_for_id,
+    AuthError, SessionPrincipal, TokenHasher, VERIFICATION_HOURS, account, mfa::MfaCipher,
+    normalize_email, password_work, random_token, require_current_owner, valid_token,
+    verification_token_for_id,
 };
-use tokio_postgres::Client;
+use tokio_postgres::{Client, Transaction};
 use uuid::Uuid;
 
 /// Invitation lifetime. The token is handed to one person out of band and the
@@ -66,28 +67,59 @@ pub struct SeatAcceptance {
     pub verification_token: String,
 }
 
-/// Invite one address to this account as a device-status observer. The address
-/// must not belong to any user on this server, and the account must be inside
-/// both the live-seat and open-invitation caps. A second open invitation for
-/// the same address is refused even from another account, so two owners can
-/// never race to claim one recipient.
-pub async fn create_invitation(
+/// Invite one address to this account as a device-status observer. This is
+/// the only public way to create an invitation and it mirrors API-key minting:
+/// a persistent read seat needs the owner's current password and, once MFA is
+/// enabled, a fresh authenticator or recovery code, so a stolen session cookie
+/// alone cannot mint one. The caller charges the `SeatInvite` budget before
+/// calling; a wrong code also charges the MFA step-up failure budget.
+///
+/// The result never depends on whether the address is registered here or
+/// invited by another account: the owner always receives a real single-use
+/// token, and any conflict surfaces only to the token holder at acceptance.
+pub async fn create_invitation_with_proof(
     client: &mut Client,
+    cipher: Option<&MfaCipher>,
+    hasher: &TokenHasher,
+    principal: &SessionPrincipal,
+    current_password: &str,
+    code: Option<&str>,
+    email: &str,
+) -> Result<IssuedInvitation, AuthError> {
+    let email = normalize_email(email)?;
+    let tx =
+        account::begin_owner_step_up(client, cipher, hasher, principal, current_password, code)
+            .await?;
+    let issued = create_invitation_in(&tx, hasher, principal, &email).await?;
+    tx.commit().await?;
+    Ok(issued)
+}
+
+/// The invitation write, run inside the step-up transaction. It performs the
+/// same statements for every address: it never reads `users` or another
+/// account's invitations, so a registered address, an unknown one, and one
+/// already invited elsewhere are indistinguishable to the inviting owner in
+/// status, body, list entry, slot use, and database work. Invitations are
+/// unique per account and address, so re-inviting an address this account
+/// already invited replaces the earlier invitation (its token stops working),
+/// which also retires an expired open row instead of letting it block the
+/// address.
+async fn create_invitation_in(
+    tx: &Transaction<'_>,
     hasher: &TokenHasher,
     principal: &SessionPrincipal,
     email: &str,
 ) -> Result<IssuedInvitation, AuthError> {
-    require_current_owner(client, principal).await?;
-    let email = normalize_email(email)?;
+    require_current_owner(tx, principal).await?;
     let account_id = principal.tenant.account_id();
-    let tx = client.transaction().await?;
-    if tx
-        .query_opt("SELECT 1 FROM users WHERE email=$1", &[&email])
-        .await?
-        .is_some()
-    {
-        return Err(AuthError::Conflict);
-    }
+    // Replace this account's own open invitation for the address, live or
+    // expired. It runs whether or not a row exists, and rolls back with the
+    // transaction if a cap below refuses the request.
+    tx.execute(
+        "UPDATE seat_invitations SET canceled_at=now() WHERE account_id=$1 AND email=$2 AND accepted_at IS NULL AND canceled_at IS NULL",
+        &[&account_id, &email],
+    )
+    .await?;
     let seats: i64 = tx
         .query_one(
             "SELECT count(*) FROM memberships WHERE account_id=$1 AND role='observer' AND revoked_at IS NULL",
@@ -119,7 +151,8 @@ pub async fn create_invitation(
         .await;
     if let Err(error) = inserted {
         if error.code() == Some(&tokio_postgres::error::SqlState::UNIQUE_VIOLATION) {
-            // A concurrent invitation claimed this address first.
+            // Only this account's own concurrent request can collide, and the
+            // owner's user-row lock serializes those; fail closed anyway.
             return Err(AuthError::Conflict);
         }
         return Err(error.into());
@@ -131,10 +164,9 @@ pub async fn create_invitation(
         )
         .await?
         .get(0);
-    tx.commit().await?;
     Ok(IssuedInvitation {
         id,
-        email,
+        email: email.to_owned(),
         expires_at_ms,
         token,
     })
@@ -300,7 +332,8 @@ pub async fn invitation_token_is_live(
 }
 
 /// Accept an invitation: claim it single-use under its row lock, refuse any
-/// conflicting existing user for the bound address without touching it, then
+/// conflicting existing user for the bound address without touching it (the
+/// token holder is the only party who ever learns of that conflict), then
 /// create the unverified observer, its membership, and a verification code.
 /// Unknown, canceled, expired, and replayed tokens all run one password
 /// verification first so their timing matches a live acceptance.
@@ -342,11 +375,21 @@ pub async fn accept_invitation(
     let verification_id = Uuid::new_v4();
     let verification_token = verification_token_for_id(hasher, verification_id);
     let verification_hash = hasher.digest(b"email-verification-v1", &verification_token);
-    tx.execute(
-        "INSERT INTO users(id,email,password_hash) VALUES($1,$2,$3)",
-        &[&user_id, &email, &password_hash],
-    )
-    .await?;
+    // Two accounts may hold open invitations for one address, and the address
+    // may register concurrently, so a lost race is a conflict for the token
+    // holder (nothing is consumed), not a server error.
+    if let Err(error) = tx
+        .execute(
+            "INSERT INTO users(id,email,password_hash) VALUES($1,$2,$3)",
+            &[&user_id, &email, &password_hash],
+        )
+        .await
+    {
+        if error.code() == Some(&tokio_postgres::error::SqlState::UNIQUE_VIOLATION) {
+            return Err(AuthError::Conflict);
+        }
+        return Err(error.into());
+    }
     tx.execute(
         "INSERT INTO memberships(account_id,user_id,role) VALUES($1,$2,'observer')",
         &[&account_id, &user_id],

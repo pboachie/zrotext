@@ -135,6 +135,37 @@ pub async fn create_api_key_with_proof(
     request: ApiKeyRequest<'_>,
 ) -> Result<ApiKeyCredentials, AuthError> {
     super::validate_api_key_request(request.scopes, request.lifetime)?;
+    let tx = begin_owner_step_up(client, cipher, hasher, owner, current_password, code).await?;
+    let key = super::insert_api_key(
+        &tx,
+        hasher,
+        owner,
+        request.scopes,
+        request.bound_device_id,
+        request.lifetime,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(key)
+}
+
+/// The owner step-up shared by every action that must not be reachable with a
+/// stolen session cookie alone (API-key minting, observer invitations): the
+/// current password and, once MFA is enabled, a fresh authenticator or
+/// recovery code. Returns the open transaction holding the owner's user-row
+/// lock, so the caller's write is ordered against recovery and revoke-others,
+/// which take the same lock. A wrong code records a failure against the MFA
+/// step-up budget (committed before returning) and an exhausted budget answers
+/// `RateLimited`. The caller charges its own endpoint budget before calling,
+/// because that budget also bounds password guesses made through the route.
+pub(super) async fn begin_owner_step_up<'a>(
+    client: &'a mut Client,
+    cipher: Option<&mfa::MfaCipher>,
+    hasher: &TokenHasher,
+    owner: &SessionPrincipal,
+    current_password: &str,
+    code: Option<&str>,
+) -> Result<tokio_postgres::Transaction<'a>, AuthError> {
     let account_id = owner.tenant.account_id();
     let old_hash: String = client.query_opt(
         "SELECT u.password_hash FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id JOIN sessions s ON s.account_id=m.account_id AND s.user_id=u.id WHERE m.role='owner' AND u.id=$1 AND m.account_id=$2 AND s.id=$3 AND s.revoked_at IS NULL AND s.expires_at>now() AND a.disabled_at IS NULL",
@@ -167,17 +198,7 @@ pub async fn create_api_key_with_proof(
             return Err(AuthError::InvalidCredentials);
         }
     }
-    let key = super::insert_api_key(
-        &tx,
-        hasher,
-        owner,
-        request.scopes,
-        request.bound_device_id,
-        request.lifetime,
-    )
-    .await?;
-    tx.commit().await?;
-    Ok(key)
+    Ok(tx)
 }
 
 /// Password proof for owner-confirmed destructive actions outside this

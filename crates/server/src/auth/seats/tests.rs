@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use super::*;
-use crate::auth::{self, Role, login, register, verify_email};
+use crate::auth::abuse_limits::{self, Lane, Limit};
+use crate::auth::{self, Role, login, mfa, register, verify_email};
 use std::sync::Arc;
 use tokio_postgres::NoTls;
+use totp_rs::{Builder, Secret};
 
 /// The auth-side schema every seat test needs, applied in order.
 const AUTH_MIGRATIONS: [&str; 9] = [
@@ -145,6 +147,142 @@ async fn accept_and_verify(
     login(db, hasher, email, password).await.unwrap()
 }
 
+/// Invitation creation without the step-up proof, for tests of the caps and
+/// address semantics, which are independent of it. Production code can only
+/// reach `create_invitation_in` through `create_invitation_with_proof`; the
+/// proof itself is covered by `invitation_creation_requires_owner_step_up`
+/// and the HTTP tests below.
+async fn create_invitation(
+    db: &mut Client,
+    hasher: &TokenHasher,
+    principal: &SessionPrincipal,
+    email: &str,
+) -> Result<IssuedInvitation, AuthError> {
+    let email = normalize_email(email)?;
+    let tx = db.transaction().await?;
+    let issued = create_invitation_in(&tx, hasher, principal, &email).await?;
+    tx.commit().await?;
+    Ok(issued)
+}
+
+/// Spent attempts of the per-account `SeatInvite` budget.
+async fn seat_invite_attempts(f: &Fixture) -> i32 {
+    let hash = abuse_limits::subject_hash(
+        &f.hasher,
+        Limit::SeatInvite,
+        &f.owner.tenant.account_id().to_string(),
+        Lane::Anonymous,
+    )
+    .unwrap();
+    f.db.query_opt(
+        "SELECT attempts FROM auth_abuse_counters WHERE scope='seat_invite' AND subject_hash=$1",
+        &[&&hash[..]],
+    )
+    .await
+    .unwrap()
+    .map_or(0, |row| row.get(0))
+}
+
+async fn count_rows(db: &Client, sql: &str, account: Uuid) -> i64 {
+    db.query_one(sql, &[&account]).await.unwrap().get(0)
+}
+
+async fn step_up_failures(f: &Fixture) -> i32 {
+    abuse_limits::failures_in_window(
+        &f.db,
+        &f.hasher,
+        Limit::MfaStepUp,
+        &f.owner.user_id.to_string(),
+    )
+    .await
+    .unwrap()
+}
+
+fn totp_now(secret_base32: &str) -> String {
+    Builder::new()
+        .with_secret(Secret::try_from_base32(secret_base32).unwrap())
+        .build()
+        .unwrap()
+        .generate_current()
+        .to_string()
+}
+
+fn seat_app(f: &Fixture, mfa_key: Option<[u8; 32]>) -> axum::Router {
+    let mut state = crate::http_auth::AuthHttpState::new(
+        f.url.clone(),
+        f.hasher.clone(),
+        "https://example.test".into(),
+        Arc::new(crate::http_auth::DisabledVerificationDispatcher),
+    )
+    .unwrap();
+    // Password hashing queues behind a process-wide two-worker gate that every
+    // parallel test in this binary shares; the production two-second wait can
+    // expire under that contention and answer 503, which is what made the
+    // browser-flow test flaky in parallel runs.
+    state.hash_permit_wait = std::time::Duration::from_secs(120);
+    if let Some(key) = mfa_key {
+        state = state.with_mfa_cipher(Arc::new(mfa::MfaCipher::new(key.to_vec()).unwrap()));
+    }
+    axum::Router::new().nest("/auth", crate::http_auth::router(state))
+}
+
+/// One owner-cookie request against the seat routes, returning the status and
+/// the JSON body (`Null` when the body is not JSON).
+async fn owner_call(
+    app: &axum::Router,
+    f: &Fixture,
+    method: &str,
+    path: &str,
+    body: serde_json::Value,
+) -> (axum::http::StatusCode, serde_json::Value) {
+    use axum::{body::Body, body::to_bytes, http::Request};
+    use tower::ServiceExt;
+    let cookie = format!(
+        "__Host-zrotext_session={}; __Host-zrotext_csrf={}",
+        f.owner_credentials.token, f.owner_credentials.csrf_token
+    );
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(path)
+        .header("origin", "https://example.test")
+        .header("cookie", cookie)
+        .header("x-zrotext-csrf", &f.owner_credentials.csrf_token);
+    let body = if body.is_null() {
+        String::new()
+    } else {
+        builder = builder.header("content-type", "application/json");
+        body.to_string()
+    };
+    let response = app
+        .clone()
+        .oneshot(builder.body(Body::from(body)).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), 65_536).await.unwrap();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+    )
+}
+
+async fn invite_over_http(
+    app: &axum::Router,
+    f: &Fixture,
+    email: &str,
+    password: &str,
+    code: Option<&str>,
+) -> (axum::http::StatusCode, serde_json::Value) {
+    owner_call(
+        app,
+        f,
+        "POST",
+        "/auth/seats/invitations",
+        serde_json::json!({"email":email,"current_password":password,"code":code}),
+    )
+    .await
+}
+
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; disposable observer seat schema"]
 async fn invitation_acceptance_verification_and_sign_in_flow() {
@@ -277,11 +415,30 @@ async fn invitations_are_single_use_cancellable_and_expiry_bound() {
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; disposable observer seat schema"]
 async fn conflicting_existing_user_is_rejected_untouched() {
     let mut f = Fixture::new(false).await;
-    // An existing owner address can never be claimed by an invitation.
+    // Inviting a registered address succeeds for the owner like any other; the
+    // conflict is discovered only by the token holder, and acceptance never
+    // touches the existing user.
+    let taken = create_invitation(&mut f.db, &f.hasher, &f.owner, "owner@example.test")
+        .await
+        .unwrap();
     assert!(matches!(
-        create_invitation(&mut f.db, &f.hasher, &f.owner, "owner@example.test").await,
+        accept_invitation(&mut f.db, &f.hasher, &taken.token, &f.password).await,
         Err(AuthError::Conflict)
     ));
+    assert_eq!(
+        count_rows(
+            &f.db,
+            "SELECT count(*) FROM memberships WHERE account_id=$1 AND role='owner' AND revoked_at IS NULL",
+            f.owner.tenant.account_id()
+        )
+        .await,
+        1
+    );
+    assert!(
+        login(&f.db, &f.hasher, "owner@example.test", &f.password)
+            .await
+            .is_ok()
+    );
 
     // A user that appears after issuance blocks acceptance without being
     // modified: its password, membership, and the invitation all stay intact.
@@ -568,25 +725,37 @@ async fn seat_management_is_tenant_scoped() {
         remove_observer(&mut f.db, &observer, observer.user_id).await,
         Err(AuthError::Unauthorized)
     ));
-    // An address can hold only one open invitation server-wide: once this
-    // account invites it, another account's invitation is refused.
+    // Another account may invite the same address at the same time: one
+    // account's open invitation never blocks or reveals itself to another.
     let shared = create_invitation(&mut f.db, &f.hasher, &f.owner, "shared@example.test")
         .await
         .unwrap();
-    assert!(matches!(
-        create_invitation(&mut f.db, &f.hasher, &other, "shared@example.test").await,
-        Err(AuthError::Conflict)
-    ));
+    let theirs = create_invitation(&mut f.db, &f.hasher, &other, "shared@example.test")
+        .await
+        .unwrap();
+    assert_ne!(shared.id, theirs.id);
+    assert_ne!(shared.token, theirs.token);
+    // Cancelling is scoped per account: the owner's cancel leaves the other
+    // account's invitation for the same address live.
     assert!(
         cancel_invitation(&mut f.db, &f.owner, shared.id)
             .await
             .unwrap()
     );
-    // After cancellation the address is free for the other account.
     assert!(
-        create_invitation(&mut f.db, &f.hasher, &other, "shared@example.test")
+        !cancel_invitation(&mut f.db, &f.owner, theirs.id)
             .await
-            .is_ok()
+            .unwrap()
+    );
+    assert!(
+        !invitation_token_is_live(&f.db, &f.hasher, &shared.token)
+            .await
+            .unwrap()
+    );
+    assert!(
+        invitation_token_is_live(&f.db, &f.hasher, &theirs.token)
+            .await
+            .unwrap()
     );
     f.finish().await;
 }
@@ -778,6 +947,635 @@ async fn a_fresh_observer_principal_never_passes_an_owner_precheck() {
     f.finish().await;
 }
 
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; disposable observer seat schema"]
+async fn invitation_creation_requires_owner_step_up() {
+    let mut f = Fixture::new(false).await;
+    let cipher = mfa::MfaCipher::new(rand::random::<[u8; 32]>().to_vec()).unwrap();
+    let account = f.owner.tenant.account_id();
+    let rows = "SELECT count(*) FROM seat_invitations WHERE account_id=$1";
+
+    // A wrong password mints nothing.
+    assert!(matches!(
+        create_invitation_with_proof(
+            &mut f.db,
+            Some(&cipher),
+            &f.hasher,
+            &f.owner,
+            "not-the-owner-password",
+            None,
+            "observer@example.test",
+        )
+        .await,
+        Err(AuthError::InvalidCredentials)
+    ));
+    assert_eq!(count_rows(&f.db, rows, account).await, 0);
+
+    // The current password is enough while MFA is off.
+    let issued = create_invitation_with_proof(
+        &mut f.db,
+        Some(&cipher),
+        &f.hasher,
+        &f.owner,
+        &f.password,
+        None,
+        "observer@example.test",
+    )
+    .await
+    .unwrap();
+    assert!(issued.token.starts_with("zti_"));
+    assert_eq!(count_rows(&f.db, rows, account).await, 1);
+
+    // Once MFA is enabled the password alone stops working.
+    let pending = mfa::begin_enrollment(&mut f.db, &cipher, &f.owner, &f.password)
+        .await
+        .unwrap();
+    let recovery = mfa::confirm_enrollment(
+        &mut f.db,
+        &cipher,
+        &f.hasher,
+        &f.owner,
+        &totp_now(&pending.secret_base32),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        create_invitation_with_proof(
+            &mut f.db,
+            Some(&cipher),
+            &f.hasher,
+            &f.owner,
+            &f.password,
+            None,
+            "second@example.test",
+        )
+        .await,
+        Err(AuthError::InvalidCredentials)
+    ));
+    assert_eq!(count_rows(&f.db, rows, account).await, 1);
+    // A wrong password is refused before any code is considered and does not
+    // spend the MFA budget; a wrong code does.
+    assert!(matches!(
+        create_invitation_with_proof(
+            &mut f.db,
+            Some(&cipher),
+            &f.hasher,
+            &f.owner,
+            "not-the-owner-password",
+            Some(&recovery.codes[0]),
+            "second@example.test",
+        )
+        .await,
+        Err(AuthError::InvalidCredentials)
+    ));
+    assert_eq!(step_up_failures(&f).await, 0);
+    for expected in 1..=5 {
+        assert!(matches!(
+            create_invitation_with_proof(
+                &mut f.db,
+                Some(&cipher),
+                &f.hasher,
+                &f.owner,
+                &f.password,
+                Some("000000"),
+                "second@example.test",
+            )
+            .await,
+            Err(AuthError::InvalidCredentials)
+        ));
+        assert_eq!(step_up_failures(&f).await, expected);
+    }
+    assert_eq!(count_rows(&f.db, rows, account).await, 1);
+    // The exhausted failure budget refuses even a valid recovery code.
+    assert!(matches!(
+        create_invitation_with_proof(
+            &mut f.db,
+            Some(&cipher),
+            &f.hasher,
+            &f.owner,
+            &f.password,
+            Some(&recovery.codes[0]),
+            "second@example.test",
+        )
+        .await,
+        Err(AuthError::RateLimited)
+    ));
+    assert_eq!(count_rows(&f.db, rows, account).await, 1);
+    // After the window lapses a valid code mints.
+    f.db.execute(
+        "UPDATE auth_abuse_counters SET window_started_at=now()-interval '16 minutes' WHERE scope='mfa_step_up'",
+        &[],
+    )
+    .await
+    .unwrap();
+    create_invitation_with_proof(
+        &mut f.db,
+        Some(&cipher),
+        &f.hasher,
+        &f.owner,
+        &f.password,
+        Some(&recovery.codes[0]),
+        "second@example.test",
+    )
+    .await
+    .unwrap();
+    assert_eq!(count_rows(&f.db, rows, account).await, 2);
+    // An observer session never passes, whatever proof it carries.
+    let other_password = f.password.clone();
+    let observer_invite = create_invitation(&mut f.db, &f.hasher, &f.owner, "third@example.test")
+        .await
+        .unwrap();
+    let credentials = accept_and_verify(
+        &mut f.db,
+        &f.hasher,
+        &observer_invite.token,
+        &other_password,
+        "third@example.test",
+    )
+    .await;
+    let observer = auth::authenticate_session(&f.db, &f.hasher, &credentials.token)
+        .await
+        .unwrap();
+    assert!(matches!(
+        create_invitation_with_proof(
+            &mut f.db,
+            Some(&cipher),
+            &f.hasher,
+            &observer,
+            &other_password,
+            None,
+            "fourth@example.test",
+        )
+        .await,
+        Err(AuthError::Unauthorized)
+    ));
+    f.finish().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; disposable observer seat schema"]
+async fn conflicts_surface_only_to_the_token_holder_at_accept() {
+    let mut f = Fixture::new(false).await;
+    let other = f.other_owner("other-owner@example.test").await;
+    let account = f.owner.tenant.account_id();
+
+    // Two accounts invite one unregistered address; both succeed.
+    let mine = create_invitation(&mut f.db, &f.hasher, &f.owner, "shared@example.test")
+        .await
+        .unwrap();
+    let theirs = create_invitation(&mut f.db, &f.hasher, &other, "shared@example.test")
+        .await
+        .unwrap();
+    // The first token holder to accept wins the address.
+    let winner_password = format!("synthetic-{}", Uuid::new_v4());
+    let acceptance = accept_invitation(&mut f.db, &f.hasher, &theirs.token, &winner_password)
+        .await
+        .unwrap();
+    // The other token holder alone learns of the conflict, and nothing about
+    // the winner changes: same password, membership, and account.
+    assert!(matches!(
+        accept_invitation(&mut f.db, &f.hasher, &mine.token, &f.password).await,
+        Err(AuthError::Conflict)
+    ));
+    let row = f
+        .db
+        .query_one(
+            "SELECT m.account_id,m.role,m.revoked_at IS NULL FROM users u JOIN memberships m ON m.user_id=u.id WHERE u.id=$1",
+            &[&acceptance.user_id],
+        )
+        .await
+        .unwrap();
+    assert_eq!(row.get::<_, Uuid>(0), other.tenant.account_id());
+    assert_eq!(row.get::<_, String>(1), "observer");
+    assert!(row.get::<_, bool>(2));
+    assert!(
+        crate::auth::verify_email_with_password(
+            &mut f.db,
+            &f.hasher,
+            &acceptance.verification_token,
+            &winner_password,
+        )
+        .await
+        .unwrap()
+    );
+    assert!(
+        login(&f.db, &f.hasher, "shared@example.test", &winner_password)
+            .await
+            .is_ok()
+    );
+    // The refused invitation was not consumed, and still counts as an open
+    // invitation the inviting owner can list and cancel.
+    assert_eq!(
+        count_rows(
+            &f.db,
+            "SELECT count(*) FROM seat_invitations WHERE account_id=$1 AND accepted_at IS NULL AND canceled_at IS NULL",
+            account
+        )
+        .await,
+        1
+    );
+    f.finish().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; disposable observer seat schema"]
+async fn reinviting_an_address_replaces_the_earlier_invitation() {
+    let mut f = Fixture::new(false).await;
+    let account = f.owner.tenant.account_id();
+    let open = "SELECT count(*) FROM seat_invitations WHERE account_id=$1 AND accepted_at IS NULL AND canceled_at IS NULL";
+
+    // Re-inviting a live invitation retires the first token.
+    let first = create_invitation(&mut f.db, &f.hasher, &f.owner, "observer@example.test")
+        .await
+        .unwrap();
+    let second = create_invitation(&mut f.db, &f.hasher, &f.owner, "observer@example.test")
+        .await
+        .unwrap();
+    assert_ne!(first.token, second.token);
+    assert!(
+        !invitation_token_is_live(&f.db, &f.hasher, &first.token)
+            .await
+            .unwrap()
+    );
+    assert!(
+        invitation_token_is_live(&f.db, &f.hasher, &second.token)
+            .await
+            .unwrap()
+    );
+    assert_eq!(count_rows(&f.db, open, account).await, 1);
+
+    // An expired open invitation never blocks the address: inviting again
+    // needs no manual cancel and leaves exactly one open row.
+    f.db.execute(
+        "UPDATE seat_invitations SET expires_at=now()-interval '1 second' WHERE id=$1",
+        &[&second.id],
+    )
+    .await
+    .unwrap();
+    let third = create_invitation(&mut f.db, &f.hasher, &f.owner, "observer@example.test")
+        .await
+        .unwrap();
+    assert!(
+        invitation_token_is_live(&f.db, &f.hasher, &third.token)
+            .await
+            .unwrap()
+    );
+    let stale_canceled: bool =
+        f.db.query_one(
+            "SELECT canceled_at IS NOT NULL FROM seat_invitations WHERE id=$1",
+            &[&second.id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert!(stale_canceled);
+    assert_eq!(count_rows(&f.db, open, account).await, 1);
+
+    // The database itself keeps the uniqueness per account and address.
+    let duplicate = f
+        .db
+        .execute(
+            "INSERT INTO seat_invitations(id,account_id,email,token_hash,expires_at) VALUES($1,$2,'observer@example.test',$3,now()+interval '1 day')",
+            &[&Uuid::new_v4(), &account, &vec![7u8; 32]],
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        duplicate.code(),
+        Some(&tokio_postgres::error::SqlState::UNIQUE_VIOLATION)
+    );
+
+    // At the open cap a re-invite of an already invited address nets zero and
+    // succeeds, while a new address is still refused.
+    for index in 0..MAX_OPEN_INVITATIONS - 1 {
+        create_invitation(
+            &mut f.db,
+            &f.hasher,
+            &f.owner,
+            &format!("observer-{index}@example.test"),
+        )
+        .await
+        .unwrap();
+    }
+    assert_eq!(count_rows(&f.db, open, account).await, MAX_OPEN_INVITATIONS);
+    assert!(matches!(
+        create_invitation(&mut f.db, &f.hasher, &f.owner, "overflow@example.test").await,
+        Err(AuthError::Conflict)
+    ));
+    create_invitation(&mut f.db, &f.hasher, &f.owner, "observer-0@example.test")
+        .await
+        .unwrap();
+    assert_eq!(count_rows(&f.db, open, account).await, MAX_OPEN_INVITATIONS);
+    // A refused request rolls the replacement back: the earlier token lives.
+    let survivor = create_invitation(&mut f.db, &f.hasher, &f.owner, "observer-1@example.test")
+        .await
+        .unwrap();
+    assert!(
+        invitation_token_is_live(&f.db, &f.hasher, &survivor.token)
+            .await
+            .unwrap()
+    );
+    f.finish().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; disposable observer seat schema"]
+async fn invitation_route_demands_password_and_mfa_and_charges_budgets() {
+    use axum::http::StatusCode;
+
+    let mut f = Fixture::new(false).await;
+    let key = rand::random::<[u8; 32]>();
+    let cipher = mfa::MfaCipher::new(key.to_vec()).unwrap();
+    let app = seat_app(&f, Some(key));
+    let account = f.owner.tenant.account_id();
+    let rows = "SELECT count(*) FROM seat_invitations WHERE account_id=$1";
+
+    // A session cookie and CSRF alone, with no proof in the body, mint nothing.
+    let (status, _) = owner_call(
+        &app,
+        &f,
+        "POST",
+        "/auth/seats/invitations",
+        serde_json::json!({"email":"observer@example.test"}),
+    )
+    .await;
+    assert!(status.is_client_error() && status != StatusCode::CREATED);
+    assert_eq!(count_rows(&f.db, rows, account).await, 0);
+
+    // A wrong password answers exactly as API-key creation does, mints
+    // nothing, and spends the per-account SeatInvite budget, which is charged
+    // before the password is hashed and so also bounds guesses on this route.
+    let before = seat_invite_attempts(&f).await;
+    let (status, _) = invite_over_http(
+        &app,
+        &f,
+        "observer@example.test",
+        "wrong-owner-password",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(count_rows(&f.db, rows, account).await, 0);
+    assert_eq!(seat_invite_attempts(&f).await, before + 1);
+
+    // The right password mints and is charged the same single attempt.
+    let (status, body) =
+        invite_over_http(&app, &f, "observer@example.test", &f.password, None).await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert!(body["token"].as_str().unwrap().starts_with("zti_"));
+    assert_eq!(count_rows(&f.db, rows, account).await, 1);
+    assert_eq!(seat_invite_attempts(&f).await, before + 2);
+
+    // An exhausted SeatInvite budget refuses even the correct password.
+    f.db.execute(
+        "UPDATE auth_abuse_counters SET attempts=30 WHERE scope='seat_invite' AND attempts<30",
+        &[],
+    )
+    .await
+    .unwrap();
+    let (status, _) = invite_over_http(&app, &f, "budget@example.test", &f.password, None).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(count_rows(&f.db, rows, account).await, 1);
+    f.db.execute(
+        "DELETE FROM auth_abuse_counters WHERE scope='seat_invite'",
+        &[],
+    )
+    .await
+    .unwrap();
+
+    // With MFA enabled the password alone is refused with the same status.
+    let pending = mfa::begin_enrollment(&mut f.db, &cipher, &f.owner, &f.password)
+        .await
+        .unwrap();
+    let recovery = mfa::confirm_enrollment(
+        &mut f.db,
+        &cipher,
+        &f.hasher,
+        &f.owner,
+        &totp_now(&pending.secret_base32),
+    )
+    .await
+    .unwrap();
+    let (status, _) = invite_over_http(&app, &f, "second@example.test", &f.password, None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(step_up_failures(&f).await, 0);
+    // A wrong code answers the same, and spends the MFA step-up failure
+    // budget on top of the SeatInvite attempt.
+    let (status, _) =
+        invite_over_http(&app, &f, "second@example.test", &f.password, Some("000000")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(step_up_failures(&f).await, 1);
+    assert_eq!(seat_invite_attempts(&f).await, 2);
+    assert_eq!(count_rows(&f.db, rows, account).await, 1);
+    // A valid recovery code mints.
+    let (status, _) = invite_over_http(
+        &app,
+        &f,
+        "second@example.test",
+        &f.password,
+        Some(&recovery.codes[0]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(count_rows(&f.db, rows, account).await, 2);
+    // Cancel is a narrowing action: session and CSRF stay sufficient.
+    let listed =
+        f.db.query_one(
+            "SELECT id FROM seat_invitations WHERE email='second@example.test'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get::<_, Uuid>(0);
+    let (status, _) = owner_call(
+        &app,
+        &f,
+        "DELETE",
+        &format!("/auth/seats/invitations/{listed}"),
+        serde_json::Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    f.finish().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; disposable observer seat schema"]
+async fn inviting_owner_cannot_tell_registered_unknown_and_elsewhere_invited_addresses_apart() {
+    use axum::http::StatusCode;
+
+    let mut f = Fixture::new(false).await;
+    let app = seat_app(&f, None);
+    let account = f.owner.tenant.account_id();
+    let other = f.other_owner("registered@example.test").await;
+    // The third case: an address another account already holds an open
+    // invitation for.
+    let elsewhere = create_invitation(&mut f.db, &f.hasher, &other, "elsewhere@example.test")
+        .await
+        .unwrap();
+    let cases = [
+        "registered@example.test",
+        "elsewhere@example.test",
+        "unknown@example.test",
+    ];
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    let mut shapes = Vec::new();
+    for (index, address) in cases.iter().enumerate() {
+        let attempts_before = seat_invite_attempts(&f).await;
+        let (status, body) = invite_over_http(&app, &f, address, &f.password, None).await;
+        // Same status, and a real single-use token in every case.
+        assert_eq!(status, StatusCode::CREATED, "{address}");
+        let object = body.as_object().unwrap();
+        let mut keys: Vec<_> = object.keys().cloned().collect();
+        keys.sort();
+        assert_eq!(keys, ["email", "expires_at_ms", "id", "token"], "{address}");
+        assert_eq!(body["email"], *address);
+        let token = body["token"].as_str().unwrap();
+        assert!(token.starts_with("zti_"));
+        assert!(
+            invitation_token_is_live(&f.db, &f.hasher, token)
+                .await
+                .unwrap(),
+            "{address}"
+        );
+        let expires = body["expires_at_ms"].as_i64().unwrap();
+        let week_ms = i64::from(INVITATION_DAYS) * 86_400_000;
+        assert!((expires - now_ms - week_ms).abs() < 120_000, "{address}");
+        // The same budget effect, and one more open slot, every time.
+        assert_eq!(
+            seat_invite_attempts(&f).await,
+            attempts_before + 1,
+            "{address}"
+        );
+        assert_eq!(
+            count_rows(
+                &f.db,
+                "SELECT count(*) FROM seat_invitations WHERE account_id=$1 AND accepted_at IS NULL AND canceled_at IS NULL AND expires_at>now()",
+                account
+            )
+            .await,
+            index as i64 + 1
+        );
+        shapes.push(serde_json::json!({
+            "status": status.as_u16(),
+            "keys": keys,
+            "token_len": token.len(),
+        }));
+    }
+    assert_eq!(shapes[0], shapes[1]);
+    assert_eq!(shapes[1], shapes[2]);
+
+    // The owner's list shows each invitation identically, as open.
+    let (status, listed) =
+        owner_call(&app, &f, "GET", "/auth/seats", serde_json::Value::Null).await;
+    assert_eq!(status, StatusCode::OK);
+    let invitations = listed["invitations"].as_array().unwrap();
+    assert_eq!(invitations.len(), 3);
+    for invitation in invitations {
+        assert_eq!(invitation["status"], "open");
+        assert!(invitation["accepted_at_ms"].is_null());
+        assert!(invitation["canceled_at_ms"].is_null());
+        assert!(invitation["accepted_user_id"].is_null());
+    }
+    // The other account's invitation is untouched by all of it.
+    assert!(
+        invitation_token_is_live(&f.db, &f.hasher, &elsewhere.token)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        count_rows(
+            &f.db,
+            "SELECT count(*) FROM seat_invitations WHERE account_id=$1 AND canceled_at IS NULL",
+            other.tenant.account_id()
+        )
+        .await,
+        1
+    );
+    // The open-invitation cap counts all three kinds alike.
+    for index in 3..MAX_OPEN_INVITATIONS {
+        let (status, _) = invite_over_http(
+            &app,
+            &f,
+            &format!("filler-{index}@example.test"),
+            &f.password,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+    }
+    let (status, _) = invite_over_http(&app, &f, "overflow@example.test", &f.password, None).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    f.finish().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; disposable observer seat schema"]
+async fn concurrent_accepts_of_one_address_by_two_accounts_have_one_winner() {
+    let mut f = Fixture::new(false).await;
+    let other = f.other_owner("other-owner@example.test").await;
+    let mine = create_invitation(&mut f.db, &f.hasher, &f.owner, "shared@example.test")
+        .await
+        .unwrap();
+    let theirs = create_invitation(&mut f.db, &f.hasher, &other, "shared@example.test")
+        .await
+        .unwrap();
+    let mut accepts = Vec::new();
+    for token in [mine.token.clone(), theirs.token.clone()] {
+        let url = f.url.clone();
+        let hasher = f.hasher.clone();
+        let password = format!("synthetic-{}", Uuid::new_v4());
+        accepts.push(tokio::spawn(async move {
+            let (mut client, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+            tokio::spawn(async move { connection.await.unwrap() });
+            accept_invitation(&mut client, &hasher, &token, &password).await
+        }));
+    }
+    let mut outcomes = Vec::new();
+    for accept in accepts {
+        outcomes.push(accept.await.unwrap());
+    }
+    // Exactly one token holder gets the address; the other sees a conflict,
+    // never a server error, and their invitation is left unconsumed.
+    assert_eq!(outcomes.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|result| matches!(result, Err(AuthError::Conflict)))
+            .count(),
+        1,
+        "{:?}",
+        outcomes
+            .iter()
+            .map(|r| r.as_ref().err())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        f.db.query_one(
+            "SELECT count(*) FROM users WHERE email='shared@example.test'",
+            &[]
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0),
+        1
+    );
+    assert_eq!(
+        f.db.query_one(
+            "SELECT count(*) FROM seat_invitations WHERE email='shared@example.test' AND accepted_at IS NULL",
+            &[]
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0),
+        1
+    );
+    f.finish().await;
+}
+
 /// The complete owner and invitee browser flow over the real HTTP routes:
 /// invite, list, accept, verify, sign in, read device status, and remove.
 #[tokio::test]
@@ -790,13 +1588,16 @@ async fn observer_seat_browser_flow_over_http() {
     use tower::ServiceExt;
 
     let mut f = Fixture::new(true).await;
-    let state = crate::http_auth::AuthHttpState::new(
+    let mut state = crate::http_auth::AuthHttpState::new(
         f.url.clone(),
         f.hasher.clone(),
         "https://example.test".into(),
         Arc::new(crate::http_auth::DisabledVerificationDispatcher),
     )
     .unwrap();
+    // See `seat_app`: the process-wide hashing gate makes the production
+    // two-second permit wait flaky when tests run in parallel.
+    state.hash_permit_wait = std::time::Duration::from_secs(120);
     let app = axum::Router::new()
         .nest("/auth", crate::http_auth::router(state))
         .nest(
@@ -834,7 +1635,8 @@ async fn observer_seat_browser_flow_over_http() {
             "/auth/seats/invitations",
             &owner_cookie,
             Some(&f.owner_credentials.csrf_token),
-            serde_json::json!({"email":"observer@example.test"}).to_string(),
+            serde_json::json!({"email":"observer@example.test","current_password":f.password})
+                .to_string(),
         ))
         .await
         .unwrap();
