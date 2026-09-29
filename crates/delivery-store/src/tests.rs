@@ -2,7 +2,7 @@ use super::*;
 
 // Keep the admission fixtures on the complete, reviewed schema. SQL is
 // embedded at build time so tests never execute files discovered at runtime.
-const TEST_MIGRATIONS: [(&str, &str); 51] = [
+const TEST_MIGRATIONS: [(&str, &str); 52] = [
     (
         "001_foundation.sql",
         include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
@@ -209,6 +209,10 @@ const TEST_MIGRATIONS: [(&str, &str); 51] = [
         "051_failover_controller_state.sql",
         include_str!("../../../deploy/compose/migrations/051_failover_controller_state.sql"),
     ),
+    (
+        "052_admission_pending_index.sql",
+        include_str!("../../../deploy/compose/migrations/052_admission_pending_index.sql"),
+    ),
 ];
 
 /// Applies every numbered migration in order. Shared by the PostgreSQL-backed
@@ -232,6 +236,16 @@ pub(crate) async fn apply_test_migrations(client: &Client) {
                 .batch_execute(
                     "CREATE INDEX CONCURRENTLY message_events_attempt_evidence \
                  ON message_events(attempt_id,evidence_code)",
+                )
+                .await
+                .unwrap();
+        }
+        if name == "052_admission_pending_index.sql" {
+            client
+                .batch_execute(
+                    "CREATE INDEX CONCURRENTLY messages_admission_pending \
+                     ON messages(account_id,device_id) \
+                     WHERE state IN ('queued','claimed')",
                 )
                 .await
                 .unwrap();

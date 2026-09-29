@@ -34,7 +34,7 @@ macro_rules! migration {
 }
 
 // Complete reviewed schema, embedded at build time.
-const TEST_MIGRATIONS: [(&str, &str); 51] = [
+const TEST_MIGRATIONS: [(&str, &str); 52] = [
     migration!("001_foundation.sql"),
     migration!("002_auth.sql"),
     migration!("003_delivery.sql"),
@@ -86,6 +86,7 @@ const TEST_MIGRATIONS: [(&str, &str); 51] = [
     migration!("049_owner_queue_probe_indexes.sql"),
     migration!("050_message_attempts_recent_index.sql"),
     migration!("051_failover_controller_state.sql"),
+    migration!("052_admission_pending_index.sql"),
 ];
 
 #[test]
@@ -172,6 +173,15 @@ async fn migrated_schema(prefix: &str) -> (Client, String, String, Client) {
     let (db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
     for (name, migration) in TEST_MIGRATIONS {
+        if name == "052_admission_pending_index.sql" {
+            db.batch_execute(
+                "CREATE INDEX CONCURRENTLY messages_admission_pending \
+                     ON messages(account_id,device_id) \
+                     WHERE state IN ('queued','claimed')",
+            )
+            .await
+            .unwrap();
+        }
         if name == "034_delivery_sweep_index.sql" {
             // Mirror the migrator's autocommit preparation.
             db.batch_execute(
