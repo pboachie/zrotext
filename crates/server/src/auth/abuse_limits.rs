@@ -13,8 +13,10 @@
 //! separate, larger verified-route ceiling that made-up subjects never reach.
 //! Email verification probes live one-use codes the same way. The device
 //! socket handshake deliberately keeps no per-subject budget at all: the
-//! device ID is public, so its pre-proof steps are bounded only by their route
-//! ceilings and handshake slots.
+//! device ID is public, so a per-device counter could be spent by anyone who
+//! knows it. Its steps spend the anonymous route ceiling first; an enrolled
+//! device the anonymous ceiling refuses falls through to the subjectless
+//! verified-route ceiling through `consume_verified_route`.
 //!
 //! Limits whose every spender is already authenticated (`subject_only`) charge
 //! only the caller's own per-subject row and skip the shared route counter
@@ -145,7 +147,8 @@ impl Limit {
             // Device socket handshake steps are subjectless by design: the
             // device ID is public information, so a per-device counter would
             // let anyone who knows it refuse the enrolled phone's handshake.
-            // Only the route-wide anonymous ceiling bounds these scopes.
+            // Route ceilings bound these scopes: the anonymous one, and for
+            // an enrolled device it refuses, the verified one.
             Self::DeviceChallenge => ("device_challenge", 300, 60, None),
             Self::DeviceAuthenticate => ("device_authenticate", 300, 60, None),
             Self::MfaChallenge => ("mfa_challenge", 300, 60, Some((5, 300))),
@@ -187,6 +190,19 @@ pub async fn consume_verified(
     subject: &str,
 ) -> Result<bool, tokio_postgres::Error> {
     charge(client, hasher, limit, Some(subject), Lane::Verified).await
+}
+
+/// Admit a request for a limit with no per-subject policy through the
+/// verified-route ceiling only, after the anonymous lane refused it and the
+/// caller showed its target is real (an enrolled device). It keeps no subject
+/// row, so naming a public identifier cannot spend a budget tied to it, and
+/// requests that name no real target never reach this ceiling.
+pub async fn consume_verified_route(
+    client: &Client,
+    hasher: &TokenHasher,
+    limit: Limit,
+) -> Result<bool, tokio_postgres::Error> {
+    charge(client, hasher, limit, None, Lane::Verified).await
 }
 
 /// Spend the anonymous budget first. Only when it refuses does `live` run;

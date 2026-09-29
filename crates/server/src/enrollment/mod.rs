@@ -795,7 +795,7 @@ pub async fn cancel_pairing(
 /// still be active. A valid proof authorizes `claim_session`; an invalid
 /// nonce, an expired challenge, or a bad signature all return `Unauthorized`
 /// without distinguishing which check failed.
-pub async fn authenticate_socket_proof(
+pub(crate) async fn authenticate_socket_proof(
     client: &Client,
     hasher: &EnrollmentHasher,
     challenge: &DeviceChallenge,

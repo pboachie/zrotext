@@ -757,23 +757,39 @@ async fn authenticate(
     let Ok(client) = runtime_db::connect_device(&state.database_url).await else {
         return Err(Some(RETRY_LATER));
     };
-    // The pre-proof step is stateless and budgeted only by the shared route
-    // ceiling and handshake slots. There is deliberately no per-device
+    // The pre-proof step is stateless and budgeted only by shared route
+    // ceilings and handshake slots. There is deliberately no per-device
     // counter: the device ID is public, so anyone who knows it would be able
     // to spend one and keep the enrolled phone's handshake refused. A
     // concurrent-socket cap alone cannot bound rapid hello/close cycles, so
-    // the route ceiling still bounds issuance reads fleet-wide.
-    if !matches!(
-        abuse_limits::consume(&client, &state.auth_hasher, Limit::DeviceChallenge, None).await,
-        Ok(true)
-    ) {
+    // the anonymous route ceiling bounds issuance reads fleet-wide. When
+    // made-up device IDs have filled it, an enrolled device is still admitted
+    // through the separate verified-route ceiling, which unknown IDs never
+    // reach.
+    let Ok(anonymous) =
+        abuse_limits::consume(&client, &state.auth_hasher, Limit::DeviceChallenge, None).await
+    else {
         return Err(Some(RETRY_LATER));
-    }
+    };
     let account = match enrollment::live_device_account(&client, device_id).await {
         Ok(Some(account_id)) => account_id,
-        Ok(None) => return Err(Some(close_code::POLICY)),
+        Ok(None) if anonymous => return Err(Some(close_code::POLICY)),
+        Ok(None) => return Err(Some(RETRY_LATER)),
         Err(error) => return Err(Some(enrollment_close_code(&error))),
     };
+    if !anonymous
+        && !matches!(
+            abuse_limits::consume_verified_route(
+                &client,
+                &state.auth_hasher,
+                Limit::DeviceChallenge
+            )
+            .await,
+            Ok(true)
+        )
+    {
+        return Err(Some(RETRY_LATER));
+    }
     let challenge = enrollment::issue_socket_challenge(
         &state.enrollment_hasher,
         account,
@@ -826,14 +842,17 @@ async fn authenticate(
     let Ok(client) = runtime_db::connect_device(&state.database_url).await else {
         return Err(Some(RETRY_LATER));
     };
-    // Route ceiling only, for the same reason as issuance: a per-device proof
-    // budget would be spendable by anyone naming the device ID.
-    if !matches!(
-        abuse_limits::consume(&client, &state.auth_hasher, Limit::DeviceAuthenticate, None).await,
-        Ok(true)
-    ) {
+    // Route ceilings only, for the same reason as issuance: a per-device proof
+    // budget would be spendable by anyone naming the device ID. Every proof
+    // reaching this point passed a charged hello on this connection, so the
+    // verification work below is bounded by issuance. When the anonymous
+    // ceiling is full, only a proof that verifies is admitted, through the
+    // verified-route ceiling; a failed proof never reaches that ceiling.
+    let Ok(anonymous) =
+        abuse_limits::consume(&client, &state.auth_hasher, Limit::DeviceAuthenticate, None).await
+    else {
         return Err(Some(RETRY_LATER));
-    }
+    };
     let identity = enrollment::authenticate_socket_proof(
         &client,
         &state.enrollment_hasher,
@@ -843,6 +862,19 @@ async fn authenticate(
     )
     .await
     .map_err(|error| Some(enrollment_close_code(&error)))?;
+    if !anonymous
+        && !matches!(
+            abuse_limits::consume_verified_route(
+                &client,
+                &state.auth_hasher,
+                Limit::DeviceAuthenticate
+            )
+            .await,
+            Ok(true)
+        )
+    {
+        return Err(Some(RETRY_LATER));
+    }
     Ok(identity)
 }
 

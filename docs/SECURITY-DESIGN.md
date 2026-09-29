@@ -317,30 +317,37 @@ its anonymous counter, so it keeps one per-subject counter across both
 lanes, and a challenge still allows five code attempts per five minutes in
 total rather than five per lane.
 
-Anyone can spend a route-wide budget with made-up subjects, so it only decides
-admission for anonymous requests. When it refuses a request, the request is
-still admitted if the caller shows it is not anonymous: the one-use QR token
-for a pairing claim and the claim nonce for its proof; a live second-factor
-challenge token; or, for password sign-in, a login-client cookie issued for
-that address. Each check is a single indexed read with no password or signature
-work. Admitted requests spend the same per-subject budget plus a separate
-verified-route ceiling ten times the anonymous one, which made-up subjects
-cannot reach. Refused requests leave no counter rows.
-
 The device WebSocket handshake is deliberately exempt from per-subject
 budgets. Its challenge is a stateless HMAC under the enrollment pepper over
 the account, device, and a timestamped challenge UUID, verifiable for 60
 seconds, so issuance costs one indexed liveness read and no write. The device
 ID is public information, so any counter keyed to it could be spent by an
 unauthenticated caller who knows it, which used to let such a caller refuse
-the enrolled phone's handshake with 1013. Issuance and proof now spend only
-their anonymous route-wide ceilings (300 per 60 seconds each, across all
-instances), with handshake slots bounding concurrency; a flood that fills a
-route ceiling delays phones briefly with a retryable close until the window
-rolls over, and no request naming a device ID can target one phone. Within a
-challenge's 60-second window a captured proof could be replayed; sessions are
-still fenced by the writer-owned connection epoch, and observing a proof
-requires breaking TLS.
+the enrolled phone's handshake with 1013. Issuance and proof each spend an
+anonymous route-wide ceiling (300 per 60 seconds, across all instances), with
+handshake slots bounding concurrency. When the anonymous ceiling refuses a
+hello, the hub still issues a challenge if the named device is enrolled and
+live, charging a subjectless verified-route ceiling ten times the anonymous
+one; when it refuses a proof, the proof is still admitted if it verifies,
+charging the matching verified-route ceiling. Made-up device IDs and proofs
+that fail verification never reach a verified ceiling, so junk traffic that
+fills the anonymous ceilings, from however many sources, cannot refuse an
+enrolled phone. The residual is traffic naming a real, live device ID: at a
+sustained rate above roughly 3,300 hellos per minute (about 55 per second)
+it can fill the verified issuance ceiling too, and every phone then receives
+a retryable 1013 until the window rolls over, for as long as that rate is
+sustained. No per-device counter exists for such a caller to single out one
+phone. Operators should therefore rate-limit WebSocket upgrades per source
+address at the edge, in addition to the per-source connection limit, because
+a connection limit alone does not bound sequential hello/close cycles.
+
+A proof is accepted only when its challenge ID, account, device and nonce
+equal the challenge issued on the same connection. Challenges are stateless
+and not marked used, so this binding is what stops a proof captured from one
+connection, or replayed after a reconnect, from opening a session on another.
+Within one connection's 60-second window a captured proof could be replayed
+only against that same challenge; sessions are still fenced by the
+writer-owned connection epoch, and observing a proof requires breaking TLS.
 A background worker deletes idle counter rows only after the longest window of
 their budget, plus one minute, has passed, so pruning never resets a budget
 that is still in force. Retention is derived from the same policy table the

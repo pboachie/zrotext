@@ -340,6 +340,51 @@ async fn device_handshake_scopes_keep_no_subject_budget() {
         .unwrap()
         .get(0);
     assert_eq!(rows, 1, "only the route row; no per-device subject rows");
+    // An enrolled device refused by the full anonymous ceiling falls through
+    // to the verified-route ceiling. It is separate from the anonymous row,
+    // ten times its size, and still keeps no per-device row.
+    for _ in 0..3_000 {
+        assert!(
+            consume_verified_route(&db, &hasher, Limit::DeviceChallenge)
+                .await
+                .unwrap()
+        );
+    }
+    assert!(
+        !consume_verified_route(&db, &hasher, Limit::DeviceChallenge)
+            .await
+            .unwrap(),
+        "the verified-route ceiling still bounds enrolled devices"
+    );
+    let route_rows: Vec<(Vec<u8>, i32)> = db
+        .query(
+            "SELECT subject_hash, attempts FROM auth_abuse_counters
+             WHERE scope IN ('device_challenge','device_authenticate') ORDER BY attempts",
+            &[],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| (row.get(0), row.get(1)))
+        .collect();
+    assert_eq!(
+        route_rows,
+        vec![
+            (
+                hasher
+                    .digest(b"abuse-global-v1", "device_challenge")
+                    .to_vec(),
+                300
+            ),
+            (
+                hasher
+                    .digest(b"abuse-verified-v1", "device_challenge")
+                    .to_vec(),
+                3_000
+            ),
+        ],
+        "one anonymous and one verified route row; no per-device subject rows"
+    );
     setup
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
         .await

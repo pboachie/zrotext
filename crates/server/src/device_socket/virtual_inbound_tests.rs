@@ -380,85 +380,212 @@ async fn authenticated_inbound_replay_retries_one_webhook_delivery() {
         .unwrap();
 }
 
+/// One enrolled phone behind a real socket router on a disposable schema.
+struct HandshakeFixture {
+    admin: tokio_postgres::Client,
+    db: tokio_postgres::Client,
+    schema: String,
+    address: std::net::SocketAddr,
+    server: tokio::task::JoinHandle<()>,
+    auth_hasher: Arc<TokenHasher>,
+    account_id: Uuid,
+    device_id: Uuid,
+    signing: SigningKey,
+}
+
+impl HandshakeFixture {
+    async fn start(prefix: &str) -> Self {
+        let url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
+        let (admin, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        let schema = format!("{prefix}_{}", Uuid::new_v4().simple());
+        admin
+            .batch_execute(&format!("CREATE SCHEMA {schema}"))
+            .await
+            .unwrap();
+        let separator = if url.contains('?') { '&' } else { '?' };
+        let schema_url = format!("{url}{separator}options=-csearch_path%3D{schema}");
+        let (db, connection) = tokio_postgres::connect(&schema_url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        for migration in [
+            include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
+            include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+            include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
+            include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
+            include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
+            include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+            include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
+        ] {
+            db.batch_execute(migration).await.unwrap();
+        }
+        let account_id = Uuid::new_v4();
+        let device_id = Uuid::new_v4();
+        let signing = SigningKey::generate_from_rng(&mut rng());
+        let public_key = signing.verifying_key().to_sec1_point(false);
+        let fingerprint: [u8; 32] = Sha256::digest(public_key.as_bytes()).into();
+        db.execute("INSERT INTO sites(site_id) VALUES('fixture')", &[])
+            .await
+            .unwrap();
+        db.execute("INSERT INTO accounts(id) VALUES($1)", &[&account_id])
+            .await
+            .unwrap();
+        db.execute(
+            "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'handshake fixture')",
+            &[&device_id, &account_id],
+        )
+        .await
+        .unwrap();
+        db.execute("INSERT INTO device_keys(device_id,account_id,signing_key_sec1,fingerprint) VALUES($1,$2,$3,$4)", &[&device_id,&account_id,&public_key.as_bytes(),&&fingerprint[..]]).await.unwrap();
+        let auth_hasher = Arc::new(TokenHasher::new(crate::test_keys::key(10)).unwrap());
+        let state = DeviceSocketState {
+            database_url: schema_url,
+            site_id: "fixture".into(),
+            instance_id: "fixture".into(),
+            deployment_epoch: 1,
+            enrollment_hasher: Arc::new(EnrollmentHasher::new(crate::test_keys::key(9)).unwrap()),
+            auth_hasher: auth_hasher.clone(),
+            alpha_policy: Arc::new(AlphaPolicy::parse(None, None, None).unwrap()),
+            dispatch_runtime_enabled: false,
+            inbound_pilot_enabled: false,
+            line_opt_out_enabled: false,
+            sms_line_activation_enabled: false,
+            draining: Arc::new(AtomicBool::new(false)),
+            drain_notify: Arc::new(Notify::new()),
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router(state)).await.unwrap();
+        });
+        Self {
+            admin,
+            db,
+            schema,
+            address,
+            server,
+            auth_hasher,
+            account_id,
+            device_id,
+            signing,
+        }
+    }
+
+    /// Opens a socket and sends `hello` naming `device_id`.
+    async fn hello(&self, device_id: Uuid) -> TestSocket {
+        let (mut socket, _) = connect_async(format!("ws://{}/v1/device-stream", self.address))
+            .await
+            .unwrap();
+        send_json(
+            &mut socket,
+            json!({"v":1,"type":"hello","device_id":device_id}),
+        )
+        .await;
+        socket
+    }
+
+    /// Opens a socket for the enrolled phone and returns its challenge frame.
+    async fn challenge(&self) -> (TestSocket, Value) {
+        let mut socket = self.hello(self.device_id).await;
+        let challenge = receive_json(&mut socket).await;
+        assert_eq!(challenge["type"], "challenge");
+        assert_eq!(challenge["account_id"], json!(self.account_id));
+        assert_eq!(challenge["device_id"], json!(self.device_id));
+        (socket, challenge)
+    }
+
+    /// The phone's proof frame for `challenge`, signed with its device key.
+    fn proof(&self, challenge: &Value) -> Value {
+        let typed = DeviceChallenge {
+            id: Uuid::parse_str(challenge["challenge_id"].as_str().unwrap()).unwrap(),
+            account_id: self.account_id,
+            device_id: self.device_id,
+            nonce: URL_SAFE_NO_PAD
+                .decode(challenge["nonce"].as_str().unwrap())
+                .unwrap()
+                .try_into()
+                .unwrap(),
+        };
+        let signature: Signature = self.signing.sign(&device_challenge_bytes(&typed));
+        json!({
+            "v":1,"type":"proof","challenge_id":challenge["challenge_id"],
+            "account_id":self.account_id,"device_id":self.device_id,
+            "nonce":challenge["nonce"],
+            "signature_der":URL_SAFE_NO_PAD.encode(signature.to_der().as_bytes())
+        })
+    }
+
+    /// Attempts per route row of `scope`, smallest first.
+    async fn route_attempts(&self, scope: &str) -> Vec<i32> {
+        self.db
+            .query(
+                "SELECT attempts FROM auth_abuse_counters WHERE scope=$1 ORDER BY attempts",
+                &[&scope],
+            )
+            .await
+            .unwrap()
+            .iter()
+            .map(|row| row.get(0))
+            .collect()
+    }
+
+    /// Spends the anonymous route ceiling (300) until it refuses.
+    async fn fill_anonymous(&self, limit: Limit) {
+        for _ in 0..=300 {
+            if !abuse_limits::consume(&self.db, &self.auth_hasher, limit, None)
+                .await
+                .unwrap()
+            {
+                return;
+            }
+        }
+        panic!("the anonymous route ceiling never refused");
+    }
+
+    /// Spends the verified route ceiling (3,000) until it refuses.
+    async fn fill_verified(&self, limit: Limit) {
+        for _ in 0..=3_000 {
+            if !abuse_limits::consume_verified_route(&self.db, &self.auth_hasher, limit)
+                .await
+                .unwrap()
+            {
+                return;
+            }
+        }
+        panic!("the verified route ceiling never refused");
+    }
+
+    async fn finish(self) {
+        self.server.abort();
+        self.admin
+            .batch_execute(&format!("DROP SCHEMA {} CASCADE", self.schema))
+            .await
+            .unwrap();
+    }
+}
+
+async fn expect_close(socket: &mut TestSocket, code: u16) {
+    let frame = timeout(Duration::from_secs(5), socket.next())
+        .await
+        .expect("socket close timed out");
+    assert!(
+        matches!(
+            &frame,
+            Some(Ok(Message::Close(Some(close)))) if u16::from(close.code) == code
+        ),
+        "expected close {code}, got {frame:?}"
+    );
+}
+
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn knowing_the_device_id_cannot_refuse_the_enrolled_phone() {
-    let url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
-        .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
-    let (admin, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
-    tokio::spawn(async move { connection.await.unwrap() });
-    let schema = format!("socket_budget_{}", Uuid::new_v4().simple());
-    admin
-        .batch_execute(&format!("CREATE SCHEMA {schema}"))
-        .await
-        .unwrap();
-    let separator = if url.contains('?') { '&' } else { '?' };
-    let schema_url = format!("{url}{separator}options=-csearch_path%3D{schema}");
-    let (db, connection) = tokio_postgres::connect(&schema_url, NoTls).await.unwrap();
-    tokio::spawn(async move { connection.await.unwrap() });
-    for migration in [
-        include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
-        include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
-        include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
-        include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
-        include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
-        include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
-        include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
-    ] {
-        db.batch_execute(migration).await.unwrap();
-    }
-    let account_id = Uuid::new_v4();
-    let device_id = Uuid::new_v4();
-    let signing = SigningKey::generate_from_rng(&mut rng());
-    let public_key = signing.verifying_key().to_sec1_point(false);
-    let fingerprint: [u8; 32] = Sha256::digest(public_key.as_bytes()).into();
-    db.execute("INSERT INTO sites(site_id) VALUES('fixture')", &[])
-        .await
-        .unwrap();
-    db.execute("INSERT INTO accounts(id) VALUES($1)", &[&account_id])
-        .await
-        .unwrap();
-    db.execute(
-        "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'budget fixture')",
-        &[&device_id, &account_id],
-    )
-    .await
-    .unwrap();
-    db.execute("INSERT INTO device_keys(device_id,account_id,signing_key_sec1,fingerprint) VALUES($1,$2,$3,$4)", &[&device_id,&account_id,&public_key.as_bytes(),&&fingerprint[..]]).await.unwrap();
-    let auth_hasher = Arc::new(TokenHasher::new(crate::test_keys::key(10)).unwrap());
-    let enrollment_hasher = Arc::new(EnrollmentHasher::new(crate::test_keys::key(9)).unwrap());
-    let state = DeviceSocketState {
-        database_url: schema_url.clone(),
-        site_id: "fixture".into(),
-        instance_id: "fixture".into(),
-        deployment_epoch: 1,
-        enrollment_hasher: enrollment_hasher.clone(),
-        auth_hasher: auth_hasher.clone(),
-        alpha_policy: Arc::new(AlphaPolicy::parse(None, None, None).unwrap()),
-        dispatch_runtime_enabled: false,
-        inbound_pilot_enabled: false,
-        line_opt_out_enabled: false,
-        sms_line_activation_enabled: false,
-        draining: Arc::new(AtomicBool::new(false)),
-        drain_notify: Arc::new(Notify::new()),
-    };
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move {
-        axum::serve(listener, router(state)).await.unwrap();
-    });
+    let fixture = HandshakeFixture::start("socket_budget").await;
     // An unauthenticated attacker who knows only the public device ID asks
     // for 60 challenges in a minute: twice the per-device budget this flow
     // used to charge, and each request indistinguishable from the phone's.
     for _ in 0..60 {
-        let (mut probe, _) = connect_async(format!("ws://{address}/v1/device-stream"))
-            .await
-            .unwrap();
-        send_json(
-            &mut probe,
-            json!({"v":1,"type":"hello","device_id":device_id}),
-        )
-        .await;
+        let mut probe = fixture.hello(fixture.device_id).await;
         let challenge = receive_json(&mut probe).await;
         assert_eq!(challenge["type"], "challenge");
         drop(probe);
@@ -466,241 +593,122 @@ async fn knowing_the_device_id_cannot_refuse_the_enrolled_phone() {
     // None of that spending can refuse the enrolled phone: with no
     // per-device counter, only the shared route ceiling gates issuance, and
     // it is far from full.
-    let (mut socket, _) = connect_async(format!("ws://{address}/v1/device-stream"))
-        .await
-        .unwrap();
-    send_json(
-        &mut socket,
-        json!({"v":1,"type":"hello","device_id":device_id}),
-    )
-    .await;
-    let challenge = receive_json(&mut socket).await;
-    assert_eq!(challenge["type"], "challenge");
-    assert_eq!(challenge["account_id"], json!(account_id));
+    let (mut socket, challenge) = fixture.challenge().await;
     // A garbage signature is a policy refusal, not a budget one, and leaves
     // the phone free to reconnect at once.
-    let typed = DeviceChallenge {
-        id: Uuid::parse_str(challenge["challenge_id"].as_str().unwrap()).unwrap(),
-        account_id,
-        device_id,
-        nonce: URL_SAFE_NO_PAD
-            .decode(challenge["nonce"].as_str().unwrap())
-            .unwrap()
-            .try_into()
-            .unwrap(),
-    };
-    send_json(&mut socket, json!({"v":1,"type":"proof","challenge_id":typed.id,"account_id":account_id,"device_id":device_id,"nonce":challenge["nonce"],"signature_der":URL_SAFE_NO_PAD.encode([0u8;16])})).await;
-    assert!(matches!(
-        timeout(Duration::from_secs(5), socket.next())
-            .await
-            .unwrap(),
-        Some(Ok(Message::Close(Some(frame)))) if u16::from(frame.code) == close_code::POLICY
-    ));
+    let mut garbage = fixture.proof(&challenge);
+    garbage["signature_der"] = json!(URL_SAFE_NO_PAD.encode([0u8; 16]));
+    send_json(&mut socket, garbage).await;
+    expect_close(&mut socket, close_code::POLICY).await;
     // The phone reconnects immediately and completes its handshake.
-    let (mut socket, _) = connect_async(format!("ws://{address}/v1/device-stream"))
-        .await
-        .unwrap();
-    send_json(
-        &mut socket,
-        json!({"v":1,"type":"hello","device_id":device_id}),
-    )
-    .await;
-    let challenge = receive_json(&mut socket).await;
-    let typed = DeviceChallenge {
-        id: Uuid::parse_str(challenge["challenge_id"].as_str().unwrap()).unwrap(),
-        account_id,
-        device_id,
-        nonce: URL_SAFE_NO_PAD
-            .decode(challenge["nonce"].as_str().unwrap())
-            .unwrap()
-            .try_into()
-            .unwrap(),
-    };
-    let signature: Signature = signing.sign(&device_challenge_bytes(&typed));
-    send_json(&mut socket, json!({"v":1,"type":"proof","challenge_id":typed.id,"account_id":account_id,"device_id":device_id,"nonce":challenge["nonce"],"signature_der":URL_SAFE_NO_PAD.encode(signature.to_der().as_bytes())})).await;
-    let session = receive_json(&mut socket).await;
-    assert_eq!(session["type"], "session");
-    // The anonymous route ceilings still bound the work: once the proof
-    // budget is full, even a valid proof waits with a retryable close.
-    while abuse_limits::consume(&db, &auth_hasher, Limit::DeviceAuthenticate, None)
-        .await
-        .unwrap()
-    {}
-    let (mut socket, _) = connect_async(format!("ws://{address}/v1/device-stream"))
-        .await
-        .unwrap();
-    send_json(
-        &mut socket,
-        json!({"v":1,"type":"hello","device_id":device_id}),
-    )
-    .await;
-    let challenge = receive_json(&mut socket).await;
-    let typed = DeviceChallenge {
-        id: Uuid::parse_str(challenge["challenge_id"].as_str().unwrap()).unwrap(),
-        account_id,
-        device_id,
-        nonce: URL_SAFE_NO_PAD
-            .decode(challenge["nonce"].as_str().unwrap())
-            .unwrap()
-            .try_into()
-            .unwrap(),
-    };
-    let signature: Signature = signing.sign(&device_challenge_bytes(&typed));
-    send_json(&mut socket, json!({"v":1,"type":"proof","challenge_id":typed.id,"account_id":account_id,"device_id":device_id,"nonce":challenge["nonce"],"signature_der":URL_SAFE_NO_PAD.encode(signature.to_der().as_bytes())})).await;
-    assert!(matches!(
-        timeout(Duration::from_secs(5), socket.next())
-            .await
-            .unwrap(),
-        Some(Ok(Message::Close(Some(frame)))) if u16::from(frame.code) == RETRY_LATER
-    ));
-    server.abort();
-    admin
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-        .await
-        .unwrap();
+    let (mut socket, challenge) = fixture.challenge().await;
+    send_json(&mut socket, fixture.proof(&challenge)).await;
+    assert_eq!(receive_json(&mut socket).await["type"], "session");
+    drop(socket);
+    // Made-up proofs fill the anonymous proof ceiling. The enrolled phone's
+    // valid proof is still admitted, through the verified-route ceiling.
+    fixture.fill_anonymous(Limit::DeviceAuthenticate).await;
+    let (mut socket, challenge) = fixture.challenge().await;
+    send_json(&mut socket, fixture.proof(&challenge)).await;
+    assert_eq!(receive_json(&mut socket).await["type"], "session");
+    drop(socket);
+    // A proof that does not verify is refused by policy and never reaches
+    // the verified ceiling: only the phone's one valid proof was charged.
+    let (mut socket, challenge) = fixture.challenge().await;
+    let mut garbage = fixture.proof(&challenge);
+    garbage["signature_der"] = json!(URL_SAFE_NO_PAD.encode([0u8; 16]));
+    send_json(&mut socket, garbage).await;
+    expect_close(&mut socket, close_code::POLICY).await;
+    assert_eq!(
+        fixture.route_attempts("device_authenticate").await,
+        vec![1, 300]
+    );
+    // The verified ceiling still bounds enrolled devices: once it is full as
+    // well, even a valid proof waits with a retryable close.
+    fixture.fill_verified(Limit::DeviceAuthenticate).await;
+    let (mut socket, challenge) = fixture.challenge().await;
+    send_json(&mut socket, fixture.proof(&challenge)).await;
+    expect_close(&mut socket, RETRY_LATER).await;
+    fixture.finish().await;
 }
 
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
-async fn route_ceiling_refusal_is_retryable_and_does_not_outlast_the_window() {
-    let url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
-        .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
-    let (admin, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
-    tokio::spawn(async move { connection.await.unwrap() });
-    let schema = format!("socket_junk_{}", Uuid::new_v4().simple());
-    admin
-        .batch_execute(&format!("CREATE SCHEMA {schema}"))
-        .await
-        .unwrap();
-    let separator = if url.contains('?') { '&' } else { '?' };
-    let schema_url = format!("{url}{separator}options=-csearch_path%3D{schema}");
-    let (db, connection) = tokio_postgres::connect(&schema_url, NoTls).await.unwrap();
-    tokio::spawn(async move { connection.await.unwrap() });
-    for migration in [
-        include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
-        include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
-        include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
-        include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
-        include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
-        include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
-        include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
-    ] {
-        db.batch_execute(migration).await.unwrap();
-    }
-    let account_id = Uuid::new_v4();
-    let device_id = Uuid::new_v4();
-    let signing = SigningKey::generate_from_rng(&mut rng());
-    let public_key = signing.verifying_key().to_sec1_point(false);
-    let fingerprint: [u8; 32] = Sha256::digest(public_key.as_bytes()).into();
-    db.execute("INSERT INTO sites(site_id) VALUES('fixture')", &[])
-        .await
-        .unwrap();
-    db.execute("INSERT INTO accounts(id) VALUES($1)", &[&account_id])
-        .await
-        .unwrap();
-    db.execute(
-        "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'reconnect fixture')",
-        &[&device_id, &account_id],
-    )
-    .await
-    .unwrap();
-    db.execute("INSERT INTO device_keys(device_id,account_id,signing_key_sec1,fingerprint) VALUES($1,$2,$3,$4)", &[&device_id,&account_id,&public_key.as_bytes(),&&fingerprint[..]]).await.unwrap();
-    let auth_hasher = Arc::new(TokenHasher::new(crate::test_keys::key(10)).unwrap());
-    let state = DeviceSocketState {
-        database_url: schema_url,
-        site_id: "fixture".into(),
-        instance_id: "fixture".into(),
-        deployment_epoch: 1,
-        enrollment_hasher: Arc::new(EnrollmentHasher::new(crate::test_keys::key(9)).unwrap()),
-        auth_hasher: auth_hasher.clone(),
-        alpha_policy: Arc::new(AlphaPolicy::parse(None, None, None).unwrap()),
-        dispatch_runtime_enabled: false,
-        inbound_pilot_enabled: false,
-        line_opt_out_enabled: false,
-        sms_line_activation_enabled: false,
-        draining: Arc::new(AtomicBool::new(false)),
-        drain_notify: Arc::new(Notify::new()),
-    };
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move {
-        axum::serve(listener, router(state)).await.unwrap();
-    });
-    // One anonymous source fills the shared handshake route ceiling with
-    // made-up device IDs, as rapid hello/close cycles would. The route
-    // ceiling is the deliberate anonymous backstop now that no per-device
-    // counter exists: while it is full, junk and the real phone alike wait.
-    while abuse_limits::consume(&db, &auth_hasher, Limit::DeviceChallenge, None)
-        .await
-        .unwrap()
-    {}
-    let (mut junk, _) = connect_async(format!("ws://{address}/v1/device-stream"))
-        .await
-        .unwrap();
-    send_json(
-        &mut junk,
-        json!({"v":1,"type":"hello","device_id":Uuid::new_v4()}),
-    )
-    .await;
-    assert!(matches!(
-        timeout(Duration::from_secs(5), junk.next()).await.unwrap(),
-        Some(Ok(Message::Close(Some(frame)))) if u16::from(frame.code) == RETRY_LATER
-    ));
-    let (mut waiting, _) = connect_async(format!("ws://{address}/v1/device-stream"))
-        .await
-        .unwrap();
-    send_json(
-        &mut waiting,
-        json!({"v":1,"type":"hello","device_id":device_id}),
-    )
-    .await;
-    assert!(matches!(
-        timeout(Duration::from_secs(5), waiting.next()).await.unwrap(),
-        Some(Ok(Message::Close(Some(frame)))) if u16::from(frame.code) == RETRY_LATER
-    ));
+async fn junk_filling_both_anonymous_ceilings_cannot_refuse_the_enrolled_phone() {
+    let fixture = HandshakeFixture::start("socket_junk").await;
+    // One anonymous source fills both shared handshake route ceilings with
+    // made-up device IDs and proofs, as rapid hello/close cycles would.
+    fixture.fill_anonymous(Limit::DeviceChallenge).await;
+    fixture.fill_anonymous(Limit::DeviceAuthenticate).await;
+    // Junk is refused with a retryable close and does not reach the verified
+    // ceiling, because no enrolled device carries its ID.
+    let mut junk = fixture.hello(Uuid::new_v4()).await;
+    expect_close(&mut junk, RETRY_LATER).await;
+    // The enrolled phone is admitted through the verified-route ceilings and
+    // completes hello, challenge, proof and session.
+    let (mut socket, challenge) = fixture.challenge().await;
+    send_json(&mut socket, fixture.proof(&challenge)).await;
+    assert_eq!(receive_json(&mut socket).await["type"], "session");
+    drop(socket);
+    assert_eq!(
+        fixture.route_attempts("device_challenge").await,
+        vec![1, 300]
+    );
+    assert_eq!(
+        fixture.route_attempts("device_authenticate").await,
+        vec![1, 300]
+    );
+    // The verified-route ceiling is the bound for enrolled devices: once it
+    // is full too, the phone waits with a retryable close.
+    fixture.fill_verified(Limit::DeviceChallenge).await;
+    let mut waiting = fixture.hello(fixture.device_id).await;
+    expect_close(&mut waiting, RETRY_LATER).await;
     // The refusal is retryable and bounded: once the 60-second window rolls
     // over, the enrolled phone completes its handshake again.
-    db.execute(
-        "UPDATE auth_abuse_counters SET window_started_at=clock_timestamp()-interval '61 seconds' WHERE scope='device_challenge'",
-        &[],
-    )
-    .await
-    .unwrap();
-    let (mut socket, _) = connect_async(format!("ws://{address}/v1/device-stream"))
+    fixture
+        .db
+        .execute(
+            "UPDATE auth_abuse_counters SET window_started_at=clock_timestamp()-interval '61 seconds' WHERE scope IN ('device_challenge','device_authenticate')",
+            &[],
+        )
         .await
         .unwrap();
-    send_json(
-        &mut socket,
-        json!({"v":1,"type":"hello","device_id":device_id}),
-    )
-    .await;
-    let challenge_json = receive_json(&mut socket).await;
-    assert_eq!(challenge_json["type"], "challenge");
-    let challenge = DeviceChallenge {
-        id: Uuid::parse_str(challenge_json["challenge_id"].as_str().unwrap()).unwrap(),
-        account_id,
-        device_id,
-        nonce: URL_SAFE_NO_PAD
-            .decode(challenge_json["nonce"].as_str().unwrap())
-            .unwrap()
-            .try_into()
-            .unwrap(),
-    };
-    let proof: Signature = signing.sign(&device_challenge_bytes(&challenge));
-    send_json(
-        &mut socket,
-        json!({
-            "v":1,"type":"proof","challenge_id":challenge.id,"account_id":account_id,
-            "device_id":device_id,"nonce":challenge_json["nonce"],
-            "signature_der":URL_SAFE_NO_PAD.encode(proof.to_der().as_bytes())
-        }),
-    )
-    .await;
-    let session_json = receive_json(&mut socket).await;
-    assert_eq!(session_json["type"], "session");
-    server.abort();
-    admin
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-        .await
-        .unwrap();
+    let (mut socket, challenge) = fixture.challenge().await;
+    send_json(&mut socket, fixture.proof(&challenge)).await;
+    assert_eq!(receive_json(&mut socket).await["type"], "session");
+    drop(socket);
+    fixture.finish().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn a_proof_for_another_connections_challenge_is_refused() {
+    let fixture = HandshakeFixture::start("socket_replay").await;
+    // Stateless challenges are not marked used, so the socket's equality gate
+    // (the proof must echo this connection's own challenge) is the only
+    // barrier against a valid proof being reused on another connection.
+    let (mut first, first_challenge) = fixture.challenge().await;
+    let (mut second, second_challenge) = fixture.challenge().await;
+    assert_ne!(
+        first_challenge["challenge_id"],
+        second_challenge["challenge_id"]
+    );
+    let first_proof = fixture.proof(&first_challenge);
+    // A's valid, in-window proof sent on B is a policy close with no session.
+    send_json(&mut second, first_proof.clone()).await;
+    expect_close(&mut second, close_code::POLICY).await;
+    // Replaying A's proof after A has gone, on a fresh connection, is
+    // refused the same way.
+    let _ = first.close(None).await;
+    drop(first);
+    let (mut third, _) = fixture.challenge().await;
+    send_json(&mut third, first_proof).await;
+    expect_close(&mut third, close_code::POLICY).await;
+    // The refusals were about binding, not the phone: its own proof on a new
+    // connection still opens a session.
+    let (mut socket, challenge) = fixture.challenge().await;
+    send_json(&mut socket, fixture.proof(&challenge)).await;
+    assert_eq!(receive_json(&mut socket).await["type"], "session");
+    drop(socket);
+    fixture.finish().await;
 }
