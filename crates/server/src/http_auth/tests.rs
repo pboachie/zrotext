@@ -3918,6 +3918,30 @@ async fn trusted_lane_daily_rows(db: &Client) -> i64 {
     .get(0)
 }
 
+/// Spend both public reset lanes for `email`'s owner: the anonymous
+/// per-address cap (three requests issue one code), one verified-lane code
+/// once the code throttle has passed, then the verified lane's daily cap.
+/// Leaves two issued codes, and checks as a control that a cookieless
+/// request with aged codes issues nothing more, so any later code must come
+/// through the trusted lane.
+async fn trusted_lane_close_public_lanes(app: &Router, db: &Client, email: &str) {
+    for _ in 0..3 {
+        send_reset(app, email, None, None, None).await;
+    }
+    assert_eq!(trusted_lane_issued(db, email).await, 1);
+    trusted_lane_age_codes(db).await;
+    send_reset(app, email, None, None, None).await;
+    assert_eq!(trusted_lane_issued(db, email).await, 2);
+    trusted_lane_exhaust_verified_daily(db).await;
+    trusted_lane_age_codes(db).await;
+    send_reset(app, email, None, None, None).await;
+    assert_eq!(
+        trusted_lane_issued(db, email).await,
+        2,
+        "control: with aged codes the public lanes must refuse"
+    );
+}
+
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn trusted_browser_cookie_grants_reset_codes_beyond_the_public_lanes() {
@@ -4651,13 +4675,14 @@ async fn revoking_other_sessions_invalidates_other_browsers_trusted_cookies() {
     assert_eq!(second.status(), StatusCode::NO_CONTENT);
     let second_trusted = trusted_cookie(&second);
 
-    // Exhaust the anonymous daily cap; browser B's trusted cookie then
-    // spends the trusted lane (the code replaces the unused one, so the row
-    // count only grows once its 15-minute replacement window has aged).
-    for _ in 0..3 {
-        send_reset(&app, "owner@example.test", None, None, None).await;
-    }
-    assert_eq!(issued(&db).await, 1);
+    // Close both public lanes before any trusted cookie is used, so that from
+    // here on a request can only be admitted through the trusted lane.
+    trusted_lane_close_public_lanes(&app, &db, "owner@example.test").await;
+    assert_eq!(issued(&db).await, 2);
+    // Browser B's trusted cookie spends the trusted lane before revocation.
+    // Codes are aged before every trusted send: inside the 15-minute code
+    // throttle nothing is issued whatever lane admits, which would make the
+    // assertions below vacuous.
     trusted_lane_age_codes(&db).await;
     send_reset(
         &app,
@@ -4669,7 +4694,7 @@ async fn revoking_other_sessions_invalidates_other_browsers_trusted_cookies() {
     .await;
     assert_eq!(
         issued(&db).await,
-        2,
+        3,
         "browser B's trusted cookie must spend the trusted lane"
     );
 
@@ -4697,31 +4722,225 @@ async fn revoking_other_sessions_invalidates_other_browsers_trusted_cookies() {
         .get(0);
     assert_eq!(epoch, 1, "revoke-others must bump the trust epoch");
 
-    // Spend the verified daily cap with cookieless sends (each admitted
-    // request replaces the still-unused code, so the row count stays flat),
-    // so any later request that is admitted must come through the trusted
-    // lane.
-    for _ in 0..13 {
-        send_reset(&app, "owner@example.test", None, None, None).await;
+    // Both pre-revocation cookies, including the revoking browser's own, are
+    // rejected on the reset path even with aged codes.
+    for stale in [&second_trusted, &first_trusted] {
+        trusted_lane_age_codes(&db).await;
+        send_reset(&app, "owner@example.test", Some(stale), None, None).await;
+        assert_eq!(
+            issued(&db).await,
+            3,
+            "a trusted cookie issued before revoke-others must be rejected"
+        );
     }
+    // A sign-in after the revocation mints a fresh cookie under the new
+    // epoch, and the reset path accepts it.
+    let third = app
+        .clone()
+        .oneshot(json_post(
+            "/login",
+            serde_json::json!({"email":"owner@example.test","password":password}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(third.status(), StatusCode::NO_CONTENT);
+    let fresh_trusted = trusted_cookie(&third);
+    assert_ne!(fresh_trusted, first_trusted);
+    assert_ne!(fresh_trusted, second_trusted);
+    trusted_lane_age_codes(&db).await;
+    send_reset(&app, "owner@example.test", Some(&fresh_trusted), None, None).await;
     assert_eq!(
         issued(&db).await,
-        2,
-        "replacements must keep one live code while the verified cap fills"
+        4,
+        "a trusted cookie issued after revoke-others must be accepted"
     );
-    send_reset(
-        &app,
-        "owner@example.test",
-        Some(&second_trusted),
-        None,
-        None,
+    setup
+        .batch_execute(&format!(
+            "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
+        ))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn mfa_changes_invalidate_earlier_trusted_cookies_on_the_reset_path() {
+    let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+        .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let schema = format!("http_reset_trusted_mfa_{}", Uuid::new_v4().simple());
+    let (setup, mut db, url) = trusted_lane_database(&base_url, &schema).await;
+    let hasher = Arc::new(TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
+    let password = Uuid::new_v4().to_string();
+    let email = "owner@example.test";
+    let owner = auth::register(&mut db, &hasher, email, &password)
+        .await
+        .unwrap();
+    assert!(
+        auth::verify_email(&mut db, &hasher, &owner.verification_token)
+            .await
+            .unwrap()
+    );
+    let state = AuthHttpState::new(
+        url,
+        hasher.clone(),
+        "https://zrotext.example".to_owned(),
+        Arc::new(CaptureVerification(Mutex::new(None))),
     )
-    .await;
-    send_reset(&app, "owner@example.test", Some(&first_trusted), None, None).await;
+    .unwrap()
+    .with_mfa_cipher(Arc::new(
+        MfaCipher::new(rand::random::<[u8; 32]>().to_vec()).unwrap(),
+    ))
+    .with_mfa_enrollment_enabled();
+    let app = router(state);
+    async fn json_body(response: Response) -> serde_json::Value {
+        serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 16 * 1024)
+                .await
+                .unwrap(),
+        )
+        .unwrap()
+    }
+    async fn epoch(db: &Client) -> i64 {
+        db.query_one("SELECT trusted_browser_epoch FROM users", &[])
+            .await
+            .unwrap()
+            .get(0)
+    }
+    fn trusted_cookie(response: &Response) -> String {
+        format!(
+            "{}={}",
+            auth::TRUSTED_BROWSER_COOKIE,
+            set_cookie_value(response, auth::TRUSTED_BROWSER_COOKIE).unwrap()
+        )
+    }
+    let login = || {
+        json_post(
+            "/login",
+            serde_json::json!({"email":email,"password":password.as_str()}),
+        )
+    };
+    // Browser A signs in and is trusted; its session enrolls MFA later.
+    let response = app.clone().oneshot(login()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let before_mfa = trusted_cookie(&response);
+    let cookies = response
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .map(|v| v.to_str().unwrap().split(';').next().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    let session_cookies = cookies.join("; ");
+    let csrf = cookies
+        .iter()
+        .find_map(|c| c.strip_prefix("__Host-zrotext_csrf=").map(str::to_owned))
+        .unwrap();
+
+    trusted_lane_close_public_lanes(&app, &db, email).await;
+    // Control: before any MFA change the cookie spends the trusted lane.
+    trusted_lane_age_codes(&db).await;
+    send_reset(&app, email, Some(&before_mfa), None, None).await;
+    assert_eq!(trusted_lane_issued(&db, email).await, 3);
+
+    // Confirming MFA enrollment bumps the trust epoch.
+    let response = app
+        .clone()
+        .oneshot(owner_post(
+            "/mfa/enroll",
+            serde_json::json!({"password":password.as_str()}),
+            &session_cookies,
+            &csrf,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    let secret = totp_rs::Secret::try_from_base32(body["secret_base32"].as_str().unwrap()).unwrap();
+    let code = totp_rs::Builder::new()
+        .with_secret(secret)
+        .build()
+        .unwrap()
+        .generate_current()
+        .to_string();
+    let response = app
+        .clone()
+        .oneshot(owner_post(
+            "/mfa/confirm",
+            serde_json::json!({"code":code}),
+            &session_cookies,
+            &csrf,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    let recovery_login = body["recovery_codes"][0].as_str().unwrap().to_owned();
+    let recovery_disable = body["recovery_codes"][1].as_str().unwrap().to_owned();
+    assert_eq!(epoch(&db).await, 1);
+    // The cookie issued before the MFA change is rejected on the reset path.
+    trusted_lane_age_codes(&db).await;
+    send_reset(&app, email, Some(&before_mfa), None, None).await;
     assert_eq!(
-        issued(&db).await,
-        2,
-        "pre-revocation trusted cookies must not spend the trusted lane"
+        trusted_lane_issued(&db, email).await,
+        3,
+        "a trusted cookie issued before MFA enrollment must be rejected"
+    );
+    // A fresh sign-in through the MFA step mints a cookie that is accepted.
+    let response = app.clone().oneshot(login()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let challenge = json_body(response).await["challenge_token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let response = app
+        .clone()
+        .oneshot(json_post(
+            "/login/mfa",
+            serde_json::json!({"challenge_token":challenge,"code":recovery_login}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let after_enroll = trusted_cookie(&response);
+    assert_ne!(after_enroll, before_mfa);
+    trusted_lane_age_codes(&db).await;
+    send_reset(&app, email, Some(&after_enroll), None, None).await;
+    assert_eq!(
+        trusted_lane_issued(&db, email).await,
+        4,
+        "a trusted cookie issued after MFA enrollment must be accepted"
+    );
+
+    // Disabling MFA bumps the epoch again.
+    let response = app
+        .clone()
+        .oneshot(owner_post(
+            "/mfa/disable",
+            serde_json::json!({"password":password.as_str(),"code":recovery_disable}),
+            &session_cookies,
+            &csrf,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(epoch(&db).await, 2);
+    for stale in [&after_enroll, &before_mfa] {
+        trusted_lane_age_codes(&db).await;
+        send_reset(&app, email, Some(stale), None, None).await;
+        assert_eq!(
+            trusted_lane_issued(&db, email).await,
+            4,
+            "a trusted cookie issued before MFA was disabled must be rejected"
+        );
+    }
+    let response = app.clone().oneshot(login()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let after_disable = trusted_cookie(&response);
+    trusted_lane_age_codes(&db).await;
+    send_reset(&app, email, Some(&after_disable), None, None).await;
+    assert_eq!(
+        trusted_lane_issued(&db, email).await,
+        5,
+        "a trusted cookie issued after MFA was disabled must be accepted"
     );
     setup
         .batch_execute(&format!(
