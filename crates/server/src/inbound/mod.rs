@@ -6,7 +6,7 @@ use p256::ecdsa::{Signature, VerifyingKey, signature::Verifier};
 use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
-use tokio_postgres::{Client, Row, error::SqlState};
+use tokio_postgres::{Client, Row, error::SqlState, types::Type};
 use uuid::Uuid;
 
 const MAX_AGE_MS: i64 = 7 * 24 * 60 * 60 * 1000;
@@ -226,7 +226,7 @@ pub async fn ingest_with_clock(
     let device_sent_seconds = plausible_device_clock(device_sent_at_ms);
     let tx = client.transaction().await?;
     let key = tx
-        .query_opt(
+        .query_typed_opt(
             "SELECT k.signing_key_sec1 FROM device_sessions s \
          JOIN devices d ON (d.account_id,d.id)=(s.account_id,s.device_id) \
          JOIN device_keys k ON (k.account_id,k.device_id)=(d.account_id,d.id) \
@@ -240,12 +240,12 @@ pub async fn ingest_with_clock(
          AND p.epoch=$6 AND NOT pg_is_in_recovery() \
          FOR SHARE OF s,d,k,t,p",
             &[
-                &session.account_id,
-                &session.device_id,
-                &session.site_id,
-                &session.instance_id,
-                &session.connection_epoch,
-                &session.deployment_epoch,
+                (&session.account_id, Type::UUID),
+                (&session.device_id, Type::UUID),
+                (&session.site_id, Type::TEXT),
+                (&session.instance_id, Type::TEXT),
+                (&session.connection_epoch, Type::INT8),
+                (&session.deployment_epoch, Type::INT8),
             ],
         )
         .await?
@@ -259,9 +259,9 @@ pub async fn ingest_with_clock(
         .map_err(|_| InboundError::InvalidSignature)?;
     // Admission takes this account lock before checking suppression. This
     // serializes STOP and START with every acceptance transaction.
-    tx.query_opt(
+    tx.query_typed_opt(
         "SELECT id FROM accounts WHERE id=$1 AND disabled_at IS NULL FOR NO KEY UPDATE",
-        &[&session.account_id],
+        &[(&session.account_id, Type::UUID)],
     )
     .await?
     .ok_or(InboundError::Unauthorized)?;
@@ -272,7 +272,7 @@ pub async fn ingest_with_clock(
     // retry. A submitted attempt with no callback row is permanently stale
     // (for example, after event retention).
     let source = tx
-        .query_opt(
+        .query_typed_opt(
             "SELECT ma.status, EXISTS (SELECT 1 FROM message_events me \
                 WHERE me.attempt_id=ma.id AND me.evidence_code='sent_callback_ok'), m.recipient_e164 \
              FROM message_attempts ma \
@@ -281,10 +281,10 @@ pub async fn ingest_with_clock(
          AND ma.message_id=$4 \
          FOR SHARE OF ma,m",
             &[
-                &event.attempt_id,
-                &session.account_id,
-                &session.device_id,
-                &event.message_id,
+                (&event.attempt_id, Type::UUID),
+                (&session.account_id, Type::UUID),
+                (&session.device_id, Type::UUID),
+                (&event.message_id, Type::UUID),
             ],
         )
         .await?;
@@ -306,22 +306,22 @@ pub async fn ingest_with_clock(
     let lock_hash = lock_hash.finalize();
     let mut lock_bytes = [0u8; 8];
     lock_bytes.copy_from_slice(&lock_hash[..8]);
-    tx.query_one(
+    tx.query_typed_one(
         "SELECT pg_advisory_xact_lock($1)",
-        &[&i64::from_be_bytes(lock_bytes)],
+        &[(&i64::from_be_bytes(lock_bytes), Type::INT8)],
     )
     .await?;
     if let Some(row) = tx
-        .query_opt(
+        .query_typed_opt(
             "SELECT account_id,device_id,event_digest FROM inbound_events WHERE id=$1 FOR SHARE",
-            &[&event.event_id],
+            &[(&event.event_id, Type::UUID)],
         )
         .await?
     {
         verify_exact_replay(&row, session, &digest)?;
-        if tx.query_opt(
+        if tx.query_typed_opt(
             "SELECT 1 FROM device_sessions WHERE account_id=$1 AND device_id=$2 AND lease_until>clock_timestamp()",
-            &[&session.account_id, &session.device_id],
+            &[(&session.account_id, Type::UUID), (&session.device_id, Type::UUID)],
         ).await?.is_none() {
             return Err(InboundError::Unauthorized);
         }
@@ -342,9 +342,12 @@ pub async fn ingest_with_clock(
     // Reject an already committed sequence without a counter update or a
     // doomed INSERT. The UNIQUE constraint below remains the race authority.
     if tx
-        .query_opt(
+        .query_typed_opt(
             "SELECT 1 FROM inbound_events WHERE device_id=$1 AND device_sequence=$2",
-            &[&session.device_id, &event.sequence],
+            &[
+                (&session.device_id, Type::UUID),
+                (&event.sequence, Type::INT8),
+            ],
         )
         .await?
         .is_some()
@@ -388,7 +391,7 @@ pub async fn ingest_with_clock(
         Content::OpaquePilot(bytes) => Some(bytes),
     };
     let inserted = tx
-        .query_opt(
+        .query_typed_opt(
             "INSERT INTO inbound_events \
          (id,account_id,device_id,message_id,attempt_id,device_sequence,classification, \
           observed_at,part_count,content_kind,content_ciphertext,event_digest,signature_der, \
@@ -396,20 +399,20 @@ pub async fn ingest_with_clock(
          VALUES($1,$2,$3,$4,$5,$6,$7,to_timestamp($8),$9,$10,$11,$12,$13,to_timestamp($14)) \
          ON CONFLICT(id) DO NOTHING RETURNING id",
             &[
-                &event.event_id,
-                &session.account_id,
-                &session.device_id,
-                &event.message_id,
-                &event.attempt_id,
-                &event.sequence,
-                &event.classification.as_str(),
-                &observed_seconds,
-                &event.part_count,
-                &event.content.as_str(),
-                &ciphertext,
-                &digest,
-                &event.signature_der,
-                &device_sent_seconds,
+                (&event.event_id, Type::UUID),
+                (&session.account_id, Type::UUID),
+                (&session.device_id, Type::UUID),
+                (&event.message_id, Type::UUID),
+                (&event.attempt_id, Type::UUID),
+                (&event.sequence, Type::INT8),
+                (&event.classification.as_str(), Type::TEXT),
+                (&observed_seconds, Type::FLOAT8),
+                (&event.part_count, Type::INT2),
+                (&event.content.as_str(), Type::TEXT),
+                (&ciphertext, Type::BYTEA),
+                (&digest, Type::BYTEA),
+                (&event.signature_der, Type::BYTEA),
+                (&device_sent_seconds, Type::FLOAT8),
             ],
         )
         .await;
@@ -427,17 +430,17 @@ pub async fn ingest_with_clock(
     };
     if inserted.is_none() {
         let row = tx
-            .query_one(
+            .query_typed_one(
                 "SELECT account_id,device_id,event_digest FROM inbound_events WHERE id=$1 FOR SHARE",
-                &[&event.event_id],
+                &[(&event.event_id, Type::UUID)],
             )
             .await?;
         verify_exact_replay(&row, session, &digest)?;
         // Transaction-start now() cannot fence a lease after a row-lock wait.
         // Session/authority rows stay locked; recheck wall time before commit.
-        if tx.query_opt(
+        if tx.query_typed_opt(
             "SELECT 1 FROM device_sessions WHERE account_id=$1 AND device_id=$2 AND lease_until>clock_timestamp()",
-            &[&session.account_id, &session.device_id],
+            &[(&session.account_id, Type::UUID), (&session.device_id, Type::UUID)],
         ).await?.is_none() {
             return Err(InboundError::Unauthorized);
         }
@@ -465,11 +468,13 @@ pub async fn ingest_with_clock(
             } else {
                 "sms_review"
             };
-            tx.execute(
+            tx.execute_typed(
                 "INSERT INTO recipient_suppressions(account_id,recipient_e164,active,source_event_id,source_attempt_id,source_observed_at,source) \
                  VALUES($1,$2,TRUE,$3,$4,to_timestamp($5),$6) ON CONFLICT(account_id,recipient_e164) DO UPDATE \
                  SET active=TRUE,source_event_id=EXCLUDED.source_event_id,source_attempt_id=EXCLUDED.source_attempt_id,source_observed_at=EXCLUDED.source_observed_at,source=EXCLUDED.source,changed_at=clock_timestamp()",
-                &[&session.account_id, &recipient_e164, &event.event_id, &event.attempt_id, &observed_seconds, &source],
+                &[(&session.account_id, Type::UUID), (&recipient_e164, Type::TEXT),
+                  (&event.event_id, Type::UUID), (&event.attempt_id, Type::UUID),
+                  (&observed_seconds, Type::FLOAT8), (&source, Type::TEXT)],
             ).await?;
             zrotext_delivery_store::cancel_pending_recipient(
                 &tx,
@@ -480,11 +485,13 @@ pub async fn ingest_with_clock(
             false
         }
         Classification::OptIn => {
-            let cleared = tx.execute(
+            let cleared = tx.execute_typed(
                 "UPDATE recipient_suppressions SET active=FALSE,source_event_id=$3,source_observed_at=to_timestamp($4),source='sms_resume',changed_at=clock_timestamp() \
                  WHERE account_id=$1 AND recipient_e164=$2 AND active=TRUE AND source_attempt_id=$5 \
                  AND source_observed_at<to_timestamp($4)",
-                &[&session.account_id, &recipient_e164, &event.event_id, &observed_seconds, &event.attempt_id],
+                &[(&session.account_id, Type::UUID), (&recipient_e164, Type::TEXT),
+                  (&event.event_id, Type::UUID), (&observed_seconds, Type::FLOAT8),
+                  (&event.attempt_id, Type::UUID)],
             ).await? == 1;
             // A signed START observed after an owner recorded an off-channel
             // hold is verified new consent from that recipient. observed_at
@@ -495,25 +502,26 @@ pub async fn ingest_with_clock(
             // owner_hold_release_allowed (migration 039) is shared with the
             // database guard.
             let released = tx
-                .query(
+                .query_typed(
                     "UPDATE owner_recipient_holds h SET released_at=clock_timestamp(),release_event_id=$3 \
                      FROM inbound_events e \
                      WHERE e.account_id=$1 AND e.id=$3 AND h.account_id=$1 AND h.recipient_e164=$2 \
                      AND h.released_at IS NULL \
                      AND owner_hold_release_allowed(e.observed_at,e.device_sent_at,e.received_at,h.created_at) \
                      RETURNING h.id",
-                    &[&session.account_id, &recipient_e164, &event.event_id],
+                    &[(&session.account_id, Type::UUID), (&recipient_e164, Type::TEXT),
+                      (&event.event_id, Type::UUID)],
                 )
                 .await?;
             for hold in released {
-                tx.execute(
+                tx.execute_typed(
                     "INSERT INTO owner_opt_out_audit(id,account_id,event,hold_id,release_event_id) \
                      VALUES($1,$2,'hold_released',$3,$4)",
                     &[
-                        &Uuid::new_v4(),
-                        &session.account_id,
-                        &hold.get::<_, Uuid>(0),
-                        &event.event_id,
+                        (&Uuid::new_v4(), Type::UUID),
+                        (&session.account_id, Type::UUID),
+                        (&hold.get::<_, Uuid>(0), Type::UUID),
+                        (&event.event_id, Type::UUID),
                     ],
                 )
                 .await?;
@@ -523,18 +531,21 @@ pub async fn ingest_with_clock(
         _ => false,
     };
     let queued = tx
-        .execute(
+        .execute_typed(
             "INSERT INTO webhook_deliveries (id,account_id,endpoint_id,event_id) \
          SELECT gen_random_uuid(),account_id,id,$1 FROM webhook_endpoints \
          WHERE account_id=$2 AND enabled=TRUE FOR SHARE",
-            &[&event.event_id, &session.account_id],
+            &[
+                (&event.event_id, Type::UUID),
+                (&session.account_id, Type::UUID),
+            ],
         )
         .await?;
     // Transaction-start now() cannot fence a lease after a row-lock wait.
     // Session/authority rows stay locked; recheck wall time before commit.
-    if tx.query_opt(
+    if tx.query_typed_opt(
         "SELECT 1 FROM device_sessions WHERE account_id=$1 AND device_id=$2 AND lease_until>clock_timestamp()",
-        &[&session.account_id, &session.device_id],
+        &[(&session.account_id, Type::UUID), (&session.device_id, Type::UUID)],
     ).await?.is_none() {
         return Err(InboundError::Unauthorized);
     }
@@ -581,11 +592,15 @@ async fn suppression_cleared<C: tokio_postgres::GenericClient>(
     // A redacted source has no recipient. The source event ID still names the
     // one suppression row that this event's START transition cleared.
     Ok(client
-        .query_opt(
+        .query_typed_opt(
             "SELECT 1 FROM recipient_suppressions WHERE account_id=$1 \
          AND ($2::text IS NULL OR recipient_e164=$2) \
          AND active=FALSE AND source_event_id=$3",
-            &[&account_id, &recipient_e164, &event_id],
+            &[
+                (&account_id, Type::UUID),
+                (&recipient_e164, Type::TEXT),
+                (&event_id, Type::UUID),
+            ],
         )
         .await?
         .is_some())
@@ -618,11 +633,11 @@ pub(crate) async fn consume_storage_budget<C: tokio_postgres::GenericClient>(
     // UUIDs are already public random identifiers; hash namespaces keep their
     // two roles disjoint without depending on a rotating operational pepper.
     Ok(client
-        .query_one(
+        .query_typed_one(
             "SELECT auth_abuse_consume('inbound_daily',$1,$2,1000,86400,200,86400)",
             &[
-                &budget_key("account", account_id),
-                &budget_key("device", device_id),
+                (&budget_key("account", account_id), Type::BYTEA),
+                (&budget_key("device", device_id), Type::BYTEA),
             ],
         )
         .await?
@@ -639,9 +654,9 @@ pub(crate) async fn consume_consent_budget<C: tokio_postgres::GenericClient>(
     device_id: Uuid,
 ) -> Result<bool, tokio_postgres::Error> {
     Ok(client
-        .query_one(
+        .query_typed_one(
             "SELECT auth_abuse_consume('inbound_consent_daily',$1,NULL::bytea,10000,86400,1,86400)",
-            &[&budget_key("device", device_id)],
+            &[(&budget_key("device", device_id), Type::BYTEA)],
         )
         .await?
         .get(0))

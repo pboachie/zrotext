@@ -2374,3 +2374,185 @@ async fn recent_grant_precheck_is_one_bounded_index_probe() {
         .await
         .unwrap();
 }
+
+/// A byte-pipe between the client and PostgreSQL that counts Sync-terminated
+/// batches the client sends. Every extended-protocol round trip ends with a
+/// Sync message, so the count is the number of client waits per operation:
+/// the legacy `query(&str)` path needs a Parse/Describe wait before each
+/// Bind/Execute, while the typed API sends Parse+Bind+Execute in one flight.
+struct DescribeCountingProxy {
+    url: String,
+    round_trips: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl DescribeCountingProxy {
+    /// Forwards one client connection to `target` and reports its URL plus the
+    /// shared round-trip counter.
+    async fn start(target: &str) -> (Self, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::{TcpListener, TcpStream};
+
+        let (authority, rest) = target
+            .split_once("://")
+            .expect("database URL with scheme")
+            .1
+            .split_once('/')
+            .expect("database URL with a path");
+        let userinfo = match authority.rsplit_once('@') {
+            Some((userinfo, _)) => format!("{userinfo}@"),
+            None => String::new(),
+        };
+        let upstream = authority
+            .rsplit_once('@')
+            .map_or(authority, |(_, host)| host)
+            .to_string();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let url = format!("postgres://{userinfo}127.0.0.1:{port}/{rest}");
+        let round_trips = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = round_trips.clone();
+        let task = tokio::spawn(async move {
+            let (mut client, _) = listener.accept().await.unwrap();
+            let mut server = TcpStream::connect(upstream).await.unwrap();
+            // The counting direction is client to server. The first message
+            // is the untagged startup frame; every later one is a one-byte
+            // tag followed by a big-endian length that counts itself.
+            let mut from_client = Vec::new();
+            let mut startup_skipped = false;
+            let mut client_buf = [0u8; 8192];
+            let mut server_buf = [0u8; 8192];
+            loop {
+                tokio::select! {
+                    read = client.read(&mut client_buf) => {
+                        let read = match read { Ok(0) | Err(_) => break, Ok(read) => read };
+                        from_client.extend_from_slice(&client_buf[..read]);
+                        let mut cursor = 0;
+                        if !startup_skipped {
+                            let startup = from_client
+                                .get(..4)
+                                .map(|prefix| u32::from_be_bytes(prefix.try_into().unwrap()) as usize);
+                            match startup {
+                                Some(length) if from_client.len() >= length && length >= 8 => {
+                                    cursor = length;
+                                    startup_skipped = true;
+                                }
+                                // The rest of the startup frame has not
+                                // arrived yet; nothing is countable so far.
+                                _ => cursor = 0,
+                            }
+                        }
+                        while from_client.len() - cursor >= 5 {
+                            let length =
+                                u32::from_be_bytes(from_client[cursor + 1..cursor + 5].try_into().unwrap())
+                                    as usize;
+                            if from_client.len() - cursor < 1 + length {
+                                break;
+                            }
+                            if from_client[cursor] == b'S' {
+                                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            }
+                            cursor += 1 + length;
+                        }
+                        from_client.drain(..cursor);
+                        if server.write_all(&client_buf[..read]).await.is_err() {
+                            break;
+                        }
+                    }
+                    read = server.read(&mut server_buf) => {
+                        let read = match read { Ok(0) | Err(_) => break, Ok(read) => read };
+                        if client.write_all(&server_buf[..read]).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+            let _ = client.shutdown().await;
+            let _ = server.shutdown().await;
+        });
+        (Self { url, round_trips }, task)
+    }
+}
+
+/// The admission transaction must pay exactly one round trip per statement:
+/// six extended-protocol statements for a fresh unmetered accept, and the
+/// control query shows the legacy path pays two (#476).
+#[tokio::test]
+#[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn admission_pays_one_round_trip_per_statement() {
+    let url = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL")
+        .expect("set ZT_DELIVERY_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let (setup, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let schema = format!("round_trip_test_{}", Uuid::new_v4().simple());
+    setup
+        .batch_execute(&format!(
+            "CREATE SCHEMA {schema}; SET search_path TO {schema}"
+        ))
+        .await
+        .unwrap();
+    apply_test_migrations(&setup).await;
+    let account_id = Uuid::new_v4();
+    let device_id = Uuid::new_v4();
+    setup
+        .execute("INSERT INTO accounts(id) VALUES($1)", &[&account_id])
+        .await
+        .unwrap();
+    setup
+        .execute(
+            "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'wire fixture')",
+            &[&device_id, &account_id],
+        )
+        .await
+        .unwrap();
+
+    let (proxy, proxy_task) = DescribeCountingProxy::start(&url).await;
+    let (mut client, connection) = tokio_postgres::connect(&proxy.url, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    client
+        .batch_execute(&format!("SET search_path TO {schema}"))
+        .await
+        .unwrap();
+    let before = proxy.round_trips.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(before, 0, "setup runs outside the proxied connection");
+    let mut store = DeliveryStore::new(&mut client);
+    store
+        .accept(NewMessage {
+            account_id,
+            device_id,
+            client_message_id: Uuid::new_v4(),
+            idempotency_key: "round-trip",
+            recipient_e164: "+15551234567",
+            synthetic_payload: b"synthetic wire count",
+            expires_at_ms: now_ms() + 60_000,
+        })
+        .await
+        .unwrap();
+    // One Sync-terminated batch per statement: account lock, suppression
+    // check, idempotency insert, pending counts, message insert, dispatch job
+    // insert. BEGIN/COMMIT use the simple protocol and add none.
+    let after_accept = proxy.round_trips.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(
+        after_accept, 6,
+        "fresh unmetered admission must pay exactly one round trip per statement"
+    );
+    // Control: the legacy `query(&str)` path waits on Parse/Describe before
+    // Bind/Execute, so the same single statement costs at least two batches.
+    client
+        .query_opt("SELECT $1::text", &[&"legacy-control"])
+        .await
+        .unwrap();
+    let after_control = proxy.round_trips.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        after_control >= after_accept + 2,
+        "legacy query(&str) must still pay a separate prepare round trip"
+    );
+    proxy_task.abort();
+    setup
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
