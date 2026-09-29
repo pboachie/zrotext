@@ -161,6 +161,43 @@ transaction as its acknowledgment. Anything unacknowledged or ambiguous, and
 every local STOP block (`local_recipient_suppressions`, binding-less
 withdrawal records), is never pruned.
 
+## Proposed grant-bound sealed dispatch (roadmap #539; NOT IMPLEMENTED)
+
+**This section is a design proposal for the device side of sealed outbound
+dispatch. No frame below exists on the wire, nothing implements it, and the
+sealed runtime stays disabled end to end.**
+
+A sealed outbound envelope is 426..34,213 bytes, far beyond this stream's
+4,096-byte frame budget, so the envelope bytes never ride the stream. The
+proposal separates the grant from the bytes:
+
+- The hub sends one small `sealed_execution_grant` frame per attempt inside
+  the authenticated session: account, device, line, message, attempt and
+  connection-epoch identifiers, the SHA-256 digest of the exact envelope
+  bytes, a short server-time expiry (bounded tens of seconds), and the
+  segment count.
+- The device fetches the exact envelope bytes by digest over the existing
+  authenticated HTTPS API, outside this stream, and re-checks their digest
+  before anything else. Alternatives considered: binary WebSocket frames
+  (this stream rejects binary frames today) and chunked base64 over text
+  frames (multiples the frame count and the replay surface); both rejected
+  for v1.
+- Before any HPKE open, the device validates the grant: every identity
+  binding above must match the authenticated session and the active line,
+  the session epoch must be current, the envelope digest must match the
+  fetched bytes, the expiry must be in the future and within a bounded
+  plausibility window, and the segment count must be 1..6. Any refusal
+  yields no plaintext and no radio call; an expired grant is reported, never
+  retried silently.
+- After the HPKE open, inside the granted attempt, the device enforces the
+  sealed-v1 plaintext rules (strict UTF-8, 1..32,768 bytes, no BOM, no NUL)
+  and journals the attempt through `sealed_preparations` exactly as the
+  candidate preparation path does: journal before submit, ambiguous radio
+  outcomes stay `unknown`, and nothing auto-resends. Plaintext exists only
+  inside zeroized holders of the granted attempt; no key material,
+  plaintext, or envelope bytes enter logs, the evidence journal, or status
+  reports.
+
 ## Optional reported preconditions
 
 New peers may negotiate [privacy-minimal Android preconditions](device-preconditions.md)
