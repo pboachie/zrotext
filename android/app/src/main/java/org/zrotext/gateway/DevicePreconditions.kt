@@ -92,14 +92,24 @@ internal class DeviceStatusPublisher {
         if (epoch <= 0 || elapsedMs < 0) return null
         val previous = lastReportElapsedMs
         if (previous != null && (elapsedMs < previous || elapsedMs - previous < REPORT_INTERVAL_MS)) return null
-        lastReportElapsedMs = elapsedMs
         return version
+    }
+
+    /**
+     * Stamps the report floor from the actual send time, after any asynchronous
+     * capture. A decision that never sends does not consume the next slot.
+     */
+    @Synchronized fun reportSent(elapsedMs: Long) {
+        if (elapsedMs < 0) return
+        val previous = lastReportElapsedMs
+        if (previous == null || elapsedMs >= previous) lastReportElapsedMs = elapsedMs
     }
 
     fun nextFrame(epoch: Long, elapsedMs: Long, sample: () -> DevicePreconditions): String? =
         when (nextVersion(epoch, elapsedMs)) {
-            Version.V1 -> sample().frame(epoch)
+            Version.V1 -> sample().frame(epoch).also { reportSent(elapsedMs) }
             Version.V2 -> sample().frameV2(epoch, NetworkService.UNAVAILABLE)
+                .also { reportSent(elapsedMs) }
             null -> null
         }
 
@@ -107,6 +117,8 @@ internal class DeviceStatusPublisher {
         const val PROTOCOL = "zrotext-device-status-v1"
         const val PROTOCOL_V2 = "zrotext-device-status-v2"
         const val OFFER = "$PROTOCOL_V2, $PROTOCOL"
-        const val REPORT_INTERVAL_MS = 30_000L
+
+        /** Slack below the 30 s default heartbeat: fixed-rate ticks with jitter land slightly under it. */
+        const val REPORT_INTERVAL_MS = 25_000L
     }
 }
