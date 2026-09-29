@@ -1224,6 +1224,10 @@ async fn postgres_fences_unknown_and_tenant_idempotency() {
             .unwrap();
         assert_eq!(payload.recipient_e164, "+15551234567");
         assert_eq!(payload.body, "test only");
+        store
+            .confirm_synthetic_grant(&grant, &session)
+            .await
+            .unwrap();
         let event = |evidence, event_id| RadioEvent {
             event_id,
             account_id: account,
@@ -1265,6 +1269,11 @@ async fn postgres_fences_unknown_and_tenant_idempotency() {
             .unwrap();
         assert!(matches!(
             store.synthetic_payload_for_grant(&grant, &session).await,
+            Err(StoreError::StaleFence)
+        ));
+        // The content-free confirmation enforces the same fence.
+        assert!(matches!(
+            store.confirm_synthetic_grant(&grant, &session).await,
             Err(StoreError::StaleFence)
         ));
         assert!(matches!(
@@ -2476,6 +2485,144 @@ impl DescribeCountingProxy {
 /// The admission transaction must pay exactly one round trip per statement:
 /// six extended-protocol statements for a fresh unmetered accept, and the
 /// control query shows the legacy path pays two (#476).
+#[tokio::test]
+#[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn admission_pending_count_reads_the_account_pending_index_only() {
+    let url = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL")
+        .expect("set ZT_DELIVERY_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let (client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let schema = format!("admission_pending_test_{}", Uuid::new_v4().simple());
+    client
+        .batch_execute(&format!(
+            "CREATE SCHEMA {schema}; SET search_path TO {schema}"
+        ))
+        .await
+        .unwrap();
+    apply_test_migrations(&client).await;
+    let account = Uuid::new_v4();
+    let device = Uuid::new_v4();
+    let other_account = Uuid::new_v4();
+    let other_device = Uuid::new_v4();
+    for id in [&account, &other_account] {
+        client
+            .execute("INSERT INTO accounts(id) VALUES($1)", &[id])
+            .await
+            .unwrap();
+    }
+    for (id, owner) in [(&device, &account), (&other_device, &other_account)] {
+        client
+            .execute(
+                "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'synthetic phone')",
+                &[id, owner],
+            )
+            .await
+            .unwrap();
+    }
+    // The counted tenant keeps a large terminal history. Retention only redacts
+    // content, so these rows stay forever and must never feed the count.
+    client
+        .execute(
+            "INSERT INTO messages(id,account_id,device_id,recipient_e164,recipient_digest,transport_mode,transport_payload,request_digest,state,expires_at) \
+             SELECT gen_random_uuid(),$1,$2,'+15551234567',decode(repeat('11',32),'hex'),\
+             'synthetic_alpha',decode('01','hex'),decode(repeat('22',32),'hex'),\
+             'delivered',now()-interval '1 day' FROM generate_series(1,8000)",
+            &[&account, &device],
+        )
+        .await
+        .unwrap();
+    // Two live pending messages for the counted device.
+    for _ in 0..2 {
+        client
+            .execute(
+                "INSERT INTO messages(id,account_id,device_id,recipient_e164,recipient_digest,transport_mode,transport_payload,request_digest,state,expires_at) \
+                 VALUES(gen_random_uuid(),$1,$2,'+15551234567',decode(repeat('11',32),'hex'),\
+                 'synthetic_alpha',decode('01','hex'),decode(repeat('22',32),'hex'),\
+                 'queued',now()+interval '1 hour')",
+                &[&account, &device],
+            )
+            .await
+            .unwrap();
+    }
+    // Other tenants hold large live queues. A global pending walk, the plan the
+    // expiry-keyed index serves, would visit all of their rows.
+    client
+        .execute(
+            "INSERT INTO messages(id,account_id,device_id,recipient_e164,recipient_digest,transport_mode,transport_payload,request_digest,state,expires_at) \
+             SELECT gen_random_uuid(),$1,$2,'+15551234567',decode(repeat('11',32),'hex'),\
+             'synthetic_alpha',decode('01','hex'),decode(repeat('22',32),'hex'),\
+             'queued',now()+interval '1 hour' FROM generate_series(1,16000)",
+            &[&other_account, &other_device],
+        )
+        .await
+        .unwrap();
+    client.batch_execute("ANALYZE messages").await.unwrap();
+
+    let counts = client
+        .query_one(
+            "SELECT COUNT(*) FILTER (WHERE device_id=$2), COUNT(*) FROM messages \
+             WHERE account_id=$1 AND state IN ('queued','claimed') AND expires_at>now()",
+            &[&account, &device],
+        )
+        .await
+        .unwrap();
+    assert_eq!(counts.get::<_, i64>(0), 2);
+    assert_eq!(counts.get::<_, i64>(1), 2);
+
+    // The admission count is the exact accept_inner query, run inside the
+    // account-locked admission transaction on every accept.
+    let plan: Vec<String> = client
+        .query(
+            "EXPLAIN (ANALYZE, BUFFERS, COSTS OFF) \
+             SELECT COUNT(*) FILTER (WHERE device_id=$2), COUNT(*) FROM messages \
+             WHERE account_id=$1 AND state IN ('queued','claimed') AND expires_at>now()",
+            &[&account, &device],
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| row.get::<_, String>(0))
+        .collect();
+    let shown = plan.join("\n");
+    // The scan must go through the account-keyed partial index and none of the
+    // history, expiry-keyed, or device-keyed alternatives.
+    assert!(shown.contains("messages_admission_pending"), "{shown}");
+    for wrong in [
+        "Seq Scan on messages",
+        "messages_account_created",
+        "messages_pending_expiry",
+        "messages_owner_pending_state",
+    ] {
+        assert!(!shown.contains(wrong), "{wrong} in: {shown}");
+    }
+    // Neither the tenant's terminal history nor other tenants' queues were
+    // fetched and filtered away: the heap saw only the account's pending rows.
+    for line in &plan {
+        if let Some(rest) = line.trim().strip_prefix("Rows Removed by Filter: ") {
+            let removed: i64 = rest.trim().parse().unwrap_or(0);
+            assert_eq!(removed, 0, "{shown}");
+        }
+    }
+    let blocks: u64 = plan
+        .iter()
+        .filter_map(|line| line.trim().strip_prefix("Buffers: shared "))
+        .flat_map(|rest| rest.split(' '))
+        .filter_map(|part| {
+            part.split_once('=')
+                .and_then(|(_, n)| n.parse::<u64>().ok())
+        })
+        .sum();
+    assert!(blocks <= 16, "count touched {blocks} blocks: {shown}");
+    client
+        .batch_execute(&format!(
+            "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
+        ))
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 #[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn admission_pays_one_round_trip_per_statement() {
