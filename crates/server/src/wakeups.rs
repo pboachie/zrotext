@@ -55,6 +55,10 @@ fn wake(queue: Queue) {
 #[cfg(test)]
 type Observer = std::sync::Arc<dyn Fn(Queue) + Send + Sync>;
 
+/// Wakeups an observer saw: the queue and the row count at that instant.
+#[cfg(test)]
+type SeenWakes = std::sync::Arc<std::sync::Mutex<Vec<(Queue, i64)>>>;
+
 #[cfg(test)]
 tokio::task_local! {
     static OBSERVER: Observer;
@@ -77,11 +81,8 @@ pub(crate) async fn observed<F: std::future::Future>(observer: Observer, future:
 pub(crate) fn committed_rows_observer(
     database_url: String,
     count_sql: &'static str,
-) -> (
-    Observer,
-    std::sync::Arc<std::sync::Mutex<Vec<(Queue, i64)>>>,
-) {
-    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+) -> (Observer, SeenWakes) {
+    let seen: SeenWakes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let record = seen.clone();
     let observer: Observer = std::sync::Arc::new(move |queue| {
         let url = database_url.clone();
