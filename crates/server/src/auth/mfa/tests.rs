@@ -56,7 +56,7 @@ async fn postgres_enrollment_challenge_replay_recovery_and_disable() {
         include_str!("../../../../../deploy/compose/migrations/005_verification_outbox.sql"),
         include_str!("../../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
         include_str!("../../../../../deploy/compose/migrations/048_observer_memberships.sql"),
-        include_str!("../../../../../deploy/compose/migrations/060_trusted_browser_epoch.sql"),
+        include_str!("../../../../../deploy/compose/migrations/055_trusted_browser_epoch.sql"),
     ] {
         client.batch_execute(migration).await.unwrap();
     }

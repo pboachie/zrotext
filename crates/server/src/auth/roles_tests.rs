@@ -47,6 +47,7 @@ impl Fixture {
             include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
             include_str!("../../../../deploy/compose/migrations/025_account_recovery.sql"),
             include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
+            include_str!("../../../../deploy/compose/migrations/055_trusted_browser_epoch.sql"),
         ] {
             db.batch_execute(migration).await.unwrap();
         }

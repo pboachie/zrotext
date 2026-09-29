@@ -221,8 +221,8 @@ const TEST_MIGRATIONS: [(&str, &str); 55] = [
         migration!("054_stateless_device_challenges.sql"),
     ),
     (
-        "060_trusted_browser_epoch.sql",
-        migration!("060_trusted_browser_epoch.sql"),
+        "055_trusted_browser_epoch.sql",
+        migration!("055_trusted_browser_epoch.sql"),
     ),
 ];
 

@@ -55,7 +55,7 @@ async fn assert_reset_preserves_mfa(path: ResetPath) {
         include_str!("../../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
         include_str!("../../../../../deploy/compose/migrations/025_account_recovery.sql"),
         include_str!("../../../../../deploy/compose/migrations/048_observer_memberships.sql"),
-        include_str!("../../../../../deploy/compose/migrations/060_trusted_browser_epoch.sql"),
+        include_str!("../../../../../deploy/compose/migrations/055_trusted_browser_epoch.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }
@@ -253,7 +253,7 @@ async fn expired_reset_mail_is_pruned_in_bounded_batches_before_live_mail() {
         include_str!("../../../../../deploy/compose/migrations/005_verification_outbox.sql"),
         include_str!("../../../../../deploy/compose/migrations/025_account_recovery.sql"),
         include_str!("../../../../../deploy/compose/migrations/048_observer_memberships.sql"),
-        include_str!("../../../../../deploy/compose/migrations/060_trusted_browser_epoch.sql"),
+        include_str!("../../../../../deploy/compose/migrations/055_trusted_browser_epoch.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }
@@ -339,7 +339,7 @@ async fn api_key_mint_waits_for_recovery_lock_and_rechecks_session() {
         include_str!("../../../../../deploy/compose/migrations/013_owner_mfa.sql"),
         include_str!("../../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
         include_str!("../../../../../deploy/compose/migrations/048_observer_memberships.sql"),
-        include_str!("../../../../../deploy/compose/migrations/060_trusted_browser_epoch.sql"),
+        include_str!("../../../../../deploy/compose/migrations/055_trusted_browser_epoch.sql"),
     ] {
         recovery_db.batch_execute(migration).await.unwrap();
     }
@@ -431,7 +431,7 @@ async fn postgres_password_session_and_reset_lifecycle() {
         include_str!("../../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
         include_str!("../../../../../deploy/compose/migrations/025_account_recovery.sql"),
         include_str!("../../../../../deploy/compose/migrations/048_observer_memberships.sql"),
-        include_str!("../../../../../deploy/compose/migrations/060_trusted_browser_epoch.sql"),
+        include_str!("../../../../../deploy/compose/migrations/055_trusted_browser_epoch.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }
@@ -772,7 +772,7 @@ async fn postgres_operator_reset_revokes_all_owner_credentials() {
         include_str!("../../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
         include_str!("../../../../../deploy/compose/migrations/025_account_recovery.sql"),
         include_str!("../../../../../deploy/compose/migrations/048_observer_memberships.sql"),
-        include_str!("../../../../../deploy/compose/migrations/060_trusted_browser_epoch.sql"),
+        include_str!("../../../../../deploy/compose/migrations/055_trusted_browser_epoch.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }
@@ -928,7 +928,7 @@ impl MfaOwner {
             ),
             include_str!("../../../../../deploy/compose/migrations/025_account_recovery.sql"),
             include_str!("../../../../../deploy/compose/migrations/048_observer_memberships.sql"),
-            include_str!("../../../../../deploy/compose/migrations/060_trusted_browser_epoch.sql"),
+            include_str!("../../../../../deploy/compose/migrations/055_trusted_browser_epoch.sql"),
         ] {
             db.batch_execute(migration).await.unwrap();
         }
@@ -1097,7 +1097,7 @@ async fn api_key_issuance_needs_step_up_expires_by_default_and_revoke_others_nee
         include_str!("../../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
         include_str!("../../../../../deploy/compose/migrations/025_account_recovery.sql"),
         include_str!("../../../../../deploy/compose/migrations/048_observer_memberships.sql"),
-        include_str!("../../../../../deploy/compose/migrations/060_trusted_browser_epoch.sql"),
+        include_str!("../../../../../deploy/compose/migrations/055_trusted_browser_epoch.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }

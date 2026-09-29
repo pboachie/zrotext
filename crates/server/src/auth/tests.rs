@@ -398,7 +398,7 @@ async fn pending_signup_schema(base_url: &str, schema: &str) -> (Client, Client,
         include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
         include_str!("../../../../deploy/compose/migrations/022_pending_owner_expiry.sql"),
         include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
-        include_str!("../../../../deploy/compose/migrations/060_trusted_browser_epoch.sql"),
+        include_str!("../../../../deploy/compose/migrations/055_trusted_browser_epoch.sql"),
     ] {
         client.batch_execute(migration).await.unwrap();
     }
