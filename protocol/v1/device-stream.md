@@ -136,6 +136,14 @@ marks the row acknowledged locally. Observations older than six days remain
 local because the hub rejects them after seven days. Android never interprets
 this acknowledgment as authorization to send an SMS.
 
+Phone-side retention runs at app start and daily: acknowledged or quarantined
+radio events, inbound events and uploads, terminal SMS attempts and
+acknowledged STOP upload records older than seven days are deleted with their
+children, and an inbound event's locally encrypted body is nulled in the same
+transaction as its acknowledgment. Anything unacknowledged or ambiguous, and
+every local STOP block (`local_recipient_suppressions`, binding-less
+withdrawal records), is never pruned.
+
 ## Optional reported preconditions
 
 New peers may negotiate [privacy-minimal Android preconditions](device-preconditions.md)

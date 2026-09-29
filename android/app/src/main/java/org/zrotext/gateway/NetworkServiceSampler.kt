@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 package org.zrotext.gateway
 
-import android.Manifest
 import android.content.Context
 import android.content.SharedPreferences
-import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -14,48 +12,61 @@ import android.telephony.SubscriptionManager
 import android.telephony.TelephonyCallback
 import android.telephony.TelephonyManager
 import androidx.annotation.RequiresApi
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
-/** One initial callback per eligible report; no persistent cached radio observation. */
+/**
+ * One initial callback per eligible report; no persistent cached radio observation.
+ * Each sample resolves the active subscription list exactly once, off the main
+ * thread; only the TelephonyCallback itself runs on the main looper.
+ */
 internal class NetworkServiceSampler(
     private val context: Context,
     private val selectedId: () -> Int = {
         context.getSharedPreferences("gateway_selection", Context.MODE_PRIVATE)
             .getInt("subscription_id", SubscriptionManager.INVALID_SUBSCRIPTION_ID)
+    },
+    private val activeSubscriptionIds: (Int) -> List<Int>? = { selected ->
+        DevicePreconditions.resolveActiveSubscriptionIds(context, selected)
     }
 ) {
     private val main = Handler(Looper.getMainLooper())
+    private val lookup: ExecutorService = Executors.newSingleThreadExecutor()
     private var cancelPending: (() -> Unit)? = null
 
     fun cancel() { main.post { cancelPending?.invoke(); cancelPending = null } }
 
-    fun sample(isCurrent: () -> Boolean, result: (NetworkService) -> Unit) {
-        main.post {
-            cancelPending?.invoke()
-            cancelPending = null
-            if (!isCurrent()) return@post
-            if (Build.VERSION.SDK_INT < 33) {
-                result(NetworkService.UNAVAILABLE)
-                return@post
+    fun shutdown() { lookup.shutdown() }
+
+    /** Delivers the once-per-report subscription lookup without a service-state capture. */
+    fun lookupOnly(result: (List<Int>?) -> Unit) {
+        lookup.execute { result(activeSubscriptionIds(selectedId())) }
+    }
+
+    fun sample(isCurrent: () -> Boolean, result: (NetworkService, List<Int>?) -> Unit) {
+        lookup.execute {
+            // Binder work stays off the main thread; the value lives for this sample only.
+            val active = activeSubscriptionIds(selectedId())
+            main.post {
+                cancelPending?.invoke()
+                cancelPending = null
+                if (!isCurrent()) return@post
+                if (Build.VERSION.SDK_INT < 33) {
+                    result(NetworkService.UNAVAILABLE, active)
+                    return@post
+                }
+                observe(active, isCurrent, result)
             }
-            observe(isCurrent, result)
         }
     }
 
-    private fun selected(): Int? = try {
-        if (context.checkSelfPermission(Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) null
-        else {
-            val chosen = selectedId()
-            if (chosen < 0) null else context.getSystemService(SubscriptionManager::class.java)
-                ?.activeSubscriptionInfoList?.firstOrNull { it.subscriptionId == chosen }?.subscriptionId
-        }
-    } catch (_: RuntimeException) { null }
-
     @RequiresApi(33)
-    private fun observe(isCurrent: () -> Boolean, result: (NetworkService) -> Unit) {
-        val subscription = selected()
-        if (subscription == null) { result(NetworkService.UNAVAILABLE); return }
+    private fun observe(active: List<Int>?, isCurrent: () -> Boolean,
+                        result: (NetworkService, List<Int>?) -> Unit) {
+        val subscription = selectedId().takeIf { it >= 0 && active?.contains(it) == true }
+        if (subscription == null) { result(NetworkService.UNAVAILABLE, active); return }
         val manager = context.getSystemService(TelephonyManager::class.java)?.createForSubscriptionId(subscription)
-        if (manager == null) { result(NetworkService.UNAVAILABLE); return }
+        if (manager == null) { result(NetworkService.UNAVAILABLE, active); return }
         val capture = NetworkServiceCapture(subscription, SystemClock.elapsedRealtime())
         var registered = false
         lateinit var listener: TelephonyCallback
@@ -72,10 +83,10 @@ internal class NetworkServiceSampler(
             cancelPending = null
         }
         fun finish(value: NetworkService) {
-            val observation = capture.complete(selected(), SystemClock.elapsedRealtime(), value)
+            val observation = capture.complete(active, SystemClock.elapsedRealtime(), value)
             if (observation == null) return
             cleanup()
-            if (isCurrent()) result(observation)
+            if (isCurrent()) result(observation, active)
         }
         listener = object : TelephonyCallback(), TelephonyCallback.ServiceStateListener {
             override fun onServiceStateChanged(serviceState: ServiceState) {

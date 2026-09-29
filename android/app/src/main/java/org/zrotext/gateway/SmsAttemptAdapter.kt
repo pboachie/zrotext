@@ -34,6 +34,7 @@ internal object SmsAttemptAdapter {
             if (result == StartResult.NOT_STARTED) {
                 runCatching { SmsJournalDatabase.get(app).attempts()
                     .markAcknowledgedNoRadio(grant.attemptId.toString(), System.currentTimeMillis()) }
+                JournalWriteSignal.alphaEventRecorded()
             }
             finished(result)
         }
@@ -92,8 +93,10 @@ internal object SmsAttemptAdapter {
         if (!isSessionCurrent() || System.currentTimeMillis() >= grant.expiresAtMs ||
             !hasSelectedSim(context, subscriptionId)) {
             return try {
-                if (dao.markPreflightNoRadio(attemptId, System.currentTimeMillis()) == 1)
-                    StartResult.RESERVED_NOT_SENT else StartResult.UNKNOWN
+                if (dao.markPreflightNoRadio(attemptId, System.currentTimeMillis()) == 1) {
+                    JournalWriteSignal.alphaEventRecorded()
+                    StartResult.RESERVED_NOT_SENT
+                } else StartResult.UNKNOWN
             } catch (_: RuntimeException) {
                 StartResult.UNKNOWN
             }
@@ -110,7 +113,8 @@ internal object SmsAttemptAdapter {
         return try {
             synchronized(LocalSuppressionGate.lock) {
                 if (dao.isRecipientSuppressed(senderToken)) {
-                    dao.markPreflightNoRadio(attemptId, System.currentTimeMillis())
+                    if (dao.markPreflightNoRadio(attemptId, System.currentTimeMillis()) == 1)
+                        JournalWriteSignal.alphaEventRecorded()
                     StartResult.RESERVED_NOT_SENT
                 } else {
                     if (parts.size == 1) {
@@ -194,6 +198,7 @@ class SmsCallbackReceiver : BroadcastReceiver() {
                             else DeliveryStatus.UNVERIFIED
                         } else null,
                         System.currentTimeMillis())
+                JournalWriteSignal.alphaEventRecorded()
             } finally {
                 pending.finish()
             }

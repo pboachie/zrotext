@@ -36,9 +36,11 @@ pub(super) struct Report {
 pub(super) struct ReportBudget(Option<Instant>);
 impl ReportBudget {
     // Enforced before checking out a database client; excess reports are ignored.
+    // The floor sits below the default 30 s heartbeat so a report sent on every
+    // heartbeat tick is still admitted despite scheduling and capture jitter.
     pub fn admit(&mut self, now: Instant) -> bool {
         if self.0.is_some_and(|previous| {
-            now.saturating_duration_since(previous) < Duration::from_secs(30)
+            now.saturating_duration_since(previous) < Duration::from_secs(25)
         }) {
             return false;
         }
@@ -117,8 +119,12 @@ mod tests {
         let start = Instant::now();
         let mut budget = ReportBudget::default();
         assert!(budget.admit(start));
-        assert!(!budget.admit(start + Duration::from_millis(29_999)));
-        assert!(budget.admit(start + Duration::from_secs(30)));
+        assert!(!budget.admit(start + Duration::from_millis(24_999)));
+        assert!(budget.admit(start + Duration::from_secs(25)));
+        // A burst shortly after an admitted report is still refused.
+        assert!(!budget.admit(start + Duration::from_secs(30)));
+        // A report slightly under 30 s after the previous admitted one is not a burst.
+        assert!(budget.admit(start + Duration::from_millis(54_990)));
         assert!(!budget.admit(start));
     }
 }
