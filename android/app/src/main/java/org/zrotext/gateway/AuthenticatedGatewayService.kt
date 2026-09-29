@@ -350,7 +350,9 @@ class AuthenticatedGatewayService : Service() {
                                                 val observed = DevicePreconditions.observe(applicationContext)
                                                 val status = if (version == DeviceStatusPublisher.Version.V2)
                                                     observed.frameV2(heartbeatEpoch, network) else observed.frame(heartbeatEpoch)
-                                                if (!webSocket.send(status)) disconnect(currentGeneration, DeviceReconnectPolicy.Loss.TRANSPORT)
+                                                if (webSocket.send(status))
+                                                    statusPublisher.reportSent(SystemClock.elapsedRealtime())
+                                                else disconnect(currentGeneration, DeviceReconnectPolicy.Loss.TRANSPORT)
                                             }
                                             when (version) {
                                                 DeviceStatusPublisher.Version.V1 -> sendStatus(NetworkService.UNAVAILABLE)
