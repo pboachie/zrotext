@@ -500,7 +500,7 @@ where
         let mut probe = crate::runtime_db::connect_worker(database_url)
             .await
             .map_err(|_| WorkerError::Database)?;
-        if !inbound::webhook_lane_has_work(&mut probe).await? {
+        if !inbound::webhook_lane_has_work(&probe).await? {
             return Ok(0);
         }
         inbound::recover_expired_webhook_leases(&mut probe).await?;

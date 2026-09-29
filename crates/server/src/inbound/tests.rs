@@ -419,6 +419,8 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
     ))
     .await
     .unwrap();
+    let separator = if url.contains('?') { '&' } else { '?' };
+    let scoped_url = format!("{url}{separator}options=-csearch_path%3D{schema}");
     for migration in [
         include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
         include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
@@ -717,7 +719,7 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
     .await
     .unwrap();
     assert!(
-        crate::webhook_worker::dispatch_one(&mut db, &vault, "worker-policy")
+        crate::webhook_worker::dispatch_one(&scoped_url, &vault, "worker-policy")
             .await
             .unwrap()
     );
@@ -880,7 +882,7 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
         let captured = observed.clone();
         assert!(
             crate::webhook_worker::dispatch_one_with(
-                &mut db,
+                &scoped_url,
                 &vault,
                 worker,
                 move |url, body, secret| async move {
@@ -3177,7 +3179,7 @@ async fn account_lock_serializes_only_consent_ingest_with_admission() {
 async fn lane_batch_survives_an_undecryptable_endpoint_secret() {
     let url = std::env::var("ZT_INBOUND_TEST_DATABASE_URL")
         .expect("set ZT_INBOUND_TEST_DATABASE_URL for PostgreSQL-backed tests");
-    let (mut db, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+    let (db, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
         .await
         .unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
@@ -3463,7 +3465,7 @@ async fn lease_delivery_as(db: &Client, delivery: Uuid, owner: &str, lease_until
 #[tokio::test]
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn idle_lane_tick_recovers_an_expired_lease() {
-    let (mut db, schema, scoped_url) = webhook_dispatch_schema("webhook_idle_recovery").await;
+    let (db, schema, scoped_url) = webhook_dispatch_schema("webhook_idle_recovery").await;
     let account = Uuid::new_v4();
     let endpoint = seed_dispatch_account(&db, account, 1, 1).await[0];
     let delivery: Uuid = db
@@ -3516,7 +3518,7 @@ async fn idle_lane_tick_recovers_an_expired_lease() {
 #[tokio::test]
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn lane_tick_leaves_an_unexpired_lease_alone() {
-    let (mut db, schema, scoped_url) = webhook_dispatch_schema("webhook_live_lease").await;
+    let (db, schema, scoped_url) = webhook_dispatch_schema("webhook_live_lease").await;
     let vault = lane_vault();
     let live_account = Uuid::new_v4();
     let live_endpoint = seed_dispatch_account(&db, live_account, 1, 1).await[0];
@@ -3602,7 +3604,7 @@ async fn lane_tick_leaves_an_unexpired_lease_alone() {
 #[tokio::test]
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn lane_tick_dispatches_a_due_retry_when_nothing_fresh_is_due() {
-    let (mut db, schema, scoped_url) = webhook_dispatch_schema("webhook_due_retry").await;
+    let (db, schema, scoped_url) = webhook_dispatch_schema("webhook_due_retry").await;
     let vault = lane_vault();
     let account = Uuid::new_v4();
     let endpoint = seed_dispatch_account(&db, account, 1, 1).await[0];
