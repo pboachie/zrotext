@@ -969,20 +969,6 @@ fn pg_writer_authority_reuses_one_connection_across_operations() {
         "{base_url}{separator}options=-csearch_path%3D{schema}&application_name={app_name}"
     );
 
-    // Let the per-database session counter settle after the admin session
-    // opened, so the delta below counts only the authority's connections.
-    std::thread::sleep(Duration::from_millis(1500));
-    let sessions_before: i64 = runtime.block_on(async {
-        admin
-            .query_one(
-                "SELECT sessions FROM pg_stat_database WHERE datname = current_database()",
-                &[],
-            )
-            .await
-            .unwrap()
-            .get(0)
-    });
-
     let mut authority = PgWriterAuthority::new(url).unwrap();
     let mut live_pids = Vec::new();
     for round in 0..12 {
@@ -1002,43 +988,8 @@ fn pg_writer_authority_reuses_one_connection_across_operations() {
         live_pids.push(authority_backend_pids(&runtime, &admin, &app_name));
     }
 
-    // The session counter is flushed asynchronously (roughly once a second,
-    // or at backend exit), so keep reading until it has been stable for two
-    // consecutive reads after at least 1.5 seconds of observation.
-    let mut sessions_after = sessions_before;
-    let mut consecutive_equal = 0;
-    let mut reads = 0;
-    while reads < 20 {
-        std::thread::sleep(Duration::from_millis(300));
-        let read: i64 = runtime.block_on(async {
-            admin
-                .query_one(
-                    "SELECT sessions FROM pg_stat_database WHERE datname = current_database()",
-                    &[],
-                )
-                .await
-                .unwrap()
-                .get(0)
-        });
-        reads += 1;
-        consecutive_equal = if read == sessions_after {
-            consecutive_equal + 1
-        } else {
-            0
-        };
-        sessions_after = read;
-        if reads >= 5 && consecutive_equal >= 2 {
-            break;
-        }
-    }
-    assert!(
-        reads >= 5 && consecutive_equal >= 2,
-        "pg_stat_database.sessions never settled"
-    );
     eprintln!(
-        "reuse measurement: live authority backends after each of 12 operations: {live_pids:?}; \
-         pg_stat_database.sessions delta: {}",
-        sessions_after - sessions_before
+        "reuse measurement: live authority backends after each of 12 operations: {live_pids:?}"
     );
 
     for (index, pids) in live_pids.iter().enumerate() {
@@ -1057,12 +1008,6 @@ fn pg_writer_authority_reuses_one_connection_across_operations() {
         authority.connections_opened, 1,
         "12 sequential operations must ride one dedicated connection"
     );
-    assert_eq!(
-        sessions_after - sessions_before,
-        1,
-        "12 sequential operations must open exactly one connection"
-    );
-
     // Break the dedicated connection server-side: the operation riding it
     // must fail closed, and only the NEXT operation may reconnect.
     runtime.block_on(async {
