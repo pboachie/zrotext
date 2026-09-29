@@ -1373,7 +1373,7 @@ async fn endpoint_lifecycle_is_tenant_bound_and_retires_queued_deliveries() {
 async fn history_pages_scan_the_endpoint_history_index_without_sorting() {
     let url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
         .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
-    let (mut db, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+    let (db, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
         .await
         .unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
