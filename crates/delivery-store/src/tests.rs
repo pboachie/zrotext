@@ -2856,3 +2856,95 @@ async fn one_evidence_aggregate_keeps_conflict_segment_and_proof_rules() {
         .await
         .unwrap();
 }
+
+/// The folded billing guard statement must keep every FOR SHARE lock the
+/// sequential reads took: while an admission holds them, billing ingress and
+/// reconciliation cannot change the risk event, the unfinished
+/// reconciliation, the past-due subscription or the policy row it just read.
+/// Each row is set up so only the guard statement locks it (the
+/// reconciliation is not done, so `recon_done_lock` does not cover it).
+#[tokio::test]
+#[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn billed_admission_guard_share_locks_every_row_it_reads() {
+    let url = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL")
+        .expect("set ZT_DELIVERY_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let (mut client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let schema = format!("billing_guard_lock_test_{}", Uuid::new_v4().simple());
+    client
+        .batch_execute(&format!(
+            "CREATE SCHEMA {schema}; SET search_path TO {schema}"
+        ))
+        .await
+        .unwrap();
+    apply_test_migrations(&client).await;
+    let account = Uuid::new_v4();
+    client
+        .execute("INSERT INTO accounts(id) VALUES($1)", &[&account])
+        .await
+        .unwrap();
+    client
+        .batch_execute(&format!(
+            "INSERT INTO billing_customers(account_id,stripe_customer_id) VALUES('{account}','cus_guardlock'); \
+             INSERT INTO billing_reconciliations(stripe_subscription_id,account_id,stripe_customer_id, \
+               dirty_generation,processed_generation) VALUES('sub_guardlock','{account}','cus_guardlock',2,1); \
+             INSERT INTO billing_subscriptions(stripe_subscription_id,account_id,stripe_customer_id,stripe_status) \
+               VALUES('sub_guardlock','{account}','cus_guardlock','past_due'); \
+             INSERT INTO billing_events(stripe_event_id,event_type,account_id,body_sha256,disposition) \
+               VALUES('evt_guardlock','charge.refunded','{account}',decode(repeat('ab',32),'hex'),'queued'); \
+             INSERT INTO billing_risk_events(stripe_event_id,stripe_charge_id,risk_kind,account_id) \
+               VALUES('evt_guardlock','ch_guardlock','refund','{account}'); \
+             INSERT INTO usage_quota_policies(account_id,metric,limit_units,source) \
+               VALUES('{account}','outbound_message',10,'stripe_test')"
+        ))
+        .await
+        .unwrap();
+    let (mut peer, peer_connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move { peer_connection.await.unwrap() });
+    peer.batch_execute(&format!("SET search_path TO {schema}"))
+        .await
+        .unwrap();
+    let guarded = [
+        "SELECT 1 FROM billing_risk_events WHERE account_id=$1 FOR UPDATE NOWAIT",
+        "SELECT 1 FROM billing_reconciliations WHERE account_id=$1 FOR UPDATE NOWAIT",
+        "SELECT 1 FROM billing_subscriptions WHERE account_id=$1 FOR UPDATE NOWAIT",
+        "SELECT 1 FROM usage_quota_policies WHERE account_id=$1 FOR UPDATE NOWAIT",
+    ];
+    // Nothing holds the rows yet: the peer's probe itself is lockable.
+    for statement in guarded {
+        let probe = peer.transaction().await.unwrap();
+        assert_eq!(probe.query(statement, &[&account]).await.unwrap().len(), 1);
+        probe.rollback().await.unwrap();
+    }
+    let tx = client.transaction().await.unwrap();
+    let (_, bound) = lock_billing_account(&tx, account, true).await.unwrap();
+    assert_eq!(bound, Some(true));
+    // The queued risk event makes this admission a payment hold, but only
+    // after the guard statement has read, and locked, all four rows.
+    assert!(matches!(
+        reserve_outbound(&tx, account, Uuid::new_v4(), None, bound).await,
+        Err(StoreError::PaymentHold)
+    ));
+    for statement in guarded {
+        let error = peer
+            .query(statement, &[&account])
+            .await
+            .expect_err(statement);
+        assert_eq!(
+            error.code(),
+            Some(&SqlState::LOCK_NOT_AVAILABLE),
+            "{statement}: {error:?}"
+        );
+    }
+    tx.rollback().await.unwrap();
+    client
+        .batch_execute(&format!(
+            "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
+        ))
+        .await
+        .unwrap();
+}
