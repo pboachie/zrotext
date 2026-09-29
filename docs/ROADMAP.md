@@ -330,7 +330,7 @@ Keep message content out of reach of the server, and give owners control of thei
 | Capability | Stage | Evidence |
 |---|---|---|
 | Owner accounts, MFA and scoped API keys | Build | [#43](https://github.com/pboachie/zrotext/pull/43), [#172](https://github.com/pboachie/zrotext/pull/172), [#175](https://github.com/pboachie/zrotext/pull/175), [MFA operations](MFA-OPERATIONS.md), [#240](https://github.com/pboachie/zrotext/pull/240), [#207](https://github.com/pboachie/zrotext/pull/207), [#217](https://github.com/pboachie/zrotext/pull/217), [Recovery tests](../crates/server/src/auth/account/tests.rs) |
-| Sealed-content protocol (client-side keys) | Design | [Draft 01](../protocol/drafts/zt-sealed-draft-01.md), [draft 02 proposal](../protocol/drafts/zt-sealed-draft-02-proposal.md), [#159](https://github.com/pboachie/zrotext/pull/159), [#162](https://github.com/pboachie/zrotext/pull/162), [#260](https://github.com/pboachie/zrotext/pull/260) |
+| Sealed-content protocol (client-side keys) | Design | [Draft 01](../protocol/drafts/zt-sealed-draft-01.md), [draft 02 proposal](../protocol/drafts/zt-sealed-draft-02-proposal.md), [#159](https://github.com/pboachie/zrotext/pull/159), [#162](https://github.com/pboachie/zrotext/pull/162), [#260](https://github.com/pboachie/zrotext/pull/260), [#464](https://github.com/pboachie/zrotext/pull/464), [#525](https://github.com/pboachie/zrotext/pull/525) |
 | Data export and account deletion | Build | [Data retention](SELF-HOSTING.md#data-retention), [#267](https://github.com/pboachie/zrotext/pull/267), [#271](https://github.com/pboachie/zrotext/pull/271) retention evidence covers history pruning only |
 
 <a id="cap-accounts"></a>
@@ -354,7 +354,7 @@ Keep message content out of reach of the server, and give owners control of thei
 - [x] TypeScript and Android test vectors, including signed manifests and root rotation
 - [x] Test-only envelope parser and Android Keystore boundary
 - [x] Q1-Q11 decisions recorded with cross-client manifest vectors ([#260](https://github.com/pboachie/zrotext/pull/260))
-- [ ] Verify the recorded Q1-Q11 decisions with the evidence each row still lists in the [protocol decision log](../protocol/drafts/zt-009-decision-log.md)
+- [x] Recorded Q1-Q11 decisions re-verified against the evidence each row lists in the [protocol decision log](../protocol/drafts/zt-009-decision-log.md) ([#464](https://github.com/pboachie/zrotext/pull/464)); the Q9 Rust receiver gap it found is closed ([#525](https://github.com/pboachie/zrotext/pull/525))
 - [ ] Cross-client interoperability and adversarial security tests
 - [ ] Recovery and unlock flows
 - [ ] Enabled in the gateway for real messages
@@ -382,7 +382,7 @@ Offer an operated service built from the same public code, and keep it available
 | Two-location routing with fenced devices | Build | [#73](https://github.com/pboachie/zrotext/pull/73), [design](MULTI-LOCATION.md) |
 | Automatic failover with independent quorum | Design | [Failover design](MULTI-LOCATION.md#automatic-failover-needs-an-independent-decision), [Implementation status](MULTI-LOCATION.md#implementation-status-first-increment) |
 | Optional managed AI service | Planned | [product proposal](PRODUCT-PLAN.md#managed-ai-and-larger-campaigns), [data-handling proposal](MANAGED-AI.md) proposal only; no runtime implementation |
-| Provider-based high-volume sending | Planned | [product proposal](PRODUCT-PLAN.md#managed-ai-and-larger-campaigns) proposal only; no runtime implementation |
+| Provider-based high-volume sending | Planned | [product proposal](PRODUCT-PLAN.md#managed-ai-and-larger-campaigns), [route evaluation](PROVIDER-ROUTES.md) evaluation only; no route selected and no runtime implementation |
 
 <a id="cap-hosted"></a>
 <details>
@@ -429,7 +429,7 @@ Offer an operated service built from the same public code, and keep it available
 <details>
 <summary><b>Provider-based high-volume sending</b> · planned</summary>
 
-- [ ] Evaluate provider routes, supported regions and sender-number requirements before promising capacity
+- [x] Evaluate provider routes, supported regions and sender-number requirements before promising capacity ([evaluation](PROVIDER-ROUTES.md), [#459](https://github.com/pboachie/zrotext/pull/459))
 - [ ] Explicit route selection with shared suppression, idempotency and delivery semantics; no automatic resend of unknown phone attempts
 
 </details>

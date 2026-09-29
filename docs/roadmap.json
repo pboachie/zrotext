@@ -1,5 +1,5 @@
 {
-  "snapshot": "2026-09-26",
+  "snapshot": "2026-09-29",
   "tracks": [
     {
       "id": "gateway",
@@ -271,16 +271,18 @@
             ["draft 02 proposal", "../protocol/drafts/zt-sealed-draft-02-proposal.md"],
             ["#159", "https://github.com/pboachie/zrotext/pull/159"],
             ["#162", "https://github.com/pboachie/zrotext/pull/162"],
-            ["#260", "https://github.com/pboachie/zrotext/pull/260"]
+            ["#260", "https://github.com/pboachie/zrotext/pull/260"],
+            ["#464", "https://github.com/pboachie/zrotext/pull/464"],
+            ["#525", "https://github.com/pboachie/zrotext/pull/525"]
           ],
           "done": [
             "Draft protocol and validation gates",
             "TypeScript and Android test vectors, including signed manifests and root rotation",
             "Test-only envelope parser and Android Keystore boundary",
-            "Q1-Q11 decisions recorded with cross-client manifest vectors ([#260](https://github.com/pboachie/zrotext/pull/260))"
+            "Q1-Q11 decisions recorded with cross-client manifest vectors ([#260](https://github.com/pboachie/zrotext/pull/260))",
+            "Recorded Q1-Q11 decisions re-verified against the evidence each row lists in the [protocol decision log](../protocol/drafts/zt-009-decision-log.md) ([#464](https://github.com/pboachie/zrotext/pull/464)); the Q9 Rust receiver gap it found is closed ([#525](https://github.com/pboachie/zrotext/pull/525))"
           ],
           "todo": [
-            "Verify the recorded Q1-Q11 decisions with the evidence each row still lists in the [protocol decision log](../protocol/drafts/zt-009-decision-log.md)",
             "Cross-client interoperability and adversarial security tests",
             "Recovery and unlock flows",
             "Enabled in the gateway for real messages"
@@ -391,12 +393,14 @@
           "short": "Provider-based sending",
           "stage": "planned",
           "evidence": [
-            ["product proposal", "PRODUCT-PLAN.md#managed-ai-and-larger-campaigns"]
+            ["product proposal", "PRODUCT-PLAN.md#managed-ai-and-larger-campaigns"],
+            ["route evaluation", "PROVIDER-ROUTES.md"]
           ],
-          "evidence_note": "proposal only; no runtime implementation",
-          "done": [],
+          "evidence_note": "evaluation only; no route selected and no runtime implementation",
+          "done": [
+            "Evaluate provider routes, supported regions and sender-number requirements before promising capacity ([evaluation](PROVIDER-ROUTES.md), [#459](https://github.com/pboachie/zrotext/pull/459))"
+          ],
           "todo": [
-            "Evaluate provider routes, supported regions and sender-number requirements before promising capacity",
             "Explicit route selection with shared suppression, idempotency and delivery semantics; no automatic resend of unknown phone attempts"
           ]
         }
