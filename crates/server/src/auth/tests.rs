@@ -398,6 +398,7 @@ async fn pending_signup_schema(base_url: &str, schema: &str) -> (Client, Client,
         include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
         include_str!("../../../../deploy/compose/migrations/022_pending_owner_expiry.sql"),
         include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
+        include_str!("../../../../deploy/compose/migrations/055_trusted_browser_epoch.sql"),
     ] {
         client.batch_execute(migration).await.unwrap();
     }
@@ -976,4 +977,173 @@ async fn queueing_account_mail_wakes_the_mail_worker_without_its_tick() {
         ))
         .await
         .unwrap();
+}
+
+#[test]
+fn trusted_browser_cookie_binds_to_user_account_and_current_password() {
+    let hasher = TokenHasher::new(crate::test_keys::key(201)).unwrap();
+    let user = Uuid::new_v4();
+    let account = Uuid::new_v4();
+    let password_hash = "argon2id$current-password-hash";
+    let now = std::time::SystemTime::now();
+    let set_cookie = trusted_browser_cookie(&hasher, user, account, 0, password_hash, now);
+    assert!(set_cookie.starts_with("__Host-zrotext_trusted_browser=ztb_"));
+    assert!(set_cookie.contains("; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age="));
+    let value = set_cookie
+        .split_once('=')
+        .unwrap()
+        .1
+        .split(';')
+        .next()
+        .unwrap();
+    assert!(trusted_browser_valid(
+        &hasher,
+        value,
+        user,
+        account,
+        0,
+        password_hash,
+        now
+    ));
+    // The cookie reveals no account data.
+    assert!(!set_cookie.contains(&user.to_string()[..8]));
+    assert!(!set_cookie.contains(&account.to_string()[..8]));
+    // Another user, account, or password hash does not validate it.
+    assert!(!trusted_browser_valid(
+        &hasher,
+        value,
+        Uuid::new_v4(),
+        account,
+        0,
+        password_hash,
+        now
+    ));
+    assert!(!trusted_browser_valid(
+        &hasher,
+        value,
+        user,
+        Uuid::new_v4(),
+        0,
+        password_hash,
+        now
+    ));
+    assert!(!trusted_browser_valid(
+        &hasher,
+        value,
+        user,
+        account,
+        0,
+        "argon2id$changed-password-hash",
+        now
+    ));
+    // Another pepper does not validate it.
+    let other_hasher = TokenHasher::new(crate::test_keys::key(202)).unwrap();
+    assert!(!trusted_browser_valid(
+        &other_hasher,
+        value,
+        user,
+        account,
+        0,
+        password_hash,
+        now
+    ));
+}
+
+#[test]
+fn trusted_browser_cookie_is_bound_to_its_issue_time() {
+    let hasher = TokenHasher::new(crate::test_keys::key(203)).unwrap();
+    let user = Uuid::new_v4();
+    let account = Uuid::new_v4();
+    let password_hash = "argon2id$current-password-hash";
+    let issued = std::time::SystemTime::now();
+    let value = trusted_browser_cookie(&hasher, user, account, 0, password_hash, issued)
+        .split_once('=')
+        .unwrap()
+        .1
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    let day = std::time::Duration::from_secs(86_400);
+    // Freshly issued: valid now and for the whole bounded lifetime.
+    assert!(trusted_browser_valid(
+        &hasher,
+        &value,
+        user,
+        account,
+        0,
+        password_hash,
+        issued + day * 89
+    ));
+    // Past its lifetime: invalid however it is presented.
+    assert!(!trusted_browser_valid(
+        &hasher,
+        &value,
+        user,
+        account,
+        0,
+        password_hash,
+        issued + day * 91
+    ));
+    // Issued in the future (beyond clock equality): invalid.
+    assert!(!trusted_browser_valid(
+        &hasher,
+        &value,
+        user,
+        account,
+        0,
+        password_hash,
+        issued - day
+    ));
+    // Malformed values never validate.
+    for broken in [
+        "".to_owned(),
+        "ztb_only".to_owned(),
+        "ztb_only.1800000000".to_owned(),
+        "ztb_only.1800000000.tag.extra".to_owned(),
+        "notprefix.1800000000.tag".to_owned(),
+        format!("{value}0"),
+    ] {
+        assert!(
+            !trusted_browser_valid(&hasher, &broken, user, account, 0, password_hash, issued),
+            "{broken:?} validated"
+        );
+    }
+}
+
+#[test]
+fn trusted_browser_cookie_is_bound_to_the_owners_trust_epoch() {
+    let hasher = TokenHasher::new(crate::test_keys::key(215)).unwrap();
+    let user = Uuid::new_v4();
+    let account = Uuid::new_v4();
+    let password_hash = "argon2id$current-password-hash";
+    let now = std::time::SystemTime::now();
+    let set_cookie = trusted_browser_cookie(&hasher, user, account, 0, password_hash, now);
+    let value = set_cookie
+        .split_once('=')
+        .unwrap()
+        .1
+        .split(';')
+        .next()
+        .unwrap();
+    assert!(trusted_browser_valid(
+        &hasher,
+        value,
+        user,
+        account,
+        0,
+        password_hash,
+        now
+    ));
+    // After revoke-others or an MFA change bumps the epoch, the same cookie
+    // (same id, issue time and password) no longer verifies.
+    assert!(!trusted_browser_valid(
+        &hasher,
+        value,
+        user,
+        account,
+        1,
+        password_hash,
+        now
+    ));
 }

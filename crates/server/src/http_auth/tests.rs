@@ -1,7 +1,7 @@
 use super::*;
-use axum::{body::Body, http::Request};
+use axum::{body::Body, extract::ConnectInfo, http::Request};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use std::sync::Mutex;
+use std::{net::SocketAddr, sync::Mutex};
 use tower::ServiceExt;
 
 struct CaptureVerification(Mutex<Option<String>>);
@@ -56,6 +56,50 @@ fn json_post(uri: &str, body: serde_json::Value) -> Request<Body> {
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(body.to_string()))
         .unwrap()
+}
+
+/// The raw value of one `Set-Cookie` pair in a response, without attributes.
+fn set_cookie_value(response: &Response, name: &str) -> Option<String> {
+    response
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .find_map(|value| {
+            let value = value.to_str().ok()?;
+            value
+                .split(';')
+                .next()?
+                .strip_prefix(&format!("{name}="))
+                .map(str::to_owned)
+        })
+}
+
+/// A reset request with optional trusted-browser cookie, transport peer, and
+/// forwarded header. Returns the full response for byte-parity checks.
+fn reset_request(
+    email: &str,
+    trusted_cookie: Option<&str>,
+    peer: Option<SocketAddr>,
+    forwarded_for: Option<&str>,
+) -> Request<Body> {
+    let mut request = json_post(
+        "/password/reset/request",
+        serde_json::json!({"email": email}),
+    );
+    if let Some(cookie) = trusted_cookie {
+        request
+            .headers_mut()
+            .insert(header::COOKIE, HeaderValue::from_str(cookie).unwrap());
+    }
+    if let Some(forwarded) = forwarded_for {
+        request
+            .headers_mut()
+            .insert("x-forwarded-for", HeaderValue::from_str(forwarded).unwrap());
+    }
+    if let Some(peer) = peer {
+        request.extensions_mut().insert(ConnectInfo(peer));
+    }
+    request
 }
 
 fn invite_post(uri: &str, body: serde_json::Value, token: &str) -> Request<Body> {
@@ -933,6 +977,7 @@ async fn verified_password_reset_survives_anonymous_request_and_confirm_exhausti
         include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
         include_str!("../../../../deploy/compose/migrations/025_account_recovery.sql"),
         include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
+        include_str!("../../../../deploy/compose/migrations/055_trusted_browser_epoch.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }
@@ -1064,6 +1109,34 @@ fn verified_reset_subject_is_distinct_and_rolls_with_the_code_throttle() {
     assert_ne!(verified_reset_subject("other@example.test", start), subject);
 }
 
+#[test]
+fn trusted_reset_subjects_are_distinct_from_every_other_lane() {
+    let email = "owner@example.test";
+    let start = UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+    let window = trusted_reset_window_subject(email, start);
+    let daily = trusted_reset_daily_subject(email);
+    // The trusted window subject rolls with the same throttle cadence.
+    assert_eq!(
+        trusted_reset_window_subject(
+            email,
+            start + VERIFIED_RESET_WINDOW - Duration::from_secs(1)
+        ),
+        window
+    );
+    assert_ne!(
+        trusted_reset_window_subject(email, start + VERIFIED_RESET_WINDOW),
+        window
+    );
+    // It shares no subject with the verified lane, the anonymous counter, or
+    // the trusted lane's own daily cap.
+    assert_ne!(window, verified_reset_subject(email, start));
+    assert_ne!(window, email);
+    assert_ne!(window, daily);
+    assert_ne!(daily, email);
+    assert_ne!(daily, verified_reset_subject(email, start));
+    assert_ne!(trusted_reset_daily_subject("other@example.test"), daily);
+}
+
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn stranger_spending_address_budget_does_not_block_owner_password_reset() {
@@ -1089,6 +1162,7 @@ async fn stranger_spending_address_budget_does_not_block_owner_password_reset() 
         include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
         include_str!("../../../../deploy/compose/migrations/025_account_recovery.sql"),
         include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
+        include_str!("../../../../deploy/compose/migrations/055_trusted_browser_epoch.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }
@@ -1204,8 +1278,17 @@ async fn stranger_spending_address_budget_does_not_block_owner_password_reset() 
         .unwrap();
 }
 
+/// The fixed owner row the recording budgets answer with: a trusted-browser
+/// cookie minted for exactly this row is valid, and any other is not.
+const RECORDING_OWNER_USER: Uuid = uuid::uuid!("00000000-0000-0000-0000-000000000101");
+const RECORDING_OWNER_ACCOUNT: Uuid = uuid::uuid!("00000000-0000-0000-0000-000000000102");
+const RECORDING_OWNER_EPOCH: i64 = 0;
+const RECORDING_OWNER_PASSWORD: &str = "recording-owner-password-hash";
+
 /// Records which budget statements an admission runs, answering from fixed
-/// outcomes. `anonymous` answers both anonymous charges.
+/// outcomes. `anonymous` answers both anonymous charges, and `window` and
+/// `daily` answer both lanes; the recorded name carries the lane each
+/// subject belonged to.
 struct RecordingResetBudgets {
     anonymous: bool,
     live: bool,
@@ -1221,42 +1304,93 @@ impl RecordingResetBudgets {
     }
 }
 
+/// Which lane a charge or read subject belonged to, from its subject string.
+fn recorded_lane(subject: &str) -> &'static str {
+    if subject.contains("\0trusted") {
+        "trusted"
+    } else {
+        "verified"
+    }
+}
+
 impl ResetBudgets for RecordingResetBudgets {
     async fn charge_anonymous(&self, _: &str) -> Result<bool, tokio_postgres::Error> {
         self.record("charge_anonymous", self.anonymous)
     }
-    async fn owner_is_live(&self, _: &str) -> Result<bool, tokio_postgres::Error> {
-        self.record("owner_is_live", self.live)
+    async fn owner_row(&self, _: &str) -> Result<Option<OwnerResetRow>, tokio_postgres::Error> {
+        let _ = self.record("owner_row", self.live);
+        Ok(self.live.then(|| OwnerResetRow {
+            user_id: RECORDING_OWNER_USER,
+            account_id: RECORDING_OWNER_ACCOUNT,
+            trusted_browser_epoch: RECORDING_OWNER_EPOCH,
+            password_hash: RECORDING_OWNER_PASSWORD.to_owned(),
+        }))
     }
-    async fn charge_window(&self, _: &str) -> Result<bool, tokio_postgres::Error> {
-        self.record("charge_window", self.window)
+    async fn charge_window(&self, subject: &str) -> Result<bool, tokio_postgres::Error> {
+        self.record(
+            match recorded_lane(subject) {
+                "trusted" => "charge_window:trusted",
+                _ => "charge_window:verified",
+            },
+            self.window,
+        )
     }
-    async fn charge_daily(&self, _: &str) -> Result<bool, tokio_postgres::Error> {
-        self.record("charge_daily", self.daily)
+    async fn charge_daily(&self, subject: &str) -> Result<bool, tokio_postgres::Error> {
+        self.record(
+            match recorded_lane(subject) {
+                "trusted" => "charge_daily:trusted",
+                _ => "charge_daily:verified",
+            },
+            self.daily,
+        )
     }
-    async fn read_daily(&self, _: &str) -> Result<bool, tokio_postgres::Error> {
-        self.record("read_daily", self.daily)
+    async fn read_daily(&self, subject: &str) -> Result<bool, tokio_postgres::Error> {
+        self.record(
+            match recorded_lane(subject) {
+                "trusted" => "read_daily:trusted",
+                _ => "read_daily:verified",
+            },
+            self.daily,
+        )
     }
 }
 
 #[tokio::test]
 async fn reset_admission_runs_the_same_statement_count_for_known_and_unknown_addresses() {
+    let hasher = TokenHasher::new(crate::test_keys::key(204)).unwrap();
     let now = UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+    let trusted_cookie = auth::trusted_browser_cookie(
+        &hasher,
+        RECORDING_OWNER_USER,
+        RECORDING_OWNER_ACCOUNT,
+        RECORDING_OWNER_EPOCH,
+        RECORDING_OWNER_PASSWORD,
+        now - Duration::from_secs(60),
+    )
+    .split_once('=')
+    .unwrap()
+    .1
+    .split(';')
+    .next()
+    .unwrap()
+    .to_owned();
     // (anonymous, live, window, daily) -> expected admission and calls.
     type Case = ((bool, bool, bool, bool), bool, &'static [&'static str]);
-    let cases: [Case; 7] = [
-        // The anonymous budget admits before any probe, known or not.
+    let verified: [Case; 7] = [
+        // The anonymous budget admits before any probe, known or not, with
+        // or without trusted evidence.
         ((true, true, true, true), true, &["charge_anonymous"]),
         ((true, false, true, true), true, &["charge_anonymous"]),
-        // Unknown address, anonymous budget spent.
+        // Unknown address, anonymous budget spent. A presented cookie changes
+        // nothing: there is no owner row to validate it against.
         (
             (false, false, true, true),
             false,
             &[
                 "charge_anonymous",
-                "owner_is_live",
+                "owner_row",
                 "charge_anonymous",
-                "read_daily",
+                "read_daily:verified",
             ],
         ),
         // Verified owner admitted through the window and the daily cap.
@@ -1265,9 +1399,9 @@ async fn reset_admission_runs_the_same_statement_count_for_known_and_unknown_add
             true,
             &[
                 "charge_anonymous",
-                "owner_is_live",
-                "charge_window",
-                "charge_daily",
+                "owner_row",
+                "charge_window:verified",
+                "charge_daily:verified",
             ],
         ),
         // Verified owner over the daily cap: refused.
@@ -1276,9 +1410,9 @@ async fn reset_admission_runs_the_same_statement_count_for_known_and_unknown_add
             false,
             &[
                 "charge_anonymous",
-                "owner_is_live",
-                "charge_window",
-                "charge_daily",
+                "owner_row",
+                "charge_window:verified",
+                "charge_daily:verified",
             ],
         ),
         // Verified owner refused by the window: the daily cap is only read.
@@ -1287,9 +1421,9 @@ async fn reset_admission_runs_the_same_statement_count_for_known_and_unknown_add
             false,
             &[
                 "charge_anonymous",
-                "owner_is_live",
-                "charge_window",
-                "read_daily",
+                "owner_row",
+                "charge_window:verified",
+                "read_daily:verified",
             ],
         ),
         (
@@ -1297,13 +1431,13 @@ async fn reset_admission_runs_the_same_statement_count_for_known_and_unknown_add
             false,
             &[
                 "charge_anonymous",
-                "owner_is_live",
-                "charge_window",
-                "read_daily",
+                "owner_row",
+                "charge_window:verified",
+                "read_daily:verified",
             ],
         ),
     ];
-    for ((anonymous, live, window, daily), admitted, calls) in cases {
+    for ((anonymous, live, window, daily), admitted, calls) in verified {
         let budgets = RecordingResetBudgets {
             anonymous,
             live,
@@ -1312,13 +1446,118 @@ async fn reset_admission_runs_the_same_statement_count_for_known_and_unknown_add
             calls: Mutex::new(Vec::new()),
         };
         assert_eq!(
-            admit_reset_request_with(&budgets, "owner@example.test", now)
-                .await
-                .unwrap(),
+            admit_reset_request_with(
+                &budgets,
+                &hasher,
+                "owner@example.test",
+                now,
+                ResetTrust {
+                    trusted_browser: None,
+                    trusted_network: false,
+                },
+            )
+            .await
+            .unwrap(),
             admitted,
             "{anonymous} {live} {window} {daily}"
         );
         assert_eq!(budgets.calls.lock().unwrap().as_slice(), calls);
+    }
+    // Trusted evidence, from a valid cookie and from a trusted network, runs
+    // the same statements against the trusted lane's own subjects instead.
+    let trusted: [Case; 3] = [
+        (
+            (false, true, true, true),
+            true,
+            &[
+                "charge_anonymous",
+                "owner_row",
+                "charge_window:trusted",
+                "charge_daily:trusted",
+            ],
+        ),
+        (
+            (false, true, true, false),
+            false,
+            &[
+                "charge_anonymous",
+                "owner_row",
+                "charge_window:trusted",
+                "charge_daily:trusted",
+            ],
+        ),
+        (
+            (false, true, false, true),
+            false,
+            &[
+                "charge_anonymous",
+                "owner_row",
+                "charge_window:trusted",
+                "read_daily:trusted",
+            ],
+        ),
+    ];
+    for (cookie, network) in [
+        (Some(trusted_cookie.as_str()), false),
+        (None, true),
+        (Some(trusted_cookie.as_str()), true),
+    ] {
+        for ((anonymous, live, window, daily), admitted, calls) in trusted {
+            let budgets = RecordingResetBudgets {
+                anonymous,
+                live,
+                window,
+                daily,
+                calls: Mutex::new(Vec::new()),
+            };
+            let trust = ResetTrust {
+                trusted_browser: cookie,
+                trusted_network: network,
+            };
+            assert_eq!(
+                admit_reset_request_with(&budgets, &hasher, "owner@example.test", now, trust)
+                    .await
+                    .unwrap(),
+                admitted,
+                "{anonymous} {live} {window} {daily} cookie={} network={network}",
+                cookie.is_some()
+            );
+            assert_eq!(budgets.calls.lock().unwrap().as_slice(), calls);
+        }
+    }
+    // A forged or malformed cookie falls back to the normal lanes: the same
+    // statements as no cookie at all.
+    for forged in [
+        String::new(),
+        "ztb_forged.1800000000.forgedtag".to_owned(),
+        trusted_cookie.replace('0', "1"),
+        format!("{trusted_cookie}.extra"),
+    ] {
+        let budgets = RecordingResetBudgets {
+            anonymous: false,
+            live: true,
+            window: false,
+            daily: false,
+            calls: Mutex::new(Vec::new()),
+        };
+        let trust = ResetTrust {
+            trusted_browser: Some(&forged),
+            trusted_network: false,
+        };
+        assert!(
+            !admit_reset_request_with(&budgets, &hasher, "owner@example.test", now, trust)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            budgets.calls.lock().unwrap().as_slice(),
+            &[
+                "charge_anonymous",
+                "owner_row",
+                "charge_window:verified",
+                "read_daily:verified",
+            ]
+        );
     }
 }
 
@@ -1347,6 +1586,7 @@ async fn verified_reset_lane_refuses_the_thirteenth_code_of_a_day_per_address() 
         include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
         include_str!("../../../../deploy/compose/migrations/025_account_recovery.sql"),
         include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
+        include_str!("../../../../deploy/compose/migrations/055_trusted_browser_epoch.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }
@@ -1527,6 +1767,12 @@ async fn postgres_http_account_lifecycle_enforces_csrf_and_revocation() {
         ))
         .await
         .unwrap();
+    test_client
+        .batch_execute(include_str!(
+            "../../../../deploy/compose/migrations/055_trusted_browser_epoch.sql"
+        ))
+        .await
+        .unwrap();
     let capture = Arc::new(CaptureVerification(Mutex::new(None)));
     let state = AuthHttpState::new(
         url,
@@ -1704,8 +1950,9 @@ async fn postgres_http_account_lifecycle_enforces_csrf_and_revocation() {
                 .to_owned()
         })
         .collect::<Vec<_>>();
-    assert_eq!(cookies.len(), 3);
+    assert_eq!(cookies.len(), 4);
     assert!(cookies[2].starts_with("__Host-zrotext_login_client=ztl_"));
+    assert!(cookies[3].starts_with("__Host-zrotext_trusted_browser=ztb_"));
     let cookie_header = cookies.join("; ");
     let csrf = cookies[1].split_once('=').unwrap().1;
     let session_request = Request::builder()
@@ -2584,6 +2831,7 @@ async fn valid_verification_survives_anonymous_invalid_code_exhaustion() {
         include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
         include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
         include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
+        include_str!("../../../../deploy/compose/migrations/055_trusted_browser_epoch.sql"),
     ] {
         client.batch_execute(migration).await.unwrap();
     }
@@ -2705,6 +2953,7 @@ async fn owner_sign_in_survives_anonymous_login_budget_exhaustion() {
         include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
         include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
         include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
+        include_str!("../../../../deploy/compose/migrations/055_trusted_browser_epoch.sql"),
     ] {
         client.batch_execute(migration).await.unwrap();
     }
@@ -2762,10 +3011,11 @@ async fn owner_sign_in_survives_anonymous_login_budget_exhaustion() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
     let cookies = set_cookies(&response);
-    assert_eq!(cookies.len(), 3);
+    assert_eq!(cookies.len(), 4);
     let known = cookies[2].clone();
     assert!(known.starts_with("__Host-zrotext_login_client=ztl_"));
     assert!(!known.contains("owner"));
+    assert!(cookies[3].starts_with("__Host-zrotext_trusted_browser=ztb_"));
 
     // One anonymous source targets the owner's address, then sprays
     // made-up addresses until the shared route budget is exhausted too.
@@ -2858,8 +3108,9 @@ async fn owner_sign_in_survives_anonymous_login_budget_exhaustion() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
     let cookies = set_cookies(&response);
-    assert_eq!(cookies.len(), 2);
+    assert_eq!(cookies.len(), 3);
     assert!(cookies[0].starts_with("__Host-zrotext_session=zts_"));
+    assert!(cookies[2].starts_with("__Host-zrotext_trusted_browser=ztb_"));
     // The remembered browser's own budget is bounded like any address.
     let (_, value) = known.split_once('=').unwrap();
     let own = auth::login_client_subject(&hasher, value, "owner@example.test").unwrap();
@@ -2954,6 +3205,7 @@ async fn postgres_http_mfa_never_sets_session_before_factor_and_limits_replay() 
         include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
         include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
         include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
+        include_str!("../../../../deploy/compose/migrations/055_trusted_browser_epoch.sql"),
     ] {
         client.batch_execute(migration).await.unwrap();
     }
@@ -2994,8 +3246,9 @@ async fn postgres_http_mfa_never_sets_session_before_factor_and_limits_replay() 
         .iter()
         .map(|v| v.to_str().unwrap().split(';').next().unwrap().to_owned())
         .collect::<Vec<_>>();
-    assert_eq!(cookies.len(), 3);
+    assert_eq!(cookies.len(), 4);
     assert!(cookies[2].starts_with("__Host-zrotext_login_client=ztl_"));
+    assert!(cookies[3].starts_with("__Host-zrotext_trusted_browser=ztb_"));
     let cookie_header = cookies.join("; ");
     let csrf = cookies[1].split_once('=').unwrap().1;
     let response = app
@@ -3127,7 +3380,7 @@ async fn postgres_http_mfa_never_sets_session_before_factor_and_limits_replay() 
             .get_all(header::SET_COOKIE)
             .iter()
             .count(),
-        3
+        4
     );
     let response = app
         .clone()
@@ -3269,8 +3522,9 @@ async fn postgres_http_mfa_never_sets_session_before_factor_and_limits_replay() 
         .iter()
         .map(|v| v.to_str().unwrap().split(';').next().unwrap().to_owned())
         .collect::<Vec<_>>();
-    assert_eq!(cookies.len(), 3);
+    assert_eq!(cookies.len(), 4);
     assert!(cookies[2].starts_with("__Host-zrotext_login_client=ztl_"));
+    assert!(cookies[3].starts_with("__Host-zrotext_trusted_browser=ztb_"));
     let cookie_header = cookies.join("; ");
     let csrf = cookies[1].split_once('=').unwrap().1;
     let response = no_key_app
@@ -3560,6 +3814,1138 @@ async fn concurrent_logins_queue_for_password_work_and_saturation_is_503() {
     drop(held);
     setup
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+/// Schema, migrations, and connection URL shared by the trusted-lane
+/// PostgreSQL tests.
+async fn trusted_lane_database(
+    base_url: &str,
+    schema: &str,
+) -> (tokio_postgres::Client, tokio_postgres::Client, String) {
+    let (setup, connection) = tokio_postgres::connect(base_url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    setup
+        .batch_execute(&format!("CREATE SCHEMA {schema}"))
+        .await
+        .unwrap();
+    let separator = if base_url.contains('?') { '&' } else { '?' };
+    let url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
+    let (db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    for migration in [
+        include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+        include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+        include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
+        include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
+        include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
+        include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+        include_str!("../../../../deploy/compose/migrations/025_account_recovery.sql"),
+        include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
+        include_str!("../../../../deploy/compose/migrations/053_observer_seat_invitations.sql"),
+        include_str!("../../../../deploy/compose/migrations/054_stateless_device_challenges.sql"),
+        include_str!("../../../../deploy/compose/migrations/055_trusted_browser_epoch.sql"),
+    ] {
+        db.batch_execute(migration).await.unwrap();
+    }
+    (setup, db, url)
+}
+
+/// Issue one reset request against `app` and return the full response after
+/// asserting the uniform 202.
+async fn send_reset(
+    app: &Router,
+    email: &str,
+    trusted_cookie: Option<&str>,
+    peer: Option<SocketAddr>,
+    forwarded_for: Option<&str>,
+) -> (StatusCode, String, axum::body::Bytes) {
+    let response = app
+        .clone()
+        .oneshot(reset_request(email, trusted_cookie, peer, forwarded_for))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let (parts, body) = response.into_parts();
+    let body = axum::body::to_bytes(body, 16 * 1024).await.unwrap();
+    (parts.status, format!("{:?}", parts.headers), body)
+}
+
+async fn trusted_lane_issued(db: &Client, email: &str) -> i64 {
+    db.query_one(
+        "SELECT count(*) FROM password_resets r JOIN users u ON u.id=r.user_id WHERE u.email=$1",
+        &[&email],
+    )
+    .await
+    .unwrap()
+    .get(0)
+}
+
+async fn trusted_lane_age_codes(db: &Client) {
+    db.execute(
+        "UPDATE password_resets SET created_at=created_at-interval '16 minutes'",
+        &[],
+    )
+    .await
+    .unwrap();
+}
+
+/// Spend the verified reset lane's full daily cap for every address exercised
+/// so far, as if earlier throttle windows had admitted eleven more requests
+/// after the one already charged: the subject row reaches its 12-per-day cap,
+/// so further verified-lane requests are refused. The route row shares the
+/// scope and stays far under its ceiling.
+async fn trusted_lane_exhaust_verified_daily(db: &Client) {
+    let updated = db
+        .execute(
+            "UPDATE auth_abuse_counters SET attempts=12 \
+             WHERE scope='password_reset_verified_daily' AND attempts=1",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated, 2);
+}
+
+async fn trusted_lane_daily_rows(db: &Client) -> i64 {
+    db.query_one(
+        "SELECT count(*) FROM auth_abuse_counters WHERE scope='password_reset_verified_daily'",
+        &[],
+    )
+    .await
+    .unwrap()
+    .get(0)
+}
+
+/// Spend both public reset lanes for `email`'s owner: the anonymous
+/// per-address cap (three requests issue one code), one verified-lane code
+/// once the code throttle has passed, then the verified lane's daily cap.
+/// Leaves two issued codes, and checks as a control that a cookieless
+/// request with aged codes issues nothing more, so any later code must come
+/// through the trusted lane.
+async fn trusted_lane_close_public_lanes(app: &Router, db: &Client, email: &str) {
+    for _ in 0..3 {
+        send_reset(app, email, None, None, None).await;
+    }
+    assert_eq!(trusted_lane_issued(db, email).await, 1);
+    trusted_lane_age_codes(db).await;
+    send_reset(app, email, None, None, None).await;
+    assert_eq!(trusted_lane_issued(db, email).await, 2);
+    trusted_lane_exhaust_verified_daily(db).await;
+    trusted_lane_age_codes(db).await;
+    send_reset(app, email, None, None, None).await;
+    assert_eq!(
+        trusted_lane_issued(db, email).await,
+        2,
+        "control: with aged codes the public lanes must refuse"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn trusted_browser_cookie_grants_reset_codes_beyond_the_public_lanes() {
+    let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+        .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let schema = format!("http_reset_trusted_cookie_{}", Uuid::new_v4().simple());
+    let (setup, mut db, url) = trusted_lane_database(&base_url, &schema).await;
+    let hasher = Arc::new(TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
+    let password = Uuid::new_v4().to_string();
+    let owner = auth::register(&mut db, &hasher, "owner@example.test", &password)
+        .await
+        .unwrap();
+    assert!(
+        auth::verify_email(&mut db, &hasher, &owner.verification_token)
+            .await
+            .unwrap()
+    );
+    let state = AuthHttpState::new(
+        url,
+        hasher.clone(),
+        "https://zrotext.example".to_owned(),
+        Arc::new(CaptureVerification(Mutex::new(None))),
+    )
+    .unwrap();
+    let app = router(state);
+    // A successful sign-in marks the browser as trusted.
+    let response = app
+        .clone()
+        .oneshot(json_post(
+            "/login",
+            serde_json::json!({"email":"owner@example.test","password":password}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let trusted = set_cookie_value(&response, auth::TRUSTED_BROWSER_COOKIE).unwrap();
+    let cookie_header = format!("{}={trusted}", auth::TRUSTED_BROWSER_COOKIE);
+    // A stranger naming the address spends the anonymous per-address budget.
+    for _ in 0..3 {
+        send_reset(&app, "owner@example.test", None, None, None).await;
+    }
+    assert_eq!(trusted_lane_issued(&db, "owner@example.test").await, 1);
+    // The verified lane admits one more code once the throttle window passes.
+    trusted_lane_age_codes(&db).await;
+    send_reset(&app, "owner@example.test", None, None, None).await;
+    assert_eq!(trusted_lane_issued(&db, "owner@example.test").await, 2);
+    trusted_lane_exhaust_verified_daily(&db).await;
+    trusted_lane_age_codes(&db).await;
+    let capped = send_reset(&app, "owner@example.test", None, None, None).await;
+    assert_eq!(trusted_lane_issued(&db, "owner@example.test").await, 2);
+    // The same exhausted public lanes still admit the browser that signed in:
+    // the trusted lane charges its own subjects and issues a fresh code.
+    let rows_before = trusted_lane_daily_rows(&db).await;
+    trusted_lane_age_codes(&db).await;
+    let trusted_response =
+        send_reset(&app, "owner@example.test", Some(&cookie_header), None, None).await;
+    assert_eq!(trusted_response.0, capped.0);
+    assert_eq!(trusted_lane_issued(&db, "owner@example.test").await, 3);
+    assert_eq!(trusted_lane_daily_rows(&db).await, rows_before + 1);
+    // The trusted lane keeps the code cadence and the uniform 202: further
+    // requests inside the throttle window issue nothing, and an unknown
+    // address carrying the same cookie gets the same response and issues
+    // nothing.
+    send_reset(&app, "owner@example.test", Some(&cookie_header), None, None).await;
+    assert_eq!(trusted_lane_issued(&db, "owner@example.test").await, 3);
+    trusted_lane_age_codes(&db).await;
+    let unknown = send_reset(
+        &app,
+        "nobody@example.test",
+        Some(&cookie_header),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(unknown.0, trusted_response.0);
+    assert_eq!(trusted_lane_issued(&db, "nobody@example.test").await, 0);
+    setup
+        .batch_execute(&format!(
+            "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
+        ))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn forged_or_foreign_trusted_evidence_gets_no_extra_budget() {
+    let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+        .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let schema = format!("http_reset_trusted_forged_{}", Uuid::new_v4().simple());
+    let (setup, mut db, url) = trusted_lane_database(&base_url, &schema).await;
+    let hasher = Arc::new(TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
+    let password = Uuid::new_v4().to_string();
+    for email in ["target@example.test", "other@example.test"] {
+        let owner = auth::register(&mut db, &hasher, email, &password)
+            .await
+            .unwrap();
+        assert!(
+            auth::verify_email(&mut db, &hasher, &owner.verification_token)
+                .await
+                .unwrap()
+        );
+    }
+    let networks = TrustedNetworks::parse(Some("198.51.100.0/24"), Some("203.0.113.0/24")).unwrap();
+    let state = AuthHttpState::new(
+        url,
+        hasher.clone(),
+        "https://zrotext.example".to_owned(),
+        Arc::new(CaptureVerification(Mutex::new(None))),
+    )
+    .unwrap()
+    .with_reset_trusted_networks(networks);
+    let app = router(state);
+    let login = |app: Router, email: String| {
+        let request = json_post(
+            "/login",
+            serde_json::json!({"email": email, "password": password}),
+        );
+        async move {
+            let response = app.oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::NO_CONTENT);
+            set_cookie_value(&response, auth::TRUSTED_BROWSER_COOKIE).unwrap()
+        }
+    };
+    let own = login(app.clone(), "target@example.test".to_owned()).await;
+    let foreign = login(app.clone(), "other@example.test".to_owned()).await;
+    let cookie_header = |value: &str| format!("{}={value}", auth::TRUSTED_BROWSER_COOKIE);
+    let own_header = cookie_header(&own);
+    let foreign_header = cookie_header(&foreign);
+    // Tamper a fully significant tag character: the final base64 character
+    // carries ignored padding bits, so flipping it can decode identically.
+    let forged_header = cookie_header(&{
+        let (prefix, tag) = own.rsplit_once('.').unwrap();
+        let flipped = if tag.as_bytes()[0] == b'A' { "B" } else { "A" };
+        format!("{prefix}.{flipped}{}", &tag[1..])
+    });
+    // Exhaust the public lanes for the target address.
+    for _ in 0..3 {
+        send_reset(&app, "target@example.test", None, None, None).await;
+    }
+    assert_eq!(trusted_lane_issued(&db, "target@example.test").await, 1);
+    trusted_lane_age_codes(&db).await;
+    send_reset(&app, "target@example.test", None, None, None).await;
+    assert_eq!(trusted_lane_issued(&db, "target@example.test").await, 2);
+    trusted_lane_exhaust_verified_daily(&db).await;
+    let refused = send_reset(&app, "target@example.test", None, None, None).await;
+    // A tampered tag, another owner's cookie, a spoofed forwarded header from
+    // a caller with no peer information, and a spoofed header from an
+    // untrusted peer all fall back to the exhausted public lanes: same 202,
+    // no code, and no trusted-lane counter rows.
+    let rows_before = trusted_lane_daily_rows(&db).await;
+    trusted_lane_age_codes(&db).await;
+    for (cookie, peer, forwarded) in [
+        (Some(forged_header.clone()), None, None),
+        (Some(foreign_header.clone()), None, None),
+        (None, None, Some("198.51.100.9")),
+        (
+            None,
+            Some("192.0.2.8:443".parse().unwrap()),
+            Some("198.51.100.9"),
+        ),
+        (Some("garbage".to_owned()), None, None),
+    ] {
+        let response = send_reset(
+            &app,
+            "target@example.test",
+            cookie.as_deref(),
+            peer,
+            forwarded,
+        )
+        .await;
+        assert_eq!(response.0, refused.0);
+        assert_eq!(response.1, refused.1);
+        assert_eq!(response.2, refused.2);
+    }
+    assert_eq!(trusted_lane_issued(&db, "target@example.test").await, 2);
+    assert_eq!(trusted_lane_daily_rows(&db).await, rows_before);
+    // The valid cookie still crosses the exhausted lanes, proving the
+    // refusals above came from the evidence being rejected.
+    trusted_lane_age_codes(&db).await;
+    send_reset(&app, "target@example.test", Some(&own_header), None, None).await;
+    assert_eq!(trusted_lane_issued(&db, "target@example.test").await, 3);
+    setup
+        .batch_execute(&format!(
+            "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
+        ))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn password_change_and_erasure_invalidate_trusted_browser_cookies() {
+    let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+        .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let schema = format!("http_reset_trusted_revoke_{}", Uuid::new_v4().simple());
+    let (setup, mut db, url) = trusted_lane_database(&base_url, &schema).await;
+    let hasher = Arc::new(TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
+    let password = Uuid::new_v4().to_string();
+    let owner = auth::register(&mut db, &hasher, "owner@example.test", &password)
+        .await
+        .unwrap();
+    assert!(
+        auth::verify_email(&mut db, &hasher, &owner.verification_token)
+            .await
+            .unwrap()
+    );
+    let state = AuthHttpState::new(
+        url,
+        hasher.clone(),
+        "https://zrotext.example".to_owned(),
+        Arc::new(CaptureVerification(Mutex::new(None))),
+    )
+    .unwrap();
+    let app = router(state);
+    async fn issued(db: &Client) -> i64 {
+        db.query_one("SELECT count(*) FROM password_resets", &[])
+            .await
+            .unwrap()
+            .get(0)
+    }
+    // Sign in: the browser becomes trusted and holds session cookies.
+    let response = app
+        .clone()
+        .oneshot(json_post(
+            "/login",
+            serde_json::json!({"email":"owner@example.test","password":password}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let cookies = response
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .map(|v| v.to_str().unwrap().split(';').next().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    let trusted = set_cookie_value(&response, auth::TRUSTED_BROWSER_COOKIE).unwrap();
+    let trusted_header = format!("{}={trusted}", auth::TRUSTED_BROWSER_COOKIE);
+    let cookie_header = cookies.join("; ");
+    let csrf = cookies
+        .iter()
+        .find_map(|cookie| {
+            cookie
+                .strip_prefix("__Host-zrotext_csrf=")
+                .map(str::to_owned)
+        })
+        .unwrap();
+    // Exhaust the public lanes, then confirm the trusted lane still issues.
+    for _ in 0..3 {
+        send_reset(&app, "owner@example.test", None, None, None).await;
+    }
+    assert_eq!(issued(&db).await, 1);
+    trusted_lane_age_codes(&db).await;
+    send_reset(&app, "owner@example.test", None, None, None).await;
+    assert_eq!(issued(&db).await, 2);
+    trusted_lane_exhaust_verified_daily(&db).await;
+    trusted_lane_age_codes(&db).await;
+    send_reset(
+        &app,
+        "owner@example.test",
+        Some(&trusted_header),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(issued(&db).await, 3);
+    // A password change revokes every session and every trusted browser.
+    let new_password = Uuid::new_v4().to_string();
+    let response = app
+        .clone()
+        .oneshot(owner_post(
+            "/password",
+            serde_json::json!({
+                "current_password": password,
+                "new_password": new_password,
+            }),
+            &cookie_header,
+            &csrf,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    trusted_lane_age_codes(&db).await;
+    send_reset(
+        &app,
+        "owner@example.test",
+        Some(&trusted_header),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(issued(&db).await, 3);
+    // Erasing the account removes the user row the cookie binds to, and its
+    // membership, sessions and reset history cascade away with it; the
+    // request falls back to the spent anonymous lane with the same 202 and
+    // must not queue anything for the erased address.
+    db.execute("DELETE FROM users", &[]).await.unwrap();
+    assert_eq!(issued(&db).await, 0);
+    trusted_lane_age_codes(&db).await;
+    send_reset(
+        &app,
+        "owner@example.test",
+        Some(&trusted_header),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(issued(&db).await, 0);
+    // A fresh sign-in with the new password mints fresh trust, and the
+    // trusted lane still has budget left for the address.
+    let owner = auth::register(&mut db, &hasher, "owner@example.test", &new_password)
+        .await
+        .unwrap();
+    assert!(
+        auth::verify_email(&mut db, &hasher, &owner.verification_token)
+            .await
+            .unwrap()
+    );
+    let response = app
+        .clone()
+        .oneshot(json_post(
+            "/login",
+            serde_json::json!({"email":"owner@example.test","password":new_password}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let fresh = set_cookie_value(&response, auth::TRUSTED_BROWSER_COOKIE).unwrap();
+    assert_ne!(fresh, trusted);
+    trusted_lane_age_codes(&db).await;
+    send_reset(
+        &app,
+        "owner@example.test",
+        Some(&format!("{}={fresh}", auth::TRUSTED_BROWSER_COOKIE)),
+        None,
+        None,
+    )
+    .await;
+    // The erasure also cascaded the reset history away, so this is the first
+    // code of the re-registered owner.
+    assert_eq!(issued(&db).await, 1);
+    setup
+        .batch_execute(&format!(
+            "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
+        ))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn trusted_network_reset_requests_survive_exhausted_public_lanes() {
+    let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+        .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let schema = format!("http_reset_trusted_network_{}", Uuid::new_v4().simple());
+    let (setup, mut db, url) = trusted_lane_database(&base_url, &schema).await;
+    let hasher = Arc::new(TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
+    let password = Uuid::new_v4().to_string();
+    let owner = auth::register(&mut db, &hasher, "owner@example.test", &password)
+        .await
+        .unwrap();
+    assert!(
+        auth::verify_email(&mut db, &hasher, &owner.verification_token)
+            .await
+            .unwrap()
+    );
+    let networks = TrustedNetworks::parse(Some("198.51.100.0/24"), Some("203.0.113.0/24")).unwrap();
+    let state = AuthHttpState::new(
+        url,
+        hasher.clone(),
+        "https://zrotext.example".to_owned(),
+        Arc::new(CaptureVerification(Mutex::new(None))),
+    )
+    .unwrap()
+    .with_reset_trusted_networks(networks);
+    let app = router(state);
+    async fn issued(db: &Client) -> i64 {
+        db.query_one("SELECT count(*) FROM password_resets", &[])
+            .await
+            .unwrap()
+            .get(0)
+    }
+    // Exhaust the public lanes from unconfigured addresses.
+    for _ in 0..3 {
+        send_reset(
+            &app,
+            "owner@example.test",
+            None,
+            Some("192.0.2.10:443".parse().unwrap()),
+            None,
+        )
+        .await;
+    }
+    assert_eq!(issued(&db).await, 1);
+    trusted_lane_age_codes(&db).await;
+    send_reset(&app, "owner@example.test", None, None, None).await;
+    assert_eq!(issued(&db).await, 2);
+    trusted_lane_exhaust_verified_daily(&db).await;
+    let refused = send_reset(&app, "owner@example.test", None, None, None).await;
+    // A request whose socket peer is inside a trusted network is admitted
+    // through the trusted lane with the same 202.
+    trusted_lane_age_codes(&db).await;
+    send_reset(
+        &app,
+        "owner@example.test",
+        None,
+        Some("198.51.100.7:443".parse().unwrap()),
+        None,
+    )
+    .await;
+    assert_eq!(issued(&db).await, 3);
+    // A trusted proxy may vouch for the client it forwarded.
+    trusted_lane_age_codes(&db).await;
+    send_reset(
+        &app,
+        "owner@example.test",
+        None,
+        Some("203.0.113.5:443".parse().unwrap()),
+        Some("198.51.100.9"),
+    )
+    .await;
+    assert_eq!(issued(&db).await, 4);
+    // An untrusted peer cannot spoof its way in with the header, and a
+    // trusted proxy does not vouch for an outside client.
+    trusted_lane_age_codes(&db).await;
+    for (email, peer, forwarded) in [
+        (
+            "owner@example.test",
+            Some("192.0.2.8:443".parse().unwrap()),
+            Some("198.51.100.9"),
+        ),
+        (
+            "owner@example.test",
+            Some("203.0.113.5:443".parse().unwrap()),
+            Some("192.0.2.8"),
+        ),
+    ] {
+        let response = send_reset(&app, email, None, peer, forwarded).await;
+        assert_eq!(response.0, refused.0);
+    }
+    // An unknown address from a trusted network still issues nothing.
+    trusted_lane_age_codes(&db).await;
+    let response = send_reset(
+        &app,
+        "nobody@example.test",
+        None,
+        Some("198.51.100.7:443".parse().unwrap()),
+        None,
+    )
+    .await;
+    assert_eq!(response.0, refused.0);
+    assert_eq!(issued(&db).await, 4);
+    // The unknown trusted-network request spent only its own anonymous
+    // budget; the real owner's trusted lane is untouched and still admits.
+    trusted_lane_age_codes(&db).await;
+    send_reset(
+        &app,
+        "owner@example.test",
+        None,
+        Some("198.51.100.7:443".parse().unwrap()),
+        None,
+    )
+    .await;
+    assert_eq!(issued(&db).await, 5);
+    setup
+        .batch_execute(&format!(
+            "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
+        ))
+        .await
+        .unwrap();
+}
+
+#[test]
+fn forwarded_for_chain_joins_every_header_line_in_arrival_order() {
+    let mut headers = axum::http::HeaderMap::new();
+    headers.append(
+        "x-forwarded-for",
+        axum::http::HeaderValue::from_str("198.51.100.9").unwrap(),
+    );
+    headers.append(
+        "x-forwarded-for",
+        axum::http::HeaderValue::from_str("192.0.2.8, 203.0.113.4").unwrap(),
+    );
+    // Some proxies append a new header line instead of extending the first;
+    // every line must be read, in order, or the client-controlled first line
+    // would be the only one believed.
+    assert_eq!(
+        super::forwarded_for_chain(&headers).as_deref(),
+        Some("198.51.100.9,192.0.2.8,203.0.113.4")
+    );
+    assert_eq!(
+        super::forwarded_for_chain(&axum::http::HeaderMap::new()),
+        None
+    );
+}
+
+/// Proxies inside `RESET_TRUSTED_CIDRS` (one private range for both), where
+/// resolving a collapsed chain to the proxy's own address would grant trust.
+fn overlapping_trusted_networks() -> TrustedNetworks {
+    TrustedNetworks::parse(
+        Some("198.51.100.0/24"),
+        Some("198.51.100.5/32,198.51.100.6/32"),
+    )
+    .unwrap()
+}
+
+fn forwarded_headers(lines: &[&[u8]]) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    for line in lines {
+        headers.append("x-forwarded-for", HeaderValue::from_bytes(line).unwrap());
+    }
+    headers
+}
+
+#[test]
+fn a_collapsed_forwarded_chain_never_trusts_the_proxy_itself() {
+    let networks = overlapping_trusted_networks();
+    let proxy: Option<SocketAddr> = Some("198.51.100.5:443".parse().unwrap());
+    let trusted = |headers: &HeaderMap| {
+        networks.reset_trusted_client(proxy, super::forwarded_for_chain(headers).as_deref())
+    };
+    // Control: a definite client inside the trusted range is trusted.
+    assert!(trusted(&forwarded_headers(&[b"198.51.100.9"])));
+    // A client-supplied line holding an obs-text byte, merged by an
+    // appending proxy with the real client, is unreadable as a whole. It must
+    // not be dropped: the chain would collapse and the proxy become the
+    // client.
+    assert!(!trusted(&forwarded_headers(&[b"x\x80y, 192.0.2.8"])));
+    assert!(!trusted(&forwarded_headers(&[b"\xff"])));
+    // An unreadable line to the right of the client poisons the chain. One
+    // to its left is client-injected content the right-to-left walk never
+    // reaches, like any other spoofed left entry, so the definite client the
+    // proxy appended still decides.
+    assert!(!trusted(&forwarded_headers(&[b"198.51.100.9", b"\x80"])));
+    assert!(!trusted(&forwarded_headers(&[
+        b"198.51.100.9",
+        b"\x80",
+        b"198.51.100.6"
+    ])));
+    assert!(trusted(&forwarded_headers(&[b"\x80", b"198.51.100.9"])));
+    assert!(!trusted(&forwarded_headers(&[b"\x80", b"192.0.2.8"])));
+    // Empty headers and empty entries resolve to no client.
+    assert!(!trusted(&forwarded_headers(&[b""])));
+    assert!(!trusted(&forwarded_headers(&[b" , "])));
+    assert!(!trusted(&forwarded_headers(&[b"", b""])));
+    assert!(!trusted(&forwarded_headers(&[b"198.51.100.9", b""])));
+    // No header at all from a trusted proxy names no client either.
+    assert!(!trusted(&HeaderMap::new()));
+    // A chain of only trusted proxies names no client.
+    assert!(!trusted(&forwarded_headers(&[
+        b"198.51.100.6",
+        b"198.51.100.5"
+    ])));
+    // A spoofed trusted left-most line cannot hide the real client.
+    assert!(!trusted(&forwarded_headers(&[
+        b"198.51.100.9",
+        b"192.0.2.8"
+    ])));
+    // Malformed entries fail closed.
+    assert!(!trusted(&forwarded_headers(&[
+        b"198.51.100.9, 198.51.100.6:51234"
+    ])));
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn collapsed_forwarded_chains_from_a_trusted_proxy_get_no_trusted_lane() {
+    let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+        .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let schema = format!("http_reset_trusted_collapse_{}", Uuid::new_v4().simple());
+    let (setup, mut db, url) = trusted_lane_database(&base_url, &schema).await;
+    let hasher = Arc::new(TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
+    let password = Uuid::new_v4().to_string();
+    let owner = auth::register(&mut db, &hasher, "owner@example.test", &password)
+        .await
+        .unwrap();
+    assert!(
+        auth::verify_email(&mut db, &hasher, &owner.verification_token)
+            .await
+            .unwrap()
+    );
+    let state = AuthHttpState::new(
+        url,
+        hasher.clone(),
+        "https://zrotext.example".to_owned(),
+        Arc::new(CaptureVerification(Mutex::new(None))),
+    )
+    .unwrap()
+    .with_reset_trusted_networks(overlapping_trusted_networks());
+    let app = router(state);
+    async fn issued(db: &Client) -> i64 {
+        db.query_one("SELECT count(*) FROM password_resets", &[])
+            .await
+            .unwrap()
+            .get(0)
+    }
+    let proxy: SocketAddr = "198.51.100.5:443".parse().unwrap();
+    let outside: SocketAddr = "192.0.2.10:443".parse().unwrap();
+    // Exhaust the public lanes from an outside address.
+    for _ in 0..3 {
+        send_reset(&app, "owner@example.test", None, Some(outside), None).await;
+    }
+    assert_eq!(issued(&db).await, 1);
+    trusted_lane_age_codes(&db).await;
+    send_reset(&app, "owner@example.test", None, Some(outside), None).await;
+    assert_eq!(issued(&db).await, 2);
+    trusted_lane_exhaust_verified_daily(&db).await;
+    // Every collapsed or unusable chain through the proxy is refused like any
+    // outside request, with codes aged so that an admission would issue.
+    let lines: [&[&[u8]]; 7] = [
+        &[],
+        &[b""],
+        &[b" , "],
+        &[b"x\x80y, 192.0.2.8"],
+        &[b"198.51.100.6, 198.51.100.5"],
+        &[b"198.51.100.9, 192.0.2.8"],
+        &[b"198.51.100.9", b"\x80"],
+    ];
+    for chain in lines {
+        trusted_lane_age_codes(&db).await;
+        let mut request = reset_request("owner@example.test", None, Some(proxy), None);
+        for line in chain {
+            request
+                .headers_mut()
+                .append("x-forwarded-for", HeaderValue::from_bytes(line).unwrap());
+        }
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert_eq!(
+            issued(&db).await,
+            2,
+            "chain {chain:?} from the proxy must not reach the trusted lane"
+        );
+    }
+    // Control: the same proxy vouching for a definite client inside the
+    // trusted range is admitted through the trusted lane.
+    trusted_lane_age_codes(&db).await;
+    send_reset(
+        &app,
+        "owner@example.test",
+        None,
+        Some(proxy),
+        Some("198.51.100.9, 198.51.100.6"),
+    )
+    .await;
+    assert_eq!(issued(&db).await, 3);
+    setup
+        .batch_execute(&format!(
+            "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
+        ))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn revoking_other_sessions_invalidates_other_browsers_trusted_cookies() {
+    let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+        .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let schema = format!(
+        "http_reset_trusted_revokeothers_{}",
+        Uuid::new_v4().simple()
+    );
+    let (setup, mut db, url) = trusted_lane_database(&base_url, &schema).await;
+    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(216)).unwrap());
+    let password = Uuid::new_v4().to_string();
+    let owner = auth::register(&mut db, &hasher, "owner@example.test", &password)
+        .await
+        .unwrap();
+    assert!(
+        auth::verify_email(&mut db, &hasher, &owner.verification_token)
+            .await
+            .unwrap()
+    );
+    let state = AuthHttpState::new(
+        url,
+        hasher.clone(),
+        "https://zrotext.example".to_owned(),
+        Arc::new(CaptureVerification(Mutex::new(None))),
+    )
+    .unwrap();
+    let app = router(state);
+    async fn issued(db: &tokio_postgres::Client) -> i64 {
+        db.query_one("SELECT count(*) FROM password_resets", &[])
+            .await
+            .unwrap()
+            .get(0)
+    }
+    fn cookie_pair(response: &Response) -> (String, String) {
+        let joined = response
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .map(|v| v.to_str().unwrap().split(';').next().unwrap().to_owned())
+            .collect::<Vec<_>>()
+            .join("; ");
+        let csrf = joined
+            .split("; ")
+            .find_map(|c| c.strip_prefix("__Host-zrotext_csrf=").map(str::to_owned))
+            .unwrap();
+        (joined, csrf)
+    }
+    fn trusted_cookie(response: &Response) -> String {
+        format!(
+            "{}={}",
+            auth::TRUSTED_BROWSER_COOKIE,
+            set_cookie_value(response, auth::TRUSTED_BROWSER_COOKIE).unwrap()
+        )
+    }
+    // Two browsers sign in; both sessions live and both browsers trusted.
+    let first = app
+        .clone()
+        .oneshot(json_post(
+            "/login",
+            serde_json::json!({"email":"owner@example.test","password":password}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::NO_CONTENT);
+    let (first_cookies, first_csrf) = cookie_pair(&first);
+    let first_trusted = trusted_cookie(&first);
+    let second = app
+        .clone()
+        .oneshot(json_post(
+            "/login",
+            serde_json::json!({"email":"owner@example.test","password":password}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(second.status(), StatusCode::NO_CONTENT);
+    let second_trusted = trusted_cookie(&second);
+
+    // Close both public lanes before any trusted cookie is used, so that from
+    // here on a request can only be admitted through the trusted lane.
+    trusted_lane_close_public_lanes(&app, &db, "owner@example.test").await;
+    assert_eq!(issued(&db).await, 2);
+    // Browser B's trusted cookie spends the trusted lane before revocation.
+    // Codes are aged before every trusted send: inside the 15-minute code
+    // throttle nothing is issued whatever lane admits, which would make the
+    // assertions below vacuous.
+    trusted_lane_age_codes(&db).await;
+    send_reset(
+        &app,
+        "owner@example.test",
+        Some(&second_trusted),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(
+        issued(&db).await,
+        3,
+        "browser B's trusted cookie must spend the trusted lane"
+    );
+
+    // The owner revokes every other session from browser A: the trust epoch
+    // bumps, so every browser's pre-revocation trusted cookie must stop
+    // working, including browser B's.
+    let response = app
+        .clone()
+        .oneshot(owner_post(
+            "/sessions/revoke-others",
+            serde_json::json!({"current_password": password}),
+            &first_cookies,
+            &first_csrf,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let epoch: i64 = db
+        .query_one(
+            "SELECT trusted_browser_epoch FROM users WHERE email='owner@example.test'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(epoch, 1, "revoke-others must bump the trust epoch");
+
+    // Both pre-revocation cookies, including the revoking browser's own, are
+    // rejected on the reset path even with aged codes.
+    for stale in [&second_trusted, &first_trusted] {
+        trusted_lane_age_codes(&db).await;
+        send_reset(&app, "owner@example.test", Some(stale), None, None).await;
+        assert_eq!(
+            issued(&db).await,
+            3,
+            "a trusted cookie issued before revoke-others must be rejected"
+        );
+    }
+    // A sign-in after the revocation mints a fresh cookie under the new
+    // epoch, and the reset path accepts it.
+    let third = app
+        .clone()
+        .oneshot(json_post(
+            "/login",
+            serde_json::json!({"email":"owner@example.test","password":password}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(third.status(), StatusCode::NO_CONTENT);
+    let fresh_trusted = trusted_cookie(&third);
+    assert_ne!(fresh_trusted, first_trusted);
+    assert_ne!(fresh_trusted, second_trusted);
+    trusted_lane_age_codes(&db).await;
+    send_reset(&app, "owner@example.test", Some(&fresh_trusted), None, None).await;
+    assert_eq!(
+        issued(&db).await,
+        4,
+        "a trusted cookie issued after revoke-others must be accepted"
+    );
+    setup
+        .batch_execute(&format!(
+            "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
+        ))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn mfa_changes_invalidate_earlier_trusted_cookies_on_the_reset_path() {
+    let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+        .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let schema = format!("http_reset_trusted_mfa_{}", Uuid::new_v4().simple());
+    let (setup, mut db, url) = trusted_lane_database(&base_url, &schema).await;
+    let hasher = Arc::new(TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
+    let password = Uuid::new_v4().to_string();
+    let email = "owner@example.test";
+    let owner = auth::register(&mut db, &hasher, email, &password)
+        .await
+        .unwrap();
+    assert!(
+        auth::verify_email(&mut db, &hasher, &owner.verification_token)
+            .await
+            .unwrap()
+    );
+    let state = AuthHttpState::new(
+        url,
+        hasher.clone(),
+        "https://zrotext.example".to_owned(),
+        Arc::new(CaptureVerification(Mutex::new(None))),
+    )
+    .unwrap()
+    .with_mfa_cipher(Arc::new(
+        MfaCipher::new(rand::random::<[u8; 32]>().to_vec()).unwrap(),
+    ))
+    .with_mfa_enrollment_enabled();
+    let app = router(state);
+    async fn json_body(response: Response) -> serde_json::Value {
+        serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 16 * 1024)
+                .await
+                .unwrap(),
+        )
+        .unwrap()
+    }
+    async fn epoch(db: &Client) -> i64 {
+        db.query_one("SELECT trusted_browser_epoch FROM users", &[])
+            .await
+            .unwrap()
+            .get(0)
+    }
+    fn trusted_cookie(response: &Response) -> String {
+        format!(
+            "{}={}",
+            auth::TRUSTED_BROWSER_COOKIE,
+            set_cookie_value(response, auth::TRUSTED_BROWSER_COOKIE).unwrap()
+        )
+    }
+    let login = || {
+        json_post(
+            "/login",
+            serde_json::json!({"email":email,"password":password.as_str()}),
+        )
+    };
+    // Browser A signs in and is trusted; its session enrolls MFA later.
+    let response = app.clone().oneshot(login()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let before_mfa = trusted_cookie(&response);
+    let cookies = response
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .map(|v| v.to_str().unwrap().split(';').next().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    let session_cookies = cookies.join("; ");
+    let csrf = cookies
+        .iter()
+        .find_map(|c| c.strip_prefix("__Host-zrotext_csrf=").map(str::to_owned))
+        .unwrap();
+
+    trusted_lane_close_public_lanes(&app, &db, email).await;
+    // Control: before any MFA change the cookie spends the trusted lane.
+    trusted_lane_age_codes(&db).await;
+    send_reset(&app, email, Some(&before_mfa), None, None).await;
+    assert_eq!(trusted_lane_issued(&db, email).await, 3);
+
+    // Confirming MFA enrollment bumps the trust epoch.
+    let response = app
+        .clone()
+        .oneshot(owner_post(
+            "/mfa/enroll",
+            serde_json::json!({"password":password.as_str()}),
+            &session_cookies,
+            &csrf,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    let secret = totp_rs::Secret::try_from_base32(body["secret_base32"].as_str().unwrap()).unwrap();
+    let code = totp_rs::Builder::new()
+        .with_secret(secret)
+        .build()
+        .unwrap()
+        .generate_current()
+        .to_string();
+    let response = app
+        .clone()
+        .oneshot(owner_post(
+            "/mfa/confirm",
+            serde_json::json!({"code":code}),
+            &session_cookies,
+            &csrf,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    let recovery_login = body["recovery_codes"][0].as_str().unwrap().to_owned();
+    let recovery_disable = body["recovery_codes"][1].as_str().unwrap().to_owned();
+    assert_eq!(epoch(&db).await, 1);
+    // The cookie issued before the MFA change is rejected on the reset path.
+    trusted_lane_age_codes(&db).await;
+    send_reset(&app, email, Some(&before_mfa), None, None).await;
+    assert_eq!(
+        trusted_lane_issued(&db, email).await,
+        3,
+        "a trusted cookie issued before MFA enrollment must be rejected"
+    );
+    // A fresh sign-in through the MFA step mints a cookie that is accepted.
+    let response = app.clone().oneshot(login()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let challenge = json_body(response).await["challenge_token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let response = app
+        .clone()
+        .oneshot(json_post(
+            "/login/mfa",
+            serde_json::json!({"challenge_token":challenge,"code":recovery_login}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let after_enroll = trusted_cookie(&response);
+    assert_ne!(after_enroll, before_mfa);
+    trusted_lane_age_codes(&db).await;
+    send_reset(&app, email, Some(&after_enroll), None, None).await;
+    assert_eq!(
+        trusted_lane_issued(&db, email).await,
+        4,
+        "a trusted cookie issued after MFA enrollment must be accepted"
+    );
+
+    // Disabling MFA bumps the epoch again.
+    let response = app
+        .clone()
+        .oneshot(owner_post(
+            "/mfa/disable",
+            serde_json::json!({"password":password.as_str(),"code":recovery_disable}),
+            &session_cookies,
+            &csrf,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(epoch(&db).await, 2);
+    for stale in [&after_enroll, &before_mfa] {
+        trusted_lane_age_codes(&db).await;
+        send_reset(&app, email, Some(stale), None, None).await;
+        assert_eq!(
+            trusted_lane_issued(&db, email).await,
+            4,
+            "a trusted cookie issued before MFA was disabled must be rejected"
+        );
+    }
+    let response = app.clone().oneshot(login()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let after_disable = trusted_cookie(&response);
+    trusted_lane_age_codes(&db).await;
+    send_reset(&app, email, Some(&after_disable), None, None).await;
+    assert_eq!(
+        trusted_lane_issued(&db, email).await,
+        5,
+        "a trusted cookie issued after MFA was disabled must be accepted"
+    );
+    setup
+        .batch_execute(&format!(
+            "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
+        ))
         .await
         .unwrap();
 }
