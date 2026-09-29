@@ -201,7 +201,7 @@ async fn webhook_history_index_builds_concurrently_and_retries_an_interrupted_bu
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB on a disposable PostgreSQL cluster"]
 async fn numbered_gate_fails_without_the_index() {
     let (name, admin, config) = disposable_database().await;
-    let mut client = connect(&config).await;
+    let client = connect(&config).await;
     // A minimal stand-in table: the gate only validates the index shape in
     // the catalogs, never row data.
     client
