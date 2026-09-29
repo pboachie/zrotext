@@ -1,12 +1,26 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 {$EDGE_DOMAIN} {
-	# Compress responses at the edge so a dashboard load transfers ~21 KB
-	# instead of ~93 KB. The streaming endpoints are excluded so the
-	# live-update SSE stream and the long-lived device WebSockets are never
-	# buffered. (Caddy 2.11 header matchers cannot negate a field value, so
-	# the exclusion is by path, which covers exactly those two streams.)
-	@compressible not path /owner/events /v1/device-stream
-	encode @compressible zstd gzip
+	# Compress only the static, secret-free dashboard assets at the edge, so
+	# a dashboard load transfers ~21 KB instead of ~93 KB. Both gates must
+	# hold: the request must be a GET/HEAD for an owner or billing dashboard
+	# asset path, and the response must be HTML, CSS, JavaScript or a font.
+	# API and JSON responses (which can carry one-time secrets such as API
+	# keys and pairing tokens) are never compressed, which keeps
+	# compression length side channels (BREACH) off them. The live-update
+	# SSE stream and the device WebSockets are never compressed or buffered.
+	@dashboard_assets {
+		method GET HEAD
+		path /owner/* /billing /billing/dashboard.js
+		not path /owner/events
+	}
+	encode @dashboard_assets zstd gzip {
+		match {
+			header Content-Type text/html*
+			header Content-Type text/css*
+			header Content-Type text/javascript*
+			header Content-Type font/*
+		}
+	}
 	reverse_proxy app:8080 {
 		# Authenticated device streams are long-lived WebSockets. Caddy
 		# forwards the Upgrade and Host headers without extra directives.

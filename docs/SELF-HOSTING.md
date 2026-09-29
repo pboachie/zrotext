@@ -48,11 +48,16 @@ only suitable for local tests; ordinary Android apps do not trust user-added CAs
 by default. Keep the `caddy_data` volume so certificate state survives restarts.
 The edge permits long-lived streams for up to 24 hours and delays forced closure
 for five minutes during a Caddy reload; gateway reconnection still remains
-necessary. The edge also compresses textual responses (`zstd` or `gzip`), which
-shrinks each owner-dashboard load from about 93 KB to roughly 21 KB; the
-`text/event-stream` live-update stream is excluded from compression so it is
-never buffered. If you front the API with a different proxy, mirror that
-exclusion. Owner JS/CSS assets revalidate with a strong `ETag`, so a repeat
+necessary. The edge compresses (`zstd` or `gzip`) only the static dashboard
+assets: `GET`/`HEAD` requests under `/owner/*`, `/billing` and
+`/billing/dashboard.js` whose response is HTML, CSS, JavaScript or a font.
+That shrinks each owner-dashboard load from about 93 KB to roughly 21 KB. API
+and JSON responses are never compressed, because some carry one-time secrets
+(API keys, pairing tokens, MFA setup) and compression would expose a
+BREACH-style length side channel; the `/owner/events` live-update stream and
+the `/v1/device-stream` WebSockets are never compressed or buffered. If you
+front the API with a different proxy, keep the same path and content-type
+allowlist and never compress `/v1/` responses. Owner JS/CSS assets revalidate with a strong `ETag`, so a repeat
 load answers `304` with no body once the assets are cached. Apply per-source
 connection limits upstream before exposing the
 device stream broadly, as described under runtime capacity below.
