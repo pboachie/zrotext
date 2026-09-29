@@ -6,9 +6,11 @@ use std::{collections::BTreeMap, fs, path::Path};
 use thiserror::Error;
 use tokio_postgres::Client;
 
+mod admission_pending_index;
 mod owner_queue_index;
 mod radio_evidence_index;
 mod recent_attempt_index;
+use admission_pending_index::*;
 use owner_queue_index::*;
 use radio_evidence_index::*;
 use recent_attempt_index::*;
@@ -114,6 +116,12 @@ pub enum MigrationError {
     RecentAttemptIndexConflict,
     #[error("message_attempts_device_created is still being built; refusing to interrupt it")]
     RecentAttemptIndexBuildInProgress,
+    #[error("messages_admission_pending is absent, invalid, or has the wrong definition")]
+    AdmissionPendingIndexUnavailable,
+    #[error("messages_admission_pending has an unexpected definition; refusing to replace it")]
+    AdmissionPendingIndexConflict,
+    #[error("messages_admission_pending is still being built; refusing to interrupt it")]
+    AdmissionPendingIndexBuildInProgress,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -276,6 +284,9 @@ async fn apply_locked(
     if ledger.contains_key(&RECENT_ATTEMPT_INDEX_MIGRATION) {
         verify_recent_attempt_index(client).await?;
     }
+    if ledger.contains_key(&ADMISSION_PENDING_INDEX_MIGRATION) {
+        verify_admission_pending_index(client).await?;
+    }
 
     for migration in migrations {
         if ledger.contains_key(&migration.version) {
@@ -319,6 +330,16 @@ async fn apply_locked(
             // transaction. The advisory lock still serializes migrator jobs.
             prepare_recent_attempt_index(client).await?;
         }
+        if migration.version == ADMISSION_PENDING_INDEX_MIGRATION {
+            if migration.filename != ADMISSION_PENDING_INDEX_FILE {
+                return Err(MigrationError::InvalidDirectory(format!(
+                    "migration {ADMISSION_PENDING_INDEX_MIGRATION:03} must be {ADMISSION_PENDING_INDEX_FILE}"
+                )));
+            }
+            // CREATE INDEX CONCURRENTLY cannot run in the numbered migration's
+            // transaction. The advisory lock still serializes migrator jobs.
+            prepare_admission_pending_index(client).await?;
+        }
         let tx = client.transaction().await?;
         if let Err(error) = tx.batch_execute(&migration.sql).await {
             // Dropping the transaction closes it without committing the failed file.
@@ -360,6 +381,12 @@ async fn apply_locked(
         .any(|migration| migration.version == RECENT_ATTEMPT_INDEX_MIGRATION)
     {
         verify_recent_attempt_index(client).await?;
+    }
+    if migrations
+        .iter()
+        .any(|migration| migration.version == ADMISSION_PENDING_INDEX_MIGRATION)
+    {
+        verify_admission_pending_index(client).await?;
     }
     Ok(applied)
 }
@@ -723,6 +750,8 @@ async fn verify_m0_shape(tx: &tokio_postgres::Transaction<'_>) -> Result<(), Mig
     Ok(())
 }
 
+#[cfg(test)]
+mod admission_pending_index_tests;
 #[cfg(test)]
 mod online_index_tests;
 #[cfg(test)]

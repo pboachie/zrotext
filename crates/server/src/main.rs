@@ -406,15 +406,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             zrotext_server::runtime_db::connect_worker(&worker_database).await
                                                 .map_err(|_| "webhook database unavailable")?;
                                         // Drain a bounded backlog on one socket rather than
-                                        // one delivery per lane per tick.
-                                        let mut sent = 0;
-                                        while sent < WEBHOOK_DELIVERIES_PER_TICK
-                                            && !worker_draining.load(Ordering::Acquire)
-                                            && webhook_worker::dispatch_one(&mut client, &worker_vault, &worker_id).await
-                                                .map_err(|_| "webhook dispatch failed")?
-                                        {
-                                            sent += 1;
-                                        }
+                                        // one delivery per lane per tick; one delivery's
+                                        // deferral does not abort the batch.
+                                        let sent = if worker_draining.load(Ordering::Acquire) {
+                                            0
+                                        } else {
+                                            webhook_worker::dispatch_lane_batch(
+                                                &mut client,
+                                                &worker_vault,
+                                                &worker_id,
+                                                WEBHOOK_DELIVERIES_PER_TICK,
+                                            )
+                                            .await
+                                            .map_err(|_| "webhook dispatch failed")?
+                                        };
                                         if lane == 0 && ticks % 30 == 1 {
                                             let (pending, oldest_age_seconds, in_flight) =
                                                 webhook_worker::queue_signal(&client).await

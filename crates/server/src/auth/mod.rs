@@ -10,7 +10,7 @@ use sha2::Sha256;
 use std::sync::OnceLock;
 use subtle::ConstantTimeEq;
 use thiserror::Error;
-use tokio_postgres::Client;
+use tokio_postgres::{Client, types::Type};
 use uuid::Uuid;
 
 const SESSION_DAYS: i32 = 14;
@@ -779,9 +779,9 @@ pub async fn authenticate_session(
     // A session that has not been used within the idle window is treated as
     // expired. A never-used session is measured from its creation.
     let row = client
-        .query_opt(
+        .query_typed_opt(
             "SELECT s.id,s.account_id,s.user_id,s.csrf_hash,(s.last_used_at IS NULL OR s.last_used_at<now()-($3::integer * interval '1 minute')) FROM sessions s JOIN memberships m ON (m.account_id,m.user_id)=(s.account_id,s.user_id) JOIN users u ON u.id=s.user_id JOIN accounts a ON a.id=s.account_id WHERE m.role='owner' AND s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at>now() AND COALESCE(s.last_used_at,s.created_at)>now()-($2::integer * interval '1 hour') AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL",
-            &[&&hash[..], &SESSION_IDLE_HOURS, &ACTIVITY_WRITE_MINUTES],
+            &[(&&hash[..], Type::BYTEA), (&SESSION_IDLE_HOURS, Type::INT4), (&ACTIVITY_WRITE_MINUTES, Type::INT4)],
         )
         .await?
         .ok_or(AuthError::Unauthorized)?;
@@ -791,9 +791,9 @@ pub async fn authenticate_session(
     // timeout. The guard avoids a row rewrite on every authenticated request.
     let session_id: Uuid = row.get(0);
     if row.get::<_, bool>(4) {
-        client.execute(
+        client.execute_typed(
             "UPDATE sessions SET last_used_at=now() WHERE id=$1 AND revoked_at IS NULL AND (last_used_at IS NULL OR last_used_at<now()-($2::integer * interval '1 minute'))",
-            &[&session_id, &ACTIVITY_WRITE_MINUTES],
+            &[(&session_id, Type::UUID), (&ACTIVITY_WRITE_MINUTES, Type::INT4)],
         ).await?;
     }
     Ok(SessionPrincipal {
@@ -957,9 +957,9 @@ pub async fn authenticate_api_key(
     let prefix = token.chars().skip(4).take(12).collect::<String>();
     let hash = hasher.digest(b"api-key-v1", token);
     let row = client
-        .query_opt(
+        .query_typed_opt(
             "SELECT k.id,k.account_id,k.token_hash,k.scopes,k.bound_device_id,(k.last_used_at IS NULL OR k.last_used_at<now()-($2::integer * interval '1 minute')) FROM api_keys k JOIN memberships m ON (m.account_id,m.user_id)=(k.account_id,k.created_by_user_id) JOIN users u ON u.id=k.created_by_user_id JOIN accounts a ON a.id=k.account_id WHERE m.role='owner' AND k.public_prefix=$1 AND k.revoked_at IS NULL AND (k.expires_at IS NULL OR k.expires_at>now()) AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL",
-            &[&prefix, &ACTIVITY_WRITE_MINUTES],
+            &[(&prefix, Type::TEXT), (&ACTIVITY_WRITE_MINUTES, Type::INT4)],
         )
         .await?
         .ok_or(AuthError::Unauthorized)?;
@@ -978,9 +978,9 @@ pub async fn authenticate_api_key(
     // The guard bounds writes to one per key per window.
     if row.get::<_, bool>(5) {
         client
-            .execute(
+            .execute_typed(
                 "UPDATE api_keys SET last_used_at=now() WHERE id=$1 AND revoked_at IS NULL AND (last_used_at IS NULL OR last_used_at<now()-($2::integer * interval '1 minute'))",
-                &[&key_id, &ACTIVITY_WRITE_MINUTES],
+                &[(&key_id, Type::UUID), (&ACTIVITY_WRITE_MINUTES, Type::INT4)],
             )
             .await?;
     }
