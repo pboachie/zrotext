@@ -125,6 +125,68 @@ test("change signals refresh only the signalled sections", async () => {
   assert.equal(page.counts("/v1/owner/messages"), messagesBefore + 1);
 });
 
+test("a burst of change signals coalesces into one immediate and one trailing reload", async () => {
+  const page = await ownerPage();
+  const source = FakeEventSource.instances[0];
+  source.open();
+  const devicesBefore = page.counts("/v1/enrollment/devices");
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  source.changed(["devices"]);
+  await settle();
+  await settle();
+  source.changed(["devices"]);
+  await settle();
+  source.changed(["devices"]);
+  source.changed(["devices"]);
+  source.changed(["devices"]);
+  assert.equal(page.counts("/v1/enrollment/devices"), devicesBefore + 1,
+    "burst caused more than one immediate reload");
+  assert.equal(page.timers.size, 1, "expected exactly the merged trailing reload timer");
+  const trailing = [...page.timers.values()][0];
+  assert.ok(trailing.delay <= 15_000, "trailing reload waits longer than the floor");
+  trailing.callback();
+  await settle();
+  await settle();
+  assert.equal(page.counts("/v1/enrollment/devices"), devicesBefore + 2,
+    "trailing reload did not run");
+});
+
+test("a change after the floor passes reloads immediately again", async () => {
+  const page = await ownerPage();
+  const source = FakeEventSource.instances[0];
+  source.open();
+  const devicesBefore = page.counts("/v1/enrollment/devices");
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  source.changed(["devices"]);
+  await settle();
+  await settle();
+  assert.equal(page.counts("/v1/enrollment/devices"), devicesBefore + 1);
+  const realNow = Date.now;
+  Date.now = () => realNow() + 20_000;
+  try {
+    source.changed(["devices"]);
+  } finally {
+    Date.now = realNow;
+  }
+  assert.equal(page.counts("/v1/enrollment/devices"), devicesBefore + 2,
+    "change after the floor did not reload immediately");
+});
+
+test("a dropped stream cancels a pending trailing reload", async () => {
+  const page = await ownerPage();
+  const source = FakeEventSource.instances[0];
+  source.open();
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  source.changed(["devices"]);
+  await settle();
+  await settle();
+  source.changed(["devices"]);
+  assert.equal(page.timers.size, 1, "no trailing reload was scheduled");
+  const trailingId = [...page.timers.keys()][0];
+  source.error();
+  assert.equal(page.timers.has(trailingId), false, "trailing reload survived the stream ending");
+});
+
 test("an open message row pauses that list during a live update", async () => {
   const page = await ownerPage();
   const source = FakeEventSource.instances[0];

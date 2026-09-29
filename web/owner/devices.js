@@ -54,6 +54,14 @@ let liveFailures = 0;
 let liveOpenedAt = 0;
 let deviceLoads = 0;
 let messageLoads = 0;
+// Live-triggered reloads are coalesced: once a section has reloaded from a
+// change signal, further signals inside this floor merge into a single
+// trailing reload, so a busy tenant cannot rebuild its lists on every poll.
+const liveReloadFloorMs = dashboardRefreshMs;
+let devicesLiveReloadedAt = 0;
+let messagesLiveReloadedAt = 0;
+let devicesTrailingReload = null;
+let messagesTrailingReload = null;
 let browsingOlderDevices = false;
 let browsingOlderMessages = false;
 const preconditionFreshMs = 90_000;
@@ -93,9 +101,17 @@ function stopDashboardRefresh() {
   dashboardTimer = null;
 }
 
+function cancelPendingLiveReloads() {
+  if (devicesTrailingReload !== null) window.clearTimeout(devicesTrailingReload);
+  if (messagesTrailingReload !== null) window.clearTimeout(messagesTrailingReload);
+  devicesTrailingReload = null;
+  messagesTrailingReload = null;
+}
+
 function stopLiveUpdates() {
   if (liveRetryTimer !== null) window.clearTimeout(liveRetryTimer);
   liveRetryTimer = null;
+  cancelPendingLiveReloads();
   if (liveEvents) liveEvents.close();
   liveEvents = null;
   liveConnected = false;
@@ -127,14 +143,15 @@ function startLiveUpdates() {
       return;
     }
     if (!Array.isArray(sections)) return;
-    if (sections.includes("devices") && !deviceLoads && !browsingOlderDevices && !viewingList("device-list")) loadDevices(true, true);
-    if (sections.includes("messages") && !messageLoads && !browsingOlderMessages && !viewingList("message-list")) loadMessages(true, true);
+    if (sections.includes("devices")) requestLiveDevicesReload();
+    if (sections.includes("messages")) requestLiveMessagesReload();
   });
   source.addEventListener("error", () => {
     if (liveEvents !== source) return;
     source.close();
     liveEvents = null;
     liveConnected = false;
+    cancelPendingLiveReloads();
     if (Date.now() - liveOpenedAt >= liveHealthyMs) liveFailures = 0;
     scheduleDashboardRefresh();
     scheduleLiveRetry();
@@ -158,6 +175,40 @@ function syncLiveUpdates() {
 
 function canRefreshDashboard() {
   return dashboardSignedIn && dashboardPageActive && !document.hidden && byId("auto-refresh").checked;
+}
+
+function requestLiveDevicesReload() {
+  if (deviceLoads || browsingOlderDevices || viewingList("device-list")) return;
+  const now = Date.now();
+  if (devicesTrailingReload !== null) return;
+  if (now - devicesLiveReloadedAt < liveReloadFloorMs) {
+    devicesTrailingReload = window.setTimeout(() => {
+      devicesTrailingReload = null;
+      if (!canRefreshDashboard() || deviceLoads || browsingOlderDevices || viewingList("device-list")) return;
+      devicesLiveReloadedAt = Date.now();
+      loadDevices(true, true);
+    }, devicesLiveReloadedAt + liveReloadFloorMs - now);
+    return;
+  }
+  devicesLiveReloadedAt = now;
+  loadDevices(true, true);
+}
+
+function requestLiveMessagesReload() {
+  if (messageLoads || browsingOlderMessages || viewingList("message-list")) return;
+  const now = Date.now();
+  if (messagesTrailingReload !== null) return;
+  if (now - messagesLiveReloadedAt < liveReloadFloorMs) {
+    messagesTrailingReload = window.setTimeout(() => {
+      messagesTrailingReload = null;
+      if (!canRefreshDashboard() || messageLoads || browsingOlderMessages || viewingList("message-list")) return;
+      messagesLiveReloadedAt = Date.now();
+      loadMessages(true, true);
+    }, messagesLiveReloadedAt + liveReloadFloorMs - now);
+    return;
+  }
+  messagesLiveReloadedAt = now;
+  loadMessages(true, true);
 }
 
 function scheduleDashboardRefresh() {
