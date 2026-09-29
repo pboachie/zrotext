@@ -6,7 +6,7 @@ use p256::ecdsa::{Signature, VerifyingKey, signature::Verifier};
 use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
-use tokio_postgres::{Client, Row, error::SqlState};
+use tokio_postgres::{Client, Row, error::SqlState, types::Type};
 use uuid::Uuid;
 
 const MAX_AGE_MS: i64 = 7 * 24 * 60 * 60 * 1000;
@@ -752,17 +752,24 @@ fn retry_delay(attempt_count: i16) -> Option<i32> {
         .copied()
 }
 
-/// Recover timed-out leases then claim one due delivery with SKIP LOCKED.
-/// Account and endpoint cursors are durable across workers and processes.
-/// A separate egress worker must validate DNS/addresses and decrypt the
-/// endpoint's signing secret before any HTTP request. No network I/O occurs.
-pub async fn claim_webhook(
-    client: &mut Client,
-    worker_id: &str,
-) -> Result<Option<WebhookLease>, InboundError> {
-    if worker_id.is_empty() || worker_id.len() > 64 {
-        return Err(InboundError::InvalidInput);
-    }
+/// One indexed probe answered by `webhook_deliveries_due`: false means no
+/// delivery anywhere is claimable, so an idle lane tick opens no claim
+/// transaction and scans no accounts.
+pub async fn webhook_due_exists(client: &Client) -> Result<bool, InboundError> {
+    Ok(client
+        .query_opt(
+            "SELECT 1 FROM webhook_deliveries \
+         WHERE status='pending' AND next_attempt_at<=now() AND attempt_count<7 LIMIT 1",
+            &[],
+        )
+        .await?
+        .is_some())
+}
+
+/// Close timed-out leases once per lane tick. Endpoint locks go first to match
+/// claim, finish and owner retirement; a previous worker may have finished a
+/// scanned lease since, so every row is rechecked under its delivery lock.
+pub async fn recover_expired_webhook_leases(client: &mut Client) -> Result<(), InboundError> {
     let tx = client.transaction().await?;
     let expired = tx
         .query(
@@ -813,6 +820,23 @@ pub async fn claim_webhook(
             .await?;
         }
     }
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Claim one due delivery with SKIP LOCKED. The lane runs the due probe and
+/// expired-lease recovery first; account and endpoint cursors are durable
+/// across workers and processes. A separate egress worker must validate
+/// DNS/addresses and decrypt the endpoint's signing secret before any HTTP
+/// request. No network I/O occurs.
+pub async fn claim_webhook(
+    client: &mut Client,
+    worker_id: &str,
+) -> Result<Option<WebhookLease>, InboundError> {
+    if worker_id.is_empty() || worker_id.len() > 64 {
+        return Err(InboundError::InvalidInput);
+    }
+    let tx = client.transaction().await?;
     let account = tx
         .query_opt(
             "SELECT a.account_id FROM webhook_dispatch_accounts a WHERE EXISTS ( \
@@ -832,65 +856,70 @@ pub async fn claim_webhook(
         return Ok(None);
     };
     let account_id: Uuid = account.get(0);
-    let endpoint = tx
-        .query_opt(
-            "SELECT e.id FROM webhook_endpoints e WHERE e.account_id=$1 \
-         AND e.enabled AND e.paused_at IS NULL AND NOT EXISTS ( \
-         SELECT 1 FROM webhook_deliveries l WHERE l.endpoint_id=e.id AND l.status='leased') \
-         AND EXISTS (SELECT 1 FROM webhook_deliveries d WHERE d.endpoint_id=e.id \
-         AND d.status='pending' AND d.next_attempt_at<=now() AND d.attempt_count<7) \
-         ORDER BY e.last_claim_seq,e.id FOR UPDATE OF e SKIP LOCKED LIMIT 1",
-            &[&account_id],
+    // One pick joins the endpoint cursor order with its earliest due
+    // delivery. Only the endpoint row is locked: holding it until commit is
+    // what keeps a second worker off this endpoint, exactly like the
+    // two-step pick did.
+    let pick = tx
+        .query_typed_opt(
+            "SELECT e.id,d.id,d.event_id,d.generation,d.attempt_count \
+             FROM webhook_endpoints e JOIN webhook_deliveries d ON d.endpoint_id=e.id \
+             WHERE e.account_id=$1 AND e.enabled AND e.paused_at IS NULL AND NOT EXISTS ( \
+             SELECT 1 FROM webhook_deliveries l WHERE l.endpoint_id=e.id AND l.status='leased') \
+             AND d.status='pending' AND d.next_attempt_at<=now() AND d.attempt_count<7 \
+             ORDER BY e.last_claim_seq,e.id,d.next_attempt_at,d.id \
+             FOR UPDATE OF e SKIP LOCKED LIMIT 1",
+            &[(&account_id, Type::UUID)],
         )
         .await?;
-    let Some(endpoint) = endpoint else {
+    let Some(pick) = pick else {
         tx.commit().await?;
         return Ok(None);
     };
-    let endpoint_id: Uuid = endpoint.get(0);
-    let row = tx
-        .query_opt(
-            "SELECT id,event_id,generation,attempt_count FROM webhook_deliveries \
-         WHERE endpoint_id=$1 AND status='pending' AND next_attempt_at<=now() \
-         AND attempt_count<7 ORDER BY next_attempt_at,id \
-         FOR UPDATE SKIP LOCKED LIMIT 1",
-            &[&endpoint_id],
-        )
-        .await?;
-    let Some(row) = row else {
-        tx.commit().await?;
-        return Ok(None);
-    };
-    let delivery_id: Uuid = row.get(0);
-    let event_id: Uuid = row.get(1);
-    let generation: i16 = row.get(2);
-    let attempt_number: i16 = row.get::<_, i16>(3) + 1;
+    let endpoint_id: Uuid = pick.get(0);
+    let delivery_id: Uuid = pick.get(1);
+    let event_id: Uuid = pick.get(2);
+    let generation: i16 = pick.get(3);
+    let attempt_number: i16 = pick.get::<_, i16>(4) + 1;
     let attempt_id = Uuid::new_v4();
-    tx.execute(
-        "UPDATE webhook_deliveries SET status='leased',attempt_count=$2,lease_owner=$3, \
-         lease_until=now()+interval '30 seconds',updated_at=now() WHERE id=$1",
-        &[&delivery_id, &attempt_number, &worker_id],
-    )
-    .await?;
-    tx.execute(
-        "INSERT INTO webhook_attempts(id,delivery_id,generation,attempt_number) VALUES($1,$2,$3,$4)",
-        &[&attempt_id, &delivery_id, &generation, &attempt_number],
-    )
-    .await?;
-    let claim_seq: i64 = tx
-        .query_one("SELECT nextval('webhook_claim_sequence')", &[])
-        .await?
-        .get(0);
-    tx.execute(
-        "UPDATE webhook_dispatch_accounts SET last_claim_seq=$2 WHERE account_id=$1",
-        &[&account_id, &claim_seq],
-    )
-    .await?;
-    tx.execute(
-        "UPDATE webhook_endpoints SET last_claim_seq=$2 WHERE id=$1",
-        &[&endpoint_id, &claim_seq],
-    )
-    .await?;
+    // One statement leases the delivery, opens its attempt row, takes the
+    // fairness sequence and advances both cursors. The status guard makes a
+    // lost race impossible to double-lease; an empty claim advances nothing.
+    let leased = tx
+        .query_typed_opt(
+            "WITH claim AS ( \
+               UPDATE webhook_deliveries SET status='leased',attempt_count=attempt_count+1, \
+                 lease_owner=$2,lease_until=now()+interval '30 seconds',updated_at=now() \
+               WHERE id=$1 AND status='pending' \
+               RETURNING id), \
+             attempt AS ( \
+               INSERT INTO webhook_attempts(id,delivery_id,generation,attempt_number) \
+               SELECT $3,claim.id,$4,$5 FROM claim), \
+             seq AS (SELECT nextval('webhook_claim_sequence') AS claim_seq), \
+             account_cursor AS ( \
+               UPDATE webhook_dispatch_accounts SET last_claim_seq=seq.claim_seq FROM seq \
+               WHERE account_id=$6 AND EXISTS (SELECT 1 FROM claim)), \
+             endpoint_cursor AS ( \
+               UPDATE webhook_endpoints SET last_claim_seq=seq.claim_seq FROM seq \
+               WHERE id=$7 AND EXISTS (SELECT 1 FROM claim)) \
+             SELECT (SELECT 1 FROM claim)",
+            &[
+                (&delivery_id, Type::UUID),
+                (&worker_id, Type::TEXT),
+                (&attempt_id, Type::UUID),
+                (&generation, Type::INT2),
+                (&attempt_number, Type::INT2),
+                (&account_id, Type::UUID),
+                (&endpoint_id, Type::UUID),
+            ],
+        )
+        .await?;
+    if leased.is_none() {
+        // The delivery stopped being pending between the pick and the lease;
+        // nothing was leased and no cursor moved.
+        tx.commit().await?;
+        return Ok(None);
+    }
     tx.commit().await?;
     Ok(Some(WebhookLease {
         delivery_id,
