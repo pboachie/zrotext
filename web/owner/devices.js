@@ -115,6 +115,10 @@ function cancelPendingLiveReloads() {
   if (messagesTrailingReload !== null) window.clearTimeout(messagesTrailingReload);
   devicesTrailingReload = null;
   messagesTrailingReload = null;
+  // A signal queued during an in-flight reload belongs to the stream that
+  // sent it; once that stream drops, the fallback refresh takes over.
+  devicesSignalDuringLoad = false;
+  messagesSignalDuringLoad = false;
 }
 
 function stopLiveUpdates() {
@@ -1019,7 +1023,7 @@ async function loadDevices(reset = true, automatic = false) {
     if (deviceLoads === 0 && devicesSignalDuringLoad) {
       // Answer a signal that arrived while this reload was in flight.
       devicesSignalDuringLoad = false;
-      requestLiveDevicesReload();
+      if (canRefreshDashboard()) requestLiveDevicesReload();
     }
     if (!stale()) moreButton.disabled = false;
   }
@@ -1124,7 +1128,7 @@ async function loadMessages(reset = true, automatic = false) {
     if (messageLoads === 0 && messagesSignalDuringLoad) {
       // Answer a signal that arrived while this reload was in flight.
       messagesSignalDuringLoad = false;
-      requestLiveMessagesReload();
+      if (canRefreshDashboard()) requestLiveMessagesReload();
     }
     if (!stale()) moreButton.disabled = false;
   }

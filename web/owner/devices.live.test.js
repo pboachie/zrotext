@@ -68,7 +68,10 @@ async function ownerPage({ eventSource = FakeEventSource } = {}) {
     }
     if (url === "/v1/billing/status") return response(404);
     if (url === "/v1/billing/device-capacity") return response(404);
-    if (url === "/v1/owner/messages") return response(200, { messages: state.messages, next_cursor: null });
+    if (url === "/v1/owner/messages") {
+      if (state.pendingMessages) return state.pendingMessages;
+      return response(200, { messages: state.messages, next_cursor: null });
+    }
     if (url === "/v1/owner/opt-out-review") return response(200, { holds: [], next_cursor: null });
     if (url === "/v1/owner/opt-out-holds") return response(200, { holds: [], next_cursor: null });
     if (url === "/v1/auth/api-keys" && (!options || options.method === "GET"))
@@ -209,6 +212,131 @@ test("a signal arriving during an in-flight reload triggers one follow-up reload
   await settle();
   assert.equal(page.counts("/v1/enrollment/devices"), inFlight + 1,
     "the trailing reload did not run");
+});
+
+test("a messages burst coalesces into one immediate and one trailing reload", async () => {
+  const page = await ownerPage();
+  const source = FakeEventSource.instances[0];
+  source.open();
+  const messagesBefore = page.counts("/v1/owner/messages");
+  const devicesBefore = page.counts("/v1/enrollment/devices");
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  source.changed(["messages"]);
+  await settle();
+  await settle();
+  source.changed(["messages"]);
+  await settle();
+  source.changed(["messages"]);
+  source.changed(["messages"]);
+  assert.equal(page.counts("/v1/owner/messages"), messagesBefore + 1,
+    "burst caused more than one immediate message reload");
+  assert.equal(page.timers.size, 1, "expected exactly the merged trailing message reload timer");
+  const trailing = [...page.timers.values()][0];
+  assert.ok(trailing.delay > 0 && trailing.delay <= 15_000, "trailing reload ignores the floor");
+  trailing.callback();
+  await settle();
+  await settle();
+  assert.equal(page.counts("/v1/owner/messages"), messagesBefore + 2,
+    "trailing message reload did not run");
+  assert.equal(page.counts("/v1/enrollment/devices"), devicesBefore,
+    "a messages burst reloaded the device list");
+});
+
+test("a messages signal arriving during an in-flight reload triggers one follow-up reload", async () => {
+  const page = await ownerPage();
+  const source = FakeEventSource.instances[0];
+  source.open();
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  await settle();
+  await settle();
+  let resolveMessages;
+  page.state.pendingMessages = new Promise((resolve) => { resolveMessages = resolve; });
+  source.changed(["messages"]);
+  await settle();
+  const inFlight = page.counts("/v1/owner/messages");
+  source.changed(["messages"]);
+  await settle();
+  assert.equal(page.counts("/v1/owner/messages"), inFlight,
+    "signal during an in-flight message reload started a concurrent fetch");
+  assert.equal(page.timers.size, 0, "signal during an in-flight message reload armed a timer early");
+  page.state.pendingMessages = null;
+  resolveMessages(response(200, { messages: [], next_cursor: null }));
+  await settle();
+  await settle();
+  await settle();
+  assert.equal(page.counts("/v1/owner/messages"), inFlight,
+    "queued message follow-up bypassed the reload floor");
+  assert.equal(page.timers.size, 1, "the signal during the in-flight message reload was dropped");
+  [...page.timers.values()][0].callback();
+  await settle();
+  await settle();
+  assert.equal(page.counts("/v1/owner/messages"), inFlight + 1,
+    "the trailing message reload did not run");
+});
+
+for (const [section, path, pendingKey] of [
+  ["devices", "/v1/enrollment/devices", "pendingDevices"],
+  ["messages", "/v1/owner/messages", "pendingMessages"],
+]) {
+  test(`a dropped stream discards a ${section} signal queued during an in-flight reload`, async () => {
+    const page = await ownerPage();
+    const source = FakeEventSource.instances[0];
+    source.open();
+    const settle = () => new Promise((resolve) => setImmediate(resolve));
+    await settle();
+    await settle();
+    let release;
+    page.state[pendingKey] = new Promise((resolve) => { release = resolve; });
+    source.changed([section]);
+    await settle();
+    source.changed([section]);
+    source.error();
+    const timersAfterDrop = [...page.timers.values()].map((timer) => timer.delay).sort();
+    const fetchesAfterDrop = page.counts(path);
+    page.state[pendingKey] = null;
+    release(response(200, section === "devices"
+      ? { devices: [], next_cursor: null }
+      : { messages: [], next_cursor: null }));
+    await settle();
+    await settle();
+    await settle();
+    assert.deepEqual([...page.timers.values()].map((timer) => timer.delay).sort(), timersAfterDrop,
+      "a load finishing after the stream dropped re-armed a live reload");
+    assert.equal(page.counts(path), fetchesAfterDrop,
+      "a load finishing after the stream dropped fetched again");
+  });
+}
+
+test("turning off automatic refresh discards a signal queued during an in-flight reload", async () => {
+  const page = await ownerPage();
+  const source = FakeEventSource.instances[0];
+  source.open();
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  await settle();
+  await settle();
+  let release;
+  page.state.pendingMessages = new Promise((resolve) => { release = resolve; });
+  source.changed(["messages"]);
+  await settle();
+  source.changed(["messages"]);
+  const fetches = page.counts("/v1/owner/messages");
+  page.element("auto-refresh").checked = false;
+  page.element("auto-refresh").listeners.change();
+  page.state.pendingMessages = null;
+  const realNow = Date.now;
+  // Past the reload floor, so only the automatic-refresh guard can stop it.
+  Date.now = () => realNow() + 20_000;
+  try {
+    release(response(200, { messages: [], next_cursor: null }));
+    await settle();
+    await settle();
+    await settle();
+  } finally {
+    Date.now = realNow;
+  }
+  assert.equal(page.counts("/v1/owner/messages"), fetches,
+    "a queued signal reloaded after automatic refresh was turned off");
+  assert.equal(page.timers.size, 0, "a queued signal armed a timer after automatic refresh was turned off");
 });
 
 test("a dropped stream cancels a pending trailing reload", async () => {
