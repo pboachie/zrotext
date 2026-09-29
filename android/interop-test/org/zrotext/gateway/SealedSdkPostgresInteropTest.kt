@@ -33,15 +33,24 @@ class SealedSdkPostgresInteropTest {
         val expected = readFixture("ZT_INTEROP_TEST_CONTEXT")
         val now = expected.getLong("now")
         fun bytes(name: String) = hex(expected.getString(name))
-        fun authority(fingerprint: ByteArray = bytes("rootFingerprint")) = Draft02ManifestAuthority.verify(
-            bytes("rootPin"), hex(input.getString("manifest")), Draft02ManifestAuthority.Trust(
-                bytes("accountId"), fingerprint, expected.getLong("generation"),
+        fun authority(fingerprint: ByteArray = bytes("rootFingerprint"), manifestField: String = "manifest") =
+            Draft02ManifestAuthority.verify(
+                bytes("rootPin"), hex(input.getString(manifestField)), Draft02ManifestAuthority.Trust(
+                    bytes("accountId"), fingerprint, expected.getLong("generation"),
+                    Draft02ManifestAuthority.Position.after(expected.getLong("previousVersion"), bytes("previousDigest"))), now)
+        fun authorityWithManifest(manifest: ByteArray) = Draft02ManifestAuthority.verify(
+            bytes("rootPin"), manifest, Draft02ManifestAuthority.Trust(
+                bytes("accountId"), bytes("rootFingerprint"), expected.getLong("generation"),
                 Draft02ManifestAuthority.Position.after(expected.getLong("previousVersion"), bytes("previousDigest"))), now)
-        fun request(message: ByteArray = bytes("messageId")) = Draft02ManifestAuthority.Request(
+        fun request(
+            message: ByteArray = bytes("messageId"),
+            readers: List<Draft02ManifestAuthority.Reader> = listOf(
+                Draft02ManifestAuthority.Reader(1, bytes("deviceKeyId")),
+                Draft02ManifestAuthority.Reader(2, bytes("archiveKeyId"))),
+        ) = Draft02ManifestAuthority.Request(
             Draft02ManifestAuthority.Direction.OUTBOUND, bytes("accountId"), message,
             bytes("deviceId"), bytes("lineId"), expected.getString("peer").toByteArray(Charsets.US_ASCII),
-            bytes("signerKeyId"), listOf(Draft02ManifestAuthority.Reader(1, bytes("deviceKeyId")),
-                Draft02ManifestAuthority.Reader(2, bytes("archiveKeyId"))))
+            bytes("signerKeyId"), readers)
         fun proof(message: ByteArray = bytes("messageId")): Draft02OutboundEnvelope {
             val source = hex(input.getString("outboundEnvelope"))
             val persisted = hex(input.getString("persistedOutboundEnvelope"))
@@ -126,6 +135,120 @@ class SealedSdkPostgresInteropTest {
                 fixture.authority(), fixture.request()) { fixture.now }
         }
     }
+
+    // Adversarial cross-client vectors: every tampered, truncated, oversized,
+    // downgraded, misaddressed or clock-skewed input must fail closed here too.
+    // The verifiers reject through require(), so IllegalArgumentException is
+    // the stable rejection type; fixture reads happen before the throwing
+    // call so a missing field fails loudly instead of passing vacuously.
+    private fun rejectEnvelope(bytes: ByteArray) {
+        val fixture = Fixture()
+        val authority = fixture.authority()
+        val request = fixture.request()
+        assertThrows(IllegalArgumentException::class.java) {
+            Draft02OutboundEnvelope.verify(bytes, authority, request) { fixture.now }
+        }
+    }
+
+    private fun rejectManifest(field: String) {
+        val fixture = Fixture()
+        val manifest = hex(fixture.input.getString(field)) // Missing fields fail here.
+        assertThrows(IllegalArgumentException::class.java) { fixture.authorityWithManifest(manifest) }
+    }
+
+    @Test fun truncatedEnvelopeTailIsRejected() {
+        val fixture = Fixture()
+        val envelope = hex(fixture.input.getString("outboundEnvelope"))
+        rejectEnvelope(envelope.copyOf(envelope.size - 1))
+    }
+
+    @Test fun truncatedEnvelopeHeaderIsRejected() {
+        val fixture = Fixture()
+        val envelope = hex(fixture.input.getString("outboundEnvelope"))
+        rejectEnvelope(envelope.copyOf(300))
+    }
+
+    @Test fun truncatedEnvelopeSignatureIsRejected() {
+        val fixture = Fixture()
+        val envelope = hex(fixture.input.getString("outboundEnvelope"))
+        rejectEnvelope(envelope.copyOf(envelope.size - 64))
+    }
+
+    @Test fun oversizedEnvelopeIsRejected() {
+        val fixture = Fixture()
+        val envelope = hex(fixture.input.getString("outboundEnvelope"))
+        rejectEnvelope(envelope + ByteArray(36_865))
+    }
+
+    @Test fun downgradedProfileByteIsRejected() {
+        val fixture = Fixture()
+        rejectEnvelope(hex(fixture.input.getString("outboundDowngradeV1")))
+    }
+
+    @Test fun unknownRecipientKeyIsRejected() {
+        val fixture = Fixture()
+        rejectEnvelope(hex(fixture.input.getString("outboundWrongRecipient")))
+    }
+
+    @Test fun misorderedWrapRolesAreRejected() {
+        val fixture = Fixture()
+        rejectEnvelope(hex(fixture.input.getString("outboundMisorderedWrap")))
+    }
+
+    @Test fun ungrantedThirdWrapRoleIsRejectedByTheManifestGrantCheck() {
+        val fixture = Fixture()
+        // The vector's third wrap keys the archive key the manifest grants
+        // under role 2, so key existence cannot explain the rejection. Select
+        // every wrap in the envelope to pass the exact-reader-set check, and
+        // the manifest authority itself must reject the ungranted role.
+        val request = fixture.request(readers = listOf(
+            Draft02ManifestAuthority.Reader(1, fixture.bytes("deviceKeyId")),
+            Draft02ManifestAuthority.Reader(2, fixture.bytes("archiveKeyId")),
+            Draft02ManifestAuthority.Reader(3, fixture.bytes("archiveKeyId"))))
+        val error = assertThrows(IllegalArgumentException::class.java) {
+            Draft02OutboundEnvelope.verify(hex(fixture.input.getString("outboundUngrantedThirdWrap")),
+                fixture.authority(), request) { fixture.now }
+        }
+        assertEquals("Reader authority", error.message)
+    }
+
+    @Test fun foreignAccountEnvelopeIsRejected() {
+        val fixture = Fixture()
+        rejectEnvelope(hex(fixture.input.getString("outboundWrongAccount")))
+    }
+
+    @Test fun expiredEnvelopeIntentIsRejected() {
+        val fixture = Fixture()
+        val error = assertThrows(IllegalArgumentException::class.java) {
+            Draft02OutboundEnvelope.verify(hex(fixture.input.getString("outboundExpired")),
+                fixture.authority(), fixture.request()) { fixture.now }
+        }
+        assertEquals("Envelope freshness", error.message)
+    }
+
+    @Test fun futureEnvelopeIntentIsRejected() {
+        val fixture = Fixture()
+        // A future-dated observation is not only a server-side concern: the
+        // shipping envelope verifier enforces the observation window locally.
+        val error = assertThrows(IllegalArgumentException::class.java) {
+            Draft02OutboundEnvelope.verify(hex(fixture.input.getString("outboundFuture")),
+                fixture.authority(), fixture.request()) { fixture.now }
+        }
+        assertEquals("Envelope freshness", error.message)
+    }
+
+    @Test fun tamperedManifestSignatureIsRejected() {
+        val fixture = Fixture()
+        val manifest = hex(fixture.input.getString("manifest"))
+        manifest[manifest.size - 1] = (manifest[manifest.size - 1].toInt() xor 1).toByte()
+        assertThrows(IllegalArgumentException::class.java) { fixture.authorityWithManifest(manifest) }
+    }
+
+    @Test fun expiredManifestIsRejected() = rejectManifest("manifestExpired")
+
+    @Test fun futureManifestIsRejected() = rejectManifest("manifestFuture")
+
+    @Test fun wrongPreviousDigestManifestIsRejected() = rejectManifest("manifestWrongPreviousDigest")
 
     companion object {
         private const val MAX_FIXTURE_BYTES = 1_048_576
