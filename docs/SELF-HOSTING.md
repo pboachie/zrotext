@@ -318,10 +318,10 @@ application tables.
 ### Runtime database and device capacity
 
 Each server process reserves separate PostgreSQL connection budgets: 16 ordinary
-requests, 16 device database operations, and 4 background jobs. A device fleet
+requests, 16 device database operations, and 8 background jobs. A device fleet
 cannot consume the request/job reserves. Requests and device operations wait at
-most two seconds for pool admission; background jobs fail immediately when their
-reserve is full. Device sockets release their database clients between handshake
+most two seconds for pool admission; background jobs wait at most one second
+and then fail when their reserve is full. Device sockets release their database clients between handshake
 steps and after each database operation, before waiting for or writing frames.
 The separate stream limits remain 32 authenticated sessions and 32 handshakes
 per process; idle phones and pending proofs do not reserve database clients.
@@ -333,14 +333,19 @@ A session that sends more than 60 heartbeats in a minute is closed with policy
 code 1008.
 Database saturation can still close a stream with retry-later code 1013, so
 these socket limits are admission ceilings, not a throughput guarantee. Count every hub
-and other database client when sizing PostgreSQL: two hubs can use 72 runtime
+and other database client when sizing PostgreSQL: two hubs can use 80 runtime
 connections in total. These conservative limits are fixed in `runtime_db.rs`;
 adding replicas requires a database capacity review. Migration and operator CLI
 connections are separate and must be included in the deployment budget.
 
 When `WEBHOOK_DELIVERY_ENABLED=true`, `WEBHOOK_DISPATCH_CONCURRENCY` controls
-parallel sender lanes per process (default 2, allowed 1–3). The cap leaves at
-least one of the four background database slots for other jobs. Claims rotate
+parallel sender lanes per process (default 2, allowed 1–3). Four of the eight
+background slots are reserved for the periodic workers (retention, maintenance,
+account mail and delivery recovery); the enabled webhook lanes and
+`STRIPE_TEST_RECONCILE_CONCURRENCY` (when `STRIPE_BILLING_TEST_ENABLED=true`)
+share the other four, and startup fails if their sum exceeds four. With
+delivery disabled the webhook setting is not counted, so Stripe test billing
+can use its full range of 1–4. Claims rotate
 between accounts and endpoints with due work across all hubs; only one leased
 attempt per endpoint can exist. Private process logs emit `webhook_queue` with
 pending count, oldest pending age in seconds, and in-flight count about once a

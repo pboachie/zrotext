@@ -48,7 +48,10 @@ clears its old allowances.
 The subscription and payment-risk queues each run every 10 seconds. Each tick
 claims up to `STRIPE_TEST_RECONCILE_BATCH_SIZE` jobs (default 25, range 1–100)
 with at most `STRIPE_TEST_RECONCILE_CONCURRENCY` simultaneous provider reads
-across both queues (default 2, range 1–4). Risk work is probed every 10 seconds
+across both queues (default 2, range 1–4). When webhook delivery is also
+enabled, `WEBHOOK_DISPATCH_CONCURRENCY` plus this setting must not exceed 4
+(the background database slots left after the periodic workers), or startup
+fails; with webhook delivery disabled the full range is available. Risk work is probed every 10 seconds
 even while a slow subscription batch remains active. With fast provider responses, 200 ready jobs at the
 default batch size need about eight ticks, or 70–80 seconds from the first tick.
 With slower responses, allow roughly `ceil(jobs / batch_size)` ticks plus the

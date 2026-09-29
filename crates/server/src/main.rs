@@ -137,6 +137,33 @@ fn bounded_worker_setting(
     }
 }
 
+/// Periodic workers that each need one worker-class socket per tick.
+const PERIODIC_WORKER_RESERVE: usize = 4;
+
+/// Refuse a configuration whose enabled worker lanes could need more
+/// worker-class sockets than the process budget. Webhook lanes are spawned,
+/// and therefore counted, only when delivery is enabled; Stripe lanes only
+/// when test billing is enabled.
+fn worker_budget_check(
+    webhook_delivery_enabled: bool,
+    webhook_dispatch_concurrency: usize,
+    stripe_reconcile_concurrency: Option<usize>,
+) -> Result<(), String> {
+    let webhook = if webhook_delivery_enabled {
+        webhook_dispatch_concurrency
+    } else {
+        0
+    };
+    let stripe = stripe_reconcile_concurrency.unwrap_or(0);
+    if webhook + stripe + PERIODIC_WORKER_RESERVE <= zrotext_server::runtime_db::WORKER_SLOTS {
+        return Ok(());
+    }
+    Err(format!(
+        "WEBHOOK_DISPATCH_CONCURRENCY ({webhook}) plus STRIPE_TEST_RECONCILE_CONCURRENCY ({stripe}) plus the periodic worker reserve ({PERIODIC_WORKER_RESERVE}) exceed the worker database budget ({}); lower one of the concurrency settings",
+        zrotext_server::runtime_db::WORKER_SLOTS
+    ))
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let hosted_sessions_enabled = optional_bool("STRIPE_TEST_HOSTED_SESSIONS_ENABLED")?;
@@ -202,21 +229,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(env::VarError::NotPresent) => 2,
         Err(_) => return Err("WEBHOOK_DISPATCH_CONCURRENCY must be valid UTF-8".into()),
     };
-    /// Periodic workers that each need one worker-class socket per tick.
-    const PERIODIC_WORKER_RESERVE: usize = 4;
-    let stripe_reconcile_concurrency = billing_test.as_ref().map(|billing| billing.7);
-    if webhook_dispatch_concurrency
-        + stripe_reconcile_concurrency.unwrap_or(0)
-        + PERIODIC_WORKER_RESERVE
-        > zrotext_server::runtime_db::WORKER_SLOTS
-    {
-        return Err(format!(
-            "WEBHOOK_DISPATCH_CONCURRENCY ({webhook_dispatch_concurrency}) plus STRIPE_TEST_RECONCILE_CONCURRENCY ({}) plus the periodic worker reserve ({PERIODIC_WORKER_RESERVE}) exceed the worker database budget ({}); lower one of the concurrency settings",
-            stripe_reconcile_concurrency.unwrap_or(0),
-            zrotext_server::runtime_db::WORKER_SLOTS
-        )
-        .into());
-    }
+    worker_budget_check(
+        webhook_delivery_enabled,
+        webhook_dispatch_concurrency,
+        billing_test.as_ref().map(|billing| billing.7),
+    )?;
     // One account's share of this process's authenticated device sockets.
     let device_sockets_per_account = match env::var("DEVICE_SOCKETS_PER_ACCOUNT") {
         Ok(value) => match value.parse::<usize>() {
@@ -1323,6 +1340,24 @@ mod tests {
     use super::*;
     use rand::{Rng, rng};
     use uuid::Uuid;
+
+    #[test]
+    fn worker_budget_counts_only_enabled_lanes() {
+        // Delivery disabled: every documented Stripe concurrency (1-4) is
+        // valid whatever WEBHOOK_DISPATCH_CONCURRENCY says.
+        for webhook in 1..=3 {
+            for stripe in 1..=4 {
+                assert!(worker_budget_check(false, webhook, Some(stripe)).is_ok());
+            }
+            assert!(worker_budget_check(true, webhook, None).is_ok());
+        }
+        // Delivery and test billing enabled: the two share four sockets.
+        assert!(worker_budget_check(true, 2, Some(2)).is_ok());
+        assert!(worker_budget_check(true, 1, Some(3)).is_ok());
+        assert!(worker_budget_check(true, 2, Some(3)).is_err());
+        assert!(worker_budget_check(true, 3, Some(2)).is_err());
+        assert!(worker_budget_check(true, 3, Some(4)).is_err());
+    }
 
     #[test]
     fn smtp_aliases_accept_supplied_names_but_reject_conflicts() {
