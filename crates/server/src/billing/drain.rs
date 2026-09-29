@@ -341,6 +341,14 @@ mod tests {
                 include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
                 include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
                 include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+                // 023 adds the pointer-or-review check that a blanket
+                // requeue of review rows violates; 024 widens risk states.
+                include_str!(
+                    "../../../../deploy/compose/migrations/023_billing_py_charge_and_unsupported.sql"
+                ),
+                include_str!(
+                    "../../../../deploy/compose/migrations/024_billing_risk_operator_review.sql"
+                ),
                 include_str!("../../../../deploy/compose/migrations/027_billing_test_config.sql"),
                 include_str!(
                     "../../../../deploy/compose/migrations/028_billing_provider_failures.sql"
@@ -363,9 +371,12 @@ mod tests {
                 .unwrap();
                 db.execute("INSERT INTO billing_reconciliations(stripe_subscription_id,account_id,stripe_customer_id) VALUES($1,$2,$3)", &[&subscription_id, &account_id, &customer_id]).await.unwrap();
             }
-            // A row parked by earlier row-level failures, plus a parked risk
-            // event: recovery must sweep both back into the queue without
-            // operator action.
+            // Rows the pre-#483 worker parked for provider-wide failures
+            // (class authorization/transport): recovery must sweep both back
+            // into the queue without operator action. Rows parked for
+            // row-level reasons, a tenant-conflict risk event and a
+            // pointerless review-required dispute must keep their review
+            // state and evidence.
             let parked_account = Uuid::new_v4();
             db.execute("INSERT INTO accounts(id) VALUES($1)", &[&parked_account])
                 .await
@@ -378,11 +389,12 @@ mod tests {
             .unwrap();
             db.execute("INSERT INTO billing_reconciliations(stripe_subscription_id,account_id,stripe_customer_id) VALUES($1,$2,$3)", &[&"sub_outageparked", &parked_account, &"cus_outageparked"]).await.unwrap();
             db.execute(
-                "UPDATE billing_reconciliations SET state='needs_review',failed_attempts=10 WHERE stripe_subscription_id='sub_outageparked'",
+                "UPDATE billing_reconciliations SET state='needs_review',failed_attempts=10,last_failure_class='transport' WHERE stripe_subscription_id='sub_outageparked'",
                 &[],
             )
             .await
             .unwrap();
+            db.execute("INSERT INTO billing_reconciliations(stripe_subscription_id,account_id,stripe_customer_id,state,failed_attempts,last_failure_class) VALUES('sub_rowparked',$1,'cus_outageparked','needs_review',10,'invalid_response')", &[&parked_account]).await.unwrap();
             db.execute(
                 "INSERT INTO billing_events(stripe_event_id,event_type,account_id,body_sha256,disposition) VALUES('evt_outageparked','charge.refunded',$1,$2,'queued')",
                 &[&parked_account, &vec![0u8; 32]],
@@ -396,8 +408,42 @@ mod tests {
             .await
             .unwrap();
             db.execute(
-                "UPDATE billing_risk_events SET state='needs_review',failed_attempts=10 WHERE stripe_event_id='evt_outageparked'",
+                "UPDATE billing_risk_events SET state='needs_review',failed_attempts=10,last_failure_class='authorization' WHERE stripe_event_id='evt_outageparked'",
                 &[],
+            )
+            .await
+            .unwrap();
+            for (event, kind) in [
+                ("evt_rowparked", "charge.refunded"),
+                ("evt_pointerless", "charge.dispute.created"),
+                ("evt_queuedrisk", "charge.refunded"),
+            ] {
+                db.execute(
+                    "INSERT INTO billing_events(stripe_event_id,event_type,account_id,body_sha256,disposition) VALUES($1,$2,$3,$4,'queued')",
+                    &[&event, &kind, &parked_account, &vec![0u8; 32]],
+                )
+                .await
+                .unwrap();
+            }
+            // A tenant conflict parked by the worker, recorded as "local".
+            db.execute(
+                "INSERT INTO billing_risk_events(stripe_event_id,stripe_charge_id,risk_kind,account_id,state,failed_attempts,last_failure_class) VALUES('evt_rowparked','ch_rowparked','refund',$1,'needs_review',10,'local')",
+                &[&parked_account],
+            )
+            .await
+            .unwrap();
+            // Ingestion stores a signed dispute with an unusable charge as a
+            // pointerless review row; migration 023 forbids requeueing it.
+            db.execute(
+                "INSERT INTO billing_risk_events(stripe_event_id,risk_kind,account_id,state) VALUES('evt_pointerless','dispute',$1,'needs_review')",
+                &[&parked_account],
+            )
+            .await
+            .unwrap();
+            // A queued risk event: the shared pause must stop its queue too.
+            db.execute(
+                "INSERT INTO billing_risk_events(stripe_event_id,stripe_charge_id,risk_kind,account_id) VALUES('evt_queuedrisk','ch_queuedrisk','refund',$1)",
+                &[&parked_account],
             )
             .await
             .unwrap();
@@ -435,6 +481,15 @@ mod tests {
                         }
                         (axum::http::StatusCode::from_u16(status).unwrap(), headers)
                             .into_response()
+                    },
+                ),
+            )
+            .route(
+                "/v1/charges/{charge_id}",
+                get(
+                    move |State((counted, _)): State<(Arc<AtomicUsize>, Arc<AtomicBool>)>| async move {
+                        counted.fetch_add(1, Ordering::SeqCst);
+                        axum::http::StatusCode::from_u16(status).unwrap()
                     },
                 ),
             )
@@ -479,12 +534,22 @@ mod tests {
                 deferred, first_tick as i64,
                 "only the failed rows defer, by the provider pause"
             );
-            // Second tick while paused: no provider contact at all.
+            // Second tick while paused: no provider contact at all, from
+            // either queue. The risk queue has a claimable event and shares
+            // the subscription queue's pause.
             assert!(!drain_billing_batch(&worker, &scoped_url, 25, 2, false, &draining).await);
+            assert!(!drain_billing_batch(&worker, &scoped_url, 25, 2, true, &draining).await);
             assert_eq!(
                 requests.load(Ordering::SeqCst),
                 first_tick,
                 "paused queue sent more requests"
+            );
+            let queued_risk = db.query_one("SELECT state,failed_attempts,next_attempt_at<=now() FROM billing_risk_events WHERE stripe_event_id='evt_queuedrisk'", &[]).await.unwrap();
+            assert_eq!(queued_risk.get::<_, String>(0), "queued");
+            assert_eq!(queued_risk.get::<_, i32>(1), 0);
+            assert!(
+                queued_risk.get::<_, bool>(2),
+                "paused risk queue must not claim"
             );
             // Recovery: the provider answers again; the first successful
             // request clears the pause state and sweeps parked rows back
@@ -503,15 +568,59 @@ mod tests {
                 parked.get::<_, bool>(1),
                 "parked row must requeue and drain"
             );
-            let parked_risk: String = db
+            let parked_risk = db
                 .query_one(
-                    "SELECT state FROM billing_risk_events WHERE stripe_event_id='evt_outageparked'",
+                    "SELECT state,failed_attempts,last_failure_class FROM billing_risk_events WHERE stripe_event_id='evt_outageparked'",
                     &[],
                 )
                 .await
-                .unwrap()
-                .get(0);
-            assert_eq!(parked_risk, "queued", "parked risk event must requeue");
+                .unwrap();
+            assert_eq!(
+                parked_risk.get::<_, String>(0),
+                "queued",
+                "outage-parked risk event must requeue"
+            );
+            assert_eq!(parked_risk.get::<_, i32>(1), 0);
+            assert_eq!(
+                parked_risk.get::<_, Option<String>>(2).as_deref(),
+                Some("authorization"),
+                "requeue keeps the failure evidence"
+            );
+            // Row-level parking is terminal until an operator acts: state,
+            // retry count and failure class all survive the recovery sweep.
+            let kept = db
+                .query_one(
+                    "SELECT state,failed_attempts,last_failure_class FROM billing_reconciliations WHERE stripe_subscription_id='sub_rowparked'",
+                    &[],
+                )
+                .await
+                .unwrap();
+            assert_eq!(kept.get::<_, String>(0), "needs_review");
+            assert_eq!(kept.get::<_, i32>(1), 10);
+            assert_eq!(kept.get::<_, String>(2), "invalid_response");
+            let kept = db
+                .query(
+                    "SELECT stripe_event_id,state,failed_attempts,last_failure_class FROM billing_risk_events WHERE stripe_event_id IN ('evt_rowparked','evt_pointerless') ORDER BY stripe_event_id",
+                    &[],
+                )
+                .await
+                .unwrap();
+            let kept: Vec<(String, String, i32, Option<String>)> = kept
+                .iter()
+                .map(|row| (row.get(0), row.get(1), row.get(2), row.get(3)))
+                .collect();
+            assert_eq!(
+                kept,
+                vec![
+                    ("evt_pointerless".into(), "needs_review".into(), 0, None),
+                    (
+                        "evt_rowparked".into(),
+                        "needs_review".into(),
+                        10,
+                        Some("local".into())
+                    ),
+                ]
+            );
             let review: i64 = db
                 .query_one(
                     "SELECT count(*) FROM billing_reconciliations WHERE state='needs_review'",
@@ -520,11 +629,27 @@ mod tests {
                 .await
                 .unwrap()
                 .get(0);
-            assert_eq!(review, 0, "no row may remain parked after recovery");
+            assert_eq!(review, 1, "only the row-level review row stays parked");
             assert!(
                 requests.load(Ordering::SeqCst) > first_tick,
                 "recovery must contact the provider"
             );
+            // Recovery resets the escalation: the next outage starts again at
+            // the 30-second base instead of the grown pause. One job (batch 1,
+            // concurrency 1) keeps the streak deterministic.
+            healthy.store(false, Ordering::SeqCst);
+            db.execute("UPDATE billing_reconciliations SET dirty_generation=dirty_generation+1,next_attempt_at=now() WHERE stripe_subscription_id='sub_outage00'", &[]).await.unwrap();
+            assert!(drain_billing_batch(&worker, &scoped_url, 1, 1, false, &draining).await);
+            let (low, high) = if retry_after.is_some() {
+                (110f64, 130f64)
+            } else {
+                (20f64, 40f64)
+            };
+            let deferred: bool = db.query_one(
+                "SELECT next_attempt_at > now() + make_interval(secs => $1) AND next_attempt_at < now() + make_interval(secs => $2) FROM billing_reconciliations WHERE stripe_subscription_id='sub_outage00'",
+                &[&low, &high],
+            ).await.unwrap().get(0);
+            assert!(deferred, "post-recovery pause must restart at the base");
             server.abort();
             setup
                 .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))

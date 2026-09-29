@@ -54,15 +54,23 @@ default batch size need about eight ticks, or 70–80 seconds from the first tic
 With slower responses, allow roughly `ceil(jobs / batch_size)` ticks plus the
 time for each batch's provider reads and database work. Failed jobs wait for
 their retry time. Row-level failures back off exponentially: one minute after
-the first failure, doubling per attempt up to one hour. A provider-wide
+the first failure, doubling per attempt up to 32 minutes (1, 2, 4, 8, 16, then
+32 minutes for each later attempt), so a row reaches review after about 2.7
+hours of row-level failures. A provider-wide
 failure — 401/403, 429, any 5xx or a transport error — pauses both queues
 after the request that discovered it: no further jobs are spawned that tick,
 the pause starts at 30 seconds and doubles per consecutive provider-wide
 failure up to 10 minutes, and a numeric `Retry-After` on a 429 replaces the
 schedule up to the same 10-minute cap. Provider-wide failures never count
-toward a row's retry budget, and the first successful provider request after
-the pause requeues every row parked in `needs_review`, so an outage no longer
-parks rows for manual review. Review
+toward a row's retry budget: the failing row stays queued and is deferred by
+the pause, so an outage no longer parks rows for manual review. Rows that an
+earlier worker version parked because of an outage (review rows whose last
+failure class is `authorization` or `transport`) are requeued by the first
+successful provider request after a provider-wide failure; their failure
+class is kept and their retry count restarts. Rows parked for row-level
+reasons, tenant conflicts, ingestion-time review rows and legacy rows with the
+ambiguous `http` class stay in `needs_review` for an operator. The sweep runs
+in one transaction; if it fails, the next successful request repeats it. Review
 `billing_reconciliations` and `billing_risk_events` for pending rows and
 `next_attempt_at` when recovery is slower than expected.
 
@@ -144,7 +152,8 @@ and writes `provider_deleted` to the entitlement audit when quota plans are
 configured. Other provider errors retry at most ten times with exponential backoff. The
 row then moves
 to `needs_review`, remains admission blocking, and stops automatic retries
-until a provider-wide outage recovery requeues it; provider-wide failures
+until an operator, a new verified subscription event or a billing
+configuration change requeues it; provider-wide failures
 (401/403, 429, 5xx, transport) never reach this cap because they pause the
 queues instead.
 The owner billing status exposes `reviewReconciliations`, `reviewRiskEvents`,
