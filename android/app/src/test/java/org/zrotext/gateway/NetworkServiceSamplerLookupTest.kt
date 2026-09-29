@@ -31,16 +31,29 @@ class NetworkServiceSamplerLookupTest {
         }
     }
 
-    private fun awaitSample(sampler: NetworkServiceSampler, lookup: CountingLookup) {
-        val before = lookup.lookups.get()
+    /**
+     * Drains the paused main looper until [delivered] fires or five seconds pass.
+     *
+     * The lookup runs on the sampler's executor and only then posts its continuation
+     * to the main looper, so a single idle() can run before that post lands (the
+     * lookup counter is bumped before the post). Idling repeatedly until the
+     * delivery latch fires waits for the post itself, not for a proxy of it.
+     */
+    private fun idleMainLooperUntil(delivered: CountDownLatch): Boolean {
+        val mainLooper = shadowOf(Looper.getMainLooper())
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+        while (true) {
+            mainLooper.idle()
+            if (delivered.count == 0L) return true
+            if (System.nanoTime() >= deadline) return false
+            Thread.sleep(5)
+        }
+    }
+
+    private fun awaitSample(sampler: NetworkServiceSampler) {
         val samplerDone = CountDownLatch(1)
         sampler.sample({ true }) { _, _ -> samplerDone.countDown() }
-        // Wait for the lookup executor's counter, then drain the main looper for the
-        // posted continuation.
-        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
-        while (lookup.lookups.get() == before && System.nanoTime() < deadline) Thread.sleep(5)
-        shadowOf(Looper.getMainLooper()).idle()
-        assertTrue(samplerDone.await(5, TimeUnit.SECONDS))
+        assertTrue(idleMainLooperUntil(samplerDone))
     }
 
     @Test fun oneSampleMakesExactlyOneLookupOffTheMainLooperAndDeliversIt() {
@@ -56,15 +69,12 @@ class NetworkServiceSamplerLookupTest {
             delivered[0] = resolved
             deliveredDone.countDown()
         }
-        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
-        while (lookup.lookups.get() == 0 && System.nanoTime() < deadline) Thread.sleep(5)
-        shadowOf(Looper.getMainLooper()).idle()
-        assertTrue(deliveredDone.await(5, TimeUnit.SECONDS))
+        assertTrue(idleMainLooperUntil(deliveredDone))
         assertEquals(1, lookup.lookups.get())
         assertEquals(listOf(7, 9), delivered[0])
         assertFalse(lookup.sawMainThread[0])
         // A second sample resolves once more; nothing resolves between samples.
-        awaitSample(sampler, lookup)
+        awaitSample(sampler)
         assertEquals(2, lookup.lookups.get())
         assertFalse(lookup.sawMainThread[0])
         sampler.shutdown()
