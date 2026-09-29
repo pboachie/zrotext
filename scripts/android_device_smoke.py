@@ -12,6 +12,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = "org.zrotext.gateway."
 PRECONDITIONS = PACKAGE + "DevicePreconditionsDeviceTest"
+RCS_RISK = PACKAGE + "DefaultSmsAppRcsRiskDeviceTest"
 ACCESSIBILITY = PACKAGE + "GatewayAccessibilityDeviceTest"
 MANIFEST_AUTHORITY = PACKAGE + "ManifestAuthorityDeviceTest"
 NETWORK_SERVICE = PACKAGE + "NetworkServiceDeviceTest"
@@ -24,6 +25,9 @@ SERIAL = "emulator-5562"
 
 def selected_tests(root=ROOT):
     expected = {PRECONDITIONS: 1}
+    source = root / "android/app/src/androidTest/java/org/zrotext/gateway/DefaultSmsAppRcsRiskDeviceTest.kt"
+    if source.is_file():
+        expected[RCS_RISK] = 1
     source = root / "android/app/src/androidTest/java/org/zrotext/gateway/GatewayAccessibilityDeviceTest.kt"
     if source.is_file():
         expected[ACCESSIBILITY] = 5

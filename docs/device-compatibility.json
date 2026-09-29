@@ -29,6 +29,7 @@
       "runs": "scripts/android_device_smoke.py",
       "tests": [
         "android/app/src/androidTest/java/org/zrotext/gateway/DevicePreconditionsDeviceTest.kt",
+        "android/app/src/androidTest/java/org/zrotext/gateway/DefaultSmsAppRcsRiskDeviceTest.kt",
         "android/app/src/androidTest/java/org/zrotext/gateway/GatewayAccessibilityDeviceTest.kt",
         "android/app/src/androidTest/java/org/zrotext/gateway/ManifestAuthorityDeviceTest.kt",
         "android/app/src/androidTest/java/org/zrotext/gateway/NetworkServiceDeviceTest.kt",
@@ -133,12 +134,13 @@
       "status": "supported",
       "evidence": "emulator",
       "tests": [
+        "android/app/src/androidTest/java/org/zrotext/gateway/DefaultSmsAppRcsRiskDeviceTest.kt",
         "android/app/src/androidTest/java/org/zrotext/gateway/DevicePreconditionsDeviceTest.kt",
+        "android/app/src/androidTest/java/org/zrotext/gateway/Draft02RootStorageDeviceTest.kt",
         "android/app/src/androidTest/java/org/zrotext/gateway/GatewayAccessibilityDeviceTest.kt",
         "android/app/src/androidTest/java/org/zrotext/gateway/ManifestAuthorityDeviceTest.kt",
         "android/app/src/androidTest/java/org/zrotext/gateway/NetworkServiceDeviceTest.kt",
         "android/app/src/androidTest/java/org/zrotext/gateway/OutboundEnvelopeDeviceTest.kt",
-        "android/app/src/androidTest/java/org/zrotext/gateway/Draft02RootStorageDeviceTest.kt",
         "android/app/src/androidTest/java/org/zrotext/gateway/SealedBodyDeviceTest.kt",
         "android/app/src/androidTest/java/org/zrotext/gateway/SealedPreparationDeviceTest.kt",
         "android/app/src/preparationProbeTest/java/org/zrotext/gateway/PreparationProbeDeviceTest.kt"
