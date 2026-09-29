@@ -556,13 +556,13 @@ mod tests {
             (
                 "/owner/seats.js",
                 "text/javascript; charset=utf-8",
-                "no-cache",
+                "no-store",
             ),
             ("/owner/observer", "text/html; charset=utf-8", "no-store"),
             (
                 "/owner/observer.js",
                 "text/javascript; charset=utf-8",
-                "no-cache",
+                "no-store",
             ),
         ] {
             let response = router()
