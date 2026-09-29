@@ -640,12 +640,73 @@ async fn prune_keeps_every_scope_for_its_longest_window() {
         .iter()
         .filter(|limit| limit.policy().3.is_some())
         .count();
-    assert_eq!(kept as usize, Limit::ALL.len() + with_subject);
+    let subject_only = Limit::ALL
+        .iter()
+        .filter(|limit| limit.subject_only())
+        .count();
+    // Subject-only limits keep one row less: they charge no route row.
+    assert_eq!(
+        kept as usize,
+        Limit::ALL.len() + with_subject - subject_only
+    );
     for limit in Limit::ALL {
         let scope = limit.policy().0;
         set_idle(scope, retention_for(scope) + 5).await;
     }
     assert_eq!(prune(&db).await.unwrap(), kept as u64);
+    setup
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+/// One tenant's exhausted outbound budget must not refuse another tenant's
+/// sends, and authenticated accepts must not write one shared counter row
+/// that serializes them (#494).
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn outbound_accepts_share_no_route_row_across_accounts() {
+    let (setup, db, schema) = abuse_schema().await;
+    let hasher = TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap();
+    // Eleven accounts at the full per-account rate run past the old shared
+    // 600-per-minute route ceiling together; under that ceiling the eleventh
+    // account's accepts would have been refused.
+    let accounts: Vec<String> = (0..11).map(|_| Uuid::new_v4().to_string()).collect();
+    for account in &accounts {
+        for _ in 0..60 {
+            assert!(
+                consume(&db, &hasher, Limit::OutboundAccept, Some(account))
+                    .await
+                    .unwrap(),
+                "account {account} must keep its own budget"
+            );
+        }
+    }
+    // The per-account ceiling still binds.
+    assert!(
+        !consume(&db, &hasher, Limit::OutboundAccept, Some(&accounts[0]))
+            .await
+            .unwrap()
+    );
+    // No shared route row was written: only the eleven account rows exist.
+    assert!(
+        db.query_opt(
+            "SELECT 1 FROM auth_abuse_counters WHERE scope='alpha_send' AND subject_hash=$1",
+            &[&&hasher.digest(b"abuse-global-v1", "alpha_send")[..]],
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+    let rows: i64 = db
+        .query_one(
+            "SELECT count(*) FROM auth_abuse_counters WHERE scope='alpha_send'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(rows, 11);
     setup
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
         .await
