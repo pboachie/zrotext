@@ -15,7 +15,7 @@
 
 use super::TokenHasher;
 use std::future::Future;
-use tokio_postgres::{Client, GenericClient, Transaction};
+use tokio_postgres::{Client, GenericClient, Transaction, types::Type};
 
 /// Verified subjects share a route ceiling this many times the anonymous one.
 /// It is a backstop against many real subjects, not the per-subject limit.
@@ -328,16 +328,16 @@ async fn charge(
     let (subject_max, subject_seconds) = subject_policy.unwrap_or((0, 0));
     let subject_bytes: Option<&[u8]> = subject_hash.as_ref().map(|hash| &hash[..]);
     let row = client
-        .query_one(
+        .query_typed_one(
             "SELECT auth_abuse_consume($1,$2,$3,$4,$5,$6,$7)",
             &[
-                &scope,
-                &&route_hash[..],
-                &subject_bytes,
-                &route_max,
-                &global_seconds,
-                &subject_max,
-                &subject_seconds,
+                (&scope, Type::TEXT),
+                (&&route_hash[..], Type::BYTEA),
+                (&subject_bytes, Type::BYTEA),
+                (&route_max, Type::INT4),
+                (&global_seconds, Type::INT4),
+                (&subject_max, Type::INT4),
+                (&subject_seconds, Type::INT4),
             ],
         )
         .await?;

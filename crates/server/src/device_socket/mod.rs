@@ -38,7 +38,7 @@ use tokio::{
     sync::{Notify, OwnedSemaphorePermit, Semaphore},
     time::{interval, timeout, timeout_at},
 };
-use tokio_postgres::Client;
+use tokio_postgres::{Client, types::Type};
 use uuid::Uuid;
 use zrotext_delivery_store::{DeliveryStore, GrantRecord, RadioEvent, SessionRecord, StoreError};
 use zrotext_domain::{Evidence, MessageState};
@@ -1665,9 +1665,11 @@ async fn session_current(
     if state.draining.load(Ordering::Acquire) {
         return Ok(false);
     }
-    Ok(client.query_opt(
+    Ok(client.query_typed_opt(
         "SELECT 1 FROM device_sessions s JOIN devices d ON (d.account_id,d.id)=(s.account_id,s.device_id) JOIN device_keys k ON (k.account_id,k.device_id)=(d.account_id,d.id) JOIN accounts a ON a.id=d.account_id JOIN sites t ON t.site_id=s.site_id JOIN deployment_authority p ON p.singleton=TRUE WHERE s.account_id=$1 AND s.device_id=$2 AND s.site_id=$3 AND s.instance_id=$4 AND s.connection_epoch=$5 AND s.deployment_epoch=$6 AND s.lease_until>now() AND d.revoked_at IS NULL AND k.revoked_at IS NULL AND a.disabled_at IS NULL AND t.enabled=TRUE AND t.draining=FALSE AND p.epoch=$6 AND NOT pg_is_in_recovery()",
-        &[&session.account_id, &session.device_id, &state.site_id, &state.instance_id, &session.connection_epoch, &state.deployment_epoch],
+        &[(&session.account_id, Type::UUID), (&session.device_id, Type::UUID),
+          (&state.site_id, Type::TEXT), (&state.instance_id, Type::TEXT),
+          (&session.connection_epoch, Type::INT8), (&state.deployment_epoch, Type::INT8)],
     ).await?.is_some())
 }
 
@@ -1679,9 +1681,12 @@ async fn renew_session(
     if state.draining.load(Ordering::Acquire) {
         return Ok(false);
     }
-    Ok(client.execute(
+    Ok(client.execute_typed(
         "UPDATE device_sessions s SET lease_until=now()+($7::integer * interval '1 second') WHERE s.account_id=$1 AND s.device_id=$2 AND s.site_id=$3 AND s.instance_id=$4 AND s.connection_epoch=$5 AND s.deployment_epoch=$6 AND s.lease_until>now() AND EXISTS (SELECT 1 FROM devices d JOIN device_keys k ON (k.account_id,k.device_id)=(d.account_id,d.id) JOIN accounts a ON a.id=d.account_id JOIN sites t ON t.site_id=$3 JOIN deployment_authority p ON p.singleton=TRUE WHERE d.account_id=$1 AND d.id=$2 AND d.revoked_at IS NULL AND k.revoked_at IS NULL AND a.disabled_at IS NULL AND t.enabled=TRUE AND t.draining=FALSE AND p.epoch=$6 AND NOT pg_is_in_recovery())",
-        &[&session.account_id, &session.device_id, &state.site_id, &state.instance_id, &session.connection_epoch, &state.deployment_epoch, &SESSION_LEASE_SECONDS],
+        &[(&session.account_id, Type::UUID), (&session.device_id, Type::UUID),
+          (&state.site_id, Type::TEXT), (&state.instance_id, Type::TEXT),
+          (&session.connection_epoch, Type::INT8), (&state.deployment_epoch, Type::INT8),
+          (&SESSION_LEASE_SECONDS, Type::INT4)],
     ).await? == 1)
 }
 
