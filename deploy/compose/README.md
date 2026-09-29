@@ -139,10 +139,26 @@ of reading and sorting the endpoint's whole retention history. The same
 wrong-shape refusal, active-build protection, invalid-build retry, and
 post-recording verification rules apply.
 
+Migration 058 is the inverse online exception: it removes an index rather than
+building one. Migration 012's `auth_abuse_counters_stale` indexed `updated_at`,
+which every abuse-budget charge rewrites, so each charge was a non-HOT update
+that added index entries on the subject row and the shared route row. Before
+the numbered 058 file runs, the migrator executes
+`DROP INDEX CONCURRENTLY IF EXISTS public.auth_abuse_counters_stale` in
+autocommit mode while holding the migration advisory lock; the drop takes no
+lock that blocks charges, and `IF EXISTS` makes a rerun after an interrupted
+drop idempotent. The numbered 058 SQL file then asserts the index is absent and
+records its checksum. Once 058 is recorded, every later migrator run fails if
+an index named `auth_abuse_counters_stale` exists again, so do not re-create
+it. The only reader of the index was the periodic abuse-counter prune; its SQL
+and 5000-row bound are unchanged, and without the index it scans the
+live-subject counter table once per maintenance tick. Charge semantics do not
+change.
+
 A concurrent build permits message writes but may wait for older transactions;
 monitor `pg_stat_progress_create_index` and allow migration to finish before
 starting API workers. If application rollback is needed, the valid index can
-remain; keep the migration package containing the applied 034, 040, 049, 050, 052 and 057 files so a rolled-back
+remain; keep the migration package containing the applied 034, 040, 049, 050, 052, 057 and 058 files so a rolled-back
 API does not rerun an older migrator with a mismatched checksum. Removing the
 index later requires a separately planned
 `DROP INDEX CONCURRENTLY` outside a transaction, after workers that depend on
