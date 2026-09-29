@@ -34,7 +34,7 @@ macro_rules! migration {
 }
 
 // Complete reviewed schema, embedded at build time.
-const TEST_MIGRATIONS: [(&str, &str); 52] = [
+const TEST_MIGRATIONS: [(&str, &str); 53] = [
     migration!("001_foundation.sql"),
     migration!("002_auth.sql"),
     migration!("003_delivery.sql"),
