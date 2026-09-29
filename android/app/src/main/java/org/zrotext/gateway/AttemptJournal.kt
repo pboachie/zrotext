@@ -605,23 +605,24 @@ abstract class SmsAttemptDao {
     @Query("UPDATE sms_attempts SET state = 'delivery_unknown', updatedAtMs = :now WHERE state = 'submitted' AND updatedAtMs < :cutoff")
     abstract fun markTimedOutDeliveries(cutoff: Long, now: Long)
 
-    @Query("DELETE FROM alpha_radio_events WHERE (acknowledgedAtMs IS NOT NULL AND acknowledgedAtMs < :cutoff) OR (quarantinedAtMs IS NOT NULL AND quarantinedAtMs < :cutoff)")
-    protected abstract fun pruneOldAlphaEvents(cutoff: Long): Int
+    /** Every prune statement is capped so one tick does bounded work on the journal thread. */
+    @Query("DELETE FROM alpha_radio_events WHERE rowid IN (SELECT rowid FROM alpha_radio_events WHERE (acknowledgedAtMs IS NOT NULL AND acknowledgedAtMs < :cutoff) OR (quarantinedAtMs IS NOT NULL AND quarantinedAtMs < :cutoff) LIMIT :limit)")
+    protected abstract fun pruneOldAlphaEvents(cutoff: Long, limit: Int): Int
 
     /** Cascades to the signed inbound upload rows of the same events. */
-    @Query("DELETE FROM inbound_events WHERE eventId IN (SELECT u.eventId FROM inbound_uploads u WHERE (u.acknowledgedAtMs IS NOT NULL AND u.acknowledgedAtMs < :cutoff) OR (u.quarantinedAtMs IS NOT NULL AND u.quarantinedAtMs < :cutoff))")
-    protected abstract fun pruneOldInboundEvents(cutoff: Long): Int
+    @Query("DELETE FROM inbound_events WHERE rowid IN (SELECT e.rowid FROM inbound_events e JOIN inbound_uploads u ON u.eventId = e.eventId WHERE (u.acknowledgedAtMs IS NOT NULL AND u.acknowledgedAtMs < :cutoff) OR (u.quarantinedAtMs IS NOT NULL AND u.quarantinedAtMs < :cutoff) LIMIT :limit)")
+    protected abstract fun pruneOldInboundEvents(cutoff: Long, limit: Int): Int
 
     /** Terminal attempts whose every alpha event and inbound upload already settled. */
-    @Query("DELETE FROM sms_attempts WHERE state IN ('submitted','delivered','delivery_failed','delivery_unknown','failed','partial_failure','not_submitted') AND updatedAtMs < :cutoff  AND attemptId NOT IN (SELECT attemptId FROM alpha_radio_events WHERE acknowledgedAtMs IS NULL AND quarantinedAtMs IS NULL)AND attemptId NOT IN (SELECT e.attemptId FROM inbound_events e JOIN inbound_uploads u ON u.eventId = e.eventId WHERE u.acknowledgedAtMs IS NULL AND u.quarantinedAtMs IS NULL)")
-    protected abstract fun pruneTerminalAttempts(cutoff: Long): Int
+    @Query("DELETE FROM sms_attempts WHERE rowid IN (SELECT rowid FROM sms_attempts WHERE state IN ('submitted','delivered','delivery_failed','delivery_unknown','failed','partial_failure','not_submitted') AND updatedAtMs < :cutoff AND attemptId NOT IN (SELECT attemptId FROM alpha_radio_events WHERE acknowledgedAtMs IS NULL AND quarantinedAtMs IS NULL) AND attemptId NOT IN (SELECT e.attemptId FROM inbound_events e JOIN inbound_uploads u ON u.eventId = e.eventId WHERE u.acknowledgedAtMs IS NULL AND u.quarantinedAtMs IS NULL) LIMIT :limit)")
+    protected abstract fun pruneTerminalAttempts(cutoff: Long, limit: Int): Int
 
     /** The suppression row keeps enforcing the STOP; only the settled upload record goes. */
-    @Query("DELETE FROM local_inbound_withdrawals WHERE acknowledgedAtMs IS NOT NULL AND acknowledgedAtMs < :cutoff")
-    protected abstract fun pruneAcknowledgedWithdrawals(cutoff: Long): Int
+    @Query("DELETE FROM local_inbound_withdrawals WHERE rowid IN (SELECT rowid FROM local_inbound_withdrawals WHERE acknowledgedAtMs IS NOT NULL AND acknowledgedAtMs < :cutoff LIMIT :limit)")
+    protected abstract fun pruneAcknowledgedWithdrawals(cutoff: Long, limit: Int): Int
 
-    @Query("DELETE FROM local_withdrawal_sequences WHERE eventId NOT IN (SELECT eventId FROM local_inbound_withdrawals WHERE eventId IS NOT NULL)")
-    protected abstract fun pruneOrphanedWithdrawalSequences(): Int
+    @Query("DELETE FROM local_withdrawal_sequences WHERE rowid IN (SELECT rowid FROM local_withdrawal_sequences WHERE eventId NOT IN (SELECT eventId FROM local_inbound_withdrawals WHERE eventId IS NOT NULL) LIMIT :limit)")
+    protected abstract fun pruneOrphanedWithdrawalSequences(limit: Int): Int
 
     /**
      * Phone-side retention: acknowledged or quarantined evidence older than the
@@ -632,9 +633,11 @@ abstract class SmsAttemptDao {
     open fun pruneAcknowledgedEvidence(now: Long, retentionMs: Long): Boolean {
         require(now > 0 && retentionMs > 0)
         val cutoff = Math.subtractExact(now, retentionMs)
-        val pruned = pruneOldAlphaEvents(cutoff) + pruneOldInboundEvents(cutoff) +
-            pruneTerminalAttempts(cutoff) + pruneAcknowledgedWithdrawals(cutoff)
-        pruneOrphanedWithdrawalSequences()
+        val pruned = pruneOldAlphaEvents(cutoff, PRUNE_BATCH) +
+            pruneOldInboundEvents(cutoff, PRUNE_BATCH) +
+            pruneTerminalAttempts(cutoff, PRUNE_BATCH) +
+            pruneAcknowledgedWithdrawals(cutoff, PRUNE_BATCH)
+        pruneOrphanedWithdrawalSequences(PRUNE_BATCH)
         return pruned > 0
     }
 
@@ -741,6 +744,9 @@ abstract class SmsAttemptDao {
 }
 
 private const val INBOUND_PILOT_WINDOW_MS = 24L * 60 * 60 * 1000
+
+/** Upper bound on rows one prune pass may delete from each table. */
+private const val PRUNE_BATCH = 500
 
 @Database(entities = [SmsAttempt::class, SmsSegment::class, AlphaRadioEvent::class,
     InboundWindow::class, InboundEvent::class, InboundUpload::class,
@@ -876,26 +882,41 @@ class GatewayApplication : Application() {
         super.onCreate()
         val app = applicationContext
         HeartbeatResumeStore.eligibleAfterUserStop(app)
-        JournalRuntime.io.execute { maintainJournal(System.currentTimeMillis()) }
+        // Crash recovery runs once per process. It reclassifies live attempt
+        // states, so repeating it on the daily timer would retire in-flight
+        // attempts of a running session; the timer prunes only.
+        JournalRuntime.io.execute {
+            val now = System.currentTimeMillis()
+            val dao = SmsJournalDatabase.get(app).attempts()
+            recoverJournalState(dao, now)
+            pruneJournalEvidence(dao, now)
+        }
         JournalRuntime.timeouts.scheduleAtFixedRate({
-            JournalRuntime.io.execute { maintainJournal(System.currentTimeMillis()) }
+            JournalRuntime.io.execute {
+                pruneJournalEvidence(SmsJournalDatabase.get(app).attempts(),
+                    System.currentTimeMillis())
+            }
         }, RETENTION_CHECK_MS, RETENTION_CHECK_MS, TimeUnit.MILLISECONDS)
     }
 
-    private fun maintainJournal(now: Long) {
-        val dao = SmsJournalDatabase.get(applicationContext).attempts()
-        dao.markInterrupted(now)
-        dao.markUnsentReservations(now)
-        dao.retireOrphanedAlphaIntents(now)
-        dao.markTimedOutDeliveries(now - DELIVERY_RECEIPT_TIMEOUT_MS, now)
-        dao.pruneAcknowledgedEvidence(now, EVIDENCE_RETENTION_MS)
-    }
-
     companion object {
-        private const val DELIVERY_RECEIPT_TIMEOUT_MS = 24L * 60 * 60 * 1000
+        internal const val DELIVERY_RECEIPT_TIMEOUT_MS = 24L * 60 * 60 * 1000
 
         /** One day past the six-day upload window the hub would still accept. */
         internal const val EVIDENCE_RETENTION_MS = 7L * 24 * 60 * 60 * 1000
         private const val RETENTION_CHECK_MS = 24L * 60 * 60 * 1000
     }
+}
+
+/** Startup-only crash recovery: reclassifies states a dead process left behind. */
+internal fun recoverJournalState(dao: SmsAttemptDao, now: Long) {
+    dao.markInterrupted(now)
+    dao.markUnsentReservations(now)
+    dao.retireOrphanedAlphaIntents(now)
+    dao.markTimedOutDeliveries(now - GatewayApplication.DELIVERY_RECEIPT_TIMEOUT_MS, now)
+}
+
+/** Periodic journal task: deletes settled evidence and nothing else. */
+internal fun pruneJournalEvidence(dao: SmsAttemptDao, now: Long) {
+    dao.pruneAcknowledgedEvidence(now, GatewayApplication.EVIDENCE_RETENTION_MS)
 }

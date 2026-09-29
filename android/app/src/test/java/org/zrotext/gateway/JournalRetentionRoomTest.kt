@@ -132,6 +132,41 @@ class JournalRetentionRoomTest {
         assertNotNull(dao.lineOptOutByEventId(pending))
     }
 
+    @Test fun periodicPruneNeverRewritesLiveAttemptStates() {
+        // A reserved attempt and an authorized submitting send must survive the
+        // daily task untouched; only startup crash recovery may reclassify them.
+        dao.reserveAlpha(uuid(20), uuid(120), 7, 1, uuid(220), old)
+        assertEquals(true, dao.acknowledgeAlphaIntent(uuid(220), true, old + 1))
+        dao.consumeRadioStart(uuid(20), uuid(120), 7, 1, old + 2)
+        assertEquals("radio_started", dao.getAttempt(uuid(20))?.state)
+        dao.reserveAlpha(uuid(22), uuid(122), 7, 1, uuid(222), old)
+        assertEquals("reserved", dao.getAttempt(uuid(22))?.state)
+
+        pruneJournalEvidence(dao, now)
+
+        assertEquals("radio_started", dao.getAttempt(uuid(20))?.state)
+        assertEquals("reserved", dao.getAttempt(uuid(22))?.state)
+        assertNotNull(dao.getAlphaEvent(uuid(222)))
+
+        // The startup path is the one that reclassifies a dead process's states.
+        recoverJournalState(dao, now)
+        assertEquals("not_submitted", dao.getAttempt(uuid(22))?.state)
+        assertEquals("unknown", dao.getAttempt(uuid(20))?.state)
+    }
+
+    @Test fun terminalAttemptWithUnacknowledgedInboundUploadSurvivesThePrune() {
+        val eventId = seedCapturedInbound(10, old, "e".repeat(64))
+        // Settle every alpha event too, so only the pending inbound upload
+        // keeps this terminal attempt alive.
+        settleAlphaEvents(old + 5)
+
+        assertTrue(dao.pruneAcknowledgedEvidence(now, retention))
+
+        assertNotNull(dao.getAttempt(uuid(10)))
+        assertNotNull(dao.inboundByEventId(eventId))
+        assertNotNull(dao.inboundUpload(eventId))
+    }
+
     @Test fun nothingIsPrunedInsideTheRetentionWindow() {
         seedSettledAlphaAttempt(7, recent)
         assertEquals(false, dao.pruneAcknowledgedEvidence(now, retention))
