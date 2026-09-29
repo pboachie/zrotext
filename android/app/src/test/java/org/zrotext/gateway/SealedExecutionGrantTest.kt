@@ -7,13 +7,20 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** Roadmap #539: a sealed execution grant is bound to one device, line, session, envelope and moment. */
+/**
+ * Roadmap #539: a sealed execution grant is bound to one account, device, line,
+ * message, reader, session, envelope and moment. One test per binding field, so a
+ * mutation that drops any single fence fails exactly that field's test.
+ */
 class SealedExecutionGrantTest {
     private val account = UUID.fromString("11111111-1111-4111-8111-111111111111")
     private val device = UUID.fromString("22222222-2222-4222-8222-222222222222")
     private val line = UUID.fromString("33333333-3333-4333-8333-333333333333")
     private val message = UUID.fromString("44444444-4444-4444-8444-444444444444")
     private val attempt = UUID.fromString("55555555-5555-4555-8555-555555555555")
+    private val other = UUID.fromString("66666666-6666-4666-8666-666666666666")
+    private val readerKey = ByteArray(32) { 7 }
+    private val archiveKey = ByteArray(32) { 8 }
     private val envelope = ByteArray(600) { (it % 251).toByte() }
     private val digest = SealedExecutionGrantValidator.sha256(envelope)
     private val now = 1_800_000_000_000L
@@ -29,130 +36,188 @@ class SealedExecutionGrantTest {
         envelopeDigest: ByteArray = digest,
         expiresAtMs: Long = expires,
         segmentCount: Int = 1,
+        readerRole: Int = 1,
+        readerKeyId: ByteArray = readerKey,
+        deploymentEpoch: Long = 3L,
+        bindingGeneration: Long = 9L,
     ) = SealedExecutionGrantValidator.Fields(
         accountId, deviceId, lineId, messageId, attemptId, epoch,
-        envelopeDigest, expiresAtMs, segmentCount
+        envelopeDigest, expiresAtMs, segmentCount, readerRole, readerKeyId,
+        deploymentEpoch, bindingGeneration, 1L, ByteArray(32) { 5 },
     )
+
+    private fun claims(
+        accountId: UUID = account,
+        messageId: UUID = message,
+        deviceId: UUID = device,
+        lineId: UUID = line,
+        reader: ByteArray = readerKey,
+    ) = SealedExecutionGrantValidator.EnvelopeClaims(accountId, messageId, deviceId, lineId, reader)
+
+    private fun verdict(
+        f: SealedExecutionGrantValidator.Fields = fields(),
+        c: SealedExecutionGrantValidator.EnvelopeClaims = claims(),
+        authAccount: UUID = account,
+        authDevice: UUID = device,
+        activeLine: UUID = line,
+        epoch: Long = 77L,
+        deployment: Long = 3L,
+        bindingGeneration: Long = 9L,
+        pinnedReader: ByteArray = readerKey,
+        bytes: ByteArray = envelope,
+        nowMs: Long = now,
+    ) = SealedExecutionGrantValidator.validate(
+        f, bytes, c, authAccount, authDevice, activeLine, epoch, deployment, bindingGeneration, pinnedReader, nowMs,
+    )
+
+    private fun assertRefused(expected: SealedExecutionGrantValidator.Verdict.Refused, actual: Any) =
+        assertEquals(expected, actual)
 
     @Test
     fun matchingGrantIsValid() {
-        val result = SealedExecutionGrantValidator.validate(
-            fields(), envelope, account, device, line, 77L, now
-        )
-        assertTrue(result is SealedExecutionGrantValidator.Verdict.Valid)
+        assertTrue(verdict() is SealedExecutionGrantValidator.Verdict.Valid)
     }
 
     @Test
-    fun refusalTableCoversEveryBindingAndTimingFailure() {
-        fun refusal(
-            f: SealedExecutionGrantValidator.Fields,
-            authDevice: UUID = device,
-            authAccount: UUID = account,
-            activeLine: UUID = line,
-            epoch: Long = 77L,
-            bytes: ByteArray = envelope,
-            nowMs: Long = now
-        ) = SealedExecutionGrantValidator.validate(f, bytes, authAccount, authDevice, activeLine, epoch, nowMs)
+    fun accountBindsSessionGrantAndEnvelope() {
+        val refused = SealedExecutionGrantValidator.Verdict.Refused.ACCOUNT_MISMATCH
+        assertRefused(refused, verdict(fields(accountId = other)))
+        assertRefused(refused, verdict(authAccount = other))
+        assertRefused(refused, verdict(c = claims(accountId = other)))
+    }
 
-        assertEquals(
-            SealedExecutionGrantValidator.Verdict.Refused.DEVICE_MISMATCH,
-            refusal(fields(deviceId = UUID.randomUUID()))
+    @Test
+    fun deviceBindsSessionGrantAndEnvelope() {
+        val refused = SealedExecutionGrantValidator.Verdict.Refused.DEVICE_MISMATCH
+        assertRefused(refused, verdict(fields(deviceId = other)))
+        assertRefused(refused, verdict(authDevice = other))
+        assertRefused(refused, verdict(c = claims(deviceId = other)))
+    }
+
+    @Test
+    fun lineBindsActiveLineGrantEnvelopeAndBindingGeneration() {
+        val refused = SealedExecutionGrantValidator.Verdict.Refused.LINE_MISMATCH
+        assertRefused(refused, verdict(fields(lineId = other)))
+        assertRefused(refused, verdict(activeLine = other))
+        assertRefused(refused, verdict(c = claims(lineId = other)))
+        assertRefused(
+            SealedExecutionGrantValidator.Verdict.Refused.BINDING_GENERATION_MISMATCH,
+            verdict(bindingGeneration = 10L)
         )
-        assertEquals(
-            SealedExecutionGrantValidator.Verdict.Refused.DEVICE_MISMATCH,
-            refusal(fields(), authAccount = UUID.randomUUID())
+    }
+
+    @Test
+    fun messageBindsTheEnvelopeClaimAndAttemptMustBeNonZero() {
+        assertRefused(
+            SealedExecutionGrantValidator.Verdict.Refused.MESSAGE_MISMATCH,
+            verdict(fields(messageId = other))
         )
-        assertEquals(
-            SealedExecutionGrantValidator.Verdict.Refused.LINE_MISMATCH,
-            refusal(fields(), activeLine = UUID.randomUUID())
+        assertRefused(
+            SealedExecutionGrantValidator.Verdict.Refused.MESSAGE_MISMATCH,
+            verdict(c = claims(messageId = other))
         )
-        assertEquals(
-            SealedExecutionGrantValidator.Verdict.Refused.SESSION_MISMATCH,
-            refusal(fields(), epoch = 76L)
+        assertRefused(
+            SealedExecutionGrantValidator.Verdict.Refused.MESSAGE_OR_ATTEMPT_MISMATCH,
+            verdict(fields(attemptId = UUID(0, 0)))
         )
+        assertRefused(
+            SealedExecutionGrantValidator.Verdict.Refused.MESSAGE_OR_ATTEMPT_MISMATCH,
+            verdict(fields(messageId = UUID(0, 0)), c = claims(messageId = UUID(0, 0)))
+        )
+    }
+
+    @Test
+    fun onlyTheDevicePayloadReaderRoleMayDecrypt() {
+        for (role in listOf(0, 2, 3, 4)) {
+            assertRefused(
+                SealedExecutionGrantValidator.Verdict.Refused.READER_ROLE_MISMATCH,
+                verdict(fields(readerRole = role))
+            )
+        }
+    }
+
+    @Test
+    fun readerKeyBindsThisDevicesKeystoreKeyAndTheEnvelopeWrap() {
+        val refused = SealedExecutionGrantValidator.Verdict.Refused.READER_KEY_MISMATCH
+        assertRefused(refused, verdict(fields(readerKeyId = archiveKey)))
+        assertRefused(refused, verdict(pinnedReader = archiveKey))
+        assertRefused(refused, verdict(c = claims(reader = archiveKey)))
+        // The grant and the device may agree and still be refused when the envelope's device wrap differs.
+        assertRefused(refused, verdict(fields(readerKeyId = archiveKey), pinnedReader = archiveKey))
+    }
+
+    @Test
+    fun sessionAndDeploymentEpochsMustBeCurrent() {
+        assertRefused(SealedExecutionGrantValidator.Verdict.Refused.SESSION_MISMATCH, verdict(epoch = 76L))
+        assertRefused(SealedExecutionGrantValidator.Verdict.Refused.SESSION_MISMATCH, verdict(fields(epoch = 78L)))
+        assertRefused(SealedExecutionGrantValidator.Verdict.Refused.DEPLOYMENT_MISMATCH, verdict(deployment = 4L))
+    }
+
+    @Test
+    fun envelopeDigestBindsTheExactBytes() {
         // A one-byte envelope substitution must refuse even with a plausible shape.
         val substituted = envelope.copyOf().also { it[100] = (it[100] + 1).toByte() }
-        assertEquals(
+        assertRefused(
             SealedExecutionGrantValidator.Verdict.Refused.ENVELOPE_DIGEST_MISMATCH,
-            refusal(fields(), bytes = substituted)
+            verdict(bytes = substituted)
         )
         // The same envelope under a different digest claim refuses too.
-        assertEquals(
+        assertRefused(
             SealedExecutionGrantValidator.Verdict.Refused.ENVELOPE_DIGEST_MISMATCH,
-            refusal(fields(envelopeDigest = SealedExecutionGrantValidator.sha256(ByteArray(600))))
-        )
-        assertEquals(
-            SealedExecutionGrantValidator.Verdict.Refused.MESSAGE_OR_ATTEMPT_MISMATCH,
-            refusal(fields(attemptId = UUID(0, 0)))
-        )
-        assertEquals(
-            SealedExecutionGrantValidator.Verdict.Refused.EXPIRED,
-            refusal(fields(expiresAtMs = now), nowMs = now)
-        )
-        assertEquals(
-            SealedExecutionGrantValidator.Verdict.Refused.IMPLAUSIBLE_EXPIRY,
-            refusal(fields(expiresAtMs = now + SealedExecutionGrantValidator.MAX_GRANT_FUTURE_MS + 1))
-        )
-        assertEquals(
-            SealedExecutionGrantValidator.Verdict.Refused.SEGMENT_COUNT_OUT_OF_RANGE,
-            refusal(fields(segmentCount = 7))
-        )
-        assertEquals(
-            SealedExecutionGrantValidator.Verdict.Refused.SEGMENT_COUNT_OUT_OF_RANGE,
-            refusal(fields(segmentCount = 0))
+            verdict(fields(envelopeDigest = SealedExecutionGrantValidator.sha256(ByteArray(600))))
         )
     }
 
     @Test
     fun expiryAtTheExactBoundaryIsRefusedAndJustInsideItIsValid() {
-        assertEquals(
-            SealedExecutionGrantValidator.Verdict.Refused.EXPIRED,
-            SealedExecutionGrantValidator.validate(
-                fields(expiresAtMs = now), envelope, account, device, line, 77L, now
-            )
-        )
-        assertTrue(
-            SealedExecutionGrantValidator.validate(
-                fields(expiresAtMs = now + 1), envelope, account, device, line, 77L, now
-            ) is SealedExecutionGrantValidator.Verdict.Valid
-        )
+        assertRefused(SealedExecutionGrantValidator.Verdict.Refused.EXPIRED, verdict(fields(expiresAtMs = now)))
+        assertRefused(SealedExecutionGrantValidator.Verdict.Refused.EXPIRED, verdict(nowMs = expires + 1))
+        assertTrue(verdict(fields(expiresAtMs = now + 1)) is SealedExecutionGrantValidator.Verdict.Valid)
         // The plausibility ceiling itself is acceptable; one millisecond past it is not.
         assertTrue(
-            SealedExecutionGrantValidator.validate(
-                fields(expiresAtMs = now + SealedExecutionGrantValidator.MAX_GRANT_FUTURE_MS),
-                envelope, account, device, line, 77L, now
-            ) is SealedExecutionGrantValidator.Verdict.Valid
+            verdict(fields(expiresAtMs = now + SealedExecutionGrantValidator.MAX_GRANT_FUTURE_MS))
+                is SealedExecutionGrantValidator.Verdict.Valid
+        )
+        assertRefused(
+            SealedExecutionGrantValidator.Verdict.Refused.IMPLAUSIBLE_EXPIRY,
+            verdict(fields(expiresAtMs = now + SealedExecutionGrantValidator.MAX_GRANT_FUTURE_MS + 1))
         )
     }
 
     @Test
+    fun segmentCountMustBeOneToSix() {
+        for (count in listOf(0, 7)) {
+            assertRefused(
+                SealedExecutionGrantValidator.Verdict.Refused.SEGMENT_COUNT_OUT_OF_RANGE,
+                verdict(fields(segmentCount = count))
+            )
+        }
+        assertTrue(verdict(fields(segmentCount = 6)) is SealedExecutionGrantValidator.Verdict.Valid)
+    }
+
+    @Test
     fun validGrantCarriesNoEnvelopeBytesAndRedactsItself() {
-        val valid = SealedExecutionGrantValidator.validate(
-            fields(), envelope, account, device, line, 77L, now
-        ) as SealedExecutionGrantValidator.Verdict.Valid
+        val valid = verdict() as SealedExecutionGrantValidator.Verdict.Valid
         // The digest binds execution to these exact bytes without carrying them.
-        assertTrue(MessageDigestRef.equal(valid.grant.envelopeDigest, digest))
+        assertTrue(java.security.MessageDigest.isEqual(valid.grant.envelopeDigest, digest))
         assertEquals("SealedExecutionGrant(redacted)", valid.grant.toString())
+        assertEquals("SealedExecutionGrantFields(redacted)", fields().toString())
+        assertEquals("SealedEnvelopeClaims(unauthenticated)", claims().toString())
     }
 
     @Test
     fun plaintextRulesAcceptStrictUtf8AndRefuseTheContractViolations() {
         assertTrue(SealedPlaintextRules.acceptBody("hello".toByteArray(Charsets.UTF_8)))
         assertFalse(SealedPlaintextRules.acceptBody(ByteArray(0)))
+        assertTrue(SealedPlaintextRules.acceptBody(ByteArray(SealedPlaintextRules.MAX_BODY_BYTES) { 'a'.code.toByte() }))
         assertFalse(
             SealedPlaintextRules.acceptBody(ByteArray(SealedPlaintextRules.MAX_BODY_BYTES + 1) { 'a'.code.toByte() })
         )
         assertFalse(SealedPlaintextRules.acceptBody(byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte(), 'h'.code.toByte())))
-                // A NUL inside the body refuses.
-        assertFalse(SealedPlaintextRules.acceptBody(byteArrayOf('a'.code.toByte(), 0, 'b'.code.toByte())))
         // Overlong or invalid UTF-8 must refuse rather than replace.
         assertFalse(SealedPlaintextRules.acceptBody(byteArrayOf(0xC0.toByte(), 0xAF.toByte())))
         assertFalse(SealedPlaintextRules.acceptBody(byteArrayOf(0xFF.toByte())))
         // A NUL inside the body refuses.
         assertFalse(SealedPlaintextRules.acceptBody("a\u0000b".toByteArray(Charsets.UTF_8)))
-    }
-
-    private object MessageDigestRef {
-        fun equal(a: ByteArray, b: ByteArray) = java.security.MessageDigest.isEqual(a, b)
     }
 }

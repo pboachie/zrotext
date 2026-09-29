@@ -58,6 +58,24 @@ internal class Draft02OutboundEnvelope private constructor(bytes: ByteArray, dig
                 }
         }
 
+        /**
+         * UNAUTHENTICATED routing claims of a structurally bounded outbound envelope, read by the same
+         * parser [verify] uses. They are only an early refusal fence for an execution grant (#539):
+         * nothing here is authority, and [verify] still authenticates every claimed field.
+         */
+        internal class RoutingClaims(val accountId: ByteArray, val messageId: ByteArray, val deviceId: ByteArray,
+                                     val lineId: ByteArray, val deviceReaderKeyId: ByteArray) {
+            override fun toString() = "OutboundRoutingClaims(unauthenticated)"
+        }
+
+        /** Throws on any bound the sealed-v1 profile-02 outbound parser refuses (size, kind, lengths, wraps). */
+        internal fun routingClaims(input: ByteArray): RoutingClaims {
+            val parsed = parse(input)
+            val p = parsed.protected
+            return RoutingClaims(p.copyOfRange(0, 16), p.copyOfRange(16, 32), p.copyOfRange(32, 48),
+                p.copyOfRange(48, 64), parsed.bytes.copyOfRange(parsed.deviceAt + 1, parsed.deviceAt + 33))
+        }
+
         /** Low-level signature corpus entry point; this returns no trusted-envelope result. */
         internal fun signatureMatches(input: ByteArray, signerPoint: ByteArray): Boolean {
             require(signerPoint.size == 65) { "Signer point size" }

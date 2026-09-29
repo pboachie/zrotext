@@ -37,8 +37,13 @@ to it.
 All keys and exchanged files are temporary synthetic test data. The workflow
 does not upload them or use secrets. Software ECDH does not exercise Android
 hardware key custody; the supplied test clock does not establish a trusted
-device clock. This test does not exercise grants, journals, transport, carrier
-delivery or the live sealed release gates.
+device clock. Two cases apply the PROPOSED `sealed_execution_grant` rules
+(roadmap #539, [device-stream.md](../../protocol/v1/device-stream.md)) to the
+database-returned bytes: a grant bound to that exact envelope authorizes the
+shipping decrypt, and a grant naming another account, device, line or message,
+the archive reader role, the archive key or changed bytes is refused before any
+recipient unwrap. This test does not exercise the grant frame's transport,
+journals, carrier delivery or the live sealed release gates.
 
 ## Run locally
 
@@ -69,7 +74,7 @@ cd android
 ./gradlew --init-script sealed-interop.init.gradle :app:testDebugUnitTest --tests org.zrotext.gateway.SealedSdkPostgresInteropTest --no-configuration-cache --no-daemon --max-workers=2
 ```
 
-Use `gradlew.bat` on Windows. All twenty Android cases must run without skips.
+Use `gradlew.bat` on Windows. All twenty-three Android cases must run without skips.
 Missing inputs or malformed fixtures fail the dedicated test. The opt-in Rust
 feature and explicit Android test source keep this fixture-dependent test out
 of ordinary unit-test commands; the dedicated CI workflow runs it explicitly.

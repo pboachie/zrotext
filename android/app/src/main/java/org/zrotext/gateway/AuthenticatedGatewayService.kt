@@ -517,6 +517,12 @@ class AuthenticatedGatewayService : Service() {
                             handleLineOptOutAck(webSocket, currentGeneration,
                                 LineOptOutUploadFrame.ackEventId(frame))
                         }
+                        SealedExecutionGrantFrame.TYPE -> {
+                            // PROPOSED optional frame (#539). This build never offers the
+                            // sealed-dispatch negotiation, so it drops the frame unparsed:
+                            // no Keystore use, no journal row and no session teardown.
+                            SealedExecutionGrantFrame.dispositionWithoutNegotiation()
+                        }
                         else -> error("Unexpected device frame")
                     }
                 } catch (_: Exception) {
