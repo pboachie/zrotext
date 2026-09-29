@@ -4,7 +4,7 @@ Build tools and libraries are pinned in the source tree. Check these files for t
 
 | Component | Version source |
 |---|---|
-| Rust toolchain | [`rust-toolchain.toml`](../rust-toolchain.toml) |
+| Rust toolchain | [`rust-toolchain.toml`](../rust-toolchain.toml); the `rust` build image tag in [`deploy/compose/Dockerfile`](../deploy/compose/Dockerfile) must name the same version, and the image build fails if they differ |
 | Rust packages | [`Cargo.lock`](../Cargo.lock) |
 | Android plugins | [`android/build.gradle.kts`](../android/build.gradle.kts) |
 | Android SDK levels and libraries | [`android/app/build.gradle.kts`](../android/app/build.gradle.kts) |
@@ -56,4 +56,4 @@ Review changes to the pinned `gradle/actions/wrapper-validation` commit against 
 
 Application source is licensed under [AGPL-3.0-only](../LICENSE). Third-party tools and libraries retain their own licenses; generated wrapper files and downloaded distributions are not relicensed as application code.
 
-The server image bundles the project license at `/usr/share/doc/zrotext/LICENSE` and generated Rust dependency notices at `/usr/share/doc/zrotext/THIRD_PARTY_NOTICES`. The image build uses the pinned `cargo-about` version, [`about.toml`](../about.toml), and [`about.hbs`](../about.hbs) to resolve license texts for the shipped server and migrator binaries. The release smoke reads both files from the exact published image digest.
+The server image bundles the project license at `/usr/share/doc/zrotext/LICENSE` and generated Rust dependency notices at `/usr/share/doc/zrotext/THIRD_PARTY_NOTICES`. The image build compiles the pinned `cargo-about` version in its own stage with `--locked`, and uses it with [`about.toml`](../about.toml), and [`about.hbs`](../about.hbs) to resolve license texts for the shipped server and migrator binaries. The release smoke reads both files from the exact published image digest.

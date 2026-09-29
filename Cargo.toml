@@ -23,3 +23,12 @@ opt-level = 3
 
 [profile.dev.package.p256]
 opt-level = 3
+
+# Smaller, faster server image binaries. `strip = "symbols"` drops the symbol
+# table, so a RUST_BACKTRACE shows addresses instead of function names; the
+# panic message still names the source file and line. Thin LTO and one codegen
+# unit let rustc optimize across crates at the cost of a longer release build.
+[profile.release]
+strip = "symbols"
+lto = "thin"
+codegen-units = 1

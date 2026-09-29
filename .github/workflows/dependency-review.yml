@@ -3,6 +3,11 @@ on:
   pull_request:
 permissions:
   contents: read
+# A new push to a pull request cancels that pull request's older review; the
+# new run still reviews the whole pull request diff.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
 jobs:
   dependency-review:
     runs-on: ubuntu-24.04
