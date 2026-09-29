@@ -96,11 +96,15 @@ pub(crate) async fn create(
 
 #[derive(Serialize)]
 struct SeatBody {
-    user_id: Uuid,
+    /// Null for a removed seat whose user row was deleted with it.
+    user_id: Option<Uuid>,
     email: String,
     email_verified: bool,
     created_at_ms: i64,
     revoked_at_ms: Option<i64>,
+    /// True only for a removed seat whose address is free again. False for a
+    /// live seat and for a removed seat whose address stays occupied.
+    address_free: bool,
     status: &'static str,
 }
 
@@ -165,6 +169,7 @@ pub(crate) async fn list(
                     email_verified: seat.email_verified,
                     created_at_ms: seat.created_at_ms,
                     revoked_at_ms: seat.revoked_at_ms,
+                    address_free: seat.address_free,
                     status,
                 }
             })
@@ -213,20 +218,34 @@ pub(crate) async fn cancel(
     }
 }
 
+#[derive(Serialize)]
+struct RemovedSeatBody {
+    status: &'static str,
+    /// True when the seat's address is free again. False when the observer's
+    /// user row could not be deleted: the seat is still removed and every
+    /// credential revoked, but the address stays occupied.
+    address_free: bool,
+}
+
 pub(crate) async fn remove(
     State(state): State<Arc<AuthHttpState>>,
     OwnerMutation(owner, _slot): OwnerMutation,
     Path(user_id): Path<Uuid>,
-) -> Result<StatusCode, AuthHttpError> {
+) -> Result<Response, AuthHttpError> {
     let mut client = connect(&state.database_url).await?;
-    if seats::remove_observer(&mut client, &owner, user_id)
+    let Some(removal) = seats::remove_observer(&mut client, &owner, user_id)
         .await
         .map_err(map_auth)?
-    {
-        Ok(StatusCode::NO_CONTENT)
-    } else {
-        Err(AuthHttpError::NotFound)
-    }
+    else {
+        return Err(AuthHttpError::NotFound);
+    };
+    let mut response = Json(RemovedSeatBody {
+        status: "removed",
+        address_free: removal.address_freed,
+    })
+    .into_response();
+    super::no_store(&mut response);
+    Ok(response)
 }
 
 #[derive(Deserialize)]

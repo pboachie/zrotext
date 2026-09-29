@@ -333,10 +333,7 @@ async fn invitation_acceptance_verification_and_sign_in_flow() {
     assert!(page.seats[0].email_verified);
     assert!(page.seats[0].revoked_at_ms.is_none());
     assert!(page.invitations[0].accepted_at_ms.is_some());
-    assert_eq!(
-        page.invitations[0].accepted_user_id,
-        Some(page.seats[0].user_id)
-    );
+    assert_eq!(page.invitations[0].accepted_user_id, page.seats[0].user_id);
     f.finish().await;
 }
 
@@ -529,24 +526,55 @@ async fn seat_removal_revokes_every_credential_and_never_resurrects() {
         .await
         .unwrap();
 
-    // The owner cannot be removed, and an unknown seat id is not found.
-    assert!(
-        !remove_observer(&mut f.db, &f.owner, f.owner.user_id)
-            .await
-            .unwrap()
-    );
-    assert!(
-        !remove_observer(&mut f.db, &f.owner, Uuid::new_v4())
-            .await
-            .unwrap()
-    );
-    assert!(
-        remove_observer(&mut f.db, &f.owner, observer_id)
-            .await
-            .unwrap()
-    );
+    // An API key of the seat, inserted directly because observers cannot mint
+    // one through any route.
+    let key_token = crate::auth::random_token("ztk_");
+    let key_prefix: String = key_token.chars().skip(4).take(12).collect();
+    let key_hash = f.hasher.digest(b"api-key-v1", &key_token);
+    f.db.execute(
+        "INSERT INTO api_keys(id,account_id,created_by_user_id,public_prefix,token_hash,scopes) VALUES($1,$2,$3,$4,$5,ARRAY['devices:read'])",
+        &[
+            &Uuid::new_v4(),
+            &f.owner.tenant.account_id(),
+            &observer_id,
+            &key_prefix,
+            &&key_hash[..],
+        ],
+    )
+    .await
+    .unwrap();
 
-    // Every credential of the seat is dead: session, login, reset code.
+    // The owner cannot be removed through this path, and an unknown seat id
+    // is not found. The owner's user and membership are untouched by both.
+    assert!(
+        remove_observer(&mut f.db, &f.owner, f.owner.user_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        remove_observer(&mut f.db, &f.owner, Uuid::new_v4())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        f.db.query_one(
+            "SELECT count(*) FROM users u JOIN memberships m ON m.user_id=u.id WHERE u.id=$1 AND m.role='owner' AND m.revoked_at IS NULL",
+            &[&f.owner.user_id]
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0),
+        1
+    );
+    let removal = remove_observer(&mut f.db, &f.owner, observer_id)
+        .await
+        .unwrap()
+        .expect("the seat is removed");
+    assert!(removal.address_freed);
+
+    // Every credential of the seat is dead: session, login, reset code, key.
     assert!(matches!(
         auth::authenticate_session(&f.db, &f.hasher, &credentials.token).await,
         Err(AuthError::Unauthorized)
@@ -560,31 +588,34 @@ async fn seat_removal_revokes_every_credential_and_never_resurrects() {
             .await
             .unwrap()
     );
-    assert_eq!(
-        f.db.query_one(
-            "SELECT count(*) FROM sessions WHERE user_id=$1 AND revoked_at IS NULL",
-            &[&observer_id]
-        )
-        .await
-        .unwrap()
-        .get::<_, i64>(0),
-        0
+    assert!(
+        auth::authenticate_api_key(&f.db, &f.hasher, &key_token)
+            .await
+            .is_err()
     );
-    assert_eq!(
-        f.db.query_one(
-            "SELECT count(*) FROM password_resets WHERE user_id=$1 AND used_at IS NULL",
-            &[&observer_id]
-        )
-        .await
-        .unwrap()
-        .get::<_, i64>(0),
-        0
-    );
+    // The old identity is gone entirely, not merely revoked.
+    for table in [
+        "users WHERE id",
+        "memberships WHERE user_id",
+        "sessions WHERE user_id",
+        "api_keys WHERE created_by_user_id",
+        "password_resets WHERE user_id",
+    ] {
+        assert_eq!(
+            f.db.query_one(&format!("SELECT count(*) FROM {table}=$1"), &[&observer_id])
+                .await
+                .unwrap()
+                .get::<_, i64>(0),
+            0,
+            "{table}"
+        );
+    }
     // Second removal is a no-op and the owner is unaffected.
     assert!(
-        !remove_observer(&mut f.db, &f.owner, observer_id)
+        remove_observer(&mut f.db, &f.owner, observer_id)
             .await
             .unwrap()
+            .is_none()
     );
     assert!(
         auth::authenticate_session(&f.db, &f.hasher, &f.owner_credentials.token)
@@ -592,24 +623,29 @@ async fn seat_removal_revokes_every_credential_and_never_resurrects() {
             .is_ok()
     );
 
-    // No request path restores the seat: the revoked tombstone stays.
-    assert!(
+    // No request path restores the seat: there is no row left to update.
+    assert_eq!(
         f.db.execute(
             "UPDATE memberships SET revoked_at=NULL WHERE user_id=$1",
             &[&observer_id]
         )
         .await
-        .is_err()
+        .unwrap(),
+        0
     );
     // Re-accepting the consumed invitation cannot recreate the seat either.
     assert!(matches!(
         accept_invitation(&mut f.db, &f.hasher, &issued.token, &f.password).await,
         Err(AuthError::InvalidCredentials)
     ));
-    // The owner still lists the tombstone as removed, not active.
+    // The owner's list keeps a removed tombstone, sourced from the invitation.
     let page = list_seats(&f.db, &f.owner).await.unwrap();
     assert_eq!(page.seats.len(), 1);
     assert!(page.seats[0].revoked_at_ms.is_some());
+    assert!(page.seats[0].user_id.is_none());
+    assert!(page.seats[0].address_free);
+    assert_eq!(page.seats[0].email, "observer@example.test");
+    assert!(page.invitations.is_empty());
     f.finish().await;
 }
 
@@ -708,9 +744,10 @@ async fn seat_management_is_tenant_scoped() {
         .await
         .unwrap();
     assert!(
-        !remove_observer(&mut f.db, &other, observer.user_id)
+        remove_observer(&mut f.db, &other, observer.user_id)
             .await
             .unwrap()
+            .is_none()
     );
     // The observer itself cannot manage seats, not even its own.
     assert!(matches!(
@@ -824,8 +861,13 @@ async fn seat_and_invitation_budgets_are_bounded() {
     ));
     // Removing one seat frees the seat cap again.
     let page = list_seats(&f.db, &f.owner).await.unwrap();
-    let victim = page.seats.last().unwrap().user_id;
-    assert!(remove_observer(&mut f.db, &f.owner, victim).await.unwrap());
+    let victim = page.seats.last().unwrap().user_id.unwrap();
+    assert!(
+        remove_observer(&mut f.db, &f.owner, victim)
+            .await
+            .unwrap()
+            .is_some()
+    );
     // Freeing an invitation slot as well lets the creation through: both the
     // live-seat and open-invitation caps must be below their bounds.
     assert!(
@@ -1413,10 +1455,34 @@ async fn inviting_owner_cannot_tell_registered_unknown_and_elsewhere_invited_add
     let elsewhere = create_invitation(&mut f.db, &f.hasher, &other, "elsewhere@example.test")
         .await
         .unwrap();
+    // The fourth case: an address that used to be an observer of another
+    // account, whose removal deleted the old user.
+    let former_invite = create_invitation(&mut f.db, &f.hasher, &other, "former@example.test")
+        .await
+        .unwrap();
+    let former_credentials = accept_and_verify(
+        &mut f.db,
+        &f.hasher,
+        &former_invite.token,
+        &f.password,
+        "former@example.test",
+    )
+    .await;
+    let former = auth::authenticate_session(&f.db, &f.hasher, &former_credentials.token)
+        .await
+        .unwrap();
+    assert!(
+        remove_observer(&mut f.db, &other, former.user_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .address_freed
+    );
     let cases = [
         "registered@example.test",
         "elsewhere@example.test",
         "unknown@example.test",
+        "former@example.test",
     ];
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1467,13 +1533,14 @@ async fn inviting_owner_cannot_tell_registered_unknown_and_elsewhere_invited_add
     }
     assert_eq!(shapes[0], shapes[1]);
     assert_eq!(shapes[1], shapes[2]);
+    assert_eq!(shapes[2], shapes[3]);
 
     // The owner's list shows each invitation identically, as open.
     let (status, listed) =
         owner_call(&app, &f, "GET", "/auth/seats", serde_json::Value::Null).await;
     assert_eq!(status, StatusCode::OK);
     let invitations = listed["invitations"].as_array().unwrap();
-    assert_eq!(invitations.len(), 3);
+    assert_eq!(invitations.len(), cases.len());
     for invitation in invitations {
         assert_eq!(invitation["status"], "open");
         assert!(invitation["accepted_at_ms"].is_null());
@@ -1489,14 +1556,14 @@ async fn inviting_owner_cannot_tell_registered_unknown_and_elsewhere_invited_add
     assert_eq!(
         count_rows(
             &f.db,
-            "SELECT count(*) FROM seat_invitations WHERE account_id=$1 AND canceled_at IS NULL",
+            "SELECT count(*) FROM seat_invitations WHERE account_id=$1 AND accepted_at IS NULL AND canceled_at IS NULL",
             other.tenant.account_id()
         )
         .await,
         1
     );
-    // The open-invitation cap counts all three kinds alike.
-    for index in 3..MAX_OPEN_INVITATIONS {
+    // The open-invitation cap counts all four kinds alike.
+    for index in cases.len() as i64..MAX_OPEN_INVITATIONS {
         let (status, _) = invite_over_http(
             &app,
             &f,
@@ -1573,6 +1640,302 @@ async fn concurrent_accepts_of_one_address_by_two_accounts_have_one_winner() {
         .get::<_, i64>(0),
         1
     );
+    f.finish().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; disposable observer seat schema"]
+async fn removal_frees_the_address_for_a_fresh_seat_and_for_registration() {
+    let mut f = Fixture::new(false).await;
+    let account = f.owner.tenant.account_id();
+    let email = "observer@example.test";
+    let first = create_invitation(&mut f.db, &f.hasher, &f.owner, email)
+        .await
+        .unwrap();
+    let old_password = format!("synthetic-{}", Uuid::new_v4());
+    let old_credentials =
+        accept_and_verify(&mut f.db, &f.hasher, &first.token, &old_password, email).await;
+    let old = auth::authenticate_session(&f.db, &f.hasher, &old_credentials.token)
+        .await
+        .unwrap();
+    let key_token = crate::auth::random_token("ztk_");
+    let key_prefix: String = key_token.chars().skip(4).take(12).collect();
+    let key_hash = f.hasher.digest(b"api-key-v1", &key_token);
+    f.db.execute(
+        "INSERT INTO api_keys(id,account_id,created_by_user_id,public_prefix,token_hash,scopes) VALUES($1,$2,$3,$4,$5,ARRAY['devices:read'])",
+        &[&Uuid::new_v4(), &account, &old.user_id, &key_prefix, &&key_hash[..]],
+    )
+    .await
+    .unwrap();
+    assert!(
+        remove_observer(&mut f.db, &f.owner, old.user_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .address_freed
+    );
+
+    // The removed person's password, session, and key are dead, and the old
+    // user id is gone.
+    assert!(matches!(
+        login(&f.db, &f.hasher, email, &old_password).await,
+        Err(AuthError::InvalidCredentials)
+    ));
+    assert!(matches!(
+        auth::authenticate_session(&f.db, &f.hasher, &old_credentials.token).await,
+        Err(AuthError::Unauthorized)
+    ));
+    assert!(
+        auth::authenticate_api_key(&f.db, &f.hasher, &key_token)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        count_rows(&f.db, "SELECT count(*) FROM users WHERE id=$1", old.user_id).await,
+        0
+    );
+
+    // The tombstone is listed but holds no seat and no invitation slot: with
+    // one seat short of the cap the owner can still invite and the invitation
+    // is accepted.
+    let page = list_seats(&f.db, &f.owner).await.unwrap();
+    assert_eq!(page.seats.len(), 1);
+    assert_eq!(page.seats[0].email, email);
+    assert!(page.seats[0].revoked_at_ms.is_some());
+    assert!(page.seats[0].address_free);
+    for index in 0..MAX_ACTIVE_OBSERVERS - 1 {
+        let user_id = Uuid::new_v4();
+        f.db
+            .execute(
+                "INSERT INTO users(id,email,password_hash,email_verified_at) SELECT $1,$2,password_hash,now() FROM users WHERE id=$3",
+                &[&user_id, &format!("bulk-{index}@example.test"), &f.owner.user_id],
+            )
+            .await
+            .unwrap();
+        f.db.execute(
+            "INSERT INTO memberships(account_id,user_id,role) VALUES($1,$2,'observer')",
+            &[&account, &user_id],
+        )
+        .await
+        .unwrap();
+    }
+    let again = create_invitation(&mut f.db, &f.hasher, &f.owner, email)
+        .await
+        .unwrap();
+    // Accepting creates a brand-new user with a new password.
+    let new_password = format!("synthetic-{}", Uuid::new_v4());
+    let new_credentials =
+        accept_and_verify(&mut f.db, &f.hasher, &again.token, &new_password, email).await;
+    let fresh = auth::authenticate_session(&f.db, &f.hasher, &new_credentials.token)
+        .await
+        .unwrap();
+    assert_ne!(fresh.user_id, old.user_id);
+    assert_eq!(fresh.role, Role::Observer);
+    assert!(matches!(
+        login(&f.db, &f.hasher, email, &old_password).await,
+        Err(AuthError::InvalidCredentials)
+    ));
+    // The seat cap is now full, so it counts live seats only, not tombstones.
+    assert!(matches!(
+        create_invitation(&mut f.db, &f.hasher, &f.owner, "seat-overflow@example.test").await,
+        Err(AuthError::Conflict)
+    ));
+
+    // Removing the fresh seat frees the address for the person to register
+    // their own owner account.
+    assert!(
+        remove_observer(&mut f.db, &f.owner, fresh.user_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .address_freed
+    );
+    let own_password = format!("synthetic-{}", Uuid::new_v4());
+    let signup = register(&mut f.db, &f.hasher, email, &own_password)
+        .await
+        .unwrap();
+    assert!(
+        verify_email(&mut f.db, &f.hasher, &signup.verification_token)
+            .await
+            .unwrap()
+    );
+    let own = login(&f.db, &f.hasher, email, &own_password).await.unwrap();
+    let own = auth::authenticate_session(&f.db, &f.hasher, &own.token)
+        .await
+        .unwrap();
+    assert_eq!(own.role, Role::Owner);
+    assert_ne!(own.tenant.account_id(), account);
+    f.finish().await;
+}
+
+/// A row that restricts deleting the observer's membership: a pairing request
+/// the observer "created". Observers cannot pair, so this is unreachable
+/// through the routes; it stands in for any restricting reference.
+async fn restrict_observer_deletion(f: &Fixture, user_id: Uuid) {
+    f.db.execute(
+        "INSERT INTO pairing_requests(id,account_id,created_by_user_id,token_digest,display_name,expires_at) VALUES($1,$2,$3,$4,'synthetic',now()+interval '1 hour')",
+        &[
+            &Uuid::new_v4(),
+            &f.owner.tenant.account_id(),
+            &user_id,
+            &vec![9u8; 32],
+        ],
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; disposable observer seat schema"]
+async fn removal_is_never_blocked_and_reports_an_address_that_stays_occupied() {
+    let mut f = Fixture::new(true).await;
+    let email = "observer@example.test";
+    let issued = create_invitation(&mut f.db, &f.hasher, &f.owner, email)
+        .await
+        .unwrap();
+    let credentials =
+        accept_and_verify(&mut f.db, &f.hasher, &issued.token, &f.password, email).await;
+    let observer = auth::authenticate_session(&f.db, &f.hasher, &credentials.token)
+        .await
+        .unwrap();
+    restrict_observer_deletion(&f, observer.user_id).await;
+
+    // The database refuses the user delete, and removal still succeeds.
+    let removal = remove_observer(&mut f.db, &f.owner, observer.user_id)
+        .await
+        .unwrap()
+        .expect("removal is never blocked");
+    assert!(!removal.address_freed);
+    // Every revocation committed: session, login, membership, sessions.
+    assert!(matches!(
+        auth::authenticate_session(&f.db, &f.hasher, &credentials.token).await,
+        Err(AuthError::Unauthorized)
+    ));
+    assert!(matches!(
+        login(&f.db, &f.hasher, email, &f.password).await,
+        Err(AuthError::InvalidCredentials)
+    ));
+    let membership_revoked: bool =
+        f.db.query_one(
+            "SELECT revoked_at IS NOT NULL FROM memberships WHERE user_id=$1",
+            &[&observer.user_id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert!(membership_revoked);
+    assert_eq!(
+        count_rows(
+            &f.db,
+            "SELECT count(*) FROM sessions WHERE revoked_at IS NULL AND user_id IN (SELECT user_id FROM memberships WHERE account_id=$1 AND role='observer')",
+            f.owner.tenant.account_id()
+        )
+        .await,
+        0
+    );
+    // The user row survives, so the address stays occupied, and the owner's
+    // list says so.
+    assert_eq!(
+        count_rows(
+            &f.db,
+            "SELECT count(*) FROM users WHERE id=$1",
+            observer.user_id
+        )
+        .await,
+        1
+    );
+    let page = list_seats(&f.db, &f.owner).await.unwrap();
+    assert_eq!(page.seats.len(), 1);
+    assert!(page.seats[0].revoked_at_ms.is_some());
+    assert!(!page.seats[0].address_free);
+    assert_eq!(page.seats[0].user_id, Some(observer.user_id));
+    // A new invitation is issued as usual but its token holder is refused at
+    // acceptance, without touching the surviving user.
+    let again = create_invitation(&mut f.db, &f.hasher, &f.owner, email)
+        .await
+        .unwrap();
+    assert!(matches!(
+        accept_invitation(&mut f.db, &f.hasher, &again.token, &f.password).await,
+        Err(AuthError::Conflict)
+    ));
+    // The revocation is still irreversible, and removing again is a no-op.
+    assert!(
+        f.db.execute(
+            "UPDATE memberships SET revoked_at=NULL WHERE user_id=$1",
+            &[&observer.user_id]
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        remove_observer(&mut f.db, &f.owner, observer.user_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    f.finish().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; disposable observer seat schema"]
+async fn removal_response_and_list_state_whether_the_address_is_free() {
+    use axum::http::StatusCode;
+
+    let mut f = Fixture::new(true).await;
+    let app = seat_app(&f, None);
+    let mut ids = Vec::new();
+    for email in ["free@example.test", "occupied@example.test"] {
+        let issued = create_invitation(&mut f.db, &f.hasher, &f.owner, email)
+            .await
+            .unwrap();
+        let credentials =
+            accept_and_verify(&mut f.db, &f.hasher, &issued.token, &f.password, email).await;
+        let observer = auth::authenticate_session(&f.db, &f.hasher, &credentials.token)
+            .await
+            .unwrap();
+        ids.push(observer.user_id);
+    }
+    restrict_observer_deletion(&f, ids[1]).await;
+
+    let (status, listed) =
+        owner_call(&app, &f, "GET", "/auth/seats", serde_json::Value::Null).await;
+    assert_eq!(status, StatusCode::OK);
+    for seat in listed["seats"].as_array().unwrap() {
+        assert_eq!(seat["status"], "active");
+        assert_eq!(seat["address_free"], false);
+    }
+    for (id, expected_free) in [(ids[0], true), (ids[1], false)] {
+        let (status, body) = owner_call(
+            &app,
+            &f,
+            "DELETE",
+            &format!("/auth/seats/{id}"),
+            serde_json::Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["status"], "removed");
+        assert_eq!(body["address_free"], expected_free);
+    }
+    let (_, listed) = owner_call(&app, &f, "GET", "/auth/seats", serde_json::Value::Null).await;
+    let seats = listed["seats"].as_array().unwrap();
+    assert_eq!(seats.len(), 2);
+    for seat in seats {
+        assert_eq!(seat["status"], "removed");
+        let free = seat["email"] == "free@example.test";
+        assert_eq!(seat["address_free"], free, "{}", seat["email"]);
+        assert_eq!(seat["user_id"].is_null(), free);
+    }
+    // An unknown seat is still a plain not-found.
+    let (status, _) = owner_call(
+        &app,
+        &f,
+        "DELETE",
+        &format!("/auth/seats/{}", Uuid::new_v4()),
+        serde_json::Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
     f.finish().await;
 }
 
@@ -1833,7 +2196,11 @@ async fn observer_seat_browser_flow_over_http() {
         ))
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 65_536).await.unwrap();
+    let removed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(removed["status"], "removed");
+    assert_eq!(removed["address_free"], true);
 
     // The removed seat is dead: no sign-in, and the old session is revoked.
     let response = app
@@ -1878,5 +2245,7 @@ async fn observer_seat_browser_flow_over_http() {
     let body = to_bytes(response.into_body(), 65_536).await.unwrap();
     let seats: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(seats["seats"][0]["status"], "removed");
+    assert_eq!(seats["seats"][0]["address_free"], true);
+    assert!(seats["seats"][0]["user_id"].is_null());
     f.finish().await;
 }

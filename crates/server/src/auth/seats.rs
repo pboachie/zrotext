@@ -2,9 +2,10 @@
 //! Owner-managed device-status observer seats. An owner invites an address
 //! with a bounded, single-use opaque invitation; the database stores only the
 //! HMAC of that token. The invitee accepts it with a new password, verifies
-//! the address independently, and receives read-only status access. Seats are
-//! revoked, never deleted, so a removed observer cannot be resurrected by any
-//! later request.
+//! the address independently, and receives read-only status access. Removing
+//! a seat revokes it irreversibly and deletes the observer's user row so the
+//! address is free again; the owner's history of the seat survives as a
+//! tombstone on the accepted invitation, and no request can restore the seat.
 
 use super::{
     AuthError, SessionPrincipal, TokenHasher, VERIFICATION_HOURS, account, mfa::MfaCipher,
@@ -47,11 +48,21 @@ pub struct IssuedInvitation {
 }
 
 pub struct SeatSummary {
-    pub user_id: Uuid,
+    /// `None` for a removed seat whose user row was deleted with it.
+    pub user_id: Option<Uuid>,
     pub email: String,
     pub email_verified: bool,
     pub created_at_ms: i64,
     pub revoked_at_ms: Option<i64>,
+    /// True only for a removed seat whose address is free again. It is false
+    /// for a live seat and for a removed seat whose user row could not be
+    /// deleted, which keeps the address occupied.
+    pub address_free: bool,
+}
+
+/// What removing a seat did, so the owner can see whether the address is free.
+pub struct SeatRemoval {
+    pub address_freed: bool,
 }
 
 pub struct SeatsPage {
@@ -180,24 +191,45 @@ pub async fn list_seats(
 ) -> Result<SeatsPage, AuthError> {
     require_current_owner(client, principal).await?;
     let account_id = principal.tenant.account_id();
-    let seats = client
+    let mut seats: Vec<SeatSummary> = client
         .query(
-            "SELECT m.user_id,u.email,(u.email_verified_at IS NOT NULL),(extract(epoch FROM m.created_at)*1000)::bigint,(extract(epoch FROM m.revoked_at)*1000)::bigint FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.account_id=$1 AND m.role='observer' ORDER BY m.created_at DESC,m.user_id DESC LIMIT $2",
+            "SELECT m.user_id,u.email,(u.email_verified_at IS NOT NULL),(extract(epoch FROM m.created_at)*1000)::bigint FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.account_id=$1 AND m.role='observer' AND m.revoked_at IS NULL ORDER BY m.created_at DESC,m.user_id DESC LIMIT $2",
             &[&account_id, &SEAT_PAGE_LIMIT],
         )
         .await?
         .into_iter()
         .map(|row| SeatSummary {
-            user_id: row.get(0),
+            user_id: Some(row.get(0)),
             email: row.get(1),
             email_verified: row.get(2),
             created_at_ms: row.get(3),
-            revoked_at_ms: row.get(4),
+            revoked_at_ms: None,
+            address_free: false,
         })
         .collect();
+    // Removed seats are read from the accepted invitation that created them,
+    // because removal deletes the user row. They hold no seat or invitation
+    // slot: only live memberships and unexpired open invitations are counted.
+    seats.extend(
+        client
+            .query(
+                "SELECT accepted_user_id,email,(extract(epoch FROM accepted_at)*1000)::bigint,(extract(epoch FROM removed_at)*1000)::bigint,removal_freed_address FROM seat_invitations WHERE account_id=$1 AND removed_at IS NOT NULL ORDER BY removed_at DESC,id DESC LIMIT $2",
+                &[&account_id, &SEAT_PAGE_LIMIT],
+            )
+            .await?
+            .into_iter()
+            .map(|row| SeatSummary {
+                user_id: row.get(0),
+                email: row.get(1),
+                email_verified: false,
+                created_at_ms: row.get(2),
+                revoked_at_ms: row.get(3),
+                address_free: row.get::<_, Option<bool>>(4).unwrap_or(false),
+            }),
+    );
     let invitations = client
         .query(
-            "SELECT id,email,(extract(epoch FROM created_at)*1000)::bigint,(extract(epoch FROM expires_at)*1000)::bigint,(extract(epoch FROM accepted_at)*1000)::bigint,(extract(epoch FROM canceled_at)*1000)::bigint,accepted_user_id FROM seat_invitations WHERE account_id=$1 ORDER BY created_at DESC,id DESC LIMIT $2",
+            "SELECT id,email,(extract(epoch FROM created_at)*1000)::bigint,(extract(epoch FROM expires_at)*1000)::bigint,(extract(epoch FROM accepted_at)*1000)::bigint,(extract(epoch FROM canceled_at)*1000)::bigint,accepted_user_id FROM seat_invitations WHERE account_id=$1 AND removed_at IS NULL ORDER BY created_at DESC,id DESC LIMIT $2",
             &[&account_id, &SEAT_PAGE_LIMIT],
         )
         .await?
@@ -240,14 +272,23 @@ pub async fn cancel_invitation(
 /// challenges, password reset codes and their queued mail, outstanding email
 /// verification codes and their queued mail, and any still-open invitation
 /// for the same address in this account. The owner's own rows never match.
+///
+/// The observer's user row is then deleted so the address is free again (the
+/// person can be invited afresh or register their own account, with none of
+/// the old identity carried over). Removal is a security action and is never
+/// blockable: the delete runs in a savepoint and only for a user whose single
+/// membership is this account's observer seat, and if the database refuses it
+/// with an integrity error (a restricting reference, unreachable for
+/// observers today) the savepoint is rolled back, every revocation above still
+/// commits, and the result reports the address as still occupied.
 pub async fn remove_observer(
     client: &mut Client,
     principal: &SessionPrincipal,
     user_id: Uuid,
-) -> Result<bool, AuthError> {
+) -> Result<Option<SeatRemoval>, AuthError> {
     require_current_owner(client, principal).await?;
     let account_id = principal.tenant.account_id();
-    let tx = client.transaction().await?;
+    let mut tx = client.transaction().await?;
     let Some(row) = tx
         .query_opt(
             "SELECT u.email FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.account_id=$1 AND m.user_id=$2 AND m.role='observer' AND m.revoked_at IS NULL FOR UPDATE OF m",
@@ -255,7 +296,7 @@ pub async fn remove_observer(
         )
         .await?
     else {
-        return Ok(false);
+        return Ok(None);
     };
     let email: String = row.get(0);
     let revoked = tx
@@ -265,7 +306,7 @@ pub async fn remove_observer(
         )
         .await?;
     if revoked != 1 {
-        return Ok(false);
+        return Ok(None);
     }
     tx.execute(
         "UPDATE sessions SET revoked_at=now() WHERE account_id=$1 AND user_id=$2 AND revoked_at IS NULL",
@@ -307,8 +348,51 @@ pub async fn remove_observer(
         &[&account_id, &email],
     )
     .await?;
+    // The owner's record of the seat, written before the user row can go: the
+    // delete below clears the invitation's user link. A seat without an
+    // accepted invitation (never created through this flow) has no record.
+    let tombstone: Option<Uuid> = tx
+        .query_opt(
+            "UPDATE seat_invitations SET removed_at=now(),removal_freed_address=false WHERE account_id=$1 AND accepted_user_id=$2 AND accepted_at IS NOT NULL AND removed_at IS NULL RETURNING id",
+            &[&account_id, &user_id],
+        )
+        .await?
+        .map(|row| row.get(0));
+    // Free the address. The guards keep an owner, and any user with another
+    // membership, out of reach even if a caller were ever to pass one.
+    let savepoint = tx.transaction().await?;
+    let deleted = savepoint
+        .execute(
+            "DELETE FROM users u WHERE u.id=$1 AND EXISTS (SELECT 1 FROM memberships m WHERE m.user_id=u.id AND m.account_id=$2 AND m.role='observer') AND NOT EXISTS (SELECT 1 FROM memberships m WHERE m.user_id=u.id AND NOT (m.account_id=$2 AND m.role='observer'))",
+            &[&user_id, &account_id],
+        )
+        .await;
+    let address_freed = match deleted {
+        Ok(count) => {
+            savepoint.commit().await?;
+            count == 1
+        }
+        // Class 23 is an integrity-constraint violation, such as a restricting
+        // foreign key. It must not undo the revocations above.
+        Err(error)
+            if error
+                .code()
+                .is_some_and(|code| code.code().starts_with("23")) =>
+        {
+            savepoint.rollback().await?;
+            false
+        }
+        Err(error) => return Err(error.into()),
+    };
+    if let (true, Some(invitation_id)) = (address_freed, tombstone) {
+        tx.execute(
+            "UPDATE seat_invitations SET removal_freed_address=true WHERE id=$1",
+            &[&invitation_id],
+        )
+        .await?;
+    }
     tx.commit().await?;
-    Ok(true)
+    Ok(Some(SeatRemoval { address_freed }))
 }
 
 /// Indexed, read-only probe for the accept route's verified lane. It never

@@ -16,7 +16,15 @@ CREATE TABLE seat_invitations (
     expires_at timestamptz NOT NULL,
     accepted_at timestamptz,
     canceled_at timestamptz,
-    accepted_user_id uuid REFERENCES users(id) ON DELETE SET NULL
+    accepted_user_id uuid REFERENCES users(id) ON DELETE SET NULL,
+    -- Removing a seat deletes the observer's user row so the address is free;
+    -- this row is the owner's tombstone of that seat. removal_freed_address is
+    -- false when the user row could not be deleted and the address stays
+    -- occupied.
+    removed_at timestamptz,
+    removal_freed_address boolean,
+    CHECK ((removed_at IS NULL) = (removal_freed_address IS NULL)),
+    CHECK (removed_at IS NULL OR accepted_at IS NOT NULL)
 );
 CREATE UNIQUE INDEX seat_invitations_one_open_per_account_address
     ON seat_invitations(account_id, email) WHERE accepted_at IS NULL AND canceled_at IS NULL;
