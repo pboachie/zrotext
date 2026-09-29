@@ -11,7 +11,7 @@ use std::{
     ops::{Deref, DerefMut},
     sync::{
         Arc, LazyLock, Mutex, Weak,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -48,6 +48,12 @@ const ADMISSION_WAIT: Duration = Duration::from_secs(2);
 /// idle socket (freed once its driver observes the close), or for any socket
 /// to be returned to the pool, before failing fast.
 const EVICTION_WAIT: Duration = Duration::from_secs(1);
+/// How long acquire prefers a same-class socket whose DISCARD ALL reset is
+/// still in flight over opening a brand-new connection, when a permit is
+/// otherwise free. Back-to-back checkouts (auth extractor then handler,
+/// proof then claim) would otherwise grow the pool toward its cap while the
+/// previous socket is milliseconds from reuse (issue #514).
+const RESET_REUSE_WAIT: Duration = Duration::from_millis(50);
 
 struct Idle {
     url: Arc<str>,
@@ -64,6 +70,9 @@ struct ClassPool {
     wait: bool,
     idle: Mutex<Vec<Idle>>,
     returned: Notify,
+    /// Sockets whose drop has spawned a DISCARD ALL reset that has not yet
+    /// returned them to the idle list (or closed them).
+    resets_in_flight: AtomicUsize,
     sweep_started: AtomicBool,
 }
 
@@ -74,6 +83,7 @@ impl ClassPool {
             wait,
             idle: Mutex::new(Vec::new()),
             returned: Notify::new(),
+            resets_in_flight: AtomicUsize::new(0),
             sweep_started: AtomicBool::new(false),
         })
     }
@@ -263,6 +273,7 @@ impl Drop for PooledClient {
         let pool = self.pool.clone();
         let url = self.url.clone();
         let created = self.created;
+        pool.resets_in_flight.fetch_add(1, Ordering::AcqRel);
         runtime.spawn(async move {
             // DISCARD ALL runs after any statement still queued on this socket
             // and fails inside a transaction block. Either way an unready
@@ -277,6 +288,7 @@ impl Drop for PooledClient {
                 client.clear_type_cache();
                 pool.put(url, client, created);
             }
+            pool.resets_in_flight.fetch_sub(1, Ordering::AcqRel);
         });
     }
 }
@@ -328,6 +340,22 @@ async fn acquire(pool: &Arc<ClassPool>, url: &str) -> Result<PooledClient, Conne
                 created,
                 pool: pool.clone(),
             });
+        }
+        // A same-class socket may be milliseconds from reuse: its drop is
+        // still running DISCARD ALL. With a free permit we could open a new
+        // connection immediately, but that grows the pool toward its cap for
+        // no need, so briefly prefer the returning socket first (#514). The
+        // preference is bounded by the admission deadline so a stream of
+        // return notifications cannot spin a fail-fast class past its
+        // ADMISSION_WAIT/EVICTION_WAIT budget.
+        if pool.resets_in_flight.load(Ordering::Acquire) > 0 && Instant::now() < deadline {
+            let prefer_until = std::cmp::min(Instant::now() + RESET_REUSE_WAIT, deadline);
+            tokio::select! {
+                _ = &mut returned => {
+                    continue;
+                }
+                _ = tokio::time::sleep_until(prefer_until) => {}
+            }
         }
         if let Ok(permit) = pool.slots.clone().try_acquire_owned() {
             return open(pool, url, permit).await;
@@ -422,6 +450,74 @@ mod tests {
             .expect("replacement admission resolves within the bounded window");
         let replacement = replacement.expect("imminent same-URL release is reused, not rejected");
         replacement.query_one("SELECT 1", &[]).await.unwrap();
+    }
+
+    // The reset preference must never spin a fail-fast class past its
+    // admission deadline: a stream of return notifications (churn from other
+    // waiters) restarts the preference loop, and without the deadline bound
+    // the acquire would never reach the permit wait that enforces Capacity.
+    #[tokio::test(start_paused = true)]
+    async fn reset_preference_cannot_spin_past_the_admission_deadline() {
+        let pool = ClassPool::new(1, false);
+        // Hold the only permit and pretend a reset is in flight: take() finds
+        // nothing, the preference would loop on notifications, and only the
+        // deadline can end it. The URL never gets dialed: admission fails
+        // before any connection attempt.
+        let held = pool.slots.clone().acquire_owned().await.unwrap();
+        pool.resets_in_flight.store(1, Ordering::SeqCst);
+        let churn_pool = pool.clone();
+        let churn = tokio::spawn(async move {
+            loop {
+                churn_pool.returned.notify_waiters();
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        });
+        let outcome = tokio::time::timeout(
+            EVICTION_WAIT * 3,
+            acquire(&pool, "postgresql://127.0.0.1:1/never-dialed"),
+        )
+        .await;
+        churn.abort();
+        drop(held);
+        let acquired = outcome.expect("acquire resolves instead of spinning on notifications");
+        assert!(matches!(acquired, Err(ConnectError::Capacity)));
+    }
+
+    // Back-to-back checkouts on a class with free permits must still reuse
+    // the socket whose DISCARD ALL reset is in flight instead of growing the
+    // pool with a brand-new connection (issue #514).
+    #[tokio::test(flavor = "current_thread")]
+    #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+    async fn immediate_recheckout_reuses_the_resetting_socket_with_permits_free() {
+        let url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+            .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
+        let pool = ClassPool::new(2, true);
+        let first = acquire(&pool, &url).await.unwrap();
+        let pid: i32 = first
+            .query_one("SELECT pg_backend_pid()", &[])
+            .await
+            .unwrap()
+            .get(0);
+        // The pool's second permit is free, so opening a new connection is
+        // always possible; the re-checkout must still land on the same
+        // backend once its reset completes.
+        drop(first);
+        let second = timeout(
+            RESET_REUSE_WAIT + Duration::from_secs(2),
+            acquire(&pool, &url),
+        )
+        .await
+        .expect("re-checkout resolves within the bounded window")
+        .unwrap();
+        let reuse_pid: i32 = second
+            .query_one("SELECT pg_backend_pid()", &[])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(
+            reuse_pid, pid,
+            "the resetting socket must be reused, not replaced"
+        );
     }
 
     #[tokio::test]
