@@ -48,7 +48,13 @@ only suitable for local tests; ordinary Android apps do not trust user-added CAs
 by default. Keep the `caddy_data` volume so certificate state survives restarts.
 The edge permits long-lived streams for up to 24 hours and delays forced closure
 for five minutes during a Caddy reload; gateway reconnection still remains
-necessary. Apply per-source connection limits upstream before exposing the
+necessary. The edge also compresses textual responses (`zstd` or `gzip`), which
+shrinks each owner-dashboard load from about 93 KB to roughly 21 KB; the
+`text/event-stream` live-update stream is excluded from compression so it is
+never buffered. If you front the API with a different proxy, mirror that
+exclusion. Owner JS/CSS assets revalidate with a strong `ETag`, so a repeat
+load answers `304` with no body once the assets are cached. Apply per-source
+connection limits upstream before exposing the
 device stream broadly, as described under runtime capacity below.
 
 For an existing nginx TLS edge, proxy ordinary requests and
