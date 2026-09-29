@@ -552,10 +552,10 @@ mod tests {
                 "text/javascript; charset=utf-8",
                 "no-cache",
             ),
-            ("/owner/seats", "text/html; charset=utf-8"),
-            ("/owner/seats.js", "text/javascript; charset=utf-8"),
-            ("/owner/observer", "text/html; charset=utf-8"),
-            ("/owner/observer.js", "text/javascript; charset=utf-8"),
+            ("/owner/seats", "text/html; charset=utf-8", "no-store"),
+            ("/owner/seats.js", "text/javascript; charset=utf-8", "no-cache"),
+            ("/owner/observer", "text/html; charset=utf-8", "no-store"),
+            ("/owner/observer.js", "text/javascript; charset=utf-8", "no-cache"),
         ] {
             let response = router()
                 .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
