@@ -149,13 +149,13 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")
     implementation("com.squareup.okhttp3:okhttp:5.5.0")
-    implementation("androidx.core:core-ktx:1.19.0")
+    implementation("androidx.core:core-ktx:1.19.1")
     implementation("androidx.room:room-runtime:2.8.5")
     ksp("androidx.room:room-compiler:2.8.5")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.robolectric:robolectric:4.16.1")
     androidTestImplementation("androidx.test:runner:1.7.0")
-    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test.ext:junit:1.3.0")
     // Dormant draft-02 provider probe only; no Tink code enters the release runtime.
     androidTestImplementation("com.google.crypto.tink:tink:1.23.0")
 
@@ -166,7 +166,7 @@ dependencies {
         add("androidLintTool", "org.bouncycastle:bcprov-jdk18on:1.86")
         add("androidLintTool", "org.bouncycastle:bcpkix-jdk18on:1.86")
         add("androidLintTool", "org.bouncycastle:bcutil-jdk18on:1.86")
-        add("androidLintTool", "org.apache.commons:commons-lang3:3.18.0")
+        add("androidLintTool", "org.apache.commons:commons-lang3:3.20.0")
         add("androidLintTool", "org.apache.httpcomponents:httpclient:4.5.14")
     }
 }

@@ -4,14 +4,41 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # One PR per week for minor and patch version updates. Groups apply to
+    # version updates only, so security updates still open immediately.
+    groups:
+      github-actions-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
   - package-ecosystem: cargo
     directory: /
     schedule:
       interval: weekly
+    # One PR per week for minor and patch version updates. Groups apply to
+    # version updates only, so security updates still open immediately.
+    groups:
+      cargo-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
   - package-ecosystem: gradle
     directory: /android
     schedule:
       interval: weekly
+    # One PR per week for minor and patch version updates. Groups apply to
+    # version updates only, so security updates still open immediately.
+    groups:
+      gradle-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
   - package-ecosystem: docker
     directory: /deploy/compose
     schedule:
