@@ -229,3 +229,43 @@ refusal, durable Stop and subsequent withdrawal of history access. Fixture
 sessions/signers and radio callbacks are ephemeral and synthetic. Database-reopen
 send fences remain separate tests; this scenario does not claim process-restart,
 emulator, physical-device, carrier or Play approval evidence.
+
+## Isolated Android emulator and Chromium probe
+
+The explicit Gradle property `isolatedConversationProbe=true` creates a separate
+`org.zrotext.gateway.conversationprobe` test-only debug APK. Release variants are
+disabled for that property. Its only permission is INTERNET; the separate test
+APK requests no permissions. Neither APK declares a telephony receiver or actual
+SMS dispatch adapter. Normal application manifests/components remain unchanged.
+
+The probe mounts the existing pane and runtime in an isolated activity, binds an
+actual Android service, and delivers synthetic decoded receipt broadcasts on a
+background receiver thread through the same admission gate. An affirmative pane
+choice completes fixture-signed installation; receipt time comes from the
+verified channel clock. Synthetic input is not a carrier or protected system
+SMS broadcast. Ephemeral fixture keys and loopback adapters supply custody.
+
+`scripts/conversation_emulator.py` requires an explicitly selected emulator in an
+isolated conversation profile, installed `adb` and `aapt`, and the existing local
+fixture database/toolchain. Both APK package identities, testOnly declarations,
+and exact permission sets are verified BEFORE installation, even with
+`--skip-build`. This switch refuses stale ordinary gateway APKs. The runner uses
+only target-specific ADB reverse mappings and cleans up its own fixture resources.
+
+The host-only bridge invokes the existing SDK with explicit UTF-8 encoding.
+`conversation-browser-emulator.mjs` opens the actual product page in headless
+Chromium with fresh in-memory fixture custody and blocks off-origin browser
+requests. It reads the emulator's stored encrypted event, verifies exact Unicode
+and trailing spaces, cancels without signing/submission, and checks the browser
+revision between signing and dispatch. A deterministic mid-sign edit yields an
+abandoned signature but zero accepted sends; a fresh exact confirmation yields
+one accepted synthetic packet. Android durably claims before the fake callback
+reports UNKNOWN and refuses sender-instance replay. Stop retains eligible history;
+withdrawal blocks history access. This does not prove process-restart recovery,
+real SIM continuity, radio execution, production custody or Play eligibility.
+
+Before ordinary release mounting: replay the isolated stack onto each coordinator
+pin, finish production receiver/service and authenticated socket/key-custodian
+adapters, verify consent/export/retention/guarded-deletion integration and policy,
+and obtain release-owner signing/reviewer-access evidence. Physical/carrier testing
+is outside this explicitly simulator/emulator-only pass.

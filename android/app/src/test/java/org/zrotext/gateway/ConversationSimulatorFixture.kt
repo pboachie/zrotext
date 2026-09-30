@@ -85,14 +85,15 @@ internal class ConversationSimulatorFixture(private val ready: JSONObject) : Con
             ByteBuffer.allocate(16).putLong(id.mostSignificantBits).putLong(id.leastSignificantBits).array() + ByteBuffer.allocate(8).putLong(duration).array()
         val proof = bytes(response.getString("proof")); val signature = bytes(response.getString("signature"))
         check(proof.contentEquals(wanted) && signature.size == 64 && BigInteger(1, signature.copyOfRange(32, 64)) <= order.shiftRight(1))
-        check(Signature.getInstance("SHA256withECDSAinP1363Format").apply { initVerify(root); update(proof) }.verify(signature))
+        check(Signature.getInstance("SHA256withECDSA").apply { initVerify(root); update(proof) }.verify(rawDer(signature)))
         return duration
     }
 
     fun sign(domain: ByteArray): String {
-        val raw = Signature.getInstance("SHA256withECDSAinP1363Format").apply {
+        val der = Signature.getInstance("SHA256withECDSA").apply {
             initSign(signer); update(ConversationActivationCodec.transcript(domain, statement))
         }.sign()
+        val raw = Draft01SignaturePrimitive.canonicalRawFromDer(der)
         val s = BigInteger(1, raw.copyOfRange(32, 64))
         if (s > order.shiftRight(1)) {
             val low = order.subtract(s).toByteArray().takeLast(32).toByteArray()
@@ -148,6 +149,18 @@ internal class ConversationSimulatorFixture(private val ready: JSONObject) : Con
     }
     private fun sdk(input: JSONObject, tool: String = ready.getString("sdkTool")): JSONObject {
         input.put("ready", ready).put("device", parsed.scope.deviceId).put("line", parsed.scope.lineId).put("peer", parsed.scope.peer)
+        if (ready.has("hostBridgePort")) {
+            val port = ready.getInt("hostBridgePort"); require(port in 1..65535)
+            val connection = URI("http", null, "localhost", port, "/sdk", null, null).toURL().openConnection() as HttpURLConnection
+            connection.connectTimeout=10000;connection.readTimeout=30000;connection.requestMethod="POST";connection.doOutput=true
+            connection.setRequestProperty("Content-Type","application/json")
+            val request=JSONObject().put("token",ready.getString("token")).put("tool",tool.replace('\\','/').substringAfterLast('/')).put("input",input)
+            try {
+                connection.outputStream.use {it.write(request.toString().toByteArray(Charsets.UTF_8))}
+                check(connection.responseCode==200) { "Fixture host bridge failed" }
+                return JSONObject(connection.inputStream.use {it.readBytes().toString(Charsets.UTF_8)})
+            } finally {connection.disconnect()}
+        }
         val file = java.io.File.createTempFile("conversation-sdk-", ".json")
         val process = ProcessBuilder("node", tool).redirectErrorStream(true).redirectOutput(file).start()
         try {
@@ -159,6 +172,15 @@ internal class ConversationSimulatorFixture(private val ready: JSONObject) : Con
             if (process.isAlive) { process.destroyForcibly(); process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS) }
             file.delete()
         }
+    }
+    private fun rawDer(raw:ByteArray):ByteArray {
+        require(raw.size==64)
+        fun integer(bytes:ByteArray):ByteArray {
+            val encoded=BigInteger(1,bytes).toByteArray()
+            return byteArrayOf(2,encoded.size.toByte())+encoded
+        }
+        val values=integer(raw.copyOfRange(0,32))+integer(raw.copyOfRange(32,64))
+        return byteArrayOf(0x30,values.size.toByte())+values
     }
     fun b64(b: ByteArray): String = Base64.getEncoder().encodeToString(b)
     private fun bytes(s: String) = Base64.getDecoder().decode(s)

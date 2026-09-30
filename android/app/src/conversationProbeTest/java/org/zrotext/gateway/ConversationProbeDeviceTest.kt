@@ -1,0 +1,149 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+package org.zrotext.gateway
+
+import androidx.room.Room
+import java.nio.file.Files
+import java.nio.file.Paths
+import java.util.UUID
+import java.util.concurrent.Executor
+import org.json.JSONObject
+import org.junit.Assert.*
+import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import android.content.*
+import android.os.*
+import android.view.accessibility.AccessibilityNodeInfo
+import java.util.concurrent.TimeUnit
+import org.junit.Test
+import org.junit.runner.RunWith
+
+/** Authenticated runtime assembly; ephemeral loopback fixture keys, no carrier dispatch. */
+@RunWith(AndroidJUnit4::class)
+class ConversationProbeDeviceTest {
+    private fun click(text:String) {
+        val automation=InstrumentationRegistry.getInstrumentation().uiAutomation
+        fun find(node:AccessibilityNodeInfo?):AccessibilityNodeInfo? {
+            node?:return null
+            if(node.text?.toString()==text) return node
+            for(i in 0 until node.childCount) find(node.getChild(i))?.let {return it}
+            return null
+        }
+        val deadline=SystemClock.uptimeMillis()+5000
+        while(SystemClock.uptimeMillis()<deadline) {
+            val found=find(automation.rootInActiveWindow)
+            if(found!=null) {
+                var target:AccessibilityNodeInfo?=found
+                while(target!=null && !target.isClickable) target=target.parent
+                if(target?.performAction(AccessibilityNodeInfo.ACTION_CLICK)==true) return
+            }
+            automation.rootInActiveWindow?.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+            Thread.sleep(25)
+        }
+        error("Synthetic phone consent control unavailable")
+    }
+    @Test fun authenticatedActivationCaptureReadableBrowserReplyAndDurableStop() {
+        val instrumentation=InstrumentationRegistry.getInstrumentation()
+        val context=instrumentation.targetContext
+        check(Build.HARDWARE in setOf("ranchu","goldfish") && context.packageName=="org.zrotext.gateway.conversationprobe")
+        val file=checkNotNull(InstrumentationRegistry.getArguments().getString("fixturePath"))
+        require(file.startsWith("/data/local/tmp/conversation-") && file.endsWith(".json"))
+        val ready=JSONObject(java.io.File(file).readText(Charsets.UTF_8))
+        val fixture=ConversationSimulatorFixture(ready)
+        val db=Room.inMemoryDatabaseBuilder(context,ConversationCaptureDatabase::class.java).build()
+        val sends=Room.inMemoryDatabaseBuilder(context,ConversationSendDatabase::class.java).build()
+        val worker=java.util.concurrent.Executors.newSingleThreadExecutor()
+        val delivery=java.util.concurrent.Executor {Handler(Looper.getMainLooper()).post(it)}
+        val snapshots=java.util.Collections.synchronizedList(mutableListOf<ConversationPresentationSnapshot>())
+        val scope=fixture.parsed.scope
+        val start=System.nanoTime()
+        var decisions=0;var installs=0;var submissions=0
+        var permission=true
+        var installedGate: () -> Boolean = { false }
+        val runtime=ConversationAuthenticatedRuntime(db.journal(),sends.sends(),fixture,fixture.protection,
+            fixture.authenticatedWire(),{(System.nanoTime()-start)/1_000_000},
+            { selected,now -> check(permission && selected==scope && now<fixture.parsed.expiresMs) },
+            { selected -> check(selected==scope);decisions++ },
+            { request ->
+                check(decisions==1)
+                check(fixture.command("approve",data=fixture.b64(fixture.statement),signature=fixture.sign(ConversationActivationCodec.APPROVE_DOMAIN)).getBoolean("ok"))
+                check(!installedGate())
+                check(fixture.command("installed",data=fixture.b64(fixture.statement),signature=fixture.sign(ConversationActivationCodec.INSTALL_DOMAIN)).getBoolean("ok"))
+                installs++
+                fixture.command("lease",challenge=UUID.fromString(request.challenge)).toString().toByteArray(Charsets.UTF_8)
+            },worker,delivery)
+        installedGate = runtime::captureEligible
+        runtime.presentation.observe { snapshots.add(it) }
+        fun drain() {worker.submit {}.get(10,TimeUnit.SECONDS);instrumentation.waitForIdleSync()}
+        ConversationProbeSession.runtime=runtime;ConversationProbeSession.scope=scope;ConversationProbeSession.token=ready.getString("token")
+        val connected=java.util.concurrent.CountDownLatch(1)
+        val connection=object:ServiceConnection {
+            override fun onServiceConnected(name:ComponentName,binder:IBinder) {connected.countDown()}
+            override fun onServiceDisconnected(name:ComponentName) {}
+        }
+        assertTrue(context.bindService(Intent(context,ConversationProbeService::class.java),connection,Context.BIND_AUTO_CREATE))
+        assertTrue(connected.await(10,TimeUnit.SECONDS))
+        try {
+            val review=ConversationPhoneReview(UUID.randomUUID().toString(),scope.intervalId,scope.lineId,scope.bindingGeneration,
+                scope.peer,ConversationActivationCodec.DISCLOSURE,"conversation-content-v1",scope.disclosureDigest,30000)
+            runtime.propose(review,fixture.statement);drain()
+            assertEquals(ConversationPresentationPhase.AWAITING_PHONE_REVIEW,snapshots.last().phase)
+            assertFalse(runtime.captureEligible());assertEquals(0,decisions);assertEquals(0,installs)
+            context.startActivity(Intent(context,ConversationProbeActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            instrumentation.waitForIdleSync()
+            click("Agree and continue");drain()
+            assertEquals(1,decisions);assertEquals(1,installs)
+            assertEquals(ConversationPresentationPhase.CONFIRMED_ACTIVE,snapshots.last().phase)
+            val token="01".repeat(32);val body="Synthetic authenticated inbound \u03A9\nSecond line"
+            fun syntheticReceipt() {
+                ConversationProbeSession.received=java.util.concurrent.CountDownLatch(1)
+                context.sendBroadcast(Intent(ConversationProbeSession.ACTION).setPackage(context.packageName)
+                    .putExtra("token",ConversationProbeSession.token).putExtra("body",body))
+                assertTrue(ConversationProbeSession.received.await(10,TimeUnit.SECONDS))
+            }
+            syntheticReceipt();assertEquals(ConversationObservation.CAPTURED,ConversationProbeSession.observation.get())
+            syntheticReceipt();assertEquals(ConversationObservation.DUPLICATE,ConversationProbeSession.observation.get())
+            val captured=checkNotNull(runtime.retryCapture(token))
+            val encrypted=fixture.envelope(captured.body,captured.captureId,captured.firstObservedAtMs,1)
+            assertTrue(fixture.command("capture",data=encrypted.getString("envelope")).getBoolean("ok"))
+            val event=UUID.fromString(captured.captureId)
+            val before=fixture.command("history",event=event)
+            assertEquals(body,fixture.open(before.getString("envelope")).getString("opened"))
+            assertTrue(fixture.command("renew").getBoolean("ok"))
+            val after=fixture.command("history",event=event)
+            assertEquals(before.getString("envelope"),after.getString("envelope"))
+            val browser=fixture.browser(event,body)
+            assertEquals(2,browser.getInt("signed"));assertEquals(1,browser.getInt("verified"));assertEquals(0,browser.getInt("midFlightSubmissions"))
+            val packet=browser.getJSONObject("packet")
+            val verifier=object:ConversationSendVerifier {
+                override fun verify(evidence:ByteArray)=fixture.verifiedSend(evidence,false)
+            }
+            val transport=object:ConversationSendTransport {
+                override fun submit(message:String,attempt:String,scope:ConversationCaptureScope,body:String):ConversationSubmission {
+                    assertEquals("claimed",sends.sends().receipt(message)!!.state)
+                    assertEquals("Synthetic browser reply \u03A9\nExact trailing spaces  ",body)
+                    submissions++;return ConversationSubmission.UNKNOWN
+                }
+            }
+            val sender=runtime.confirmedSender(verifier,transport)
+            sender.receiveConfirmed(packet.toString().toByteArray(Charsets.UTF_8))
+            assertEquals(ConversationSubmission.UNKNOWN,sender.submitConfirmed(packet.getString("message")))
+            assertEquals(1,submissions)
+            assertThrows(IllegalStateException::class.java) {runtime.confirmedSender(verifier,transport).submitConfirmed(packet.getString("message"))}
+            assertEquals(1,submissions)
+            runtime.lifecycleLost(ConversationStopReason.OWNER_SESSION_LOST)
+            assertFalse(runtime.captureEligible());drain()
+            assertEquals(ConversationPresentationPhase.DURABLY_CLOSED,snapshots.last().phase)
+            assertFalse(fixture.command("lease",challenge=UUID.randomUUID()).getBoolean("ok"))
+            assertFalse(fixture.command("capture",data=encrypted.getString("envelope")).getBoolean("ok"))
+            assertFalse(fixture.command("browser_authority").getBoolean("ok"))
+            assertNull(runtime.retryCapture(token))
+            // Stop retains eligible history; explicit withdrawal revokes access without claiming deletion.
+            assertTrue(fixture.command("history",event=event).getBoolean("ok"))
+            assertTrue(fixture.command("withdraw").getBoolean("ok"))
+            assertFalse(fixture.command("history",event=event).getBoolean("ok"))
+        } finally {
+            context.unbindService(connection);instrumentation.waitForIdleSync();drain()
+            worker.shutdownNow();db.close();sends.close();fixture.command("finish")
+        }
+    }
+}
