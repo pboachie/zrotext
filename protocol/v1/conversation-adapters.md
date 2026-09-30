@@ -409,6 +409,13 @@ No ordinary entry point or deployment flag is mounted here. Existing-root custod
 configuration, exact selected-line observation, policy/disclosure approval,
 release signing and reviewer access remain separate runtime/release gates.
 
+Confirmed-submit responses acknowledge durable admission, including exact retries;
+they do not report current delivery state or cause a previously claimed attempt to
+be submitted again. The unnumbered proof schema candidate remains outside the
+standard migration directory and is explicitly applied only by isolated fixtures.
+Queue and lifecycle integration requires its allocated, reviewed migration before
+deployment; disabled conversation routes do not replace that schema prerequisite.
+
 
 The SDK now supplies explicit finite session custody composition and a bounded
 profile-02 inbound reader. Custody joins the existing setup signer, exact owner-root
