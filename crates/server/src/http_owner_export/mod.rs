@@ -54,6 +54,7 @@ async fn no_store(request: Request, next: Next) -> Response {
 struct ExportQuery {
     before: Option<Uuid>,
     sealed_before: Option<Uuid>,
+    interval_before: Option<Uuid>,
 }
 
 #[derive(Serialize)]
@@ -309,6 +310,7 @@ async fn export_account(
         &mut client,
         &principal,
         query.sealed_before,
+        query.interval_before,
     )
     .await
     {

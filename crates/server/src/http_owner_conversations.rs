@@ -27,6 +27,7 @@ use std::sync::Arc;
 use tokio_postgres::{Client, Transaction};
 use uuid::Uuid;
 
+pub mod activation;
 pub(crate) mod lifecycle;
 
 pub const DISCLOSURE_VERSION: &str = "conversation-content-v1";
@@ -283,6 +284,7 @@ pub async fn read_event(
         "SELECT e.envelope FROM sealed_inbound_events e JOIN owner_conversation_consents c ON c.account_id=e.account_id \
          WHERE e.account_id=$1 AND e.id=$2 AND e.device_id=c.device_id AND e.line_id=c.line_id \
            AND e.binding_generation=c.binding_generation AND e.envelope_profile=2 AND e.envelope IS NOT NULL \
+           AND NOT EXISTS (SELECT 1 FROM conversation_inbound_provenance p WHERE (p.account_id,p.event_id)=(e.account_id,e.id)) \
            AND e.observed_at>=c.enabled_at AND e.received_at>=c.enabled_at FOR SHARE OF e",
         &[&owner.tenant.account_id(), &event],
     ).await?.ok_or(ConversationError::NotFound)?;

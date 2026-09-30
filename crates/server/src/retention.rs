@@ -73,6 +73,9 @@ pub struct RetentionCounts {
     pub sealed_inbound_events: u64,
     pub device_preconditions: u64,
     pub conversation_consents: u64,
+    pub conversation_admissions_closed: u64,
+    pub conversation_provenance: u64,
+    pub conversation_intervals: u64,
 }
 
 impl RetentionCounts {
@@ -88,6 +91,9 @@ impl RetentionCounts {
             self.sealed_inbound_events,
             self.device_preconditions,
             self.conversation_consents,
+            self.conversation_admissions_closed,
+            self.conversation_provenance,
+            self.conversation_intervals,
         ]
         .into_iter()
         .any(|count| count >= limit)
@@ -118,12 +124,12 @@ UPDATE messages m SET retention_blocked_at=clock_timestamp() FROM blocked WHERE 
 /// its table name and counted as zero instead of aborting the remaining
 /// tables (#654). Every step failing still surfaces as an error so the
 /// worker's unavailability log stays meaningful.
-async fn step(
+async fn step<T: Default>(
     table: &'static str,
     first_error: &mut Option<Error>,
     failures: &mut u8,
-    run: impl Future<Output = Result<u64, Error>>,
-) -> u64 {
+    run: impl Future<Output = Result<T, Error>>,
+) -> T {
     match run.await {
         Ok(count) => count,
         Err(error) => {
@@ -132,7 +138,7 @@ async fn step(
             if first_error.is_none() {
                 *first_error = Some(error);
             }
-            0
+            T::default()
         }
     }
 }
@@ -151,7 +157,7 @@ pub async fn prune(
     assert!((1..=1000).contains(&limit));
     let mut first_error: Option<Error> = None;
     let mut failures = 0_u8;
-    let steps = 9_u8;
+    let steps = 10_u8;
 
     let idempotency_keys = step(
         "idempotency_keys",
@@ -331,6 +337,17 @@ pub async fn prune(
         ),
     )
     .await;
+    let (conversation_admissions_closed, conversation_provenance, conversation_intervals) = step(
+        "conversation_activation",
+        &mut first_error,
+        &mut failures,
+        crate::http_owner_conversations::lifecycle::activation::prune(
+            client,
+            policy.sealed_inbound_days,
+            limit,
+        ),
+    )
+    .await;
     if failures == steps
         && let Some(error) = first_error
     {
@@ -345,6 +362,9 @@ pub async fn prune(
         sealed_inbound_events,
         device_preconditions,
         conversation_consents,
+        conversation_admissions_closed,
+        conversation_provenance,
+        conversation_intervals,
     })
 }
 
