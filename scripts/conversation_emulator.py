@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from conversation_simulator import read_ready
 
 APP = "org.zrotext.gateway.conversationprobe"
 TEST = "org.zrotext.gateway.ConversationProbeDeviceTest"
@@ -29,6 +30,7 @@ def main():
     parser.add_argument("--toolchain")
     parser.add_argument("--aapt", required=True, help="Installed aapt for pre-install APK isolation verification")
     parser.add_argument("--skip-build", action="store_true")
+    parser.add_argument("--scenario", choices=("roundtrip", "stop-install", "loss-install"), default="roundtrip")
     args = parser.parse_args()
     if not args.serial.startswith("emulator-") or not args.serial[9:].isdigit():
         parser.error("Only an explicitly selected emulator is allowed")
@@ -71,11 +73,15 @@ def main():
                 "http_owner_conversations::activation::simulator::loopback_journal_bridge", "--", "--ignored", "--exact", "--nocapture"], cwd=root, env=env, stdout=stream, stderr=subprocess.STDOUT)
             try:
                 deadline = time.monotonic() + 180
-                while not (folder / "ready.json").exists():
+                server_ready = None
+                while server_ready is None:
+                    server_ready = read_ready(folder / "server.log")
+                    if server_ready is not None:
+                        break
                     if server.poll() is not None or time.monotonic() > deadline:
                         raise RuntimeError("Fixture server did not become ready")
                     time.sleep(0.1)
-                ready = json.loads((folder / "ready.json").read_text(encoding="utf-8"))
+                ready = dict(server_ready)
                 ready["browserTool"] = str(root / "sdk/typescript/test/conversation-browser-emulator.mjs")
                 tools = {"conversation-simulator-envelope.mjs": Path(ready["sdkTool"]),
                     "conversation-browser-emulator.mjs": Path(ready["browserTool"]),
@@ -116,12 +122,14 @@ def main():
                 prepared = folder / "device.json"
                 prepared.write_text(json.dumps(ready), encoding="utf-8")
                 run(adb + ["push", str(prepared), device_path])
-                result = run(adb + ["shell", "am", "instrument", "-w", "-r", "-e", "class", TEST, "-e", "fixturePath", device_path,
+                result = run(adb + ["shell", "am", "instrument", "-w", "-r", "-e", "class", TEST, "-e", "fixturePath", device_path, "-e", "scenario", args.scenario,
                     APP + ".test/androidx.test.runner.AndroidJUnitRunner"])
                 if "OK (1 test)" not in result.stdout or "FAILURES!!!" in result.stdout or "INSTRUMENTATION_FAILED" in result.stdout:
                     raise RuntimeError("Emulator probe failed:\n" + result.stdout[-6000:])
                 if server.wait(timeout=20) != 0:
                     raise RuntimeError("Fixture server assertions failed")
+                if read_ready(folder / "server.log") != server_ready:
+                    raise RuntimeError("Fixture readiness changed")
             finally:
                 failure_pending = sys.exc_info()[0] is not None
                 cleanup_errors = []

@@ -49,6 +49,11 @@ class ConversationProbeDeviceTest {
         require(file.startsWith("/data/local/tmp/conversation-") && file.endsWith(".json"))
         val ready=JSONObject(java.io.File(file).readText(Charsets.UTF_8))
         val fixture=ConversationSimulatorFixture(ready)
+        fun decode(value:String)=java.util.Base64.getDecoder().decode(value)
+        val scenario=InstrumentationRegistry.getArguments().getString("scenario") ?: "roundtrip"
+        require(scenario in setOf("roundtrip","stop-install","loss-install"))
+        val installationReply=java.util.concurrent.CountDownLatch(1)
+        val releaseInstallation=java.util.concurrent.CountDownLatch(1)
         val client=okhttp3.OkHttpClient()
         val opened=java.util.concurrent.CountDownLatch(1)
         val authenticated=java.util.concurrent.atomic.AtomicReference<ConversationPhoneSession?>(fixture.channelSession)
@@ -80,14 +85,25 @@ class ConversationProbeDeviceTest {
         val bootstrapClock=ConversationTrustedClock({(System.nanoTime()-start)/1_000_000},socketWire::currentSession)
         ConversationAuthorityTransport(ConversationSerializedChannel(socketWire),bootstrapClock,socketWire::currentSession,{(System.nanoTime()-start)/1_000_000}).refreshTime()
         val trust=Draft02TrustStore(ProbeTrustStorage())
-        val compare=Draft02RootComparison();val pin=fixture.bytes(ready.getString("pin"))
+        val compare=Draft02RootComparison();val pin=decode(ready.getString("pin"))
         val display=compare.begin(pin,pin.copyOfRange(5,21))
         var root=checkNotNull(trust.enroll(compare.confirm(display.fingerprintHex,true)).snapshot)
-        root=checkNotNull(trust.acceptManifest(root,fixture.bytes(ready.getString("predecessor"))){checkNotNull(bootstrapClock.nowMs())}.snapshot)
-        checkNotNull(trust.acceptManifest(root,fixture.bytes(ready.getString("manifest"))){checkNotNull(bootstrapClock.nowMs())}.snapshot)
-        val activation=ConversationPhoneActivation(fixture.statement,trust,socketWire,
+        root=checkNotNull(trust.acceptManifest(root,decode(ready.getString("predecessor"))){checkNotNull(bootstrapClock.nowMs())}.snapshot)
+        checkNotNull(trust.acceptManifest(root,decode(ready.getString("manifest"))){checkNotNull(bootstrapClock.nowMs())}.snapshot)
+        val activationWire=object:ConversationAuthenticatedWire {
+            override fun currentSession()=socketWire.currentSession()
+            override fun exchange(request:ByteArray):ConversationAuthenticatedWire.Reply {
+                val reply=socketWire.exchange(request)
+                if(scenario!="roundtrip" && request[5].toInt()==8) {
+                    installationReply.countDown() // Actual server installation already committed.
+                    check(releaseInstallation.await(10,TimeUnit.SECONDS))
+                }
+                return reply
+            }
+        }
+        val activation=ConversationPhoneActivation(fixture.statement,trust,activationWire,
             {checkNotNull(runtimeRef.get()?.trustedNowMs())},
-            {domain,statement,point->check(statement.contentEquals(fixture.statement) && point.contentEquals(fixture.bytes(ready.getString("signerPoint"))));fixture.bytes(fixture.sign(domain))})
+            {domain,statement,point->check(statement.contentEquals(fixture.statement) && point.contentEquals(decode(ready.getString("signerPoint"))));decode(fixture.sign(domain))})
         val runtime=ConversationAuthenticatedRuntime(db.journal(),sends.sends(),activation,fixture.protection,
             socketWire,{(System.nanoTime()-start)/1_000_000},
             { selected,now -> check(permission && selected==scope && now<fixture.parsed.expiresMs) },
@@ -118,7 +134,28 @@ class ConversationProbeDeviceTest {
             assertFalse(runtime.captureEligible());assertEquals(0,decisions);assertEquals(0,installs)
             context.startActivity(Intent(context,ConversationProbeActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             instrumentation.waitForIdleSync()
-            click("Agree and continue");drain()
+            click("Agree and continue")
+            if(scenario!="roundtrip") {
+                assertTrue(installationReply.await(10,TimeUnit.SECONDS))
+                instrumentation.waitForIdleSync()
+                assertEquals(ConversationPresentationPhase.PREPARING,snapshots.last().phase)
+                assertFalse(runtime.captureEligible())
+                if(scenario=="stop-install") {
+                    val current=snapshots.last()
+                    runtime.presentation.requestStop(scope.intervalId,current.version)
+                } else channelLost()
+                assertFalse(runtime.captureEligible()) // Synchronous shared admission closure.
+                releaseInstallation.countDown();drain()
+                assertFalse(runtime.captureEligible())
+                assertFalse(snapshots.any {it.phase==ConversationPresentationPhase.CONFIRMED_ACTIVE})
+                assertEquals(0,db.journal().contentCount())
+                if(scenario=="stop-install") {
+                    assertEquals(ConversationPresentationPhase.DURABLY_CLOSED,snapshots.last().phase)
+                    assertFalse(fixture.command("lease",challenge=UUID.randomUUID()).getBoolean("ok"))
+                } else assertEquals(ConversationCloseOutcome.DISABLED_CLOSURE_FAILED,snapshots.last().close)
+                return
+            }
+            drain()
             assertEquals(1,decisions);assertEquals(1,installs)
             assertEquals(ConversationPresentationPhase.CONFIRMED_ACTIVE,snapshots.last().phase)
             val token="01".repeat(32);val body="Synthetic authenticated inbound \u03A9\nSecond line"
@@ -174,6 +211,7 @@ class ConversationProbeDeviceTest {
             assertTrue(fixture.command("withdraw").getBoolean("ok"))
             assertFalse(fixture.command("history",event=event).getBoolean("ok"))
         } finally {
+            releaseInstallation.countDown()
             context.unbindService(connection);instrumentation.waitForIdleSync();drain()
             runtimeRef.set(null);worker.shutdownNow();activation.close();db.close();sends.close();socketWire.invalidate();socket.close(1000,"synthetic complete")
             client.dispatcher.executorService.shutdown();client.connectionPool.evictAll();fixture.command("finish")

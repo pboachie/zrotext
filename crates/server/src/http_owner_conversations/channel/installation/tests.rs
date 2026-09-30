@@ -19,7 +19,7 @@ fn frame(
 #[tokio::test]
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
 async fn approve_ack_is_not_active_and_install_lease_is_exact_bound() {
-    let (f, _, statement) = activation::tests::pending().await;
+    let (f, owner, statement) = activation::tests::pending().await;
     let s = AuthenticatedChannelSession {
         device: f.session(),
         phone_session: Uuid::new_v4(),
@@ -81,14 +81,9 @@ async fn approve_ack_is_not_active_and_install_lease_is_exact_bound() {
             .await
             .is_ok()
     );
-    activation::close(
-        &mut f.connect().await,
-        &crate::http_owner_conversations::tests::owner_for(&f, f.account).await,
-        statement.interval,
-        true,
-    )
-    .await
-    .unwrap();
+    activation::close(&mut f.connect().await, &owner, statement.interval, true)
+        .await
+        .unwrap();
     assert!(
         super::super::handle(&mut f.connect().await, &s, &renew)
             .await
