@@ -12,6 +12,7 @@ mod erasure_fk_indexes;
 mod inbound_events_attempt_fk_index;
 mod optout_review_indexes;
 mod owner_queue_index;
+mod pending_recipient_index;
 mod radio_evidence_index;
 mod recent_attempt_index;
 use abuse_counters_index_drop::*;
@@ -21,6 +22,7 @@ use erasure_fk_indexes::*;
 use inbound_events_attempt_fk_index::*;
 use optout_review_indexes::*;
 use owner_queue_index::*;
+use pending_recipient_index::*;
 use radio_evidence_index::*;
 use recent_attempt_index::*;
 use webhook_history_index::*;
@@ -138,6 +140,10 @@ pub enum MigrationError {
     AbuseCountersStaleIndexPresent,
     #[error("opt-out review indexes are absent, invalid, or the redundant active index remains")]
     OptoutReviewIndexesUnavailable,
+    #[error(
+        "the pending-recipient or retention-due index is absent, invalid, or has the wrong definition"
+    )]
+    PendingRecipientIndexUnavailable,
     #[error("message_attempts_device_created has an unexpected definition; refusing to replace it")]
     RecentAttemptIndexConflict,
     #[error("message_attempts_device_created is still being built; refusing to interrupt it")]
@@ -334,6 +340,9 @@ async fn apply_locked(
     if ledger.contains_key(&INBOUND_EVENTS_ATTEMPT_FK_INDEX_MIGRATION) {
         verify_inbound_events_attempt_fk_index(client).await?;
     }
+    if ledger.contains_key(&PENDING_RECIPIENT_INDEX_MIGRATION) {
+        verify_pending_recipient_index(client).await?;
+    }
 
     for migration in migrations {
         if ledger.contains_key(&migration.version) {
@@ -439,6 +448,16 @@ async fn apply_locked(
             // transaction. The advisory lock still serializes migrator jobs.
             prepare_inbound_events_attempt_fk_index(client).await?;
         }
+        if migration.version == PENDING_RECIPIENT_INDEX_MIGRATION {
+            if migration.filename != PENDING_RECIPIENT_INDEX_FILE {
+                return Err(MigrationError::InvalidDirectory(format!(
+                    "migration {PENDING_RECIPIENT_INDEX_MIGRATION:03} must be {PENDING_RECIPIENT_INDEX_FILE}"
+                )));
+            }
+            // CREATE INDEX CONCURRENTLY cannot run in the numbered migration's
+            // transaction. The advisory lock still serializes migrator jobs.
+            prepare_pending_recipient_index(client).await?;
+        }
         let tx = client.transaction().await?;
         if let Err(error) = tx.batch_execute(&migration.sql).await {
             // Dropping the transaction closes it without committing the failed file.
@@ -516,6 +535,12 @@ async fn apply_locked(
         .any(|migration| migration.version == INBOUND_EVENTS_ATTEMPT_FK_INDEX_MIGRATION)
     {
         verify_inbound_events_attempt_fk_index(client).await?;
+    }
+    if migrations
+        .iter()
+        .any(|migration| migration.version == PENDING_RECIPIENT_INDEX_MIGRATION)
+    {
+        verify_pending_recipient_index(client).await?;
     }
     Ok(applied)
 }
@@ -893,6 +918,8 @@ mod online_index_tests;
 mod optout_review_indexes_tests;
 #[cfg(test)]
 mod owner_queue_index_tests;
+#[cfg(test)]
+mod pending_recipient_index_tests;
 #[cfg(test)]
 mod radio_evidence_index_tests;
 #[cfg(test)]

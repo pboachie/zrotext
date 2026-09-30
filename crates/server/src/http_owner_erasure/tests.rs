@@ -269,6 +269,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
             "../../../../deploy/compose/migrations/061_inbound_events_attempt_fk_index.sql"
         ),
     ),
+    (
+        "062_pending_recipient_index.sql",
+        include_str!("../../../../deploy/compose/migrations/062_pending_recipient_index.sql"),
+    ),
+    (
+        "063_retention_blocked_stamp.sql",
+        include_str!("../../../../deploy/compose/migrations/063_retention_blocked_stamp.sql"),
+    ),
 ];
 
 /// Indexes the Compose migrator prepares with CREATE INDEX CONCURRENTLY in
@@ -321,6 +329,10 @@ const PREPARED_INDEXES: &[(&str, &str)] = &[
     (
         "061_inbound_events_attempt_fk_index.sql",
         "CREATE INDEX erasure_fk_inbound_events_attempt ON inbound_events(account_id,device_id,message_id,attempt_id)",
+    ),
+    (
+        "062_pending_recipient_index.sql",
+        "CREATE INDEX messages_pending_recipient ON messages(recipient_e164,account_id) WHERE state IN ('queued','claimed') AND recipient_e164 IS NOT NULL",
     ),
 ];
 

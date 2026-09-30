@@ -18,7 +18,7 @@ macro_rules! migration {
 
 // The ceremony runs on the complete schema. SQL is embedded at build time so
 // the test never executes files discovered at runtime.
-const TEST_MIGRATIONS: [(&str, &str); 61] = [
+const TEST_MIGRATIONS: [(&str, &str); 63] = [
     ("001_foundation.sql", migration!("001_foundation.sql")),
     ("002_auth.sql", migration!("002_auth.sql")),
     ("003_delivery.sql", migration!("003_delivery.sql")),
@@ -248,6 +248,14 @@ const TEST_MIGRATIONS: [(&str, &str); 61] = [
         "061_inbound_events_attempt_fk_index.sql",
         migration!("061_inbound_events_attempt_fk_index.sql"),
     ),
+    (
+        "062_pending_recipient_index.sql",
+        migration!("062_pending_recipient_index.sql"),
+    ),
+    (
+        "063_retention_blocked_stamp.sql",
+        migration!("063_retention_blocked_stamp.sql"),
+    ),
 ];
 
 #[test]
@@ -440,6 +448,11 @@ async fn postgres_owner_key_ceremony_requires_possession_mfa_and_revokes_only_sm
         }
         if name == "061_inbound_events_attempt_fk_index.sql" {
             db.batch_execute("CREATE INDEX erasure_fk_inbound_events_attempt ON inbound_events(account_id,device_id,message_id,attempt_id)")
+                .await
+                .unwrap();
+        }
+        if name == "062_pending_recipient_index.sql" {
+            db.batch_execute("CREATE INDEX messages_pending_recipient ON messages(recipient_e164,account_id) WHERE state IN ('queued','claimed') AND recipient_e164 IS NOT NULL")
                 .await
                 .unwrap();
         }
