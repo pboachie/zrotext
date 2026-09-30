@@ -43,6 +43,7 @@ fn socket_state(database_url: String, site_id: &str) -> DeviceSocketState {
         inbound_pilot_enabled: false,
         line_opt_out_enabled: false,
         sms_line_activation_enabled: false,
+        mms_spike_policy: std::sync::Arc::new(super::mms_spike_policy::MmsSpikePolicy::disabled()),
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),
     }

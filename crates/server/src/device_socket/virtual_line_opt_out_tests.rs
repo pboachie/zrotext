@@ -254,6 +254,7 @@ async fn authenticated_line_opt_out_replays_and_rejects_wrong_line_epoch_and_seq
         inbound_pilot_enabled: false,
         line_opt_out_enabled: true,
         sms_line_activation_enabled: false,
+        mms_spike_policy: std::sync::Arc::new(super::mms_spike_policy::MmsSpikePolicy::disabled()),
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),
     };
@@ -262,6 +263,7 @@ async fn authenticated_line_opt_out_replays_and_rejects_wrong_line_epoch_and_seq
     let disabled_state = DeviceSocketState {
         line_opt_out_enabled: false,
         sms_line_activation_enabled: false,
+        mms_spike_policy: std::sync::Arc::new(super::mms_spike_policy::MmsSpikePolicy::disabled()),
         ..state.clone()
     };
     let enabled_server = tokio::spawn(async move {

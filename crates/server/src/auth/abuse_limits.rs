@@ -92,6 +92,7 @@ limits! {
     MfaStepUp,
     BillingSession,
     ApiKeyCreate,
+    MmsSpikeGrant,
     SmsLineActivation,
     SeatInvite,
     SeatAccept,
@@ -181,6 +182,9 @@ impl Limit {
             Self::MfaStepUp => ("mfa_step_up", 120, 60, Some((5, 900))),
             Self::BillingSession => ("billing_session", 120, 60, Some((8, 60))),
             Self::SmsLineActivation => ("sms_line_activation", 120, 60, Some((30, 900))),
+            // One MMS spike grant per device and recipient per window: the
+            // subject budget of 1 is the server-side one-use gate for #438.
+            Self::MmsSpikeGrant => ("mms_spike_grant", 300, 7_776_000, Some((1, 7_776_000))),
             // Owner seat management, charged per account.
             Self::SeatInvite => ("seat_invite", 60, 3_600, Some((30, 86_400))),
             // Invitation acceptance; a live token probes through

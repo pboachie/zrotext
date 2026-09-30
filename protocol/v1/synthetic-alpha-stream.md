@@ -51,6 +51,52 @@ locally approved recipient before any radio call. It persists the attempt ID
 and one-use radio start before calling `SmsManager`. It never retries a radio call
 for the same attempt after an ambiguous return or crash.
 
+## MMS spike grant
+
+Separately from synthetic SMS, the hub can issue the founder-gated
+one-attempt MMS spike grant for [issue #438](https://github.com/pboachie/zrotext/issues/438).
+The gate is server-side and default-off: `MMS_SPIKE_GRANT_ENABLED=true`
+together with the one device named in `MMS_SPIKE_GRANT_DEVICE` and the
+recipient allowlist `MMS_SPIKE_GRANT_RECIPIENTS`, all founder-held deployment
+settings.
+
+The grant is **strictly solicited**, like `synthetic_grant`. The phone sends
+this frame only from an armed debug build, at most once per connection, after
+an authenticated session and local recipient confirmation:
+
+```json
+{"v":1,"type":"mms_spike_ready","connection_epoch":1,"recipient_digest":"BASE64URL_NO_PAD_SHA256"}
+```
+
+The digest is SHA-256 of the exact locally confirmed E.164 recipient. The hub
+answers with at most one grant on that connection, and only when every gate
+holds:
+
+```json
+{"v":1,"type":"mms_spike_grant","grant_id":"UUID","device_id":"UUID","connection_epoch":1,"recipient_digest":"BASE64URL_NO_PAD_SHA256","expires_at_ms":0,"recipient_e164":"+15555550101"}
+```
+
+- the session is current and the ready frame names its `connection_epoch`;
+- the digest names an allowlisted recipient for the founder-named device;
+- the recipient passes the STOP check — no active `recipient_suppressions`
+  row and no unreleased `owner_recipient_holds` row for the account. A
+  storage error withholds the grant and closes retryably (fail closed);
+- the server-side one-use budget for this device and recipient (the
+  `mms_spike_grant` counter, one per 90 days) is still open, so a replayed or
+  repeated ready frame — on this or a new connection, on any hub instance —
+  cannot obtain a second grant;
+- `expires_at_ms` is 30 seconds ahead, within the phone validator's
+  35-second bound.
+
+A client that never sends the ready frame never receives a grant: unarmed
+debug builds, release builds and clients predating the frame hold ordinary
+sessions untouched. There is no queued message, journal row or retry: the
+grant authorizes exactly the one debug-build radio attempt whose local
+preflight already passed, and the phone journals the outcome like any SMS
+attempt. The phone still enforces its own build allowlist and
+confirmed-recipient checks, so the two sides must agree on the recipient; see
+`docs/ANDROID-TESTING.md`.
+
 ## Evidence and acknowledgement
 
 The phone sends one durable event at a time and keeps its `event_id` until the
