@@ -800,7 +800,7 @@ async fn manifest_store_current_revocation_invalidates_earlier_admission_in_same
 #[tokio::test]
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn context_rechecks_write_last_verified_once() {
-    let mut f = Fixture::new().await;
+    let f = Fixture::new().await;
     let mut db = f.connect().await;
     let tx = db.transaction().await.unwrap();
     let mut admission = admit(&tx, f.session(), f.line, 1, &f.bytes).await.unwrap();

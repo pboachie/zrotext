@@ -259,10 +259,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "059_erasure_fk_indexes.sql",
         include_str!("../../../../deploy/compose/migrations/059_erasure_fk_indexes.sql"),
     ),
+    (
+        "060_optout_review_indexes.sql",
+        include_str!("../../../../deploy/compose/migrations/060_optout_review_indexes.sql"),
+    ),
 ];
 
 /// Indexes the Compose migrator prepares with CREATE INDEX CONCURRENTLY in
-/// autocommit mode before the numbered 034, 040, 049, 050, 052 and 059 files record
+/// autocommit mode before the numbered 034, 040, 049, 050, 052, 059 and 060 files record
 /// their checksum gates (deploy/compose/README.md, "Migration 034 is a narrow
 /// online-index exception"). The gate SQL validates the exact index
 /// definition; a fresh fixture schema builds the identical index with a
@@ -303,6 +307,10 @@ const PREPARED_INDEXES: &[(&str, &str)] = &[
     (
         "059_erasure_fk_indexes.sql",
         "CREATE INDEX erasure_fk_webhook_deliveries_event ON webhook_deliveries(account_id,event_id); CREATE INDEX erasure_fk_suppressions_attempt ON recipient_suppressions(source_attempt_id); CREATE INDEX erasure_fk_suppressions_event ON recipient_suppressions(account_id,source_event_id); CREATE INDEX erasure_fk_holds_release_event ON owner_recipient_holds(account_id,release_event_id) WHERE release_event_id IS NOT NULL; CREATE INDEX erasure_fk_opt_out_audit_release_event ON owner_opt_out_audit(account_id,release_event_id) WHERE release_event_id IS NOT NULL",
+    ),
+    (
+        "060_optout_review_indexes.sql",
+        "CREATE INDEX recipient_suppressions_review_queue ON recipient_suppressions(account_id,changed_at DESC,recipient_e164 DESC) WHERE active AND source IN ('sms_review','sms_unsolicited_review'); CREATE INDEX recipient_suppressions_review_event ON recipient_suppressions(account_id,COALESCE(source_event_id,source_unsolicited_event_id)) WHERE source IN ('sms_review','sms_unsolicited_review'); DROP INDEX recipient_suppressions_active",
     ),
 ];
 

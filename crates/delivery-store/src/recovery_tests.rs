@@ -214,3 +214,171 @@ async fn recovery_stops_early_when_the_process_is_draining() {
     ));
     db.close().await;
 }
+
+/// A full batch of each kind sweeps through one statement per batch, emits
+/// events with the same digest the per-row loop computed, and never resweeps
+/// (#508).
+#[tokio::test]
+#[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn full_batches_sweep_silent_attempts_and_delivery_timeouts_with_events() {
+    let mut db = TestDb::new().await;
+    let account_id = Uuid::new_v4();
+    db.client
+        .execute("INSERT INTO accounts(id) VALUES($1)", &[&account_id])
+        .await
+        .unwrap();
+    db.client
+        .execute(
+            "INSERT INTO devices(id,account_id,display_name) \
+             SELECT gen_random_uuid(),$1,'sweep fixture' FROM generate_series(1,200)",
+            &[&account_id],
+        )
+        .await
+        .unwrap();
+    for (state, fence_outcome, attempt_status, grant_age, updated_age, count) in [
+        (
+            "claimed",
+            "granted",
+            "granted",
+            "10 minutes",
+            "0 seconds",
+            100_i64,
+        ),
+        (
+            "submitted",
+            "submitted",
+            "submitted",
+            "1 hour",
+            "25 hours",
+            100,
+        ),
+    ] {
+        db.client
+            .execute(
+                "INSERT INTO messages(id,account_id,device_id,recipient_e164,recipient_digest, \
+                 transport_mode,transport_payload,request_digest,state,expires_at,updated_at) \
+                 SELECT gen_random_uuid(),$1,(SELECT d.id FROM devices d WHERE d.account_id=$1 \
+                   ORDER BY d.id LIMIT 1 OFFSET (n-1)),'+15551234567',$2,'synthetic_alpha',$3,$4,$5, \
+                 now()+interval '1 hour',now()-($6::text::interval) \
+                 FROM generate_series(1,$7::bigint) n",
+                &[
+                    &account_id,
+                    &vec![1_u8; 32],
+                    &b"sweep fixture".as_slice(),
+                    &vec![2_u8; 32],
+                    &state,
+                    &updated_age,
+                    &count,
+                ],
+            )
+            .await
+            .unwrap();
+        db.client
+            .execute(
+                "INSERT INTO message_attempts(id,account_id,message_id,device_id,generation, \
+                 session_epoch,deployment_epoch,status,updated_at) \
+                 SELECT gen_random_uuid(),$1,m.id,m.device_id,1,2,1,$2,now() \
+                 FROM messages m WHERE m.account_id=$1 AND m.state=$3",
+                &[&account_id, &attempt_status, &state],
+            )
+            .await
+            .unwrap();
+        db.client
+            .execute(
+                "INSERT INTO dispatch_fences(message_id,account_id,device_id,attempt_id,generation, \
+                 session_epoch,deployment_epoch,recipient_digest,grant_expires_at,outcome) \
+                 SELECT m.id,$1,m.device_id,a.id,1,2,1,$2,now()-($3::text::interval),$4 \
+                 FROM messages m JOIN message_attempts a ON a.message_id=m.id \
+                 WHERE m.account_id=$1 AND m.state=$5",
+                &[
+                    &account_id,
+                    &vec![1_u8; 32],
+                    &grant_age,
+                    &fence_outcome,
+                    &state,
+                ],
+            )
+            .await
+            .unwrap();
+    }
+
+    let silent = DeliveryStore::new(&mut db.client)
+        .reconcile_silent_attempts(RECOVERY_BATCH)
+        .await
+        .unwrap();
+    assert_eq!(silent, 100);
+    let timeouts = DeliveryStore::new(&mut db.client)
+        .reconcile_delivery_timeouts(RECOVERY_BATCH)
+        .await
+        .unwrap();
+    assert_eq!(timeouts, 100);
+
+    let events: i64 = db
+        .client
+        .query_one(
+            "SELECT count(*) FROM message_events \
+             WHERE evidence_code IN ('grant_timeout','sent_callback_timeout','delivery_timeout')",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(events, 200);
+    let digest_matches: i64 = db
+        .client
+        .query_one(
+            "SELECT count(*) FROM message_events e \
+             WHERE e.event_digest=sha256(uuid_send(e.account_id)||uuid_send(e.message_id)|| \
+                   uuid_send(e.attempt_id)||e.evidence_code::bytea) \
+               AND e.evidence_code IN ('grant_timeout','sent_callback_timeout','delivery_timeout')",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(digest_matches, 200);
+    let states: Vec<(String, i64)> = db
+        .client
+        .query(
+            "SELECT state,count(*) FROM messages WHERE account_id=$1 GROUP BY state ORDER BY state",
+            &[&account_id],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| (row.get(0), row.get(1)))
+        .collect();
+    assert_eq!(
+        states,
+        vec![
+            ("delivery_unknown".to_string(), 100),
+            ("unknown".to_string(), 100),
+        ]
+    );
+    let unknown_attempts: i64 = db
+        .client
+        .query_one(
+            "SELECT count(*) FROM message_attempts WHERE account_id=$1 AND status='unknown'",
+            &[&account_id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(unknown_attempts, 100);
+
+    assert_eq!(
+        DeliveryStore::new(&mut db.client)
+            .reconcile_silent_attempts(RECOVERY_BATCH)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        DeliveryStore::new(&mut db.client)
+            .reconcile_delivery_timeouts(RECOVERY_BATCH)
+            .await
+            .unwrap(),
+        0
+    );
+    db.close().await;
+}

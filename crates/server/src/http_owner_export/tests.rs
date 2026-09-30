@@ -95,8 +95,8 @@ const EXPORT_SCHEMA: [(&str, &str); 60] = export_schema!(
     "056_usage_limit_plans.sql",
     "057_webhook_history_index.sql",
     "058_drop_abuse_counters_updated_index.sql",
-    "059_erasure_fk_indexes.sql",    "060_optout_review_indexes.sql",
-
+    "059_erasure_fk_indexes.sql",
+    "060_optout_review_indexes.sql",
 );
 #[test]
 fn export_schema_includes_every_checked_in_migration() {
@@ -198,10 +198,10 @@ async fn export_is_tenant_bound_and_carries_owner_content() {
                 .unwrap();
         }
         if name == "060_optout_review_indexes.sql" {
-            db.batch_execute("CREATE INDEX CONCURRENTLY recipient_suppressions_review_queue ON recipient_suppressions(account_id,changed_at DESC,recipient_e164 DESC) WHERE active AND source IN ('sms_review','sms_unsolicited_review')")
+            db.batch_execute("CREATE INDEX recipient_suppressions_review_queue ON recipient_suppressions(account_id,changed_at DESC,recipient_e164 DESC) WHERE active AND source IN ('sms_review','sms_unsolicited_review')")
                 .await
                 .unwrap();
-            db.batch_execute("CREATE INDEX CONCURRENTLY recipient_suppressions_review_event ON recipient_suppressions(account_id,COALESCE(source_event_id,source_unsolicited_event_id)) WHERE source IN ('sms_review','sms_unsolicited_review')")
+            db.batch_execute("CREATE INDEX recipient_suppressions_review_event ON recipient_suppressions(account_id,COALESCE(source_event_id,source_unsolicited_event_id)) WHERE source IN ('sms_review','sms_unsolicited_review')")
                 .await
                 .unwrap();
             db.batch_execute("DROP INDEX IF EXISTS recipient_suppressions_active")

@@ -859,9 +859,9 @@ mod admission_pending_index_tests;
 #[cfg(test)]
 mod erasure_fk_index_tests;
 #[cfg(test)]
-mod optout_review_indexes_tests;
-#[cfg(test)]
 mod online_index_tests;
+#[cfg(test)]
+mod optout_review_indexes_tests;
 #[cfg(test)]
 mod owner_queue_index_tests;
 #[cfg(test)]

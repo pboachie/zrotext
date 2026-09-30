@@ -93,8 +93,8 @@ const TEST_MIGRATIONS: [(&str, &str); 60] = [
     migration!("056_usage_limit_plans.sql"),
     migration!("057_webhook_history_index.sql"),
     migration!("058_drop_abuse_counters_updated_index.sql"),
-    migration!("059_erasure_fk_indexes.sql"),    migration!("060_optout_review_indexes.sql"),
-
+    migration!("059_erasure_fk_indexes.sql"),
+    migration!("060_optout_review_indexes.sql"),
 ];
 #[test]
 fn exchange_fixture_tracks_numbered_migrations() {
@@ -205,10 +205,10 @@ async fn migrated_schema(prefix: &str) -> (Client, String, String, Client) {
                 .unwrap();
         }
         if name == "060_optout_review_indexes.sql" {
-            db.batch_execute("CREATE INDEX CONCURRENTLY recipient_suppressions_review_queue ON recipient_suppressions(account_id,changed_at DESC,recipient_e164 DESC) WHERE active AND source IN ('sms_review','sms_unsolicited_review')")
+            db.batch_execute("CREATE INDEX recipient_suppressions_review_queue ON recipient_suppressions(account_id,changed_at DESC,recipient_e164 DESC) WHERE active AND source IN ('sms_review','sms_unsolicited_review')")
                 .await
                 .unwrap();
-            db.batch_execute("CREATE INDEX CONCURRENTLY recipient_suppressions_review_event ON recipient_suppressions(account_id,COALESCE(source_event_id,source_unsolicited_event_id)) WHERE source IN ('sms_review','sms_unsolicited_review')")
+            db.batch_execute("CREATE INDEX recipient_suppressions_review_event ON recipient_suppressions(account_id,COALESCE(source_event_id,source_unsolicited_event_id)) WHERE source IN ('sms_review','sms_unsolicited_review')")
                 .await
                 .unwrap();
             db.batch_execute("DROP INDEX IF EXISTS recipient_suppressions_active")

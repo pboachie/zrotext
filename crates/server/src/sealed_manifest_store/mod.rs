@@ -48,9 +48,6 @@ pub struct Admission<'tx, 'connection, 'session> {
     session: InboundSession<'session>,
     line: Uuid,
     binding_generation: i64,
-    pin: Vec<u8>,
-    bytes: Vec<u8>,
-    trust: ManifestTrust,
     manifest: VerifiedManifest,
     change: AdmissionChange,
     /// Set once `context` has written this admission's `last_verified_ms`;
@@ -237,18 +234,11 @@ pub async fn admit<'tx, 'connection, 'session>(
         )
         .await?;
     }
-    trust.position = ChainPosition::Current {
-        version: manifest.version(),
-        digest: *manifest.digest(),
-    };
     Ok(Admission {
         tx,
         session,
         line,
         binding_generation,
-        pin,
-        bytes: bytes.to_vec(),
-        trust,
         manifest,
         change,
         verified_write: false,
