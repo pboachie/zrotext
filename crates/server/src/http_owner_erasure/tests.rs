@@ -1674,7 +1674,7 @@ async fn account_disabled_during_erasure_wait_deletes_nothing() {
     // Once the request is parked on the user lock, connection B commits the
     // disable, then A releases. The fence locks the account row too
     // (FOR UPDATE OF u,m,a), so the disable committed before that grant
-    // fails the locked row's re-qualification ΓÇö and the fence's final
+    // fails the locked row's re-qualification — and the fence's final
     // fresh-statement recheck would catch it regardless.
     wait_until_handler_is_blocked_by(&admin, "zt_erasure_disable_race", blocker_pid).await;
     admin
@@ -1739,7 +1739,7 @@ async fn session_expires_during_erasure_wait_deletes_nothing() {
     // start, so only a post-lock `clock_timestamp()` recheck can catch it.
     // The fuse also has to pass inside production's bounded lock wait: the
     // server's pooled connections run with lock_timeout=3s
-    // (crate::runtime_db), after which the request fails closed with 503 ΓÇö
+    // (crate::runtime_db), after which the request fails closed with 503 —
     // so the fuse is set well below that bound while still clearing the
     // request's pre-fence proof work.
     db.execute(

@@ -30,6 +30,7 @@ use uuid::Uuid;
 pub mod activation;
 pub mod browser_assets;
 pub mod channel;
+pub mod confirmed_http;
 pub mod enrollment;
 pub(crate) mod lifecycle;
 pub mod send;
