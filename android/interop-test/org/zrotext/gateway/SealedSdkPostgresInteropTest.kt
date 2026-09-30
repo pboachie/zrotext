@@ -99,6 +99,25 @@ class SealedSdkPostgresInteropTest {
         } finally { clear.fill('\u0000') }
     }
 
+    /** Issue #537: bytes composed by the TypeScript PRODUCTION composer under fresh
+     * CSPRNG key material (no vector pinning) must verify and decrypt here too,
+     * under their own message identity, exactly as the database persisted them. */
+    @Test fun productionComposerFreshMaterialEnvelopeVerifiesPersistsAndDecrypts() {
+        val fixture = Fixture()
+        val source = hex(fixture.input.getString("outboundProductionEnvelope"))
+        val persisted = hex(fixture.input.getString("persistedProductionEnvelope"))
+        assertArrayEquals("Database must preserve the exact production composer envelope", source, persisted)
+        val proof = Draft02OutboundEnvelope.verify(persisted, fixture.authority(),
+            fixture.request(fixture.bytes("productionMessageId"))) { fixture.now }
+        assertArrayEquals(fixture.bytes("productionUnsignedDigest"), proof.unsignedDigest)
+        val cek = fixture.cek(proof)
+        val clear = Draft02Body.open(proof, cek)
+        try {
+            assertEquals(fixture.expected.getString("expectedText"), String(clear))
+            assertTrue(cek.all { it == 0.toByte() })
+        } finally { clear.fill('\u0000') }
+    }
+
     @Test fun independentFingerprintMismatchFailsClosed() {
         val fixture = Fixture()
         val fingerprint = fixture.bytes("rootFingerprint").apply { this[0] = (this[0].toInt() xor 1).toByte() }

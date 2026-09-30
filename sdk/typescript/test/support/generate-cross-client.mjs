@@ -10,6 +10,9 @@ globalThis.crypto ??= webcrypto;
 const { prepareOutboundEnvelope02, prepareInboundEnvelope02 } = await import('../../dist/draft02-envelope-prep.js');
 const { verifyManifest02, canonicalSignature02 } = await import('../../dist/draft02-manifest.js');
 const { composeSealedOutboundEnvelope } = await import('../../dist/sealed-envelope.js');
+// Test seam only: the pinned vector cross-check. The production composer itself
+// is invoked below with fresh CSPRNG material and no override.
+const { composeSealedOutboundEnvelopeForVectors } = await import('../../dist/sealed-envelope-vectors.js');
 const setup = readFileSync(0);
 assert.ok(setup.length > 0 && setup.length <= 8192, 'Setup fixture must be nonempty and within its size bound');
 const input = JSON.parse(setup.toString('utf8'));
@@ -127,11 +130,11 @@ const outbound = await prepareOutboundEnvelope02({ ...common, kind: 1, messageId
     { role: 2, keyId: archiveKey.id, point: archiveKey.point, ekm: archiveEkm },
   ],
 });
-// Production-composer cross-check: the slice-A module, fed only the pinned
-// material, must reproduce the exact unsigned bytes and digest the Rust lane
-// admits (Web Crypto ECDSA signatures differ per run, so the envelope's last
-// 64 bytes are compared through verification, not byte equality).
-const outboundProduction = await composeSealedOutboundEnvelope({
+// Pinned cross-check through the TEST SEAM: the slice-A module, fed only the
+// pinned material, must reproduce the exact unsigned bytes and digest the Rust
+// lane admits (Web Crypto ECDSA signatures differ per run, so the envelope's
+// last 64 bytes are compared through verification, not byte equality).
+const outboundProduction = await composeSealedOutboundEnvelopeForVectors({
   manifest, nowMs: now, messageId: message, deviceId: device, lineId: line,
   peer: ascii('+12'), observedMs: now, expiresMs: now + 60_000n, content: expectedText,
   signer: { privateKey: outboundSigner.privateKey, publicPoint: outboundSigner.publicPoint },
@@ -144,6 +147,27 @@ const outboundProduction = await composeSealedOutboundEnvelope({
 assert.equal(outboundProduction.envelope.length, outbound.envelope.length);
 assert.deepEqual(Uint8Array.from(outboundProduction.envelope.subarray(0, outbound.envelope.length - 64)), outbound.unsigned);
 assert.deepEqual(Uint8Array.from(outboundProduction.unsignedDigest), outbound.unsignedSha256);
+// Production-path envelope: the public composer with NO pinning, drawing the
+// content key, body nonce and every HPKE ephemeral IKM fresh from the Web
+// Crypto CSPRNG under its own message identity. These exact bytes must clear
+// the strict server admission route and the Android verifier downstream.
+const productionMessage = randomBytes(16);
+const productionEnvelope = await composeSealedOutboundEnvelope({
+  manifest, nowMs: now, messageId: productionMessage, deviceId: device, lineId: line,
+  peer: ascii('+12'), observedMs: now, expiresMs: now + 60_000n, content: expectedText,
+  signer: { privateKey: outboundSigner.privateKey, publicPoint: outboundSigner.publicPoint },
+  recipients: [
+    { role: 1, keyId: deviceKey.id, point: deviceKey.point },
+    { role: 2, keyId: archiveKey.id, point: archiveKey.point },
+  ],
+});
+assert.equal(productionEnvelope.envelope.length, outbound.envelope.length);
+assert.deepEqual(Uint8Array.from(productionEnvelope.unsignedDigest),
+  sha(productionEnvelope.envelope.subarray(0, productionEnvelope.envelope.length - 64)));
+// Fresh material must actually have been used: same message inputs, but the
+// key-dependent regions differ from the helper-composed envelope above.
+assert.notEqual(hex(productionEnvelope.envelope.subarray(0, productionEnvelope.envelope.length - 64)), hex(outbound.unsigned));
+assert.notEqual(hex(productionEnvelope.unsignedDigest), hex(outbound.unsignedSha256));
 const inbound = await prepareInboundEnvelope02({ ...common, kind: 2, messageId: event, eventId: event,
   localSequence: 1n, cek: randomBytes(32), nonce: randomBytes(12), signer: inboundSigner,
   recipients: [{ role: 2, keyId: archiveKey.id, point: archiveKey.point, ekm: randomBytes(32) }],
@@ -239,6 +263,9 @@ process.stdout.write(JSON.stringify({
   devicePrivateScalar: hex(deviceKey.scalar), archivePoint: hex(archiveKey.point),
   outboundEnvelope: hex(outbound.envelope),
   outboundProductionUnsignedDigest: hex(outboundProduction.unsignedDigest),
+  productionMessage: hex(productionMessage),
+  outboundProductionEnvelope: hex(productionEnvelope.envelope),
+  outboundProductionFreshDigest: hex(productionEnvelope.unsignedDigest),
   inboundEnvelope: hex(inbound.envelope), outboundUnsignedDigest: hex(outbound.unsignedSha256),
   inboundUnsignedDigest: hex(inbound.unsignedSha256), outboundWrongNonce: hex(wrongNonce),
   outboundWrongSignature: hex(wrongSignature),

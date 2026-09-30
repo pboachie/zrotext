@@ -6,16 +6,21 @@ Status is per module, and the boundaries are deliberate:
   issue #537 slice A). `composeSealedOutboundEnvelope` composes one complete
   sealed outbound kind-01 profile-02 candidate envelope from explicit caller
   inputs and returns the exact bytes with the SHA-256 digest of the unsigned
-  envelope. It is verified byte-for-byte against the cross-client vectors the
-  Rust verifier lane consumes (see below).
+  envelope, drawing the content key, body nonce and every HPKE ephemeral IKM
+  fresh from the Web Crypto CSPRNG. It is verified byte-for-byte against the
+  cross-client vectors the Rust verifier lane consumes, and its fresh-material
+  output is admitted by the strict server route and verified by the Android
+  verifier in the sealed cross-client CI lane (see below).
 - **Production-shaped: sealed submission client** (`src/sealed-client.ts`,
   issue #537 slice B). `SealedClient.submitSealedMessage` posts one composed
   envelope to `POST /v1/sealed/messages` as the exact raw request body, with
   contract-pinned retries and a typed error taxonomy, exercised against an
   in-process mock server that asserts the wire format (see below).
 - **Still test-only:** the draft-01 reader, the profile-02 manifest
-  verifier/trust store, the draft-02 envelope preparation helper, and the
-  message-plane client described in the sections below.
+  verifier/trust store, and the message-plane client described in the
+  sections below. The draft-02 envelope preparation module is the internal
+  wire-layout core the production composer delegates to; only its optional
+  pinned-material override is test-only.
 - **Does not exist yet:** inbound kind-02 composition in the production
   module, and any npm publication. This package is not published anywhere.
 
@@ -52,26 +57,43 @@ The returned object carries only the `envelope` bytes and the
 resend the same exact envelope bytes and reuse this digest, never
 `idempotency-key` headers. Two compositions of the same message are two
 different identities by design, because the content key, body nonce and every
-HPKE ephemeral IKM are drawn fresh from `crypto.getRandomValues`. The
-optional `deterministicKeyMaterial` input exists only to reproduce
-cross-client vectors; production callers must omit it. Local key-material
-copies are zeroed on every exit path, but JavaScript gives no erasure
-guarantee — the engine may have copied those buffers, the delegated helper
-holds its own snapshot until the promise settles, and the body `content`
-string cannot be zeroed at all. No plaintext or key material is retained on
-the returned object.
+HPKE ephemeral IKM are drawn fresh from `crypto.getRandomValues` on every
+call. There is no way to pin that material on the production API: the public
+input type has no such field, the production function refuses an input that
+still carries a `deterministicKeyMaterial` property at runtime, and
+reproducible vector material exists only on the clearly-marked test seam
+`src/sealed-envelope-vectors.ts` (backed by the internal core in
+`src/sealed-envelope-internal.ts`), which only test files import. Local
+key-material copies are zeroed on every exit path, but JavaScript gives no
+erasure guarantee — the engine may have copied those buffers, the delegated
+helper holds its own snapshot until the promise settles, and the body
+`content` string cannot be zeroed at all. No plaintext or key material is
+retained on the returned object.
 
 Verification: `test/sealed-envelope.test.mjs` walks every parser rule
 byte-by-byte against the dormant Rust reader
 (`crates/server/src/sealed_envelope`, `sealed_body`), verifies the signature
 over the exact unsigned bytes with the existing draft-02 helpers, reopens
 wraps and body as an independent consumer from envelope bytes alone, pins the
-deterministic unsigned transcript, and regenerates the cross-client fixture
-through `test/support/generate-cross-client.mjs` — the generator the Rust CI
-lane drives — proving the production module reproduces the exact unsigned
-bytes and digest of envelopes the Rust lane admits, persists and replays.
-That Rust lane itself was not executed as part of this slice; the byte
-equality and the parser-mirror walk are the local evidence.
+deterministic unsigned transcript through the test seam, and regenerates the
+cross-client fixture through `test/support/generate-cross-client.mjs` — the
+generator the Rust CI lane drives — proving the production module reproduces
+the exact unsigned bytes and digest of envelopes the Rust lane admits,
+persists and replays. A dedicated test proves the production path draws
+fresh CSPRNG bytes on every composition: two compositions of the same message
+differ in every key-dependent region (envelope bytes and Q6 digest included,
+because the digest covers the full unsigned bytes), the key-independent
+header-plus-protected prefix stays identical, and the body nonce, the
+recovered content key and every wrap's ephemeral KEM point are never the
+all-zero values an all-zero RNG would produce; that mutant is exactly what
+the test was checked against. Finally, the sealed cross-client CI lane
+(`.github/workflows/sealed-interop.yml`) feeds the generator's
+production-path envelope — composed by `composeSealedOutboundEnvelope` with
+no pinning — through the strict server admission route
+(`crates/server/src/http_sealed` over `sealed_outbound::admit_candidate02`,
+`cross_client_interop.rs`) and through the Android verifier
+(`SealedSdkPostgresInteropTest`), so SDK-composed bytes are refused by
+neither.
 
 `SEALED_CONTENT_TYPE` (`application/vnd.zrotext.sealed.v1`) is exported for
 callers that transport the bytes themselves. This module contains no network
@@ -228,9 +250,12 @@ an authenticated freshness checkpoint; see the
 
 `src/msgplane-client.ts` binds to the slice-1 sealed message-plane contract
 ([protocol/v1/sealed-api-v1.md](../../protocol/v1/sealed-api-v1.md) and its
-[OpenAPI document](../../protocol/v1/openapi/sealed-v1.json)), which is a
-proposal with **no mounted server route**. It is test-only evidence toward
-task 21, not a production SDK. `SealedMessagePlaneClient` posts the exact
+[OpenAPI document](../../protocol/v1/openapi/sealed-v1.json)). It is
+**test-only evidence toward task 21, not a production SDK**: the production
+submission client is `src/sealed-client.ts` above. The server route it
+mirrors is mounted only when an operator sets `SEALED_ADMISSION_ENABLED=true`
+and stays absent from default deployments. `SealedMessagePlaneClient` posts
+the exact
 envelope bytes of one draft-01 envelope with the single allowed content type
 `application/vnd.zrotext.sealed.v1` to `/v1/sealed/messages` (kind 01) or
 `/v1/sealed/inbound-events` (kind 02), validates bounded syntax and the kind
@@ -295,10 +320,13 @@ Android run is part of this slice; those remain separate gates.
 Rust CI lane consumes: it verifies a fully signed synthetic manifest,
 composes the fixture envelopes through `prepareOutboundEnvelope02`, re-signs
 adversarial mutations so each one exercises its intended check, and
-cross-checks that `composeSealedOutboundEnvelope` fed the same material
-reproduces the exact unsigned bytes and digest. Setup JSON arrives on stdin
-and the fixture leaves on stdout; optional pinned key-material fields let a
-caller reproduce the fixture deterministically, and the Rust lane omits them.
+cross-checks that the test seam fed the same pinned material reproduces the
+exact unsigned bytes and digest. It also composes one envelope through the
+production entry point with fresh CSPRNG material and no pinning; those are
+the bytes the Rust lane posts through the strict server admission route and
+the Android verifier verifies downstream. Setup JSON arrives on stdin and the
+fixture leaves on stdout; optional pinned key-material fields let a caller
+reproduce the fixture deterministically, and the Rust lane omits them.
 
 This is one slice of ZT-010 evidence. Independent Rust cross-open, full manifest
 chain/rollback vectors, production key lifecycle, and the Q1–Q11 decisions

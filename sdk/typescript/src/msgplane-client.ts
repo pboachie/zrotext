@@ -2,12 +2,15 @@
  * Experimental ZTSE sealed message-plane client. Test-only.
  *
  * Binds to the slice-1 HTTP contract (protocol/v1/sealed-api-v1.md and
- * protocol/v1/openapi/sealed-v1.json): a proposal with no mounted server
- * route. The sealed runtime stays disabled; this module must not be
+ * protocol/v1/openapi/sealed-v1.json). The server's sealed v1 message route
+ * now exists but is mounted only behind the operator flag
+ * SEALED_ADMISSION_ENABLED (default off); this module must not be
  * published as a production SDK or wired to a send, inbound, webhook or
- * radio path. It never constructs a plaintext alternative, never targets the
- * synthetic-alpha route, and never accepts a caller-supplied idempotency
- * key: the unsigned-envelope digest is the identity (Q6).
+ * radio path, and production submission is handled by src/sealed-client.ts,
+ * which targets that mounted route. This client never constructs a plaintext
+ * alternative, never targets the synthetic-alpha route, and never accepts a
+ * caller-supplied idempotency key: the unsigned-envelope digest is the
+ * identity (Q6).
  */
 import { parseDraftEnvelope } from "./draft01.js";
 

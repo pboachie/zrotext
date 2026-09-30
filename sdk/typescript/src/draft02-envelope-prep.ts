@@ -1,5 +1,6 @@
 /**
- * Experimental test-only profile-02 envelope preparation. Not a production SDK
+ * Profile-02 envelope wire-layout core. The production composer
+ * (`composeSealedOutboundEnvelope`) delegates its byte layout to this module
  * path: nothing here may be connected to a send, inbound, webhook, or radio
  * route. Composition is refused unless the exact `Manifest02` object returned by
  * `verifyManifest02` authorizes the request through `authorizeOutbound02` /
