@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Account-scoped inventory; never exports ciphertext or private key material.
+pub(crate) mod activation;
 use super::{ConversationError, SessionPrincipal, fresh_owner, lock_owner};
 use serde::Serialize;
 use std::time::SystemTime;
@@ -28,11 +29,31 @@ pub(crate) struct SealedEventInventory {
     pub envelope_profile: i16,
     pub received_at_ms: i64,
     pub content_retained: bool,
+    pub interval_id: Option<Uuid>,
+    pub verified_manifest_version: Option<i64>,
+    pub verified_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct IntervalInventory {
+    pub interval_id: Uuid,
+    pub device_id: Uuid,
+    pub line_id: Uuid,
+    pub binding_generation: i64,
+    pub phase: String,
+    pub created_at_ms: i64,
+    pub accepted_at_ms: Option<i64>,
+    pub closed_at_ms: Option<i64>,
+    pub trust_generation: i64,
+    pub activation_version: i64,
 }
 
 #[derive(Debug, Serialize)]
 pub(crate) struct ConversationInventory {
     pub consent: Option<ConsentInventory>,
+    pub intervals: Vec<IntervalInventory>,
+    pub intervals_truncated: bool,
+    pub intervals_next_cursor: Option<Uuid>,
     pub sealed_events: Vec<SealedEventInventory>,
     pub sealed_events_truncated: bool,
     pub sealed_events_next_cursor: Option<Uuid>,
@@ -40,15 +61,51 @@ pub(crate) struct ConversationInventory {
 
 /// This inventories all account-owned sealed inbound identities, including
 /// purged replay tombstones. It confers no content-read or key authority.
-/// Consent currently stores only the latest selection, not interval history.
+/// Includes bounded interval history and admission metadata without statements, keys or bodies.
 pub(crate) async fn inventory(
     client: &mut Client,
     owner: &SessionPrincipal,
     before: Option<Uuid>,
+    interval_before: Option<Uuid>,
 ) -> Result<ConversationInventory, ConversationError> {
     let tx = client.transaction().await?;
     lock_owner(&tx, owner).await?;
     let account = owner.tenant.account_id();
+    let interval_at: Option<SystemTime> = match interval_before {
+        Some(id) => Some(
+            tx.query_opt(
+                "SELECT created_at FROM conversation_intervals WHERE account_id=$1 AND id=$2",
+                &[&account, &id],
+            )
+            .await?
+            .ok_or(ConversationError::NotFound)?
+            .get(0),
+        ),
+        None => None,
+    };
+    let interval_rows=tx.query("SELECT id,device_id,line_id,binding_generation,phase,(extract(epoch FROM created_at)*1000)::bigint,accepted_at_ms,(extract(epoch FROM closed_at)*1000)::bigint,trust_generation,activation_version FROM conversation_intervals WHERE account_id=$1 AND ($2::timestamptz IS NULL OR (created_at,id)<($2,$3::uuid)) ORDER BY created_at DESC,id DESC LIMIT $4 FOR SHARE", &[&account,&interval_at,&interval_before,&(INVENTORY_LIMIT as i64+1)]).await?;
+    let intervals_truncated = interval_rows.len() > INVENTORY_LIMIT;
+    let intervals: Vec<_> = interval_rows
+        .iter()
+        .take(INVENTORY_LIMIT)
+        .map(|r| IntervalInventory {
+            interval_id: r.get(0),
+            device_id: r.get(1),
+            line_id: r.get(2),
+            binding_generation: r.get(3),
+            phase: r.get(4),
+            created_at_ms: r.get(5),
+            accepted_at_ms: r.get(6),
+            closed_at_ms: r.get(7),
+            trust_generation: r.get(8),
+            activation_version: r.get(9),
+        })
+        .collect();
+    let intervals_next_cursor = if intervals_truncated {
+        intervals.last().map(|r| r.interval_id)
+    } else {
+        None
+    };
     let point: Option<(SystemTime, Uuid)> = match before {
         Some(id) => Some((
             tx.query_opt(
@@ -75,11 +132,11 @@ pub(crate) async fn inventory(
     });
     let rows = tx
         .query(
-            "SELECT id,device_id,line_id,binding_generation,envelope_profile, \
-         (extract(epoch FROM received_at)*1000)::bigint,(envelope IS NOT NULL) \
-         FROM sealed_inbound_events WHERE account_id=$1 \
-         AND ($2::timestamptz IS NULL OR (received_at,id)<($2,$3::uuid)) \
-         ORDER BY received_at DESC,id DESC LIMIT $4 FOR SHARE",
+            "SELECT e.id,e.device_id,e.line_id,e.binding_generation,e.envelope_profile, \
+         (extract(epoch FROM received_at)*1000)::bigint,(envelope IS NOT NULL),p.interval_id,p.manifest_version,p.accepted_at_ms \
+         FROM sealed_inbound_events e LEFT JOIN conversation_inbound_provenance p ON (p.account_id,p.event_id)=(e.account_id,e.id) WHERE e.account_id=$1 \
+         AND ($2::timestamptz IS NULL OR (received_at,e.id)<($2,$3::uuid)) \
+         ORDER BY received_at DESC,e.id DESC LIMIT $4 FOR SHARE OF e",
             &[
                 &account,
                 &before_at,
@@ -100,6 +157,9 @@ pub(crate) async fn inventory(
             envelope_profile: row.get(4),
             received_at_ms: row.get(5),
             content_retained: row.get(6),
+            interval_id: row.get(7),
+            verified_manifest_version: row.get(8),
+            verified_at_ms: row.get(9),
         })
         .collect();
     let sealed_events_next_cursor = if sealed_events_truncated {
@@ -111,6 +171,9 @@ pub(crate) async fn inventory(
     tx.commit().await?;
     Ok(ConversationInventory {
         consent,
+        intervals,
+        intervals_truncated,
+        intervals_next_cursor,
         sealed_events,
         sealed_events_truncated,
         sealed_events_next_cursor,

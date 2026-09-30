@@ -59,13 +59,13 @@ async fn inventory_is_bounded_account_scoped_and_preserves_purged_identities() {
     .await
     .unwrap();
     let mut client = f.connect().await;
-    let first = lifecycle::inventory(&mut client, &owner, None)
+    let first = lifecycle::inventory(&mut client, &owner, None, None)
         .await
         .unwrap();
     assert_eq!(first.consent.unwrap().peer.as_deref(), Some("+12"));
     assert_eq!(first.sealed_events.len(), lifecycle::INVENTORY_LIMIT);
     assert!(first.sealed_events_truncated);
-    let second = lifecycle::inventory(&mut client, &owner, first.sealed_events_next_cursor)
+    let second = lifecycle::inventory(&mut client, &owner, first.sealed_events_next_cursor, None)
         .await
         .unwrap();
     assert_eq!(second.sealed_events.len(), 2);
@@ -87,17 +87,17 @@ async fn inventory_is_bounded_account_scoped_and_preserves_purged_identities() {
         .await
         .unwrap();
     let other_owner = owner_for(&f, other).await;
-    let other_view = lifecycle::inventory(&mut client, &other_owner, None)
+    let other_view = lifecycle::inventory(&mut client, &other_owner, None, None)
         .await
         .unwrap();
     assert!(other_view.consent.is_none());
     assert!(other_view.sealed_events.is_empty());
     assert!(matches!(
-        lifecycle::inventory(&mut client, &other_owner, Some(event)).await,
+        lifecycle::inventory(&mut client, &other_owner, Some(event), None).await,
         Err(ConversationError::NotFound)
     ));
     revoke_conversation(&mut client, &owner).await.unwrap();
-    let withdrawn = lifecycle::inventory(&mut client, &owner, None)
+    let withdrawn = lifecycle::inventory(&mut client, &owner, None, None)
         .await
         .unwrap()
         .consent
@@ -111,7 +111,7 @@ async fn inventory_is_bounded_account_scoped_and_preserves_purged_identities() {
     .await
     .unwrap();
     assert!(matches!(
-        lifecycle::inventory(&mut client, &owner, None).await,
+        lifecycle::inventory(&mut client, &owner, None, None).await,
         Err(ConversationError::Forbidden)
     ));
     f.cleanup().await;
@@ -146,7 +146,7 @@ async fn withdrawn_metadata_cleanup_respects_cutoff_row_locks_and_new_consent() 
     assert_eq!(counts.conversation_consents, 1);
     assert!(counts.any_full(1));
     assert!(
-        lifecycle::inventory(&mut client, &owner, None)
+        lifecycle::inventory(&mut client, &owner, None, None)
             .await
             .unwrap()
             .consent
@@ -404,7 +404,7 @@ async fn owner(f: &Fixture) -> SessionPrincipal {
     owner_for(f, f.account).await
 }
 
-async fn owner_for(f: &Fixture, account: Uuid) -> SessionPrincipal {
+pub(super) async fn owner_for(f: &Fixture, account: Uuid) -> SessionPrincipal {
     principal_for(f, account, "owner").await
 }
 
@@ -436,10 +436,15 @@ async fn principal_for(f: &Fixture, account: Uuid, role: &str) -> SessionPrincip
         .unwrap()
 }
 
-async fn prepared() -> (Fixture, SessionPrincipal) {
+pub(super) async fn prepared() -> (Fixture, SessionPrincipal) {
     let f = Fixture::new().await;
     f.db.batch_execute(include_str!(
         "../../../../deploy/compose/migrations/064_owner_conversation_consent.sql"
+    ))
+    .await
+    .unwrap();
+    f.db.batch_execute(include_str!(
+        "../../../../deploy/compose/migrations/065_conversation_activation.sql"
     ))
     .await
     .unwrap();
@@ -449,7 +454,13 @@ async fn prepared() -> (Fixture, SessionPrincipal) {
 
 // Exact signed candidate envelope with opaque synthetic ciphertext. These
 // tests exercise verified ingest and reader isolation, not HPKE/device proof.
-fn envelope(f: &Fixture, event: Uuid, sequence: u64, observed: u64, peer: &[u8]) -> Vec<u8> {
+pub(super) fn envelope(
+    f: &Fixture,
+    event: Uuid,
+    sequence: u64,
+    observed: u64,
+    peer: &[u8],
+) -> Vec<u8> {
     let mut bytes = b"ZTSE\x02\x02\0\0".to_vec();
     bytes.extend(172u16.to_be_bytes());
     bytes.extend(f.account.as_bytes());

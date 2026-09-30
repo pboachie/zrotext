@@ -452,6 +452,11 @@ async fn candidate_ingest_preserves_legacy_profile_constraints_and_prune_tombsto
     ))
     .await
     .unwrap();
+    db.batch_execute(include_str!(
+        "../../../../../deploy/compose/migrations/065_conversation_activation.sql"
+    ))
+    .await
+    .unwrap();
     let pruned = crate::retention::prune(&mut db, policy, 10).await.unwrap();
     assert_eq!(pruned.sealed_inbound_events, 2);
     assert_eq!(count(&f).await, 2);

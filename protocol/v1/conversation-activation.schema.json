@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Dormant conversation acknowledgment adapter boundary",
+  "description": "Shape only; canonical binary parsing, signature, manifest and session verification are mandatory. No production device-stream frame is added.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["statement", "signature", "operation"],
+  "properties": {
+    "operation": {"enum": ["approve", "installed"]},
+    "statement": {"type": "string", "contentEncoding": "base64", "minLength": 508, "maxLength": 1368, "pattern": "^[A-Za-z0-9+/]+={0,2}$"},
+    "signature": {"type": "string", "contentEncoding": "base64", "minLength": 88, "maxLength": 88, "pattern": "^[A-Za-z0-9+/]{86}==$"}
+  }
+}
