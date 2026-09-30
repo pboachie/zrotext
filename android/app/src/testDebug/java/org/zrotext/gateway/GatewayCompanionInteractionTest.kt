@@ -40,6 +40,7 @@ class GatewayCompanionInteractionTest {
     @Test fun homeShowsRealStateAndNavigationKeepsPilotActionsSeparate() {
         compose.onNodeWithText("Gateway home").assertExists()
         compose.onNodeWithText("Arm one test SMS").assertDoesNotExist()
+        compose.onNodeWithText("Pause stops connections. SMS receiving access can still process messages locally; revoke it in Android app settings to stop local processing.").assertExists()
         compose.runOnIdle {
             AuthenticatedGatewayStatus.value = "Waiting for network"
             AuthenticatedGatewayStatus.heartbeats = 7
@@ -77,6 +78,19 @@ class GatewayCompanionInteractionTest {
         compose.onNodeWithText("Tools").performClick()
         compose.onNodeWithText("Start inbound metadata pilot").performScrollTo().performClick()
         compose.onNodeWithText("Pilot status: Set a WSS device stream and approved device ID").assertExists()
+    }
+
+    @Test fun detailsWidgetCanBeOpenedAndClosedWithoutStartingPilots() {
+        compose.onNodeWithText("Phone details").performScrollTo().performClick()
+        compose.onNodeWithText("Pairing in this session: Not paired").assertExists()
+        compose.onNodeWithText("Test connection: Paused").assertExists()
+        compose.onNodeWithText("Close widget").performScrollTo().performClick()
+        compose.onNodeWithText("Close widget").assertDoesNotExist()
+        compose.onNodeWithText("Gateway home").assertExists()
+        compose.runOnIdle {
+            assertNull(shadowOf(compose.activity).lastRequestedPermission)
+            assertTrue(shadowOf(compose.activity).allStartedServices.isEmpty())
+        }
     }
 
     @Test fun receivingDisclosureHasReachableStackedChoicesAtLargeTextAndCanBeDeclined() {
