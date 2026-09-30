@@ -2,7 +2,7 @@ use super::*;
 
 // Keep the admission fixtures on the complete, reviewed schema. SQL is
 // embedded at build time so tests never execute files discovered at runtime.
-const TEST_MIGRATIONS: [(&str, &str); 60] = [
+const TEST_MIGRATIONS: [(&str, &str); 61] = [
     (
         "001_foundation.sql",
         include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
@@ -247,6 +247,10 @@ const TEST_MIGRATIONS: [(&str, &str); 60] = [
         "060_optout_review_indexes.sql",
         include_str!("../../../deploy/compose/migrations/060_optout_review_indexes.sql"),
     ),
+    (
+        "061_inbound_events_attempt_fk_index.sql",
+        include_str!("../../../deploy/compose/migrations/061_inbound_events_attempt_fk_index.sql"),
+    ),
 ];
 
 /// Applies every numbered migration in order. Shared by the PostgreSQL-backed
@@ -313,6 +317,11 @@ pub(crate) async fn apply_test_migrations(client: &Client) {
                 .unwrap();
             client
                 .batch_execute("DROP INDEX IF EXISTS recipient_suppressions_active")
+                .await
+                .unwrap();
+        }
+        if name == "061_inbound_events_attempt_fk_index.sql" {
+            client.batch_execute("CREATE INDEX erasure_fk_inbound_events_attempt ON inbound_events(account_id,device_id,message_id,attempt_id)")
                 .await
                 .unwrap();
         }

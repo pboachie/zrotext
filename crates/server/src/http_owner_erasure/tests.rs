@@ -263,10 +263,16 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "060_optout_review_indexes.sql",
         include_str!("../../../../deploy/compose/migrations/060_optout_review_indexes.sql"),
     ),
+    (
+        "061_inbound_events_attempt_fk_index.sql",
+        include_str!(
+            "../../../../deploy/compose/migrations/061_inbound_events_attempt_fk_index.sql"
+        ),
+    ),
 ];
 
 /// Indexes the Compose migrator prepares with CREATE INDEX CONCURRENTLY in
-/// autocommit mode before the numbered 034, 040, 049, 050, 052, 059 and 060 files record
+/// autocommit mode before the numbered 034, 040, 049, 050, 052, 059, 060 and 061 files record
 /// their checksum gates (deploy/compose/README.md, "Migration 034 is a narrow
 /// online-index exception"). The gate SQL validates the exact index
 /// definition; a fresh fixture schema builds the identical index with a
@@ -311,6 +317,10 @@ const PREPARED_INDEXES: &[(&str, &str)] = &[
     (
         "060_optout_review_indexes.sql",
         "CREATE INDEX recipient_suppressions_review_queue ON recipient_suppressions(account_id,changed_at DESC,recipient_e164 DESC) WHERE active AND source IN ('sms_review','sms_unsolicited_review'); CREATE INDEX recipient_suppressions_review_event ON recipient_suppressions(account_id,COALESCE(source_event_id,source_unsolicited_event_id)) WHERE source IN ('sms_review','sms_unsolicited_review'); DROP INDEX recipient_suppressions_active",
+    ),
+    (
+        "061_inbound_events_attempt_fk_index.sql",
+        "CREATE INDEX erasure_fk_inbound_events_attempt ON inbound_events(account_id,device_id,message_id,attempt_id)",
     ),
 ];
 
@@ -2724,13 +2734,15 @@ async fn erasing_thousands_of_referenced_rows_completes_within_the_runtime_timeo
     // whole route 0.9-1.4 s, at least 7x under the timeout. All remaining work is
     // linear in the row count. The earlier version of this test put all
     // 5000 attempts on one message and ran on unanalyzed tables. That made
-    // the inbound_events -> message_attempts check quadratic. #515 does not
-    // index that check, which is served only by an index prefix. That one
-    // check took 7.4 s of an 8.5 s DELETE locally and overran 10 s on
-    // loaded runners. The bulk rows now use a few attempts per message, as
+    // the inbound_events -> message_attempts check quadratic: until
+    // migration 061 it was served only by the (account_id, message_id)
+    // prefix of inbound_events_timeline, and that one check took 7.4 s of
+    // an 8.5 s DELETE locally and overran 10 s on loaded runners (#601).
+    // Migration 061 gives it the dedicated four-column index this test now
+    // pins below. The bulk rows still use a few attempts per message, as
     // real retries do, and the populated tables are analyzed, as autovacuum
-    // does in production, so the timing reflects only the checks #515
-    // indexes.
+    // does in production, so the timing does not depend on planner
+    // statistics that a fresh test database lacks.
     let (admin, mut db, database_url, schema) = migrated_schema("fk_scale").await;
     let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(37)).unwrap());
     let handler_database_url = handler_url(&database_url, "zt_erasure_fk_scale");
@@ -2816,21 +2828,20 @@ async fn erasing_thousands_of_referenced_rows_completes_within_the_runtime_timeo
         assert_eq!(count, rows + 1);
     }
     // Production tables carry planner statistics (autovacuum analyzes them
-    // after bulk writes). Without them the foreign-key trigger's generic
-    // plan for inbound_events -> message_attempts, an FK outside #515 that
-    // has no index of its own, filters every event of the device instead of
-    // using the (account_id, message_id) prefix of inbound_events_timeline,
-    // and that one check alone costs seconds. Analyze only the populated
-    // tables; the always-empty hold tables keep their default estimates, as
-    // in a fresh deployment.
+    // after bulk writes), and the foreign-key trigger probes run as generic
+    // plans, so a fresh unanalyzed fixture can pick a different shape than
+    // production would. Analyze only the populated tables; the always-empty
+    // hold tables keep their default estimates, as in a fresh deployment.
+    // The probes themselves stay pinned by the plan and counter checks
+    // below regardless of statistics.
     db.batch_execute(
         "ANALYZE messages, message_attempts, inbound_events, webhook_deliveries, recipient_suppressions",
     )
     .await
     .unwrap();
     // (1) Each foreign-key probe the DELETE triggers is planned as an index
-    // scan on its erasure_fk_* index; without migration 059 each of these
-    // plans is a sequential scan over the account's thousands of rows.
+    // scan on its erasure_fk_* index; without migrations 059 and 061 each of
+    // these plans is a sequential scan over the account's thousands of rows.
     let sample_event: Uuid = db
         .query_one(
             &format!("SELECT e.id {BULK_EVENTS} LIMIT 1"),
@@ -2839,14 +2850,15 @@ async fn erasing_thousands_of_referenced_rows_completes_within_the_runtime_timeo
         .await
         .unwrap()
         .get(0);
-    let sample_attempt: Uuid = db
+    let sample_row = db
         .query_one(
-            &format!("SELECT e.attempt_id {BULK_EVENTS} LIMIT 1"),
+            &format!("SELECT e.attempt_id, e.message_id {BULK_EVENTS} LIMIT 1"),
             &[&a.account_id, &marker],
         )
         .await
-        .unwrap()
-        .get(0);
+        .unwrap();
+    let sample_attempt: Uuid = sample_row.get(0);
+    let sample_message: Uuid = sample_row.get(1);
     for (index, probe, key, with_account) in [
         (
             "erasure_fk_webhook_deliveries_event",
@@ -2897,12 +2909,33 @@ async fn erasing_thousands_of_referenced_rows_completes_within_the_runtime_timeo
             "foreign-key probe must use {index}: {plan}"
         );
     }
+    // The inbound_events -> message_attempts probe keys on all four foreign
+    // key columns; before migration 061 it could only ride the
+    // (account_id, message_id) prefix of inbound_events_timeline.
+    {
+        let plan: String = db
+            .query(
+                "EXPLAIN (COSTS OFF) SELECT 1 FROM inbound_events                  WHERE account_id=$1 AND device_id=$2 AND message_id=$3 AND attempt_id=$4",
+                &[&a.account_id, &device, &sample_message, &sample_attempt],
+            )
+            .await
+            .unwrap()
+            .iter()
+            .map(|row| row.get::<_, String>(0))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            plan.contains("erasure_fk_inbound_events_attempt") && !plan.contains("Seq Scan"),
+            "attempt foreign-key probe must use erasure_fk_inbound_events_attempt: {plan}"
+        );
+    }
 
     // (2) Run the handler's exact delete sequence and read this
     // transaction's own scan counters, then roll it back so the route below
     // erases the same data. Every deleted inbound event fires one probe on
     // each event-keyed index, and every deleted attempt fires one probe on
-    // the attempt index, so each index on a populated referencing table must
+    // the attempt index and on the inbound_events foreign-key index of
+    // migration 061, so each index on a populated referencing table must
     // be scanned at least `rows` times. The two hold tables are left out
     // here: their rows are append-only and block erasure (see
     // schema_protected_consent_rows_block_the_whole_erasure), so an account
@@ -2922,6 +2955,7 @@ async fn erasing_thousands_of_referenced_rows_completes_within_the_runtime_timeo
             "erasure_fk_webhook_deliveries_event",
             "erasure_fk_suppressions_event",
             "erasure_fk_suppressions_attempt",
+            "erasure_fk_inbound_events_attempt",
         ] {
             let row = tx
                 .query_one(
@@ -2940,7 +2974,11 @@ async fn erasing_thousands_of_referenced_rows_completes_within_the_runtime_timeo
         }
         // For a table, the same counter is its sequential scan count. A
         // per-row sequential scan would show up here as thousands.
-        for table in ["webhook_deliveries", "recipient_suppressions"] {
+        for table in [
+            "webhook_deliveries",
+            "recipient_suppressions",
+            "inbound_events",
+        ] {
             let seq_scans: i64 = tx
                 .query_one(
                     "SELECT pg_stat_get_xact_numscans(to_regclass($1))",

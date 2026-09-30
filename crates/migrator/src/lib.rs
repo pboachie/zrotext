@@ -9,6 +9,7 @@ use tokio_postgres::Client;
 mod abuse_counters_index_drop;
 mod admission_pending_index;
 mod erasure_fk_indexes;
+mod inbound_events_attempt_fk_index;
 mod optout_review_indexes;
 mod owner_queue_index;
 mod radio_evidence_index;
@@ -17,6 +18,7 @@ use abuse_counters_index_drop::*;
 use admission_pending_index::*;
 mod webhook_history_index;
 use erasure_fk_indexes::*;
+use inbound_events_attempt_fk_index::*;
 use optout_review_indexes::*;
 use owner_queue_index::*;
 use radio_evidence_index::*;
@@ -329,6 +331,9 @@ async fn apply_locked(
     if ledger.contains_key(&OPTOUT_REVIEW_INDEXES_MIGRATION) {
         verify_optout_review_indexes(client).await?;
     }
+    if ledger.contains_key(&INBOUND_EVENTS_ATTEMPT_FK_INDEX_MIGRATION) {
+        verify_inbound_events_attempt_fk_index(client).await?;
+    }
 
     for migration in migrations {
         if ledger.contains_key(&migration.version) {
@@ -424,6 +429,16 @@ async fn apply_locked(
             // migrator jobs, and the creates are idempotent per index.
             prepare_optout_review_indexes(client).await?;
         }
+        if migration.version == INBOUND_EVENTS_ATTEMPT_FK_INDEX_MIGRATION {
+            if migration.filename != INBOUND_EVENTS_ATTEMPT_FK_INDEX_FILE {
+                return Err(MigrationError::InvalidDirectory(format!(
+                    "migration {INBOUND_EVENTS_ATTEMPT_FK_INDEX_MIGRATION:03} must be {INBOUND_EVENTS_ATTEMPT_FK_INDEX_FILE}"
+                )));
+            }
+            // CREATE INDEX CONCURRENTLY cannot run in the numbered migration's
+            // transaction. The advisory lock still serializes migrator jobs.
+            prepare_inbound_events_attempt_fk_index(client).await?;
+        }
         let tx = client.transaction().await?;
         if let Err(error) = tx.batch_execute(&migration.sql).await {
             // Dropping the transaction closes it without committing the failed file.
@@ -495,6 +510,12 @@ async fn apply_locked(
         .any(|migration| migration.version == OPTOUT_REVIEW_INDEXES_MIGRATION)
     {
         verify_optout_review_indexes(client).await?;
+    }
+    if migrations
+        .iter()
+        .any(|migration| migration.version == INBOUND_EVENTS_ATTEMPT_FK_INDEX_MIGRATION)
+    {
+        verify_inbound_events_attempt_fk_index(client).await?;
     }
     Ok(applied)
 }
@@ -864,6 +885,8 @@ mod abuse_counters_index_drop_tests;
 mod admission_pending_index_tests;
 #[cfg(test)]
 mod erasure_fk_index_tests;
+#[cfg(test)]
+mod inbound_events_attempt_fk_index_tests;
 #[cfg(test)]
 mod online_index_tests;
 #[cfg(test)]

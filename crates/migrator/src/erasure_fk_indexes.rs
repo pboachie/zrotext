@@ -84,13 +84,13 @@ WHERE ns.nspname = 'public' AND idx.relname = '{index_name}'
     )
 }
 
-struct ErasureFkIndexSpec {
-    name: &'static str,
-    table: &'static str,
-    columns: &'static [&'static str],
-    create: &'static str,
-    drop: &'static str,
-    predicate: &'static str,
+pub(super) struct ErasureFkIndexSpec {
+    pub(super) name: &'static str,
+    pub(super) table: &'static str,
+    pub(super) columns: &'static [&'static str],
+    pub(super) create: &'static str,
+    pub(super) drop: &'static str,
+    pub(super) predicate: &'static str,
 }
 
 const ERASURE_FK_INDEXES: [ErasureFkIndexSpec; 5] = [
@@ -149,7 +149,7 @@ async fn erasure_fk_index_status(
         .map(|row| (row.get(0), row.get(1))))
 }
 
-async fn prepare_erasure_fk_index(
+pub(super) async fn prepare_erasure_fk_index(
     client: &Client,
     spec: &ErasureFkIndexSpec,
 ) -> Result<(), MigrationError> {
