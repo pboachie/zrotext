@@ -177,6 +177,179 @@ fn conversation_selectors_refuse_ambiguous_or_noncanonical_peers() {
     }
 }
 
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn reader_requires_exact_current_manifest_and_refuses_revoked_root_authority() {
+    let (mut f, owner) = prepared().await;
+    let mut client = f.connect().await;
+    enable_conversation(&mut client, &owner, &consent(f.device, f.line))
+        .await
+        .unwrap();
+    let old = Uuid::new_v4();
+    capture(&f, old, 1, b"+12", 0).await;
+    assert!(read_event(&mut client, &owner, old).await.is_ok());
+    f.advance();
+    let current = Uuid::new_v4();
+    let bytes = capture(&f, current, 2, b"+12", 0).await;
+    // Even unchanged reader key bytes do not substitute for the exact epoch.
+    assert!(matches!(
+        read_event(&mut client, &owner, old).await,
+        Err(ConversationError::Forbidden)
+    ));
+    assert_eq!(
+        read_event(&mut client, &owner, current).await.unwrap(),
+        bytes
+    );
+    f.db.execute(
+        "UPDATE sealed_manifest_authorities SET revoked_at=clock_timestamp() WHERE account_id=$1",
+        &[&f.account],
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        read_event(&mut client, &owner, current).await,
+        Err(ConversationError::Forbidden)
+    ));
+    // Persisted ciphertext remains opaque; revocation is an access fence.
+    assert!(
+        f.db.query_one(
+            "SELECT envelope IS NOT NULL FROM sealed_inbound_events WHERE id=$1",
+            &[&current]
+        )
+        .await
+        .unwrap()
+        .get::<_, bool>(0)
+    );
+    f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn reader_waits_for_manifest_before_account_and_observes_withdrawal() {
+    let (f, owner) = prepared().await;
+    enable_conversation(&mut f.connect().await, &owner, &consent(f.device, f.line))
+        .await
+        .unwrap();
+    let event = Uuid::new_v4();
+    capture(&f, event, 1, b"+12", 0).await;
+    let mut blocker = f.connect().await;
+    let blocker_pid: i32 = blocker
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await
+        .unwrap()
+        .get(0);
+    let tx = blocker.transaction().await.unwrap();
+    tx.query_one(
+        "SELECT account_id FROM sealed_manifest_authorities WHERE account_id=$1 FOR UPDATE",
+        &[&f.account],
+    )
+    .await
+    .unwrap();
+    let mut reader = f.connect().await;
+    let reader_pid: i32 = reader
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await
+        .unwrap()
+        .get(0);
+    let pending = read_event(&mut reader, &owner, event);
+    tokio::pin!(pending);
+    blocked(&f.db, pending.as_mut(), reader_pid, blocker_pid).await;
+    // NOWAIT proves the blocked reader did not hold account while requesting
+    // manifest authority. Account-only withdrawal can therefore finish.
+    let mut withdrawal = f.connect().await;
+    let proof = withdrawal.transaction().await.unwrap();
+    proof
+        .query_one(
+            "SELECT id FROM accounts WHERE id=$1 FOR UPDATE NOWAIT",
+            &[&f.account],
+        )
+        .await
+        .unwrap();
+    proof.rollback().await.unwrap();
+    revoke_conversation(&mut withdrawal, &owner).await.unwrap();
+    tx.commit().await.unwrap();
+    assert!(matches!(pending.await, Err(ConversationError::NotFound)));
+    f.cleanup().await;
+}
+
+async fn expiry_during_event_wait(expire_reader: bool) {
+    let (mut f, owner) = prepared().await;
+    enable_conversation(&mut f.connect().await, &owner, &consent(f.device, f.line))
+        .await
+        .unwrap();
+    let expires =
+        f.db.query_one(
+            "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint+1000",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0);
+    if expire_reader {
+        // Keep manifest/version/digest unchanged during the wait. Only the
+        // archive reader's validity ends; manifest expiry remains in the future.
+        f.bytes[151 + 140..151 + 148].copy_from_slice(&(expires as u64).to_be_bytes());
+    } else {
+        f.bytes[45..53].copy_from_slice(&(expires as u64).to_be_bytes());
+    }
+    f.resign();
+    let event = Uuid::new_v4();
+    capture(&f, event, 1, b"+12", 0).await;
+    let mut blocker = f.connect().await;
+    let blocker_pid: i32 = blocker
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await
+        .unwrap()
+        .get(0);
+    let tx = blocker.transaction().await.unwrap();
+    tx.query_one(
+        "SELECT id FROM sealed_inbound_events WHERE id=$1 FOR UPDATE",
+        &[&event],
+    )
+    .await
+    .unwrap();
+    let mut reader = f.connect().await;
+    let reader_pid: i32 = reader
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await
+        .unwrap()
+        .get(0);
+    let pending = read_event(&mut reader, &owner, event);
+    tokio::pin!(pending);
+    blocked(&f.db, pending.as_mut(), reader_pid, blocker_pid).await;
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while f
+            .db
+            .query_one(
+                "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint<$1",
+                &[&expires],
+            )
+            .await
+            .unwrap()
+            .get::<_, bool>(0)
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert!(matches!(pending.await, Err(ConversationError::Forbidden)));
+    f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn manifest_expiry_during_event_wait_never_returns_content() {
+    expiry_during_event_wait(false).await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn archive_reader_expiry_during_event_wait_never_returns_content() {
+    expiry_during_event_wait(true).await;
+}
+
 fn app() -> Router {
     router(OwnerConversationsState {
         database_url: "postgres://unused".into(),
@@ -447,8 +620,53 @@ async fn stale_generation_device_revocation_and_observer_role_fail_closed() {
     let outsider = owner_for(&f, foreign_account).await;
     assert!(matches!(
         read_event(&mut f.connect().await, &outsider, event).await,
+        Err(ConversationError::Forbidden)
+    ));
+    // Independent verified account B shares this schema with its own root,
+    // approved device/line and active selection. Missing-authority rejection
+    // alone would not exercise event isolation after manifest admission.
+    let other = Fixture::new().await;
+    capture(&other, Uuid::new_v4(), 1, b"+12", 0).await;
+    f.db.execute("INSERT INTO accounts(id) VALUES($1)", &[&other.account])
+        .await
+        .unwrap();
+    let authorized_other = owner_for(&f, other.account).await;
+    for table in [
+        "devices",
+        "device_keys",
+        "phone_lines",
+        "device_line_bindings",
+        "sealed_manifest_authorities",
+    ] {
+        f.db.batch_execute(&format!(
+            "INSERT INTO {table} SELECT * FROM {}.{table}",
+            other.schema
+        ))
+        .await
+        .unwrap();
+    }
+    enable_conversation(
+        &mut f.connect().await,
+        &authorized_other,
+        &consent(other.device, other.line),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        read_event(&mut f.connect().await, &authorized_other, event).await,
         Err(ConversationError::NotFound)
     ));
+    // Capture a new signed fixture event after B's selection; do not retime
+    // immutable historical bytes just to make a consent assertion pass.
+    let new_event = Uuid::new_v4();
+    capture(&other, new_event, 2, b"+12", 0).await;
+    f.db.batch_execute(&format!("INSERT INTO sealed_inbound_events SELECT * FROM {}.sealed_inbound_events WHERE id='{new_event}'", other.schema)).await.unwrap();
+    assert!(
+        read_event(&mut f.connect().await, &authorized_other, new_event)
+            .await
+            .is_ok()
+    );
+    other.cleanup().await;
     f.db.execute(
         "UPDATE devices SET revoked_at=clock_timestamp() WHERE id=$1",
         &[&f.device],
