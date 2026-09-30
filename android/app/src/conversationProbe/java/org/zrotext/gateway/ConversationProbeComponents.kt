@@ -30,13 +30,14 @@ class ConversationProbeActivity:ComponentActivity() {
 }
 class ConversationProbeService:Service() {
     private val thread=HandlerThread("synthetic-receipt")
+    private lateinit var ingress:ConversationServiceIngress
     private val receiver=object:BroadcastReceiver() {
         override fun onReceive(context:Context,intent:Intent) {
             if(intent.action!=ConversationProbeSession.ACTION || intent.getStringExtra("token")!=ConversationProbeSession.token) return
             val body=intent.getStringExtra("body")?:return
             if(body.length !in 1..32768) return
             val scope=ConversationProbeSession.scope
-            try {ConversationProbeSession.observation.set(ConversationProbeSession.runtime.observeFirstReceipt(
+            try {ConversationProbeSession.observation.set(ingress.observeFirstReceipt(
                 "01".repeat(32),scope.peer,scope.lineId,scope.bindingGeneration,body))}
             finally {ConversationProbeSession.received.countDown()}
         }
@@ -44,6 +45,7 @@ class ConversationProbeService:Service() {
     override fun onCreate() {
         super.onCreate()
         check(Build.HARDWARE in setOf("ranchu","goldfish") && packageName=="org.zrotext.gateway.conversationprobe")
+        ingress=ConversationServiceIngress(ConversationProbeSession.runtime,{null},enabled=true)
         thread.start()
         val filter=IntentFilter(ConversationProbeSession.ACTION)
         if(Build.VERSION.SDK_INT>=33) registerReceiver(receiver,filter,null,Handler(thread.looper),Context.RECEIVER_NOT_EXPORTED)
@@ -52,7 +54,7 @@ class ConversationProbeService:Service() {
     override fun onBind(intent:Intent):IBinder=Binder()
     override fun onDestroy() {
         unregisterReceiver(receiver)
-        ConversationProbeSession.runtime.lifecycleLost(ConversationStopReason.WORKER_SHUTDOWN)
+        ingress.pause(ConversationStopReason.WORKER_SHUTDOWN)
         thread.quitSafely();super.onDestroy()
     }
 }

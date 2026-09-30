@@ -269,3 +269,32 @@ pin, finish production receiver/service and authenticated socket/key-custodian
 adapters, verify consent/export/retention/guarded-deletion integration and policy,
 and obtain release-owner signing/reviewer-access evidence. Physical/carrier testing
 is outside this explicitly simulator/emulator-only pass.
+
+## Release integration dependencies
+
+`ConversationServiceIngress` is the dormant service/decoded-receipt integration
+port. Construction defaults to disabled. Its explicit enable parameter is a code
+assembly option, not owner consent or an execution grant. The owning service must
+supply an independently sampled lifecycle-loss callback. Sampling failure closes
+admission. Pause closes eligibility synchronously and permanently for that port;
+its presentation snapshot separately reports durable local/remote closure success
+or failure. A new session requires a fresh runtime and explicit phone review.
+The isolated probe alone enables this port. Normal services remain unmounted.
+
+A deployable release must assemble these dependencies in order; none is supplied
+by turning on the ingress parameter:
+
+| Dependency | Required configuration/evidence | Current boundary |
+|---|---|---|
+| Schema and lifecycle | Verified ordered migrations 064 and 065, existing inventory/export, retention and guarded deletion | Dormant transactions and lifecycle tests; coordinator merge pins required |
+| Owner and phone authentication | Existing authenticated owner session and device socket; independently negotiated phone session/account/device/key/site/epoch | Canonical handlers verified, socket registration and authenticated context adapter pending |
+| Root and browser custody | User-initiated existing owner-root custodian, verified successor CAS and exact current reader authority; recovery must not silently grant a replacement key | Enrollment/signing interfaces and fixture custody tested; live custody wiring pending |
+| Device protection | Existing hardware-backed device keys, authenticated clock and protected journals, independently sampled permissions and exact selected-line continuity | Runtime/execution adapters tested; normal receiver/service mounting pending |
+| Consent and closure | Separate browser selection and phone body-transfer disclosure, exact interval/peer/key binding, both Pause paths, logout/permission/SIM/expiry fences | Pane/runtime and isolated service tested; production consent policy and pending-close ACK recovery remain gates |
+| Browser and confirmed reply | Authenticated event discovery/reader adapter, safe text rendering, exact recipient/body/line confirmation, revision fence before dispatch | Actual page plus SDK tested with synthetic adapters; authenticated endpoint/transport wiring pending |
+| Release packaging | No fixture source, credentials, loopback bridge or synthetic dispatch in ordinary APK; release-owner signing and reviewer access | Probe is a separate test-only APK; ordinary build remains separate |
+
+This candidate creates no environment flag that mounts routes or enables radio
+execution. Live credential provisioning, access grants, production enablement and
+any future carrier test require their own explicit authorization. Simulated
+results are not carrier delivery, physical accessibility or Play approval evidence.

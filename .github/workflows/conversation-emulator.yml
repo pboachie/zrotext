@@ -1,0 +1,67 @@
+name: Isolated conversation emulator
+on:
+  pull_request:
+    paths: ['android/**', 'crates/**', 'sdk/typescript/**', 'web/owner/**', 'deploy/compose/migrations/**', 'scripts/conversation_emulator.py', 'scripts/test_conversation_emulator.py', '.github/workflows/conversation-emulator.yml']
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  conversation-emulator:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: postgres:18.6-bookworm
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 3s --health-retries 12
+    env:
+      ZT_INBOUND_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/postgres
+      DATABASE_ALLOW_PLAINTEXT: 'true'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: gradle/actions/wrapper-validation@9c971963bec38e04b3d30dcc455b5382be2fdbfb
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd
+      - name: Install existing toolchains and isolated browser tooling
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal
+          sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0' 'emulator' 'system-images;android-28;google_apis;x86_64'
+          npm install --prefix "$RUNNER_TEMP/conversation-browser-tools" --no-save --ignore-scripts playwright@1.58.2
+          node "$RUNNER_TEMP/conversation-browser-tools/node_modules/playwright/cli.js" install --with-deps chromium
+          echo "ZT_CONVERSATION_BROWSER_TOOLS=$RUNNER_TEMP/conversation-browser-tools" >> "$GITHUB_ENV"
+      - name: Build only synthetic emulator artifacts
+        run: |
+          python3 -m unittest discover -s scripts -p test_conversation_emulator.py
+          (cd sdk/typescript && npm ci --ignore-scripts && npm run build)
+          cargo +1.97.1 test --locked -p zrotext-server --lib --features conversation-simulator-tests --no-run
+          (cd android && ./gradlew -PisolatedConversationProbe=true :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon)
+      - name: Boot owned isolated emulator and require round trip
+        run: |
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
+          echo no | avdmanager create avd --name ZROtext_Conversation_API28 --package 'system-images;android-28;google_apis;x86_64' --force
+          emulator -avd ZROtext_Conversation_API28 -port 5596 -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect > "$RUNNER_TEMP/conversation-emulator.log" 2>&1 &
+          emulator_pid=$!
+          trap 'adb -s emulator-5596 emu kill || true; kill "$emulator_pid" 2>/dev/null || true' EXIT
+          timeout 180 adb -s emulator-5596 wait-for-device
+          for attempt in $(seq 1 120); do
+            if [ "$(adb -s emulator-5596 shell getprop sys.boot_completed | tr -d '\r')" = 1 ]; then break; fi
+            sleep 1
+          done
+          test "$(adb -s emulator-5596 shell getprop sys.boot_completed | tr -d '\r')" = 1
+          python3 scripts/conversation_emulator.py --serial emulator-5596 --adb "$ANDROID_HOME/platform-tools/adb" --aapt "$ANDROID_HOME/build-tools/37.0.0/aapt" --toolchain 1.97.1 --skip-build

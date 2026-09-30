@@ -10,7 +10,8 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { prepareConfirmedFixture, openConfirmedFixture, signFixtureConfirmation } from "./conversation-simulator-send.mjs";
 const require=createRequire(import.meta.url);
-const { chromium }=require("playwright");
+const { chromium }=require(process.env.ZT_CONVERSATION_BROWSER_TOOLS
+    ? path.join(process.env.ZT_CONVERSATION_BROWSER_TOOLS,"node_modules/playwright") : "playwright");
 globalThis.crypto??=webcrypto;
 let input="";
 for await(const chunk of process.stdin){input+=chunk;if(input.length>100000)throw Error("Fixture input bound");}

@@ -131,4 +131,40 @@ class ConversationAuthenticatedRuntimeTest {
             assertEquals(ConversationCloseOutcome.DISABLED_CLOSURE_FAILED,snapshots.last().close)
         } finally {release.countDown();pool.shutdownNow()}
     }
+    @Test fun serviceIngressIsDisabledByDefault() {
+        activate()
+        val ingress=ConversationServiceIngress(assembly,{null})
+        assertEquals(ConversationObservation.DISCARDED,ingress.observeFirstReceipt("55".repeat(32),scope.peer,scope.lineId,1,"synthetic"))
+        assertEquals(0,db.journal().contentCount())
+    }
+    @Test fun servicePauseClosesBeforeReturningAndCannotResumeThisInstance() {
+        activate()
+        val ingress=ConversationServiceIngress(assembly,{null},enabled=true)
+        ingress.pause(ConversationStopReason.USER_STOP)
+        assertFalse(assembly.captureEligible())
+        assertEquals(ConversationObservation.DISCARDED,ingress.observeFirstReceipt("55".repeat(32),scope.peer,scope.lineId,1,"synthetic"))
+        drain();assertEquals(ConversationCloseOutcome.DURABLY_CLOSED,snapshots.last().close)
+    }
+    @Test fun serviceSampledPermissionLossClosesAndDiscardsBeforeStorage() {
+        activate()
+        val ingress=ConversationServiceIngress(assembly,{ConversationStopReason.PERMISSION_LOST},enabled=true)
+        assertEquals(ConversationObservation.DISCARDED,ingress.observeFirstReceipt("55".repeat(32),scope.peer,scope.lineId,1,"synthetic"))
+        assertFalse(assembly.captureEligible());assertEquals(0,db.journal().contentCount())
+        drain();assertEquals(ConversationStopReason.PERMISSION_LOST,snapshots.last().stopReason)
+    }
+    @Test fun serviceAuthoritySamplingFailureFailsClosed() {
+        activate()
+        val ingress=ConversationServiceIngress(assembly,{error("authority unavailable")},enabled=true)
+        assertEquals(ConversationObservation.DISCARDED,ingress.observeFirstReceipt("55".repeat(32),scope.peer,scope.lineId,1,"synthetic"))
+        assertFalse(assembly.captureEligible());assertEquals(0,db.journal().contentCount())
+    }
+    @Test fun serviceIngressRetainsRuntimeDuplicateAndExpiryFences() {
+        activate()
+        val ingress=ConversationServiceIngress(assembly,{null},enabled=true)
+        assertEquals(ConversationObservation.CAPTURED,ingress.observeFirstReceipt("55".repeat(32),scope.peer,scope.lineId,1,"synthetic"))
+        assertEquals(ConversationObservation.DUPLICATE,ingress.observeFirstReceipt("55".repeat(32),scope.peer,scope.lineId,1,"synthetic"))
+        elapsed=10001
+        assertEquals(ConversationObservation.DISCARDED,ingress.observeFirstReceipt("66".repeat(32),scope.peer,scope.lineId,1,"synthetic"))
+        assertEquals(1,db.journal().contentCount())
+    }
 }
