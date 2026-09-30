@@ -8,12 +8,14 @@ use tokio_postgres::Client;
 
 mod abuse_counters_index_drop;
 mod admission_pending_index;
+mod erasure_fk_indexes;
 mod owner_queue_index;
 mod radio_evidence_index;
 mod recent_attempt_index;
 use abuse_counters_index_drop::*;
 use admission_pending_index::*;
 mod webhook_history_index;
+use erasure_fk_indexes::*;
 use owner_queue_index::*;
 use radio_evidence_index::*;
 use recent_attempt_index::*;
@@ -134,6 +136,12 @@ pub enum MigrationError {
     AdmissionPendingIndexConflict,
     #[error("messages_admission_pending is still being built; refusing to interrupt it")]
     AdmissionPendingIndexBuildInProgress,
+    #[error("{0} is absent, invalid, or has the wrong definition")]
+    ErasureFkIndexUnavailable(&'static str),
+    #[error("{0} has an unexpected definition; refusing to replace it")]
+    ErasureFkIndexConflict(&'static str),
+    #[error("{0} is still being built; refusing to interrupt it")]
+    ErasureFkIndexBuildInProgress(&'static str),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -305,6 +313,9 @@ async fn apply_locked(
     if ledger.contains_key(&ABUSE_COUNTERS_INDEX_DROP_MIGRATION) {
         verify_abuse_counters_index_dropped(client).await?;
     }
+    if ledger.contains_key(&ERASURE_FK_INDEX_MIGRATION) {
+        verify_erasure_fk_indexes(client).await?;
+    }
 
     for migration in migrations {
         if ledger.contains_key(&migration.version) {
@@ -379,6 +390,16 @@ async fn apply_locked(
             // idempotent.
             prepare_abuse_counters_index_drop(client).await?;
         }
+        if migration.version == ERASURE_FK_INDEX_MIGRATION {
+            if migration.filename != ERASURE_FK_INDEX_FILE {
+                return Err(MigrationError::InvalidDirectory(format!(
+                    "migration {ERASURE_FK_INDEX_MIGRATION:03} must be {ERASURE_FK_INDEX_FILE}"
+                )));
+            }
+            // CREATE INDEX CONCURRENTLY cannot run in the numbered migration's
+            // transaction. The advisory lock still serializes migrator jobs.
+            prepare_erasure_fk_indexes(client).await?;
+        }
         let tx = client.transaction().await?;
         if let Err(error) = tx.batch_execute(&migration.sql).await {
             // Dropping the transaction closes it without committing the failed file.
@@ -438,6 +459,12 @@ async fn apply_locked(
         .any(|migration| migration.version == ABUSE_COUNTERS_INDEX_DROP_MIGRATION)
     {
         verify_abuse_counters_index_dropped(client).await?;
+    }
+    if migrations
+        .iter()
+        .any(|migration| migration.version == ERASURE_FK_INDEX_MIGRATION)
+    {
+        verify_erasure_fk_indexes(client).await?;
     }
     Ok(applied)
 }
@@ -805,6 +832,8 @@ async fn verify_m0_shape(tx: &tokio_postgres::Transaction<'_>) -> Result<(), Mig
 mod abuse_counters_index_drop_tests;
 #[cfg(test)]
 mod admission_pending_index_tests;
+#[cfg(test)]
+mod erasure_fk_index_tests;
 #[cfg(test)]
 mod online_index_tests;
 #[cfg(test)]

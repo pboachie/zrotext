@@ -255,10 +255,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
             "../../../../deploy/compose/migrations/058_drop_abuse_counters_updated_index.sql"
         ),
     ),
+    (
+        "059_erasure_fk_indexes.sql",
+        include_str!("../../../../deploy/compose/migrations/059_erasure_fk_indexes.sql"),
+    ),
 ];
 
 /// Indexes the Compose migrator prepares with CREATE INDEX CONCURRENTLY in
-/// autocommit mode before the numbered 034, 040, 049, 050 and 052 files record
+/// autocommit mode before the numbered 034, 040, 049, 050, 052 and 059 files record
 /// their checksum gates (deploy/compose/README.md, "Migration 034 is a narrow
 /// online-index exception"). The gate SQL validates the exact index
 /// definition; a fresh fixture schema builds the identical index with a
@@ -295,6 +299,10 @@ const PREPARED_INDEXES: &[(&str, &str)] = &[
     (
         "058_drop_abuse_counters_updated_index.sql",
         "DROP INDEX IF EXISTS auth_abuse_counters_stale",
+    ),
+    (
+        "059_erasure_fk_indexes.sql",
+        "CREATE INDEX erasure_fk_webhook_deliveries_event ON webhook_deliveries(account_id,event_id); CREATE INDEX erasure_fk_suppressions_attempt ON recipient_suppressions(source_attempt_id); CREATE INDEX erasure_fk_suppressions_event ON recipient_suppressions(account_id,source_event_id); CREATE INDEX erasure_fk_holds_release_event ON owner_recipient_holds(account_id,release_event_id) WHERE release_event_id IS NOT NULL; CREATE INDEX erasure_fk_opt_out_audit_release_event ON owner_opt_out_audit(account_id,release_event_id) WHERE release_event_id IS NOT NULL",
     ),
 ];
 
@@ -2669,6 +2677,215 @@ async fn the_observer_user_delete_never_reaches_owners_or_other_accounts() {
         .await
         .unwrap();
     assert_eq!(nothing, 0);
+    admin
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn erasing_thousands_of_referenced_rows_completes_within_the_runtime_timeout() {
+    // Issue #515: every deleted row runs a foreign-key check against each
+    // referencing table, and the runtime connection caps one statement at
+    // ten seconds. Without the migration-056 support indexes the webhook
+    // delivery check alone scans the account's deliveries per deleted event,
+    // so a few thousand referenced rows time the whole erasure out; the
+    // success of this route is therefore itself the under-timeout proof,
+    // because a statement that overruns returns 503 instead of erasing.
+    let (admin, mut db, database_url, schema) = migrated_schema("fk_scale").await;
+    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(37)).unwrap());
+    let handler_database_url = handler_url(&database_url, "zt_erasure_fk_scale");
+    let (a, session_a, _b, _session_b, app) =
+        fixture(&mut db, &hasher, &handler_database_url, None).await;
+    let device: Uuid = db
+        .query_one(
+            "SELECT id FROM devices WHERE account_id=$1",
+            &[&a.account_id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    // A dedicated message keeps the bulk attempts away from the fixture's
+    // unique (message_id, generation) slot.
+    let bulk_message = Uuid::new_v4();
+    db.execute(
+        "INSERT INTO messages(id,account_id,device_id,recipient_e164,recipient_digest,transport_mode,transport_payload,request_digest,state,expires_at) \
+         VALUES($1,$2,$3,'+15551112222',$4,'synthetic_alpha',$5,$6,'delivered',now()+interval '1 hour')",
+        &[&bulk_message, &a.account_id, &device, &vec![6_u8; 32],
+            &b"ERASE_FK_SCALE".to_vec(), &vec![7_u8; 32]],
+    )
+    .await
+    .unwrap();
+    let rows = 5_000_i64;
+    db.execute(
+        "INSERT INTO message_attempts(id,account_id,message_id,device_id,generation,session_epoch,deployment_epoch,status) \
+         SELECT gen_random_uuid(),$1,$2,$3,g,1,1,'submitted' FROM generate_series(1,$4::bigint) g",
+        &[&a.account_id, &bulk_message, &device, &rows],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO inbound_events(id,account_id,device_id,message_id,attempt_id,device_sequence,classification,observed_at,received_at,part_count,content_kind,event_digest,signature_der) \
+         SELECT gen_random_uuid(),$1,$2,$3,ma.id,ma.generation+1000,'sim_unverified',now(),now(),1,'metadata_only', \
+                sha256(ma.generation::text::bytea),sha256(ma.id::text::bytea) \
+         FROM message_attempts ma WHERE ma.account_id=$1 AND ma.message_id=$3",
+        &[&a.account_id, &device, &bulk_message],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO webhook_endpoints(id,account_id,callback_url,signing_secret_ciphertext,signing_secret_key_version,enabled) \
+         VALUES(gen_random_uuid(),$1,'https://example.test/erasure-fk-scale',$2,1,true)",
+        &[&a.account_id, &vec![8_u8; 32]],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO webhook_deliveries(id,account_id,endpoint_id,event_id,status,next_attempt_at) \
+         SELECT gen_random_uuid(),$1,(SELECT id FROM webhook_endpoints WHERE account_id=$1 ORDER BY created_at LIMIT 1),e.id,'pending',now() \
+         FROM inbound_events e WHERE e.account_id=$1 AND e.message_id=$2",
+        &[&a.account_id, &bulk_message],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO recipient_suppressions(account_id,recipient_e164,active,source_event_id,source_attempt_id,source_observed_at,source) \
+         SELECT $1,'+1555'||lpad(e.device_sequence::text,8,'0'),true,e.id,e.attempt_id,now(),'sms_keyword' \
+         FROM inbound_events e WHERE e.account_id=$1 AND e.message_id=$2",
+        &[&a.account_id, &bulk_message],
+    )
+    .await
+    .unwrap();
+    // The fixture itself contributes one event, delivery and suppression.
+    for sql in [
+        "SELECT count(*) FROM inbound_events WHERE account_id=$1",
+        "SELECT count(*) FROM webhook_deliveries WHERE account_id=$1",
+        "SELECT count(*) FROM recipient_suppressions WHERE account_id=$1",
+    ] {
+        let count: i64 = db.query_one(sql, &[&a.account_id]).await.unwrap().get(0);
+        assert_eq!(count, rows + 1);
+    }
+    // The wall-clock bound alone can pass without the indexes on fast CI
+    // hardware, so pin the actual mechanism: every foreign-key check the
+    // DELETE triggers runs one probe query per deleted row against each
+    // referencing table. Assert each probe is an index scan on its
+    // erasure_fk_* index; without migration 059 each of these plans is a
+    // sequential scan over this account's thousands of rows.
+    let sample_event: Uuid = db
+        .query_one(
+            "SELECT id FROM inbound_events WHERE account_id=$1 AND message_id=$2 LIMIT 1",
+            &[&a.account_id, &bulk_message],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    let sample_attempt: Uuid = db
+        .query_one(
+            "SELECT id FROM message_attempts WHERE account_id=$1 AND message_id=$2 LIMIT 1",
+            &[&a.account_id, &bulk_message],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    for (index, probe) in [
+        (
+            "erasure_fk_webhook_deliveries_event",
+            "SELECT 1 FROM webhook_deliveries WHERE account_id=$1 AND event_id=$2",
+        ),
+        (
+            "erasure_fk_suppressions_event",
+            "SELECT 1 FROM recipient_suppressions WHERE account_id=$1 AND source_event_id=$2",
+        ),
+    ] {
+        let plan: String = db
+            .query(
+                &format!("EXPLAIN (COSTS OFF) {probe}"),
+                &[&a.account_id, &sample_event],
+            )
+            .await
+            .unwrap()
+            .iter()
+            .map(|row| row.get::<_, String>(0))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            plan.contains(index) && !plan.contains("Seq Scan"),
+            "foreign-key probe must use {index}: {plan}"
+        );
+    }
+    for (index, probe) in [
+        (
+            "erasure_fk_holds_release_event",
+            "SELECT 1 FROM owner_recipient_holds WHERE account_id=$1 AND release_event_id=$2",
+        ),
+        (
+            "erasure_fk_opt_out_audit_release_event",
+            "SELECT 1 FROM owner_opt_out_audit WHERE account_id=$1 AND release_event_id=$2",
+        ),
+    ] {
+        let plan: String = db
+            .query(
+                &format!("EXPLAIN (COSTS OFF) {probe}"),
+                &[&a.account_id, &sample_event],
+            )
+            .await
+            .unwrap()
+            .iter()
+            .map(|row| row.get::<_, String>(0))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            plan.contains(index) && !plan.contains("Seq Scan"),
+            "foreign-key probe must use {index}: {plan}"
+        );
+    }
+    // The suppression-attempt probe keys on the attempt id alone.
+    let plan: String = db
+        .query(
+            "EXPLAIN (COSTS OFF) SELECT 1 FROM recipient_suppressions WHERE source_attempt_id=$1",
+            &[&sample_attempt],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get::<_, String>(0))
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        plan.contains("erasure_fk_suppressions_attempt") && !plan.contains("Seq Scan"),
+        "attempt foreign-key probe must use erasure_fk_suppressions_attempt: {plan}"
+    );
+
+    let started = std::time::Instant::now();
+    let response = app
+        .oneshot(erasure_post(
+            Some(&session_a.token),
+            Some(&session_a.csrf_token),
+            Some(ORIGIN),
+            &crate::test_keys::password(1),
+            None,
+        ))
+        .await
+        .unwrap();
+    let elapsed = started.elapsed();
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "erasure of {rows} referenced rows must finish inside the runtime statement timeout"
+    );
+    eprintln!("erasure of {rows} referenced rows took {elapsed:?}");
+    for sql in [
+        "SELECT count(*) FROM inbound_events WHERE account_id=$1",
+        "SELECT count(*) FROM webhook_deliveries WHERE account_id=$1",
+        "SELECT count(*) FROM recipient_suppressions WHERE account_id=$1",
+        "SELECT count(*) FROM message_attempts WHERE account_id=$1",
+        "SELECT count(*) FROM messages WHERE account_id=$1",
+        "SELECT count(*) FROM accounts WHERE id=$1",
+    ] {
+        let count: i64 = db.query_one(sql, &[&a.account_id]).await.unwrap().get(0);
+        assert_eq!(count, 0, "{sql} after erasure");
+    }
     admin
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
         .await

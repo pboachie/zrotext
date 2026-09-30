@@ -183,7 +183,7 @@ macro_rules! queue_schema {
         [$(($name, include_str!(concat!("../../../../deploy/compose/migrations/", $name)))),+]
     };
 }
-const QUEUE_SCHEMA: [(&str, &str); 58] = queue_schema!(
+const QUEUE_SCHEMA: [(&str, &str); 59] = queue_schema!(
     "001_foundation.sql",
     "002_auth.sql",
     "003_delivery.sql",
@@ -242,6 +242,7 @@ const QUEUE_SCHEMA: [(&str, &str); 58] = queue_schema!(
     "056_usage_limit_plans.sql",
     "057_webhook_history_index.sql",
     "058_drop_abuse_counters_updated_index.sql",
+    "059_erasure_fk_indexes.sql",
 );
 #[test]
 fn queue_fixture_includes_every_checked_in_migration() {
@@ -281,6 +282,9 @@ async fn apply_queue_schema(db: &Client) {
                 db.batch_execute("DROP INDEX IF EXISTS auth_abuse_counters_stale")
                     .await
                     .unwrap();
+            }
+            "059_erasure_fk_indexes.sql" => {
+                db.batch_execute("CREATE INDEX erasure_fk_webhook_deliveries_event ON webhook_deliveries(account_id,event_id); CREATE INDEX erasure_fk_suppressions_attempt ON recipient_suppressions(source_attempt_id); CREATE INDEX erasure_fk_suppressions_event ON recipient_suppressions(account_id,source_event_id); CREATE INDEX erasure_fk_holds_release_event ON owner_recipient_holds(account_id,release_event_id) WHERE release_event_id IS NOT NULL; CREATE INDEX erasure_fk_opt_out_audit_release_event ON owner_opt_out_audit(account_id,release_event_id) WHERE release_event_id IS NOT NULL").await.unwrap();
             }
             "050_message_attempts_recent_index.sql" => {
                 db.batch_execute("CREATE INDEX message_attempts_device_created ON message_attempts(account_id,device_id,created_at)").await.unwrap();

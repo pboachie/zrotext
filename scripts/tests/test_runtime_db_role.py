@@ -62,6 +62,19 @@ class RuntimeRoleTest(unittest.TestCase):
             if migration.name == "058_drop_abuse_counters_updated_index.sql":
                 cls.sql("DROP INDEX CONCURRENTLY IF EXISTS "
                         "public.auth_abuse_counters_stale;")
+            if migration.name == "059_erasure_fk_indexes.sql":
+                cls.sql("CREATE INDEX CONCURRENTLY erasure_fk_webhook_deliveries_event "
+                        "ON public.webhook_deliveries(account_id,event_id);")
+                cls.sql("CREATE INDEX CONCURRENTLY erasure_fk_suppressions_attempt "
+                        "ON public.recipient_suppressions(source_attempt_id);")
+                cls.sql("CREATE INDEX CONCURRENTLY erasure_fk_suppressions_event "
+                        "ON public.recipient_suppressions(account_id,source_event_id);")
+                cls.sql("CREATE INDEX CONCURRENTLY erasure_fk_holds_release_event "
+                        "ON public.owner_recipient_holds(account_id,release_event_id) "
+                        "WHERE release_event_id IS NOT NULL;")
+                cls.sql("CREATE INDEX CONCURRENTLY erasure_fk_opt_out_audit_release_event "
+                        "ON public.owner_opt_out_audit(account_id,release_event_id) "
+                        "WHERE release_event_id IS NOT NULL;")
             if migration.name == "050_message_attempts_recent_index.sql":
                 cls.sql("CREATE INDEX CONCURRENTLY message_attempts_device_created "
                         "ON public.message_attempts(account_id,device_id,created_at);")

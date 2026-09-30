@@ -643,6 +643,13 @@ or phone-line identities outside the database, does not delete anything in
 external systems, and does not rewrite backups, replicas, or WAL archives —
 those keep their own lifecycle, exactly as for retention above.
 
+Large accounts erase inside the runtime's ten-second per-statement
+timeout: migration 059's online-built foreign-key support indexes give
+every per-row referential check a bounded lookup, and an account with
+twenty thousand inbound events, webhook deliveries and suppressions
+erases in a few seconds. Apply migration 059 before or with the feature's
+first use; the migrator builds the indexes concurrently.
+
 An account cannot be erased at all, and nothing is deleted (HTTP 409
 `erasure_blocked`, with the blocking tables listed), while any of these
 exist: a line identity tombstone (`phone_lines`, `device_line_bindings`) or

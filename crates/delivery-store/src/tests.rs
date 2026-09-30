@@ -2,7 +2,7 @@ use super::*;
 
 // Keep the admission fixtures on the complete, reviewed schema. SQL is
 // embedded at build time so tests never execute files discovered at runtime.
-const TEST_MIGRATIONS: [(&str, &str); 58] = [
+const TEST_MIGRATIONS: [(&str, &str); 59] = [
     (
         "001_foundation.sql",
         include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
@@ -239,6 +239,10 @@ const TEST_MIGRATIONS: [(&str, &str); 58] = [
             "../../../deploy/compose/migrations/058_drop_abuse_counters_updated_index.sql"
         ),
     ),
+    (
+        "059_erasure_fk_indexes.sql",
+        include_str!("../../../deploy/compose/migrations/059_erasure_fk_indexes.sql"),
+    ),
 ];
 
 /// Applies every numbered migration in order. Shared by the PostgreSQL-backed
@@ -279,6 +283,14 @@ pub(crate) async fn apply_test_migrations(client: &Client) {
         if name == "058_drop_abuse_counters_updated_index.sql" {
             client
                 .batch_execute("DROP INDEX IF EXISTS auth_abuse_counters_stale")
+                .await
+                .unwrap();
+        }
+        if name == "059_erasure_fk_indexes.sql" {
+            client
+                .batch_execute(
+                    "CREATE INDEX erasure_fk_webhook_deliveries_event ON webhook_deliveries(account_id,event_id); CREATE INDEX erasure_fk_suppressions_attempt ON recipient_suppressions(source_attempt_id); CREATE INDEX erasure_fk_suppressions_event ON recipient_suppressions(account_id,source_event_id); CREATE INDEX erasure_fk_holds_release_event ON owner_recipient_holds(account_id,release_event_id) WHERE release_event_id IS NOT NULL; CREATE INDEX erasure_fk_opt_out_audit_release_event ON owner_opt_out_audit(account_id,release_event_id) WHERE release_event_id IS NOT NULL",
+                )
                 .await
                 .unwrap();
         }
