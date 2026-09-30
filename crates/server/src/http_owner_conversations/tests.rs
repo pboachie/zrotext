@@ -36,6 +36,129 @@ fn content_transfer_requires_explicit_current_disclosure_and_line_identity() {
     assert!(!selected.valid());
 }
 
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn inventory_is_bounded_account_scoped_and_preserves_purged_identities() {
+    let (f, owner) = prepared().await;
+    enable_conversation(&mut f.connect().await, &owner, &consent(f.device, f.line))
+        .await
+        .unwrap();
+    let event = Uuid::new_v4();
+    capture(&f, event, 1, b"+12", 0).await;
+    // Cloning synthetic verified storage identities exercises cursor bounds;
+    // these rows are never used as device/ciphertext evidence.
+    for sequence in 2..=102i64 {
+        f.db.execute("INSERT INTO sealed_inbound_events(id,account_id,device_id,line_id,binding_generation,device_sequence,unsigned_digest,observed_at,received_at,envelope_profile,envelope) \
+            SELECT $1,account_id,device_id,line_id,binding_generation,$2,unsigned_digest,observed_at,received_at,envelope_profile,envelope FROM sealed_inbound_events WHERE id=$3",
+            &[&Uuid::new_v4(), &sequence, &event]).await.unwrap();
+    }
+    f.db.execute(
+        "UPDATE sealed_inbound_events SET envelope=NULL WHERE id=$1",
+        &[&event],
+    )
+    .await
+    .unwrap();
+    let mut client = f.connect().await;
+    let first = lifecycle::inventory(&mut client, &owner, None)
+        .await
+        .unwrap();
+    assert_eq!(first.consent.unwrap().peer.as_deref(), Some("+12"));
+    assert_eq!(first.sealed_events.len(), lifecycle::INVENTORY_LIMIT);
+    assert!(first.sealed_events_truncated);
+    let second = lifecycle::inventory(&mut client, &owner, first.sealed_events_next_cursor)
+        .await
+        .unwrap();
+    assert_eq!(second.sealed_events.len(), 2);
+    assert!(!second.sealed_events_truncated);
+    assert!(second.sealed_events_next_cursor.is_none());
+    let all: Vec<_> = first
+        .sealed_events
+        .iter()
+        .chain(&second.sealed_events)
+        .collect();
+    assert_eq!(
+        all.iter()
+            .filter(|e| e.event_id == event && !e.content_retained)
+            .count(),
+        1
+    );
+    let other = Uuid::new_v4();
+    f.db.execute("INSERT INTO accounts(id) VALUES($1)", &[&other])
+        .await
+        .unwrap();
+    let other_owner = owner_for(&f, other).await;
+    let other_view = lifecycle::inventory(&mut client, &other_owner, None)
+        .await
+        .unwrap();
+    assert!(other_view.consent.is_none());
+    assert!(other_view.sealed_events.is_empty());
+    assert!(matches!(
+        lifecycle::inventory(&mut client, &other_owner, Some(event)).await,
+        Err(ConversationError::NotFound)
+    ));
+    revoke_conversation(&mut client, &owner).await.unwrap();
+    let withdrawn = lifecycle::inventory(&mut client, &owner, None)
+        .await
+        .unwrap()
+        .consent
+        .unwrap();
+    assert!(withdrawn.peer.is_none());
+    assert!(withdrawn.revoked_at_ms.is_some());
+    f.db.execute(
+        "UPDATE sessions SET revoked_at=clock_timestamp() WHERE id=$1",
+        &[&owner.session_id],
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        lifecycle::inventory(&mut client, &owner, None).await,
+        Err(ConversationError::Forbidden)
+    ));
+    f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn withdrawn_metadata_cleanup_respects_cutoff_row_locks_and_new_consent() {
+    let (f, owner) = prepared().await;
+    let mut client = f.connect().await;
+    enable_conversation(&mut client, &owner, &consent(f.device, f.line))
+        .await
+        .unwrap();
+    assert_eq!(lifecycle::prune_withdrawn(&client, 30, 1).await.unwrap(), 0);
+    revoke_conversation(&mut client, &owner).await.unwrap();
+    assert_eq!(lifecycle::prune_withdrawn(&client, 30, 1).await.unwrap(), 0);
+    f.db.execute("UPDATE owner_conversation_consents SET revoked_at=clock_timestamp()-interval '31 days' WHERE account_id=$1", &[&f.account]).await.unwrap();
+    let mut blocker = f.connect().await;
+    let tx = blocker.transaction().await.unwrap();
+    tx.query_one(
+        "SELECT account_id FROM owner_conversation_consents WHERE account_id=$1 FOR UPDATE",
+        &[&f.account],
+    )
+    .await
+    .unwrap();
+    assert_eq!(lifecycle::prune_withdrawn(&client, 30, 1).await.unwrap(), 0);
+    tx.commit().await.unwrap();
+    let counts =
+        crate::retention::prune(&mut client, crate::retention::RetentionPolicy::default(), 1)
+            .await
+            .unwrap();
+    assert_eq!(counts.conversation_consents, 1);
+    assert!(counts.any_full(1));
+    assert!(
+        lifecycle::inventory(&mut client, &owner, None)
+            .await
+            .unwrap()
+            .consent
+            .is_none()
+    );
+    enable_conversation(&mut client, &owner, &consent(f.device, f.line))
+        .await
+        .unwrap();
+    assert_eq!(lifecycle::prune_withdrawn(&client, 30, 1).await.unwrap(), 0);
+    f.cleanup().await;
+}
+
 #[test]
 fn conversation_selectors_refuse_ambiguous_or_noncanonical_peers() {
     let mut selected = consent(Uuid::new_v4(), Uuid::new_v4());
