@@ -1,0 +1,50 @@
+name: Request maintainer release verification
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: Version tag to verify
+        required: true
+        type: string
+      gate:
+        description: Prerequisite ready for maintainer verification
+        required: true
+        type: choice
+        options:
+          - release-candidate
+          - line-binding
+          - opt-out
+          - sealed-runtime
+          - device-cycle
+      pr:
+        description: Supporting merged public PR number
+        required: true
+        type: string
+      ready:
+        description: Confirm this prerequisite is ready for maintainer verification
+        required: true
+        default: false
+        type: boolean
+permissions:
+  contents: read
+  pull-requests: read
+  issues: write
+concurrency:
+  group: maintainer-handoff-${{ inputs.release }}
+  cancel-in-progress: false
+jobs:
+  handoff:
+    if: github.repository == 'pboachie/zrotext' && github.ref == 'refs/heads/main' && inputs.ready
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Deliver the explicit readiness handoff
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE: ${{ inputs.release }}
+          GATE: ${{ inputs.gate }}
+          PR: ${{ inputs.pr }}
+        run: python3 scripts/release_handoff.py --release "$RELEASE" --gate "$GATE" --pr "$PR" --ready
