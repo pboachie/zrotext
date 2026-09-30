@@ -17,7 +17,7 @@ let input="";
 for await(const chunk of process.stdin){input+=chunk;if(input.length>100000)throw Error("Fixture input bound");}
 const {ready,event,inbound}=JSON.parse(input);
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),"../../../web/owner");
-const files=new Set(["conversation.html","conversation-core.js","conversation.js","conversation.css","devices.css"]);
+const files=new Set(["conversation.html","conversation-core.js","conversation-owner-adapter.js","conversation.js","conversation.css","devices.css"]);
 const mime={".html":"text/html",".js":"text/javascript",".css":"text/css"};
 const bridgeChallenge=randomBytes(32).toString("hex");
 let signed=0,submitted=0,packet;
@@ -99,7 +99,7 @@ try{
     await page.getByRole("button",{name:"Cancel review"}).click();assert.equal(signed,0);assert.equal(submitted,0);
     await page.getByRole("button",{name:"Review message",exact:true}).click();await page.locator("#confirmation").waitFor({state:"visible"});
     assert.equal(await page.locator("#review-body").textContent(),body);
-    await page.getByRole("button",{name:"Confirm simulated send"}).click();
+    await page.getByRole("button",{name:"Confirm this send",exact:true}).click();
     await signStarted;
     await page.locator("#body").evaluate(el=>{el.value="Changed during fixture signing";el.dispatchEvent(new Event("input",{bubbles:true}));});
     releaseSign();
@@ -107,7 +107,7 @@ try{
     assert.equal(submitted,0);const midFlightSubmissions=submitted;
     await page.locator("#body").fill(body);await page.getByRole("button",{name:"Review message",exact:true}).click();await page.locator("#confirmation").waitFor({state:"visible"});
     assert.equal(await page.locator("#review-body").textContent(),body);
-    await page.getByRole("button",{name:"Confirm simulated send"}).click();
+    await page.getByRole("button",{name:"Confirm this send",exact:true}).click();
     await page.waitForFunction(()=>document.querySelector("#body").value==="");
     assert.equal(signed,2);assert.equal(submitted,1);assert.ok((await page.locator("#messages").textContent()).includes(body));
     assert.equal(await page.evaluate(()=>localStorage.length+sessionStorage.length),0);assert.deepEqual(errors,[]);
