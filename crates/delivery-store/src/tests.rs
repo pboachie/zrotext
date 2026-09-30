@@ -2,7 +2,7 @@ use super::*;
 
 // Keep the admission fixtures on the complete, reviewed schema. SQL is
 // embedded at build time so tests never execute files discovered at runtime.
-const TEST_MIGRATIONS: [(&str, &str); 59] = [
+const TEST_MIGRATIONS: [(&str, &str); 60] = [
     (
         "001_foundation.sql",
         include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
@@ -243,6 +243,10 @@ const TEST_MIGRATIONS: [(&str, &str); 59] = [
         "059_erasure_fk_indexes.sql",
         include_str!("../../../deploy/compose/migrations/059_erasure_fk_indexes.sql"),
     ),
+    (
+        "060_optout_review_indexes.sql",
+        include_str!("../../../deploy/compose/migrations/060_optout_review_indexes.sql"),
+    ),
 ];
 
 /// Applies every numbered migration in order. Shared by the PostgreSQL-backed
@@ -291,6 +295,24 @@ pub(crate) async fn apply_test_migrations(client: &Client) {
                 .batch_execute(
                     "CREATE INDEX erasure_fk_webhook_deliveries_event ON webhook_deliveries(account_id,event_id); CREATE INDEX erasure_fk_suppressions_attempt ON recipient_suppressions(source_attempt_id); CREATE INDEX erasure_fk_suppressions_event ON recipient_suppressions(account_id,source_event_id); CREATE INDEX erasure_fk_holds_release_event ON owner_recipient_holds(account_id,release_event_id) WHERE release_event_id IS NOT NULL; CREATE INDEX erasure_fk_opt_out_audit_release_event ON owner_opt_out_audit(account_id,release_event_id) WHERE release_event_id IS NOT NULL",
                 )
+                .await
+                .unwrap();
+        }
+        if name == "060_optout_review_indexes.sql" {
+            client
+                .batch_execute(
+                    "CREATE INDEX recipient_suppressions_review_queue ON recipient_suppressions(account_id,changed_at DESC,recipient_e164 DESC) WHERE active AND source IN ('sms_review','sms_unsolicited_review')"
+                )
+                .await
+                .unwrap();
+            client
+                .batch_execute(
+                    "CREATE INDEX recipient_suppressions_review_event ON recipient_suppressions(account_id,COALESCE(source_event_id,source_unsolicited_event_id)) WHERE source IN ('sms_review','sms_unsolicited_review')"
+                )
+                .await
+                .unwrap();
+            client
+                .batch_execute("DROP INDEX IF EXISTS recipient_suppressions_active")
                 .await
                 .unwrap();
         }
@@ -3056,6 +3078,86 @@ async fn billed_admission_guard_share_locks_every_row_it_reads() {
         .batch_execute(&format!(
             "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
         ))
+        .await
+        .unwrap();
+}
+
+/// Each sweep pays a constant number of round trips per batch: one statement
+/// for any batch size, where the per-row loop paid four per row (#508).
+#[tokio::test]
+#[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn recovery_sweeps_pay_one_round_trip_per_batch() {
+    let url = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL")
+        .expect("set ZT_DELIVERY_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let (setup, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let schema = format!("sweep_wire_{}", Uuid::new_v4().simple());
+    setup
+        .batch_execute(&format!(
+            "CREATE SCHEMA {schema}; SET search_path TO {schema}"
+        ))
+        .await
+        .unwrap();
+    apply_test_migrations(&setup).await;
+    let account = Uuid::new_v4();
+    setup
+        .execute("INSERT INTO accounts(id) VALUES($1)", &[&account])
+        .await
+        .unwrap();
+    setup
+        .execute(
+            "INSERT INTO devices(id,account_id,display_name) \
+             SELECT gen_random_uuid(),$1,'wire sweep' FROM generate_series(1,30)",
+            &[&account],
+        )
+        .await
+        .unwrap();
+    setup
+        .execute(
+            "INSERT INTO messages(id,account_id,device_id,recipient_e164,recipient_digest, \
+             transport_mode,transport_payload,request_digest,state,expires_at) \
+             SELECT gen_random_uuid(),$1,(SELECT d.id FROM devices d WHERE d.account_id=$1 \
+               ORDER BY d.id LIMIT 1 OFFSET (n-1)),'+15551234567',$2,'synthetic_alpha',$3,$4,'queued', \
+             now()-interval '1 second' FROM generate_series(1,30::bigint) n",
+            &[&account, &vec![1_u8; 32], &b"wire".as_slice(), &vec![2_u8; 32]],
+        )
+        .await
+        .unwrap();
+    setup
+        .execute(
+            "INSERT INTO dispatch_jobs(message_id,account_id,device_id) \
+             SELECT m.id,$1,m.device_id FROM messages m WHERE m.account_id=$1",
+            &[&account],
+        )
+        .await
+        .unwrap();
+
+    let (proxy, proxy_task) = DescribeCountingProxy::start(&url).await;
+    let (mut client, connection) = tokio_postgres::connect(&proxy.url, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    client
+        .batch_execute(&format!("SET search_path TO {schema}"))
+        .await
+        .unwrap();
+    let before = proxy.round_trips.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(before, 0);
+    let expired = DeliveryStore::new(&mut client)
+        .expire_due(30)
+        .await
+        .unwrap();
+    assert_eq!(expired, 30);
+    assert_eq!(
+        proxy.round_trips.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "a full batch must be exactly one statement, not one per row"
+    );
+    proxy_task.abort();
+    setup
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
         .await
         .unwrap();
 }

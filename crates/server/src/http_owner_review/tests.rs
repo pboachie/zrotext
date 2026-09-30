@@ -339,3 +339,170 @@ async fn review_queue_is_owner_only_tenant_bound_paginated_and_content_free() {
         .await
         .unwrap();
 }
+
+/// The review list, its cursor lookup and the decision lookup must page
+/// through the review-source indexes without reading the account's
+/// non-review suppressions (#506).
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn review_pages_scan_the_review_indexes_without_reading_keyword_stops() {
+    let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+        .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let (admin, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let schema = format!("review_index_plan_{}", Uuid::new_v4().simple());
+    admin
+        .batch_execute(&format!("CREATE SCHEMA {schema}"))
+        .await
+        .unwrap();
+    let separator = if base_url.contains('?') { '&' } else { '?' };
+    let url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
+    let (db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    for migration in TEST_MIGRATIONS {
+        db.batch_execute(migration).await.unwrap();
+    }
+    db.batch_execute(
+        "CREATE INDEX recipient_suppressions_review_queue \
+         ON recipient_suppressions(account_id,changed_at DESC,recipient_e164 DESC) \
+         WHERE active AND source IN ('sms_review','sms_unsolicited_review')",
+    )
+    .await
+    .unwrap();
+    db.batch_execute(
+            "CREATE INDEX recipient_suppressions_review_event \
+         ON recipient_suppressions(account_id,COALESCE(source_event_id,source_unsolicited_event_id)) \
+         WHERE source IN ('sms_review','sms_unsolicited_review')",
+        )
+        .await
+        .unwrap();
+    db.batch_execute("DROP INDEX recipient_suppressions_active")
+        .await
+        .unwrap();
+    db.batch_execute(include_str!(
+        "../../../../deploy/compose/migrations/060_optout_review_indexes.sql"
+    ))
+    .await
+    .unwrap();
+
+    let account = Uuid::new_v4();
+    let device = Uuid::new_v4();
+    let message = Uuid::new_v4();
+    let attempt = Uuid::new_v4();
+    db.execute("INSERT INTO accounts(id) VALUES($1)", &[&account])
+        .await
+        .unwrap();
+    db.execute("INSERT INTO sites(site_id) VALUES('test')", &[])
+        .await
+        .unwrap();
+    db.execute(
+        "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'plan fixture')",
+        &[&device, &account],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO messages(id,account_id,device_id,recipient_e164,recipient_digest, \
+         transport_mode,transport_payload,request_digest,state,expires_at) \
+         VALUES($1,$2,$3,'+15551234567',$4,'synthetic_alpha',$5,$6,'submitted',now()+interval '1 hour')",
+        &[&message, &account, &device, &vec![2u8; 32], &b"fixture".as_slice(), &vec![3u8; 32]],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO message_attempts(id,account_id,message_id,device_id,generation, \
+         session_epoch,deployment_epoch,status) VALUES($1,$2,$3,$4,1,2,1,'submitted')",
+        &[&attempt, &account, &message, &device],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO inbound_events(id,account_id,device_id,message_id,attempt_id, \
+         device_sequence,classification,observed_at,part_count,content_kind,event_digest,signature_der) \
+         SELECT gen_random_uuid(),$1,$2,$3,$4,n,'opt_out_review',now(),1,'metadata_only', \
+         decode(md5(n::text)||md5(random()::text),'hex'),decode(substr(md5(n::text),17,16),'hex') \
+         FROM generate_series(1,12000::bigint) n",
+        &[&account, &device, &message, &attempt],
+    )
+    .await
+    .unwrap();
+    for (source, count) in [("sms_review", 6000_i64), ("sms_keyword", 6000_i64)] {
+        db.execute(
+            "INSERT INTO recipient_suppressions(account_id,recipient_e164,active,source_event_id,source_attempt_id, \
+             source_observed_at,source,changed_at) \
+             SELECT $1,(SELECT '+155'||(CASE WHEN $3='sms_keyword' THEN '6' ELSE '5' END)||lpad(e.row_number::text,6,'0') FROM (SELECT row_number() \
+             OVER (ORDER BY id) row_number FROM inbound_events WHERE account_id=$1) e WHERE e.row_number=n), \
+             $4,(SELECT id FROM inbound_events WHERE account_id=$1 ORDER BY id LIMIT 1 OFFSET (n-1)),$5, \
+             now(),$3,now()-(n*interval '1 second') \
+             FROM generate_series(1,$2::bigint) n",
+            &[&account, &count, &source, &true, &attempt],
+        )
+        .await
+        .unwrap();
+    }
+    db.batch_execute("ANALYZE recipient_suppressions")
+        .await
+        .unwrap();
+
+    let before_at: Option<std::time::SystemTime> = None;
+    let before_recipient: Option<&str> = None;
+    let list_plan: String = db
+        .query(
+            "EXPLAIN (COSTS OFF) \
+             SELECT s.recipient_e164,s.source \
+             FROM recipient_suppressions s \
+             WHERE s.account_id=$1 AND s.active \
+             AND s.source IN ('sms_review','sms_unsolicited_review') \
+             AND ($2::timestamptz IS NULL OR (s.changed_at,s.recipient_e164)<($2,$3::text)) \
+             ORDER BY s.changed_at DESC,s.recipient_e164 DESC LIMIT 21",
+            &[&account, &before_at, &before_recipient],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get::<_, String>(0))
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        list_plan.contains("Index Scan using recipient_suppressions_review_queue"),
+        "list plan must use the review queue index: {list_plan}"
+    );
+    assert!(list_plan.contains("Limit"), "list plan: {list_plan}");
+    assert!(
+        !list_plan.contains("Sort"),
+        "list plan must not sort: {list_plan}"
+    );
+
+    let anchor: uuid::Uuid = db
+        .query_one(
+            "SELECT source_event_id FROM recipient_suppressions              WHERE account_id=$1 AND active AND source='sms_review' LIMIT 1",
+            &[&account],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    let lookup_plan: String = db
+        .query(
+            "EXPLAIN (COSTS OFF) \
+             SELECT changed_at,recipient_e164 FROM recipient_suppressions \
+             WHERE account_id=$1 AND active \
+             AND source IN ('sms_review','sms_unsolicited_review') \
+             AND COALESCE(source_event_id,source_unsolicited_event_id)=$2",
+            &[&account, &anchor],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get::<_, String>(0))
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        lookup_plan.contains("Index Scan using recipient_suppressions_review_event"),
+        "cursor lookup must use the review event index: {lookup_plan}"
+    );
+
+    admin
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
