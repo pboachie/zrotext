@@ -154,7 +154,7 @@ migration credential in an API environment.
 
 - Migrations are numbered SQL files in `deploy/compose/migrations/`, append-only
   and consecutive from `001_foundation.sql`. The current highest migration in
-  this repository is **050** (`050_message_attempts_recent_index.sql`). Never
+  this repository is **059** (`059_erasure_fk_indexes.sql`). Never
   edit a file that is already applied; a change is always a new file with the
   next number.
 - The runner takes a fixed PostgreSQL advisory lock for the whole run, creates
@@ -167,10 +167,19 @@ migration credential in an API environment.
 - Editing an applied migration file makes the next run fail with
   "applied migration NNN differs from its file; restore the original file and
   add a new migration". Do not repair `schema_migrations` by hand.
-- Migrations 034, 040, 049, 050 and 052 are documented exceptions: they build their indexes with
+- Migrations 034, 040, 049, 050, 052, 057 and 059 are documented exceptions: they build their indexes with
   `CREATE INDEX CONCURRENTLY` before recording the numbered file; see the
   [Compose guide](README.md) for the interrupted-build and rollback rules that
-  apply to them.
+  apply to them. Migration 059 builds five foreign-key support indexes for
+  owner account erasure the same way: a matching invalid index left by an
+  interrupted build is dropped and rebuilt, and an index of the same name with
+  a different definition stops the migration without being replaced.
+- Migration 054 drops the `device_auth_challenges` table. Device socket
+  challenges are now stateless, but an older binary still writes that table,
+  so once 054 is applied every device handshake served by an older API
+  instance fails. Stop all older API instances before migrating and do not
+  run mixed versions. Going back to an older version after 054 means
+  restoring the pre-upgrade backup.
 - Migration 058 is the matching exception for a removal: the migrator drops
   `auth_abuse_counters_stale` with `DROP INDEX CONCURRENTLY IF EXISTS` before
   recording the numbered file, and every later run refuses to proceed if that
@@ -259,19 +268,53 @@ snapshot; they are listed here so an upgrade is not surprised by them.
   Signing out other sessions does not revoke API keys unless the request
   explicitly opts in.
 - **Authentication ordering and error shape.** Owner and API requests are
-  authenticated before their bodies are read, and malformed JSON bodies
-  return the API error envelope with HTTP 400 instead of a bare parse error.
+  authenticated from their headers before their bodies are read. Missing or
+  invalid credentials get `401` (or `403` for a bad Origin or CSRF header)
+  even when the body is also malformed; that combination used to get `400`.
+  A malformed JSON body from an authenticated caller gets the API error
+  envelope with HTTP 400. Each account may have at most four authenticated
+  body requests in flight per API process, and a fifth concurrent one gets
+  `429`.
 - **Admission limits.** HTTP admission uses route-class permit pools
   (provider callbacks, device WebSocket upgrades, anonymous
-  authentication/enrollment, and general routes) with a total ten-second
-  request-body deadline; saturation in one class no longer rejects the
-  others.
+  authentication/enrollment, and general routes) plus a separate pool for
+  health, readiness and version probes. Saturation in one class no longer
+  rejects the others; a full pool answers `503` with `Retry-After: 1`. A
+  request body not received within ten seconds of admission, or a handler
+  that passes its 30-second deadline, gets a bare `408`.
 - **Registration invites.** Invite tokens expire after a bounded lifetime
   (seven days by default). Outstanding tokens issued by an older snapshot
   stop being accepted; issue new ones through the admin CLI.
 - **Email verification.** Verifying an email address now requires the
   registrant's password, and password-reset emails are budgeted per verified
   owner per day.
+- **Trusted browsers and reset networks.** After a completed sign-in the
+  server sets a signed `__Host-zrotext_trusted_browser` cookie. A password
+  reset request from that browser, or from a network listed in the optional
+  `RESET_TRUSTED_CIDRS`, spends a separate daily budget that a stranger who
+  knows only the address cannot exhaust. `X-Forwarded-For` is honored only
+  from peers inside `TRUSTED_PROXY_CIDRS`. Both settings are empty by
+  default, and the reset lanes then work as before. A password change, a
+  reset, revoking other sessions, an MFA change or erasure invalidates the
+  cookie (migration 055 adds the per-owner trust epoch this uses). See the
+  [self-hosting documentation](../../docs/SELF-HOSTING.md).
+- **Device socket challenges.** The pre-proof device challenge is a
+  stateless HMAC value, valid for 60 seconds with 10 seconds of clock-skew
+  tolerance between instances. Keep API instance clocks synchronized. See
+  the migration 054 note above for why mixed versions must not run.
+- **Owner account erasure.** `POST /v1/owner/erasure` is available to owners
+  again, with a password proof and, when MFA is enabled, a second-factor
+  code. It is local and bounded: it deletes only this server's rows and does
+  not cancel Stripe subscriptions or customers, touch external systems, or
+  rewrite backups. Apply migration 059 so large accounts erase within the
+  statement timeout.
+- **Default-off features.** Sealed v1 message admission
+  (`SEALED_ADMISSION_ENABLED`), usage-limit plans (`USAGE_LIMITS_ENABLED`
+  with `USAGE_LIMIT_PLANS`) and independent-quorum failover
+  (`FAILOVER_QUORUM_ENABLED`) are all off unless set. Enabling usage limits
+  without a plan catalog, or setting a catalog without enabling them, stops
+  startup. Enabling failover requires `FAILOVER_QUORUM_STORE_DIR` to be an
+  absolute path without `.` or `..` components.
 
 ## Moving to a tagged release or candidate
 
