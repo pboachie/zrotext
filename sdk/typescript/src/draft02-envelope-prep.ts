@@ -1,8 +1,9 @@
 /**
  * Profile-02 envelope wire-layout core. The production composer
- * (`composeSealedOutboundEnvelope`) delegates its byte layout to this module
- * path: nothing here may be connected to a send, inbound, webhook, or radio
- * route. Composition is refused unless the exact `Manifest02` object returned by
+ * (`composeSealedOutboundEnvelope`) delegates its byte layout to this module.
+ * Its bytes are admitted only by the server's sealed admission route (mounted
+ * behind the default-off `SEALED_ADMISSION_ENABLED` flag); this module is
+ * never connected to a synthetic-alpha, plaintext, or radio route. Composition is refused unless the exact `Manifest02` object returned by
  * `verifyManifest02` authorizes the request through `authorizeOutbound02` /
  * `authorizeInbound02`, which run after the input snapshot and the public
  * identity hashing and before any encryption, HPKE wrap, or signature;

@@ -149,7 +149,18 @@ function draw(length: number): Uint8Array {
     );
   }
   const out = new Uint8Array(length);
-  source.call(globalThis.crypto, out);
+  try {
+    source.call(globalThis.crypto, out);
+  } catch (cause) {
+    // A CSPRNG that throws mid-composition is a failed draw, not a reason to
+    // surface an arbitrary error (or worse, retry with weakened material):
+    // fail closed with the typed key-material error.
+    throw new SealedEnvelopeError(
+      "key_material",
+      "the platform CSPRNG failed while drawing key material; composition is refused",
+      { cause },
+    );
+  }
   return out;
 }
 function same(a: Uint8Array, b: Uint8Array): boolean {

@@ -620,3 +620,63 @@ test("an options object inheriting deterministicKeyMaterial is refused, not hono
     (error) => error instanceof SealedEnvelopeError && error.code === "key_material",
   );
 });
+
+test("a CSPRNG that throws mid-composition fails closed with the typed error", async () => {
+  const fixture = await manifestFixture();
+  const original = globalThis.crypto.getRandomValues;
+  globalThis.crypto.getRandomValues = () => {
+    throw new Error("entropy source exhausted");
+  };
+  try {
+    await assert.rejects(
+      composeSealedOutboundEnvelope(composeInput(fixture)),
+      (error) => error instanceof SealedEnvelopeError && error.code === "key_material",
+    );
+  } finally {
+    globalThis.crypto.getRandomValues = original;
+  }
+});
+
+test("drawn CSPRNG bytes flow verbatim into the composed envelope", async () => {
+  const fixture = await manifestFixture();
+  let counter = 1;
+  const drawn = [];
+  const original = globalThis.crypto.getRandomValues;
+  const stub = (view) => {
+    for (let i = 0; i < view.length; i += 1) view[i] = (counter + i * 7) % 251;
+    drawn.push(Uint8Array.from(view));
+    counter += 13;
+    return view;
+  };
+  globalThis.crypto.getRandomValues = stub;
+  let envelope;
+  try {
+    envelope = new Uint8Array(await (await composeSealedOutboundEnvelope(composeInput(fixture))).envelope);
+  } finally {
+    globalThis.crypto.getRandomValues = original;
+  }
+  // Call order: 32-byte CEK, 12-byte in-clear body nonce, then one 32-byte
+  // EKM per wrap. The nonce is drawn key material that appears verbatim in
+  // the envelope, so a mutant that swaps drawn bytes for constants fails here.
+  assert.equal(drawn[0].length, 32);
+  assert.equal(drawn[1].length, 12);
+  const nonce = drawn[1];
+  const nonceOffset = envelope.findIndex(
+    (_, index) =>
+      index + nonce.length <= envelope.length &&
+      nonce.every((byte, offset) => envelope[index + offset] === byte),
+  );
+  assert.notEqual(nonceOffset, -1, "the drawn 12-byte nonce must appear verbatim in the envelope");
+  // And a different draw must move the envelope bytes: same stub shape, but a
+  // different nonce value yields a different envelope.
+  counter = 2;
+  drawn.length = 0;
+  globalThis.crypto.getRandomValues = stub;
+  let second;
+  try {
+    second = new Uint8Array(await (await composeSealedOutboundEnvelope(composeInput(fixture))).envelope);
+  } finally {
+    globalThis.crypto.getRandomValues = original;
+  }
+  assert.notDeepEqual([...second], [...envelope], "different drawn bytes must produce a different envelope");
+});

@@ -272,12 +272,14 @@ carrying a path, query or credentials are refused at construction. Tests use
 the pinned draft-01 vectors against a recording transport and no network.
 
 
-## Test-only profile-02 envelope preparation (task 113)
+## Profile-02 envelope preparation (wire-layout core)
 
 `src/draft02-envelope-prep.ts` composes complete candidate-02 sealed envelopes
-for tests. It is **not a production SDK path** and is connected to no send,
-inbound, webhook, or radio route. The production composition API above
-delegates to it after its own validation, so its reviewed byte layout and
+and is the internal wire-layout core the production composition API above
+delegates to. Its production bytes are admitted by the server's sealed
+admission route (`POST /v1/sealed/messages`, behind the default-off
+`SEALED_ADMISSION_ENABLED` flag, PR #545) and by no synthetic-alpha, plaintext,
+or radio route. The reviewed byte layout and
 authorization ordering are the single source of both test and production
 bytes. `prepareOutboundEnvelope02` and `prepareInboundEnvelope02` require the
 exact `Manifest02` object returned by `verifyManifest02` and call
