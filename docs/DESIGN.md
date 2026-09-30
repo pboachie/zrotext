@@ -41,6 +41,8 @@ The native gateway opens on **Home**, showing actual authenticated-service statu
 
 These screens organize existing pilot capabilities; they do not implement full conversation synchronization. The sample artwork below remains a design reference.
 
+The concept-inspired Home uses a signal ring, compact labelled icon shortcuts and spring-in cards. Only known connection proof/authentication observations animate; paused/offline states remain still and unknown or repair states use attention styling. Custom motion stops when the activity is not resumed or Android animations are disabled. Secondary phone details and Android access observations open in dismissible, scrollable bottom sheets. Access grants are independent observations, not authorization to start a pilot or send; app notification enablement does not guarantee a particular channel's delivery. Pause stays in the main Home flow.
+
 ## Reference assets
 
 - [ZROtext mark](assets/zrotext-mark.svg): editable SVG used in the README.
