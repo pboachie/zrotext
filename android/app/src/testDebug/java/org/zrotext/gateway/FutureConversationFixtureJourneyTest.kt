@@ -21,7 +21,7 @@ import java.util.UUID
 
 /** Synthetic presentation journeys only: no service, receiver, browser transport or SMS mount. */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34], qualifiers = "w320dp-h480dp")
+@Config(sdk = [28, 34], qualifiers = "w320dp-h480dp")
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class FutureConversationFixtureJourneyTest {
     @get:Rule val compose = createAndroidComposeRule<MainActivity>()
