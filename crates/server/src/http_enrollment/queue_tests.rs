@@ -183,7 +183,7 @@ macro_rules! queue_schema {
         [$(($name, include_str!(concat!("../../../../deploy/compose/migrations/", $name)))),+]
     };
 }
-const QUEUE_SCHEMA: [(&str, &str); 60] = queue_schema!(
+const QUEUE_SCHEMA: [(&str, &str); 61] = queue_schema!(
     "001_foundation.sql",
     "002_auth.sql",
     "003_delivery.sql",
@@ -244,6 +244,7 @@ const QUEUE_SCHEMA: [(&str, &str); 60] = queue_schema!(
     "058_drop_abuse_counters_updated_index.sql",
     "059_erasure_fk_indexes.sql",
     "060_optout_review_indexes.sql",
+    "061_inbound_events_attempt_fk_index.sql",
 );
 #[test]
 fn queue_fixture_includes_every_checked_in_migration() {
@@ -293,6 +294,9 @@ async fn apply_queue_schema(db: &Client) {
                 db.batch_execute("DROP INDEX IF EXISTS recipient_suppressions_active")
                     .await
                     .unwrap();
+            }
+            "061_inbound_events_attempt_fk_index.sql" => {
+                db.batch_execute("CREATE INDEX CONCURRENTLY erasure_fk_inbound_events_attempt ON inbound_events(account_id,device_id,message_id,attempt_id)").await.unwrap();
             }
             "050_message_attempts_recent_index.sql" => {
                 db.batch_execute("CREATE INDEX message_attempts_device_created ON message_attempts(account_id,device_id,created_at)").await.unwrap();

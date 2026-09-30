@@ -18,7 +18,7 @@ macro_rules! migration {
 
 // The ceremony runs on the complete schema. SQL is embedded at build time so
 // the test never executes files discovered at runtime.
-const TEST_MIGRATIONS: [(&str, &str); 60] = [
+const TEST_MIGRATIONS: [(&str, &str); 61] = [
     ("001_foundation.sql", migration!("001_foundation.sql")),
     ("002_auth.sql", migration!("002_auth.sql")),
     ("003_delivery.sql", migration!("003_delivery.sql")),
@@ -244,6 +244,10 @@ const TEST_MIGRATIONS: [(&str, &str); 60] = [
         "060_optout_review_indexes.sql",
         migration!("060_optout_review_indexes.sql"),
     ),
+    (
+        "061_inbound_events_attempt_fk_index.sql",
+        migration!("061_inbound_events_attempt_fk_index.sql"),
+    ),
 ];
 
 #[test]
@@ -431,6 +435,11 @@ async fn postgres_owner_key_ceremony_requires_possession_mfa_and_revokes_only_sm
                 .await
                 .unwrap();
             db.batch_execute("DROP INDEX IF EXISTS recipient_suppressions_active")
+                .await
+                .unwrap();
+        }
+        if name == "061_inbound_events_attempt_fk_index.sql" {
+            db.batch_execute("CREATE INDEX erasure_fk_inbound_events_attempt ON inbound_events(account_id,device_id,message_id,attempt_id)")
                 .await
                 .unwrap();
         }

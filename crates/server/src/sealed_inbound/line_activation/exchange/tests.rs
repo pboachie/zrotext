@@ -34,7 +34,7 @@ macro_rules! migration {
 }
 
 // Complete reviewed schema, embedded at build time.
-const TEST_MIGRATIONS: [(&str, &str); 60] = [
+const TEST_MIGRATIONS: [(&str, &str); 61] = [
     migration!("001_foundation.sql"),
     migration!("002_auth.sql"),
     migration!("003_delivery.sql"),
@@ -95,6 +95,7 @@ const TEST_MIGRATIONS: [(&str, &str); 60] = [
     migration!("058_drop_abuse_counters_updated_index.sql"),
     migration!("059_erasure_fk_indexes.sql"),
     migration!("060_optout_review_indexes.sql"),
+    migration!("061_inbound_events_attempt_fk_index.sql"),
 ];
 #[test]
 fn exchange_fixture_tracks_numbered_migrations() {
@@ -212,6 +213,11 @@ async fn migrated_schema(prefix: &str) -> (Client, String, String, Client) {
                 .await
                 .unwrap();
             db.batch_execute("DROP INDEX IF EXISTS recipient_suppressions_active")
+                .await
+                .unwrap();
+        }
+        if name == "061_inbound_events_attempt_fk_index.sql" {
+            db.batch_execute("CREATE INDEX erasure_fk_inbound_events_attempt ON inbound_events(account_id,device_id,message_id,attempt_id)")
                 .await
                 .unwrap();
         }
