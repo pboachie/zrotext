@@ -25,6 +25,8 @@ use std::sync::Arc;
 use tokio_postgres::{Client, Transaction};
 use uuid::Uuid;
 
+pub(crate) mod lifecycle;
+
 pub const DISCLOSURE_VERSION: &str = "conversation-content-v1";
 const CONTENT_TYPE: &str = "application/vnd.zrotext.sealed.v1";
 

@@ -272,6 +272,11 @@ async fn candidate_queue_replays_without_spending_or_rehydration_and_refunds_onc
         message_days: 1,
         ..Default::default()
     };
+    db.batch_execute(include_str!(
+        "../../../../deploy/compose/migrations/064_owner_conversation_consent.sql"
+    ))
+    .await
+    .unwrap();
     assert_eq!(
         crate::retention::prune(&mut db, policy, 100)
             .await

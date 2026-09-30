@@ -1217,12 +1217,25 @@ async fn phone_line_tombstone_blocks_erasure() {
     let (a, session_a, _b, _session_b, app) = fixture(&mut db, &hasher, &database_url, None).await;
     // A pending line identity tombstone: schema policy keeps it, so the
     // whole erasure must fail closed before anything is deleted.
+    let line = Uuid::new_v4();
     db.execute(
         "INSERT INTO phone_lines(id,account_id,state) VALUES($1,$2,'pending')",
-        &[&Uuid::new_v4(), &a.account_id],
+        &[&line, &a.account_id],
     )
     .await
     .unwrap();
+    let device: Uuid = db
+        .query_one(
+            "SELECT id FROM devices WHERE account_id=$1 LIMIT 1",
+            &[&a.account_id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    db.execute("INSERT INTO device_line_bindings(account_id,line_id,device_id,generation) VALUES($1,$2,$3,1)", &[&a.account_id, &line, &device]).await.unwrap();
+    // Withdrawn selection on a historical binding: complete account erasure
+    // is still blocked by immutable line identities and must retain this row.
+    db.execute("INSERT INTO owner_conversation_consents(account_id,device_id,line_id,binding_generation,peer,disclosure_version,enabled_by,revoked_at) VALUES($1,$2,$3,1,NULL,'conversation-content-v1',$4,clock_timestamp())", &[&a.account_id, &device, &line, &a.user_id]).await.unwrap();
     let response = app
         .clone()
         .oneshot(erasure_post(
@@ -1243,6 +1256,7 @@ async fn phone_line_tombstone_blocks_erasure() {
         "SELECT count(*) FROM messages WHERE account_id=$1",
         "SELECT count(*) FROM sessions WHERE account_id=$1",
         "SELECT count(*) FROM phone_lines WHERE account_id=$1",
+        "SELECT count(*) FROM owner_conversation_consents WHERE account_id=$1",
     ] {
         let rows: i64 = db.query_one(sql, &[&a.account_id]).await.unwrap().get(0);
         assert_eq!(

@@ -425,6 +425,26 @@ async fn export_is_tenant_bound_and_carries_owner_content() {
     assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
     let raw = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
     let takeout: Value = serde_json::from_slice(&raw).unwrap();
+    assert!(takeout["conversation_inventory"]["consent"].is_null());
+    assert_eq!(
+        takeout["conversation_inventory"]["sealed_events"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        takeout["conversation_inventory"]["sealed_events_truncated"],
+        false
+    );
+    assert!(takeout["conversation_inventory"]["sealed_events_next_cursor"].is_null());
+    let unknown_sealed = app
+        .clone()
+        .oneshot(get(
+            &format!("/v1/owner/export?sealed_before={}", Uuid::new_v4()),
+            Some(&session_a),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(unknown_sealed.status(), StatusCode::NOT_FOUND);
+    assert_eq!(unknown_sealed.headers()[header::CACHE_CONTROL], "no-store");
     assert_eq!(takeout["account"]["account_id"], a.account_id.to_string());
     assert_eq!(takeout["account"]["email"], "export-a@example.test");
     assert_eq!(takeout["account"]["email_verified"], true);
@@ -528,7 +548,10 @@ async fn export_paginates_full_history_beyond_the_first_page() {
         include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
         include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
         include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
+        include_str!("../../../../deploy/compose/migrations/018_sealed_inbound_identity.sql"),
+        include_str!("../../../../deploy/compose/migrations/043_sealed_candidate_inbound.sql"),
         include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
+        include_str!("../../../../deploy/compose/migrations/064_owner_conversation_consent.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }
