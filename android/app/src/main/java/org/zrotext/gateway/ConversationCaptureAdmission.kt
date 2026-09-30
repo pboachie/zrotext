@@ -120,6 +120,9 @@ internal class ConversationCaptureAdmission(
         journal.close(intervalId)
     }
 
+    /** Runtime worker closes admission before any lifecycle persistence; no Room or network work. */
+    @Synchronized fun disableForLifecycle() { lease = null; recovery = null; accepted = null }
+
     @Synchronized fun captureEligible(): Boolean = currentLease() != null
 
     /** Dormant adapters share the exact receiver/Pause monitor and scope fence. */
