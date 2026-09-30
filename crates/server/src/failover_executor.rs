@@ -524,6 +524,11 @@ pub struct PgWriterAuthority {
     /// Set by every failed operation and failed connect: the next operation
     /// first waits out a jittered pause and opens a fresh connection.
     reconnect_pending: bool,
+    /// The advisory-lock key this instance contends on. Production always
+    /// uses [`EXECUTOR_ADVISORY_LOCK_KEY`]; the test seam lets parallel
+    /// PostgreSQL tests isolate from each other with unique keys, because
+    /// advisory locks are per-database, not per-schema.
+    lock_key: i64,
     /// The singleton-executor advisory-lock guard: `None` on a plain port,
     /// which never attempts the lock, and `Some` on an executor-guarded
     /// port, whose every connection must acquire the lock before its
@@ -549,6 +554,7 @@ impl PgWriterAuthority {
             client: None,
             driver: None,
             reconnect_pending: false,
+            lock_key: EXECUTOR_ADVISORY_LOCK_KEY,
             guard: None,
             #[cfg(test)]
             connections_opened: 0,
@@ -570,6 +576,25 @@ impl PgWriterAuthority {
     ) -> Result<(Self, SharedExecutorRole), String> {
         let mut port = Self::new(database_url)?;
         let (guard, role) = SingletonExecutorGuard::new(lock_retry_interval);
+        port.guard = Some(guard);
+        Ok((port, role))
+    }
+
+    /// Test seam: [`Self::new_for_executor`] with an explicit advisory-lock
+    /// key. Production wiring always contends on
+    /// [`EXECUTOR_ADVISORY_LOCK_KEY`]; parallel tests that share one CI
+    /// database pass a unique key so their executors cannot fence each
+    /// other across test boundaries (advisory locks are per-database, so
+    /// schemas do not isolate them).
+    #[cfg(test)]
+    fn new_for_executor_with_lock_key(
+        database_url: String,
+        lock_retry_interval: Duration,
+        lock_key: i64,
+    ) -> Result<(Self, SharedExecutorRole), String> {
+        let mut port = Self::new(database_url)?;
+        let (guard, role) = SingletonExecutorGuard::new(lock_retry_interval);
+        port.lock_key = lock_key;
         port.guard = Some(guard);
         Ok((port, role))
     }
@@ -733,7 +758,7 @@ impl PgWriterAuthority {
         let Some(guard) = self.guard.as_mut() else {
             return Ok(LockAttempt::AcquiredFirst);
         };
-        let key = EXECUTOR_ADVISORY_LOCK_KEY;
+        let key = self.lock_key;
         let attempted = self.runtime.block_on(wait_bounded(CONNECT_CEILING, async {
             let row = client
                 .query_one("SELECT pg_try_advisory_lock($1)", &[&key])

@@ -1216,16 +1216,29 @@ fn a_dormant_executor_takes_over_when_the_active_executors_connection_dies() {
     };
 
     let retry_interval = Duration::from_millis(150);
-    let (mut first, first_role) =
-        PgWriterAuthority::new_for_executor(url(&app_first), retry_interval).unwrap();
+    // CI runs PostgreSQL tests in parallel on one shared database, and
+    // advisory locks are per-database (not per-schema), so this test's two
+    // executors contend on a test-private key instead of the production
+    // one: the race below is still real, but no other test can fence it.
+    let test_lock_key = i64::from_be_bytes(*b"ZROTEST1");
+    let (mut first, first_role) = PgWriterAuthority::new_for_executor_with_lock_key(
+        url(&app_first),
+        retry_interval,
+        test_lock_key,
+    )
+    .unwrap();
     assert_eq!(first_role.load(), ExecutorRole::Pending);
     first.load_state(&writer_site, &standby_site).unwrap();
     assert_eq!(first_role.load(), ExecutorRole::Active);
 
     // The second executor loses the race: it goes dormant, and its
     // operation fails closed instead of touching the singleton rows.
-    let (mut second, second_role) =
-        PgWriterAuthority::new_for_executor(url(&app_second), retry_interval).unwrap();
+    let (mut second, second_role) = PgWriterAuthority::new_for_executor_with_lock_key(
+        url(&app_second),
+        retry_interval,
+        test_lock_key,
+    )
+    .unwrap();
     let Err(error) = second.load_state(&writer_site, &standby_site) else {
         panic!("a second executor must not run rounds against the singleton journal row");
     };
@@ -1467,8 +1480,14 @@ fn a_reacquired_executor_reloads_from_the_database_instead_of_replaying_stale_in
     // promotion intent is saved durably, then A's connection dies before the
     // promote can run (the takeover window: intent durable, not applied).
     let retry_interval = Duration::from_millis(150);
-    let (mut authority_a, role_a) =
-        PgWriterAuthority::new_for_executor(url(&app_a), retry_interval).unwrap();
+    let (mut authority_a, role_a) = PgWriterAuthority::new_for_executor_with_lock_key(
+        url(&app_a),
+        retry_interval,
+        // Test-private key: A and B must fence each other, but no
+        // parallel test on CI's shared database can fence either.
+        i64::from_be_bytes(*b"ZROTEST2"),
+    )
+    .unwrap();
     // The eager initial connect can fail once under runner overhead; the guard
     // then parks Dormant behind the retry floor while the scripted ticks run
     // in microseconds of wall time. Drive the acquisition with cheap read-only
@@ -1525,8 +1544,12 @@ fn a_reacquired_executor_reloads_from_the_database_instead_of_replaying_stale_in
 
     // Executor B takes over and completes the promotion from the durable
     // intent; the operator reconciles through B and re-enables dispatch.
-    let (mut authority_b, role_b) =
-        PgWriterAuthority::new_for_executor(url(&app_b), retry_interval).unwrap();
+    let (mut authority_b, role_b) = PgWriterAuthority::new_for_executor_with_lock_key(
+        url(&app_b),
+        retry_interval,
+        i64::from_be_bytes(*b"ZROTEST2"),
+    )
+    .unwrap();
     // Same acquisition drive for B: its eager connect ran while A still held
     // the lock, so it starts Dormant and needs the retry floor to elapse.
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
