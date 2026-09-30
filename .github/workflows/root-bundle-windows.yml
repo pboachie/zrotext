@@ -55,6 +55,8 @@ jobs:
         run: cargo clippy --locked -p zrotext-root-terminal --all-targets -- -D warnings
       - name: Lint offline owner commands
         run: cargo clippy --locked -p zrotext-owner --all-targets -- -D warnings
+      - name: Lint the disabled-by-default unlock command
+        run: cargo clippy --locked -p zrotext-owner --all-targets --features unlock -- -D warnings
       - name: Verify disposable native fixture guards
         run: ./scripts/windows_native_ci.ps1 -SelfTest
       - name: Exercise the bundle suite as a disposable standard user
