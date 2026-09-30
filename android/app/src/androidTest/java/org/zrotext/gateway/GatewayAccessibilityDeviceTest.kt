@@ -14,12 +14,13 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 @OptIn(ExperimentalComposeUiApi::class)
 class GatewayAccessibilityDeviceTest : GatewayAccessibilityChecks() {
-    override fun onScreen(check: (RootForTest) -> Unit) {
+    override fun onScreen(page: String, check: (RootForTest) -> Unit) {
         assumeTrue(InstrumentationRegistry.getArguments().getString("a11yIsolatedEmulator") == "true")
         assumeTrue(Build.HARDWARE in setOf("ranchu", "goldfish"))
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val activity = instrumentation.startActivitySync(
             Intent(instrumentation.targetContext, MainActivity::class.java)
+                .putExtra("gateway_screen", page)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         try {
             instrumentation.waitForIdleSync()
