@@ -277,6 +277,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "063_retention_blocked_stamp.sql",
         include_str!("../../../../deploy/compose/migrations/063_retention_blocked_stamp.sql"),
     ),
+    (
+        "064_owner_conversation_consent.sql",
+        include_str!("../../../../deploy/compose/migrations/064_owner_conversation_consent.sql"),
+    ),
 ];
 
 /// Indexes the Compose migrator prepares with CREATE INDEX CONCURRENTLY in
