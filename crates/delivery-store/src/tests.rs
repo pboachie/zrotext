@@ -2,7 +2,7 @@ use super::*;
 
 // Keep the admission fixtures on the complete, reviewed schema. SQL is
 // embedded at build time so tests never execute files discovered at runtime.
-const TEST_MIGRATIONS: [(&str, &str); 61] = [
+const TEST_MIGRATIONS: [(&str, &str); 63] = [
     (
         "001_foundation.sql",
         include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
@@ -251,6 +251,14 @@ const TEST_MIGRATIONS: [(&str, &str); 61] = [
         "061_inbound_events_attempt_fk_index.sql",
         include_str!("../../../deploy/compose/migrations/061_inbound_events_attempt_fk_index.sql"),
     ),
+    (
+        "062_pending_recipient_index.sql",
+        include_str!("../../../deploy/compose/migrations/062_pending_recipient_index.sql"),
+    ),
+    (
+        "063_retention_blocked_stamp.sql",
+        include_str!("../../../deploy/compose/migrations/063_retention_blocked_stamp.sql"),
+    ),
 ];
 
 /// Applies every numbered migration in order. Shared by the PostgreSQL-backed
@@ -322,6 +330,11 @@ pub(crate) async fn apply_test_migrations(client: &Client) {
         }
         if name == "061_inbound_events_attempt_fk_index.sql" {
             client.batch_execute("CREATE INDEX erasure_fk_inbound_events_attempt ON inbound_events(account_id,device_id,message_id,attempt_id)")
+                .await
+                .unwrap();
+        }
+        if name == "062_pending_recipient_index.sql" {
+            client.batch_execute("CREATE INDEX messages_pending_recipient ON messages(recipient_e164,account_id) WHERE state IN ('queued','claimed') AND recipient_e164 IS NOT NULL")
                 .await
                 .unwrap();
         }

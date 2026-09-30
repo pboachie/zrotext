@@ -36,7 +36,7 @@ macro_rules! export_schema {
             [$(($name, include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/compose/migrations/", $name)))),+]
         };
     }
-const EXPORT_SCHEMA: [(&str, &str); 61] = export_schema!(
+const EXPORT_SCHEMA: [(&str, &str); 63] = export_schema!(
     "001_foundation.sql",
     "002_auth.sql",
     "003_delivery.sql",
@@ -98,6 +98,8 @@ const EXPORT_SCHEMA: [(&str, &str); 61] = export_schema!(
     "059_erasure_fk_indexes.sql",
     "060_optout_review_indexes.sql",
     "061_inbound_events_attempt_fk_index.sql",
+    "062_pending_recipient_index.sql",
+    "063_retention_blocked_stamp.sql",
 );
 #[test]
 fn export_schema_includes_every_checked_in_migration() {
@@ -211,6 +213,11 @@ async fn export_is_tenant_bound_and_carries_owner_content() {
         }
         if name == "061_inbound_events_attempt_fk_index.sql" {
             db.batch_execute("CREATE INDEX erasure_fk_inbound_events_attempt ON inbound_events(account_id,device_id,message_id,attempt_id)")
+                .await
+                .unwrap();
+        }
+        if name == "062_pending_recipient_index.sql" {
+            db.batch_execute("CREATE INDEX messages_pending_recipient ON messages(recipient_e164,account_id) WHERE state IN ('queued','claimed') AND recipient_e164 IS NOT NULL")
                 .await
                 .unwrap();
         }
