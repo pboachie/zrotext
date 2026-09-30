@@ -32,6 +32,20 @@
 //! semantics: taking the previous owner's connection down releases the
 //! lock, and a dormant replica acquires it on its next retry.
 //!
+//! Re-acquisition is not a resume. A replica that re-acquires the lock
+//! after losing its connection must assume another executor ran in
+//! between: everything it cached from its previous exclusive period —
+//! controller phase, journal, pending intents — may describe a past the
+//! database no longer reflects, and replaying it would act on stale state
+//! (a stale promotion replay re-pauses dispatch and overwrites the durable
+//! journal row). The port therefore latches every re-acquisition: the
+//! operation that paid for the acquiring connection is failed closed, and
+//! every later operation fails closed until the executor acknowledges the
+//! reload — the `WriterAuthority::exclusivity_reacquired` check at the top
+//! of each tick, which discards the cached state and restores from the
+//! authority snapshot and the durable journal row (the database's current
+//! truth) before anything runs again.
+//!
 //! The observation source is the durable consensus store
 //! (`FAILOVER_QUORUM_STORE_DIR`): one membership record plus append-only
 //! per-member journals, served through the decision model's freshness
@@ -167,6 +181,30 @@ enum GuardDecision {
     /// Fail the operation closed without touching the database: another
     /// replica holds the lock and the retry interval has not elapsed.
     Dormant,
+    /// Fail the operation closed without touching the database: the lock
+    /// was re-acquired and the owner has not yet acknowledged the reload
+    /// (see [`SingletonExecutorGuard::take_reacquired`]). State cached
+    /// from the previous exclusive period may be stale, so nothing may run
+    /// until the executor reloads from the database.
+    Stale,
+}
+
+/// What one `pg_try_advisory_lock` attempt means for the operation that
+/// paid for the connection it ran on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LockAttempt {
+    /// Another replica holds the lock.
+    Refused,
+    /// This port's first acquisition: no earlier exclusive period exists,
+    /// so nothing the owner could have cached is stale and the triggering
+    /// operation may run.
+    AcquiredFirst,
+    /// A re-acquisition: a previous exclusive period ended with a lost
+    /// connection, and another executor may have run in between. The
+    /// triggering operation is failed closed — it may carry intent cached
+    /// from that period — and the guard latches the re-acquisition so the
+    /// owner reloads authoritative state before the next operation.
+    AcquiredAgain,
 }
 
 /// Pure state machine behind the singleton-executor guard. The port
@@ -183,6 +221,15 @@ struct SingletonExecutorGuard {
     retry_interval: Duration,
     next_attempt: Option<Instant>,
     role: SharedExecutorRole,
+    /// Whether this port has completed an acquisition before, so a later
+    /// acquisition can be told apart from the first: only a re-acquisition
+    /// implies a previous exclusive period whose cached state may be stale.
+    ever_acquired: bool,
+    /// Latched on every re-acquisition and read-and-cleared by the owner
+    /// through [`Self::take_reacquired`]: while set, every operation fails
+    /// closed ([`GuardDecision::Stale`]) so nothing runs on the
+    /// re-acquired lock until the owner reloaded authoritative state.
+    reacquired: bool,
 }
 
 impl SingletonExecutorGuard {
@@ -194,6 +241,8 @@ impl SingletonExecutorGuard {
                 retry_interval,
                 next_attempt: None,
                 role: role.clone(),
+                ever_acquired: false,
+                reacquired: false,
             },
             role,
         )
@@ -201,6 +250,9 @@ impl SingletonExecutorGuard {
 
     /// The verdict for an operation arriving at `now`.
     fn poll(&mut self, now: Instant) -> GuardDecision {
+        if self.reacquired {
+            return GuardDecision::Stale;
+        }
         if self.role.load() == ExecutorRole::Active {
             return GuardDecision::Proceed;
         }
@@ -214,14 +266,35 @@ impl SingletonExecutorGuard {
     /// acquisition runs operations until the connection is lost; a refusal
     /// parks the guard dormant until the retry interval elapses, so at most
     /// one attempt is made per interval however often operations arrive.
-    fn resolved(&mut self, acquired: bool, now: Instant) {
+    /// An acquisition after a previous exclusive period additionally
+    /// latches [`Self::take_reacquired`] — a re-acquisition means another
+    /// executor may have advanced the authority and journal in between, so
+    /// the owner must reload before any of its cached state is acted on.
+    fn resolved(&mut self, acquired: bool, now: Instant) -> LockAttempt {
         if acquired {
+            let attempt = if self.ever_acquired {
+                self.reacquired = true;
+                LockAttempt::AcquiredAgain
+            } else {
+                LockAttempt::AcquiredFirst
+            };
+            self.ever_acquired = true;
             self.role.store(ExecutorRole::Active);
             self.next_attempt = None;
+            attempt
         } else {
             self.role.store(ExecutorRole::Dormant);
             self.next_attempt = Some(now.checked_add(self.retry_interval).unwrap_or(now));
+            LockAttempt::Refused
         }
+    }
+
+    /// Read-and-clear the re-acquisition signal. This is the owner's
+    /// reload acknowledgment: the one call that consumes it belongs to the
+    /// executor's reload step, and only after it may operations run again
+    /// (see [`GuardDecision::Stale`]).
+    fn take_reacquired(&mut self) -> bool {
+        std::mem::take(&mut self.reacquired)
     }
 
     /// The connection holding the lock was discarded: the role is not
@@ -405,6 +478,12 @@ pub enum PgAuthorityError {
          and performs no authority writes"
     )]
     ExecutorDormant,
+    #[error(
+        "the singleton advisory lock was re-acquired for this connection; the operation fails \
+         closed until the executor reloads authoritative state, because intent cached from the \
+         previous exclusive period may be stale"
+    )]
+    ExecutorLockReacquired,
     #[error("deployment_authority.epoch is outside the executor's domain: {0}")]
     EpochOutOfRange(i64),
 }
@@ -414,6 +493,20 @@ pub enum PgAuthorityError {
 /// stays a single generic entry point; async closures would express this
 /// natively but are not stable.
 type BoxedOperation<'a, T> = Pin<Box<dyn Future<Output = Result<T, PgAuthorityError>> + 'a>>;
+
+/// Outcome of opening the dedicated connection on a guarded port: the
+/// connection is ready for the triggering operation, or the singleton lock
+/// was (re-)acquired on it — see [`LockAttempt::AcquiredAgain`] for why the
+/// triggering operation must then fail closed even though the connection
+/// itself is healthy and retained.
+enum OpenedConnection {
+    /// The connection holds the lock (or the port has no guard): the
+    /// triggering operation may run on it.
+    Ready(tokio_postgres::Client),
+    /// The lock was re-acquired on this connection, which is retained in
+    /// the port: the triggering operation is failed closed instead of run.
+    AcquiredOnOpen,
+}
 
 /// PostgreSQL implementation of the `WriterAuthority` port. One dedicated,
 /// long-lived connection on a private single-threaded runtime: opened under
@@ -497,14 +590,17 @@ impl PgWriterAuthority {
         ceiling: Duration,
         operation: impl for<'a> FnOnce(&'a mut tokio_postgres::Client) -> BoxedOperation<'a, T>,
     ) -> Result<T, PgAuthorityError> {
-        // Dormancy is checked before anything else — a dormant replica
-        // performs no authority writes and never even opens a connection —
-        // and fails closed without disturbing the pending-reconnect state,
-        // which still applies once dormancy ends.
-        if let Some(guard) = self.guard.as_mut()
-            && matches!(guard.poll(Instant::now()), GuardDecision::Dormant)
-        {
-            return Err(PgAuthorityError::ExecutorDormant);
+        // Dormancy and staleness are checked before anything else — a
+        // dormant replica performs no authority writes and never even opens
+        // a connection, and a re-acquired lock runs nothing until the owner
+        // acknowledged the reload — and both fail closed without disturbing
+        // the pending-reconnect state, which still applies once they end.
+        if let Some(guard) = self.guard.as_mut() {
+            match guard.poll(Instant::now()) {
+                GuardDecision::Dormant => return Err(PgAuthorityError::ExecutorDormant),
+                GuardDecision::Stale => return Err(PgAuthorityError::ExecutorLockReacquired),
+                GuardDecision::Proceed => {}
+            }
         }
         if self.reconnect_pending {
             // The previous failure left the connection unusable; discard it
@@ -518,7 +614,18 @@ impl PgWriterAuthority {
         }
         let mut client = match self.client.take() {
             Some(client) => client,
-            None => self.open_connection(CONNECT_CEILING)?,
+            None => match self.open_connection(CONNECT_CEILING)? {
+                // The lock was re-acquired on the very connection this
+                // operation paid for. The connection (and its lock) is
+                // retained, but the operation does not run: it may carry
+                // intent cached from the previous exclusive period, and the
+                // guard now fails every operation closed until the executor
+                // reloaded authoritative state from the database.
+                OpenedConnection::AcquiredOnOpen => {
+                    return Err(PgAuthorityError::ExecutorLockReacquired);
+                }
+                OpenedConnection::Ready(client) => client,
+            },
         };
         // The client is lent to the operation only inside this block_on:
         // the port's runtime drives the operation and the socket together,
@@ -548,10 +655,7 @@ impl PgWriterAuthority {
     /// Open the dedicated connection under `ceiling` and start its driver
     /// task. A failure still marks a jittered reconnect before the next
     /// operation, so even a connect attempt cannot hang the executor.
-    fn open_connection(
-        &mut self,
-        ceiling: Duration,
-    ) -> Result<tokio_postgres::Client, PgAuthorityError> {
+    fn open_connection(&mut self, ceiling: Duration) -> Result<OpenedConnection, PgAuthorityError> {
         let url = self.database_url.clone();
         let opened = self.runtime.block_on(async move {
             let connecting = zrotext_postgres_connection::connect(&url);
@@ -576,8 +680,20 @@ impl PgWriterAuthority {
                     self.connections_opened = self.connections_opened.saturating_add(1);
                 }
                 match self.acquire_executor_lock(&client) {
-                    Ok(true) => Ok(client),
-                    Ok(false) => {
+                    Ok(LockAttempt::AcquiredFirst) => Ok(OpenedConnection::Ready(client)),
+                    Ok(LockAttempt::AcquiredAgain) => {
+                        // The re-acquired connection is kept — its lock is
+                        // exactly what the executor needs — but the
+                        // triggering operation is failed closed by the
+                        // caller: it may carry intent cached from the
+                        // previous exclusive period. No reconnect flag is
+                        // set: the transport is healthy, and the guard's
+                        // stale verdict already fails every operation
+                        // closed until the reload is acknowledged.
+                        self.client = Some(client);
+                        Ok(OpenedConnection::AcquiredOnOpen)
+                    }
+                    Ok(LockAttempt::Refused) => {
                         // The connection is healthy but worthless without
                         // the lock: discard it and fail the operation
                         // closed. No reconnect flag is set — the transport
@@ -606,14 +722,17 @@ impl PgWriterAuthority {
     /// connection later operations ride, so the lock's lifetime is the
     /// connection's lifetime — the guard re-attempts it after every
     /// reconnect, and the executor role fails over with the connection,
-    /// with no lease to renew. A plain port (no guard) always proceeds.
+    /// with no lease to renew. A re-acquisition (a previous exclusive
+    /// period exists) additionally latches the reload signal the guard
+    /// serves until the executor acknowledges it. A plain port (no guard)
+    /// always proceeds.
     fn acquire_executor_lock(
         &mut self,
         client: &tokio_postgres::Client,
-    ) -> Result<bool, PgAuthorityError> {
-        if self.guard.is_none() {
-            return Ok(true);
-        }
+    ) -> Result<LockAttempt, PgAuthorityError> {
+        let Some(guard) = self.guard.as_mut() else {
+            return Ok(LockAttempt::AcquiredFirst);
+        };
         let key = EXECUTOR_ADVISORY_LOCK_KEY;
         let attempted = self.runtime.block_on(wait_bounded(CONNECT_CEILING, async {
             let row = client
@@ -622,12 +741,7 @@ impl PgWriterAuthority {
             Ok(row.get::<_, bool>(0))
         }));
         match attempted {
-            Ok(acquired) => {
-                if let Some(guard) = self.guard.as_mut() {
-                    guard.resolved(acquired, Instant::now());
-                }
-                Ok(acquired)
-            }
+            Ok(acquired) => Ok(guard.resolved(acquired, Instant::now())),
             Err(error) => Err(error),
         }
     }
@@ -866,6 +980,12 @@ impl WriterAuthority for PgWriterAuthority {
                 Ok(row.map(|row| row.get(0)))
             })
         })
+    }
+
+    fn exclusivity_reacquired(&mut self) -> bool {
+        self.guard
+            .as_mut()
+            .is_some_and(SingletonExecutorGuard::take_reacquired)
     }
 }
 

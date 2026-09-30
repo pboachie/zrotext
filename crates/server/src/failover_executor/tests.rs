@@ -10,7 +10,9 @@ use std::collections::VecDeque;
 use zrotext_failover_quorum::decision::{
     Decision, FailoverConfig, HoldReason, MemberReport, Round, SiteFenceState, WriterObservation,
 };
-use zrotext_failover_quorum::executor::{Application, InProcessSource, ObservationSource};
+use zrotext_failover_quorum::executor::{
+    Application, ExecutorStatus, InProcessSource, ObservationSource,
+};
 use zrotext_failover_quorum::observe::{
     AbstainReason, MemberObserver, RoundProbes, StopConfirmation, WriterProbe,
 };
@@ -804,6 +806,56 @@ fn a_lost_connection_does_not_wake_a_dormant_guard_early() {
 }
 
 #[test]
+fn a_reacquired_lock_fails_operations_until_the_reload_is_acknowledged() {
+    // Stale-state safety (issue #513): only a re-acquisition — an
+    // acquisition after a previous exclusive period — invalidates cached
+    // executor state, and while it is unacknowledged every operation fails
+    // closed, however much time passes (it is a reload signal, not a retry
+    // interval).
+    let (mut guard, role) = SingletonExecutorGuard::new(Duration::from_millis(50));
+    let now = Instant::now();
+    assert_eq!(
+        guard.resolved(true, now),
+        LockAttempt::AcquiredFirst,
+        "the first acquisition lets the triggering operation run"
+    );
+    assert!(matches!(guard.poll(now), GuardDecision::Proceed));
+    // The lock dies with the connection; a later acquisition is a
+    // re-acquisition: another executor may have run in between.
+    guard.connection_lost();
+    assert_eq!(guard.resolved(true, now), LockAttempt::AcquiredAgain);
+    assert_eq!(role.load(), ExecutorRole::Active);
+    assert!(
+        matches!(guard.poll(now), GuardDecision::Stale),
+        "no operation may run on the re-acquired lock before the reload"
+    );
+    assert!(
+        matches!(
+            guard.poll(now + Duration::from_secs(1)),
+            GuardDecision::Stale
+        ),
+        "the stale verdict is sticky, not a retry interval"
+    );
+    assert!(guard.take_reacquired(), "exactly one reload signal");
+    assert!(!guard.take_reacquired(), "the signal is read-and-clear");
+    assert!(
+        matches!(guard.poll(now), GuardDecision::Proceed),
+        "after the acknowledged reload, operations run again"
+    );
+    // A refused attempt never reads as a re-acquisition, but every
+    // acquisition after the first exclusive period does — dormancy in
+    // between changes nothing.
+    assert_eq!(guard.resolved(false, now), LockAttempt::Refused);
+    assert_eq!(role.load(), ExecutorRole::Dormant);
+    guard.connection_lost();
+    assert_eq!(
+        guard.resolved(true, now + Duration::from_secs(2)),
+        LockAttempt::AcquiredAgain,
+        "every acquisition after the first exclusive period is a re-acquisition"
+    );
+}
+
+#[test]
 fn only_an_executor_constructed_port_carries_the_singleton_lock_guard() {
     // The plain port never attempts the lock — and the disabled wiring
     // (proven above: `spawn_returns_none_and_spawns_nothing_while_disabled`)
@@ -1233,6 +1285,275 @@ fn a_dormant_executor_takes_over_when_the_active_executors_connection_dies() {
 
     drop(first);
     drop(second);
+    let cleanup_schema = schema.clone();
+    runtime.block_on(async {
+        admin
+            .batch_execute(&format!("DROP SCHEMA {cleanup_schema} CASCADE"))
+            .await
+            .unwrap();
+    });
+    drop(admin);
+    let _ = runtime.block_on(admin_driver);
+}
+
+/// The stale-state safety of a re-acquired singleton executor (issue #513):
+/// a FORMER executor that re-acquires the advisory lock after a takeover
+/// must never act on the in-memory state of its previous incarnation — it
+/// reloads the authority snapshot and the durable journal row (the
+/// database's current truth) and continues from there, or fails closed
+/// without writing. Driving scenario: executor A fences the writer and
+/// saves its promotion intent, then loses its dedicated connection; B takes
+/// over, completes the promotion, records the operator's reconciliation
+/// (journal `reconciled=true`) while the operator re-enables dispatch; after
+/// B's connection dies, A re-acquires the lock with A's stale pending
+/// promotion intent still queued — and must neither re-pause dispatch nor
+/// overwrite the journal row, whatever rounds it runs.
+#[test]
+#[ignore = "requires ZT_FAILOVER_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+fn a_reacquired_executor_reloads_from_the_database_instead_of_replaying_stale_intent() {
+    let base_url = std::env::var("ZT_FAILOVER_TEST_DATABASE_URL")
+        .expect("set ZT_FAILOVER_TEST_DATABASE_URL for PostgreSQL-backed failover tests");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime");
+
+    let writer_site = format!("failover-pg-stale-w-{}", uuid::Uuid::new_v4().simple());
+    let standby_site = format!("failover-pg-stale-s-{}", uuid::Uuid::new_v4().simple());
+    let schema = format!("failover_executor_stale_{}", uuid::Uuid::new_v4().simple());
+    let app_a = format!("zt-failover-stale-a-{}", uuid::Uuid::new_v4().simple());
+    let app_b = format!("zt-failover-stale-b-{}", uuid::Uuid::new_v4().simple());
+    let members = ["member-a", "member-b", "member-c"];
+
+    let (admin, admin_driver) = {
+        let (client, connection) = runtime
+            .block_on(zrotext_postgres_connection::connect(&base_url))
+            .expect("admin connection");
+        let driver = runtime.spawn(connection);
+        (client, driver)
+    };
+    let setup_schema = schema.clone();
+    runtime.block_on(async {
+        admin
+            .batch_execute(&format!(
+                "CREATE SCHEMA {setup_schema}; SET search_path TO {setup_schema}"
+            ))
+            .await
+            .unwrap();
+        admin.batch_execute(MIGRATION_FOUNDATION).await.unwrap();
+        admin
+            .batch_execute(MIGRATION_FAILOVER_JOURNAL)
+            .await
+            .unwrap();
+    });
+    let separator = if base_url.contains('?') { '&' } else { '?' };
+    let url = |app_name: &str| {
+        format!("{base_url}{separator}options=-csearch_path%3D{schema}&application_name={app_name}")
+    };
+    // The authority baseline: both site rows (the standby disabled so the
+    // promotion must enable it), dispatch on so the failover must pause it.
+    let insert_writer = writer_site.clone();
+    let insert_standby = standby_site.clone();
+    let baseline_epoch: i64 = runtime.block_on(async {
+        admin
+            .execute(
+                "INSERT INTO sites(site_id) VALUES($1),($2)",
+                &[&insert_writer, &insert_standby],
+            )
+            .await
+            .unwrap();
+        admin
+            .execute(
+                "UPDATE sites SET enabled=FALSE WHERE site_id=$1",
+                &[&insert_standby],
+            )
+            .await
+            .unwrap();
+        admin
+            .query_one(
+                "UPDATE deployment_authority SET dispatch_enabled=TRUE RETURNING epoch",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0)
+    });
+    let base_epoch = u64::try_from(baseline_epoch).unwrap();
+    let promoted_epoch = base_epoch + 1;
+
+    // Observers over the singleton rows, through the persistent admin
+    // session only.
+    let authority_row = || -> (i64, bool) {
+        runtime.block_on(async {
+            let row = admin
+                .query_one(
+                    "SELECT epoch, dispatch_enabled FROM deployment_authority \
+                     WHERE singleton=TRUE",
+                    &[],
+                )
+                .await
+                .expect("read deployment_authority");
+            (row.get::<_, i64>(0), row.get::<_, bool>(1))
+        })
+    };
+    let journal_row = || -> Option<String> {
+        runtime.block_on(async {
+            admin
+                .query_opt(
+                    "SELECT state FROM failover_controller_state WHERE singleton=TRUE",
+                    &[],
+                )
+                .await
+                .expect("read failover_controller_state")
+                .map(|row| row.get(0))
+        })
+    };
+    let terminate = |app_name: &str| {
+        let pids = authority_backend_pids(&runtime, &admin, app_name);
+        assert_eq!(pids.len(), 1, "exactly one backend for {app_name}");
+        runtime.block_on(async {
+            admin
+                .execute("SELECT pg_terminate_backend($1)", &[&pids[0]])
+                .await
+                .unwrap();
+        });
+        // The session-level advisory lock dies with the backend; wait for the
+        // exit so the next lock attempt is deterministic.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            if authority_backend_pids(&runtime, &admin, app_name).is_empty() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        panic!("the terminated backend {app_name} must exit");
+    };
+
+    let config = FailoverConfig::new(
+        members.iter().map(|member| (*member).to_owned()).collect(),
+        writer_site.clone(),
+        standby_site.clone(),
+    )
+    .unwrap();
+
+    // Executor A acquires the lock and drives the failover to the fence; the
+    // promotion intent is saved durably, then A's connection dies before the
+    // promote can run (the takeover window: intent durable, not applied).
+    let retry_interval = Duration::from_millis(150);
+    let (authority_a, role_a) =
+        PgWriterAuthority::new_for_executor(url(&app_a), retry_interval).unwrap();
+    let mut executor_a = FailoverExecutor::new(
+        config.clone(),
+        queued_source(vec![
+            healthy_round(members, base_epoch, 1_000),
+            failure_round(members, 2_000),
+            failure_round(members, 3_000),
+            failure_round(members, 4_000),
+            evidence_round(members, 5_000),
+            evidence_round(members, 7_000),
+            evidence_round(members, 8_000),
+        ]),
+        authority_a,
+    );
+    executor_a.tick(1_000);
+    assert_eq!(role_a.load(), ExecutorRole::Active);
+    executor_a.tick(2_000);
+    executor_a.tick(3_000);
+    let report = executor_a.tick(4_000);
+    assert_eq!(
+        report.decision,
+        Some(Decision::FenceOldWriter {
+            site_id: writer_site.clone()
+        })
+    );
+    assert!(matches!(report.application, Application::Applied { .. }));
+    terminate(&app_a);
+    let report = executor_a.tick(5_000);
+    assert_eq!(
+        report.decision,
+        Some(Decision::PromoteStandby {
+            site_id: standby_site.clone(),
+            new_epoch: promoted_epoch,
+        })
+    );
+    assert!(
+        matches!(report.application, Application::Pending { .. }),
+        "A's promotion intent is saved but the application did not run on the \
+         dead connection; the stale intent stays queued: {:?}",
+        report.application
+    );
+
+    // Executor B takes over and completes the promotion from the durable
+    // intent; the operator reconciles through B and re-enables dispatch.
+    let (authority_b, role_b) =
+        PgWriterAuthority::new_for_executor(url(&app_b), retry_interval).unwrap();
+    let mut executor_b = FailoverExecutor::new(
+        config.clone(),
+        queued_source(vec![evidence_round(members, 6_000)]),
+        authority_b,
+    );
+    let report = executor_b.tick(6_000);
+    assert_eq!(
+        report.decision,
+        Some(Decision::PromoteStandby {
+            site_id: standby_site.clone(),
+            new_epoch: promoted_epoch,
+        })
+    );
+    assert_eq!(role_b.load(), ExecutorRole::Active);
+    assert!(matches!(report.application, Application::Applied { .. }));
+    executor_b.reconcile_complete().unwrap();
+    runtime.block_on(async {
+        admin
+            .execute(
+                "UPDATE deployment_authority SET dispatch_enabled=TRUE WHERE singleton=TRUE",
+                &[],
+            )
+            .await
+            .unwrap();
+    });
+    // The database's truth after the takeover: promoted, reconciled, and the
+    // operator's dispatch re-enable stands.
+    let (epoch, dispatch) = authority_row();
+    assert_eq!(u64::try_from(epoch).unwrap(), promoted_epoch);
+    assert!(dispatch);
+    let journal_after_takeover = journal_row().expect("the journal row exists");
+    assert!(
+        journal_after_takeover.contains("phase=promoted")
+            && journal_after_takeover.contains("reconciled=true"),
+        "the takeover executor reconciled: {journal_after_takeover:?}"
+    );
+
+    // B dies; A re-acquires the lock with the stale in-memory state of its
+    // previous incarnation (a mid-failover controller, the fencing journal
+    // and the pending promotion intent). A must reload from the database
+    // instead of replaying any of it.
+    terminate(&app_b);
+    let _ = executor_a.tick(7_000);
+    let _ = executor_a.tick(8_000);
+
+    let (epoch, dispatch) = authority_row();
+    assert_eq!(
+        u64::try_from(epoch).unwrap(),
+        promoted_epoch,
+        "the epoch never bumps again"
+    );
+    assert!(
+        dispatch,
+        "a re-acquired executor must not re-pause dispatch from stale intent"
+    );
+    let journal_after_reacquisition = journal_row().expect("the journal row exists");
+    assert_eq!(
+        journal_after_reacquisition, journal_after_takeover,
+        "a re-acquired executor must not overwrite the durable journal with \
+         stale intent"
+    );
+    // A continues from the current truth: running as the executor again,
+    // restored into the promoted-and-reconciled phase B left behind.
+    assert!(matches!(executor_a.status(), ExecutorStatus::Running));
+
+    drop(executor_a);
+    drop(executor_b);
     let cleanup_schema = schema.clone();
     runtime.block_on(async {
         admin
