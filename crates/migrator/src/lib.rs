@@ -21,8 +21,14 @@ use radio_evidence_index::*;
 use recent_attempt_index::*;
 use webhook_history_index::*;
 
-// Fixed, project-specific advisory lock. Held on one connection for the full run.
-const MIGRATION_LOCK: i64 = 0x5a_52_4f_54_45_58_54;
+/// Fixed, project-specific advisory lock, held on one connection for the
+/// full migrator run. Public so every other session-level advisory-lock key
+/// (for example the failover executor's singleton lock) can be pinned
+/// distinct from this namespace — two locks sharing a key would let each
+/// holder defeat the other's exclusivity. The value is the big-endian ASCII
+/// of `ZROTEXT`; it must stay fixed forever, or a migrator and an executor
+/// that disagree on the key could run concurrently.
+pub const MIGRATION_LOCK: i64 = 0x5a_52_4f_54_45_58_54;
 const IN_FLIGHT_INDEX_MIGRATION: i64 = 34;
 const IN_FLIGHT_INDEX_FILE: &str = "034_delivery_sweep_index.sql";
 const CREATE_IN_FLIGHT_INDEX: &str = "CREATE INDEX CONCURRENTLY messages_in_flight_updated ON public.messages (updated_at, id) \

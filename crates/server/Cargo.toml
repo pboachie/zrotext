@@ -61,3 +61,6 @@ tower = { version = "0.5", features = ["util"] }
 # 0.29 is the version axum already locks, so test builds compile one
 # tungstenite tree instead of two.
 tokio-tungstenite = "0.29.0"
+# Test-only: the executor tests pin the singleton lock key distinct from the
+# migrator's session-level advisory-lock namespace.
+zrotext-migrator = { path = "../migrator" }

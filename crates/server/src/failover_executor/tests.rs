@@ -880,6 +880,33 @@ fn only_an_executor_constructed_port_carries_the_singleton_lock_guard() {
 }
 
 #[test]
+fn the_executor_lock_key_is_pinned_and_distinct_from_the_migrator_lock() {
+    // Both the executor's singleton lock and the migrator's lock are
+    // session-level advisory locks in the same 64-bit key space of one
+    // database: a shared key would let whichever holder came first defeat
+    // the other's exclusivity entirely (a migrator "holding the executor",
+    // an executor "holding the migration"). The executor's key is pinned to
+    // its self-describing value (big-endian `ZROFAILO`, so `pg_locks` names
+    // it) and pinned distinct from the migrator's namespace
+    // (big-endian `ZROTEXT`).
+    assert_eq!(
+        EXECUTOR_ADVISORY_LOCK_KEY,
+        i64::from_be_bytes(*b"ZROFAILO"),
+        "the executor lock key must stay fixed at its documented value"
+    );
+    assert_eq!(
+        zrotext_migrator::MIGRATION_LOCK,
+        i64::from_be_bytes(*b"\0ZROTEXT"),
+        "the migrator lock key must stay fixed at its documented value"
+    );
+    assert_ne!(
+        EXECUTOR_ADVISORY_LOCK_KEY,
+        zrotext_migrator::MIGRATION_LOCK,
+        "the executor singleton lock and the migration lock must never share \
+         a key: each would defeat the other's exclusivity"
+    );
+}
+#[test]
 fn a_dormant_guard_fails_operations_closed_without_a_connection() {
     // Port 1 refuses connections immediately, so a reached connect would
     // fail fast with a transport error — anything but dormancy.
