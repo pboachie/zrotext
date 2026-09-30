@@ -51,8 +51,9 @@
 //! production the store stays empty and every round fails closed — it
 //! observes no database itself, it does not stop or reseed PostgreSQL hosts
 //! (external watchdog integration), the epoch anchor
-//! has no real implementation, and the store journals are never rotated or
-//! compacted; later increments per the implementation-status notes in
+//! has no real implementation, and the store journals are never rotated
+//! beyond the open-time checkpointed compaction (see [`store`]); later increments per the implementation-status notes in
+
 //! `docs/MULTI-LOCATION.md`.
 
 pub mod anchor;

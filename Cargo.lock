@@ -2985,6 +2985,7 @@ dependencies = [
  "zrotext-delivery-store",
  "zrotext-domain",
  "zrotext-failover-quorum",
+ "zrotext-migrator",
  "zrotext-postgres-connection",
  "zrotext-root-material",
 ]
