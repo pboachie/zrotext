@@ -115,6 +115,17 @@ metadata without an outbound attempt when `LINE_OPT_OUT_ENABLED=true`. It
 requires a current active line binding and never clears suppression or sends
 an SMS. See [the line-bound opt-out contract](line-opt-out-contract.md).
 
+Default-off `mms_spike_ready` and `mms_spike_grant` frames carry the
+founder-gated one-attempt MMS spike ([issue #438](https://github.com/pboachie/zrotext/issues/438))
+when `MMS_SPIKE_GRANT_ENABLED=true` names one device and an allowlisted
+recipient. The grant is strictly solicited: the hub sends it only to a client
+that first sent `mms_spike_ready` on that connection for an allowlisted
+recipient digest, at most once per connection and once per device and
+recipient, and never while that recipient has an active suppression or
+unreleased owner hold. A client that never sends the ready frame — including
+release builds and clients predating the frame — never receives a grant. See
+[the synthetic alpha stream](synthetic-alpha-stream.md).
+
 Default-off `sms_line_challenge`, `sms_line_proof`, `sms_line_proof_ack`, and
 `sms_line_activated` frames carry SMS line activation when
 `SMS_LINE_ACTIVATION_ENABLED=true`. They bind a line to this device only after
