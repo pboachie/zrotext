@@ -4949,3 +4949,58 @@ async fn mfa_changes_invalidate_earlier_trusted_cookies_on_the_reset_path() {
         .await
         .unwrap();
 }
+
+// SMTP sessions are pooled only off-Windows (issue #485). Through the
+// production dispatcher: completed mails share one session, while a 550 and
+// an unexpected positive reply to the end of a message are failures whose
+// sessions are discarded rather than reused.
+#[cfg(not(windows))]
+#[tokio::test]
+async fn smtp_dispatcher_reuses_only_sessions_that_completed_a_transaction() {
+    use super::smtp_session::tests::{Script, Server};
+    let server = Server::start(vec![
+        Script::Accept,
+        Script::Accept,
+        Script::RejectFinal,
+        Script::IntermediateFinal,
+        Script::Accept,
+    ])
+    .await;
+    let dispatcher = SmtpVerificationDispatcher {
+        from: "notice@example.test".parse().unwrap(),
+        reply_to: None,
+        sessions: server.sessions(),
+    };
+    dispatcher
+        .dispatch("owner-a@example.test", "synthetic-code-a")
+        .await
+        .unwrap();
+    dispatcher
+        .dispatch_password_reset_notice("owner-b@example.test")
+        .await
+        .unwrap();
+    assert_eq!(server.connections(), 1, "completed mails share one session");
+    assert_eq!(
+        dispatcher
+            .dispatch("owner-c@example.test", "synthetic-code-c")
+            .await,
+        Err(DispatchFailure::Rejected),
+        "a 550 is never reported as delivered"
+    );
+    assert_eq!(
+        dispatcher
+            .dispatch("owner-d@example.test", "synthetic-code-d")
+            .await,
+        Err(DispatchFailure::Rejected),
+        "a 354 after the message is never reported as delivered"
+    );
+    dispatcher
+        .dispatch("owner-e@example.test", "synthetic-code-e")
+        .await
+        .unwrap();
+    assert_eq!(
+        server.connections(),
+        3,
+        "the rejected and the unexpected sessions were both discarded"
+    );
+}

@@ -20,8 +20,7 @@ use axum::{
 use base64::{Engine, engine::general_purpose::STANDARD};
 use hmac::{Hmac, Mac, digest::KeyInit};
 use lettre::{
-    AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
-    transport::smtp::authentication::Credentials,
+    AsyncSmtpTransport, Message, Tokio1Executor, transport::smtp::authentication::Credentials,
 };
 use preauth::{MemberMutation, OwnerMutation};
 use serde::{Deserialize, Serialize};
@@ -43,6 +42,7 @@ pub mod preauth;
 mod seats_http;
 mod sms_lines;
 mod sms_owner_keys;
+mod smtp_session;
 pub mod trusted_cidrs;
 
 use std::net::SocketAddr;
@@ -187,7 +187,7 @@ impl VerificationDispatcher for DisabledVerificationDispatcher {
 pub struct SmtpVerificationDispatcher {
     from: lettre::message::Mailbox,
     reply_to: Option<lettre::message::Mailbox>,
-    transport: AsyncSmtpTransport<Tokio1Executor>,
+    sessions: smtp_session::SmtpSessions,
 }
 
 fn verification_email_body(token: &str) -> String {
@@ -220,24 +220,26 @@ impl SmtpVerificationDispatcher {
             .map(|value| value.parse().map_err(|_| "invalid SMTP Reply-To"))
             .transpose()?;
         let credentials = Credentials::new(username, password);
-        let transport = if port == 465 {
+        let builder = if port == 465 {
             AsyncSmtpTransport::<Tokio1Executor>::relay(host).map_err(|_| "invalid SMTP relay")?
         } else {
             AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host)
                 .map_err(|_| "invalid SMTP relay")?
         }
         .port(port)
-        .credentials(credentials)
-        .build();
+        .credentials(credentials);
         Ok(Self {
             from,
             reply_to,
-            transport,
+            // Reuses a bounded set of SMTP sessions instead of paying TCP,
+            // STARTTLS and AUTH per message (issue #485), and only after a
+            // transaction completed with a 2xx reply.
+            sessions: smtp_session::SmtpSessions::new(builder),
         })
     }
 
     pub async fn test_connection(&self) -> Result<(), DispatchFailure> {
-        match self.transport.test_connection().await {
+        match self.sessions.test_connection().await {
             Ok(true) => Ok(()),
             Ok(false) => Err(DispatchFailure::Connect),
             Err(error) => Err(DispatchFailure::from_smtp(&error)),
@@ -269,10 +271,13 @@ impl VerificationDispatcher for SmtpVerificationDispatcher {
                 .subject("Verify your ZROtext email")
                 .body(verification_email_body(token))
                 .map_err(|_| DispatchFailure::Message)?;
-            self.transport
+            self.sessions
                 .send(message)
                 .await
-                .map_err(|error| DispatchFailure::from_smtp(&error))?;
+                .map_err(|error| match error {
+                    smtp_session::SessionError::Smtp(error) => DispatchFailure::from_smtp(&error),
+                    smtp_session::SessionError::UnexpectedReply => DispatchFailure::Rejected,
+                })?;
             Ok(())
         })
     }
@@ -294,7 +299,7 @@ impl VerificationDispatcher for SmtpVerificationDispatcher {
                     "Your ZROtext password reset code is:\n\n{token}\n\nPaste this code into the password reset form. It expires in one hour. If you did not request it, ignore this message. The code is not a link.\n"
                 ))
                 .map_err(|_| ())?;
-            self.transport.send(message).await.map_err(|_| ())?;
+            self.sessions.send(message).await.map_err(|_| ())?;
             Ok(())
         })
     }
@@ -313,7 +318,7 @@ impl VerificationDispatcher for SmtpVerificationDispatcher {
                 .subject("Your ZROtext password was reset")
                 .body("Your ZROtext password was reset and all sessions were signed out. If you did not do this, contact support immediately.\n".to_owned())
                 .map_err(|_| ())?;
-            self.transport.send(message).await.map_err(|_| ())?;
+            self.sessions.send(message).await.map_err(|_| ())?;
             Ok(())
         })
     }
