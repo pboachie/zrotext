@@ -281,6 +281,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "064_owner_conversation_consent.sql",
         include_str!("../../../../deploy/compose/migrations/064_owner_conversation_consent.sql"),
     ),
+    (
+        "065_conversation_activation.sql",
+        include_str!("../../../../deploy/compose/migrations/065_conversation_activation.sql"),
+    ),
 ];
 
 /// Indexes the Compose migrator prepares with CREATE INDEX CONCURRENTLY in
@@ -1297,6 +1301,17 @@ async fn sealed_trust_history_blocks_erasure() {
     )
     .await
     .unwrap();
+    // Synthetic storage fixtures prove guarded deletion rolls these new tables back too.
+    let line = Uuid::new_v4();
+    let interval = Uuid::new_v4();
+    let event = Uuid::new_v4();
+    db.execute("INSERT INTO phone_lines(id,account_id,state,approved_at,current_binding_generation,last_issued_generation) VALUES($1,$2,'active',clock_timestamp(),1,1)",&[&line,&a.account_id]).await.unwrap();
+    db.execute("INSERT INTO device_line_bindings(account_id,line_id,device_id,generation,state,owner_approval_digest,device_confirmation_digest,activated_at) VALUES($1,$2,$3,1,'active',$4,$4,clock_timestamp())",&[&a.account_id,&line,&device_a,&vec![7u8;32]]).await.unwrap();
+    db.execute("INSERT INTO conversation_intervals(account_id,id,receipt_id,device_id,line_id,binding_generation,initiating_session_id,statement,statement_digest,manifest,trust_generation,activation_version,activation_digest,expires_at_ms) VALUES($1,$2,$3,$4,$5,1,$6,$7,$8,$9,1,2,$8,1)",&[&a.account_id,&interval,&Uuid::new_v4(),&device_a,&line,&session_a.id,&vec![8u8;380],&vec![9u8;32],&vec![10u8;364]]).await.unwrap();
+    let mut envelope = vec![11u8; 426];
+    envelope[..6].copy_from_slice(&[0x5a, 0x54, 0x53, 0x45, 2, 2]);
+    db.execute("INSERT INTO sealed_inbound_events(id,account_id,device_id,line_id,binding_generation,device_sequence,observed_at,part_count,envelope,unsigned_digest,envelope_profile) VALUES($1,$2,$3,$4,1,1,clock_timestamp(),NULL,$5,$6,2)",&[&event,&a.account_id,&device_a,&line,&envelope,&vec![12u8;32]]).await.unwrap();
+    db.execute("INSERT INTO conversation_inbound_provenance(account_id,event_id,interval_id,trust_generation,manifest_version,manifest_digest,verified_manifest,accepted_at_ms) VALUES($1,$2,$3,1,2,$4,$5,1)",&[&a.account_id,&event,&interval,&vec![13u8;32],&vec![14u8;364]]).await.unwrap();
     let response = app
         .clone()
         .oneshot(erasure_post(
@@ -1321,6 +1336,9 @@ async fn sealed_trust_history_blocks_erasure() {
         "SELECT count(*) FROM messages WHERE account_id=$1",
         "SELECT count(*) FROM device_keys WHERE account_id=$1",
         "SELECT count(*) FROM known_signing_point_reservations WHERE account_id=$1",
+        "SELECT count(*) FROM conversation_intervals WHERE account_id=$1",
+        "SELECT count(*) FROM conversation_inbound_provenance WHERE account_id=$1",
+        "SELECT count(*) FROM sealed_inbound_events WHERE account_id=$1",
     ] {
         let rows: i64 = db.query_one(sql, &[&a.account_id]).await.unwrap().get(0);
         assert_eq!(

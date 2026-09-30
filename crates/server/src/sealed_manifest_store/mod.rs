@@ -56,6 +56,20 @@ pub struct Admission<'tx, 'connection, 'session> {
 }
 
 impl Admission<'_, '_, '_> {
+    pub(crate) async fn snapshot(
+        &mut self,
+        wanted: &EnvelopeAuthority<'_>,
+    ) -> Result<outbound::ManifestSnapshot, AdmissionError> {
+        self.context(wanted).await?;
+        let row=self.tx.query_one("SELECT manifest,last_verified_ms FROM sealed_manifest_authorities WHERE account_id=$1", &[&self.session.account_id]).await?;
+        Ok(outbound::ManifestSnapshot {
+            generation: self.manifest.generation() as i64,
+            version: self.manifest.version() as i64,
+            digest: *self.manifest.digest(),
+            bytes: row.get(0),
+            accepted_ms: wall_time(self.tx, row.get(1)).await? as i64,
+        })
+    }
     pub fn change(&self) -> AdmissionChange {
         self.change
     }

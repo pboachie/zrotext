@@ -7,6 +7,7 @@ license.workspace = true
 
 [features]
 sealed-interop-tests = []
+conversation-simulator-tests = []
 
 [dependencies]
 zrotext-domain = { path = "../domain" }

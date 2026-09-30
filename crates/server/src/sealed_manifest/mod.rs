@@ -307,6 +307,48 @@ impl VerifiedManifest {
         self.version
     }
 
+    pub(crate) fn conversation_keys(
+        &self,
+        device: &[u8; 16],
+        line: &[u8; 16],
+        now: u64,
+    ) -> Result<([u8; 32], [u8; 32]), &'static str> {
+        freshness(self.issued, self.expires, now)?;
+        let reader = self
+            .roles
+            .iter()
+            .find(|k| k.role == 2 && k.active(now))
+            .ok_or("archive reader authority")?;
+        let mut signers = self
+            .roles
+            .iter()
+            .filter(|k| k.role == 4 && k.device == *device && k.line == *line && k.active(now));
+        let signer = signers.next().ok_or("conversation signer authority")?;
+        if signers.next().is_some() {
+            return Err("ambiguous conversation signer");
+        }
+        Ok((reader.id, signer.id))
+    }
+
+    pub(crate) fn admission_deadline(
+        &self,
+        request: &EnvelopeAuthority<'_>,
+        now: u64,
+    ) -> Result<u64, &'static str> {
+        self.envelope_context(request, now)?;
+        let mut deadline = self.expires;
+        for key in self.roles.iter().filter(|k| {
+            k.id == request.signer_key_id
+                || request
+                    .recipients
+                    .iter()
+                    .any(|r| r.role == k.role && r.key_id == k.id)
+        }) {
+            deadline = deadline.min(key.until);
+        }
+        Ok(deadline)
+    }
+
     /// Recheck freshness and key validity at use, then build strict candidate-02
     /// context. No wildcard readers or automatic reader expansion is performed.
     /// A returned context is only suitable for immediate signature verification;

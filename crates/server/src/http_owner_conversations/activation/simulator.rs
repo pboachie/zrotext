@@ -1,0 +1,183 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+//! Explicitly selected test-only loopback bridge. Never compiled into server binaries.
+use super::*;
+use crate::sealed_manifest_store::tests::Fixture;
+use axum::{Json, Router, extract::State, http::StatusCode, routing::post};
+use base64::{Engine, engine::general_purpose::STANDARD};
+use p256::ecdsa::{Signature, signature::Signer};
+use serde::Deserialize;
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use std::sync::Arc;
+use tokio::sync::{Mutex, Notify};
+
+struct Simulator {
+    fixture: Mutex<Fixture>,
+    owner: SessionPrincipal,
+    statement: Statement,
+    done: Arc<Notify>,
+    token: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Command {
+    token: String,
+    op: String,
+    #[serde(default)]
+    data: Option<String>,
+    #[serde(default)]
+    signature: Option<String>,
+    #[serde(default)]
+    challenge: Option<Uuid>,
+    #[serde(default)]
+    event: Option<Uuid>,
+}
+
+async fn command(
+    State(state): State<Arc<Simulator>>,
+    Json(c): Json<Command>,
+) -> (StatusCode, Json<Value>) {
+    if c.token != state.token {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"ok":false})));
+    }
+    let mut f = state.fixture.lock().await;
+    let mut client = f.connect().await;
+    let session = f.session();
+    let s = &state.statement;
+    let result:Result<Value,ConversationError>=match c.op.as_str() {
+        "approve"|"installed"=>{
+            let data=c.data.and_then(|v|STANDARD.decode(v).ok());
+            let signature=c.signature.and_then(|v|STANDARD.decode(v).ok());
+            match (data,signature) {
+                (Some(data),Some(signature))=>{
+                    let r=if c.op=="approve" {approve(&mut client,session,&data,&signature).await} else {installed(&mut client,session,&data,&signature).await};
+                    r.map(|()|json!({"ok":true}))
+                },_=>Err(ConversationError::Invalid),
+            }
+        },
+        "lease"=>match c.challenge {
+            Some(challenge)=>active_lease(&mut client,session,s.interval,challenge).await.map(|lease|{
+                let bytes=[b"zrotext/fixture/active/v1\0".as_slice(),s.digest().unwrap().as_slice(),challenge.as_bytes(),&lease.valid_for_ms.to_be_bytes()].concat();
+                let signature:Signature=f.root.sign(&bytes);
+                json!({"ok":true,"duration":lease.valid_for_ms,"proof":STANDARD.encode(bytes),"signature":STANDARD.encode(signature.normalize_s().to_bytes())})
+            }),None=>Err(ConversationError::Invalid),
+        },
+        "capture"=>match c.data.and_then(|v|STANDARD.decode(v).ok()) {
+            Some(bytes)=>crate::sealed_inbound::ingest::ingest_conversation(&mut client,session,f.line,1,&f.bytes,&bytes,CaptureInterval {interval:s.interval,activation_digest:s.activation_digest}).await
+                .map(|r|json!({"ok":true,"created":r.created,"event":r.event_id})).map_err(|_|ConversationError::Forbidden),
+            None=>Err(ConversationError::Invalid),
+        },
+        "history"=>match c.event {Some(event)=>read_history(&mut client,&state.owner,event).await.map(|b|json!({"ok":true,"envelope":STANDARD.encode(b)})),None=>Err(ConversationError::Invalid)},
+        "renew"=>{
+            f.advance();
+            let tx=client.transaction().await.unwrap();
+            let mut admitted=sealed_manifest_store::admit(&tx,session,f.line,1,&f.bytes).await.unwrap();
+            admitted.context(&f.wanted()).await.unwrap();drop(admitted);tx.commit().await.unwrap();
+            Ok(json!({"ok":true,"manifest":STANDARD.encode(&f.bytes)}))
+        },
+        "pause"|"withdraw"=>close(&mut client,&state.owner,s.interval,c.op=="withdraw").await.map(|()|json!({"ok":true})),
+        "logout"=>{
+            let r=close(&mut client,&state.owner,s.interval,false).await;
+            if r.is_ok() {f.db.execute("UPDATE sessions SET revoked_at=clock_timestamp() WHERE id=$1",&[&state.owner.session_id]).await.unwrap();}
+            r.map(|()|json!({"ok":true}))
+        },
+        "finish"=>{state.done.notify_one();Ok(json!({"ok":true}))},
+        _=>Err(ConversationError::Invalid),
+    };
+    match result {
+        Ok(value) => (StatusCode::OK, Json(value)),
+        Err(_) => (StatusCode::FORBIDDEN, Json(json!({"ok":false}))),
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires explicitly selected conversation simulator runner, SDK and disposable PostgreSQL"]
+async fn loopback_journal_bridge() {
+    let directory =
+        std::env::var_os("ZT_CONVERSATION_SIM_DIR").expect("explicit fixture directory");
+    let directory = std::path::PathBuf::from(directory);
+    assert!(directory.is_absolute() && directory.is_dir());
+    let (mut f, owner) = super::super::tests::prepared().await;
+    let now: i64 =
+        f.db.query_one(
+            "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    f.bytes[45..53].copy_from_slice(&((now + 900_000) as u64).to_be_bytes());
+    for i in 0..3 {
+        let start = 151 + i * 149 + 140;
+        f.bytes[start..start + 8].copy_from_slice(&((now + 900_000) as u64).to_be_bytes());
+    }
+    f.resign();
+    let mut client = f.connect().await;
+    let tx = client.transaction().await.unwrap();
+    let mut admitted = sealed_manifest_store::admit(&tx, f.session(), f.line, 1, &f.bytes)
+        .await
+        .unwrap();
+    admitted.context(&f.wanted()).await.unwrap();
+    drop(admitted);
+    tx.commit().await.unwrap();
+    let predecessor = f.bytes.clone();
+    f.advance();
+    let consent = ConversationConsent {
+        device_id: f.device,
+        line_id: f.line,
+        binding_generation: 1,
+        peer: "+12".into(),
+        disclosure_version: super::super::DISCLOSURE_VERSION.into(),
+        content_transfer_confirmed: true,
+    };
+    let statement = begin(&mut client, &owner, &consent, &f.bytes)
+        .await
+        .unwrap();
+    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let token = STANDARD.encode(rand::random::<[u8; 32]>());
+    // All private key material here is newly generated synthetic fixture material, never owner credentials.
+    let ready = json!({"port":port,"token":token,"statement":STANDARD.encode(statement.encode().unwrap()),
+        "pin":STANDARD.encode(&f.pin),"manifest":STANDARD.encode(&f.bytes),"predecessor":STANDARD.encode(predecessor),
+        "eventScalar":STANDARD.encode(f.event_signer.to_bytes()),"archiveScalar":STANDARD.encode(f.archive_key.to_bytes()),
+        "signerPoint":STANDARD.encode(f.event_signer.verifying_key().to_sec1_point(false).as_bytes()),
+        "archivePoint":STANDARD.encode(f.archive_key.verifying_key().to_sec1_point(false).as_bytes()),
+        "rootPoint":STANDARD.encode(f.root.verifying_key().to_sec1_point(false).as_bytes()),
+        "fingerprint":STANDARD.encode(Sha256::digest([b"ZTSE/root-pin/v2\0".as_slice(),&f.pin].concat())),
+        "sdkTool":std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdk/typescript/test/conversation-simulator-envelope.mjs")});
+    let done = Arc::new(Notify::new());
+    let state = Arc::new(Simulator {
+        fixture: Mutex::new(f),
+        owner,
+        statement,
+        done: done.clone(),
+        token,
+    });
+    let app = Router::new()
+        .route("/fixture", post(command))
+        .layer(axum::extract::DefaultBodyLimit::max(80_000))
+        .with_state(state.clone());
+    let mut server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async move { done.notified().await })
+            .await
+            .unwrap()
+    });
+    let path = directory.join("ready.json");
+    let temporary = directory.join("ready.tmp");
+    std::fs::write(&temporary, serde_json::to_vec(&ready).unwrap()).unwrap();
+    std::fs::rename(&temporary, &path).unwrap();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(240), &mut server).await;
+    if result.is_err() {
+        server.abort();
+        let _ = server.await;
+    }
+    std::fs::remove_file(&path).unwrap();
+    let state = Arc::try_unwrap(state).ok().expect("fixture server stopped");
+    state.fixture.into_inner().cleanup().await;
+    result
+        .expect("fixture client did not finish")
+        .expect("fixture server failed");
+}

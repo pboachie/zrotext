@@ -10,6 +10,14 @@ use crate::{
 use tokio_postgres::Transaction;
 use uuid::Uuid;
 
+pub(crate) struct ManifestSnapshot {
+    pub generation: i64,
+    pub version: i64,
+    pub digest: [u8; 32],
+    pub bytes: Vec<u8>,
+    pub accepted_ms: i64,
+}
+
 pub(crate) struct CurrentAuthority<'tx, 'connection> {
     tx: &'tx Transaction<'connection>,
     account: Uuid,
@@ -68,6 +76,25 @@ pub(crate) async fn lock_current<'tx, 'connection>(
 }
 
 impl CurrentAuthority<'_, '_> {
+    pub(crate) async fn next_snapshot(
+        &mut self,
+        bytes: &[u8],
+    ) -> Result<ManifestSnapshot, AdmissionError> {
+        let now = self.checked_time().await?;
+        let mut trust = self.trust.clone();
+        trust.position = super::ChainPosition::After {
+            version: self.manifest.version(),
+            digest: *self.manifest.digest(),
+        };
+        let next = sealed_manifest::verify(&self.pin, bytes, &trust, now)?;
+        Ok(ManifestSnapshot {
+            generation: next.generation() as i64,
+            version: next.version() as i64,
+            digest: *next.digest(),
+            bytes: bytes.to_vec(),
+            accepted_ms: now as i64,
+        })
+    }
     pub(crate) fn generation(&self) -> i64 {
         self.manifest.generation() as i64
     }
@@ -100,6 +127,88 @@ impl CurrentAuthority<'_, '_> {
         &'a mut self,
         wanted: &EnvelopeAuthority<'a>,
     ) -> Result<ExpectedContext<'a>, AdmissionError> {
+        let now = self.checked_time().await?;
+        Ok(self.manifest.envelope_context(wanted, now)?)
+    }
+
+    pub(crate) async fn conversation_keys(
+        &mut self,
+        device: Uuid,
+        line: Uuid,
+    ) -> Result<([u8; 32], [u8; 32]), AdmissionError> {
+        let now = self.checked_time().await?;
+        Ok(self
+            .manifest
+            .conversation_keys(device.as_bytes(), line.as_bytes(), now)?)
+    }
+
+    pub(crate) async fn snapshot(
+        &mut self,
+        wanted: &EnvelopeAuthority<'_>,
+    ) -> Result<ManifestSnapshot, AdmissionError> {
+        let now = self.checked_time().await?;
+        if wanted.kind != Kind::Inbound || wanted.account_id != *self.account.as_bytes() {
+            return Err("snapshot identity".into());
+        }
+        self.manifest.envelope_context(wanted, now)?;
+        Ok(ManifestSnapshot {
+            generation: self.generation(),
+            version: self.manifest.version() as i64,
+            digest: *self.manifest.digest(),
+            bytes: self.bytes.clone(),
+            accepted_ms: now as i64,
+        })
+    }
+
+    pub(crate) async fn admission_deadline(
+        &mut self,
+        wanted: &EnvelopeAuthority<'_>,
+    ) -> Result<i64, AdmissionError> {
+        let now = self.checked_time().await?;
+        if wanted.kind != Kind::Inbound || wanted.account_id != *self.account.as_bytes() {
+            return Err("deadline identity".into());
+        }
+        Ok(self.manifest.admission_deadline(wanted, now)? as i64)
+    }
+
+    /// Re-prove the original signature without rewriting its authenticated epoch.
+    /// Snapshot came from the immutable verified-ingest provenance table, not
+    /// from untrusted envelope claims. Current reader AND signer remain required.
+    pub(crate) async fn verify_history(
+        &mut self,
+        wanted: &EnvelopeAuthority<'_>,
+        snapshot: &ManifestSnapshot,
+        envelope: &[u8],
+    ) -> Result<(), AdmissionError> {
+        self.inbound_context(wanted).await?;
+        if snapshot.generation != self.generation()
+            || snapshot.version <= 0
+            || snapshot.accepted_ms <= 0
+        {
+            return Err("historical trust generation".into());
+        }
+        let trust = ManifestTrust {
+            account_id: *self.account.as_bytes(),
+            root_fingerprint: self.trust.root_fingerprint,
+            generation: snapshot.generation as u64,
+            position: ChainPosition::Current {
+                version: snapshot.version as u64,
+                digest: snapshot.digest,
+            },
+        };
+        let historical = sealed_manifest::verify(
+            &self.pin,
+            &snapshot.bytes,
+            &trust,
+            snapshot.accepted_ms as u64,
+        )?;
+        let context = historical.envelope_context(wanted, snapshot.accepted_ms as u64)?;
+        crate::sealed_envelope::verify(envelope, &context)
+            .map_err(|_| AdmissionError::Rejected("historical envelope proof"))?;
+        Ok(())
+    }
+
+    async fn checked_time(&mut self) -> Result<u64, AdmissionError> {
         let row = self.tx.query_opt(
             "SELECT root_pin,root_fingerprint,generation,version,semantic_digest,manifest,last_verified_ms \
              FROM sealed_manifest_authorities WHERE account_id=$1 AND revoked_at IS NULL",
@@ -120,7 +229,6 @@ impl CurrentAuthority<'_, '_> {
         // chain position under this transaction's FOR UPDATE lock, so the
         // signature and role proofs from lock_current cannot have changed;
         // only freshness can, and envelope_context rechecks that here.
-        let context = self.manifest.envelope_context(wanted, now)?;
         if !self.verified_write {
             self.tx
                 .execute(
@@ -130,6 +238,6 @@ impl CurrentAuthority<'_, '_> {
                 .await?;
             self.verified_write = true;
         }
-        Ok(context)
+        Ok(now)
     }
 }
