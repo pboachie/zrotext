@@ -25,23 +25,28 @@
 //!   [`ConsensusStore::open`] return an error, and a store that failed while
 //!   appending stays failed — its rounds are empty, so the controller can
 //!   only lose quorum and hold;
-//! * journals do not grow forever: once per open, each member journal is
-//!   compacted by rewriting it without the leading records that have aged
-//!   out of the decision model's freshness window (measured from the newest
+//! * journals do not grow forever: each member journal is compacted by
+//!   rewriting it without the leading records that have aged out of the
+//!   decision model's freshness window (measured from the newest
 //!   observation in that journal — the store takes no clock), always
 //!   retaining a bounded floor of records and never compacting a record
-//!   inside the window. A per-member checkpoint file records the member
-//!   identity, the last-compacted sequence, the newest compacted timestamp
-//!   and digest anchors over the compacted prefix and the retained head, so
-//!   the dropped history stays tamper-evidenced and the retained journal
-//!   stays bound to its checkpoint. The rewrite is journal-first,
+//!   inside the window. The bound is continuous, not once-per-open: the
+//!   compaction runs on open *and* on every append that pushes the journal
+//!   past the bound, so memory and disk stay bounded between opens too. A
+//!   per-member checkpoint file records the member identity, the
+//!   last-compacted sequence, the newest compacted timestamp and digest
+//!   anchors over the compacted prefix and the retained head, so the
+//!   dropped history stays tamper-evidenced and the retained journal stays
+//!   bound to its checkpoint. The rewrite is journal-first,
 //!   checkpoint-second, both atomic (temp file, fsync, rename): a crash in
 //!   between leaves the rewritten journal with the previous checkpoint,
 //!   which load accepts as the ground truth, while a checkpoint ahead of
 //!   the journal, a torn or malformed checkpoint, a spoofed identity or a
 //!   head-digest mismatch all fail the store closed exactly like in-journal
 //!   corruption. A journal starting at sequence one with no checkpoint is
-//!   the legacy layout and still loads;
+//!   the legacy layout and still loads. An append-time compaction failure
+//!   is sticky exactly like an append failure: the store fails closed
+//!   rather than silently growing past the bound;
 //! * rounds are served through the decision model's freshness window
 //!   (`observed_at <= now` and `now - observed_at <= freshness`), so
 //!   future-dated (skewed) observations are never evidence and stale
@@ -57,15 +62,16 @@
 //! member reports between machines (no listener exists; the member-side
 //! reporting loop of [`crate::report`] records only what its injected probe
 //! source observes, and no production probe source exists yet, so a
-//! production store stays empty and every round fails closed), journal
-//! rotation beyond the open-time compaction above (each open still re-reads
-//! the retained journal in full), and any
-//! external coordination between store instances — one writer per directory
-//! is assumed, and concurrent writers are detected as corruption on the
-//! next load.
+//! production store stays empty and every round fails closed), in-place
+//! re-reads of only the journal tail on open (each open still re-reads the
+//! retained journal in full), and any external coordination between store
+//! instances — one writer per directory is assumed, and concurrent writers
+//! are detected as corruption on the next load.
 use crate::decision::{MemberReport, Round, SiteFenceState, WriterObservation};
 use crate::executor::ObservationSource;
 use crate::policy::REQUIRED_MEMBERS;
+#[cfg(test)]
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
@@ -84,6 +90,11 @@ struct MemberJournal {
     next_sequence: u64,
     /// Reports in append order.
     records: Vec<MemberReport>,
+    /// The compaction checkpoint currently on disk beside the journal
+    /// (`None` while no compaction ever dropped a record): kept in memory so
+    /// an append-time compaction extends the checkpoint's digest chain
+    /// instead of restarting it.
+    checkpoint: Option<Checkpoint>,
 }
 
 /// The durable consensus store: a membership record plus one append-only
@@ -185,15 +196,21 @@ impl ConsensusStore {
 
     /// Durably append one member's report to that member's journal. The
     /// report's member identity must belong to the durable membership; the
-    /// record is written, flushed and synced before this returns. A failed
-    /// append poisons the store: later calls fail and rounds stay empty.
+    /// record is written, flushed and synced before this returns. Appending
+    /// is one write per record, and an append that pushes the retained set
+    /// past the compaction bound rotates the journal immediately (see
+    /// [`compact_journal`]): the same retention rule and crash ordering as
+    /// the open-time compaction, so memory and disk stay bounded between
+    /// opens too. A failed append or rotation poisons the store: later calls
+    /// fail and rounds stay empty.
     pub fn record(&mut self, report: &MemberReport) -> Result<(), StoreError> {
         if self.failure.is_some() {
             return Err(StoreError::Failed);
         }
+        let member = report.member_id.clone();
         let journal = self
             .journals
-            .get_mut(&report.member_id)
+            .get_mut(&member)
             .ok_or_else(|| StoreError::UnknownMember(report.member_id.clone()))?;
         let sequence = journal.next_sequence;
         let Some(next_sequence) = sequence.checked_add(1) else {
@@ -217,6 +234,48 @@ impl ConsensusStore {
         }
         journal.next_sequence = next_sequence;
         journal.records.push(report.clone());
+        // The bound is continuous, not once-per-open: the append above may
+        // have pushed this journal past its retention bound (records aged
+        // out of the freshness window measured from the newest record, minus
+        // the floor tail), so the same compaction the next open would run
+        // runs now. A failure here is sticky exactly like an append failure:
+        // the appended record itself is durable, but the store fails closed
+        // instead of silently growing past the bound.
+        let observations = self.directory.join(OBSERVATIONS_DIR);
+        let journal = self
+            .journals
+            .get_mut(&member)
+            .expect("the member journal was resolved above");
+        match compact_journal(
+            &observations,
+            &member,
+            journal.first_sequence,
+            &mut journal.records,
+            journal.checkpoint.as_ref(),
+            self.observation_freshness_ms,
+        ) {
+            Ok((first_sequence, checkpoint)) => {
+                journal.first_sequence = first_sequence;
+                if let Some(checkpoint) = checkpoint {
+                    // The rewrite replaced the journal file, so the append
+                    // handle must move onto the retained journal: the old
+                    // handle would keep appending to the replaced-away file
+                    // and those records would vanish on the next open.
+                    journal.file = OpenOptions::new()
+                        .append(true)
+                        .open(observations.join(format!("{member}.journal")))
+                        .map_err(|error| {
+                            self.failure = Some(StoreError::Failed);
+                            StoreError::Io(error)
+                        })?;
+                    journal.checkpoint = Some(checkpoint);
+                }
+            }
+            Err(error) => {
+                self.failure = Some(StoreError::Failed);
+                return Err(error);
+            }
+        }
         Ok(())
     }
 
@@ -1188,7 +1247,7 @@ fn open_journal(
                 .ok_or(StoreError::SequenceExhausted)?,
         )
         .ok_or(StoreError::SequenceExhausted)?;
-    let first_sequence = compact_journal(
+    let (first_sequence, compacted) = compact_journal(
         observations,
         member,
         first_sequence,
@@ -1196,6 +1255,7 @@ fn open_journal(
         checkpoint.as_ref(),
         observation_freshness_ms,
     )?;
+    let checkpoint = compacted.or(checkpoint);
     let file = OpenOptions::new()
         .append(true)
         .open(&journal_path)
@@ -1205,6 +1265,7 @@ fn open_journal(
         first_sequence,
         next_sequence,
         records,
+        checkpoint,
     })
 }
 
@@ -1238,7 +1299,8 @@ fn compactable_prefix_len(records: &[MemberReport], observation_freshness_ms: u6
 /// no) checkpoint — a state load accepts as the ground truth — so a
 /// checkpoint that runs ahead of its journal can never exist on disk;
 /// `open_journal` treats one as corruption. The in-memory `records` lose the
-/// compacted prefix and the new first sequence is returned.
+/// compacted prefix; the return is the journal's new first sequence and,
+/// when a compaction ran, the checkpoint now on disk beside it.
 fn compact_journal(
     observations: &Path,
     member: &str,
@@ -1246,10 +1308,10 @@ fn compact_journal(
     records: &mut Vec<MemberReport>,
     previous: Option<&Checkpoint>,
     observation_freshness_ms: u64,
-) -> Result<u64, StoreError> {
+) -> Result<(u64, Option<Checkpoint>), StoreError> {
     let compactable = compactable_prefix_len(records, observation_freshness_ms);
     if compactable == 0 {
-        return Ok(first_sequence);
+        return Ok((first_sequence, None));
     }
     // The floor guarantees a retained tail, so the head anchor always has a
     // record to bind to.
@@ -1293,7 +1355,18 @@ fn compact_journal(
         checkpoint.encode()?.as_bytes(),
     )?;
     records.drain(..compactable);
-    Ok(first_sequence + compactable as u64)
+    Ok((first_sequence + compactable as u64, Some(checkpoint)))
+}
+
+// Test seam for the compaction crash-order contract: when set to
+// `Some(n)`, the next `n` [`write_atomically`] calls on this thread succeed
+// and the one after them fails before touching either file — a simulated
+// crash at that point in the journal-first, checkpoint-second order.
+// Production never sets it; it exists so the tests can crash exactly
+// between the two writes of one compaction.
+#[cfg(test)]
+thread_local! {
+    static FAIL_ATOMIC_WRITE_AFTER: Cell<Option<u32>> = const { Cell::new(None) };
 }
 
 /// Write `bytes` to `destination` atomically: create the temp file (also
@@ -1301,6 +1374,18 @@ fn compact_journal(
 /// over the destination — so a crash at any point leaves either the old or
 /// the new content, never a torn record.
 fn write_atomically(temp: &Path, destination: &Path, bytes: &[u8]) -> Result<(), StoreError> {
+    #[cfg(test)]
+    if FAIL_ATOMIC_WRITE_AFTER.with(|slot| match slot.get() {
+        Some(remaining) => {
+            slot.set(remaining.checked_sub(1));
+            remaining == 0
+        }
+        None => false,
+    }) {
+        return Err(StoreError::Io(io::Error::other(
+            "injected compaction crash before the atomic write",
+        )));
+    }
     let mut file = File::create(temp).map_err(StoreError::Io)?;
     file.write_all(bytes).map_err(StoreError::Io)?;
     file.flush().map_err(StoreError::Io)?;

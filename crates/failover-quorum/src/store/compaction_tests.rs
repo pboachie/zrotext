@@ -14,7 +14,7 @@ use super::tests::{
     unreachable,
 };
 use super::*;
-use crate::decision::Decision;
+use crate::decision::{DEFAULT_OBSERVATION_FRESHNESS_MS, Decision};
 use crate::executor::FailoverExecutor;
 use crate::executor_tests::MemoryAuthority;
 use std::path::Path;
@@ -53,6 +53,46 @@ fn checkpoint_line(member: &str, seq: u64, at_ms: u64) -> String {
         "v1 member={member} seq={seq} at={at_ms} prefix=0123456789abcdef \
              head=fedcba9876543210\n"
     )
+}
+
+/// Arm the compaction crash seam: after `succeeds` successful atomic
+/// writes on this thread, the next one fails before touching either file —
+/// a simulated crash at that point of the journal-first, checkpoint-second
+/// order. The seam disarms itself when it fires.
+fn crash_after(succeeds: u32) {
+    FAIL_ATOMIC_WRITE_AFTER.with(|slot| slot.set(Some(succeeds)));
+}
+
+/// Disarm the compaction crash seam regardless of whether it fired.
+fn disarm_crash_seam() {
+    FAIL_ATOMIC_WRITE_AFTER.with(|slot| slot.set(None));
+}
+
+/// Craft the on-disk state just before a SECOND compaction: a journal
+/// continuing at sequence 25 from a genuine first checkpoint (sequence 24,
+/// real head digest) whose stale prefix has again grown past the floor.
+/// The reload takes the head-digest-checked path, so the checkpoint must
+/// genuinely anchor the journal's first record.
+fn second_compaction_fixture(directory: &Path) {
+    let at_ms = [
+        1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 500_000,
+    ];
+    write_journal(directory, "workload-a", 25, &at_ms);
+    let first_line = JournalRecord {
+        sequence: 25,
+        report: unreachable("workload-a", 1_000),
+    }
+    .encode()
+    .unwrap();
+    fs::write(
+        checkpoint_path(directory, "workload-a"),
+        format!(
+            "v1 member=workload-a seq=24 at=1000 prefix=0123456789abcdef \
+             head={:016x}\n",
+            fnv1a64(FNV_OFFSET_BASIS, first_line.as_bytes())
+        ),
+    )
+    .unwrap();
 }
 
 // ---------------------------------------------------------------------------
@@ -275,7 +315,10 @@ fn a_reopened_compacted_store_appends_and_reopens_contiguously() {
     assert_eq!(store.next_sequence("workload-a"), Some(33));
     let journal = fs::read_to_string(journal_path(temp.path(), "workload-a")).unwrap();
     let lines: Vec<&str> = journal.lines().collect();
-    assert_eq!(lines.len(), RETAINED_FLOOR + 1);
+    // The append itself crosses the bound again (seven stale tail records
+    // aged out by the new anchor), so the continuous compaction keeps the
+    // journal at the floor instead of growing to floor + 1.
+    assert_eq!(lines.len(), RETAINED_FLOOR);
     assert!(
         lines.last().unwrap().contains("seq=32"),
         "the append continues the compacted sequence space: {journal:?}"
@@ -678,4 +721,197 @@ fn the_checkpoint_codec_round_trips_and_pins_the_format() {
         .encode(),
         Err(StoreError::InvalidMembers(_))
     ));
+}
+
+// ---------------------------------------------------------------------------
+// The continuous bound: compaction on append, not only on open.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn appends_far_past_the_bound_keep_memory_and_disk_bounded_without_reopening() {
+    let temp = TempDir::new("continuous-bound");
+    let mut store = open(temp.path()).unwrap();
+    // Two hundred records, each spaced beyond the freshness window from the
+    // last: from the ninth append on, every append ages the previous
+    // records out of the window, so the rotation must run on the append
+    // itself — without a single reopen in between.
+    let spacing = DEFAULT_OBSERVATION_FRESHNESS_MS + 1;
+    for step in 0..200_u64 {
+        store
+            .record(&unreachable("workload-a", step * spacing))
+            .unwrap();
+        let journal = store.journals.get("workload-a").unwrap();
+        assert!(
+            journal.records.len() <= RETAINED_FLOOR,
+            "append {step} must keep the in-memory tail bounded at the floor, \
+             held {} records",
+            journal.records.len()
+        );
+    }
+    // The on-disk journal is bounded by the same rule and checkpointed, all
+    // without reopening the store.
+    assert_eq!(
+        journal_line_count(temp.path(), "workload-a"),
+        RETAINED_FLOOR,
+        "the journal on disk must stay bounded between opens"
+    );
+    assert!(
+        checkpoint_path(temp.path(), "workload-a").is_file(),
+        "the append-time rotations leave a checkpoint artifact"
+    );
+    assert_eq!(store.next_sequence("workload-a"), Some(201));
+    drop(store);
+    // The bounded store still loads and serves rounds correctly: the
+    // retained sequence space is contiguous, the newest record is fresh
+    // evidence at its own timestamp, and appends continue.
+    let mut reopened = open(temp.path()).unwrap();
+    assert_eq!(reopened.next_sequence("workload-a"), Some(201));
+    assert_eq!(reopened.round(199 * spacing).reports.len(), 1);
+    reopened
+        .record(&unreachable("workload-a", 199 * spacing + 1))
+        .unwrap();
+    assert_eq!(reopened.next_sequence("workload-a"), Some(202));
+}
+
+#[test]
+fn a_failed_append_time_compaction_poisons_the_store_like_corruption() {
+    let temp = TempDir::new("sticky-append-compaction");
+    let mut store = open(temp.path()).unwrap();
+    let spacing = DEFAULT_OBSERVATION_FRESHNESS_MS + 1;
+    for step in 0..8_u64 {
+        store
+            .record(&unreachable("workload-a", step * spacing))
+            .unwrap();
+    }
+    // The ninth append is the first to cross the bound; its rotation's
+    // journal rewrite crashes. The append itself was durable before the
+    // rotation, but the failure is sticky: today's corruption semantics,
+    // never silently growing past the bound.
+    crash_after(0);
+    let error = store
+        .record(&unreachable("workload-a", 8 * spacing))
+        .unwrap_err();
+    assert!(
+        matches!(error, StoreError::Io(ref inner)
+            if inner.to_string().contains("injected compaction crash")),
+        "got {error:?}"
+    );
+    assert!(
+        store.failed(),
+        "a failed append-time rotation poisons the store"
+    );
+    assert_eq!(
+        store.round(8 * spacing),
+        crate::decision::Round::default(),
+        "a poisoned store serves no evidence"
+    );
+    assert!(matches!(
+        store.record(&unreachable("workload-a", 0)),
+        Err(StoreError::Failed)
+    ));
+    disarm_crash_seam();
+    // A reopen loads everything the durable journal holds — the ninth
+    // record included — and completes the rotation the crash interrupted.
+    drop(store);
+    let reopened = open(temp.path()).unwrap();
+    assert_eq!(reopened.next_sequence("workload-a"), Some(10));
+    assert_eq!(
+        journal_line_count(temp.path(), "workload-a"),
+        RETAINED_FLOOR
+    );
+    assert_eq!(reopened.round(8 * spacing).reports.len(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// The crash-order contract: journal rewrite durable BEFORE the checkpoint.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_crash_at_the_checkpoint_write_leaves_a_loadable_new_journal() {
+    // The second atomic write of a compaction is the checkpoint. Crashing
+    // exactly there leaves the rewritten journal beside the PREVIOUS
+    // checkpoint — the crash window the journal-first order exists for. The
+    // reload must accept the new journal against the old checkpoint (the
+    // journal on disk is the ground truth): old journal or new journal,
+    // never a hybrid.
+    let temp = TempDir::new("crash-at-checkpoint");
+    {
+        let store = open(temp.path()).unwrap();
+        drop(store);
+    }
+    second_compaction_fixture(temp.path());
+    let checkpoint_before = fs::read_to_string(checkpoint_path(temp.path(), "workload-a")).unwrap();
+    crash_after(1); // the journal rewrite succeeds, the checkpoint write crashes
+    let error = open(temp.path()).unwrap_err();
+    assert!(
+        matches!(error, StoreError::Io(ref inner)
+            if inner.to_string().contains("injected compaction crash")),
+        "got {error:?}"
+    );
+    // The crash-window state: the NEW journal (rotated to eight records
+    // from sequence 28) beside the UNCHANGED old checkpoint.
+    assert_eq!(
+        journal_line_count(temp.path(), "workload-a"),
+        RETAINED_FLOOR
+    );
+    let journal = fs::read_to_string(journal_path(temp.path(), "workload-a")).unwrap();
+    assert!(
+        journal.lines().next().unwrap().contains("seq=27"),
+        "the rewritten journal is the durable one: {journal:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(checkpoint_path(temp.path(), "workload-a")).unwrap(),
+        checkpoint_before,
+        "the crashed checkpoint write changed nothing on disk"
+    );
+    disarm_crash_seam();
+    let mut store =
+        open(temp.path()).expect("the new journal against the old checkpoint must load");
+    assert_eq!(store.next_sequence("workload-a"), Some(35));
+    // Not a hybrid: exactly the retained tail loads, with only the fresh
+    // anchor as evidence.
+    assert_eq!(store.round(500_000).reports.len(), 1);
+    // And the store keeps working: the sequence space continues.
+    store.record(&unreachable("workload-a", 500_002)).unwrap();
+    assert_eq!(store.next_sequence("workload-a"), Some(36));
+}
+
+#[test]
+fn a_crash_at_the_journal_rewrite_leaves_the_original_state_intact() {
+    // The equivalent crash on the FIRST atomic write (the journal rewrite)
+    // leaves the original journal and checkpoint exactly as they were; the
+    // healthy open afterwards completes the rotation normally.
+    let temp = TempDir::new("crash-at-journal");
+    {
+        let store = open(temp.path()).unwrap();
+        drop(store);
+    }
+    second_compaction_fixture(temp.path());
+    let journal_before = fs::read_to_string(journal_path(temp.path(), "workload-a")).unwrap();
+    let checkpoint_before = fs::read_to_string(checkpoint_path(temp.path(), "workload-a")).unwrap();
+    crash_after(0);
+    let error = open(temp.path()).unwrap_err();
+    assert!(
+        matches!(error, StoreError::Io(ref inner)
+            if inner.to_string().contains("injected compaction crash")),
+        "got {error:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(journal_path(temp.path(), "workload-a")).unwrap(),
+        journal_before,
+        "a crash before the journal rewrite leaves the original journal"
+    );
+    assert_eq!(
+        fs::read_to_string(checkpoint_path(temp.path(), "workload-a")).unwrap(),
+        checkpoint_before,
+        "a crash before the journal rewrite leaves the original checkpoint"
+    );
+    disarm_crash_seam();
+    let store = open(temp.path()).unwrap();
+    assert_eq!(store.next_sequence("workload-a"), Some(35));
+    assert_eq!(
+        journal_line_count(temp.path(), "workload-a"),
+        RETAINED_FLOOR
+    );
+    assert_eq!(store.round(500_000).reports.len(), 1);
 }
