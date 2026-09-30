@@ -1,6 +1,6 @@
 # Use cases
 
-ZROtext's proposed direction is **your number, connected to your business, your automations, and your AI**. The first experiences focus on local service operators and individuals who want to reach their own assistant by SMS. A dashboard and integrations should use the same messaging foundation.
+ZROtext's proposed direction is **your number, connected to your business, your automations, and your AI**. The first experiences focus on local service operators and individuals who want to reach their own assistant by SMS. A dashboard and integrations should use the same messaging foundation. Developers can also connect an existing customer-controlled agent for task notifications and replies through the proposed MCP and SDK tools.
 
 **Every experience below is proposed and unavailable today.** The current gateway supports restricted synthetic or controlled tests. Neither a working template nor a connected phone establishes readiness for customer traffic. See the [roadmap](ROADMAP.md), [product implementation plan](PRODUCT-PLAN.md), and [current sending limits](SMS-COMPLIANCE.md).
 
@@ -13,6 +13,7 @@ Priority describes delivery order, not a release date. Capabilities are counted 
 |---|---|---|---|
 | First | [Text receptionist](USE-CASES.md#receptionist) | Gather job details by text, draft a reply, and ask the owner to approve a quote. | Proposed; unavailable |
 | First | [Personal AI by SMS](USE-CASES.md#personalai) | Text your assistant a note or reminder; let approved routines communicate with selected contacts. | Proposed; unavailable |
+| First | [Agent task notifications and replies](USE-CASES.md#agenttexts) | Receive a task-completion text from your agent, reply with context, and review its proposed next action. | Proposed; unavailable |
 | Next | [Repair and project updates](USE-CASES.md#repairs) | Send a repair update and request approval before extra work. | Proposed; unavailable |
 | Next | [Cancellation-slot recovery](USE-CASES.md#waitlist) | Offer an open slot in sequence and stop when one booking is confirmed. | Proposed; unavailable |
 | Next | [Wedding and event concierge](USE-CASES.md#events) | Send personalized invitations, collect RSVPs, and remind only unanswered guests. | Proposed; unavailable |
@@ -109,6 +110,49 @@ These also inherit their upstream roadmap dependencies and the [general sending 
 
 - Tasks completed by SMS without opening the dashboard.
 - Corrections, unexpected messages and repeat use by the owner.
+
+<a id="agenttexts"></a>
+
+## Agent task notifications and replies
+
+**First · Proposed; unavailable**
+
+**For:** Developers connecting an existing customer-controlled AI agent to their own SMS line.
+
+An agent needs a scoped way to notify its owner, receive replies and request review without requiring the owner to keep an agent console open.
+
+**Example:** Receive a task-completion text from your agent, reply with context, and review its proposed next action.
+
+### Intended journey
+
+1. The owner installs a supported client integration and completes a synthetic first exchange through guided setup.
+2. For a later controlled-device pilot, the owner pairs a dedicated Android phone and SIM, compares fingerprints and grants selected read or send authority.
+3. The existing agent requests a task-completion notification within the approved recipient, routine, timing and budget.
+4. The authorized connector verifies and routes the owner reply; any commitment or changed scope waits for authenticated owner review.
+5. The owner can take over, disconnect or revoke the agent and see whether work is queued, submitted, delivered or unknown.
+
+### Required capabilities
+
+- [MCP tools for customer-controlled agents](ROADMAP.md#cap-mcp) (Planned)
+- [Agent SDK adapters and reply events](ROADMAP.md#cap-agenttools) (Planned)
+- [Guided agent setup and simulator quickstart](ROADMAP.md#cap-agentsetup) (Planned)
+- [Approvals and reply tracking](ROADMAP.md#cap-approvals) (Planned)
+- [Workflow connector and integrations](ROADMAP.md#cap-integrations) (Planned)
+
+These also inherit their upstream roadmap dependencies and the [general sending gates](ROADMAP.md#path-to-general-sending).
+
+### Acceptance criteria
+
+- MCP, SDK and workflow actions share the same enforced permissions, suppression and honest delivery states.
+- Setup preserves existing client configuration and key ceremonies; agents never receive broad owner credentials or raw content keys in prompts.
+- Replayed events and ambiguous submission cannot create duplicate messages; untrusted SMS cannot grant permission.
+- The simulator sends no real SMS; carrier behavior requires a separate controlled-device verification.
+- The experience uses an owner-provided Android phone and SIM; number provisioning and emergency-delivery guarantees are outside its scope.
+
+### Success signals to measure
+
+- Measured time and manual steps to the first synthetic exchange on supported clients.
+- Verified revocation, replay refusal, scope refusals and owner takeover in a controlled pilot.
 
 <a id="repairs"></a>
 

@@ -46,8 +46,8 @@ class RoadmapTest(unittest.TestCase):
     def test_alt_text_counts(self):
         self.assertEqual(
             roadmap.alt_text(self.data),
-            "Roadmap at a glance: 22 capabilities in five tracks. Four are in a restricted "
-            "pilot, eight are being built, three are in design and seven are planned. None has "
+            "Roadmap at a glance: 25 capabilities in five tracks. Four are in a restricted "
+            "pilot, eight are being built, three are in design and ten are planned. None has "
             "reached general release.",
         )
 
