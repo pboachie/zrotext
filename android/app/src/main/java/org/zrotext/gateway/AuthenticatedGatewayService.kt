@@ -76,6 +76,7 @@ class AuthenticatedGatewayService : Service() {
     @Volatile private var lastAckAtNanos = 0L
     /** Computed once per authenticated session; the inputs cannot change within it. */
     @Volatile private var sessionIdentity: EvidenceIdentity? = null
+    @Volatile private var conversationConnection: ConversationSocketNegotiation? = null
     @Volatile private var awaitingEventId: String? = null
     @Volatile private var awaitingEventSentAtNanos = 0L
     @Volatile private var awaitingInboundId: String? = null
@@ -247,6 +248,7 @@ class AuthenticatedGatewayService : Service() {
         socket = null
         retry?.cancel(false)
         alphaPump.onConnectionReset()
+        closeConversationConnection()
         sessionIdentity = null
         awaitingEventId = null
         awaitingEventSentAtNanos = 0L
@@ -283,6 +285,7 @@ class AuthenticatedGatewayService : Service() {
                     check(frame.opt("v") is Number && frame.getInt("v") == 1)
                     check(frame.opt("type") is String)
                     when (frame.getString("type")) {
+                        "conversation_session" -> checkNotNull(conversationConnection).accept(frame)
                         "challenge" -> {
                             requireFields(frame, setOf("v", "type", "challenge_id", "account_id", "device_id", "nonce"))
                             val proof = machine.challenge(
@@ -385,6 +388,8 @@ class AuthenticatedGatewayService : Service() {
                             }, 15, 15, TimeUnit.SECONDS)
                             sessionIdentity = EvidenceIdentity.fromStream(
                                 machine.activeAccountId(), machine.activeDeviceId(), url)
+                            conversationConnection = ConversationSocketComposition.create(webSocket,checkNotNull(sessionIdentity),epoch)
+                            conversationConnection?.start()
                             if (inboundUploadRequested || lineOptOutUploadRequested) {
                                 eventPump = scheduler.scheduleAtFixedRate({
                                     if (generation == currentGeneration) {
@@ -532,7 +537,9 @@ class AuthenticatedGatewayService : Service() {
             }
 
             override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-                disconnect(currentGeneration, DeviceReconnectPolicy.Loss.PROTOCOL_REJECTED)
+                if(generation!=currentGeneration)return
+                if(conversationConnection?.binary(bytes.toByteArray())!=true)
+                    disconnect(currentGeneration, DeviceReconnectPolicy.Loss.PROTOCOL_REJECTED)
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
@@ -987,6 +994,7 @@ class AuthenticatedGatewayService : Service() {
     @Synchronized
     private fun disconnect(currentGeneration: Int, reason: DeviceReconnectPolicy.Loss) {
         if (generation != currentGeneration) return
+        closeConversationConnection()
         Log.i("ZTReconnect", "disconnect reason=$reason")
         timingTrace.mark(HeartbeatTraceEvent.DISCONNECT, traceEpoch.get(), reason)
         generation += 1 // Fence queued callbacks, grants and radio authorization before any retry.
@@ -1087,7 +1095,11 @@ class AuthenticatedGatewayService : Service() {
         }
     }
 
+    private fun closeConversationConnection() {
+        val old=conversationConnection;conversationConnection=null;old?.close()
+    }
     private fun halt() {
+        closeConversationConnection()
         ConversationProcessMount.runtime.pause(ConversationStopReason.PHONE_SESSION_LOST)
         reconnect.pause()
         generation += 1
@@ -1106,6 +1118,7 @@ class AuthenticatedGatewayService : Service() {
     }
 
     private fun cancelTimers() {
+        closeConversationConnection()
         networkServiceSampler.cancel()
         heartbeat?.cancel(false)
         watchdog?.cancel(false)

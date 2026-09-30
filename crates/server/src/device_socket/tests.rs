@@ -173,6 +173,8 @@ fn stream_schema_examples_match_serde_frames() {
         let parsed: ClientFrame = serde_json::from_value(frame.clone()).unwrap();
         assert_eq!(frame["v"], 1);
         let variant = match parsed {
+            ClientFrame::ConversationReady { .. } => "conversation_ready",
+            ClientFrame::ConversationBinary(_) => "conversation_binary",
             ClientFrame::Hello { .. } => "hello",
             ClientFrame::Proof { .. } => "proof",
             ClientFrame::Heartbeat { .. } => "heartbeat",

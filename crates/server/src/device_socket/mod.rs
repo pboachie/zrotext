@@ -46,6 +46,7 @@ use zrotext_domain::{Evidence, MessageState};
 
 mod mms_spike_policy;
 pub use mms_spike_policy::MmsSpikePolicy;
+mod conversation;
 mod preconditions;
 mod stream_diagnostic;
 
@@ -233,6 +234,7 @@ impl SocketAdmission {
 struct SocketRoute {
     state: DeviceSocketState,
     admission: SocketAdmission,
+    conversation: Option<conversation::Policy>,
 }
 
 #[derive(Clone)]
@@ -266,6 +268,14 @@ pub struct DeviceSession {
 #[derive(Deserialize)]
 #[serde(tag = "type", deny_unknown_fields)]
 enum ClientFrame {
+    #[serde(rename = "conversation_ready")]
+    ConversationReady {
+        v: u8,
+        connection_epoch: i64,
+        challenge: Uuid,
+    },
+    #[serde(skip)]
+    ConversationBinary(Vec<u8>),
     #[serde(rename = "hello")]
     Hello { v: u8, device_id: Uuid },
     #[serde(rename = "proof")]
@@ -558,11 +568,35 @@ pub fn router_with_account_share(state: DeviceSocketState, sockets_per_account: 
 fn router_with_admission(state: DeviceSocketState, admission: SocketAdmission) -> Router {
     Router::new()
         .route("/v1/device-stream", get(upgrade))
-        .with_state(SocketRoute { state, admission })
+        .with_state(SocketRoute {
+            state,
+            admission,
+            conversation: None,
+        })
+}
+
+/// Explicit future composition only. Main continues to call the default disabled router.
+/// The configured WSS origin must match the phone's independently approved endpoint.
+pub fn router_with_conversations(
+    state: DeviceSocketState,
+    origin: &str,
+) -> Result<Router, &'static str> {
+    let policy = conversation::Policy::new(origin)?;
+    Ok(Router::new()
+        .route("/v1/device-stream", get(upgrade))
+        .with_state(SocketRoute {
+            state,
+            admission: DEVICE_SOCKET_ADMISSION.clone(),
+            conversation: Some(policy),
+        }))
 }
 
 async fn upgrade(
-    State(SocketRoute { state, admission }): State<SocketRoute>,
+    State(SocketRoute {
+        state,
+        admission,
+        conversation,
+    }): State<SocketRoute>,
     headers: HeaderMap,
     websocket: WebSocketUpgrade,
 ) -> Response {
@@ -587,7 +621,16 @@ async fn upgrade(
         .protocols([preconditions::PROTOCOL_V2, preconditions::PROTOCOL])
         .max_message_size(MAX_FRAME_BYTES)
         .max_frame_size(MAX_FRAME_BYTES)
-        .on_upgrade(move |socket| run_socket(socket, state, admission, handshake_slot, deadline))
+        .on_upgrade(move |socket| {
+            run_socket(
+                socket,
+                state,
+                admission,
+                handshake_slot,
+                deadline,
+                conversation,
+            )
+        })
         .into_response()
 }
 
@@ -702,6 +745,7 @@ async fn receive_frame(socket: &mut WebSocket, budget: &mut FrameBudget) -> Opti
         }
         match message {
             Message::Text(text) => return serde_json::from_str(text.as_str()).ok(),
+            Message::Binary(bytes) => return Some(ClientFrame::ConversationBinary(bytes.to_vec())),
             Message::Ping(_) | Message::Pong(_) => continue,
             _ => return None,
         }
@@ -939,6 +983,7 @@ async fn run_socket(
     admission: SocketAdmission,
     handshake_slot: OwnedSemaphorePermit,
     deadline: tokio::time::Instant,
+    conversation_policy: Option<conversation::Policy>,
 ) {
     let status_protocol = socket
         .protocol()
@@ -1033,10 +1078,32 @@ async fn run_socket(
     let mut diagnostic_tally = stream_diagnostic::StreamTally::new(last_heartbeat);
     let mut close_reason = "other_stream_exit";
     let mut close_with_code = None;
+    let mut conversation_session = None;
     loop {
         tokio::select! {
             message = receive_frame(&mut socket, &mut frame_budget) => {
                 match message {
+                    Some(ClientFrame::ConversationReady {v:1,connection_epoch,challenge}) => {
+                        if conversation_session.is_some() || connection_epoch!=session.connection_epoch || challenge.is_nil() {
+                            close_with_code=Some(close_code::POLICY);break;
+                        }
+                        let Some(policy)=conversation_policy.as_ref() else {close_with_code=Some(close_code::POLICY);break;};
+                        let Ok(client)=runtime_db::connect_device(&state.database_url).await else {close_with_code=Some(RETRY_LATER);break;};
+                        if !session_current(&client,session,&state).await.unwrap_or(false) {close_with_code=Some(close_code::POLICY);break;}
+                        drop(client);
+                        let negotiated=policy.negotiate(session,state.deployment_epoch,challenge);
+                        let Ok((held,reply))=negotiated else {close_with_code=Some(close_code::POLICY);break;};
+                        if socket.send(Message::Text(reply.into())).await.is_err(){break;}
+                        conversation_session=Some(held);
+                    }
+                    Some(ClientFrame::ConversationBinary(bytes)) => {
+                        let Some(held)=conversation_session.as_ref() else {close_with_code=Some(close_code::POLICY);break;};
+                        let Ok(mut client)=runtime_db::connect_device(&state.database_url).await else {close_with_code=Some(RETRY_LATER);break;};
+                        match held.handle(&mut client,session,&state,&bytes).await {
+                            Ok(reply)=> {if socket.send(Message::Binary(reply.into())).await.is_err(){break;}}
+                            Err(_)=>{close_with_code=Some(close_code::POLICY);break;}
+                        }
+                    }
                     Some(frame @ (ClientFrame::DeviceStatus { v: 1, .. } | ClientFrame::DeviceStatusV2 { v: 1, .. })) => {
                         let (protocol, connection_epoch, report) = match frame {
                             ClientFrame::DeviceStatus { connection_epoch, selected_sim, sms_permission, airplane_mode, .. } =>

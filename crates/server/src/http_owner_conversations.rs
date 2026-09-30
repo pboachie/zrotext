@@ -28,10 +28,19 @@ use tokio_postgres::{Client, Transaction};
 use uuid::Uuid;
 
 pub mod activation;
+pub mod browser_assets;
 pub mod channel;
 pub mod enrollment;
 pub(crate) mod lifecycle;
 pub mod send;
+
+/// Future explicit composition. The ordinary main/router never supplies SDK assets.
+pub fn router_with_browser_sdk(
+    state: OwnerConversationsState,
+    assets: browser_assets::BrowserAssets,
+) -> Router {
+    router(state).merge(assets.router())
+}
 
 pub const DISCLOSURE_VERSION: &str = "conversation-content-v1";
 const CONTENT_TYPE: &str = "application/vnd.zrotext.sealed.v1";

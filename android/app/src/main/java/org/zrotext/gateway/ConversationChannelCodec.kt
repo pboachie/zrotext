@@ -50,6 +50,15 @@ internal object ConversationChannelCodec {
     fun timeReply(r:ConversationTimeReply)=write(2,r.session,r.challenge){require(r.sentUtcMs>0);it.writeLong(r.sentUtcMs)}
     fun parseTimeReply(bytes:ByteArray,session:ConversationPhoneSession)=read(bytes,2,session){input,nonce->ConversationTimeReply(session,nonce,input.positive())}
     fun closeRequest(r:ConversationClosureRequest)=write(3,r.session,r.challenge){it.scope(bound(r.scope,r.session))}
+    fun activationRequest(session:ConversationPhoneSession,kind:Int,challenge:UUID,statement:ByteArray,signature:ByteArray):ByteArray {
+        require(kind==6 || kind==8);require(signature.size==64)
+        val parsed=ConversationActivationCodec.decode(statement);bound(parsed.scope,session)
+        require(parsed.connectionEpoch==session.connectionEpoch && parsed.deploymentEpoch==session.deploymentEpoch)
+        return write(kind,session,challenge){it.writeShort(statement.size);it.write(statement);it.write(signature)}
+    }
+    fun leaseRequest(r:ConversationClosureRequest)=write(10,r.session,r.challenge){it.scope(bound(r.scope,r.session))}
+    fun parseApprovalReply(bytes:ByteArray,session:ConversationPhoneSession)=read(bytes,7,session){input,nonce->nonce to bound(input.scope(),session)}
+    fun parseLeaseReply(bytes:ByteArray,session:ConversationPhoneSession)=read(bytes,9,session){input,nonce->Triple(nonce,bound(input.scope(),session),input.positive().also{require(it<=60000)})}
     fun reconciliationRequest(r:ConversationClosureRequest, originalStatement:ByteArray):ByteArray {
         val owned=originalStatement.copyOf()
         require(ConversationActivationCodec.decode(owned).scope==bound(r.scope,r.session))

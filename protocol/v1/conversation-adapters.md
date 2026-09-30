@@ -352,3 +352,59 @@ creates no root credential. A queued result is valid only after a real durable
 server queue adapter accepts the exact proof; authorization-only verification is
 not queued acceptance. Production custody, queue persistence/transport endpoints
 and browser mounting remain unconnected code gates.
+
+## Explicit authenticated installation extension
+
+The ordinary device socket router rejects the extension. The explicit
+`router_with_conversations` constructor requires a configured WSS origin and
+retains the existing enrolled-device proof and current database session checks.
+After ordinary stream authentication, the client sends `conversation_ready`
+with its connection epoch and a fresh challenge. The server creates a fresh
+per-connection phone-session UUID. Its `conversation_session` reply echoes the
+challenge and binds the account, device, connection and deployment epochs and
+SHA-256 of the canonical `wss://host:port` origin. Neither side accepts a duplicate
+negotiation or a caller-supplied replacement account/session. The JSON contract
+is [conversation-channel.schema.json](conversation-channel.schema.json).
+
+Only then can binary `ZTCW` version-1 exchanges use the existing 118-byte header:
+magic/version, kind, account/device/phone-session UUIDs, connection/deployment
+epochs, origin digest and fresh challenge UUID. All integers use network order.
+The socket owner supplies independently held authority to the handler; parsing
+the header never establishes authority. Existing time, closure and closed-only
+reconciliation messages retain their encodings.
+
+| Request | Payload after header | Reply |
+|---|---|---|
+| 6: approve | Two-byte statement length, complete canonical activation statement, 64-byte low-S approval signature | 7: exact retained scope |
+| 8: install | Same statement encoding, distinct installation-domain signature | 9: exact scope followed by eight-byte lease duration |
+| 10: refresh lease | Exact retained scope | 9: exact scope and lease duration |
+
+The request bound is 1,208 bytes. Lease duration is positive and at most 60,000
+milliseconds. Approval ACK alone never makes capture eligible. The phone verifies
+its existing accepted root/manifest, exact phone signer and archive reader, signs
+with its existing hardware-backed key, verifies both nonce-bound replies and
+installs through the shared admission gate. A callback must follow an explicit
+affirmative phone decision; pending installation remains ineligible. Session loss
+invalidates the wire before closing runtime admission. Blocking installation work
+runs on a distinct worker, never the socket listener, and checks cancellation
+before mounting. No new root or device credential is created by these adapters.
+
+## Finite candidate assembly checks
+
+These are code-completion checks for the dormant candidate, distinct from live
+credential configuration. An entry is complete only after aggregate tests and
+independent review establish the stated behavior.
+
+| Owned files | Acceptance |
+|---|---|
+| `device_socket/conversation.rs`, `ConversationSocketNegotiation.kt` | Existing device proof, exact negotiated identity, expiry/rotation rejection and no listener blocking |
+| `channel/installation.rs`, `ConversationPhoneActivation.kt`, existing trust/key stores | Actual two-stage acceptance, current manifest authority, no pending capture or late promotion after Stop/loss |
+| SDK custody/reader and owner page | Explicit owner initiation, exact root CAS, fresh session/key fences, readable authenticated text and complete verified renewal history |
+| Confirmed-send queue and lifecycle hooks | Atomic proof plus delivery admission, exact idempotent retry, export inventory, retention redaction and guarded deletion |
+| Owner endpoint composition and phone transport | Existing owner cookie/CSRF, independently held phone authority, real queue acceptance and decoded receipt upload; no claimed-request authority |
+| Receiver/service mount and presentation port | Explicit disabled defaults, shared first-receipt/Stop gate, durable failure shown separately and no radio dispatch in test build |
+| Packaged SDK assets and isolated emulator runner | Compiled native app, actual dormant server handlers and browser crypto complete the synthetic round trip |
+
+No ordinary entry point or deployment flag is mounted here. Existing-root custody
+configuration, exact selected-line observation, policy/disclosure approval,
+release signing and reviewer access remain separate runtime/release gates.

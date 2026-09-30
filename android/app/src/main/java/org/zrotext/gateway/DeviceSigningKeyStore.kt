@@ -73,7 +73,18 @@ class DeviceSigningKeyStore(
     }
 
     fun signDeviceChallenge(accountId: UUID, deviceId: UUID, challengeId: UUID, nonce: ByteArray): ByteArray =
-        sign(EnrollmentProof.deviceAuthBytes(accountId, deviceId, challengeId, nonce))
+          sign(EnrollmentProof.deviceAuthBytes(accountId, deviceId, challengeId, nonce))
+
+    /** Explicit approved conversation only; missing/unsupported existing keys are never created. */
+    internal fun signConversationStatement(domain:ByteArray,statement:ByteArray,expectedPoint:ByteArray):ByteArray {
+        ConversationActivationCodec.decode(statement)
+        val key=privateKey()
+        check(securityLevel(key) in setOf(SigningKeySecurity.STRONGBOX,SigningKeySecurity.TRUSTED_ENVIRONMENT))
+        val public=openStore().getCertificate(alias)?.publicKey as? ECPublicKey ?: error("Existing conversation signer unavailable")
+        check(DevicePayloadKeyStore.encodePoint(public).contentEquals(expectedPoint))
+        val der=Signature.getInstance("SHA256withECDSA").run {initSign(key);update(ConversationActivationCodec.transcript(domain,statement));sign()}
+        return Draft01SignaturePrimitive.canonicalRawFromDer(der)
+    }
 
     internal fun signInboundMetadata(accountId: UUID, deviceId: UUID, upload: InboundUpload,
                                      event: InboundEvent): ByteArray =

@@ -26,13 +26,20 @@ internal class ConversationSocketWire(private val socket: WebSocket,
     override fun currentSession()=synchronized(lock) { if(closed) null else authenticatedSession() }
     override fun exchange(request:ByteArray):ConversationAuthenticatedWire.Reply {
         val owned=request.copyOf()
-        require(owned.size in 118..1144 && owned.copyOfRange(0,5).contentEquals(byteArrayOf(90,84,67,87,1)))
+        require(owned.size in 118..1208 && owned.copyOfRange(0,5).contentEquals(byteArrayOf(90,84,67,87,1)))
         val session=checkNotNull(currentSession())
         val kind=owned[5].toInt()
         val challenge=ByteBuffer.wrap(owned,102,16).let{UUID(it.long,it.long)}
         when(kind) {
             1 -> ConversationChannelCodec.parseTimeRequest(owned,session)
             3 -> ConversationChannelCodec.parseCloseRequest(owned,session)
+            6,8 -> {
+                require(owned.size>=564);val length=ByteBuffer.wrap(owned,118,2).short.toInt() and 65535
+                require(length in 380..1024 && owned.size==184+length)
+                require(ConversationChannelCodec.activationRequest(session,kind,challenge,owned.copyOfRange(120,120+length),owned.copyOfRange(120+length,owned.size)).contentEquals(owned))
+            }
+            10 -> require(ConversationChannelCodec.leaseRequest(ConversationClosureRequest(session,challenge,
+                ConversationChannelCodec.parseCloseRequest(owned.copyOf().also{it[5]=3},session).scope)).contentEquals(owned))
             5 -> {
                 require(owned.size>=120)
                 val length=ByteBuffer.wrap(owned,118,2).short.toInt() and 65535
@@ -43,7 +50,7 @@ internal class ConversationSocketWire(private val socket: WebSocket,
             }
             else -> error("Conversation request kind unavailable")
         }
-        val pending=Waiting(session,challenge,if(kind==1)2 else 4)
+        val pending=Waiting(session,challenge,when(kind){1->2;6->7;8,10->9;else->4})
         synchronized(lock) {check(!closed && waiting==null && authenticatedSession()==session);waiting=pending}
         try {
             check(socket.send(owned.toByteString())) { "Socket submission refused" }
@@ -60,6 +67,8 @@ internal class ConversationSocketWire(private val socket: WebSocket,
         val challenge=runCatching {
             when(pending.replyKind) {
                 2 -> ConversationChannelCodec.parseTimeReply(bytes,session).challenge
+                7 -> ConversationChannelCodec.parseApprovalReply(bytes,session).first
+                9 -> ConversationChannelCodec.parseLeaseReply(bytes,session).first
                 else -> ConversationChannelCodec.parseCloseReply(bytes,session).challenge
             }
         }.getOrNull()

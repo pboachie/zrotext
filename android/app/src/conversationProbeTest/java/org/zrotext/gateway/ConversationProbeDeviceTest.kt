@@ -77,17 +77,25 @@ class ConversationProbeDeviceTest {
         var decisions=0;var installs=0;var submissions=0
         var permission=true
         var installedGate: () -> Boolean = { false }
-        val runtime=ConversationAuthenticatedRuntime(db.journal(),sends.sends(),fixture,fixture.protection,
+        val bootstrapClock=ConversationTrustedClock({(System.nanoTime()-start)/1_000_000},socketWire::currentSession)
+        ConversationAuthorityTransport(ConversationSerializedChannel(socketWire),bootstrapClock,socketWire::currentSession,{(System.nanoTime()-start)/1_000_000}).refreshTime()
+        val trust=Draft02TrustStore(ProbeTrustStorage())
+        val compare=Draft02RootComparison();val pin=fixture.bytes(ready.getString("pin"))
+        val display=compare.begin(pin,pin.copyOfRange(5,21))
+        var root=checkNotNull(trust.enroll(compare.confirm(display.fingerprintHex,true)).snapshot)
+        root=checkNotNull(trust.acceptManifest(root,fixture.bytes(ready.getString("predecessor"))){checkNotNull(bootstrapClock.nowMs())}.snapshot)
+        checkNotNull(trust.acceptManifest(root,fixture.bytes(ready.getString("manifest"))){checkNotNull(bootstrapClock.nowMs())}.snapshot)
+        val activation=ConversationPhoneActivation(fixture.statement,trust,socketWire,
+            {checkNotNull(runtimeRef.get()?.trustedNowMs())},
+            {domain,statement,point->check(statement.contentEquals(fixture.statement) && point.contentEquals(fixture.bytes(ready.getString("signerPoint"))));fixture.bytes(fixture.sign(domain))})
+        val runtime=ConversationAuthenticatedRuntime(db.journal(),sends.sends(),activation,fixture.protection,
             socketWire,{(System.nanoTime()-start)/1_000_000},
             { selected,now -> check(permission && selected==scope && now<fixture.parsed.expiresMs) },
             { selected -> check(selected==scope);decisions++ },
             { request ->
                 check(decisions==1)
-                check(fixture.command("approve",data=fixture.b64(fixture.statement),signature=fixture.sign(ConversationActivationCodec.APPROVE_DOMAIN)).getBoolean("ok"))
                 check(!installedGate())
-                check(fixture.command("installed",data=fixture.b64(fixture.statement),signature=fixture.sign(ConversationActivationCodec.INSTALL_DOMAIN)).getBoolean("ok"))
-                installs++
-                fixture.command("lease",challenge=UUID.fromString(request.challenge)).toString().toByteArray(Charsets.UTF_8)
+                activation.install(request).also {installs++}
             },worker,delivery)
         runtimeRef.set(runtime)
         if(authenticated.get()==null)runtime.lifecycleLost(ConversationStopReason.PHONE_SESSION_LOST)
@@ -167,8 +175,20 @@ class ConversationProbeDeviceTest {
             assertFalse(fixture.command("history",event=event).getBoolean("ok"))
         } finally {
             context.unbindService(connection);instrumentation.waitForIdleSync();drain()
-            runtimeRef.set(null);worker.shutdownNow();db.close();sends.close();socketWire.invalidate();socket.close(1000,"synthetic complete")
+            runtimeRef.set(null);worker.shutdownNow();activation.close();db.close();sends.close();socketWire.invalidate();socket.close(1000,"synthetic complete")
             client.dispatcher.executorService.shutdown();client.connectionPool.evictAll();fixture.command("finish")
         }
+    }
+
+    /** Disposable fixture protection only; never selected by the ordinary root-store factory. */
+    private class ProbeTrustStorage:Draft02TrustStore.Storage,Draft02TrustStore.Session {
+        private var created=false;private var value:ByteArray?=null
+        @Synchronized override fun <T> locked(action:Draft02TrustStore.Session.()->T)=action(this)
+        override fun keyState()=if(created)Draft02TrustStore.KeyState.READY else Draft02TrustStore.KeyState.ABSENT
+        override fun createKey(){check(!created);created=true}
+        override fun read()=value?.copyOf()
+        override fun seal(plaintext:ByteArray)=plaintext.copyOf()
+        override fun open(ciphertext:ByteArray)=ciphertext.copyOf()
+        override fun write(ciphertext:ByteArray,preCommit:()->Unit){preCommit();value=ciphertext.copyOf()}
     }
 }

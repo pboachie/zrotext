@@ -108,6 +108,7 @@ internal class ConversationAuthenticatedRuntime(
         ConversationConfirmedSend(sends, admission, verifier, protection, clock::nowMs, transport)
 
     fun captureEligible(): Boolean = admission.captureEligible()
+    internal fun trustedNowMs():Long? = clock.nowMs()
     fun firstReceiptBoundary() = admission.firstReceiptBoundary { if (blocked.get()) 0 else clock.nowMs() ?: 0 }
     fun observeAtBoundary(boundary: ConversationCaptureAdmission.ReceiptBoundary, token: String,
                           peer: String, line: String, generation: Long, body: String) =

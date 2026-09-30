@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Dormant authenticated channel handlers. No device socket registers these messages.
+//! Authenticated channel handlers; registration requires the explicit dormant socket router.
 use super::{ConversationError, activation};
 use crate::inbound::InboundSession;
 use sha2::{Digest, Sha256};
@@ -42,7 +42,7 @@ fn request(
     s: &AuthenticatedChannelSession<'_>,
     bytes: &[u8],
 ) -> Result<(u8, Uuid), ConversationError> {
-    if !(118..=1144).contains(&bytes.len()) || !matches!(bytes[5], 1 | 3 | 5) {
+    if !(118..=1208).contains(&bytes.len()) || !matches!(bytes[5], 1 | 3 | 5 | 6 | 8 | 10) {
         return Err(ConversationError::Invalid);
     }
     let kind = bytes[5];
@@ -55,6 +55,10 @@ fn request(
         || kind == 5
             && (bytes.len() < 500
                 || usize::from(u16::from_be_bytes([bytes[118], bytes[119]])) != bytes.len() - 120)
+        || matches!(kind, 6 | 8)
+            && (bytes.len() < 564
+                || usize::from(u16::from_be_bytes([bytes[118], bytes[119]])) + 184 != bytes.len())
+        || kind == 10 && !(370..=383).contains(&bytes.len())
     {
         return Err(ConversationError::Invalid);
     }
@@ -155,6 +159,9 @@ pub async fn handle(
     bytes: &[u8],
 ) -> Result<Vec<u8>, ConversationError> {
     let (kind, challenge) = request(authenticated, bytes)?;
+    if matches!(kind, 6 | 8 | 10) {
+        return installation::handle(client, authenticated, kind, challenge, bytes).await;
+    }
     let tx = client.transaction().await?;
     if kind == 3 {
         // Same manifest-before-account lock order as capture; revocation does not prevent a stop.
@@ -197,5 +204,6 @@ pub async fn handle(
     Ok(reply)
 }
 
+mod installation;
 #[cfg(test)]
 mod tests;
