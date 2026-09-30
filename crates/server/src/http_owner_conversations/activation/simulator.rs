@@ -15,6 +15,7 @@ use axum::{
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use futures_util::SinkExt;
+use hmac::{Hmac, KeyInit, Mac};
 use p256::ecdsa::{Signature, signature::Signer};
 use p256::{ecdsa::SigningKey, elliptic_curve::Generate};
 use serde::Deserialize;
@@ -23,6 +24,7 @@ use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::sync::Arc;
 use tokio::sync::{Mutex, Notify};
+use tower::ServiceExt;
 
 struct Simulator {
     fixture: Mutex<Fixture>,
@@ -32,7 +34,9 @@ struct Simulator {
     token: String,
     phone_session: Uuid,
     origin_hash: [u8; 32],
-    sends: Mutex<std::collections::HashMap<Uuid, super::super::send::Confirmation>>,
+    queue_router: Router,
+    owner_token: String,
+    owner_csrf: String,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -137,32 +141,21 @@ async fn command(
         "history"=>match c.event {Some(event)=>read_history(&mut client,&state.owner,event).await.map(|b|json!({"ok":true,"envelope":STANDARD.encode(b)})),None=>Err(ConversationError::Invalid)},
         "browser_authority"=>active_lease(&mut client,session,s.interval,Uuid::new_v4()).await.map(|lease| json!({"ok":true,"phase":"active","validForMs":lease.valid_for_ms,"manifest":STANDARD.encode(&f.bytes),
             "scope":{"account":s.account,"session":s.originating_session,"interval":s.interval,"device":s.device,"line":s.line,"generation":s.generation.to_string(),"peer":s.peer,"reader":STANDARD.encode(s.reader),"manifest":STANDARD.encode(Sha256::digest(&f.bytes[..f.bytes.len()-64]))}})),
-        "send"=>{
-            match (c.data.and_then(|v|STANDARD.decode(v).ok()),c.confirmation.and_then(|v|STANDARD.decode(v).ok()),c.signature.and_then(|v|STANDARD.decode(v).ok())) {
-                (Some(bytes),Some(proof),Some(signature))=>match super::super::send::authorize_confirmed_send(&mut client,&state.owner,session,&bytes,&proof,&signature).await {
-                    Ok(confirmed)=>{
-                        let mut seen=state.sends.lock().await;
-                        if let Some(old)=seen.get(&confirmed.message) {
-                            if old!=&confirmed {Err(ConversationError::Conflict)} else {Ok(json!({"ok":true,"created":false,"envelope":STANDARD.encode(bytes)}))}
-                        } else {seen.insert(confirmed.message,confirmed);Ok(json!({"ok":true,"created":true,"envelope":STANDARD.encode(bytes)}))}
-                    },Err(e)=>Err(e),
-                },_=>Err(ConversationError::Invalid),
-            }
-        },
+        "send"=>submit_confirmed(&state, &f, &c).await,
         "send_expiry_wait"=>{
-            match (c.data.and_then(|v|STANDARD.decode(v).ok()),c.confirmation.and_then(|v|STANDARD.decode(v).ok()),c.signature.and_then(|v|STANDARD.decode(v).ok())) {
-                (Some(bytes),Some(proof),Some(signature))=>{
+            match c.confirmation.as_ref().and_then(|v|STANDARD.decode(v).ok()) {
+                Some(proof)=>{
                     let confirmed=super::super::send::Confirmation::decode(&proof).unwrap();
                     let mut blocker=f.connect().await;
                     let hold=blocker.transaction().await.unwrap();
                     hold.query_one("SELECT id FROM accounts WHERE id=$1 FOR UPDATE",&[&s.account]).await.unwrap();
                     assert!(confirmed.expires_ms-now(&hold).await.unwrap()<=1500);
-                    let mut pending=Box::pin(super::super::send::authorize_confirmed_send(&mut client,&state.owner,session,&bytes,&proof,&signature));
-                    assert!(tokio::time::timeout(std::time::Duration::from_millis(25),&mut pending).await.is_err(),"actual account lock must block admission");
+                    let mut pending=Box::pin(submit_confirmed(&state,&f,&c));
+                    assert!(tokio::time::timeout(std::time::Duration::from_millis(25),&mut pending).await.is_err(),"actual HTTP admission must wait for account lock");
                     while now(&hold).await.unwrap()<confirmed.expires_ms {tokio::time::sleep(std::time::Duration::from_millis(10)).await;}
                     hold.commit().await.unwrap();
                     assert!(matches!(pending.await,Err(ConversationError::Forbidden)),"confirmation expiry after lock wait must fail closed");
-                    assert!(!state.sends.lock().await.contains_key(&confirmed.message));
+                    assert_eq!(durable_counts(&f,confirmed.message).await,(0,0,0,0));
                     Ok(json!({"ok":true,"rejected":true}))
                 },_=>Err(ConversationError::Invalid),
             }
@@ -189,11 +182,157 @@ async fn command(
     }
 }
 
+// The fixture bridge posts through the real dormant cookie/CSRF HTTP adapter.
+// Returning an envelope requires committed queue and proof rows, never a map.
+async fn submit_confirmed(
+    state: &Simulator,
+    f: &Fixture,
+    c: &Command,
+) -> Result<Value, ConversationError> {
+    let (Some(envelope), Some(confirmation), Some(signature)) =
+        (&c.data, &c.confirmation, &c.signature)
+    else {
+        return Err(ConversationError::Invalid);
+    };
+    let request = axum::http::Request::post("/v1/owner/conversation/send")
+        .header("content-type", "application/json")
+        .header("origin", "https://test.example")
+        .header(
+            "cookie",
+            format!(
+                "__Host-zrotext_session={}; __Host-zrotext_csrf={}",
+                state.owner_token, state.owner_csrf
+            ),
+        )
+        .header("x-zrotext-csrf", &state.owner_csrf)
+        .body(axum::body::Body::from(
+            json!({"envelope":envelope,"confirmation":confirmation,"signature":signature})
+                .to_string(),
+        ))
+        .unwrap();
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(28),
+        state.queue_router.clone().oneshot(request),
+    )
+    .await
+    .expect("fixture HTTP queue admission exceeded bounded deadline")
+    .unwrap();
+    if response.status() != StatusCode::ACCEPTED {
+        return Err(match response.status() {
+            StatusCode::FORBIDDEN => ConversationError::Forbidden,
+            StatusCode::CONFLICT => ConversationError::Conflict,
+            StatusCode::BAD_REQUEST => ConversationError::Invalid,
+            _ => ConversationError::Unavailable,
+        });
+    }
+    let result: Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(result["state"], "queued");
+    let message: Uuid = result["message_id"].as_str().unwrap().parse().unwrap();
+    assert_eq!(durable_counts(f, message).await, (1, 1, 1, 1));
+    let row =
+        f.db.query_one(
+            "SELECT transport_payload FROM messages WHERE account_id=$1 AND id=$2",
+            &[&f.account, &message],
+        )
+        .await
+        .unwrap();
+    let queued: Vec<u8> = row.get(0);
+    assert_eq!(STANDARD.encode(&queued), *envelope);
+    Ok(json!({"ok":true,"created":result["created"],"envelope":STANDARD.encode(queued)}))
+}
+
+async fn durable_counts(f: &Fixture, message: Uuid) -> (i64, i64, i64, i64) {
+    let row=f.db.query_one("SELECT (SELECT count(*) FROM messages WHERE account_id=$1 AND id=$2), \
+        (SELECT count(*) FROM dispatch_jobs WHERE account_id=$1 AND message_id=$2), \
+        (SELECT count(*) FROM conversation_confirmation_records WHERE account_id=$1 AND message_id=$2), \
+        (SELECT count(*) FROM usage_ledger WHERE account_id=$1 AND message_id=$2 AND entry_kind='reserve')",&[&f.account,&message]).await.unwrap();
+    (row.get(0), row.get(1), row.get(2), row.get(3))
+}
+
+fn queue_router(f: &Fixture) -> Router {
+    let sep = if f.url.contains('?') { '&' } else { '?' };
+    let url = format!("{}{sep}options=-csearch_path%3D{}", f.url, f.schema);
+    let hasher = Arc::new(crate::auth::TokenHasher::new(crate::test_keys::key(84)).unwrap());
+    let owner = super::super::OwnerConversationsState {
+        database_url: url.clone(),
+        auth_hasher: hasher.clone(),
+        canonical_origin: "https://test.example".into(),
+    };
+    let phone = f.session();
+    let socket = crate::device_socket::DeviceSocketState {
+        database_url: url,
+        site_id: phone.site_id.into(),
+        instance_id: phone.instance_id.into(),
+        deployment_epoch: phone.deployment_epoch,
+        enrollment_hasher: Arc::new(
+            crate::enrollment::EnrollmentHasher::new(crate::test_keys::key(77)).unwrap(),
+        ),
+        auth_hasher: hasher,
+        alpha_policy: Arc::new(crate::alpha_policy::AlphaPolicy::parse(None, None, None).unwrap()),
+        dispatch_runtime_enabled: false,
+        inbound_pilot_enabled: false,
+        line_opt_out_enabled: false,
+        sms_line_activation_enabled: false,
+        mms_spike_policy: Arc::new(
+            crate::device_socket::MmsSpikePolicy::parse(None, None, None).unwrap(),
+        ),
+        draining: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        drain_notify: Arc::new(Notify::new()),
+    };
+    super::super::confirmed_http::router(owner, socket, true)
+}
+
+async fn owner_credentials(f: &Fixture, owner: &SessionPrincipal) -> (String, String) {
+    let random = |prefix: &str| {
+        format!(
+            "{prefix}{}",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>())
+        )
+    };
+    let token = random("zts_");
+    let csrf = random("ztc_");
+    let hash = |domain: &[u8], value: &str| {
+        let mut mac = Hmac::<Sha256>::new_from_slice(&crate::test_keys::key(84)).unwrap();
+        mac.update(domain);
+        mac.update(value.as_bytes());
+        mac.finalize().into_bytes().to_vec()
+    };
+    f.db.execute(
+        "UPDATE sessions SET token_hash=$1,csrf_hash=$2 WHERE id=$3",
+        &[
+            &hash(b"session-v1\0", &token),
+            &hash(b"csrf-v1\0", &csrf),
+            &owner.session_id,
+        ],
+    )
+    .await
+    .unwrap();
+    (token, csrf)
+}
+
 #[tokio::test]
 #[ignore = "requires explicitly selected conversation simulator runner, SDK and disposable PostgreSQL"]
 async fn loopback_journal_bridge() {
     assert!(std::env::var_os("ZT_CONVERSATION_SIM_DIR").is_some());
     let (mut f, owner) = super::super::tests::prepared().await;
+    if !super::super::send::queue::lifecycle::installed(&f.db)
+        .await
+        .unwrap()
+    {
+        f.db.batch_execute(include_str!(
+            "../../../../../deploy/compose/migration-candidates/NNN_conversation_confirmation_records.sql"
+        ))
+        .await
+        .unwrap();
+    }
+    f.db.execute("INSERT INTO usage_quota_policies(account_id,metric,limit_units) VALUES($1,'outbound_message',1000)",&[&f.account]).await.unwrap();
+    let (owner_token, owner_csrf) = owner_credentials(&f, &owner).await;
+    let queue_router = queue_router(&f);
     // Additional roles exist only in this fresh owner-signed synthetic manifest.
     // No production key, root grant or shared signer custody is created.
     let browser_key = SigningKey::generate_from_rng(&mut rand::rng());
@@ -291,7 +430,9 @@ async fn loopback_journal_bridge() {
         token,
         phone_session,
         origin_hash,
-        sends: Mutex::new(std::collections::HashMap::new()),
+        queue_router,
+        owner_token,
+        owner_csrf,
     });
     let app = Router::new()
         .route("/fixture", post(command))
