@@ -200,3 +200,32 @@ Before mounting: coordinate both service Pause paths and first-PDU receiver with
 one shared runtime, finish server/frame/verifier adapters and signer enrollment,
 integrate export/retention/guarded deletion/backup/reconciliation, update consent
 policy and verify hardware plus real-device behavior under specific SMS approval.
+
+## Authenticated dormant runtime assembly
+
+`ConversationAuthenticatedRuntime` joins the shared presentation port, journal,
+canonical verifier, authenticated channel clock, fresh phone-decision recovery,
+and lifecycle closure under one serialized worker and admission gate. Proposal
+alone cannot capture; installation completes only after the exact current phone
+decision and active lease. `observeFirstReceipt` records authenticated receipt
+time, and `confirmedSender` shares the same admission and monotonic clock. Its
+receive/submit operations remain worker-only and explicit; no automatic replay
+or actual radio transport is supplied. Session/permission/consent authority is a
+mandatory live callback, not a cached UI permission check.
+
+Lifecycle loss closes eligibility synchronously, then queues durable local and
+verified remote closure. Worker rejection reports disabled admission with failed
+closure. Rejected UI notification delivery cannot discard closure work. A serial
+worker submission is resolved before a concurrent submission can be accepted.
+The presentation port signatures are unchanged; no activity, service or receiver
+mount is added.
+
+`scripts/conversation_simulator.py --assembly` runs one explicitly supported
+synthetic scenario against the actual dormant server handlers, Android Room
+journal and browser SDK. It covers approval/install, authenticated channel/time,
+protected inbound and readable history, unchanged ciphertext after benign
+renewal, exact-confirmed synthetic reply, UNKNOWN sender-instance recreation
+refusal, durable Stop and subsequent withdrawal of history access. Fixture
+sessions/signers and radio callbacks are ephemeral and synthetic. Database-reopen
+send fences remain separate tests; this scenario does not claim process-restart,
+emulator, physical-device, carrier or Play approval evidence.

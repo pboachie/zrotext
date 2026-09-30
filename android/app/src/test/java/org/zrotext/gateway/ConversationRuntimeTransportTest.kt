@@ -45,6 +45,7 @@ class ConversationRuntimeTransportTest {
         override fun approve(review:ConversationPhoneReview,stillCurrent:()->Boolean) {synchronized(admissionGate){duringApproval();check(stillCurrent());approvals++;sample=active()}}
         override fun decline(review:ConversationPhoneReview){declined++;sample=ConversationPresentationSnapshot(1,ConversationPresentationPhase.OFF)}
         override fun disableAdmission(){beforeDisable();synchronized(admissionGate){disabled=true}}
+        override fun stopForLifecycle(reason:ConversationStopReason) = stop(scope.intervalId).copy(stopReason=reason)
         override fun stop(intervalId:String):ConversationPresentationSnapshot {stops++;transport.close(scope);return ConversationPresentationSnapshot(1,ConversationPresentationPhase.DURABLY_CLOSED,scope.intervalId,scope.lineId,1,close=ConversationCloseOutcome.DURABLY_CLOSED)}
     }
     private val runtime = ConversationPresentationRuntime(queue,delivery,domain)
@@ -85,5 +86,30 @@ class ConversationRuntimeTransportTest {
             queue.drain();delivery.drain();assertEquals(0,approvals);assertTrue(disabled)
             assertEquals(ConversationPresentationPhase.DURABLY_CLOSED,observations.last().phase)
         } finally {pool.shutdownNow()}
+    }
+    @Test fun rejectedStopSubmissionPublishesDisabledClosureFailure() {
+        var reject = false
+        val executor = Executor { if (reject) throw java.util.concurrent.RejectedExecutionException() else queue.execute(it) }
+        val tested = ConversationPresentationRuntime(executor,delivery,domain)
+        tested.observe { observations.add(it) }; sample=active(); tested.refresh();queue.drain();delivery.drain()
+        val state=observations.last();reject=true
+        tested.requestStop(scope.intervalId,state.version);delivery.drain()
+        assertTrue(disabled);assertEquals(0,stops)
+        assertEquals(ConversationCloseOutcome.DISABLED_CLOSURE_FAILED,observations.last().close)
+        tested.refresh();delivery.drain() // Unrelated later rejection preserves a valid failed-close snapshot.
+        assertEquals(ConversationCloseOutcome.DISABLED_CLOSURE_FAILED,observations.last().close)
+        assertFalse(observations.last().canStop)
+    }
+    @Test fun rejectedNotificationDoesNotDropLifecycleClosure() {
+        val tested=ConversationPresentationRuntime(queue,Executor {throw java.util.concurrent.RejectedExecutionException()},domain)
+        tested.observe {};sample=active();tested.refresh();queue.drain()
+        tested.lifecycleStop(ConversationStopReason.PHONE_SESSION_LOST);assertTrue(disabled);queue.drain()
+        assertEquals(1,stops)
+    }
+    @Test fun lifecycleClosesSelectedDomainWithoutPublishedIntervalOrUiVersion() {
+        runtime.refresh()
+        runtime.lifecycleStop(ConversationStopReason.PHONE_SESSION_LOST)
+        assertTrue(disabled);queue.drain();delivery.drain()
+        assertEquals(1,stops)
     }
 }

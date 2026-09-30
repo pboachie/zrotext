@@ -79,10 +79,23 @@ internal class ConversationJournalPresentationDomain(
         admission.disableForLifecycle()
         terminal = ConversationPresentationSnapshot(1,ConversationPresentationPhase.OFF)
     }
+    fun authorityUnavailable() {
+        pending?.evidence?.fill(0); pending = null
+        admission.disableForLifecycle()
+        terminal = ConversationPresentationSnapshot(1,ConversationPresentationPhase.FAILURE,
+            scope?.intervalId,scope?.lineId,scope?.bindingGeneration,canStop=scope != null,
+            failure=ConversationPresentationFailure.AUTHORITY_UNAVAILABLE)
+    }
     override fun disableAdmission() = admission.disableForLifecycle()
-    override fun stop(intervalId: String): ConversationPresentationSnapshot {
+    override fun stop(intervalId: String): ConversationPresentationSnapshot = stop(intervalId, ConversationStopReason.USER_STOP)
+    override fun stop(intervalId: String, reason: ConversationStopReason): ConversationPresentationSnapshot {
         val selected = checkNotNull(scope); check(selected.intervalId == intervalId)
         pending?.evidence?.fill(0); pending = null
-        return hooks.stop(selected,ConversationStopReason.USER_STOP).also { terminal = it }
+        return hooks.stop(selected,reason).also { terminal = it }
+    }
+    override fun stopForLifecycle(reason: ConversationStopReason): ConversationPresentationSnapshot {
+        admission.disableForLifecycle()
+        val selected = scope ?: return ConversationPresentationSnapshot(1,ConversationPresentationPhase.OFF,stopReason=reason)
+        return stop(selected.intervalId,reason)
     }
 }

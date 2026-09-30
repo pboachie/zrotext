@@ -21,6 +21,20 @@ import org.json.JSONObject
 
 /** Fresh fixture keys and loopback server only. Implements no shipped transport or credentials. */
 internal class ConversationSimulatorFixture(private val ready: JSONObject) : ConversationActivationVerifier {
+    /** Session comes out-of-band from the isolated fixture server, never decoded from frame claims. */
+    val channelSession: ConversationPhoneSession by lazy {
+        val s=ready.getJSONObject("channelSession")
+        ConversationPhoneSession(UUID.fromString(s.getString("account")),UUID.fromString(s.getString("device")),
+            UUID.fromString(s.getString("session")),s.getLong("connectionEpoch"),s.getLong("deploymentEpoch"),s.getString("originHash"))
+    }
+    fun authenticatedWire() = object:ConversationAuthenticatedWire {
+        override fun currentSession() = channelSession
+        override fun exchange(request:ByteArray):ConversationAuthenticatedWire.Reply {
+            val response=command("channel",data=b64(request))
+            check(response.getBoolean("ok")) { "Synthetic authenticated channel refused" }
+            return ConversationAuthenticatedWire.Reply(channelSession,bytes(response.getString("frame")))
+        }
+    }
     val statement = bytes(ready.getString("statement"))
     val parsed = ConversationActivationCodec.decode(statement)
     private val parameters = AlgorithmParameters.getInstance("EC").apply {

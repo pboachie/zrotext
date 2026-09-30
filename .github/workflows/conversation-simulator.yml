@@ -89,3 +89,5 @@ jobs:
           (cd android && ./gradlew :app:compileDebugUnitTestKotlin --no-daemon --max-workers=2)
       - name: Require synthetic capture, encrypted history, confirmed reply and closure
         run: python3 scripts/conversation_simulator.py
+      - name: Require authenticated dormant runtime assembly
+        run: python3 scripts/conversation_simulator.py --assembly

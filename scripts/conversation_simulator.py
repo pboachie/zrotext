@@ -17,11 +17,17 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--toolchain", help="Optional installed Cargo toolchain override")
     parser.add_argument("--mode", choices=("pause", "logout", "close_failure", "send_close", "send_verify_close"), action="append")
+    parser.add_argument("--assembly", action="store_true", help="Verify authenticated dormant runtime assembly")
+    parser.add_argument("--gradle-init", help="Optional local Gradle test resource configuration")
     args = parser.parse_args()
+    test_class = "ConversationAuthenticatedServerSimulatorTest" if args.assembly else "ConversationServerSimulatorTest"
+    if args.assembly and args.mode not in (None, ["pause"]):
+        parser.error("Authenticated assembly implements only the pause scenario")
+    modes = (["pause"] if args.assembly else (args.mode or ("pause", "logout", "close_failure", "send_close", "send_verify_close")))
     root = Path(__file__).resolve().parents[1]
     cargo = ["cargo"] + (["+" + args.toolchain] if args.toolchain else [])
     gradle = str(root / "android" / "gradlew.bat") if os.name == "nt" else "./gradlew"
-    for mode in args.mode or ("pause", "logout", "close_failure", "send_close", "send_verify_close"):
+    for mode in modes:
         with tempfile.TemporaryDirectory(prefix="conversation-simulator-") as directory:
             env = dict(os.environ, ZT_CONVERSATION_SIM_DIR=directory, ZT_CONVERSATION_SIM_MODE=mode)
             log = Path(directory) / "server.log"
@@ -37,18 +43,21 @@ def main():
                         if server.poll() is not None or time.monotonic() > deadline:
                             raise RuntimeError("Synthetic server startup failed: " + log.read_text()[-4000:])
                         time.sleep(0.1)
-                    android = subprocess.run([gradle, ":app:testDebugUnitTest", "--tests",
-                        "org.zrotext.gateway.ConversationServerSimulatorTest", "--rerun-tasks", "--no-daemon"],
+                    android = subprocess.run([gradle] + (["-I", str(Path(args.gradle_init).resolve())] if args.gradle_init else []) + [":app:testDebugUnitTest", "--tests",
+                        "org.zrotext.gateway." + test_class, "--rerun-tasks", "--no-daemon"],
                         cwd=root / "android", env=env, stdout=subprocess.PIPE,
                         stderr=subprocess.STDOUT, text=True, timeout=210)
                     if android.returncode:
-                        report = root / "android/app/build/test-results/testDebugUnitTest/TEST-org.zrotext.gateway.ConversationServerSimulatorTest.xml"
+                        report = root / ("android/app/build/test-results/testDebugUnitTest/TEST-org.zrotext.gateway." + test_class + ".xml")
                         details = report.read_text(encoding="utf-8")[-8000:] if report.exists() else "No test report"
                         raise RuntimeError("Synthetic Android contract failed:\n" + android.stdout[-3000:] + "\n" + details)
-                    suite = ET.parse(root / "android/app/build/test-results/testDebugUnitTest/TEST-org.zrotext.gateway.ConversationServerSimulatorTest.xml").getroot()
+                    suite = ET.parse(root / ("android/app/build/test-results/testDebugUnitTest/TEST-org.zrotext.gateway." + test_class + ".xml")).getroot()
                     assert suite.get("tests") == "1" and suite.get("failures") == "0" and suite.get("skipped") == "0", "Simulator must actually execute"
                     assert server.wait(timeout=20) == 0, "Synthetic server assertions failed"
-                    print("PASS " + mode + ": journal, encrypted browser history, exact-confirmed reply, durable confirmed send/restart fence, shared phone gate, closure")
+                    if args.assembly:
+                        print("PASS-SIMULATOR authenticated assembly: phone decision/install, authenticated time/channel, protected inbound, readable browser history/renewal, exact-confirmed synthetic reply, UNKNOWN instance-recreation replay fence, durable lifecycle closure")
+                    else:
+                        print("PASS " + mode + ": journal, encrypted browser history, exact-confirmed reply, durable confirmed send/restart fence, shared phone gate, closure")
                 finally:
                     if server.poll() is None:
                         try:

@@ -18,6 +18,8 @@ struct Simulator {
     statement: Statement,
     done: Arc<Notify>,
     token: String,
+    phone_session: Uuid,
+    origin_hash: [u8; 32],
     sends: Mutex<std::collections::HashMap<Uuid, super::super::send::Confirmation>>,
 }
 #[derive(Deserialize)]
@@ -49,6 +51,12 @@ async fn command(
     let session = f.session();
     let s = &state.statement;
     let result:Result<Value,ConversationError>=match c.op.as_str() {
+        "channel"=>match c.data.and_then(|v|STANDARD.decode(v).ok()) {
+            Some(bytes)=>super::super::channel::handle(&mut client,&super::super::channel::AuthenticatedChannelSession {
+                device:session,phone_session:state.phone_session,origin_hash:state.origin_hash,
+            },&bytes).await.map(|reply|json!({"ok":true,"frame":STANDARD.encode(reply)})),
+            None=>Err(ConversationError::Invalid),
+        },
         "approve"|"installed"=>{
             let data=c.data.and_then(|v|STANDARD.decode(v).ok());
             let signature=c.signature.and_then(|v|STANDARD.decode(v).ok());
@@ -208,8 +216,10 @@ async fn loopback_journal_bridge() {
         .unwrap();
     let port = listener.local_addr().unwrap().port();
     let token = STANDARD.encode(rand::random::<[u8; 32]>());
+    let phone_session = Uuid::new_v4();
+    let origin_hash = [0x77; 32];
     // All private key material here is newly generated synthetic fixture material, never owner credentials.
-    let ready = json!({"port":port,"token":token,"trustGeneration":statement.trust_generation,"statement":STANDARD.encode(statement.encode().unwrap()),
+    let ready = json!({"port":port,"token":token,"channelSession":{"account":f.account,"device":f.device,"session":phone_session,"connectionEpoch":1,"deploymentEpoch":1,"originHash":"77".repeat(32)},"trustGeneration":statement.trust_generation,"statement":STANDARD.encode(statement.encode().unwrap()),
         "pin":STANDARD.encode(&f.pin),"manifest":STANDARD.encode(&f.bytes),"predecessor":STANDARD.encode(predecessor),
         "eventScalar":STANDARD.encode(f.event_signer.to_bytes()),"archiveScalar":STANDARD.encode(f.archive_key.to_bytes()),
         "signerPoint":STANDARD.encode(f.event_signer.verifying_key().to_sec1_point(false).as_bytes()),
@@ -227,6 +237,8 @@ async fn loopback_journal_bridge() {
         statement,
         done: done.clone(),
         token,
+        phone_session,
+        origin_hash,
         sends: Mutex::new(std::collections::HashMap::new()),
     });
     let app = Router::new()
