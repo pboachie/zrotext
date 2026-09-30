@@ -41,3 +41,23 @@ Sealed dashboard rules: fetch metadata and ciphertext; decrypt locally; render m
 - [Two-location concept](assets/two-location-concept.png): sample routing and database-authority view.
 
 These are design references with sample data, not Android hardware captures. When adding screenshots, remove personal numbers, email addresses, device identifiers, and tokens.
+
+## Dormant conversation presentation
+
+`FutureConversationPane` is an unmounted presentation component for the future
+conversation port. Opening it does not start capture, approve a request, or start
+a service. Approval requires a known label for the exact line generation and
+binds the request identity and observed version. Decline and Back close the
+review without granting approval. Choices remain vertically stacked and
+scrollable at large text sizes.
+
+Pending and recovery states do not claim confirmed activity. Observations expire
+against monotonic receipt time, including delayed UI delivery; actions check
+that budget again. Duplicate or older observations cannot renew it. Lifecycle
+stops detach observation and clear displayed authority. A restart requires a new
+interval and fresh phone approval from the domain.
+
+Stop remains a request until durable closure is observed. A failed durable close
+is described as capture disabled locally with closure unconfirmed. Retained
+encrypted content is deleted separately, and submitted messages cannot be
+recalled. This component does not enable production conversation transfer.
