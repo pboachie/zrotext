@@ -1467,8 +1467,21 @@ fn a_reacquired_executor_reloads_from_the_database_instead_of_replaying_stale_in
     // promotion intent is saved durably, then A's connection dies before the
     // promote can run (the takeover window: intent durable, not applied).
     let retry_interval = Duration::from_millis(150);
-    let (authority_a, role_a) =
+    let (mut authority_a, role_a) =
         PgWriterAuthority::new_for_executor(url(&app_a), retry_interval).unwrap();
+    // The eager initial connect can fail once under runner overhead; the guard
+    // then parks Dormant behind the retry floor while the scripted ticks run
+    // in microseconds of wall time. Drive the acquisition with cheap read-only
+    // operations until it holds, so the first scripted tick starts Active.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while role_a.load() != ExecutorRole::Active {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "executor A never acquired the lock"
+        );
+        let _ = authority_a.load_state(&writer_site, &standby_site);
+        std::thread::sleep(Duration::from_millis(60));
+    }
     let mut executor_a = FailoverExecutor::new(
         config.clone(),
         queued_source(vec![
@@ -1512,8 +1525,19 @@ fn a_reacquired_executor_reloads_from_the_database_instead_of_replaying_stale_in
 
     // Executor B takes over and completes the promotion from the durable
     // intent; the operator reconciles through B and re-enables dispatch.
-    let (authority_b, role_b) =
+    let (mut authority_b, role_b) =
         PgWriterAuthority::new_for_executor(url(&app_b), retry_interval).unwrap();
+    // Same acquisition drive for B: its eager connect ran while A still held
+    // the lock, so it starts Dormant and needs the retry floor to elapse.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while role_b.load() != ExecutorRole::Active {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "executor B never acquired the lock after A's death"
+        );
+        let _ = authority_b.load_state(&writer_site, &standby_site);
+        std::thread::sleep(Duration::from_millis(60));
+    }
     let mut executor_b = FailoverExecutor::new(
         config.clone(),
         queued_source(vec![evidence_round(members, 6_000)]),
@@ -1558,6 +1582,17 @@ fn a_reacquired_executor_reloads_from_the_database_instead_of_replaying_stale_in
     terminate(&app_b);
     let _ = executor_a.tick(7_000);
     let _ = executor_a.tick(8_000);
+    // The scripted source is exhausted; empty rounds decide Hold, so extra
+    // ticks safely drive the lock retry until A actually re-acquires.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while role_a.load() != ExecutorRole::Active {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "executor A never re-acquired the lock after B's death"
+        );
+        let _ = executor_a.tick(9_000);
+        std::thread::sleep(Duration::from_millis(60));
+    }
 
     let (epoch, dispatch) = authority_row();
     assert_eq!(
