@@ -254,7 +254,7 @@ pub async fn prune(
                 .await?;
             let ids: Vec<Uuid> = rows.iter().map(|row| row.get(0)).collect();
             let deleted = if ids.is_empty() {
-                T::default()
+                0
             } else {
                 tx.execute(
                     "DELETE FROM webhook_attempts WHERE delivery_id=ANY($1)",
