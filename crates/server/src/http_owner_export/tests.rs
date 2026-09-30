@@ -108,17 +108,20 @@ const EXPORT_SCHEMA: [(&str, &str); 66] = export_schema!(
 fn export_schema_includes_every_checked_in_migration() {
     let directory =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/compose/migrations");
-    let count = std::fs::read_dir(directory)
+    let mut names = std::fs::read_dir(directory)
         .unwrap()
         .map(|entry| entry.unwrap().path())
         .filter(|path| path.extension().is_some_and(|ext| ext == "sql"))
-        .count();
+        .map(|path| path.file_name().unwrap().to_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    names.sort();
+    let embedded = EXPORT_SCHEMA
+        .iter()
+        .filter(|(name, _)| !name.starts_with("../migration-candidates/"))
+        .map(|(name, _)| name.to_string())
+        .collect::<Vec<_>>();
     assert_eq!(
-        count,
-        EXPORT_SCHEMA
-            .iter()
-            .filter(|(name, _)| !name.starts_with("../migration-candidates/"))
-            .count(),
+        names, embedded,
         "add the new migration to EXPORT_SCHEMA so the export test covers it"
     );
 }
