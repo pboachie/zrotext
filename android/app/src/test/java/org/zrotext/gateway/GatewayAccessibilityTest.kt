@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 package org.zrotext.gateway
 
+import android.content.Intent
 import android.Manifest
+import android.view.accessibility.AccessibilityManager
 import android.os.Looper
 import android.telephony.SubscriptionManager
 import androidx.compose.ui.ExperimentalComposeUiApi
@@ -27,14 +29,16 @@ import java.time.Duration
 @OptIn(ExperimentalComposeUiApi::class)
 open class GatewayAccessibilityTest : GatewayAccessibilityChecks() {
     protected open val testFontScale = 2f
-    override fun onScreen(check: (RootForTest) -> Unit) {
+    override fun onScreen(page: String, check: (RootForTest) -> Unit) {
         RuntimeEnvironment.setFontScale(testFontScale)
         val app = RuntimeEnvironment.getApplication()
+        shadowOf(app.getSystemService(AccessibilityManager::class.java)).setEnabled(true)
         shadowOf(app).grantPermissions(Manifest.permission.READ_PHONE_STATE)
         shadowOf(app.getSystemService(SubscriptionManager::class.java)).setActiveSubscriptionInfos(
             SubscriptionInfoBuilder.newBuilder().setId(1).setSimSlotIndex(0)
                 .setDisplayName("Test SIM").buildSubscriptionInfo())
-        val controller = Robolectric.buildActivity(MainActivity::class.java).setup().visible()
+        val controller = Robolectric.buildActivity(MainActivity::class.java, Intent(app, MainActivity::class.java)
+            .putExtra("gateway_screen", page)).setup().visible()
         try {
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(300))
             val root = requireNotNull(findRoot(controller.get().window.decorView))
@@ -49,7 +53,7 @@ open class GatewayAccessibilityTest : GatewayAccessibilityChecks() {
         }
     }
 
-    @Test fun choosingASimUpdatesItsSelectedStateAndDescription() = onScreen { root ->
+    @Test fun choosingASimUpdatesItsSelectedStateAndDescription() = onScreen(GatewayPage.SETUP.name) { root ->
         fun choice() = nodes(root).single { text(it) == "SIM 1: Test SIM" }
         assertFalse(choice().config[SemanticsProperties.Selected])
         assertEquals("Not selected", choice().config[SemanticsProperties.StateDescription])
