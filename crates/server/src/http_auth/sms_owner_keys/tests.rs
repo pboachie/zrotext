@@ -18,7 +18,7 @@ macro_rules! migration {
 
 // The ceremony runs on the complete schema. SQL is embedded at build time so
 // the test never executes files discovered at runtime.
-const TEST_MIGRATIONS: [(&str, &str); 59] = [
+const TEST_MIGRATIONS: [(&str, &str); 60] = [
     ("001_foundation.sql", migration!("001_foundation.sql")),
     ("002_auth.sql", migration!("002_auth.sql")),
     ("003_delivery.sql", migration!("003_delivery.sql")),
@@ -239,7 +239,11 @@ const TEST_MIGRATIONS: [(&str, &str); 59] = [
     (
         "059_erasure_fk_indexes.sql",
         migration!("059_erasure_fk_indexes.sql"),
+    ),    (
+        "060_optout_review_indexes.sql",
+        migration!("060_optout_review_indexes.sql"),
     ),
+
 ];
 
 #[test]
@@ -416,6 +420,17 @@ async fn postgres_owner_key_ceremony_requires_possession_mfa_and_revokes_only_sm
         }
         if name == "059_erasure_fk_indexes.sql" {
             db.batch_execute("CREATE INDEX erasure_fk_webhook_deliveries_event ON webhook_deliveries(account_id,event_id); CREATE INDEX erasure_fk_suppressions_attempt ON recipient_suppressions(source_attempt_id); CREATE INDEX erasure_fk_suppressions_event ON recipient_suppressions(account_id,source_event_id); CREATE INDEX erasure_fk_holds_release_event ON owner_recipient_holds(account_id,release_event_id) WHERE release_event_id IS NOT NULL; CREATE INDEX erasure_fk_opt_out_audit_release_event ON owner_opt_out_audit(account_id,release_event_id) WHERE release_event_id IS NOT NULL")
+                .await
+                .unwrap();
+        }
+        if name == "060_optout_review_indexes.sql" {
+            db.batch_execute("CREATE INDEX CONCURRENTLY recipient_suppressions_review_queue ON recipient_suppressions(account_id,changed_at DESC,recipient_e164 DESC) WHERE active AND source IN ('sms_review','sms_unsolicited_review')")
+                .await
+                .unwrap();
+            db.batch_execute("CREATE INDEX CONCURRENTLY recipient_suppressions_review_event ON recipient_suppressions(account_id,COALESCE(source_event_id,source_unsolicited_event_id)) WHERE source IN ('sms_review','sms_unsolicited_review')")
+                .await
+                .unwrap();
+            db.batch_execute("DROP INDEX IF EXISTS recipient_suppressions_active")
                 .await
                 .unwrap();
         }

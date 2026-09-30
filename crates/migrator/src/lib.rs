@@ -9,6 +9,7 @@ use tokio_postgres::Client;
 mod abuse_counters_index_drop;
 mod admission_pending_index;
 mod erasure_fk_indexes;
+mod optout_review_indexes;
 mod owner_queue_index;
 mod radio_evidence_index;
 mod recent_attempt_index;
@@ -16,6 +17,7 @@ use abuse_counters_index_drop::*;
 use admission_pending_index::*;
 mod webhook_history_index;
 use erasure_fk_indexes::*;
+use optout_review_indexes::*;
 use owner_queue_index::*;
 use radio_evidence_index::*;
 use recent_attempt_index::*;
@@ -132,6 +134,8 @@ pub enum MigrationError {
     WebhookHistoryIndexBuildInProgress,
     #[error("auth_abuse_counters_stale index is still present")]
     AbuseCountersStaleIndexPresent,
+    #[error("opt-out review indexes are absent, invalid, or the redundant active index remains")]
+    OptoutReviewIndexesUnavailable,
     #[error("message_attempts_device_created has an unexpected definition; refusing to replace it")]
     RecentAttemptIndexConflict,
     #[error("message_attempts_device_created is still being built; refusing to interrupt it")]
@@ -322,6 +326,9 @@ async fn apply_locked(
     if ledger.contains_key(&ERASURE_FK_INDEX_MIGRATION) {
         verify_erasure_fk_indexes(client).await?;
     }
+    if ledger.contains_key(&OPTOUT_REVIEW_INDEXES_MIGRATION) {
+        verify_optout_review_indexes(client).await?;
+    }
 
     for migration in migrations {
         if ledger.contains_key(&migration.version) {
@@ -406,6 +413,17 @@ async fn apply_locked(
             // transaction. The advisory lock still serializes migrator jobs.
             prepare_erasure_fk_indexes(client).await?;
         }
+        if migration.version == OPTOUT_REVIEW_INDEXES_MIGRATION {
+            if migration.filename != OPTOUT_REVIEW_INDEXES_FILE {
+                return Err(MigrationError::InvalidDirectory(format!(
+                    "migration {OPTOUT_REVIEW_INDEXES_MIGRATION:03} must be {OPTOUT_REVIEW_INDEXES_FILE}"
+                )));
+            }
+            // CREATE/DROP INDEX CONCURRENTLY cannot run in the numbered
+            // migration's transaction. The advisory lock still serializes
+            // migrator jobs, and the creates are idempotent per index.
+            prepare_optout_review_indexes(client).await?;
+        }
         let tx = client.transaction().await?;
         if let Err(error) = tx.batch_execute(&migration.sql).await {
             // Dropping the transaction closes it without committing the failed file.
@@ -468,9 +486,9 @@ async fn apply_locked(
     }
     if migrations
         .iter()
-        .any(|migration| migration.version == ERASURE_FK_INDEX_MIGRATION)
+        .any(|migration| migration.version == OPTOUT_REVIEW_INDEXES_MIGRATION)
     {
-        verify_erasure_fk_indexes(client).await?;
+        verify_optout_review_indexes(client).await?;
     }
     Ok(applied)
 }
@@ -840,6 +858,8 @@ mod abuse_counters_index_drop_tests;
 mod admission_pending_index_tests;
 #[cfg(test)]
 mod erasure_fk_index_tests;
+#[cfg(test)]
+mod optout_review_indexes_tests;
 #[cfg(test)]
 mod online_index_tests;
 #[cfg(test)]
