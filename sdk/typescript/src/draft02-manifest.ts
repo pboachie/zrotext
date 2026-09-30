@@ -324,6 +324,14 @@ export function verifiedManifestIdentity02(manifest: Manifest02, nowMs: bigint):
  timeWindow(bound.issuedMs,bound.expiresMs,nowMs);
  return {accountId:Uint8Array.from(bound.accountId),generation:bound.generation,version:bound.version,digest:Uint8Array.from(bound.digest),rootPoint:Uint8Array.from(bound.rootPoint)};
 }
+
+/** Owned high-water from the actual verification, preserving the root transition anchor. */
+export function verifiedManifestTrust02(manifest: Manifest02, nowMs: bigint): ManifestTrust02 {
+  verifiedManifestIdentity02(manifest, nowMs);
+  const snapshot = verifiedSnapshots.get(manifest);
+  if (!snapshot) fail("trust requires a just-verified manifest");
+  return copyTrust(snapshot.after);
+}
 /** Reuse profile key-ID derivation for explicit role-5 enrollment. No storage/root creation. */
 export async function browserSignerKeyId02(point: Uint8Array): Promise<Uint8Array> {
  const owned=Uint8Array.from(point);

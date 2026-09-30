@@ -112,6 +112,22 @@ commit acknowledgement; timeout, session change, wrong peer or uncertain respons
 cannot claim Closed. The existing socket still has no production implementation
 of these new messages: these are tested dormant adapters, not a deployed protocol.
 
+`ConversationChannelCodec` now encodes the proposed frames as `ZTCW`, version 1,
+and kind 1=time request, 2=time reply, 3=closure request, 4=closure reply. Network
+order header: account/device/phone-session UUIDs, connection/deployment i64 epochs,
+32-byte origin hash, and challenge UUID. Header size is 118 bytes; time reply adds
+positive i64 UTC. Closure adds account/device/line/interval/receipt/owner-session
+UUIDs, line/root/manifest i64 generations/version, four 32-byte disclosure/reader/
+manifest/activation-transcript digests, and one-byte-length ASCII canonical peer.
+Reply adds exactly one durability byte (0 or 1). Requests are 370–383 bytes and
+replies 371–384 bytes. No trailing bytes, unknown kinds, zero UUIDs, oversized or
+truncated frames are accepted. Embedded account/device must match channel identity.
+`ConversationSerializedChannel` requires the existing authenticated socket owner
+to supply response identity out of band and rechecks current identity after waits.
+The codec is not a signature or transport-integrity mechanism: socket authentication
+and integrity remain mandatory. Matching nonce/scope and committed-state truth are
+verified by the authority adapter/server, not inferred from successful decoding.
+
 ## Owner-root enrollment integration boundary
 
 The session-lifetime browser signer exposes only its public point and role-5 key
@@ -128,6 +144,19 @@ fixture root signing demonstrates the boundary without provisioning user custody
 An actual custodian UI/sign/publish adapter remains an integration gate. It must
 not accept a transport-success response as verified manifest enrollment, overwrite
 the pinned root on recovery, or automatically replay a failed owner confirmation.
+
+`createConversationEnrollment02` implements a single-use dormant custodian adapter:
+verify current phone/archive reader authority before approval or signing, preserve
+all existing manifest records, add one exact-line role-5 key with a maximum
+30-minute lifetime, sign through an existing custodian callback, independently
+verify that root signature and exact successor chain, and require an atomic
+predecessor/session/consent installation callback. Every callback receives owned
+copies; the verified high-water preserves its actual transition anchor. Account,
+session, reader, root or predecessor change, expiry, refusal and uncertain install
+consume the attempt without replay. The returned manifest alone never activates
+the conversation signer; its current-authority source must independently read the
+installed verified successor. Fixture custodian/CAS demonstrates this path; no
+user root, persistent credential storage or actual publication adapter is created.
 
 Before mounting: coordinate both service Pause paths and first-PDU receiver with
 one shared runtime, finish server/frame/verifier adapters and signer enrollment,

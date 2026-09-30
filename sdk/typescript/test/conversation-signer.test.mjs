@@ -3,6 +3,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { webcrypto } from "node:crypto";
 import {prepareConversationSignerSetup02} from "../dist/conversation-signer.js";
+import {createConversationEnrollment02} from "../dist/conversation-enrollment.js";
 import {canonicalSignature02,verifyManifest02,advanceManifestTrust02,browserSignerKeyId02,verifiedManifestIdentity02} from "../dist/draft02-manifest.js";
 import {openConfirmedFixture,encodeFixtureConfirmation} from "./conversation-simulator-send.mjs";
 globalThis.crypto ??= webcrypto;
@@ -124,3 +125,35 @@ test("new signer review decrypts as exact confirmed content at distinct phone fi
  const packet={message:uuid(review.messageId),envelope:b64(review.envelope),confirmation:b64(review.proof),signature:b64(signature)};
  assert.equal(await openConfirmedFixture({ready,scope,current:ready.manifest,packet}),c.text);
 });
+
+async function enrollmentCandidate(changeBinding=b=>b){
+ const f=await fixture(),binding=changeBinding(bindingFor(f));let trust=pin(f.root),authority=await verifyManifest02(await manifest(f),trust,now);
+ trust=advanceManifestTrust02(trust,authority);const before=authority;const browser=await key();
+ let alive=true,consent=true,selection=binding,time=now,decisions=0,signs=0,installs=0;
+ let decide=async()=>{},custodian=async r=>sign(f.root,"ZTSE/manifest/v2",r.unsigned),beforeInstall=async()=>{};
+ const read=async()=>({binding:selection,manifest:authority,nowMs:time,ownerSessionLive:alive,consentLive:consent});
+ const adapter=createConversationEnrollment02(binding,browser.point,read,async r=>{decisions++;await decide(r);},async r=>{signs++;return custodian(r);},async(expected,accepted,highWater,selected)=>{
+  await beforeInstall();assert.deepEqual(selected,binding);
+  if(!alive||!consent||selection!==binding||!Buffer.from(authority.digest).equals(Buffer.from(expected)))throw Error("Fixture CAS authority lost");
+  authority=accepted;trust=highWater;installs++;
+ });
+ return {f,binding,browser,adapter,before,read,stats:()=>({decisions,signs,installs}),setAlive:v=>alive=v,setConsent:v=>consent=v,setSelection:v=>selection=v,setTime:v=>time=v,setDecision:v=>decide=v,setSigner:v=>custodian=v,setInstall:v=>beforeInstall=v,
+ rotateRoot:async()=>{f.root=await key();const rootId=await id(6,f.root.point);f.records=f.records.map(r=>r.role===6?{...r,key:f.root,keyId:rootId}:r);trust={...pin(f.root),generation:2n};authority=await verifyManifest02(await manifest(f,{generation:2n}),trust,now);},
+ renew:async()=>{authority=await verifyManifest02(await manifest(f,{version:authority.version+1n,previous:authority.digest}),trust,now);trust=advanceManifestTrust02(trust,authority);}};
+}
+test("existing root enrollment adds only bounded exact line signer and verifies install",async()=>{
+ const c=await enrollmentCandidate(),accepted=await c.adapter.enroll();assert.equal(accepted.version,2n);assert.deepEqual(accepted.previousDigest,c.before.digest);
+ const keyId=await browserSignerKeyId02(c.browser.point),record=accepted.keys.find(k=>Buffer.from(k.keyId).equals(Buffer.from(keyId)));
+ assert.equal(record.role,5);assert.equal(record.scope,1);assert.deepEqual(record.lineId,c.binding.line);assert.equal(record.untilMs,now+1800000n);
+ for(const original of c.before.keys)assert.deepEqual(accepted.keys.find(k=>Buffer.from(k.keyId).equals(Buffer.from(original.keyId))),original);
+ assert.deepEqual(c.stats(),{decisions:1,signs:1,installs:1});await assert.rejects(c.adapter.enroll(),/consumed/);
+});
+test("root enrollment refusal consumes action without signing",async()=>{const c=await enrollmentCandidate();c.setDecision(async()=>{throw Error("declined");});await assert.rejects(c.adapter.enroll());assert.deepEqual(c.stats(),{decisions:1,signs:0,installs:0});await assert.rejects(c.adapter.enroll(),/consumed/);});
+test("root enrollment tampered successor signature never installs",async()=>{const c=await enrollmentCandidate();c.setSigner(async r=>{const signature=await sign(c.f.root,"ZTSE/manifest/v2",r.unsigned);signature[2]^=1;return signature;});await assert.rejects(c.adapter.enroll());assert.equal(c.stats().installs,0);});
+test("root enrollment wrong signing root never installs",async()=>{const c=await enrollmentCandidate(),wrong=await key();c.setSigner(r=>sign(wrong,"ZTSE/manifest/v2",r.unsigned));await assert.rejects(c.adapter.enroll(),/verification/);assert.equal(c.stats().installs,0);});
+for(const [name,change] of [["logout",c=>c.setAlive(false)],["consent withdrawal",c=>c.setConsent(false)],["account switch",c=>c.setSelection({...c.binding,account:device})],["session switch",c=>c.setSelection({...c.binding,session:device})],["reader switch",c=>c.setSelection({...c.binding,archiveReader:new Uint8Array(32).fill(8)})],["expiry",c=>c.setTime(now+1800000n)],["manifest renewal",c=>c.renew()]])test("root enrollment rejects "+name+" during owner decision",async()=>{const c=await enrollmentCandidate();c.setDecision(async()=>{await change(c);});await assert.rejects(c.adapter.enroll());assert.equal(c.stats().signs,0);assert.equal(c.stats().installs,0);});
+test("root enrollment revocation during signature withholds installation",async()=>{const c=await enrollmentCandidate();c.setSigner(async r=>{const signature=await sign(c.f.root,"ZTSE/manifest/v2",r.unsigned);c.setConsent(false);return signature;});await assert.rejects(c.adapter.enroll());assert.equal(c.stats().installs,0);});
+test("root enrollment final install CAS rejects late logout",async()=>{const c=await enrollmentCandidate();c.setInstall(async()=>{c.setAlive(false);});await assert.rejects(c.adapter.enroll(),/CAS/);assert.equal(c.stats().installs,0);});
+for(const [name,change] of [["foreign device",b=>({...b,device:line})],["foreign line",b=>({...b,line:device})],["wrong phone reader",b=>({...b,phoneReader:new Uint8Array(32).fill(8)})],["wrong archive reader",b=>({...b,archiveReader:new Uint8Array(32).fill(8)})]])test("root enrollment preflight rejects "+name+" before root approval",async()=>{const c=await enrollmentCandidate(change);await assert.rejects(c.adapter.enroll(),/reader authority/);assert.deepEqual(c.stats(),{decisions:0,signs:0,installs:0});});
+test("root enrollment callback mutation cannot alter owned signed successor",async()=>{const c=await enrollmentCandidate();c.setDecision(async r=>{r.unsigned.fill(0);r.binding.line.fill(0);r.publicPoint.fill(0);});const accepted=await c.adapter.enroll();assert.equal(accepted.version,2n);assert.deepEqual(accepted.accountId,account);});
+test("root enrollment valid root rotation cannot reuse old review",async()=>{const c=await enrollmentCandidate();c.setDecision(()=>c.rotateRoot());await assert.rejects(c.adapter.enroll(),/predecessor changed/);assert.equal(c.stats().signs,0);});
