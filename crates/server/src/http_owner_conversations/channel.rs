@@ -42,7 +42,7 @@ fn request(
     s: &AuthenticatedChannelSession<'_>,
     bytes: &[u8],
 ) -> Result<(u8, Uuid), ConversationError> {
-    if !(118..=383).contains(&bytes.len()) || !matches!(bytes[5], 1 | 3) {
+    if !(118..=1144).contains(&bytes.len()) || !matches!(bytes[5], 1 | 3 | 5) {
         return Err(ConversationError::Invalid);
     }
     let kind = bytes[5];
@@ -50,7 +50,12 @@ fn request(
     if header(s, kind, nonce)? != bytes[..118] {
         return Err(ConversationError::Forbidden);
     }
-    if kind == 1 && bytes.len() != 118 || kind == 3 && !(370..=383).contains(&bytes.len()) {
+    if kind == 1 && bytes.len() != 118
+        || kind == 3 && !(370..=383).contains(&bytes.len())
+        || kind == 5
+            && (bytes.len() < 500
+                || usize::from(u16::from_be_bytes([bytes[118], bytes[119]])) != bytes.len() - 120)
+    {
         return Err(ConversationError::Invalid);
     }
     Ok((kind, nonce))
@@ -101,6 +106,47 @@ async fn live(tx: &Transaction<'_>, s: InboundSession<'_>) -> Result<(), Convers
         &[&s.account_id,&s.device_id,&s.site_id,&s.instance_id,&s.connection_epoch,&s.deployment_epoch]).await?.ok_or(ConversationError::Forbidden)?;
     Ok(())
 }
+/// Recover only the acknowledgement of an already durable closure. Cleared
+/// statements are reconstructed from the phone's canonical original, bound to
+/// the immutable approval digest and independently checked retained scope.
+async fn closed_scope(
+    tx: &Transaction<'_>,
+    s: InboundSession<'_>,
+    original: &[u8],
+) -> Result<Vec<u8>, ConversationError> {
+    let statement = activation::Statement::decode(original)?;
+    if statement.account != s.account_id || statement.device != s.device_id {
+        return Err(ConversationError::Forbidden);
+    }
+    let row = tx.query_opt(
+        "SELECT statement_digest,device_id,line_id,binding_generation,receipt_id,initiating_session_id, \
+         trust_generation,activation_version,activation_digest,expires_at_ms,phase,closed_at IS NOT NULL,statement \
+         FROM conversation_intervals WHERE account_id=$1 AND id=$2 FOR UPDATE",
+        &[&s.account_id, &statement.interval],
+    ).await?.ok_or(ConversationError::Forbidden)?;
+    if row.get::<_, Vec<u8>>(0) != statement.digest()?
+        || row.get::<_, Uuid>(1) != statement.device
+        || row.get::<_, Uuid>(2) != statement.line
+        || row.get::<_, i64>(3) != statement.generation
+        || row.get::<_, Uuid>(4) != statement.receipt
+        || row.get::<_, Uuid>(5) != statement.originating_session
+        || row.get::<_, i64>(6) != statement.trust_generation
+        || row.get::<_, i64>(7) != statement.activation_version
+        || row.get::<_, Vec<u8>>(8) != statement.activation_digest
+        || row.get::<_, i64>(9) != statement.expires_ms
+        || !matches!(
+            row.get::<_, String>(10).as_str(),
+            "history" | "expired" | "withdrawn"
+        )
+        || !row.get::<_, bool>(11)
+        || row
+            .get::<_, Option<Vec<u8>>>(12)
+            .is_some_and(|saved| saved != original)
+    {
+        return Err(ConversationError::Forbidden);
+    }
+    scope(&statement)
+}
 /// Returns bytes only AFTER durable commit. Socket write alone never means interval closure.
 /// Stop preserves retained history; it is not withdrawal/deletion, nor owner read authority.
 pub async fn handle(
@@ -122,6 +168,11 @@ pub async fn handle(
     let mut reply = header(authenticated, if kind == 1 { 2 } else { 4 }, challenge)?;
     if kind == 1 {
         reply.extend_from_slice(&activation::now(&tx).await?.to_be_bytes());
+    } else if kind == 5 {
+        // A fresh authenticated request may recover a lost ACK after pending
+        // closure cleared the statement. It never transitions any interval.
+        reply.extend_from_slice(&closed_scope(&tx, authenticated.device, &bytes[120..]).await?);
+        reply.push(1);
     } else {
         let interval =
             Uuid::from_slice(&bytes[166..182]).map_err(|_| ConversationError::Invalid)?;
