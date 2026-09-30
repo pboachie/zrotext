@@ -408,3 +408,30 @@ independent review establish the stated behavior.
 No ordinary entry point or deployment flag is mounted here. Existing-root custody
 configuration, exact selected-line observation, policy/disclosure approval,
 release signing and reviewer access remain separate runtime/release gates.
+
+
+The SDK now supplies explicit finite session custody composition and a bounded
+profile-02 inbound reader. Custody joins the existing setup signer, exact owner-root
+enrollment and verified successor re-read, then supplies the owner transport's local
+prepare/sign/open methods. An existing nonextractable owner-root CryptoKey can be
+adapted without generating or persisting credentials. Root approval, predecessor
+CAS and independently sampled authority remain mandatory. A supplied AbortSignal,
+session expiry, logout, revoked reader/signer or failed authority permanently close
+custody. No returned transport success alone activates the signer.
+
+Historical opening verifies the original signer and wraps at authenticated receipt
+time, then current reader authority before and after plaintext opening. Reload can
+restore accepted history by verifying a complete signed same-root successor chain
+to the existing trust store's exact persisted high-water, without moving it backward.
+Incomplete, forked, oversized or root-transition chains are refused. The authenticated
+manifest-history source remains an integration dependency; it supplies public signed
+bytes, never replacement reader keys or a new trust pin.
+
+The page's owner configuration path requires an affirmative session-custody checkbox
+and setup click before importing the packaged SDK or accessing custody. It assembles
+the real owner transport, closes custody on pagehide/visibility/logout/expiry and
+renders queued acceptance separately from delivery. The source-only packaging script
+copies the existing built SDK and locked HPKE ESM graph to an explicitly selected
+asset directory. Serving that directory on the disabled conversation router and
+supplying existing-user custodian/authority/endpoint configuration are separate
+assembly responsibilities; this change creates no default production mount.

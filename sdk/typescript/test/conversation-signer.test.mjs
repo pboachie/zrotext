@@ -4,9 +4,14 @@ import assert from "node:assert/strict";
 import { webcrypto } from "node:crypto";
 import {prepareConversationSignerSetup02} from "../dist/conversation-signer.js";
 import {createConversationEnrollment02} from "../dist/conversation-enrollment.js";
+import {prepareConversationCustody02,existingConversationRootCustodian02} from "../dist/conversation-custody.js";
+import {prepareInboundEnvelope02} from "../dist/draft02-envelope-prep.js";
+import {Draft02TrustStore} from "../dist/draft02-trust-store.js";
+import {indexedDB} from "fake-indexeddb";
 import {canonicalSignature02,verifyManifest02,advanceManifestTrust02,browserSignerKeyId02,verifiedManifestIdentity02} from "../dist/draft02-manifest.js";
 import {openConfirmedFixture,encodeFixtureConfirmation} from "./conversation-simulator-send.mjs";
 globalThis.crypto ??= webcrypto;
+globalThis.indexedDB ??= indexedDB;
 const encoder = new TextEncoder();
 const now = BigInt(Date.now());
 const order = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n;
@@ -157,3 +162,38 @@ test("root enrollment final install CAS rejects late logout",async()=>{const c=a
 for(const [name,change] of [["foreign device",b=>({...b,device:line})],["foreign line",b=>({...b,line:device})],["wrong phone reader",b=>({...b,phoneReader:new Uint8Array(32).fill(8)})],["wrong archive reader",b=>({...b,archiveReader:new Uint8Array(32).fill(8)})]])test("root enrollment preflight rejects "+name+" before root approval",async()=>{const c=await enrollmentCandidate(change);await assert.rejects(c.adapter.enroll(),/reader authority/);assert.deepEqual(c.stats(),{decisions:0,signs:0,installs:0});});
 test("root enrollment callback mutation cannot alter owned signed successor",async()=>{const c=await enrollmentCandidate();c.setDecision(async r=>{r.unsigned.fill(0);r.binding.line.fill(0);r.publicPoint.fill(0);});const accepted=await c.adapter.enroll();assert.equal(accepted.version,2n);assert.deepEqual(accepted.accountId,account);});
 test("root enrollment valid root rotation cannot reuse old review",async()=>{const c=await enrollmentCandidate();c.setDecision(()=>c.rotateRoot());await assert.rejects(c.adapter.enroll(),/predecessor changed/);assert.equal(c.stats().signs,0);});
+
+async function custodyCandidate(options={}) {
+ const f=await fixture(),inbound=await key();
+ f.records.push({role:4,key:inbound,keyId:await id(4,inbound.point),device,line,scope:2,state:1});
+ const binding=bindingFor(f),store=await Draft02TrustStore.open("synthetic-custody-"+crypto.randomUUID()),rootPin=await rootPinBytes(f.root);
+ await store.enroll(rootPin.bytes,rootPin.fingerprint,now);
+ let authority=await store.acceptManifest(await manifest(f),now),alive=true,consent=true,time=now,confirmations=0,decisions=0;
+ const genesis=authority;
+ const archiveJwk=await crypto.subtle.exportKey("jwk",f.archive.privateKey);archiveJwk.key_ops=["deriveBits"];
+ const archive=await crypto.subtle.importKey("jwk",archiveJwk,{name:"ECDH",namedCurve:"P-256"},false,["deriveBits"]);
+ const root=await crypto.subtle.importKey("jwk",await crypto.subtle.exportKey("jwk",f.root.privateKey),{name:"ECDSA",namedCurve:"P-256"},false,["sign"]);
+ const read=async()=>({binding,manifest:authority,nowMs:time,ownerSessionLive:alive,consentLive:consent});
+ const acceptedChain=[genesis.bytes];
+ const config={binding,archivePrivateKey:archive,readCurrent:read,
+  consumeSetupDecision:async reviewed=>assert.deepEqual(reviewed,binding),consumeOwnerDecision:async review=>{decisions++;assert.deepEqual(review.binding,binding);assert.equal(review.successorVersion,authority.version+1n);},
+  signWithExistingRoot:existingConversationRootCustodian02(root),installVerified:async(expected,accepted,highWater,selection)=>{
+   assert.deepEqual(expected,authority.digest);assert.deepEqual(selection,binding);
+   if(options.skipInstall)return;
+   authority=await store.acceptManifest(accepted.bytes,time);acceptedChain.push(authority.bytes);assert.deepEqual((await store.read()).trust,highWater);
+  },consumeConfirmation:async()=>{confirmations++;},...options};
+ const custody=await prepareConversationCustody02(config);
+ async function inboundEnvelope(historic=genesis){return (await prepareInboundEnvelope02({kind:2,manifest:historic,nowMs:now,messageId:binding.interval,eventId:binding.interval,deviceId:device,lineId:line,peer:encoder.encode(binding.peer),observedMs:now,localSequence:1n,content:"Synthetic inbound \u03a9\nTrailing spaces  ",cek:crypto.getRandomValues(new Uint8Array(32)),nonce:crypto.getRandomValues(new Uint8Array(12)),signer:{privateKey:inbound.privateKey,publicPoint:inbound.point},recipients:[{role:2,keyId:binding.archiveReader,point:f.archive.point,ekm:crypto.getRandomValues(new Uint8Array(32))}]})).envelope;}
+ return {custody,store,genesis,inboundEnvelope,binding,get authority(){return authority;},stats:()=>({confirmations,decisions}),setAlive:v=>alive=v,setConsent:v=>consent=v,setTime:v=>time=v,
+  renew:async(revoked=false)=>{const currentRecords=authority.keys.map(k=>({role:k.role,key:{point:k.point},keyId:k.keyId,device:k.deviceId,line:k.lineId,scope:k.scope,state:revoked&&k.role===2?2:k.state,from:k.fromMs,until:k.untilMs}));if(revoked){const replacement=await key();currentRecords.push({role:2,key:replacement,keyId:await id(2,replacement.point),device:zero16,line:zero16,scope:12,state:1,from:now-1000n,until:now+3600000n});}authority=await store.acceptManifest(await manifest(f,{records:currentRecords,version:authority.version+1n,previous:authority.digest}),time);},
+  reopen:async()=>{custody.close();return prepareConversationCustody02({...config,history:{trustStore:store,loadChain:async digest=>{const at=acceptedChain.findIndex(bytes=>Buffer.from(bytes.subarray(0,-64)).equals(Buffer.from(genesis.bytes.subarray(0,-64)))&&Buffer.from(digest).equals(Buffer.from(genesis.digest)));if(at<0)throw Error("Synthetic chain not found");return acceptedChain.slice(at);}}});},
+  close:()=>{custody.close();store.close();}};
+}
+test("session custody composes exact existing root enrollment and one confirmed packet",async()=>{const c=await custodyCandidate();try{const {scope}=await c.custody.authority(),review=await c.custody.prepare(scope,"Synthetic exact reply");assert.deepEqual(c.stats(),{confirmations:0,decisions:1});const packet=await c.custody.signReviewed(review,scope,"Synthetic exact reply");assert.deepEqual(Object.keys(packet),["envelope","confirmation","signature"]);assert.equal(Buffer.from(packet.signature,"base64").length,64);assert.equal(c.stats().confirmations,1);await assert.rejects(c.custody.signReviewed(review,scope,"Synthetic exact reply"));}finally{c.close();}});
+test("transport success without authoritative enrollment never opens custody",async()=>{await assert.rejects(custodyCandidate({skipInstall:true}),/authoritatively installed/);});
+test("session custody verifies signed profile02 inbound and preserves exact body",async()=>{const c=await custodyCandidate();try{const {scope}=await c.custody.authority();assert.equal(await c.custody.openSealed(await c.inboundEnvelope(),scope),"Synthetic inbound \u03a9\nTrailing spaces  ");}finally{c.close();}});
+test("same root renewal retains historical inbound without changing ciphertext",async()=>{const c=await custodyCandidate();try{const bytes=await c.inboundEnvelope();await c.renew();const {scope}=await c.custody.authority();assert.equal(await c.custody.openSealed(bytes,scope),"Synthetic inbound \u03a9\nTrailing spaces  ");}finally{c.close();}});
+for(const [name,change] of [["current archive revocation",c=>c.renew(true)],["logout",c=>c.setAlive(false)],["consent loss",c=>c.setConsent(false)],["signer expiry",c=>c.setTime(now+1800000n)]])test("custody closes on "+name,async()=>{const c=await custodyCandidate();try{const {scope}=await c.custody.authority(),bytes=await c.inboundEnvelope();await change(c);await assert.rejects(c.custody.openSealed(bytes,scope));await assert.rejects(c.custody.authority());}finally{c.close();}});
+test("inbound signature tampering never releases plaintext",async()=>{const c=await custodyCandidate();try{const {scope}=await c.custody.authority(),bytes=await c.inboundEnvelope();bytes[bytes.length-1]^=1;await assert.rejects(c.custody.openSealed(bytes,scope));}finally{c.close();}});
+test("persistent high-water proves accepted historical chain without rollback",async()=>{const c=await custodyCandidate();try{const chain=[c.genesis.bytes,c.authority.bytes],before=await c.store.read();assert.deepEqual((await c.store.verifyHistory(chain,now)).digest,c.genesis.digest);assert.deepEqual(await c.store.read(),before);await assert.rejects(c.store.verifyHistory([c.genesis.bytes],now),/high-water/);await assert.rejects(c.store.verifyHistory([c.genesis.bytes,c.genesis.bytes,c.authority.bytes],now),/duplicate/);const broken=Uint8Array.from(c.authority.bytes);broken[60]^=1;await assert.rejects(c.store.verifyHistory([c.genesis.bytes,broken],now));await c.renew();await assert.rejects(c.store.verifyHistory(chain,now),/high-water/);}finally{c.close();}});
+test("fresh explicitly approved custody restores history through persisted high-water",async()=>{const c=await custodyCandidate();let fresh;try{const bytes=await c.inboundEnvelope();fresh=await c.reopen();const {scope}=await fresh.authority();assert.equal(await fresh.openSealed(bytes,scope),"Synthetic inbound \u03a9\nTrailing spaces  ");assert.equal(c.stats().decisions,2);}finally{fresh?.close();c.close();}});

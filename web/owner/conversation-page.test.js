@@ -4,7 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { randomUUID } = require("node:crypto");
 const core = require("./conversation-core.js");
-async function page({ expireReview = false, adapterAvailable = true } = {}) {
+async function page({ expireReview = false, adapterAvailable = true, ownerSetup } = {}) {
   const previous = new Map(), elements = new Map(), events = {}, writes = [];
   let time = 0, accepted = 0;
   const scope = {account:randomUUID(),session:randomUUID(),interval:randomUUID(),device:randomUUID(),line:randomUUID(),generation:"1",peer:"+12",reader:"fixture",manifest:"fixture"};
@@ -25,7 +25,8 @@ async function page({ expireReview = false, adapterAvailable = true } = {}) {
   const values = { document:{hidden:false,getElementById:element,createElement:()=>({textContent:""}),addEventListener(event,fn){events[event]=fn;}},
     window:{addEventListener(event,fn){events[event]=fn;}},setInterval(fn){events.timer=fn;return 1;},
     ZtConversation:{create(a){const c=core.create(a,()=>time);return {...c,prepare:async()=>{const review=await c.prepare();if(expireReview)time=60000;return review;}};}},
-    ZtConversationSimulatorAdapter:adapterAvailable?adapter:undefined };
+    ZtConversationSimulatorAdapter:adapterAvailable?adapter:undefined,
+    ZtConversationOwnerSetup:ownerSetup };
   for (const [name,value] of Object.entries(values)) {previous.set(name,Object.getOwnPropertyDescriptor(globalThis,name));Object.defineProperty(globalThis,name,{value,writable:true,configurable:true});}
   delete require.cache[require.resolve("./conversation.js")];require("./conversation.js");
   return {element,events,writes,literal,accepted:()=>accepted,async click(id){await element(id).listeners.click();},input(value){element("body").value=value;element("body").listeners.input();},
@@ -50,4 +51,9 @@ test("expiry between prepare and DOM render never repopulates private review tex
 });
 test("page has no implicit transport when the fixture adapter is absent",async()=>{
   const p=await page({adapterAvailable:false});try {assert.deepEqual(p.element("connect").listeners,{});assert.equal(p.accepted(),0);}finally{p.cleanup();}
+});
+test("owner configuration requires an affirmative session decision before SDK or custody access",async()=>{
+ let accesses=0;
+ const p=await page({adapterAvailable:false,ownerSetup:{custodyOptions:async()=>{accesses++;throw Error("No implicit custody");}}});
+ try{assert.equal(accesses,0);assert.equal(p.element("connect").disabled,false);await p.click("connect");assert.equal(accesses,0);assert.equal(p.element("composer").disabled,true);p.events.pagehide();assert.equal(accesses,0);}finally{p.cleanup();}
 });

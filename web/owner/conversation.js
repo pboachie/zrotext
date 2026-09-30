@@ -2,11 +2,15 @@
 "use strict";
 (() => {
   const el = (id) => document.getElementById(id);
-  const adapter = globalThis.ZtConversationSimulatorAdapter;
-  if (!adapter) return; // No implicit credentials, network or activation.
-  const controller = ZtConversation.create(adapter);
+  let adapter = globalThis.ZtConversationSimulatorAdapter;
+  const setup = globalThis.ZtConversationOwnerSetup;
+  if (!adapter && !setup) return; // No implicit credentials, network or activation.
+  let controller = adapter ? ZtConversation.create(adapter) : null;
+  let setupPending = false, setupRevision = 0;
+  let custodyLifetime = null;
   function render() {
-    const s = controller.state();
+    const s = controller ? controller.state() : { scope: null, draft: "", review: null, canConfirm: false, busy: setupPending, messages: [] };
+    if (!s.scope && adapter && !globalThis.ZtConversationSimulatorAdapter) adapter.close();
     el("composer").disabled = !s.scope || s.busy;
     el("confirm").disabled = !s.canConfirm;
     el("confirmation").hidden = !s.review;
@@ -26,8 +30,27 @@
   }
   el("connect").disabled = false;
   el("connect").addEventListener("click", () => action(async () => {
-    await controller.authorize(); el("status").textContent = "Fixture conversation authorized.";
+    if (setupPending) throw Error("Setup in progress");
+    setupPending = true; el("connect").disabled = true;
+    const ticket = ++setupRevision;
+    try {
+    if (setup && !globalThis.ZtConversationSimulatorAdapter) {
+      if (!el("session-custody").checked) throw Error("Explicit session custody decision required");
+      adapter?.close(); controller?.clear(); controller = null;
+      render();
+      custodyLifetime?.abort(); custodyLifetime = new AbortController();
+      const sdk = await import("/v1/owner/conversation-sdk/sdk/conversation-custody.js");
+      const options = await setup.custodyOptions();
+      const custody = await sdk.prepareConversationCustody02({ ...options, signal: custodyLifetime.signal });
+      if (ticket !== setupRevision) { custody.close(); throw Error("Setup closed"); }
+      try { adapter = ZtConversationOwnerTransport.create({ ...setup.transportOptions, enabled: true, custody }); }
+      catch (error) { custody.close(); throw error; }
+      controller = ZtConversation.create(adapter);
+      setup.onClose?.(() => { adapter.close(); controller.clear(); render(); });
+    }
+    await controller.authorize(); el("status").textContent = setup ? "Conversation authorized for this session." : "Fixture conversation authorized.";
     if (adapter.initialEvent) await controller.read(adapter.initialEvent);
+    } finally { setupPending = false; el("connect").disabled = false; }
   }));
   el("body").addEventListener("input", () => { try { controller.edit(el("body").value); } catch { controller.clear(); } render(); });
   el("review").addEventListener("click", () => action(async () => {
@@ -35,14 +58,14 @@
     if (controller.state().canConfirm) el("review-body").focus();
   }));
   el("confirm").addEventListener("click", () => action(async () => {
-    await controller.confirm(); el("status").textContent = "Simulator accepted the confirmed message. Carrier delivery is not tested.";
+    const result = await controller.confirm(); el("status").textContent = result.status === "queued" ? "Confirmed message queued. Delivery is pending." : "Simulator accepted the confirmed message. Carrier delivery is not tested.";
   }));
   el("cancel").addEventListener("click", () => { try { controller.edit(controller.state().draft); } catch { controller.clear(); } render(); el("body").focus(); });
-  const clear = () => { controller.clear(); render(); el("status").textContent = "Conversation cleared. Check authorization again."; };
+  const clear = () => { setupRevision++; custodyLifetime?.abort(); adapter?.close?.(); controller?.clear(); render(); el("status").textContent = "Conversation cleared. Check authorization again."; };
   el("clear").addEventListener("click", clear);
   window.addEventListener("pagehide", clear);
   document.addEventListener("visibilitychange", () => { if (document.hidden) clear(); });
-  adapter.onClose?.(clear);
+  adapter?.onClose?.(clear);
   setInterval(render, 1000);
   render();
 })();

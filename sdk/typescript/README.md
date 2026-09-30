@@ -334,3 +334,36 @@ This is one slice of ZT-010 evidence. Independent Rust cross-open, full manifest
 chain/rollback vectors, production key lifecycle, and the Q1–Q11 decisions
 remain separate gates. The candidate profile says vectors must be regenerated
 after those decisions and versioning.
+
+### Explicit conversation session custody
+
+`prepareConversationCustody02` composes the existing signer and enrollment adapter,
+using independently sampled current authority, explicit exact setup/root decisions,
+an existing nonextractable archive reader and an existing root custodian. It requires
+an authoritative verified successor re-read after enrollment CAS. It exposes owner
+transport-compatible `authority`, `prepare`, `signReviewed`, `openSealed` and `close`.
+The confirmed packet has base64 `envelope`, `confirmation` and `signature` fields.
+`existingConversationRootCustodian02` adapts an existing nonextractable P-256 ECDSA
+CryptoKey; it neither generates nor imports a user root. Root approval remains a
+separate mandatory enrollment decision. Abort, expiry and authority loss permanently
+close the session; reopening requires new explicit setup and root approval.
+
+The profile-02 reader verifies routing, historical signer/wrap authority, canonical
+signature, HPKE and AES-GCM before returning strict UTF-8 text. Current archive reader
+revocation blocks retained history. Same-root accepted manifests observed in the
+session are cached with a finite bound. To restore history after reload, supply
+`history: {trustStore, loadChain}`: `loadChain` returns the requested signed manifest
+and every successor through the current persisted high-water. `verifyHistory` on
+the existing `Draft02TrustStore` validates the complete chain without writing or
+lowering high-water. Missing, forked, rotated-root and oversized chains are refused.
+
+After `npm ci --ignore-scripts` and `npm run build`, the explicit command
+`node scripts/package_conversation_browser.mjs <asset-output-directory>` from the
+repository root copies compiled SDK and locked HPKE ESM code, rewrites bare imports
+to relative paths and preserves dependency licenses. Output must be outside the
+source tree. No fixtures or credentials are packaged. The integration owner must
+mount those assets on the disabled conversation router at
+`/v1/owner/conversation-sdk/`; the page imports `sdk/conversation-custody.js` only
+after the session-custody choice and setup click. `ZtConversationOwnerSetup` supplies
+`custodyOptions()`, `transportOptions` and an optional `onClose` notification hook.
+There is no default root provider, endpoint configuration or production mount.

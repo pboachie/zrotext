@@ -270,6 +270,38 @@ export class Draft02TrustStore {
     return manifest;
   }
 
+  /** Restore historical acceptance without lowering high-water: prove a complete signed successor
+   * chain ending at the exact CURRENT persisted digest. Expired ancestors are verified at their signed
+   * issue times; the requested ancestor is verified at authenticated receipt time. Root transitions
+   * and incomplete/oversized chains are refused. This operation never writes or enrolls a root.
+   */
+  async verifyHistory(chain: readonly Uint8Array[], observedMs: bigint): Promise<Manifest02> {
+    checkedTime(observedMs);
+    if (chain.length < 1 || chain.length > 64) fail("history chain bound");
+    const signed = chain.map(bytes => input(bytes, "history manifest"));
+    if (signed.some(bytes => bytes.length < 215 || bytes.length > 11223)) fail("history manifest bound");
+    const before = await this.read();
+    if (!before || before.trust.version === 0n) fail("history requires accepted high-water");
+    const first = signed[0];
+    const version = new DataView(first.buffer, first.byteOffset, first.byteLength).getBigUint64(29);
+    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", Uint8Array.from(first.subarray(0, -64)).buffer));
+    // This temporary self-digest permits signature parsing only. It is accepted solely after the
+    // contiguous chain reaches the already trusted current digest, below.
+    let pin: ManifestTrust02 = { ...before.trust, version, digest };
+    const historical = await verifyManifest02(first, pin, observedMs);
+    pin = advanceManifestTrust02(pin, historical);
+    for (const bytes of signed.slice(1)) {
+      const issuedMs = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getBigUint64(37);
+      const next = await verifyManifest02(bytes, pin, issuedMs);
+      if (next.version !== pin.version + 1n) fail("history chain duplicate");
+      pin = advanceManifestTrust02(pin, next);
+    }
+    if (pin.version !== before.trust.version || !sameBytes(pin.digest, before.trust.digest)) fail("history does not reach high-water");
+    const after = await this.read();
+    if (!after || !sameSnapshot(before, after)) fail("history high-water changed");
+    return historical;
+  }
+
   /** The expected new root must be pinned by the owner independently of the relay. */
   async acceptTransition(bytes: Uint8Array, expectedNewRoot: Uint8Array, nowMs: bigint): Promise<Draft02TrustSnapshot> {
     // Verification and the time cap must read the same bytes, whatever the caller does
