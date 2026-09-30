@@ -171,6 +171,10 @@ migration credential in an API environment.
   `CREATE INDEX CONCURRENTLY` before recording the numbered file; see the
   [Compose guide](README.md) for the interrupted-build and rollback rules that
   apply to them.
+- Migration 058 is the matching exception for a removal: the migrator drops
+  `auth_abuse_counters_stale` with `DROP INDEX CONCURRENTLY IF EXISTS` before
+  recording the numbered file, and every later run refuses to proceed if that
+  index is re-created. See the [Compose guide](README.md).
 - `TEST_MIGRATIONS` is not an operator setting. It is the name of private test
   constants in the Rust test suites (for example in
   `crates/delivery-store/src/tests.rs`) that embed the migration SQL so

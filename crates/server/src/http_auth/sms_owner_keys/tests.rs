@@ -18,7 +18,7 @@ macro_rules! migration {
 
 // The ceremony runs on the complete schema. SQL is embedded at build time so
 // the test never executes files discovered at runtime.
-const TEST_MIGRATIONS: [(&str, &str); 57] = [
+const TEST_MIGRATIONS: [(&str, &str); 58] = [
     ("001_foundation.sql", migration!("001_foundation.sql")),
     ("002_auth.sql", migration!("002_auth.sql")),
     ("003_delivery.sql", migration!("003_delivery.sql")),
@@ -232,6 +232,10 @@ const TEST_MIGRATIONS: [(&str, &str); 57] = [
         "057_webhook_history_index.sql",
         migration!("057_webhook_history_index.sql"),
     ),
+    (
+        "058_drop_abuse_counters_updated_index.sql",
+        migration!("058_drop_abuse_counters_updated_index.sql"),
+    ),
 ];
 
 #[test]
@@ -400,6 +404,11 @@ async fn postgres_owner_key_ceremony_requires_possession_mfa_and_revokes_only_sm
             )
             .await
             .unwrap();
+        }
+        if name == "058_drop_abuse_counters_updated_index.sql" {
+            db.batch_execute("DROP INDEX IF EXISTS auth_abuse_counters_stale")
+                .await
+                .unwrap();
         }
         if name == "034_delivery_sweep_index.sql" {
             // Mirror the migrator's autocommit preparation before the

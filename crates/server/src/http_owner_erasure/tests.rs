@@ -249,6 +249,12 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "057_webhook_history_index.sql",
         include_str!("../../../../deploy/compose/migrations/057_webhook_history_index.sql"),
     ),
+    (
+        "058_drop_abuse_counters_updated_index.sql",
+        include_str!(
+            "../../../../deploy/compose/migrations/058_drop_abuse_counters_updated_index.sql"
+        ),
+    ),
 ];
 
 /// Indexes the Compose migrator prepares with CREATE INDEX CONCURRENTLY in
@@ -285,6 +291,10 @@ const PREPARED_INDEXES: &[(&str, &str)] = &[
     (
         "057_webhook_history_index.sql",
         "CREATE INDEX webhook_deliveries_history ON webhook_deliveries(endpoint_id,created_at DESC,id DESC)",
+    ),
+    (
+        "058_drop_abuse_counters_updated_index.sql",
+        "DROP INDEX IF EXISTS auth_abuse_counters_stale",
     ),
 ];
 

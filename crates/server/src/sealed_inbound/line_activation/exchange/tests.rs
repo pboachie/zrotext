@@ -34,7 +34,7 @@ macro_rules! migration {
 }
 
 // Complete reviewed schema, embedded at build time.
-const TEST_MIGRATIONS: [(&str, &str); 57] = [
+const TEST_MIGRATIONS: [(&str, &str); 58] = [
     migration!("001_foundation.sql"),
     migration!("002_auth.sql"),
     migration!("003_delivery.sql"),
@@ -92,6 +92,7 @@ const TEST_MIGRATIONS: [(&str, &str); 57] = [
     migration!("055_trusted_browser_epoch.sql"),
     migration!("056_usage_limit_plans.sql"),
     migration!("057_webhook_history_index.sql"),
+    migration!("058_drop_abuse_counters_updated_index.sql"),
 ];
 #[test]
 fn exchange_fixture_tracks_numbered_migrations() {
@@ -188,6 +189,11 @@ async fn migrated_schema(prefix: &str) -> (Client, String, String, Client) {
         }
         if name == "057_webhook_history_index.sql" {
             db.batch_execute("CREATE INDEX CONCURRENTLY webhook_deliveries_history ON webhook_deliveries(endpoint_id,created_at DESC,id DESC)")
+                .await
+                .unwrap();
+        }
+        if name == "058_drop_abuse_counters_updated_index.sql" {
+            db.batch_execute("DROP INDEX IF EXISTS auth_abuse_counters_stale")
                 .await
                 .unwrap();
         }

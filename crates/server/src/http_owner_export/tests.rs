@@ -36,7 +36,7 @@ macro_rules! export_schema {
             [$(($name, include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/compose/migrations/", $name)))),+]
         };
     }
-const EXPORT_SCHEMA: [(&str, &str); 57] = export_schema!(
+const EXPORT_SCHEMA: [(&str, &str); 58] = export_schema!(
     "001_foundation.sql",
     "002_auth.sql",
     "003_delivery.sql",
@@ -94,6 +94,7 @@ const EXPORT_SCHEMA: [(&str, &str); 57] = export_schema!(
     "055_trusted_browser_epoch.sql",
     "056_usage_limit_plans.sql",
     "057_webhook_history_index.sql",
+    "058_drop_abuse_counters_updated_index.sql",
 );
 #[test]
 fn export_schema_includes_every_checked_in_migration() {
@@ -181,6 +182,11 @@ async fn export_is_tenant_bound_and_carries_owner_content() {
         }
         if name == "057_webhook_history_index.sql" {
             db.batch_execute("CREATE INDEX CONCURRENTLY webhook_deliveries_history ON webhook_deliveries(endpoint_id,created_at DESC,id DESC)")
+                .await
+                .unwrap();
+        }
+        if name == "058_drop_abuse_counters_updated_index.sql" {
+            db.batch_execute("DROP INDEX IF EXISTS auth_abuse_counters_stale")
                 .await
                 .unwrap();
         }
