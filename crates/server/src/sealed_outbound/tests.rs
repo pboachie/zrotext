@@ -22,6 +22,10 @@ struct TestCase {
     principal: ApiPrincipal,
     hasher: TokenHasher,
     user: Uuid,
+    /// The bearer token text; the cross-client interop lane posts through the
+    /// real HTTP route, which authenticates from headers, not from a principal.
+    #[cfg(feature = "sealed-interop-tests")]
+    token: String,
 }
 impl Deref for TestCase {
     type Target = Fixture;
@@ -111,6 +115,8 @@ impl TestCase {
             principal,
             hasher,
             user,
+            #[cfg(feature = "sealed-interop-tests")]
+            token,
         }
     }
     fn writer(&self) -> WriterContext<'static> {

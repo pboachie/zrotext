@@ -1,13 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Explicit cross-client CI lane; no production entry point or radio effect.
 use super::*;
+use axum::{
+    body::{Body, to_bytes},
+    http::{Request, StatusCode},
+};
 use serde_json::{Value, json};
 use std::{
     fs,
     io::Write,
     path::PathBuf,
     process::{Command, Stdio},
+    sync::Arc,
 };
+use tower::ServiceExt;
 
 /// Directory under the Git-ignored repository `target/` that receives the Android inputs.
 const OUTPUT_DIR: &str = "zrotext-sealed-interop";
@@ -286,6 +292,84 @@ async fn actual_sdk_ciphertext_verifies_persists_and_replays_without_extra_effec
         assert!(verdict(&error), "{name} produced {error:?}");
     }
     assert_eq!(counts(&f).await, (1, 1, 1));
+
+    // Production-path admission. `outboundProductionEnvelope` was composed by
+    // the TypeScript production entry point (`composeSealedOutboundEnvelope`)
+    // with NO deterministic override: fresh CSPRNG content key, body nonce and
+    // HPKE ephemeral IKMs under its own message identity. Those exact bytes
+    // must clear the strict sealed admission route (#545,
+    // crates/server/src/http_sealed over sealed_outbound::admit_candidate02),
+    // not just the internal admission call, so the SDK's production wire
+    // output is proven end to end: bearer authentication, the byte-exact
+    // sealed content type, the body bound, verification, authorization,
+    // durable queueing and exact-digest replay.
+    let production = bytes(&fixture, "outboundProductionEnvelope");
+    let production_digest = bytes(&fixture, "outboundProductionFreshDigest");
+    let production_message = Uuid::from_slice(&bytes(&fixture, "productionMessage")).unwrap();
+    assert_eq!(
+        Sha256::digest(&production[..production.len() - 64]).as_slice(),
+        production_digest.as_slice(),
+        "production digest must cover the exact unsigned bytes"
+    );
+    assert_eq!(production.len(), outbound.len());
+    assert_ne!(
+        &production[..production.len() - 64],
+        &outbound[..outbound.len() - 64],
+        "production bytes must be composed under fresh key material"
+    );
+    let state = crate::http_sealed::SealedHttpState::new(
+        format!("{}?options=-csearch_path%3D{}", f.url, f.schema),
+        Arc::new(TokenHasher::new(crate::test_keys::key(76)).unwrap()),
+        "manifest-test".into(),
+        1,
+        true,
+    )
+    .unwrap();
+    let app = crate::http_sealed::router(state);
+    let submit = |body: Vec<u8>| {
+        Request::builder()
+            .method("POST")
+            .uri("/messages")
+            .header("authorization", format!("Bearer {}", f.token))
+            .header("content-type", "application/vnd.zrotext.sealed.v1")
+            .body(Body::from(body))
+            .unwrap()
+    };
+    #[derive(serde::Deserialize)]
+    struct Accepted {
+        message_id: Uuid,
+        created: bool,
+    }
+    let first = app
+        .clone()
+        .oneshot(submit(production.clone()))
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::ACCEPTED);
+    let accepted: Accepted =
+        serde_json::from_slice(&to_bytes(first.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert!(accepted.created);
+    assert_eq!(accepted.message_id, production_message);
+    let replayed = app.oneshot(submit(production.clone())).await.unwrap();
+    assert_eq!(replayed.status(), StatusCode::ACCEPTED);
+    let replay: Accepted =
+        serde_json::from_slice(&to_bytes(replayed.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert!(!replay.created);
+    assert_eq!(replay.message_id, production_message);
+    assert_eq!(counts(&f).await, (2, 2, 2));
+    let production_row = f
+        .db
+        .query_one(
+            "SELECT transport_mode,transport_payload,sealed_binding_generation,request_digest FROM messages WHERE account_id=$1 AND id=$2",
+            &[&f.account, &production_message],
+        )
+        .await
+        .unwrap();
+    assert_eq!(production_row.get::<_, String>(0), "sealed_candidate02");
+    assert_eq!(production_row.get::<_, Vec<u8>>(1), production);
+    assert_eq!(production_row.get::<_, i64>(2), 1);
+    assert_eq!(production_row.get::<_, Vec<u8>>(3), production_digest);
+
     let row=f.db.query_one("SELECT transport_mode,transport_payload,sealed_binding_generation,request_digest FROM messages WHERE account_id=$1 AND id=$2", &[&f.account,&message]).await.unwrap();
     assert_eq!(row.get::<_, String>(0), "sealed_candidate02");
     let persisted_outbound: Vec<u8> = row.get(1);
@@ -297,6 +381,7 @@ async fn actual_sdk_ciphertext_verifies_persists_and_replays_without_extra_effec
     );
     fixture["persistedOutboundEnvelope"] = json!(hex(&persisted_outbound));
     fixture["persistedInboundEnvelope"] = json!(hex(&persisted_inbound));
+    fixture["persistedProductionEnvelope"] = json!(hex(&production));
     fixture["persistedOutboundSha256"] = json!(hex(&Sha256::digest(&persisted_outbound)));
     fixture["persistedInboundSha256"] = json!(hex(&Sha256::digest(&persisted_inbound)));
     fs::write(
@@ -313,6 +398,8 @@ async fn actual_sdk_ciphertext_verifies_persists_and_replays_without_extra_effec
         "archiveKeyId": fixture["archiveKeyId"], "devicePoint": fixture["devicePoint"],
         "devicePrivateScalar": fixture["devicePrivateScalar"],
         "unsignedDigest": fixture["outboundUnsignedDigest"], "expectedText": fixture["expectedText"],
+        "productionMessageId": fixture["productionMessage"],
+        "productionUnsignedDigest": fixture["outboundProductionFreshDigest"],
     });
     fs::write(
         out.join("expected-context.json"),
