@@ -59,6 +59,9 @@ class RuntimeRoleTest(unittest.TestCase):
             if migration.name == "057_webhook_history_index.sql":
                 cls.sql("CREATE INDEX CONCURRENTLY webhook_deliveries_history "
                         "ON public.webhook_deliveries(endpoint_id,created_at DESC,id DESC);")
+            if migration.name == "058_drop_abuse_counters_updated_index.sql":
+                cls.sql("DROP INDEX CONCURRENTLY IF EXISTS "
+                        "public.auth_abuse_counters_stale;")
             if migration.name == "050_message_attempts_recent_index.sql":
                 cls.sql("CREATE INDEX CONCURRENTLY message_attempts_device_created "
                         "ON public.message_attempts(account_id,device_id,created_at);")
