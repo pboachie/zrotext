@@ -72,6 +72,7 @@ pub struct RetentionCounts {
     pub inbound_events: u64,
     pub sealed_inbound_events: u64,
     pub device_preconditions: u64,
+    pub conversation_consents: u64,
 }
 
 impl RetentionCounts {
@@ -86,6 +87,7 @@ impl RetentionCounts {
             self.inbound_events,
             self.sealed_inbound_events,
             self.device_preconditions,
+            self.conversation_consents,
         ]
         .into_iter()
         .any(|count| count >= limit)
@@ -149,7 +151,7 @@ pub async fn prune(
     assert!((1..=1000).contains(&limit));
     let mut first_error: Option<Error> = None;
     let mut failures = 0_u8;
-    let steps = 8_u8;
+    let steps = 9_u8;
 
     let idempotency_keys = step(
         "idempotency_keys",
@@ -318,6 +320,17 @@ pub async fn prune(
         ),
     )
     .await;
+    let conversation_consents = step(
+        "conversation_consents",
+        &mut first_error,
+        &mut failures,
+        crate::http_owner_conversations::lifecycle::prune_withdrawn(
+            client,
+            policy.sealed_inbound_days,
+            limit,
+        ),
+    )
+    .await;
     if failures == steps
         && let Some(error) = first_error
     {
@@ -331,6 +344,7 @@ pub async fn prune(
         inbound_events,
         sealed_inbound_events,
         device_preconditions,
+        conversation_consents,
     })
 }
 

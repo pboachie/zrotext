@@ -9,6 +9,9 @@ fn only_a_full_batch_requests_another_pass() {
     assert!(!counts.any_full(BATCH_SIZE));
     counts.sealed_inbound_events = BATCH_SIZE as u64;
     assert!(counts.any_full(BATCH_SIZE));
+    counts.sealed_inbound_events = 0;
+    counts.conversation_consents = BATCH_SIZE as u64;
+    assert!(counts.any_full(BATCH_SIZE));
 }
 
 async fn message(db: &Client, account: Uuid, device: Uuid, state: &str, age: i32) -> Uuid {
@@ -129,6 +132,7 @@ const MIGRATIONS: &[&str] = &[
         WHERE state IN ('queued','claimed') AND recipient_e164 IS NOT NULL",
     include_str!("../../../../deploy/compose/migrations/062_pending_recipient_index.sql"),
     include_str!("../../../../deploy/compose/migrations/063_retention_blocked_stamp.sql"),
+    include_str!("../../../../deploy/compose/migrations/064_owner_conversation_consent.sql"),
 ];
 
 async fn migrated(db: &Client) -> String {
@@ -287,7 +291,8 @@ async fn retention_respects_each_cutoff_and_replay_fences() {
             webhook_deliveries: 1,
             inbound_events: 1,
             sealed_inbound_events: 1,
-            device_preconditions: 1
+            device_preconditions: 1,
+            conversation_consents: 0
         }
     );
     assert_eq!(
