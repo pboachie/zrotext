@@ -103,6 +103,7 @@ class AuthenticatedGatewayService : Service() {
     @Synchronized
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_PAUSE) {
+            ConversationProcessMount.runtime.pause(ConversationStopReason.USER_STOP)
             val rebootResumeCleared = HeartbeatResumeStore.clear(this)
             halt()
             if (rebootResumeCleared) {
@@ -1087,6 +1088,7 @@ class AuthenticatedGatewayService : Service() {
     }
 
     private fun halt() {
+        ConversationProcessMount.runtime.pause(ConversationStopReason.PHONE_SESSION_LOST)
         reconnect.pause()
         generation += 1
         JournalWriteSignal.replace(null)
@@ -1115,6 +1117,7 @@ class AuthenticatedGatewayService : Service() {
 
     @Synchronized
     override fun onDestroy() {
+        ConversationProcessMount.runtime.pause(ConversationStopReason.WORKER_SHUTDOWN)
         processActive = false
         halt()
         connectivity.unregisterNetworkCallback(networkCallback)

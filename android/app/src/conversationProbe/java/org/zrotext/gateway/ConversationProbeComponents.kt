@@ -30,22 +30,26 @@ class ConversationProbeActivity:ComponentActivity() {
 }
 class ConversationProbeService:Service() {
     private val thread=HandlerThread("synthetic-receipt")
-    private lateinit var ingress:ConversationServiceIngress
+    private lateinit var mount:ConversationRuntimeMount
     private val receiver=object:BroadcastReceiver() {
         override fun onReceive(context:Context,intent:Intent) {
             if(intent.action!=ConversationProbeSession.ACTION || intent.getStringExtra("token")!=ConversationProbeSession.token) return
             val body=intent.getStringExtra("body")?:return
             if(body.length !in 1..32768) return
             val scope=ConversationProbeSession.scope
-            try {ConversationProbeSession.observation.set(ingress.observeFirstReceipt(
-                "01".repeat(32),scope.peer,scope.lineId,scope.bindingGeneration,body))}
+            try {ConversationProbeSession.observation.set(mount.receive(mount.firstReceipt(),1,
+                "01".repeat(32),scope.peer,body))}
             finally {ConversationProbeSession.received.countDown()}
         }
     }
     override fun onCreate() {
         super.onCreate()
         check(Build.HARDWARE in setOf("ranchu","goldfish") && packageName=="org.zrotext.gateway.conversationprobe")
-        ingress=ConversationServiceIngress(ConversationProbeSession.runtime,{null},enabled=true)
+        mount=ConversationRuntimeMount()
+        mount.install(ConversationProbeSession.runtime,{
+            val scope=ConversationProbeSession.scope
+            ConversationRuntimeMount.ObservedLine(scope.lineId,scope.bindingGeneration)
+        },{null},enabled=true)
         thread.start()
         val filter=IntentFilter(ConversationProbeSession.ACTION)
         if(Build.VERSION.SDK_INT>=33) registerReceiver(receiver,filter,null,Handler(thread.looper),Context.RECEIVER_NOT_EXPORTED)
@@ -54,7 +58,7 @@ class ConversationProbeService:Service() {
     override fun onBind(intent:Intent):IBinder=Binder()
     override fun onDestroy() {
         unregisterReceiver(receiver)
-        ingress.pause(ConversationStopReason.WORKER_SHUTDOWN)
+        mount.pause(ConversationStopReason.WORKER_SHUTDOWN)
         thread.quitSafely();super.onDestroy()
     }
 }

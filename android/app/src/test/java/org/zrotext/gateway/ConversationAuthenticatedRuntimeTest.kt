@@ -167,4 +167,102 @@ class ConversationAuthenticatedRuntimeTest {
         assertEquals(ConversationObservation.DISCARDED,ingress.observeFirstReceipt("66".repeat(32),scope.peer,scope.lineId,1,"synthetic"))
         assertEquals(1,db.journal().contentCount())
     }
+
+    @Test fun normalMountDefaultsDisabledAndCannotEnableFromReceipt() {
+        activate();val mount=ConversationRuntimeMount()
+        assertFalse(mount.install(assembly,{ConversationRuntimeMount.ObservedLine(scope.lineId,1)},{null}))
+        assertNull(mount.firstReceipt())
+        assertEquals(ConversationObservation.DISCARDED,mount.receive(null,1,"55".repeat(32),scope.peer,"synthetic"))
+        assertEquals(0,db.journal().contentCount())
+    }
+    @Test fun queuedPreApprovalReceiptCannotBecomeEligibleAfterPhoneApproval() {
+        propose();val mount=ConversationRuntimeMount()
+        assertTrue(mount.install(assembly,{ConversationRuntimeMount.ObservedLine(scope.lineId,1)},{null},enabled=true))
+        val old=mount.firstReceipt()
+        assembly.presentation.approvePhoneReview(review.requestId,snapshots.last().version);drain()
+        assertTrue(assembly.captureEligible())
+        assertEquals(ConversationObservation.DISCARDED,mount.receive(old,1,"55".repeat(32),scope.peer,"synthetic"))
+        assertEquals(0,db.journal().contentCount())
+        assertEquals(ConversationObservation.CAPTURED,mount.receive(mount.firstReceipt(),1,"66".repeat(32),scope.peer,"synthetic"))
+    }
+    @Test fun normalMountPauseFencesQueuedReceiptAndRequiresNewMount() {
+        activate();val mount=ConversationRuntimeMount()
+        assertTrue(mount.install(assembly,{ConversationRuntimeMount.ObservedLine(scope.lineId,1)},{null},enabled=true))
+        val receipt=mount.firstReceipt();mount.pause(ConversationStopReason.USER_STOP)
+        assertFalse(assembly.captureEligible());assertNull(mount.firstReceipt())
+        assertEquals(ConversationObservation.DISCARDED,mount.receive(receipt,1,"55".repeat(32),scope.peer,"synthetic"))
+        drain();assertEquals(ConversationCloseOutcome.DURABLY_CLOSED,snapshots.last().close)
+    }
+
+    @Test fun receiptDoesNotWaitForMountInstallationOrInheritIt() {
+        activate();val mount=ConversationRuntimeMount()
+        val finished=java.util.concurrent.CountDownLatch(1)
+        val receipt=java.util.concurrent.atomic.AtomicReference<ConversationRuntimeMount.Receipt>()
+        val receiver=Thread {try {receipt.set(mount.firstReceipt())} finally {finished.countDown()}}
+        try {
+            synchronized(mount) {
+                receiver.start()
+                assertTrue("Receipt snapshot cannot wait behind installation/storage monitor",
+                    finished.await(2,java.util.concurrent.TimeUnit.SECONDS))
+                assertTrue(mount.install(assembly,{ConversationRuntimeMount.ObservedLine(scope.lineId,1)},{null},enabled=true))
+            }
+            assertNull(receipt.get())
+            assertEquals(ConversationObservation.DISCARDED,mount.receive(receipt.get(),1,"55".repeat(32),scope.peer,"synthetic"))
+            assertEquals(ConversationObservation.CAPTURED,mount.receive(mount.firstReceipt(),1,"66".repeat(32),scope.peer,"synthetic"))
+        } finally {receiver.join(3000)}
+    }
+    @Test fun normalMountRequiresObservedSubscriptionAndCurrentLine() {
+        activate();val mount=ConversationRuntimeMount()
+        mount.install(assembly,{if(it==7) ConversationRuntimeMount.ObservedLine(scope.lineId,1) else null},{null},enabled=true)
+        val receipt=mount.firstReceipt()
+        assertEquals(ConversationObservation.DISCARDED,mount.receive(receipt,null,"55".repeat(32),scope.peer,"synthetic"))
+        assertEquals(ConversationObservation.DUPLICATE,mount.receive(receipt,8,"55".repeat(32),scope.peer,"synthetic"))
+        assertEquals(ConversationObservation.DUPLICATE,mount.receive(receipt,7,"55".repeat(32),scope.peer,"synthetic"))
+        assertEquals(ConversationObservation.CAPTURED,mount.receive(mount.firstReceipt(),7,"66".repeat(32),scope.peer,"synthetic"))
+    }
+
+    @Test fun observedLineSamplerFailureClosesMountedAdmission() {
+        activate();val mount=ConversationRuntimeMount()
+        mount.install(assembly,{error("mapping unavailable")},{null},enabled=true)
+        assertEquals(ConversationObservation.DISCARDED,mount.receive(mount.firstReceipt(),1,"55".repeat(32),scope.peer,"synthetic"))
+        assertFalse(assembly.captureEligible());assertNull(mount.firstReceipt());assertEquals(0,db.journal().contentCount())
+    }
+
+    @Test fun bothOrdinaryServicePauseRoutesCloseTheSharedMountBeforeReturning() {
+        activate()
+        for (type in listOf(GatewayService::class.java,AuthenticatedGatewayService::class.java)) {
+            val global=ConversationProcessMount.runtime
+            assertTrue(global.install(assembly,{ConversationRuntimeMount.ObservedLine(scope.lineId,1)},{null},enabled=true))
+            val service=org.robolectric.Robolectric.buildService(type).create()
+            val action=if(type==GatewayService::class.java) GatewayService.ACTION_PAUSE else AuthenticatedGatewayService.ACTION_PAUSE
+            service.get().onStartCommand(android.content.Intent().setAction(action),0,1)
+            assertNull(global.firstReceipt());assertFalse(assembly.captureEligible())
+            service.destroy()
+        }
+        drain()
+    }
+
+    @Test fun preTokenOrStorageFailureClosesBeforeOuterReceiverSwallowsIt() {
+        activate();val mount=ConversationRuntimeMount()
+        mount.install(assembly,{ConversationRuntimeMount.ObservedLine(scope.lineId,1)},{null},enabled=true)
+        assertThrows(IllegalStateException::class.java){mount.prepareAndReceive { error("fixture vault unavailable before receipt token") }}
+        assertNull(mount.firstReceipt());assertFalse(assembly.captureEligible());assertEquals(0,db.journal().contentCount())
+    }
+
+    @Test fun socketGracefulOrFailureLifecycleClosesAdmissionSynchronously() {
+        activate()
+        val socket=object:okhttp3.WebSocket {
+            override fun request()=okhttp3.Request.Builder().url("https://example.org").build()
+            override fun queueSize()=0L
+            override fun send(text:String)=false
+            override fun send(bytes:okio.ByteString)=false
+            override fun close(code:Int,reason:String?)=true
+            override fun cancel()=Unit
+        }
+        val wire=ConversationSocketWire(socket,{session})
+        val lifecycle=ConversationSocketLifecycle(wire,{session=null},{assembly.lifecycleLost(ConversationStopReason.PHONE_SESSION_LOST)})
+        lifecycle.lost();lifecycle.lost()
+        assertNull(session);assertNull(wire.currentSession());assertFalse(assembly.captureEligible())
+        assertEquals(ConversationObservation.DISCARDED,assembly.observeFirstReceipt("55".repeat(32),scope.peer,scope.lineId,1,"synthetic"))
+    }
 }

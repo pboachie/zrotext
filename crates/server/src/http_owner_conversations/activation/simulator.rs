@@ -2,8 +2,19 @@
 //! Explicitly selected test-only loopback bridge. Never compiled into server binaries.
 use super::*;
 use crate::sealed_manifest_store::tests::Fixture;
-use axum::{Json, Router, extract::State, http::StatusCode, routing::post};
+use axum::{
+    Json, Router,
+    extract::{
+        State,
+        ws::{Message, WebSocketUpgrade},
+    },
+    http::{HeaderMap, StatusCode},
+    response::IntoResponse,
+    response::Response,
+    routing::{get, post},
+};
 use base64::{Engine, engine::general_purpose::STANDARD};
+use futures_util::SinkExt;
 use p256::ecdsa::{Signature, signature::Signer};
 use p256::{ecdsa::SigningKey, elliptic_curve::Generate};
 use serde::Deserialize;
@@ -37,6 +48,49 @@ struct Command {
     event: Option<Uuid>,
     #[serde(default)]
     confirmation: Option<String>,
+}
+
+async fn phone_channel(
+    State(state): State<Arc<Simulator>>,
+    headers: HeaderMap,
+    upgrade: WebSocketUpgrade,
+) -> Response {
+    if headers
+        .get("x-zrotext-fixture-token")
+        .and_then(|v| v.to_str().ok())
+        != Some(state.token.as_str())
+    {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    upgrade
+        .on_upgrade(move |mut socket| async move {
+            while let Some(Ok(Message::Binary(bytes))) = socket.recv().await {
+                let f = state.fixture.lock().await;
+                let mut client = f.connect().await;
+                let result = super::super::channel::handle(
+                    &mut client,
+                    &super::super::channel::AuthenticatedChannelSession {
+                        device: f.session(),
+                        phone_session: state.phone_session,
+                        origin_hash: state.origin_hash,
+                    },
+                    &bytes,
+                )
+                .await;
+                match result {
+                    Ok(reply) => {
+                        if socket.send(Message::Binary(reply.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => {
+                        let _ = socket.close().await;
+                        break;
+                    }
+                }
+            }
+        })
+        .into_response()
 }
 
 async fn command(
@@ -243,6 +297,7 @@ async fn loopback_journal_bridge() {
     });
     let app = Router::new()
         .route("/fixture", post(command))
+        .route("/phone-channel", get(phone_channel))
         .layer(axum::extract::DefaultBodyLimit::max(80_000))
         .with_state(state.clone());
     let mut server = tokio::spawn(async move {

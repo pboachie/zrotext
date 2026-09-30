@@ -18,7 +18,7 @@ internal class ConversationAuthenticatedRuntime(
     private val requireAuthority: (ConversationCaptureScope, Long) -> Unit,
     consumePhoneDecision: (ConversationCaptureScope) -> Unit,
     exchangeAcceptanceInstall: (ConversationRecoveryRequest) -> ByteArray,
-    worker: Executor, delivery: Executor
+    worker: Executor, private val delivery: Executor
 ) {
     private val blocked = AtomicBoolean(true)
     private val epoch = AtomicLong(0)
@@ -85,11 +85,34 @@ internal class ConversationAuthenticatedRuntime(
         runtime.lifecycleStop(reason)
     }
 
+
+    /** Deliberate closed-only reconciliation; never restores time/admission or retries any send. */
+    fun reconcileClosed(deliver: (Boolean) -> Unit) {
+        try { serial.execute {
+            var original:ByteArray?=null
+            val result=runCatching {
+                check(blocked.get() || !admission.captureEligible())
+                original=admission.originalClosedStatement()
+                val scope=ConversationActivationCodec.decode(checkNotNull(original)).scope
+                check(sends.closed(scope.intervalId)>0)
+                transport.reconcile(scope,checkNotNull(original))
+                domain.recordReconciledClosure(scope)
+            }.isSuccess
+            original?.fill(0);runtime.refresh()
+            runCatching { delivery.execute { runCatching { deliver(result) } } }
+        } } catch (_:Exception) { runCatching { delivery.execute { runCatching { deliver(false) } } } }
+    }
+
     /** Explicit confirmed-send adapter shares capture/Stop admission and authenticated monotonic time. */
     fun confirmedSender(verifier: ConversationSendVerifier, transport: ConversationSendTransport) =
         ConversationConfirmedSend(sends, admission, verifier, protection, clock::nowMs, transport)
 
     fun captureEligible(): Boolean = admission.captureEligible()
+    fun firstReceiptBoundary() = admission.firstReceiptBoundary { if (blocked.get()) 0 else clock.nowMs() ?: 0 }
+    fun observeAtBoundary(boundary: ConversationCaptureAdmission.ReceiptBoundary, token: String,
+                          peer: String, line: String, generation: Long, body: String) =
+        admission.observeAtBoundary(boundary, token, peer, line, generation, body)
+
     fun retryCapture(token: String): ConversationCapturedBody? = admission.retry(token)
     fun observeFirstReceipt(token: String, peer: String, line: String, generation: Long,
         body: String): ConversationObservation = admission.observe(token, clock.nowMs() ?: 0, peer, line, generation, body)

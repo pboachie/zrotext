@@ -188,13 +188,15 @@ new manifest. Current reader and owner expiry are rechecked before commit;
 replay, tamper, withdrawal and expired session roll back the transaction.
 The root custodian and owner authenticated endpoint adapters remain unconnected.
 
-A pending interval closed before installation becomes expired and loses its
-statement under the existing lifecycle schema. If its ACK is lost, a later
-request cannot reconstruct every original scope byte and fails closed. A durable
-ACK/scope tombstone or separately authenticated reconciliation protocol is still
-needed for that recovery case; it cannot be invented by client retry or by
-reopening the interval. No new migration or weakened lifecycle constraint is
-introduced here.
+Pending closure now supports explicit authenticated kind-5 reconciliation. The
+phone supplies its original canonical approval bytes with a fresh channel nonce.
+The server compares the original transcript digest and every retained scope field
+under the interval lock and acknowledges only history/expired/withdrawn rows with
+a durable closure timestamp. It never changes phase, restores statement bytes,
+authorizes reads or reopens capture. The original proof is protected inside the
+existing journal's protectedScope column/AAD (format 2); legacy scope-only records
+remain readable but cannot recover a missing original proof. No SQL change or
+separate persistent credential store is required.
 
 Before mounting: coordinate both service Pause paths and first-PDU receiver with
 one shared runtime, finish server/frame/verifier adapters and signer enrollment,
@@ -279,7 +281,8 @@ supply an independently sampled lifecycle-loss callback. Sampling failure closes
 admission. Pause closes eligibility synchronously and permanently for that port;
 its presentation snapshot separately reports durable local/remote closure success
 or failure. A new session requires a fresh runtime and explicit phone review.
-The isolated probe alone enables this port. Normal services remain unmounted.
+The isolated probe alone enables this port. Normal services have disabled process
+mount hooks; no ordinary activity installs or authorizes the mount.
 
 A deployable release must assemble these dependencies in order; none is supplied
 by turning on the ingress parameter:
@@ -289,8 +292,8 @@ by turning on the ingress parameter:
 | Schema and lifecycle | Verified ordered migrations 064 and 065, existing inventory/export, retention and guarded deletion | Dormant transactions and lifecycle tests; coordinator merge pins required |
 | Owner and phone authentication | Existing authenticated owner session and device socket; independently negotiated phone session/account/device/key/site/epoch | Canonical handlers verified, socket registration and authenticated context adapter pending |
 | Root and browser custody | User-initiated existing owner-root custodian, verified successor CAS and exact current reader authority; recovery must not silently grant a replacement key | Enrollment/signing interfaces and fixture custody tested; live custody wiring pending |
-| Device protection | Existing hardware-backed device keys, authenticated clock and protected journals, independently sampled permissions and exact selected-line continuity | Runtime/execution adapters tested; normal receiver/service mounting pending |
-| Consent and closure | Separate browser selection and phone body-transfer disclosure, exact interval/peer/key binding, both Pause paths, logout/permission/SIM/expiry fences | Pane/runtime and isolated service tested; production consent policy and pending-close ACK recovery remain gates |
+| Device protection | Existing hardware-backed device keys, authenticated clock and protected journals, independently sampled permissions and exact selected-line continuity | Disabled ordinary receiver/service hooks and runtime/execution adapters tested; runtime construction and exact observed-line mapping remain unconnected |
+| Consent and closure | Separate browser selection and phone body-transfer disclosure, exact interval/peer/key binding, both Pause paths, logout/permission/SIM/expiry fences | Pane/runtime, ordinary Pause hooks and closed-only ACK recovery tested; production consent policy and activity integration remain gates |
 | Browser and confirmed reply | Authenticated event discovery/reader adapter, safe text rendering, exact recipient/body/line confirmation, revision fence before dispatch | Actual page plus SDK tested with synthetic adapters; authenticated endpoint/transport wiring pending |
 | Release packaging | No fixture source, credentials, loopback bridge or synthetic dispatch in ordinary APK; release-owner signing and reviewer access | Probe is a separate test-only APK; ordinary build remains separate |
 
@@ -298,3 +301,54 @@ This candidate creates no environment flag that mounts routes or enables radio
 execution. Live credential provisioning, access grants, production enablement and
 any future carrier test require their own explicit authorization. Simulated
 results are not carrier delivery, physical accessibility or Play approval evidence.
+
+## Disabled ordinary integration ports
+
+Both ordinary service Pause paths, authenticated service halt and service teardown
+now synchronously close the shared process mount. The ordinary SMS receiver takes
+an opaque admission/clock fence before queuing decoded receipt work. A receipt
+observed before installation cannot become eligible after phone approval. Worker
+capture still verifies current authenticated session, permissions, consent, line,
+reader and lease through the same journal gate. Missing observed subscription or
+an unselected line commits a discarded receipt fence; it never falls back to the
+default SIM. Mapping/preparation/storage failures close the mount. Failure before
+an HMAC or durable receipt reservation cannot prove that a later redelivery was
+already recorded; normal activation must remain disabled until that failure and
+redelivery recovery case has accepted device evidence and a recovery policy.
+
+The process mount is uninstalled by default. Install requires explicit code-owner
+configuration and independent live authority/line mapping callbacks; it does not
+authorize body transfer. No ordinary activity creates a runtime, generates keys,
+installs a mount or enables radio execution in this candidate.
+
+`ConversationSocketWire` binds an existing authenticated OkHttp socket to one
+bounded binary exchange. It verifies independently held session and nonce, rejects
+rotation, timeout, late/duplicate replies and submission refusal, and never
+replays requests or falls back to HTTP. Its owner must negotiate the phone session
+and origin through the authenticated connection and invalidate it on socket loss;
+production negotiation/registration remain separate code gates. The emulator uses
+a loopback WebSocket with out-of-band fixture identity to exercise this exact wire.
+
+Closed-only reconciliation uses request kind 5: the authenticated channel header,
+a two-byte canonical-statement length and the original approved statement. The
+server verifies its retained immutable digest and complete scope under the same
+interval lock and returns a fresh nonce-bound kind-4 closure acknowledgement only
+for an already closed interval. It never reinstalls approval, grants history or
+reopens capture. The protected phone journal retains these original bytes inside
+its existing protected installation field; legacy scope-only records remain
+readable but cannot reconstruct this proof. Recovery requires both local journals
+closed and keeps admission closed throughout. Socket loss invalidates session,
+unblocks pending exchange and closes admission synchronously, including concurrent
+duplicate listener callbacks. No automatic cold-start capture recovery is added.
+
+`conversation-owner-adapter.js` defines a disabled-by-default owner transport port.
+It requires current authority, current CSRF and custody callbacks plus explicit
+owner endpoint paths. Sealed reads and confirmed submissions use owner cookies,
+CSRF headers, same-origin mode, no-store and refused redirects. The adapter checks
+session/scope and CSRF before signing and immediately before dispatch; one-use
+confirmation never retries an ambiguous POST. It delegates local verification,
+decryption and signing to the existing reviewed SDK/custodian interfaces and
+creates no root credential. A queued result is valid only after a real durable
+server queue adapter accepts the exact proof; authorization-only verification is
+not queued acceptance. Production custody, queue persistence/transport endpoints
+and browser mounting remain unconnected code gates.

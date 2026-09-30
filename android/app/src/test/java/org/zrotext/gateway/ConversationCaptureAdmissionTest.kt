@@ -96,6 +96,28 @@ class ConversationCaptureAdmissionTest {
         assertEquals(0, journal.contentCount())
     }
 
+    @Test fun receiptDuringActivationMonitorWaitCannotInheritPromotedLease() {
+        prepare()
+        val finished=java.util.concurrent.CountDownLatch(1)
+        val boundary=java.util.concurrent.atomic.AtomicReference<ConversationCaptureAdmission.ReceiptBoundary>()
+        val failure=java.util.concurrent.atomic.AtomicReference<Throwable>()
+        val receiver=Thread { try { boundary.set(gate.firstReceiptBoundary { 1234L }) }
+            catch(error:Throwable){failure.set(error)} finally {finished.countDown()} }
+        try {
+            synchronized(gate) {
+                receiver.start()
+                assertTrue("Receipt must snapshot before waiting for activation's monitor",
+                    finished.await(2,java.util.concurrent.TimeUnit.SECONDS))
+                activate()
+            }
+            failure.get()?.let { throw AssertionError(it) }
+            assertEquals(ConversationObservation.DISCARDED,gate.observeAtBoundary(checkNotNull(boundary.get()),
+                token(1),scope.peer,scope.lineId,scope.bindingGeneration,"synthetic"))
+            assertNull(journal.receipt(token(1))!!.protectedCapture)
+            assertEquals(ConversationObservation.CAPTURED,observe(2))
+        } finally {receiver.join(3000)}
+    }
+
     @Test fun forgedServerResponseCannotInstallOrOpenCapture() {
         prepare()
         val request = gate.beginRecovery()

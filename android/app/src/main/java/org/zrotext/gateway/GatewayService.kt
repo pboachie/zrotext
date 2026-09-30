@@ -43,6 +43,7 @@ class GatewayService : Service() {
         generation += 1
         val currentGeneration = generation
         if (intent?.action == ACTION_PAUSE) {
+            ConversationProcessMount.runtime.pause(ConversationStopReason.USER_STOP)
             refusedStart = false
             stopSelf()
             return START_NOT_STICKY
@@ -107,6 +108,7 @@ class GatewayService : Service() {
     }
 
     override fun onDestroy() {
+        ConversationProcessMount.runtime.pause(ConversationStopReason.WORKER_SHUTDOWN)
         processActive = false
         generation += 1
         heartbeat?.cancel(false)

@@ -49,6 +49,24 @@ class ConversationProbeDeviceTest {
         require(file.startsWith("/data/local/tmp/conversation-") && file.endsWith(".json"))
         val ready=JSONObject(java.io.File(file).readText(Charsets.UTF_8))
         val fixture=ConversationSimulatorFixture(ready)
+        val client=okhttp3.OkHttpClient()
+        val opened=java.util.concurrent.CountDownLatch(1)
+        val authenticated=java.util.concurrent.atomic.AtomicReference<ConversationPhoneSession?>(fixture.channelSession)
+        lateinit var socketWire:ConversationSocketWire
+        val runtimeRef=java.util.concurrent.atomic.AtomicReference<ConversationAuthenticatedRuntime?>()
+        val wireRef=java.util.concurrent.atomic.AtomicReference<ConversationSocketWire?>()
+        fun channelLost(){authenticated.set(null);wireRef.get()?.invalidate();runtimeRef.get()?.lifecycleLost(ConversationStopReason.PHONE_SESSION_LOST);opened.countDown()}
+        val socket=client.newWebSocket(okhttp3.Request.Builder().url("ws://localhost:"+ready.getInt("port")+"/phone-channel")
+            .header("x-zrotext-fixture-token",ready.getString("token")).build(),object:okhttp3.WebSocketListener(){
+                override fun onOpen(socket:okhttp3.WebSocket,response:okhttp3.Response){opened.countDown()}
+                override fun onMessage(socket:okhttp3.WebSocket,bytes:okio.ByteString){authenticated.get()?.let {socketWire.acceptReply(it,bytes.toByteArray())}}
+                override fun onFailure(socket:okhttp3.WebSocket,error:Throwable,response:okhttp3.Response?){channelLost()}
+                override fun onClosing(socket:okhttp3.WebSocket,code:Int,reason:String){channelLost();socket.close(code,reason)}
+                override fun onClosed(socket:okhttp3.WebSocket,code:Int,reason:String){channelLost()}
+            })
+        socketWire=ConversationSocketWire(socket,{authenticated.get()});wireRef.set(socketWire)
+        check(opened.await(10,TimeUnit.SECONDS) && authenticated.get()!=null)
+
         val db=Room.inMemoryDatabaseBuilder(context,ConversationCaptureDatabase::class.java).build()
         val sends=Room.inMemoryDatabaseBuilder(context,ConversationSendDatabase::class.java).build()
         val worker=java.util.concurrent.Executors.newSingleThreadExecutor()
@@ -60,7 +78,7 @@ class ConversationProbeDeviceTest {
         var permission=true
         var installedGate: () -> Boolean = { false }
         val runtime=ConversationAuthenticatedRuntime(db.journal(),sends.sends(),fixture,fixture.protection,
-            fixture.authenticatedWire(),{(System.nanoTime()-start)/1_000_000},
+            socketWire,{(System.nanoTime()-start)/1_000_000},
             { selected,now -> check(permission && selected==scope && now<fixture.parsed.expiresMs) },
             { selected -> check(selected==scope);decisions++ },
             { request ->
@@ -71,6 +89,8 @@ class ConversationProbeDeviceTest {
                 installs++
                 fixture.command("lease",challenge=UUID.fromString(request.challenge)).toString().toByteArray(Charsets.UTF_8)
             },worker,delivery)
+        runtimeRef.set(runtime)
+        if(authenticated.get()==null)runtime.lifecycleLost(ConversationStopReason.PHONE_SESSION_LOST)
         installedGate = runtime::captureEligible
         runtime.presentation.observe { snapshots.add(it) }
         fun drain() {worker.submit {}.get(10,TimeUnit.SECONDS);instrumentation.waitForIdleSync()}
@@ -137,13 +157,18 @@ class ConversationProbeDeviceTest {
             assertFalse(fixture.command("capture",data=encrypted.getString("envelope")).getBoolean("ok"))
             assertFalse(fixture.command("browser_authority").getBoolean("ok"))
             assertNull(runtime.retryCapture(token))
+
+            val reconciled=java.util.concurrent.atomic.AtomicBoolean(false)
+            runtime.reconcileClosed{reconciled.set(it)};drain()
+            assertTrue(reconciled.get());assertFalse(runtime.captureEligible())
             // Stop retains eligible history; explicit withdrawal revokes access without claiming deletion.
             assertTrue(fixture.command("history",event=event).getBoolean("ok"))
             assertTrue(fixture.command("withdraw").getBoolean("ok"))
             assertFalse(fixture.command("history",event=event).getBoolean("ok"))
         } finally {
             context.unbindService(connection);instrumentation.waitForIdleSync();drain()
-            worker.shutdownNow();db.close();sends.close();fixture.command("finish")
+            runtimeRef.set(null);worker.shutdownNow();db.close();sends.close();socketWire.invalidate();socket.close(1000,"synthetic complete")
+            client.dispatcher.executorService.shutdown();client.connectionPool.evictAll();fixture.command("finish")
         }
     }
 }

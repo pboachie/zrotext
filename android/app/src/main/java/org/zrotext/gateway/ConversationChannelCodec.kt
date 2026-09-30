@@ -50,6 +50,12 @@ internal object ConversationChannelCodec {
     fun timeReply(r:ConversationTimeReply)=write(2,r.session,r.challenge){require(r.sentUtcMs>0);it.writeLong(r.sentUtcMs)}
     fun parseTimeReply(bytes:ByteArray,session:ConversationPhoneSession)=read(bytes,2,session){input,nonce->ConversationTimeReply(session,nonce,input.positive())}
     fun closeRequest(r:ConversationClosureRequest)=write(3,r.session,r.challenge){it.scope(bound(r.scope,r.session))}
+    fun reconciliationRequest(r:ConversationClosureRequest, originalStatement:ByteArray):ByteArray {
+        val owned=originalStatement.copyOf()
+        require(ConversationActivationCodec.decode(owned).scope==bound(r.scope,r.session))
+        return write(5,r.session,r.challenge){it.writeShort(owned.size);it.write(owned)}
+    }
+
     fun parseCloseRequest(bytes:ByteArray,session:ConversationPhoneSession)=read(bytes,3,session){input,nonce->ConversationClosureRequest(session,nonce,bound(input.scope(),session))}
     fun closeReply(r:ConversationClosureReply)=write(4,r.session,r.challenge){it.scope(bound(r.scope,r.session));it.writeByte(if(r.durablyClosed)1 else 0)}
     fun parseCloseReply(bytes:ByteArray,session:ConversationPhoneSession)=read(bytes,4,session){input,nonce->
@@ -75,4 +81,5 @@ internal class ConversationSerializedChannel(private val wire:ConversationAuthen
     }
     override fun time(request:ConversationTrustedClock.Request)=ConversationChannelCodec.parseTimeReply(checked(request.session,ConversationChannelCodec.timeRequest(request)),request.session)
     override fun close(request:ConversationClosureRequest)=ConversationChannelCodec.parseCloseReply(checked(request.session,ConversationChannelCodec.closeRequest(request)),request.session)
+    override fun reconcile(request:ConversationClosureRequest, originalStatement:ByteArray)=ConversationChannelCodec.parseCloseReply(checked(request.session,ConversationChannelCodec.reconciliationRequest(request,originalStatement)),request.session)
 }

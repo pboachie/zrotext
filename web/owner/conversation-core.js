@@ -62,7 +62,7 @@
         const result = await approved.confirm(() => { live(); if (ticket !== revision || !same(approved.scope, current)) throw new Error("Conversation changed."); });
         if (ticket !== revision) throw new Error("Result unavailable. Do not retry automatically.");
         live();
-        if (result?.status !== "simulator_accepted") throw new Error("Result unavailable. Do not retry automatically.");
+        if (!["simulator_accepted", "queued"].includes(result?.status)) throw new Error("Result unavailable. Do not retry automatically.");
         messages.push(Object.freeze({ direction: "outbound", body: approved.body })); draft = "";
         return result;
       } finally { busy = false; }

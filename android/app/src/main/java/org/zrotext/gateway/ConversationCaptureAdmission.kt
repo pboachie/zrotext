@@ -44,7 +44,7 @@ internal class ConversationCaptureAdmission(
     private data class Lease(val scope: ConversationCaptureScope, val deadline: Long)
     private data class Accepted(val request: Recovery, val duration: Long)
     private var recovery: Recovery? = null
-    private var lease: Lease? = null
+    @Volatile private var lease: Lease? = null
     private var accepted: Accepted? = null
     private var lastElapsed: Long? = null
 
@@ -61,7 +61,9 @@ internal class ConversationCaptureAdmission(
                 check(readScope(existing) == scope) { "Prepared scope changed" }
                 existing
             } else {
-                val sealed = protection.seal(scope.encode(), scopeAad(scope.intervalId, scope.receiptId))
+                val original=runCatching { ConversationActivationCodec.decode(evidence).takeIf { it.scope==scope } }.getOrNull()?.let { evidence.copyOf() }
+                val sealed = protection.seal(ConversationProtectedInstallation.encode(scope,original), scopeAad(scope.intervalId, scope.receiptId))
+                original?.fill(0)
                 ConversationInstallation(intervalId = scope.intervalId, receiptId = scope.receiptId,
                     transcriptDigest = scope.transcriptDigest, protectedScope = sealed.ciphertext,
                     nonce = sealed.nonce)
@@ -124,6 +126,33 @@ internal class ConversationCaptureAdmission(
     @Synchronized fun disableForLifecycle() { lease = null; recovery = null; accepted = null }
 
     @Synchronized fun captureEligible(): Boolean = currentLease() != null
+    @Synchronized fun originalClosedStatement(): ByteArray {
+        val row=checkNotNull(journal.installation())
+        check(row.state=="closed" && journal.isClosed(row.intervalId)>0)
+        val value=ConversationProtectedInstallation.decode(protection.open(
+            InboundVault.Sealed(row.protectedScope,row.nonce),scopeAad(row.intervalId,row.receiptId)))
+        check(value.scope.intervalId==row.intervalId && value.scope.receiptId==row.receiptId && value.scope.transcriptDigest==row.transcriptDigest)
+        return checkNotNull(value.originalStatement).copyOf()
+    }
+
+
+    /** Main-thread receipt fence: no database, plaintext or authority decision is read here. */
+    class ReceiptBoundary internal constructor(internal val identity: Any?, internal val utcMs: Long) {
+        override fun toString() = "ConversationReceiptBoundary(redacted)"
+    }
+    fun firstReceiptBoundary(utcMillis: () -> Long): ReceiptBoundary {
+        // Snapshot BEFORE any clock callback or monitor wait. A later activation cannot
+        // promote this receipt. Full monotonic/authority/storage checks run on the worker.
+        val atEntry = lease
+        val utcMs = runCatching(utcMillis).getOrDefault(0)
+        val elapsed = runCatching { elapsedMillis() }.getOrNull()
+        return ReceiptBoundary(atEntry?.takeIf { utcMs > 0 && elapsed != null && elapsed >= 0 && elapsed < it.deadline }, utcMs)
+    }
+    @Synchronized fun observeAtBoundary(boundary: ReceiptBoundary, token: String, peer: String,
+                                         line: String, generation: Long, body: String): ConversationObservation =
+        observe(token, if (boundary.identity != null && boundary.identity === lease) boundary.utcMs else 0,
+            peer, line, generation, body)
+
 
     /** Fresh sanitized budget for the dormant runtime; storage state alone never implies active. */
     @Synchronized fun remainingMs(expected: ConversationCaptureScope): Long {
@@ -230,8 +259,8 @@ internal class ConversationCaptureAdmission(
     }
 
     private fun readScope(row: ConversationInstallation): ConversationCaptureScope {
-        val scope = ConversationCaptureScope.decode(protection.open(
-            InboundVault.Sealed(row.protectedScope, row.nonce), scopeAad(row.intervalId, row.receiptId)))
+        val scope = ConversationProtectedInstallation.decode(protection.open(
+            InboundVault.Sealed(row.protectedScope, row.nonce), scopeAad(row.intervalId, row.receiptId))).scope
         check(scope.intervalId == row.intervalId && scope.receiptId == row.receiptId &&
             scope.transcriptDigest == row.transcriptDigest) { "Protected installation identity changed" }
         return scope

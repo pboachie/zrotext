@@ -98,4 +98,14 @@ internal class ConversationJournalPresentationDomain(
         val selected = scope ?: return ConversationPresentationSnapshot(1,ConversationPresentationPhase.OFF,stopReason=reason)
         return stop(selected.intervalId,reason)
     }
+
+    fun recordReconciledClosure(value:ConversationCaptureScope) {
+        check(scope==null || scope==value)
+        pending?.evidence?.fill(0);pending=null
+        scope=value
+        admission.disableForLifecycle()
+        terminal=ConversationPresentationSnapshot(1,ConversationPresentationPhase.DURABLY_CLOSED,
+            value.intervalId,value.lineId,value.bindingGeneration,close=ConversationCloseOutcome.DURABLY_CLOSED,
+            stopReason=terminal?.stopReason)
+    }
 }

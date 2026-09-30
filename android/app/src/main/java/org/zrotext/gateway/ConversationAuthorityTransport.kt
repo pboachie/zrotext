@@ -10,6 +10,8 @@ import java.util.UUID
 internal interface ConversationAuthenticatedChannel {
     fun time(request: ConversationTrustedClock.Request): ConversationTimeReply
     fun close(request: ConversationClosureRequest): ConversationClosureReply
+    fun reconcile(request: ConversationClosureRequest, originalStatement: ByteArray): ConversationClosureReply =
+        error("Authenticated closure reconciliation unavailable")
 }
 internal data class ConversationTimeReply(val session: ConversationPhoneSession, val challenge: UUID, val sentUtcMs: Long)
 internal data class ConversationClosureRequest(val session: ConversationPhoneSession, val challenge: UUID, val scope: ConversationCaptureScope) {
@@ -33,12 +35,19 @@ internal class ConversationAuthorityTransport(
             clock.installAuthenticatedReply(reply.challenge, reply.session, reply.sentUtcMs)
         } catch (error: Exception) { clock.invalidate(); throw error }
     }
-    @Synchronized fun close(scope: ConversationCaptureScope) {
+    @Synchronized fun close(scope: ConversationCaptureScope) = exchangeClose(scope, null)
+    /** Explicit closed-only query, never a retry of approval, capture or SMS execution. */
+    @Synchronized fun reconcile(scope: ConversationCaptureScope, originalStatement: ByteArray) =
+        exchangeClose(scope, originalStatement.copyOf())
+    private fun exchangeClose(scope: ConversationCaptureScope, originalStatement: ByteArray?) {
         val session = checkNotNull(currentSession())
         check(session.account.toString() == scope.accountId && session.device.toString() == scope.deviceId)
         val start = elapsedMillis(); check(start >= 0 && start <= Long.MAX_VALUE - 5000)
         val request = ConversationClosureRequest(session, UUID.randomUUID(), scope)
-        val reply = channel.close(request)
+        val reply = if (originalStatement == null) channel.close(request) else {
+            check(ConversationActivationCodec.decode(originalStatement).scope == scope)
+            channel.reconcile(request, originalStatement)
+        }
         val end = elapsedMillis()
         check(end >= start && end - start <= 5000 && currentSession() == session)
         check(reply.session == session && reply.challenge == request.challenge && reply.scope == scope && reply.durablyClosed)
