@@ -18,7 +18,7 @@ use sha2::{Digest, Sha256};
 use tower::ServiceExt;
 use uuid::Uuid;
 const SCHEMA: &str = include_str!(
-    "../../../../../deploy/compose/migrations/066_conversation_confirmation_records.sql"
+    "../../../../../deploy/compose/migration-candidates/NNN_conversation_confirmation_records.sql"
 );
 struct Case {
     f: Fixture,

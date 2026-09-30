@@ -102,7 +102,7 @@ const EXPORT_SCHEMA: [(&str, &str); 66] = export_schema!(
     "063_retention_blocked_stamp.sql",
     "064_owner_conversation_consent.sql",
     "065_conversation_activation.sql",
-    "066_conversation_confirmation_records.sql",
+    "../migration-candidates/NNN_conversation_confirmation_records.sql",
 );
 #[test]
 fn export_schema_includes_every_checked_in_migration() {
@@ -115,7 +115,10 @@ fn export_schema_includes_every_checked_in_migration() {
         .count();
     assert_eq!(
         count,
-        EXPORT_SCHEMA.len(),
+        EXPORT_SCHEMA
+            .iter()
+            .filter(|(name, _)| !name.starts_with("../migration-candidates/"))
+            .count(),
         "add the new migration to EXPORT_SCHEMA so the export test covers it"
     );
 }
@@ -556,7 +559,7 @@ async fn export_paginates_full_history_beyond_the_first_page() {
         include_str!("../../../../deploy/compose/migrations/064_owner_conversation_consent.sql"),
         include_str!("../../../../deploy/compose/migrations/065_conversation_activation.sql"),
         include_str!(
-            "../../../../deploy/compose/migrations/066_conversation_confirmation_records.sql"
+            "../../../../deploy/compose/migration-candidates/NNN_conversation_confirmation_records.sql"
         ),
     ] {
         db.batch_execute(migration).await.unwrap();

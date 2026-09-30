@@ -286,9 +286,9 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../../../../deploy/compose/migrations/065_conversation_activation.sql"),
     ),
     (
-        "066_conversation_confirmation_records.sql",
+        "../migration-candidates/NNN_conversation_confirmation_records.sql",
         include_str!(
-            "../../../../deploy/compose/migrations/066_conversation_confirmation_records.sql"
+            "../../../../deploy/compose/migration-candidates/NNN_conversation_confirmation_records.sql"
         ),
     ),
 ];
@@ -365,6 +365,7 @@ fn migrations_fixture_is_every_checked_in_migration() {
     discovered.sort();
     let embedded = MIGRATIONS
         .iter()
+        .filter(|(name, _)| !name.starts_with("../migration-candidates/"))
         .map(|(name, _)| name.to_string())
         .collect::<Vec<_>>();
     assert_eq!(

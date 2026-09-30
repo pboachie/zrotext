@@ -100,7 +100,7 @@ const TEST_MIGRATIONS: [(&str, &str); 66] = [
     migration!("063_retention_blocked_stamp.sql"),
     migration!("064_owner_conversation_consent.sql"),
     migration!("065_conversation_activation.sql"),
-    migration!("066_conversation_confirmation_records.sql"),
+    migration!("../migration-candidates/NNN_conversation_confirmation_records.sql"),
 ];
 #[test]
 fn exchange_fixture_tracks_numbered_migrations() {
@@ -114,6 +114,7 @@ fn exchange_fixture_tracks_numbered_migrations() {
     discovered.sort();
     let embedded = TEST_MIGRATIONS
         .iter()
+        .filter(|(name, _)| !name.starts_with("../migration-candidates/"))
         .map(|(name, _)| name.to_string())
         .collect::<Vec<_>>();
     assert_eq!(discovered, embedded, "update the embedded migration list");

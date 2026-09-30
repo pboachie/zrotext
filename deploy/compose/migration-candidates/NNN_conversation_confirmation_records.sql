@@ -1,5 +1,5 @@
 -- SPDX-License-Identifier: AGPL-3.0-only
--- 066 is allocated to durable signed conversation reply confirmations.
+-- Unnumbered candidate: allocation is required before entering the migration directory.
 -- Raw proof content may only be redacted; immutable replay identity remains.
 CREATE TABLE conversation_confirmation_records (
  account_id uuid NOT NULL,

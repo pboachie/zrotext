@@ -14,7 +14,7 @@ use p256::{
 // creates this table. Production integration also needs export/retention/erasure
 // coordination: proof redaction preserves these immutable identity tombstones.
 const SCHEMA: &str = include_str!(
-    "../../../../../../deploy/compose/migrations/066_conversation_confirmation_records.sql"
+    "../../../../../../deploy/compose/migration-candidates/NNN_conversation_confirmation_records.sql"
 );
 
 struct Case {

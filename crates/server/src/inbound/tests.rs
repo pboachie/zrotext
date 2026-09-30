@@ -1998,7 +1998,7 @@ async fn signed_stop_after_content_retention_still_suppresses_recipient() {
     .await
     .unwrap();
     db.batch_execute(include_str!(
-        "../../../../deploy/compose/migrations/066_conversation_confirmation_records.sql"
+        "../../../../deploy/compose/migration-candidates/NNN_conversation_confirmation_records.sql"
     ))
     .await
     .unwrap();

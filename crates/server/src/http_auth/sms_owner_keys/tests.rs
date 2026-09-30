@@ -265,8 +265,8 @@ const TEST_MIGRATIONS: [(&str, &str); 66] = [
         migration!("065_conversation_activation.sql"),
     ),
     (
-        "066_conversation_confirmation_records.sql",
-        migration!("066_conversation_confirmation_records.sql"),
+        "../migration-candidates/NNN_conversation_confirmation_records.sql",
+        migration!("../migration-candidates/NNN_conversation_confirmation_records.sql"),
     ),
 ];
 
@@ -282,6 +282,7 @@ fn ceremony_fixture_tracks_numbered_migrations() {
     discovered.sort();
     let embedded = TEST_MIGRATIONS
         .iter()
+        .filter(|(name, _)| !name.starts_with("../migration-candidates/"))
         .map(|(name, _)| name.to_string())
         .collect::<Vec<_>>();
     assert_eq!(discovered, embedded, "update the embedded migration list");
