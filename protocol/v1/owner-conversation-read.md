@@ -47,7 +47,34 @@ admission boundary; this reader parses the already-verified envelope again to
 check its selectors. Synthetic tests use signed fixture envelopes with opaque
 test ciphertext. They do not prove browser decryption or carrier behavior.
 
-## Mandatory integration gates
+## Export inventory and lifecycle
+
+The existing owner export includes `conversation_inventory`: the latest active
+or withdrawn selection and a bounded page of account-owned sealed inbound
+identities. Each identity reports device/line/generation, profile, receipt time
+and whether ciphertext is retained. It includes purged replay identities.
+It exports neither envelopes nor keys and confers no readable-content access.
+This metadata inventory is not a complete encrypted-content export.
+
+At most 100 sealed identities appear per page. Follow
+`sealed_events_next_cursor` using the independent `sealed_before` query parameter;
+the existing outbound `before` cursor retains its meaning. Unknown or foreign
+account sealed cursors return 404. Inventory authorization is rechecked under
+owner/session locks and again after later waits. Responses remain no-store.
+
+Withdrawal clears the selected peer immediately. The existing retention worker
+deletes withdrawn selection metadata in bounded, skip-locked batches after the
+configured sealed-inbound retention period (30 days by default). Active selection
+metadata persists until withdrawal; re-enabling replaces the latest row, so this
+table is not interval history. Existing envelope purge preserves immutable
+event/sequence/digest identities to prevent replay from restoring purged content.
+
+Guarded account erasure explicitly includes selection metadata before its parent
+rows. Immutable line/trust records still block full erasure with 409 and no
+partial deletion. These changes make no backup-erasure guarantee; off-host
+expiry and restore treatment remain integration gates.
+
+## Remaining integration gates
 
 - Bind phone capture and server ingest to the same consent interval. Timestamp
   filters do **not** prove post-consent capture: an ahead-of-time phone clock
