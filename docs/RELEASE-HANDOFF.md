@@ -12,6 +12,8 @@ Repeated handoffs for the same release and gate do not notify again. Routine
 updates do not run this workflow. A closed checklist or changed assignment requires
 maintainer review; the workflow never reopens it. Workflow concurrency serializes
 handoffs for the same release. Use the workflow rather than concurrent local calls.
+Only maintainer- or workflow-authored checklists participate in deduplication;
+markers in other contributors' issues are ignored.
 
 The coordinator can invoke it with the GitHub CLI:
 

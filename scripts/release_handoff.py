@@ -57,13 +57,13 @@ def handoff(release, gate, prs, ready, api=gh):
     title = f"Maintainer verification: {release}"
     issues = api("api", "--paginate", "--slurp", f"repos/{REPO}/issues?state=all&per_page=100")
     matches = [issue for page in issues for issue in page
-               if "pull_request" not in issue and issue_marker in (issue.get("body") or "")]
+               if "pull_request" not in issue
+               and (issue.get("user") or {}).get("login") in (OWNER, "github-actions[bot]")
+               and issue_marker in (issue.get("body") or "")]
     if len(matches) > 1:
         raise HandoffError("Multiple release checklists exist; reconcile them before retrying.")
     issue = matches[0] if matches else None
     if issue:
-        if issue["user"]["login"] not in (OWNER, "github-actions[bot]"):
-            raise HandoffError("The checklist author is not the trusted maintainer or workflow.")
         # A closed issue is a maintainer decision, never reopen it automatically.
         if issue["state"] != "open":
             raise HandoffError("The release checklist is closed; maintainer review is required.")

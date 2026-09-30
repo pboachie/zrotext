@@ -28,7 +28,7 @@ class FakeGitHub:
             result = {"body": fields["body"], "user": {"login": "github-actions[bot]"}}
             self.comments.append(result)
         else:
-            result = {"number": 1, "body": fields["body"], "state": "open",
+            result = {"number": len(self.issues) + 1, "body": fields["body"], "state": "open",
                       "assignees": [{"login": "pboachie"}],
                       "user": {"login": "github-actions[bot]"}}
             self.issues.append(result)
@@ -117,15 +117,30 @@ class HandoffTests(unittest.TestCase):
                                   "user": {"login": "untrusted-contributor"}})
         self.assertTrue(self.run_gate("device-cycle")["notified"])
 
-    def test_ambiguous_or_untrusted_checklist_fails_closed(self):
-        self.api.issues = [{"body": marker("v1.2.3-rc.1"),
-                            "user": {"login": "untrusted-contributor"}}]
+    def test_multiple_trusted_checklists_fail_closed(self):
+        self.run_gate()
+        self.api.issues.append(dict(self.api.issues[0]))
         with self.assertRaises(HandoffError):
             self.run_gate()
-        self.api.issues *= 2
-        with self.assertRaises(HandoffError):
-            self.run_gate()
-        self.assertEqual(self.api.writes, [])
+        self.assertEqual(len(self.api.writes), 1)
+
+    def test_unrelated_markers_do_not_block_initial_handoff(self):
+        for count in (1, 2):
+            with self.subTest(count=count):
+                self.api = FakeGitHub()
+                self.api.issues = [{"body": marker("v1.2.3-rc.1"),
+                                    "user": {"login": "untrusted-contributor"}} for _ in range(count)]
+                self.assertTrue(self.run_gate()["notified"])
+                self.assertFalse(self.run_gate()["notified"])
+                self.assertEqual(len(self.api.writes), 1)
+
+    def test_unrelated_markers_do_not_block_existing_checklist(self):
+        self.run_gate()
+        self.api.issues.extend([{"body": marker("v1.2.3-rc.1"),
+                                 "user": {"login": "untrusted-contributor"}}] * 2)
+        self.assertEqual(self.run_gate("device-cycle"), {"issue": 1, "notified": True})
+        self.assertFalse(self.run_gate("device-cycle")["notified"])
+        self.assertEqual(len(self.api.comments), 1)
 
 
 if __name__ == "__main__":
