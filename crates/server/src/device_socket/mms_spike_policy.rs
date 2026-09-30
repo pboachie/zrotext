@@ -157,5 +157,13 @@ mod tests {
             MmsSpikePolicy::parse(Some("true"), Some("not-a-uuid"), Some("+15551234567")).is_err()
         );
         assert!(MmsSpikePolicy::parse(Some("yes"), None, None).is_err());
+        // An empty or wrongly-cased flag refuses startup rather than
+        // silently enabling or disabling the spike (audit mutation M02).
+        for value in ["", "TRUE", "True", "on", "0", "1"] {
+            assert!(
+                MmsSpikePolicy::parse(Some(value), None, None).is_err(),
+                "flag {value:?} must refuse startup"
+            );
+        }
     }
 }

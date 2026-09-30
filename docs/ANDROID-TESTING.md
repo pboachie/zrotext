@@ -71,20 +71,27 @@ of these must pass:
 3. **Confirmation dialog.** The operator reviews the exact recipient and SIM
    in a dialog and arms one attempt. The arm is held in memory for five
    minutes and consumed by the first grant.
-4. **Server grant.** The phone sends only after an `mms_spike_grant` frame
-   arrives on the authenticated device stream. Like `synthetic_grant`, it must
-   carry exactly `v`, `type`, `grant_id`, `device_id`, `connection_epoch`,
+4. **Server grant.** After the operator arms the attempt, the app sends an
+   `mms_spike_ready` frame on the authenticated device stream naming the
+   session's connection epoch and the SHA-256 digest of the confirmed
+   recipient, and the phone sends only after the hub answers with an
+   `mms_spike_grant` frame. Like `synthetic_grant`, it must carry exactly
+   `v`, `type`, `grant_id`, `device_id`, `connection_epoch`,
    `recipient_digest`, `expires_at_ms` and `recipient_e164`, and match the
    authenticated device and connection epoch, the confirmed and allowlisted
    recipient, and an expiry at most 35 seconds ahead. An unarmed or invalid
-   grant fails the session. The server issues the frame (spec:
-   `protocol/v1/device-stream.md`) only when the founder has enabled it with
-   `MMS_SPIKE_GRANT_ENABLED=true`, named the one gateway device in
-   `MMS_SPIKE_GRANT_DEVICE`, and allowlisted the recipient in
-   `MMS_SPIKE_GRANT_RECIPIENTS`; it arrives once per connection, directly
-   behind the `session` frame, and is withheld when the recipient has an
-   active suppression or owner hold on the server. With the feature off (the
-   default) no frame is ever sent, so the spike stays armed-but-silent.
+   grant fails the session. The hub issues the frame only when the founder
+   has enabled it with `MMS_SPIKE_GRANT_ENABLED=true`, named the one gateway
+   device in `MMS_SPIKE_GRANT_DEVICE`, and allowlisted the recipient in
+   `MMS_SPIKE_GRANT_RECIPIENTS`, and only in answer to the ready frame: a
+   client that never asks — an unarmed debug build, a release build, or a
+   client predating the frame — never receives one, so ordinary sessions are
+   unaffected. The hub also enforces the one-use gate server-side (one grant
+   per device and recipient per 90 days) and withholds the grant while the
+   recipient has an active suppression or unreleased owner hold. The
+   Android app from #442 does not yet send the ready frame; until it does,
+   the armed spike stays armed-but-silent. Spec:
+   `protocol/v1/synthetic-alpha-stream.md`.
 5. **STOP suppression.** The keyed `sender-v1` token (the Android Keystore
    HMAC used by the SMS path) is looked up in the local suppression list, and a
    lookup failure counts as suppressed. The lookup is repeated under the local

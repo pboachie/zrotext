@@ -302,6 +302,15 @@ enum ClientFrame {
         connection_epoch: i64,
         recipient_digest: String,
     },
+    /// Armed debug-build request for the one MMS spike attempt (#438). The
+    /// hub answers with at most one `mms_spike_grant` on this connection;
+    /// a client that never sends this frame never receives a grant.
+    #[serde(rename = "mms_spike_ready")]
+    MmsSpikeReady {
+        v: u8,
+        connection_epoch: i64,
+        recipient_digest: String,
+    },
     #[serde(rename = "radio_event")]
     RadioEvent {
         v: u8,
@@ -1005,15 +1014,6 @@ async fn run_socket(
         release_socket_session(&state, session).await;
         return;
     }
-    // The MMS spike grant rides immediately behind the session frame so the
-    // phone's armed window is consumed deterministically; at most one grant
-    // per connection, and a send failure ends the session as usual.
-    if let Some(frame) = mms_spike_grant_if_due(session, &state).await
-        && !send_frame(&mut socket, frame).await
-    {
-        release_socket_session(&state, session).await;
-        return;
-    }
     let mut last_heartbeat = Instant::now();
     let mut heartbeat_budget = HeartbeatBudget::new(last_heartbeat);
     let mut session_checks = SessionCheckSchedule::new(Instant::now());
@@ -1026,6 +1026,7 @@ async fn run_socket(
     let mut last_grant_at: Option<Instant> = None;
     let mut alpha_ready: Option<([u8; 32], Instant)> = None;
     let mut alpha_ready_used = false;
+    let mut mms_spike_ready_used = false;
     // Enabled only for controlled local liveness probes. Emit bounded,
     // content-free timing and exit markers, never frames or device IDs.
     let diagnostic = std::env::var("ZT_DEVICE_STREAM_DIAGNOSTIC").is_ok_and(|value| value == "1");
@@ -1121,6 +1122,56 @@ async fn run_socket(
                         { break; }
                         alpha_ready = Some((digest, Instant::now()));
                         alpha_ready_used = true;
+                    }
+                    // The grant is strictly solicited (#438): only an armed
+                    // debug build that names this session and an allowlisted
+                    // recipient digest receives one, at most once per
+                    // connection. Old and release clients never send this
+                    // frame, so they never receive a grant.
+                    Some(ClientFrame::MmsSpikeReady { v: 1, connection_epoch, recipient_digest })
+                        if connection_epoch == session.connection_epoch && !mms_spike_ready_used =>
+                    {
+                        mms_spike_ready_used = true;
+                        let Ok(bytes) = URL_SAFE_NO_PAD.decode(recipient_digest.as_bytes()) else { break; };
+                        let Ok(digest): Result<[u8; 32], _> = bytes.try_into() else { break; };
+                        if URL_SAFE_NO_PAD.encode(digest) != recipient_digest {
+                            break;
+                        }
+                        let Ok(client) = runtime_db::connect_device(&state.database_url).await else {
+                            close_with_code = Some(RETRY_LATER);
+                            break;
+                        };
+                        if !session_current(&client, session, &state).await.unwrap_or(false) {
+                            break;
+                        }
+                        match mms_spike_grant_if_due(&client, session, &state, &digest).await {
+                            Ok(Some(frame)) => {
+                                if !send_frame(&mut socket, frame).await {
+                                    break;
+                                }
+                            }
+                            // A ready frame that cannot yield a grant — wrong
+                            // digest, unnamed device, stopped recipient, spent
+                            // one-use budget, or the feature off — is refused
+                            // outright rather than silently ignored, so the
+                            // phone learns and the once-per-connection flag is
+                            // never stranded.
+                            Ok(None) => {
+                                close_with_code = Some(close_code::POLICY);
+                                break;
+                            }
+                            Err(_) => {
+                                close_with_code = Some(RETRY_LATER);
+                                break;
+                            }
+                        }
+                    }
+                    // A second or malformed mms_spike_ready (the per-request
+                    // flag is spent, or the epoch does not match this
+                    // session) is a policy refusal, not a silent skip.
+                    Some(ClientFrame::MmsSpikeReady { .. }) => {
+                        close_with_code = Some(close_code::POLICY);
+                        break;
                     }
                     Some(ClientFrame::RadioEvent {
                         v: 1, connection_epoch, event_id, message_id, attempt_id,
@@ -1690,21 +1741,26 @@ async fn poll_synthetic_grant(
     Ok(Some(grant_frame(grant, recipient, body)))
 }
 
-/// Build the founder-gated MMS spike grant for this session, if one is due.
-/// Returns `None` unless the feature is on, this is the named device, and the
-/// first allowlisted recipient passes the STOP check: no active suppression
-/// and no active owner hold for the account. Any doubt (unknown recipient
-/// state, storage error) refuses, exactly like the phone-side preflight.
+/// Build the solicited MMS spike grant for this session (#438). Called only
+/// from the `mms_spike_ready` handler: `digest` must name an allowlisted
+/// recipient for the founder-named device, that recipient must pass the STOP
+/// check (no active suppression, no unreleased owner hold; any doubt fails
+/// closed), and the server-side one-use budget for this device and recipient
+/// must still be open. Any doubt or storage error withholds the grant.
 async fn mms_spike_grant_if_due(
+    client: &tokio_postgres::Client,
     session: DeviceSession,
     state: &DeviceSocketState,
-) -> Option<ServerFrame> {
+    digest: &[u8; 32],
+) -> Result<Option<ServerFrame>, tokio_postgres::Error> {
     if state.mms_spike_policy.gated_device() != Some(session.device_id) {
-        return None;
+        return Ok(None);
     }
-    let client = runtime_db::connect_device(&state.database_url).await.ok()?;
     for recipient in state.mms_spike_policy.recipients() {
-        let stopped: Option<bool> = client
+        if Sha256::digest(recipient.as_bytes()).as_slice() != &digest[..] {
+            continue;
+        }
+        let stopped: bool = client
             .query_one(
                 "SELECT EXISTS(SELECT 1 FROM recipient_suppressions \
                  WHERE account_id=$1 AND recipient_e164=$2 AND active) \
@@ -1712,24 +1768,36 @@ async fn mms_spike_grant_if_due(
                  WHERE account_id=$1 AND recipient_e164=$2 AND released_at IS NULL)",
                 &[&session.account_id, &recipient],
             )
-            .await
-            .ok()
-            .map(|row| row.get::<_, bool>(0));
-        if stopped != Some(false) {
-            continue;
+            .await?
+            .get(0);
+        if stopped {
+            return Ok(None);
         }
-        let digest = Sha256::digest(recipient.as_bytes());
-        return Some(ServerFrame::MmsSpikeGrant {
+        // Server-side one-use: the subject budget allows a single grant for
+        // this device and recipient, so a replayed or repeated ready frame
+        // cannot obtain a second grant even across instances or reconnects.
+        let subject = format!("{}:{}", session.device_id, recipient);
+        if !abuse_limits::consume(
+            client,
+            &state.auth_hasher,
+            abuse_limits::Limit::MmsSpikeGrant,
+            Some(&subject),
+        )
+        .await?
+        {
+            return Ok(None);
+        }
+        return Ok(Some(ServerFrame::MmsSpikeGrant {
             v: 1,
             grant_id: Uuid::new_v4(),
             device_id: session.device_id,
             connection_epoch: session.connection_epoch,
-            recipient_digest: URL_SAFE_NO_PAD.encode(digest),
+            recipient_digest: URL_SAFE_NO_PAD.encode(Sha256::digest(recipient.as_bytes())),
             expires_at_ms: now_ms() + mms_spike_policy::MMS_SPIKE_GRANT_TTL_MS,
             recipient_e164: recipient.to_string(),
-        });
+        }));
     }
-    None
+    Ok(None)
 }
 
 fn now_ms() -> i64 {

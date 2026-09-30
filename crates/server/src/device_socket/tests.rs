@@ -168,8 +168,8 @@ fn stream_schema_examples_match_serde_frames() {
         "../../../../protocol/v1/device-stream.examples.json"
     ))
     .unwrap();
-    assert_eq!(examples.len(), 21);
-    for frame in &examples[..10] {
+    assert_eq!(examples.len(), 22);
+    for frame in &examples[..11] {
         let parsed: ClientFrame = serde_json::from_value(frame.clone()).unwrap();
         assert_eq!(frame["v"], 1);
         let variant = match parsed {
@@ -179,6 +179,7 @@ fn stream_schema_examples_match_serde_frames() {
             ClientFrame::DeviceStatus { .. } => "device_status",
             ClientFrame::DeviceStatusV2 { .. } => "device_status_v2",
             ClientFrame::AlphaReady { .. } => "alpha_ready",
+            ClientFrame::MmsSpikeReady { .. } => "mms_spike_ready",
             ClientFrame::RadioEvent { .. } => "radio_event",
             ClientFrame::InboundEvent { .. } => "inbound_event",
             ClientFrame::LineOptOut { .. } => "line_opt_out",
@@ -270,8 +271,8 @@ fn stream_schema_examples_match_serde_frames() {
             device_signature_sha256: "Ag".into(),
         },
     ];
-    assert_eq!(server_frames.len(), examples.len() - 10);
-    for (actual, documented) in server_frames.into_iter().zip(&examples[10..]) {
+    assert_eq!(server_frames.len(), examples.len() - 11);
+    for (actual, documented) in server_frames.into_iter().zip(&examples[11..]) {
         let variant = match &actual {
             ServerFrame::Challenge { .. } => "challenge",
             ServerFrame::Session { .. } => "session",

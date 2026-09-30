@@ -803,13 +803,54 @@ async fn one_known_device_id_cannot_starve_another_enrolled_phone() {
     fixture.finish().await;
 }
 
+async fn connect_session(
+    address: std::net::SocketAddr,
+    device_id: Uuid,
+    account_id: Uuid,
+    signing: &SigningKey,
+) -> (TestSocket, i64) {
+    let (mut socket, _) = connect_async(format!("ws://{address}/v1/device-stream"))
+        .await
+        .unwrap();
+    send_json(
+        &mut socket,
+        json!({"v":1,"type":"hello","device_id":device_id}),
+    )
+    .await;
+    let challenge = receive_json(&mut socket).await;
+    assert_eq!(challenge["type"], "challenge");
+    let typed = DeviceChallenge {
+        id: Uuid::parse_str(challenge["challenge_id"].as_str().unwrap()).unwrap(),
+        account_id,
+        device_id,
+        nonce: URL_SAFE_NO_PAD
+            .decode(challenge["nonce"].as_str().unwrap())
+            .unwrap()
+            .try_into()
+            .unwrap(),
+    };
+    let signature: Signature = signing.sign(&device_challenge_bytes(&typed));
+    send_json(&mut socket, json!({"v":1,"type":"proof","challenge_id":typed.id,"account_id":account_id,"device_id":device_id,"nonce":challenge["nonce"],"signature_der":URL_SAFE_NO_PAD.encode(signature.to_der().as_bytes())})).await;
+    let session = receive_json(&mut socket).await;
+    assert_eq!(session["type"], "session");
+    (socket, session["connection_epoch"].as_i64().unwrap())
+}
+async fn next_frame_within(socket: &mut TestSocket, ms: u64) -> Option<Value> {
+    match tokio::time::timeout(Duration::from_millis(ms), socket.next()).await {
+        Ok(Some(Ok(Message::Text(text)))) => Some(serde_json::from_str(&text).unwrap()),
+        _ => None,
+    }
+}
+
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
-async fn mms_spike_grant_follows_the_session_frame_only_when_due() {
-    // The server, not the phone, gates the MMS spike (#438): the grant frame
-    // rides directly behind the session frame, only for the founder-named
-    // device and an allowlisted, un-suppressed recipient, and never when the
-    // feature is off.
+async fn mms_spike_grant_is_solicited_one_use_and_stop_gated() {
+    // The server, not the phone, gates the MMS spike (#438), and the grant
+    // is strictly solicited: only an armed debug build's `mms_spike_ready`
+    // naming this session and an allowlisted recipient digest receives one,
+    // at most once per connection and once per device and recipient across
+    // connections, never while the recipient has stopped, and never to a
+    // client that did not ask.
     let url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
         .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
     let (admin, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
@@ -858,6 +899,7 @@ async fn mms_spike_grant_follows_the_session_frame_only_when_due() {
     .unwrap();
     db.execute("INSERT INTO device_keys(device_id,account_id,signing_key_sec1,fingerprint) VALUES($1,$2,$3,$4)", &[&device_id,&account_id,&public_key.as_bytes(),&&fingerprint[..]]).await.unwrap();
     let recipient = "+15551234567".to_string();
+    let recipient_digest = URL_SAFE_NO_PAD.encode(Sha256::digest(recipient.as_bytes()));
     let state_for = |policy: MmsSpikePolicy| DeviceSocketState {
         database_url: schema_url.clone(),
         site_id: "fixture".into(),
@@ -882,56 +924,43 @@ async fn mms_spike_grant_follows_the_session_frame_only_when_due() {
         });
         (address, server)
     };
-    async fn connect_session(
-        address: std::net::SocketAddr,
-        device_id: Uuid,
-        account_id: Uuid,
-        signing: &SigningKey,
-    ) -> (TestSocket, i64) {
-        let (mut socket, _) = connect_async(format!("ws://{address}/v1/device-stream"))
-            .await
-            .unwrap();
-        send_json(
-            &mut socket,
-            json!({"v":1,"type":"hello","device_id":device_id}),
-        )
-        .await;
-        let challenge = receive_json(&mut socket).await;
-        assert_eq!(challenge["type"], "challenge");
-        let typed = DeviceChallenge {
-            id: Uuid::parse_str(challenge["challenge_id"].as_str().unwrap()).unwrap(),
-            account_id,
-            device_id,
-            nonce: URL_SAFE_NO_PAD
-                .decode(challenge["nonce"].as_str().unwrap())
-                .unwrap()
-                .try_into()
+    async fn expect_close(socket: &mut TestSocket, code: u16) {
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(5), socket.next())
+                .await
                 .unwrap(),
-        };
-        let signature: Signature = signing.sign(&device_challenge_bytes(&typed));
-        send_json(&mut socket, json!({"v":1,"type":"proof","challenge_id":typed.id,"account_id":account_id,"device_id":device_id,"nonce":challenge["nonce"],"signature_der":URL_SAFE_NO_PAD.encode(signature.to_der().as_bytes())})).await;
-        let session = receive_json(&mut socket).await;
-        assert_eq!(session["type"], "session");
-        (socket, session["connection_epoch"].as_i64().unwrap())
-    }
-    async fn next_frame_within(socket: &mut TestSocket, ms: u64) -> Option<Value> {
-        match tokio::time::timeout(Duration::from_millis(ms), socket.next()).await {
-            Ok(Some(Ok(Message::Text(text)))) => Some(serde_json::from_str(&text).unwrap()),
-            _ => None,
-        }
+            Some(Ok(Message::Close(Some(frame)))) if u16::from(frame.code) == code
+        ));
     }
 
-    // Enabled and matching: the grant arrives right behind the session frame
-    // with the exact field set the phone's validator demands.
+    fn ready_frame(epoch: i64, digest: &str) -> Value {
+        json!({"v":1,"type":"mms_spike_ready","connection_epoch":epoch,"recipient_digest":digest})
+    }
+
+    // Solicited: no ready frame, no grant — an unarmed, old or release
+    // client never receives one.
     let (address, server) = serve(state_for(
         MmsSpikePolicy::parse(Some("true"), Some(&device_id.to_string()), Some(&recipient))
             .unwrap(),
     ))
     .await;
-    let (mut socket, epoch) = connect_session(address, device_id, account_id, &signing).await;
+    let (mut socket, _epoch) = connect_session(address, device_id, account_id, &signing).await;
+    assert!(
+        next_frame_within(&mut socket, 1_500).await.is_none(),
+        "a client that did not request must never receive a grant"
+    );
+    // A ready frame with a digest that names no allowlisted recipient is
+    // refused outright, never silently ignored.
+    let wrong_digest = URL_SAFE_NO_PAD.encode(Sha256::digest(b"+15550000000"));
+    send_json(&mut socket, ready_frame(_epoch, &wrong_digest)).await;
+    expect_close(&mut socket, close_code::POLICY).await;
+    // The matching ready frame on a fresh connection delivers exactly one
+    // grant with the field set the phone's validator demands.
+    let (mut socket, _epoch) = connect_session(address, device_id, account_id, &signing).await;
+    send_json(&mut socket, ready_frame(_epoch, &recipient_digest)).await;
     let grant: Value = next_frame_within(&mut socket, 5_000)
         .await
-        .expect("grant frame follows the session frame");
+        .expect("grant follows the matching ready frame");
     assert_eq!(grant["type"], "mms_spike_grant");
     let mut keys: Vec<String> = grant.as_object().unwrap().keys().cloned().collect();
     keys.sort();
@@ -950,12 +979,9 @@ async fn mms_spike_grant_follows_the_session_frame_only_when_due() {
     );
     assert_eq!(grant["v"], json!(1));
     assert_eq!(grant["device_id"], json!(device_id));
-    assert_eq!(grant["connection_epoch"], json!(epoch));
+    assert_eq!(grant["connection_epoch"], json!(_epoch));
     assert_eq!(grant["recipient_e164"], json!(recipient));
-    assert_eq!(
-        grant["recipient_digest"],
-        json!(URL_SAFE_NO_PAD.encode(Sha256::digest(recipient.as_bytes())))
-    );
+    assert_eq!(grant["recipient_digest"], json!(recipient_digest));
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -965,11 +991,32 @@ async fn mms_spike_grant_follows_the_session_frame_only_when_due() {
         expires > now && expires - now <= 35_000,
         "{expires} vs {now}"
     );
-    // Exactly one grant per connection.
-    assert!(next_frame_within(&mut socket, 500).await.is_none());
+    // A second ready frame on the same connection is refused: the
+    // connection already had its one request.
+    send_json(&mut socket, ready_frame(_epoch, &recipient_digest)).await;
+    expect_close(&mut socket, close_code::POLICY).await;
     server.abort();
 
-    // STOP check: an active suppression withholds the grant.
+    // One-use is server-side: a fresh connection and ready frame receive
+    // nothing while the device+recipient budget is spent.
+    let (address, server) = serve(state_for(
+        MmsSpikePolicy::parse(Some("true"), Some(&device_id.to_string()), Some(&recipient))
+            .unwrap(),
+    ))
+    .await;
+    let (mut socket, epoch) = connect_session(address, device_id, account_id, &signing).await;
+    send_json(&mut socket, ready_frame(epoch, &recipient_digest)).await;
+    expect_close(&mut socket, close_code::POLICY).await;
+    server.abort();
+    // Reset the budget for the STOP scenarios below.
+    db.execute(
+        "DELETE FROM auth_abuse_counters WHERE scope='mms_spike_grant'",
+        &[],
+    )
+    .await
+    .unwrap();
+
+    // STOP check: an active suppression withholds the grant (fail closed).
     let stop_message = Uuid::new_v4();
     let stop_attempt = Uuid::new_v4();
     let stop_event = Uuid::new_v4();
@@ -1006,45 +1053,189 @@ async fn mms_spike_grant_follows_the_session_frame_only_when_due() {
             .unwrap(),
     ))
     .await;
-    let (mut socket, _epoch) = connect_session(address, device_id, account_id, &signing).await;
-    assert!(
-        next_frame_within(&mut socket, 1_500).await.is_none(),
-        "a suppressed recipient must not be granted"
-    );
+    let (mut socket, epoch) = connect_session(address, device_id, account_id, &signing).await;
+    send_json(&mut socket, ready_frame(epoch, &recipient_digest)).await;
+    expect_close(&mut socket, close_code::POLICY).await;
     server.abort();
+    // An unreleased owner hold withholds it too.
+    let hold_user = Uuid::new_v4();
+    let hold_id = Uuid::new_v4();
+    db.execute(
+        "INSERT INTO users(id,email,password_hash,created_at) VALUES($1,'hold@example.test','x',now())",
+        &[&hold_user],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO memberships(account_id,user_id,role) VALUES($1,$2,'owner')",
+        &[&account_id, &hold_user],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO owner_recipient_holds(id,account_id,recipient_e164,channel,reason,reported_at,created_by) \
+         VALUES($1,$2,$3,'web_form','opt_out',now(),$4)",
+        &[&hold_id, &account_id, &recipient, &hold_user],
+    )
+    .await
+    .unwrap();
     db.execute(
         "DELETE FROM recipient_suppressions WHERE account_id=$1",
         &[&account_id],
     )
     .await
     .unwrap();
-
-    // A different founder-named device withholds the grant for this one.
     let (address, server) = serve(state_for(
+        MmsSpikePolicy::parse(Some("true"), Some(&device_id.to_string()), Some(&recipient))
+            .unwrap(),
+    ))
+    .await;
+    let (mut socket, epoch) = connect_session(address, device_id, account_id, &signing).await;
+    send_json(&mut socket, ready_frame(epoch, &recipient_digest)).await;
+    expect_close(&mut socket, close_code::POLICY).await;
+    server.abort();
+    // Releasing the hold lets the grant through again.
+    // The production release path is the owner review flow; the guard
+    // trigger forbids direct updates, so the disposable test schema lifts it
+    // for this one synthetic release.
+    db.execute(
+        "ALTER TABLE owner_recipient_holds DISABLE TRIGGER owner_recipient_holds_before_update_or_delete",
+        &[],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "UPDATE owner_recipient_holds SET released_at=now(), release_event_id=$2 WHERE id=$1",
+        &[&hold_id, &stop_event],
+    )
+    .await
+    .unwrap();
+    let (address, server) = serve(state_for(
+        MmsSpikePolicy::parse(Some("true"), Some(&device_id.to_string()), Some(&recipient))
+            .unwrap(),
+    ))
+    .await;
+    let (mut socket, epoch) = connect_session(address, device_id, account_id, &signing).await;
+    send_json(&mut socket, ready_frame(epoch, &recipient_digest)).await;
+    let granted: Value = next_frame_within(&mut socket, 5_000)
+        .await
+        .expect("a released hold lets the grant through");
+    assert_eq!(granted["type"], "mms_spike_grant");
+    server.abort();
+
+    // A device the founder did not name, and a disabled policy, never grant
+    // even to a ready client.
+    for policy in [
         MmsSpikePolicy::parse(
             Some("true"),
             Some(&other_device.to_string()),
             Some(&recipient),
         )
         .unwrap(),
-    ))
+        MmsSpikePolicy::disabled(),
+    ] {
+        let (address, server) = serve(state_for(policy)).await;
+        let (mut socket, epoch) = connect_session(address, device_id, account_id, &signing).await;
+        send_json(&mut socket, ready_frame(epoch, &recipient_digest)).await;
+        expect_close(&mut socket, close_code::POLICY).await;
+        server.abort();
+    }
+
+    admin
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn mms_spike_grant_fails_closed_when_the_stop_tables_are_unreadable() {
+    // A storage error in the STOP lookup must withhold the grant rather
+    // than issue one: the schema deliberately lacks owner_recipient_holds,
+    // so the lookup errors and the ready frame receives nothing.
+    let url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+        .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let (admin, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let schema = format!("socket_mms_stop_{}", Uuid::new_v4().simple());
+    admin
+        .batch_execute(&format!("CREATE SCHEMA {schema}"))
+        .await
+        .unwrap();
+    let separator = if url.contains('?') { '&' } else { '?' };
+    let schema_url = format!("{url}{separator}options=-csearch_path%3D{schema}");
+    let (db, connection) = tokio_postgres::connect(&schema_url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    for migration in [
+        include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
+        include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+        include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
+        include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
+        include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
+        include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+        // 007 and 036 stay out: recipient_suppressions and
+        // owner_recipient_holds do not exist, so the STOP lookup fails.
+    ] {
+        db.batch_execute(migration).await.unwrap();
+    }
+    let account_id = Uuid::new_v4();
+    let device_id = Uuid::new_v4();
+    let signing = SigningKey::generate_from_rng(&mut rng());
+    let public_key = signing.verifying_key().to_sec1_point(false);
+    let fingerprint: [u8; 32] = Sha256::digest(public_key.as_bytes()).into();
+    db.execute("INSERT INTO sites(site_id) VALUES('fixture')", &[])
+        .await
+        .unwrap();
+    db.execute("INSERT INTO accounts(id) VALUES($1)", &[&account_id])
+        .await
+        .unwrap();
+    db.execute(
+        "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'stop fail fixture')",
+        &[&device_id, &account_id],
+    )
+    .await
+    .unwrap();
+    db.execute("INSERT INTO device_keys(device_id,account_id,signing_key_sec1,fingerprint) VALUES($1,$2,$3,$4)", &[&device_id,&account_id,&public_key.as_bytes(),&&fingerprint[..]]).await.unwrap();
+    let recipient = "+15551234567".to_string();
+    let state = DeviceSocketState {
+        database_url: schema_url,
+        site_id: "fixture".into(),
+        instance_id: "fixture".into(),
+        deployment_epoch: 1,
+        enrollment_hasher: Arc::new(EnrollmentHasher::new(crate::test_keys::key(9)).unwrap()),
+        auth_hasher: Arc::new(TokenHasher::new(crate::test_keys::key(10)).unwrap()),
+        alpha_policy: Arc::new(AlphaPolicy::parse(None, None, None).unwrap()),
+        dispatch_runtime_enabled: false,
+        inbound_pilot_enabled: false,
+        line_opt_out_enabled: false,
+        sms_line_activation_enabled: false,
+        mms_spike_policy: Arc::new(
+            MmsSpikePolicy::parse(Some("true"), Some(&device_id.to_string()), Some(&recipient))
+                .unwrap(),
+        ),
+        draining: Arc::new(AtomicBool::new(false)),
+        drain_notify: Arc::new(Notify::new()),
+    };
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router(state)).await.unwrap();
+    });
+    let (mut socket, epoch) = connect_session(address, device_id, account_id, &signing).await;
+    let digest = URL_SAFE_NO_PAD.encode(Sha256::digest(recipient.as_bytes()));
+    send_json(
+        &mut socket,
+        json!({"v":1,"type":"mms_spike_ready","connection_epoch":epoch,"recipient_digest":digest}),
+    )
     .await;
-    let (mut socket, _epoch) = connect_session(address, device_id, account_id, &signing).await;
-    assert!(
-        next_frame_within(&mut socket, 1_500).await.is_none(),
-        "a device the founder did not name must not be granted"
-    );
+    // The unreadable STOP state closes the socket retryably without a grant.
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_secs(5), socket.next())
+            .await
+            .unwrap(),
+        Some(Ok(Message::Close(Some(frame)))) if u16::from(frame.code) == RETRY_LATER
+    ));
     server.abort();
-
-    // Default-off withholds it too.
-    let (address, server) = serve(state_for(MmsSpikePolicy::disabled())).await;
-    let (mut socket, _epoch) = connect_session(address, device_id, account_id, &signing).await;
-    assert!(
-        next_frame_within(&mut socket, 1_500).await.is_none(),
-        "a disabled policy must never grant"
-    );
-    server.abort();
-
     admin
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
         .await
