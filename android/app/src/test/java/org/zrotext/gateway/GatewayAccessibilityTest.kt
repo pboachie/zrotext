@@ -38,7 +38,8 @@ open class GatewayAccessibilityTest : GatewayAccessibilityChecks() {
             SubscriptionInfoBuilder.newBuilder().setId(1).setSimSlotIndex(0)
                 .setDisplayName("Test SIM").buildSubscriptionInfo())
         val controller = Robolectric.buildActivity(MainActivity::class.java, Intent(app, MainActivity::class.java)
-            .putExtra("gateway_screen", page)).setup().visible()
+            .putExtra("gateway_screen", page.substringBefore('/'))
+            .putExtra("gateway_setup_step", page.substringAfter('/', "OVERVIEW"))).setup().visible()
         try {
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(300))
             val root = requireNotNull(findRoot(controller.get().window.decorView))
@@ -53,7 +54,7 @@ open class GatewayAccessibilityTest : GatewayAccessibilityChecks() {
         }
     }
 
-    @Test fun choosingASimUpdatesItsSelectedStateAndDescription() = onScreen(GatewayPage.SETUP.name) { root ->
+    @Test fun choosingASimUpdatesItsSelectedStateAndDescription() = onScreen("SETUP/SIM") { root ->
         fun choice() = nodes(root).single { text(it) == "SIM 1: Test SIM" }
         assertFalse(choice().config[SemanticsProperties.Selected])
         assertEquals("Not selected", choice().config[SemanticsProperties.StateDescription])

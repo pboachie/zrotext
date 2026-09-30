@@ -29,6 +29,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -46,6 +49,9 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
+
+internal val LocalGatewayScrollReset = staticCompositionLocalOf<() -> Unit> { {} }
 
 internal enum class GatewayPage(val label: String) {
     HOME("Home"), SETUP("Setup"), CONNECTION("Connection"), TOOLS("Tools")
@@ -63,6 +69,8 @@ internal fun GatewayCompanion(initialPage: GatewayPage = GatewayPage.HOME,
     // cannot let fixed navigation consume the space needed by the controls.
     screenState.SaveableStateProvider(page.name) {
         val scroll = rememberScrollState()
+        val scope = rememberCoroutineScope()
+        val resetScroll: () -> Unit = { scope.launch { scroll.scrollTo(0) } }
         Column(Modifier.fillMaxSize().safeDrawingPadding().imePadding().clipToBounds()
             .verticalScroll(scroll).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -95,7 +103,9 @@ internal fun GatewayCompanion(initialPage: GatewayPage = GatewayPage.HOME,
                     }
                 }
             }
-            content(page, navigate)
+            CompositionLocalProvider(LocalGatewayScrollReset provides resetScroll) {
+                content(page, navigate)
+            }
         }
     }
 }

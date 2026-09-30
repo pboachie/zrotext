@@ -23,17 +23,22 @@ abstract class GatewayAccessibilityChecks {
     private fun debugOnly(vararg labels: String): List<String> =
         if (BuildConfig.DEBUG) labels.toList() else emptyList()
 
-    private fun everyScreen(check: (GatewayPage, RootForTest) -> Unit) {
-        GatewayPage.entries.forEach { page -> onScreen(page.name) { check(page, it) } }
+    private fun everyScreen(check: (String, RootForTest) -> Unit) {
+        (GatewayPage.entries.map { it.name } + listOf("SETUP/ACCESS", "SETUP/SIM", "SETUP/PAIRING"))
+            .forEach { page -> onScreen(page) { check(page, it) } }
     }
 
     @Test fun sectionsAreHeadingsInReadingOrder() = everyScreen { page, root ->
         val expected = when (page) {
-            GatewayPage.HOME -> listOf("Gateway home", "This phone", "Quick controls")
-            GatewayPage.SETUP -> listOf("Set up this phone", "Device pairing")
-            GatewayPage.CONNECTION -> listOf("Authenticated device heartbeat")
-            GatewayPage.TOOLS -> listOf("Advanced pilots", "Gateway connection test", "Controlled SMS test") +
+            "HOME" -> listOf("Gateway home", "This phone", "Quick controls")
+            "SETUP" -> listOf("Set up this phone")
+            "SETUP/ACCESS" -> listOf("Set up this phone", "Review access", "Android access")
+            "SETUP/SIM" -> listOf("Set up this phone", "Choose a SIM")
+            "SETUP/PAIRING" -> listOf("Set up this phone", "Device pairing")
+            "CONNECTION" -> listOf("Authenticated device heartbeat")
+            "TOOLS" -> listOf("Advanced pilots", "Gateway connection test", "Controlled SMS test") +
                 debugOnly("Controlled MMS spike")
+            else -> error("Unknown test screen")
         }
         val headings = nodes(root).filter { it.config.contains(SemanticsProperties.Heading) }
         assertEquals(listOf("ZROtext") + expected, headings.map(::text))
@@ -44,10 +49,13 @@ abstract class GatewayAccessibilityChecks {
 
     @Test fun statusRegionsExcludeRoutineHeartbeatCounters() = everyScreen { page, root ->
         val expected = when (page) {
-            GatewayPage.HOME -> listOf("Device status")
-            GatewayPage.SETUP -> listOf("Pairing status")
-            GatewayPage.CONNECTION -> listOf("Authenticated connection status")
-            GatewayPage.TOOLS -> listOf("Pilot status", "Connection status") + debugOnly("MMS spike status")
+            "HOME" -> listOf("Device status")
+            "SETUP" -> listOf("Pairing in this session")
+            "SETUP/ACCESS", "SETUP/SIM" -> emptyList()
+            "SETUP/PAIRING" -> listOf("Pairing status")
+            "CONNECTION" -> listOf("Authenticated connection status")
+            "TOOLS" -> listOf("Pilot status", "Connection status") + debugOnly("MMS spike status")
+            else -> error("Unknown test screen")
         }
         val regions = nodes(root).filter { it.config.contains(SemanticsProperties.LiveRegion) }
         assertTrue(regions.all { it.config[SemanticsProperties.LiveRegion] == LiveRegionMode.Polite })
@@ -78,11 +86,12 @@ abstract class GatewayAccessibilityChecks {
 
     @Test fun fieldsKeepLabelsAndTokensRemainPasswordFields() = everyScreen { page, root ->
         val expected = when (page) {
-            GatewayPage.HOME -> emptyList()
-            GatewayPage.SETUP -> listOf("HTTPS server origin", "Pairing ID", "One-use pairing token")
-            GatewayPage.CONNECTION -> listOf("WSS device stream URL", "Approved device UUID")
-            GatewayPage.TOOLS -> listOf("WSS test endpoint", "Short-lived test token", "Controlled recipient +E.164") +
+            "HOME", "SETUP", "SETUP/ACCESS", "SETUP/SIM" -> emptyList()
+            "SETUP/PAIRING" -> listOf("HTTPS server origin", "Pairing ID", "One-use pairing token")
+            "CONNECTION" -> listOf("WSS device stream URL", "Approved device UUID")
+            "TOOLS" -> listOf("WSS test endpoint", "Short-lived test token", "Controlled recipient +E.164") +
                 debugOnly("Controlled MMS recipient +E.164", "Optional subject")
+            else -> error("Unknown test screen")
         }
         val fields = nodes(root).filter { it.config.contains(SemanticsProperties.EditableText) }
         assertEquals(expected, fields.map(::text))
