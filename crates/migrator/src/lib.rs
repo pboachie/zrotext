@@ -486,6 +486,12 @@ async fn apply_locked(
     }
     if migrations
         .iter()
+        .any(|migration| migration.version == ERASURE_FK_INDEX_MIGRATION)
+    {
+        verify_erasure_fk_indexes(client).await?;
+    }
+    if migrations
+        .iter()
         .any(|migration| migration.version == OPTOUT_REVIEW_INDEXES_MIGRATION)
     {
         verify_optout_review_indexes(client).await?;
