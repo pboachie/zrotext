@@ -3,7 +3,7 @@ buildscript {
         constraints {
             // Build tooling only: the CycloneDX plugin (cyclonedx-core-java) pulls
             // jackson-databind onto this classpath. It is not in any :app configuration.
-            classpath("com.fasterxml.jackson.core:jackson-databind:2.22.2") {
+            classpath("com.fasterxml.jackson.core:jackson-databind:2.22.3") {
                 because("CVE-2026-68497, CVE-2026-83557 and CVE-2026-19032 are fixed in 2.22.2")
             }
         }
