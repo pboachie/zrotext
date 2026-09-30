@@ -33,6 +33,7 @@ START = re.compile(
     r"head=([0-9a-f]{40}) (?:base=([0-9a-f]{40}) )?"
     r"mode=(review|address) trigger=([A-Za-z0-9_-]+) -->"
 )
+PRIVATE_RESULT = "<!-- zrotext-jules-session-result:v1 -->"
 RESULT = re.compile(r"<!-- zrotext-jules-result:v1 session=(sessions/[A-Za-z0-9_-]+) -->")
 
 
@@ -235,7 +236,7 @@ def safe_session_url(session: dict) -> str:
         "jules.google.com", "jules.google"} else ""
 
 
-def recent_feedback(number: int, github_token: str) -> str:
+def recent_feedback(number: int, github_token: str, jules_key: str = "") -> str:
     """Collect Jules' latest review and maintainer feedback for an address task.
 
     Only identity fields returned by GitHub decide what is included: comments
@@ -269,9 +270,19 @@ def recent_feedback(number: int, github_token: str) -> str:
     published = [item for item in reviews if jules_review(item)]
     if published:
         latest = published[-1]
+        body = latest.get("body") or ""
+        if PRIVATE_RESULT in body:
+            if not jules_key:
+                raise RuntimeError("Jules credentials are required to retrieve session feedback")
+            session = RESULT.search(body).group(1)
+            body = review_report(final_message(session, jules_key), latest.get("commit_id"), None)
+            if body is None:
+                raise RuntimeError("Jules session feedback is incomplete or stale")
+        else:
+            body = RESULT.sub("", body).strip()
         feedback["jules_review"] = {
             "commit": latest.get("commit_id"),
-            "body": RESULT.sub("", latest.get("body") or "").strip()[:JULES_REVIEW_LIMIT],
+            "body": body[:JULES_REVIEW_LIMIT],
         }
     # Keep the newest maintainer feedback that fits, then restore its order.
     kept: list[dict] = []
@@ -375,7 +386,7 @@ def start_review(number: int, mode: str, trigger: str, github_token: str,
     if pr["head"]["ref"] not in branches:
         print(f"PR #{number} deferred: its head branch is not yet available in the Jules source.")
         return False
-    feedback = recent_feedback(number, github_token) if mode == "address" else ""
+    feedback = recent_feedback(number, github_token, jules_key) if mode == "address" else ""
     created = request_json(f"{JULES}/sessions", token=jules_key, service="jules",
                            method="POST", phase="session-create", payload={
                                "title": f"ZROtext PR #{number} {mode}",
@@ -596,12 +607,17 @@ def poll_reviews(github_token: str, jules_key: str) -> None:
                 message = final_message(session, jules_key)
                 if mode == "review":
                     report = review_report(message, sha, base_sha)
-                    body = f"{header}\n\n" + (report if report is not None else
+                    body = f"{header}\n\n" + (
+                           "Jules returned a complete report for these commits. "
+                           "Inspect the session before deciding which outcomes to share publicly. "
+                           "This notice does not establish a clean review.\n\n" + PRIVATE_RESULT
+                           if report is not None else
                            "Jules did not return a complete, valid review for these commits. "
                            "This is an incomplete review, not a clean result. Inspect the session "
                            "for blockers or findings, then request a new review with `/jules review`.")
                 else:
-                    body = f"{header}\n\n{message[:12000].replace('<!--', '&lt;!--')}"
+                    body = (f"{header}\n\nJules completed the address session. "
+                            "Inspect the session before deciding which outcomes to share publicly.")
                 if mode == "address":
                     body += "\n\nProposed changes remain in the Jules session until the owner publishes them."
             body += "\n\n" + marker
