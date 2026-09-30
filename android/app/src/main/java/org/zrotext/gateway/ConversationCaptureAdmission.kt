@@ -122,6 +122,13 @@ internal class ConversationCaptureAdmission(
 
     @Synchronized fun captureEligible(): Boolean = currentLease() != null
 
+    /** Dormant adapters share the exact receiver/Pause monitor and scope fence. */
+    @Synchronized fun <T> withCurrentScope(expected: ConversationCaptureScope, action: (() -> Unit) -> T): T = failClosed {
+        val check = { check(checkNotNull(currentLease()).scope == expected) { "Conversation scope unavailable" } }
+        check()
+        action(check)
+    }
+
     /**
      * receiptToken is the existing vault's domain-separated HMAC of the original PDU identity.
      * It must be independent of interval / retries. No plaintext PDU hash or peer is stored in Room.

@@ -51,3 +51,36 @@ published consent/policy and physical-device tests. None is enabled here.
 
 The canonical cross-language example is
 [conversation-send.json](vectors/conversation-send.json).
+
+## Dormant phone confirmation journal
+
+The standalone `ConversationConfirmedSend` adapter and its separate Room database
+persist encrypted signed evidence and message/interval/digest/deadline metadata.
+They are never opened by production code. The cross-language fixture verifies
+current manifest authority, both signatures, exact scope and decrypted body digest
+before this journal accepts the browser packet. The receiver and explicit close
+share the same admission monitor. Prepared or installed states cannot send.
+
+A transaction changes `confirmed` to `claimed` and reserves a unique attempt before
+the transport callback. Reverification, expiry or authority failure after claiming
+preserves that fence. `submitted` denotes submission only; callback failure yields
+`unknown`. Claimed, submitted and unknown records cannot be automatically replayed,
+including after database reopening. This prevents local duplicate submission; it
+does not establish carrier delivery or support production reconciliation yet.
+
+The trusted-time adapter follows the existing sealed dispatch contract: authenticated
+server time advanced by a monotonic clock, unavailable until refreshed after restart.
+Device wall time alone is forbidden. Unavailable, throwing or regressing time latches
+the adapter closed. Freshness is checked after the final admission query immediately
+before transport. The fixture supplies synthetic time; no production time service is
+created here. Existing execution grants, suppression, billing and queue fences remain
+required before any real radio transport.
+
+Content is capped at 128 records and permanent receipt/closure fences at 1024.
+Purging encrypted evidence retains replay identity and cannot restore content through
+retry. Close cancels pending evidence after disabling the shared capture gate; close
+failure must be surfaced separately. Before mounting, integrate this database into the
+protected export inventory, retention worker, guarded account/device deletion and
+uncertain-attempt reconciliation. Journal deletion must never be used to reset a send
+fence while the corresponding authority can still submit. No worker or UI claims those
+integration gates are complete.

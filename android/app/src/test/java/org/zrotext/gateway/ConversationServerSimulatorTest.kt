@@ -101,9 +101,43 @@ class ConversationServerSimulatorTest {
                 // A verified result handed off after the 30s intent deadline is
                 // refused even though the conversation's 60s lease remains live.
                 assertFalse(fixture.recordVerifiedAcceptance(admission, deadline, { deadline }) { simulatedPhoneAcceptances++ })
-                assertTrue(fixture.recordVerifiedAcceptance(admission, deadline) { simulatedPhoneAcceptances++ })
+                val sendName = "conversation-server-send-test.db"
+                context.deleteDatabase(sendName)
+                var sendDb = Room.databaseBuilder(context, ConversationSendDatabase::class.java, sendName).allowMainThreadQueries().build()
+                try {
+                    var verificationCount = 0
+                    val verifier = object : ConversationSendVerifier {
+                        override fun verify(evidence: ByteArray): VerifiedConversationSend {
+                            verificationCount++
+                            return fixture.verifiedSend(evidence, System.getenv("ZT_CONVERSATION_SIM_MODE") == "send_verify_close" && verificationCount == 3)
+                        }
+                    }
+                    // Fixture time only; production requires refreshed authenticated monotonic time.
+                    fun sender() = ConversationConfirmedSend(sendDb.sends(), admission, verifier, fixture.protection,
+                        System::currentTimeMillis, object : ConversationSendTransport {
+                            override fun submit(message: String, attempt: String, scope: ConversationCaptureScope, body: String): ConversationSubmission {
+                                assertEquals("claimed", sendDb.sends().receipt(message)!!.state)
+                                assertEquals(attempt, sendDb.sends().receipt(message)!!.attempt)
+                                assertEquals("Synthetic browser reply \u03A9\nExact trailing spaces  ", body)
+                                simulatedPhoneAcceptances++
+                                return ConversationSubmission.SUBMITTED
+                            }
+                        })
+                    val durable = sender()
+                    durable.receiveConfirmed(sent.toString().toByteArray(Charsets.UTF_8))
+                    assertEquals("confirmed", sendDb.sends().receipt(sent.getString("message"))!!.state)
+                    if (System.getenv("ZT_CONVERSATION_SIM_MODE") == "send_verify_close") {
+                        assertThrows(IllegalStateException::class.java) { durable.submitConfirmed(sent.getString("message")) }
+                        assertEquals("claimed", sendDb.sends().receipt(sent.getString("message"))!!.state)
+                        assertEquals(0, simulatedPhoneAcceptances)
+                    } else assertEquals(ConversationSubmission.SUBMITTED, durable.submitConfirmed(sent.getString("message")))
+                    sendDb.close()
+                    sendDb = Room.databaseBuilder(context, ConversationSendDatabase::class.java, sendName).allowMainThreadQueries().build()
+                    assertEquals(if (System.getenv("ZT_CONVERSATION_SIM_MODE") == "send_verify_close") "claimed" else "submitted", sendDb.sends().receipt(sent.getString("message"))!!.state)
+                    assertThrows(IllegalStateException::class.java) { sender().submitConfirmed(sent.getString("message")) }
+                } finally { sendDb.close(); context.deleteDatabase(sendName) }
             }
-            assertEquals(if (sendClosed) 0 else 1, simulatedPhoneAcceptances)
+            assertEquals(if (sendClosed || System.getenv("ZT_CONVERSATION_SIM_MODE") == "send_verify_close") 0 else 1, simulatedPhoneAcceptances)
 
             // All receiver / close actions use this same admission instance. Never infer Closed on failure.
             val mode = System.getenv("ZT_CONVERSATION_SIM_MODE") ?: "pause"

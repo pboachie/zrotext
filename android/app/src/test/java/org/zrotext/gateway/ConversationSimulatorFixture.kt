@@ -113,6 +113,18 @@ internal class ConversationSimulatorFixture(private val ready: JSONObject) : Con
         JSONObject().put("op", "prepare").put("body", body).put("capture", capture).put("observed", observed).put("sequence", sequence))
     fun open(envelope: String): JSONObject = sdk(JSONObject().put("op", "open").put("envelope", envelope))
     fun browser(event: UUID, inbound: String): JSONObject = sdk(JSONObject().put("event", event.toString()).put("inbound", inbound).put("closeDuringDecrypt", System.getenv("ZT_CONVERSATION_SIM_MODE") == "send_close"), ready.getString("browserTool"))
+    fun verifiedSend(evidence: ByteArray, closeAfterDecrypt: Boolean = false): VerifiedConversationSend {
+        val packet = JSONObject(evidence.toString(Charsets.UTF_8))
+        val tool = java.io.File(java.io.File(ready.getString("browserTool")).parentFile, "conversation-phone-send-verifier.mjs").path
+        val expected = JSONObject().put("account", parsed.scope.accountId).put("device", parsed.scope.deviceId)
+            .put("line", parsed.scope.lineId).put("interval", parsed.scope.intervalId).put("session", parsed.scope.initiatingSessionId)
+            .put("generation", parsed.scope.bindingGeneration.toString()).put("peer", parsed.scope.peer)
+            .put("reader", b64(hex(parsed.scope.readerKeyId)))
+        val value = sdk(JSONObject().put("evidencePacket", packet).put("expectedScope", expected).put("closeAfterDecrypt", closeAfterDecrypt), tool)
+        val authenticated = value.getJSONObject("scope")
+        expected.keys().forEach { field -> check(authenticated.getString(field) == expected.getString(field)) }
+        return VerifiedConversationSend(parsed.scope, value.getString("message"), value.getString("deadline").toLong(), value.getString("body"))
+    }
     // Verified deadline comes from the independently checked signed proof. The
     // clock executes inside the shared monitor, after any admission-lock wait.
     fun recordVerifiedAcceptance(admission: ConversationCaptureAdmission, deadline: Long,
