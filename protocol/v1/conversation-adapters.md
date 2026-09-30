@@ -166,6 +166,36 @@ pending, synchronous local Stop, and negative/unconfirmed remote ACK behavior.
 These tests do not establish actual server authentication, encrypted production
 custody, permission grants, carrier execution or device accessibility readiness.
 
+## Dormant server handlers
+
+`http_owner_conversations::channel::handle` now verifies the exact frame header
+against socket-owned identity and database-backed account/device/key/site/epoch
+and lease authority. Time uses server UTC. Stop compares every scope byte against
+the canonical stored activation, serializes with capture using manifest-before-
+account locking, and returns an ACK only after the closure transaction commits.
+Active-to-history Stop is idempotent and preserves authorized retained history;
+owner logout does not prevent an otherwise authenticated phone from closing it.
+No handler is registered in the socket or an HTTP router. The socket owner still
+must negotiate the phone-session UUID/origin and supply the independently proven
+context. Scope/nonce decoding never creates that context.
+
+`http_owner_conversations::enrollment::install` implements the SDK installation
+callback boundary as a dormant PostgreSQL transaction. It verifies the existing
+root-signed exact successor, requires current owner session/selection/consent and
+line/readers, preserves all old records, permits one bounded exact-line role-5
+addition, and performs a predecessor CAS. Acceptance provenance advances with the
+new manifest. Current reader and owner expiry are rechecked before commit;
+replay, tamper, withdrawal and expired session roll back the transaction.
+The root custodian and owner authenticated endpoint adapters remain unconnected.
+
+A pending interval closed before installation becomes expired and loses its
+statement under the existing lifecycle schema. If its ACK is lost, a later
+request cannot reconstruct every original scope byte and fails closed. A durable
+ACK/scope tombstone or separately authenticated reconciliation protocol is still
+needed for that recovery case; it cannot be invented by client retry or by
+reopening the interval. No new migration or weakened lifecycle constraint is
+introduced here.
+
 Before mounting: coordinate both service Pause paths and first-PDU receiver with
 one shared runtime, finish server/frame/verifier adapters and signer enrollment,
 integrate export/retention/guarded deletion/backup/reconciliation, update consent

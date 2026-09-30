@@ -9,6 +9,7 @@ use crate::{
 };
 use tokio_postgres::Transaction;
 use uuid::Uuid;
+mod enrollment;
 
 pub(crate) struct ManifestSnapshot {
     pub generation: i64,

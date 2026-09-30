@@ -28,6 +28,8 @@ use tokio_postgres::{Client, Transaction};
 use uuid::Uuid;
 
 pub mod activation;
+pub mod channel;
+pub mod enrollment;
 pub(crate) mod lifecycle;
 pub mod send;
 
