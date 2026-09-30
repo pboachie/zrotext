@@ -10,7 +10,9 @@ use crate::{
         self,
         preauth::{OwnerAuthState, OwnerMutation},
     },
-    sealed_envelope::{self, Kind, Profile},
+    sealed_envelope::{self, ExpectedRecipient, Kind, Profile},
+    sealed_manifest::EnvelopeAuthority,
+    sealed_manifest_store::{AdmissionError, outbound::lock_current},
 };
 use axum::{
     Router,
@@ -128,6 +130,15 @@ impl IntoResponse for ConversationError {
             Self::Database(_) | Self::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
         };
         status.into_response()
+    }
+}
+
+impl From<AdmissionError> for ConversationError {
+    fn from(error: AdmissionError) -> Self {
+        match error {
+            AdmissionError::Database(error) => Self::Database(error),
+            AdmissionError::Rejected(_) => Self::Forbidden,
+        }
     }
 }
 
@@ -251,6 +262,9 @@ pub async fn read_event(
         return Err(ConversationError::NotFound);
     }
     let tx = client.transaction().await?;
+    // Shared ingest/read lock order: manifest authority BEFORE account. Never
+    // append a manifest lock to the existing account-first owner inventory.
+    let mut authority = lock_current(&tx, owner.tenant.account_id()).await?;
     lock_owner(&tx, owner).await?;
     let selected = tx
         .query_opt(
@@ -284,7 +298,40 @@ pub async fn read_event(
     {
         return Err(ConversationError::NotFound);
     }
+    let recipients: Vec<ExpectedRecipient> = claims
+        .wraps
+        .iter()
+        .map(|wrap| {
+            Ok(ExpectedRecipient {
+                role: wrap.role,
+                key_id: wrap
+                    .key_id
+                    .try_into()
+                    .map_err(|_| ConversationError::NotFound)?,
+            })
+        })
+        .collect::<Result<_, ConversationError>>()?;
+    let wanted = EnvelopeAuthority {
+        kind: Kind::Inbound,
+        account_id: *owner.tenant.account_id().as_bytes(),
+        device_id: *device.as_bytes(),
+        line_id: *line.as_bytes(),
+        message_id: *event.as_bytes(),
+        signer_key_id: claims
+            .signer_key_id
+            .try_into()
+            .map_err(|_| ConversationError::NotFound)?,
+        peer: claims.peer,
+        recipients: &recipients,
+    };
+    // Reverify under the exact current owner-signed manifest, including current
+    // archive reader/signer validity and expiry after the event-row lock wait.
+    // Historical-manifest content fails closed even if key bytes are unchanged.
+    let context = authority.inbound_context(&wanted).await?;
+    sealed_envelope::verify(&bytes, &context).map_err(|_| ConversationError::Forbidden)?;
     fresh_owner(&tx, owner).await?;
+    authority.inbound_context(&wanted).await?;
+    drop(authority);
     tx.commit().await?;
     Ok(bytes)
 }
