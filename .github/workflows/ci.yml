@@ -3,6 +3,8 @@ on:
   pull_request:
   push:
     branches: [main]
+env:
+  DOCKER_BUILD_RECORD_UPLOAD: 'false'
 permissions:
   contents: read
 # A new push to a pull request cancels that pull request's older run. Every
@@ -36,6 +38,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Build server image for vulnerability scan
@@ -86,6 +90,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Test owner browser flows
         run: node --test web/owner/*.test.js
       - name: Test draft sealed-content vectors and TypeScript reader
@@ -97,6 +103,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
       - name: Public-tree hygiene
         run: python3 scripts/check_public_tree.py
@@ -175,6 +182,8 @@ jobs:
         run: echo 'Every changed file is documentation or Android-only; see scripts/ci_changes.py.'
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: env.RUN_RUST == 'true'
+        with:
+          persist-credentials: false
       - name: Check documented environment variables
         if: env.RUN_RUST == 'true'
         run: python3 scripts/check_env_example.py
@@ -235,6 +244,8 @@ jobs:
         run: echo 'Every changed file is documentation or server-only; see scripts/ci_changes.py.'
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: env.RUN_ANDROID == 'true'
+        with:
+          persist-credentials: false
       - name: Validate Gradle wrapper JAR
         if: env.RUN_ANDROID == 'true'
         uses: gradle/actions/wrapper-validation@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0

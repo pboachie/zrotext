@@ -556,8 +556,8 @@ class ReviewRoutingTests(unittest.TestCase):
         self.assertEqual(len(posted), 1)
         self.assertEqual(posted[0]["event"], "COMMENT")
         self.assertEqual(posted[0]["commit_id"], SHA)
-        self.assertIn("No actionable findings.", posted[0]["body"])
-        self.assertIn("Not run; review only.", posted[0]["body"])
+        self.assertIn("complete report", posted[0]["body"])
+        self.assertNotIn("Not run; review only.", posted[0]["body"])
         self.assertIn("zrotext-jules-result", posted[0]["body"])
 
     def test_prose_final_message_is_an_incomplete_review_comment(self):
@@ -866,6 +866,86 @@ class AddressFeedbackTrustTests(unittest.TestCase):
         self.assertIn("Rename the helper.", prompts[0])
         self.assertNotIn("token logger", prompts[0])
 
+
+
+class SessionPublicationTests(unittest.TestCase):
+    def collect(self, mode, message):
+        sent = []
+        start = {"user": dict(ACTIONS_USER), "body": (
+            f"<!-- zrotext-jules-start:v1 session=sessions/123 head={SHA} "
+            f"base={BASE_SHA} mode={mode} trigger=comment-7 -->")}
+        def listing(path, token):
+            return {
+                "/issues?labels=jules-pending&state=open": [{"number": 74, "pull_request": {}}],
+                "/issues/74/comments": [start], "/pulls/74/reviews": [],
+            }[path]
+        def request(url, **kwargs):
+            if kwargs.get("method") == "POST":
+                sent.append((url, kwargs["payload"]))
+                return {}
+            if url == f"{review.JULES}/sessions/123":
+                return {"state": "COMPLETED"}
+            if url == f"{review.GITHUB}/pulls/74":
+                return pull_request()
+            raise AssertionError(url)
+        with patch.object(review, "pages", side_effect=listing), \
+             patch.object(review, "request_json", side_effect=request), \
+             patch.object(review, "final_message", return_value=message), \
+             patch.object(review, "remove_pending_label"):
+            review.poll_reviews("github-test", "jules-test")
+        self.assertEqual(len(sent), 1)
+        return sent[0]
+
+    def test_completed_review_keeps_all_report_fields_in_session(self):
+        finding = {"severity": "P2", "path": "synthetic-case.rs", "line": 1,
+                   "title": "synthetic-title", "evidence": "synthetic-evidence",
+                   "fix": "synthetic-fix"}
+        message = report_json(findings=[finding], tests="synthetic-tests",
+                              limitations="synthetic-limitations")
+        url, payload = self.collect("review", message)
+        self.assertEqual(url, f"{review.GITHUB}/pulls/74/reviews")
+        self.assertEqual(payload["commit_id"], SHA)
+        self.assertIn(review.PRIVATE_RESULT, payload["body"])
+        for value in [finding[k] for k in ("path", "title", "evidence", "fix")]:
+            self.assertNotIn(value, payload["body"])
+        self.assertNotIn("synthetic-tests", payload["body"])
+        self.assertNotIn("synthetic-limitations", payload["body"])
+        self.assertIn("does not establish a clean review", payload["body"])
+
+    def test_address_summary_is_never_copied_to_public_comment(self):
+        url, payload = self.collect("address", "synthetic-session-summary @synthetic-user")
+        self.assertEqual(url, f"{review.GITHUB}/issues/74/comments")
+        self.assertNotIn("synthetic-session-summary", payload["body"])
+        self.assertNotIn("@synthetic-user", payload["body"])
+        self.assertIn("Inspect the session", payload["body"])
+        self.assertIn("zrotext-jules-result", payload["body"])
+
+    def test_invalid_review_remains_incomplete_without_echoing_output(self):
+        for message in ("synthetic-prose", report_json(status="blocked"),
+                        report_json(head="c" * 40)):
+            with self.subTest(message=message):
+                url, payload = self.collect("review", message)
+                self.assertEqual(url, f"{review.GITHUB}/issues/74/comments")
+                self.assertIn("incomplete review", payload["body"])
+                self.assertNotIn("synthetic-prose", payload["body"])
+
+    def test_address_feedback_retrieves_validated_session_report(self):
+        notice = jules_published_review(review.PRIVATE_RESULT)
+        def listing(path, token):
+            return [notice] if path == "/pulls/74/reviews" else []
+        with patch.object(review, "pages", side_effect=listing), \
+             patch.object(review, "final_message", return_value=report_json(tests="synthetic-tests")) as read:
+            feedback = json.loads(review.recent_feedback(74, "github-test", "jules-test"))
+        read.assert_called_once_with("sessions/123", "jules-test")
+        self.assertIn("synthetic-tests", feedback["jules_review"]["body"])
+        self.assertNotIn(review.PRIVATE_RESULT, feedback["jules_review"]["body"])
+
+    def test_address_feedback_rejects_invalid_session_report(self):
+        notice = jules_published_review(review.PRIVATE_RESULT)
+        with patch.object(review, "pages", side_effect=lambda p, t: [notice] if p.endswith("/reviews") else []), \
+             patch.object(review, "final_message", return_value=report_json(head="c" * 40)):
+            with self.assertRaisesRegex(RuntimeError, "incomplete or stale"):
+                review.recent_feedback(74, "github-test", "jules-test")
 
 if __name__ == "__main__":
     unittest.main()
