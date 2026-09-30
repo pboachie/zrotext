@@ -352,10 +352,17 @@ The profile-02 reader verifies routing, historical signer/wrap authority, canoni
 signature, HPKE and AES-GCM before returning strict UTF-8 text. Current archive reader
 revocation blocks retained history. Same-root accepted manifests observed in the
 session are cached with a finite bound. To restore history after reload, supply
-`history: {trustStore, loadChain}`: `loadChain` returns the requested signed manifest
-and every successor through the current persisted high-water. `verifyHistory` on
-the existing `Draft02TrustStore` validates the complete chain without writing or
-lowering high-water. Missing, forked, rotated-root and oversized chains are refused.
+`history: {trustStore}` uses public signed-manifest bytes atomically retained alongside
+the existing high-water by each successful `acceptManifest`. The last 64 accepted
+versions of the current root/generation survive browser reload; no message content,
+private key or credential is added. Reenrollment, root transition and corrupt-state
+recovery clear that public history. `verifyStoredHistory` re-verifies the contiguous
+signed chain to the exact current persisted high-water without lowering trust.
+An optional `loadChain` can supply the requested signed manifest and every successor
+when they are available elsewhere. Missing, forked, rotated-root and oversized chains
+are refused. Browsers predating this retention change, new browsers, cleared storage
+and pruned/unobserved intermediate versions require a complete signed chain from an
+independently retained source; the current-only server directory cannot restore it.
 
 After `npm ci --ignore-scripts` and `npm run build`, the explicit command
 `node scripts/package_conversation_browser.mjs <asset-output-directory>` from the
