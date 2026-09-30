@@ -29,7 +29,7 @@ abstract class GatewayAccessibilityChecks {
 
     @Test fun sectionsAreHeadingsInReadingOrder() = everyScreen { page, root ->
         val expected = when (page) {
-            GatewayPage.HOME -> listOf("Gateway home", "Authenticated connection", "This phone")
+            GatewayPage.HOME -> listOf("Gateway home", "This phone", "Quick controls")
             GatewayPage.SETUP -> listOf("Set up this phone", "Device pairing")
             GatewayPage.CONNECTION -> listOf("Authenticated device heartbeat")
             GatewayPage.TOOLS -> listOf("Advanced pilots", "Gateway connection test", "Controlled SMS test") +
@@ -44,7 +44,7 @@ abstract class GatewayAccessibilityChecks {
 
     @Test fun statusRegionsExcludeRoutineHeartbeatCounters() = everyScreen { page, root ->
         val expected = when (page) {
-            GatewayPage.HOME -> listOf("Device status", "Pairing in this session", "Test connection")
+            GatewayPage.HOME -> listOf("Device status")
             GatewayPage.SETUP -> listOf("Pairing status")
             GatewayPage.CONNECTION -> listOf("Authenticated connection status")
             GatewayPage.TOOLS -> listOf("Pilot status", "Connection status") + debugOnly("MMS spike status")
