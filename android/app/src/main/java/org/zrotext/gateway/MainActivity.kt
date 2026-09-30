@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -61,6 +62,7 @@ class MainActivity : ComponentActivity() {
     private var signingFingerprint by mutableStateOf("")
     private var signingSecurity by mutableStateOf("")
     private var defaultSmsAppRcsRisk by mutableStateOf(DefaultSmsAppRcsRisk.Risk.UNAVAILABLE)
+    private var permissionDisclosure by mutableStateOf<GatewayPermissionPurpose?>(null)
     private val pairingWorker = Executors.newSingleThreadExecutor()
     private val permissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         refreshSims()
@@ -84,6 +86,22 @@ class MainActivity : ComponentActivity() {
         defaultSmsAppRcsRisk = DefaultSmsAppRcsRisk.observe(this)
         setContent {
             GatewayTheme {
+            permissionDisclosure?.let { purpose ->
+                AlertDialog(
+                    onDismissRequest = { permissionDisclosure = null },
+                    title = { Text(purpose.title) },
+                    text = { Text(purpose.disclosure, modifier = Modifier.verticalScroll(rememberScrollState())) },
+                    confirmButton = {
+                        GatewayButton(onClick = {
+                            permissionDisclosure = null
+                            askPermissions(purpose)
+                        }) { Text("Agree and continue") }
+                    },
+                    dismissButton = {
+                        GatewayButton(onClick = { permissionDisclosure = null }) { Text("Not now") }
+                    }
+                )
+            }
                 Column(
                     modifier = Modifier.fillMaxSize().safeDrawingPadding().imePadding().clipToBounds()
                         .verticalScroll(rememberScrollState()).padding(24.dp),
@@ -95,7 +113,14 @@ class MainActivity : ComponentActivity() {
                     Text("Check SIM visibility and a test socket connection. This connection test does not send or receive SMS.")
                     GatewayStatusText("Connection status", GatewayStatus.value)
                     Text("Heartbeat acknowledgments this process: ${GatewayStatus.heartbeats}")
-                    GatewayButton(onClick = { askPermissions() }) { Text("Grant gateway permissions") }
+                    GatewayButton(onClick = { permissionDisclosure = GatewayPermissionPurpose.SIM }) { Text("Choose SIM permissions") }
+                    GatewayButton(onClick = { permissionDisclosure = GatewayPermissionPurpose.SEND }) { Text("Review SMS sending access") }
+                    GatewayButton(onClick = { permissionDisclosure = GatewayPermissionPurpose.RECEIVE }) { Text("Review SMS receiving access") }
+                    Text("SMS access is optional for pairing and connection tests. Pause stops the connection, but receiving access can still process incoming SMS locally. Revoke SMS access in Android app settings to stop that processing.")
+                    GatewayButton(onClick = {
+                        startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                            android.net.Uri.parse("package:$packageName")))
+                    }) { Text("Manage or revoke permissions") }
                     Text("Selected SIM: ${selectedSim?.toString() ?: "none"}")
                     sims.forEach { (id, label) ->
                         GatewayButton(onClick = {
@@ -271,10 +296,11 @@ class MainActivity : ComponentActivity() {
         return false
     }
 
-    private fun askPermissions() {
-        val requested = mutableListOf(Manifest.permission.READ_PHONE_STATE, Manifest.permission.SEND_SMS, Manifest.permission.RECEIVE_SMS)
-        if (Build.VERSION.SDK_INT >= 33) requested += Manifest.permission.POST_NOTIFICATIONS
-        permissions.launch(requested.toTypedArray())
+    private fun askPermissions(purpose: GatewayPermissionPurpose) {
+        val requested = purpose.permissions(Build.VERSION.SDK_INT).filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (requested.isNotEmpty()) permissions.launch(requested.toTypedArray())
     }
 
     private fun refreshSims() {
