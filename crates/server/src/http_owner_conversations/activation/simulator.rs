@@ -20,6 +20,7 @@ use p256::{ecdsa::SigningKey, elliptic_curve::Generate};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use std::io::Write;
 use std::sync::Arc;
 use tokio::sync::{Mutex, Notify};
 
@@ -191,10 +192,7 @@ async fn command(
 #[tokio::test]
 #[ignore = "requires explicitly selected conversation simulator runner, SDK and disposable PostgreSQL"]
 async fn loopback_journal_bridge() {
-    let directory =
-        std::env::var_os("ZT_CONVERSATION_SIM_DIR").expect("explicit fixture directory");
-    let directory = std::path::PathBuf::from(directory);
-    assert!(directory.is_absolute() && directory.is_dir());
+    assert!(std::env::var_os("ZT_CONVERSATION_SIM_DIR").is_some());
     let (mut f, owner) = super::super::tests::prepared().await;
     // Additional roles exist only in this fresh owner-signed synthetic manifest.
     // No production key, root grant or shared signer custody is created.
@@ -306,16 +304,15 @@ async fn loopback_journal_bridge() {
             .await
             .unwrap()
     });
-    let path = directory.join("ready.json");
-    let temporary = directory.join("ready.tmp");
-    std::fs::write(&temporary, serde_json::to_vec(&ready).unwrap()).unwrap();
-    std::fs::rename(&temporary, &path).unwrap();
+    let readiness = serde_json::to_string(&ready).unwrap();
+    assert!(readiness.len() <= 16_384);
+    println!("\nZT_CONVERSATION_SIM_READY_V1 {readiness}");
+    std::io::stdout().flush().unwrap();
     let result = tokio::time::timeout(std::time::Duration::from_secs(240), &mut server).await;
     if result.is_err() {
         server.abort();
         let _ = server.await;
     }
-    std::fs::remove_file(&path).unwrap();
     let state = Arc::try_unwrap(state).ok().expect("fixture server stopped");
     state.fixture.into_inner().cleanup().await;
     result
