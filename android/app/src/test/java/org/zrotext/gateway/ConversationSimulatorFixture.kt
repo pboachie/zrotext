@@ -89,7 +89,7 @@ internal class ConversationSimulatorFixture(private val ready: JSONObject) : Con
     }
 
     fun command(op: String, data: String? = null, signature: String? = null,
-                challenge: UUID? = null, event: UUID? = null): JSONObject {
+                challenge: UUID? = null, event: UUID? = null, confirmation: String? = null): JSONObject {
         val port = ready.getInt("port")
         require(port in 1..65535)
         val uri = URI("http", null, "localhost", port, "/fixture", null, null)
@@ -100,6 +100,7 @@ internal class ConversationSimulatorFixture(private val ready: JSONObject) : Con
         val json = JSONObject().put("token", ready.getString("token")).put("op", op)
         data?.let { json.put("data", it) }; signature?.let { json.put("signature", it) }
         challenge?.let { json.put("challenge", it.toString()) }; event?.let { json.put("event", it.toString()) }
+        confirmation?.let { json.put("confirmation", it) }
         try {
             connection.outputStream.use { it.write(json.toString().toByteArray(Charsets.UTF_8)) }
             return JSONObject((if (connection.responseCode == 200) connection.inputStream else connection.errorStream).use {
@@ -111,10 +112,18 @@ internal class ConversationSimulatorFixture(private val ready: JSONObject) : Con
     fun envelope(body: String, capture: String, observed: Long, sequence: Long): JSONObject = sdk(
         JSONObject().put("op", "prepare").put("body", body).put("capture", capture).put("observed", observed).put("sequence", sequence))
     fun open(envelope: String): JSONObject = sdk(JSONObject().put("op", "open").put("envelope", envelope))
-    private fun sdk(input: JSONObject): JSONObject {
+    fun browser(event: UUID, inbound: String): JSONObject = sdk(JSONObject().put("event", event.toString()).put("inbound", inbound).put("closeDuringDecrypt", System.getenv("ZT_CONVERSATION_SIM_MODE") == "send_close"), ready.getString("browserTool"))
+    // Verified deadline comes from the independently checked signed proof. The
+    // clock executes inside the shared monitor, after any admission-lock wait.
+    fun recordVerifiedAcceptance(admission: ConversationCaptureAdmission, deadline: Long,
+                                 now: () -> Long = System::currentTimeMillis, record: () -> Unit): Boolean = synchronized(admission) {
+        if (!admission.captureEligible() || now() >= deadline) false
+        else { record(); true }
+    }
+    private fun sdk(input: JSONObject, tool: String = ready.getString("sdkTool")): JSONObject {
         input.put("ready", ready).put("device", parsed.scope.deviceId).put("line", parsed.scope.lineId).put("peer", parsed.scope.peer)
         val file = java.io.File.createTempFile("conversation-sdk-", ".json")
-        val process = ProcessBuilder("node", ready.getString("sdkTool")).redirectErrorStream(true).redirectOutput(file).start()
+        val process = ProcessBuilder("node", tool).redirectErrorStream(true).redirectOutput(file).start()
         try {
             process.outputStream.use { it.write(input.toString().toByteArray(Charsets.UTF_8)) }
             check(process.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)) { "Synthetic SDK adapter timed out" }

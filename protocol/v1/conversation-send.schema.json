@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Dormant conversation confirmation transport",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["envelope", "confirmation", "signature"],
+  "properties": {
+    "envelope": {"type": "string", "contentEncoding": "base64", "maxLength": 45620},
+    "confirmation": {"type": "string", "contentEncoding": "base64", "minLength": 396, "maxLength": 416},
+    "signature": {"type": "string", "contentEncoding": "base64", "minLength": 88, "maxLength": 88}
+  },
+  "$comment": "Test-only transport. Binary decode, canonical widths, low-S signatures, exact scope/manifest/body binding and current temporal authority are enforced by code; schema validation grants nothing."
+}

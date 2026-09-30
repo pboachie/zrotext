@@ -84,6 +84,26 @@ class ConversationServerSimulatorTest {
             assertEquals(captured.captureId, admission.retry(token)!!.captureId)
             assertEquals(captured.firstObservedAtMs, admission.retry(token)!!.firstObservedAtMs)
             assertEquals(ConversationObservation.DUPLICATE, observe())
+            assertTrue(admission.captureEligible()) // Same simulated phone admission gate is active.
+            val browser = fixture.browser(event, body)
+            assertEquals(1, browser.getInt("signed"))
+            val sendClosed = browser.getBoolean("closedDuringDecrypt")
+            if (sendClosed) enabled = false
+            // Record synthetic phone acceptance under the exact same monitor/gate
+            // as receiver observation and Pause, only after verified decryption.
+            var simulatedPhoneAcceptances = 0
+            val sent = browser.getJSONObject("packet")
+            val proof = java.util.Base64.getDecoder().decode(sent.getString("confirmation"))
+            val deadline = java.nio.ByteBuffer.wrap(proof, 125, 8).long
+            if (browser.getInt("verified") == 1) {
+                assertTrue(admission.captureEligible())
+                assertEquals(scope, fixture.parsed.scope)
+                // A verified result handed off after the 30s intent deadline is
+                // refused even though the conversation's 60s lease remains live.
+                assertFalse(fixture.recordVerifiedAcceptance(admission, deadline, { deadline }) { simulatedPhoneAcceptances++ })
+                assertTrue(fixture.recordVerifiedAcceptance(admission, deadline) { simulatedPhoneAcceptances++ })
+            }
+            assertEquals(if (sendClosed) 0 else 1, simulatedPhoneAcceptances)
 
             // All receiver / close actions use this same admission instance. Never infer Closed on failure.
             val mode = System.getenv("ZT_CONVERSATION_SIM_MODE") ?: "pause"
@@ -96,6 +116,8 @@ class ConversationServerSimulatorTest {
             assertEquals(if (mode == "close_failure") "capture_disabled_closure_failed" else "closed", closeStatus)
             assertFalse(fixture.command("lease", challenge = UUID.randomUUID()).getBoolean("ok"))
             assertFalse(fixture.command("capture", data = envelope.getString("envelope")).getBoolean("ok"))
+            assertFalse(fixture.command("browser_authority").getBoolean("ok"))
+            assertFalse(fixture.command("send", data = sent.getString("envelope"), confirmation = sent.getString("confirmation"), signature = sent.getString("signature")).getBoolean("ok"))
             if (mode == "close_failure") {
                 db.close()
                 db = Room.databaseBuilder(context, ConversationCaptureDatabase::class.java, name).allowMainThreadQueries().build()

@@ -87,5 +87,5 @@ jobs:
           cargo clippy --locked -p zrotext-server --all-targets --features conversation-simulator-tests -- -D warnings
           cargo test --locked -p zrotext-server --lib --features conversation-simulator-tests --no-run
           (cd android && ./gradlew :app:compileDebugUnitTestKotlin --no-daemon --max-workers=2)
-      - name: Require the real synthetic capture / encrypted history and closure contracts
+      - name: Require synthetic capture, encrypted history, confirmed reply and closure
         run: python3 scripts/conversation_simulator.py

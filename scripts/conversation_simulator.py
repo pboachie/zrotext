@@ -16,12 +16,12 @@ import xml.etree.ElementTree as ET
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--toolchain", help="Optional installed Cargo toolchain override")
-    parser.add_argument("--mode", choices=("pause", "logout", "close_failure"), action="append")
+    parser.add_argument("--mode", choices=("pause", "logout", "close_failure", "send_close"), action="append")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     cargo = ["cargo"] + (["+" + args.toolchain] if args.toolchain else [])
     gradle = str(root / "android" / "gradlew.bat") if os.name == "nt" else "./gradlew"
-    for mode in args.mode or ("pause", "logout", "close_failure"):
+    for mode in args.mode or ("pause", "logout", "close_failure", "send_close"):
         with tempfile.TemporaryDirectory(prefix="conversation-simulator-") as directory:
             env = dict(os.environ, ZT_CONVERSATION_SIM_DIR=directory, ZT_CONVERSATION_SIM_MODE=mode)
             log = Path(directory) / "server.log"
@@ -48,7 +48,7 @@ def main():
                     suite = ET.parse(root / "android/app/build/test-results/testDebugUnitTest/TEST-org.zrotext.gateway.ConversationServerSimulatorTest.xml").getroot()
                     assert suite.get("tests") == "1" and suite.get("failures") == "0" and suite.get("skipped") == "0", "Simulator must actually execute"
                     assert server.wait(timeout=20) == 0, "Synthetic server assertions failed"
-                    print("PASS " + mode + ": server acceptance/install, journal, encrypted browser history, durable closure")
+                    print("PASS " + mode + ": journal, encrypted browser history, exact-confirmed reply, shared phone gate, closure")
                 finally:
                     if server.poll() is None:
                         try:

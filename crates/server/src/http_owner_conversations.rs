@@ -29,6 +29,7 @@ use uuid::Uuid;
 
 pub mod activation;
 pub(crate) mod lifecycle;
+pub mod send;
 
 pub const DISCLOSURE_VERSION: &str = "conversation-content-v1";
 const CONTENT_TYPE: &str = "application/vnd.zrotext.sealed.v1";
