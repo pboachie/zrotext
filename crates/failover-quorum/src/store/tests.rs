@@ -18,9 +18,9 @@ use crate::executor_tests::MemoryAuthority;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const MEMBERS: [&str; 3] = ["workload-a", "workload-b", "witness"];
+pub(super) const MEMBERS: [&str; 3] = ["workload-a", "workload-b", "witness"];
 
-fn members() -> Vec<String> {
+pub(super) fn members() -> Vec<String> {
     MEMBERS.iter().map(|member| (*member).to_owned()).collect()
 }
 
@@ -31,11 +31,11 @@ fn changed_members() -> Vec<String> {
         .collect()
 }
 
-fn test_config() -> FailoverConfig {
+pub(super) fn test_config() -> FailoverConfig {
     FailoverConfig::new(members(), "site-a", "site-b").unwrap()
 }
 
-fn report(member_id: &str, writer: WriterObservation, at_ms: u64) -> MemberReport {
+pub(super) fn report(member_id: &str, writer: WriterObservation, at_ms: u64) -> MemberReport {
     MemberReport {
         member_id: member_id.to_owned(),
         observed_at_ms: at_ms,
@@ -47,15 +47,15 @@ fn report(member_id: &str, writer: WriterObservation, at_ms: u64) -> MemberRepor
     }
 }
 
-fn reachable(member_id: &str, epoch: u64, at_ms: u64) -> MemberReport {
+pub(super) fn reachable(member_id: &str, epoch: u64, at_ms: u64) -> MemberReport {
     report(member_id, WriterObservation::Reachable { epoch }, at_ms)
 }
 
-fn unreachable(member_id: &str, at_ms: u64) -> MemberReport {
+pub(super) fn unreachable(member_id: &str, at_ms: u64) -> MemberReport {
     report(member_id, WriterObservation::Unreachable, at_ms)
 }
 
-fn evidence(member_id: &str, at_ms: u64) -> MemberReport {
+pub(super) fn evidence(member_id: &str, at_ms: u64) -> MemberReport {
     let report = unreachable(member_id, at_ms);
     MemberReport {
         writer_site_fence: Some(SiteFenceState {
@@ -74,10 +74,10 @@ fn evidence(member_id: &str, at_ms: u64) -> MemberReport {
 /// argument or the system temp dir — under the workspace `target/`, which
 /// Git ignores; the name is a fixed per-test label plus a process-unique
 /// suffix.
-struct TempDir(PathBuf);
+pub(super) struct TempDir(PathBuf);
 
 impl TempDir {
-    fn new(label: &str) -> Self {
+    pub(super) fn new(label: &str) -> Self {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
         let nanos = std::time::SystemTime::now()
@@ -91,7 +91,7 @@ impl TempDir {
         Self(path)
     }
 
-    fn path(&self) -> &Path {
+    pub(super) fn path(&self) -> &Path {
         &self.0
     }
 }
@@ -116,24 +116,28 @@ impl Drop for TempDir {
     }
 }
 
-fn open(directory: &Path) -> Result<ConsensusStore, StoreError> {
+pub(super) fn open(directory: &Path) -> Result<ConsensusStore, StoreError> {
     ConsensusStore::open(directory, members(), DEFAULT_OBSERVATION_FRESHNESS_MS)
 }
 
-fn observations_dir(directory: &Path) -> PathBuf {
+pub(super) fn observations_dir(directory: &Path) -> PathBuf {
     directory.join("observations")
 }
 
-fn journal_path(directory: &Path, member: &str) -> PathBuf {
+pub(super) fn journal_path(directory: &Path, member: &str) -> PathBuf {
     observations_dir(directory).join(format!("{member}.journal"))
 }
 
-fn membership_path(directory: &Path) -> PathBuf {
+pub(super) fn checkpoint_path(directory: &Path, member: &str) -> PathBuf {
+    observations_dir(directory).join(format!("{member}.checkpoint"))
+}
+
+pub(super) fn membership_path(directory: &Path) -> PathBuf {
     directory.join("membership")
 }
 
 /// Append raw bytes to a member journal on disk (store must be dropped).
-fn append_journal_bytes(directory: &Path, member: &str, bytes: &[u8]) {
+pub(super) fn append_journal_bytes(directory: &Path, member: &str, bytes: &[u8]) {
     let path = journal_path(directory, member);
     let mut file = OpenOptions::new()
         .append(true)
@@ -414,8 +418,15 @@ fn journal_head_truncation_fails_closed_on_reload() {
     .unwrap();
     let error = open(temp.path()).unwrap_err();
     assert!(
-        matches!(error, StoreError::SequenceBroken { ref member, expected: 1, found: 2 } if member == "workload-a"),
-        "sequences must be contiguous from one, got {error:?}"
+        matches!(
+            error,
+            // Since compaction, the precise diagnosis is a journal
+            // continuing above one without a checkpoint; a deleted head is
+            // still fail-closed.
+            StoreError::CheckpointMissing { ref member, journal_first: 2 }
+                if member == "workload-a"
+        ),
+        "a head-truncated journal must fail closed, got {error:?}"
     );
 }
 

@@ -151,6 +151,11 @@ pub(crate) struct MemoryAuthority {
     /// Adversarial: the old writer's fence is cleared (operator SQL) just
     /// before our promotion runs.
     unfence_writer_on_promote: bool,
+    /// Test seam standing in for the singleton advisory lock: latched by
+    /// `reacquire` to simulate the port losing and re-acquiring its write
+    /// exclusivity, and read-and-cleared by
+    /// `WriterAuthority::exclusivity_reacquired`.
+    exclusivity_latch: bool,
 }
 
 impl MemoryAuthority {
@@ -180,6 +185,7 @@ impl MemoryAuthority {
             saves_since_arm: 0,
             bump_epoch_on_promote_to: None,
             unfence_writer_on_promote: false,
+            exclusivity_latch: false,
         }
     }
 
@@ -209,6 +215,15 @@ impl MemoryAuthority {
                 _ => None,
             })
             .collect()
+    }
+
+    /// Test seam: this executor's incarnation ended (its lock died with a
+    /// lost connection) and a later incarnation of the SAME process
+    /// re-acquired write exclusivity, exactly as the PostgreSQL port's
+    /// guard reports after a takeover round. Everything the executor cached
+    /// from before is potentially stale from this point on.
+    pub(crate) fn reacquire(&mut self) {
+        self.exclusivity_latch = true;
     }
 }
 
@@ -325,6 +340,10 @@ impl WriterAuthority for MemoryAuthority {
         self.calls.push(AuthorityCall::LoadJournal);
         Ok(self.journal.clone())
     }
+
+    fn exclusivity_reacquired(&mut self) -> bool {
+        std::mem::take(&mut self.exclusivity_latch)
+    }
 }
 
 fn journal(config: &FailoverConfig, max_epoch_seen: u64, phase: RestorablePhase) -> String {
@@ -436,6 +455,142 @@ fn full_failover_applies_fence_then_exactly_one_promotion() {
     );
     assert_eq!(port.fence_calls(), 1);
     assert_eq!(port.promote_calls(), vec![5]);
+}
+
+#[test]
+fn a_reacquired_executor_reloads_instead_of_replaying_stale_pending_intent() {
+    // Executor A drives a failover to the saved promotion intent, then its
+    // exclusivity dies (connection lost) with the promote still pending.
+    let mut port = MemoryAuthority::new(5);
+    port.fail_promote = true;
+    let mut executor_a = full_executor(
+        port,
+        &[
+            healthy_round(5, 1_000),
+            failure_round(2_000),
+            failure_round(3_000),
+            failure_round(4_000),
+            evidence_round(5_000),
+        ],
+    );
+    drive_to_fence(&mut executor_a);
+    let report = executor_a.tick(5_000);
+    assert_eq!(
+        report.decision,
+        Some(Decision::PromoteStandby {
+            site_id: "site-b".to_owned(),
+            new_epoch: 6
+        })
+    );
+    assert!(
+        matches!(report.application, Application::Pending { .. }),
+        "the promote call failed, so A holds a stale pending intent: {:?}",
+        report.application
+    );
+
+    // Executor B takes over (the same authority — the database), completes
+    // the promotion and records the operator's reconciliation; the operator
+    // then re-enables dispatch. That is the database's current truth.
+    let (config, _source, port) = executor_a.into_parts();
+    let mut executor_b =
+        FailoverExecutor::new(config.clone(), source(&[evidence_round(6_000)]), port);
+    let report = executor_b.tick(6_000);
+    assert_eq!(
+        report.decision,
+        Some(Decision::PromoteStandby {
+            site_id: "site-b".to_owned(),
+            new_epoch: 6
+        })
+    );
+    assert!(matches!(report.application, Application::Applied { .. }));
+    executor_b.reconcile_complete().unwrap();
+    let (config, _source, mut port) = executor_b.into_parts();
+    port.dispatch_enabled = true;
+    let journal_after_takeover = port.journal.clone().expect("the journal row exists");
+    assert!(journal_after_takeover.contains("reconciled=true"));
+    let promotes_after_takeover = port.promote_calls().len();
+
+    // A's process re-acquires exclusivity (B died). A's cached controller,
+    // journal and pending promote intent are from its previous incarnation
+    // and must never be replayed: the next tick discards them and restores
+    // from the authority and journal row instead.
+    port.reacquire();
+    let mut executor_a = FailoverExecutor::new(
+        config,
+        source(&[evidence_round(7_000), evidence_round(8_000)]),
+        port,
+    );
+    let report = executor_a.tick(7_000);
+    assert_eq!(
+        report.decision,
+        Some(Decision::Hold(HoldReason::SteadyOnNewWriter)),
+        "the reload tick continues from the database's current truth"
+    );
+    let _ = executor_a.tick(8_000);
+    assert!(
+        matches!(executor_a.status(), ExecutorStatus::Running),
+        "a re-acquired executor runs again from the reloaded state"
+    );
+    let (_, _, port) = executor_a.into_parts();
+    assert_eq!(
+        port.promote_calls().len(),
+        promotes_after_takeover,
+        "no stale promote replay after the re-acquisition: {:?}",
+        port.promote_calls()
+    );
+    assert!(
+        port.dispatch_enabled,
+        "a re-acquired executor must not re-pause dispatch from stale intent"
+    );
+    assert_eq!(
+        port.journal.as_deref(),
+        Some(journal_after_takeover.as_str()),
+        "a re-acquired executor must not overwrite the durable journal with \
+         stale intent"
+    );
+    assert!(matches!(
+        port.journal_phase(),
+        Some(RestorablePhase::Promoted {
+            new_epoch: 6,
+            reconciled: true,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn a_reacquired_executor_refuses_operator_reconciliation_until_it_reloads() {
+    // Reconciliation is an authority write like any other: after a
+    // re-acquisition it must be refused (and the stale state discarded)
+    // rather than journaling a stale phase, and it stays refused until a
+    // tick restored the controller from the database.
+    let mut executor = full_executor(
+        MemoryAuthority::new(5),
+        &[
+            healthy_round(5, 1_000),
+            failure_round(2_000),
+            failure_round(3_000),
+            failure_round(4_000),
+            evidence_round(5_000),
+        ],
+    );
+    drive_to_fence(&mut executor);
+    let _ = executor.tick(5_000);
+    executor.reconcile_complete().unwrap();
+    let (config, _source, mut port) = executor.into_parts();
+    let journal_before = port.journal.clone();
+    port.reacquire();
+    let mut executor = FailoverExecutor::new(config, source(&[healthy_round(6, 7_000)]), port);
+    assert_eq!(
+        executor.reconcile_complete(),
+        Err(ReconcileError::NotOutstanding),
+        "reconciliation must fail closed while the stale state is discarded"
+    );
+    let (_, _, port) = executor.into_parts();
+    assert_eq!(
+        port.journal, journal_before,
+        "a refused stale reconciliation must not write the journal"
+    );
 }
 
 #[test]

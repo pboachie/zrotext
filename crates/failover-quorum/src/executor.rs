@@ -35,6 +35,17 @@
 //! applied (for example after a database restore from backup) fails closed
 //! permanently instead of acting.
 //!
+//! Singleton exclusivity compounds the durability rules: an executor whose
+//! authority lost and *re-acquired* its write exclusivity (see
+//! [`WriterAuthority::exclusivity_reacquired`]) must treat everything it
+//! cached from the previous exclusive period — controller, journal,
+//! confirmed-durable journal, pending intents — as stale, because another
+//! executor may have run in between. It discards that state and reloads
+//! the authority snapshot and the durable journal row before acting,
+//! failing closed where they disagree with the current epoch; it never
+//! replays cached intent from a previous incarnation (a stale promotion
+//! replay would re-pause dispatch and overwrite the durable journal).
+//!
 //! This module performs no I/O itself: both the observation source and the
 //! authority port are injected, which keeps every failure scenario below
 //! unit-testable. The [`InProcessSource`](crate::executor::InProcessSource)
@@ -164,6 +175,19 @@ pub trait WriterAuthority {
 
     /// Load the encoded controller journal, `None` when none was saved.
     fn load_controller_state(&mut self) -> Result<Option<String>, Self::Error>;
+
+    /// Whether this authority's write exclusivity was lost and re-acquired
+    /// since the last call (each call reads and clears the signal). An
+    /// executor that survived the loss with cached state — controller,
+    /// journal, pending intents — must treat `true` as "another executor
+    /// may have run in between": everything cached from the previous
+    /// exclusive period is stale, may never be replayed, and must be
+    /// reloaded from the authority before any action. The default — an
+    /// authority without exclusivity of its own — never reports a
+    /// re-acquisition.
+    fn exclusivity_reacquired(&mut self) -> bool {
+        false
+    }
 }
 
 /// The durable controller journal: the subset of controller state that must
@@ -368,6 +392,12 @@ impl<S: ObservationSource, A: WriterAuthority> FailoverExecutor<S, A> {
     /// Explicit operator input: the post-promotion reconciliation completed.
     /// Journaled on success; refused while a promotion is still pending.
     pub fn reconcile_complete(&mut self) -> Result<(), ReconcileError> {
+        // A re-acquired exclusivity means the cached controller and journal
+        // may describe another executor's past: refuse (and discard) rather
+        // than journal stale state. The next tick reloads from the database.
+        if self.authority.exclusivity_reacquired() {
+            self.discard_stale_state();
+        }
         if !self.pending.is_empty() {
             return Err(ReconcileError::PromotionPending);
         }
@@ -399,6 +429,19 @@ impl<S: ObservationSource, A: WriterAuthority> FailoverExecutor<S, A> {
                 application: Application::None,
                 journal_saved: false,
             };
+        }
+        // A re-acquired exclusivity invalidates everything cached from the
+        // previous exclusive period: another executor may have taken over
+        // and advanced the authority and journal while this one held a dead
+        // connection. Replay of the stale controller, journal or pending
+        // intents would act on a past the database no longer reflects (a
+        // stale promotion replay re-pauses dispatch and overwrites the
+        // durable journal), so they are discarded — never replayed — and
+        // the restore below reloads the authority snapshot and the durable
+        // journal row, reconciling them against the current epoch exactly
+        // like a restart, failing closed where they disagree.
+        if self.authority.exclusivity_reacquired() {
+            self.discard_stale_state();
         }
         if self.controller.is_none() && !self.restore() {
             return TickReport {
@@ -471,6 +514,25 @@ impl<S: ObservationSource, A: WriterAuthority> FailoverExecutor<S, A> {
             application,
             journal_saved,
         }
+    }
+
+    /// Discard everything cached from a previous exclusive period. A
+    /// re-acquired authority means another executor may have taken over and
+    /// advanced the authority and the durable journal while this executor
+    /// held a dead connection: the in-memory controller, journal,
+    /// confirmed-durable journal and pending intents all describe a past
+    /// the database may no longer reflect, so none of them may be replayed.
+    /// The next [`Self::restore`] reloads the authority snapshot and the
+    /// durable journal row — the database's current truth — and fails
+    /// closed where they cannot be reconciled, exactly as a process
+    /// restart does. Pending actions are dropped, not replayed: they are
+    /// re-derivable from fresh evidence, exactly as a restart drops them.
+    fn discard_stale_state(&mut self) {
+        self.controller = None;
+        self.journal = None;
+        self.durable_journal = None;
+        self.pending.clear();
+        self.status = ExecutorStatus::WaitingForAuthority;
     }
 
     /// Apply (or park) a fresh decision from this round.

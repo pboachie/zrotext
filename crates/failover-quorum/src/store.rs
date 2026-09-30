@@ -25,6 +25,28 @@
 //!   [`ConsensusStore::open`] return an error, and a store that failed while
 //!   appending stays failed — its rounds are empty, so the controller can
 //!   only lose quorum and hold;
+//! * journals do not grow forever: each member journal is compacted by
+//!   rewriting it without the leading records that have aged out of the
+//!   decision model's freshness window (measured from the newest
+//!   observation in that journal — the store takes no clock), always
+//!   retaining a bounded floor of records and never compacting a record
+//!   inside the window. The bound is continuous, not once-per-open: the
+//!   compaction runs on open *and* on every append that pushes the journal
+//!   past the bound, so memory and disk stay bounded between opens too. A
+//!   per-member checkpoint file records the member identity, the
+//!   last-compacted sequence, the newest compacted timestamp and digest
+//!   anchors over the compacted prefix and the retained head, so the
+//!   dropped history stays tamper-evidenced and the retained journal stays
+//!   bound to its checkpoint. The rewrite is journal-first,
+//!   checkpoint-second, both atomic (temp file, fsync, rename): a crash in
+//!   between leaves the rewritten journal with the previous checkpoint,
+//!   which load accepts as the ground truth, while a checkpoint ahead of
+//!   the journal, a torn or malformed checkpoint, a spoofed identity or a
+//!   head-digest mismatch all fail the store closed exactly like in-journal
+//!   corruption. A journal starting at sequence one with no checkpoint is
+//!   the legacy layout and still loads. An append-time compaction failure
+//!   is sticky exactly like an append failure: the store fails closed
+//!   rather than silently growing past the bound;
 //! * rounds are served through the decision model's freshness window
 //!   (`observed_at <= now` and `now - observed_at <= freshness`), so
 //!   future-dated (skewed) observations are never evidence and stale
@@ -40,15 +62,16 @@
 //! member reports between machines (no listener exists; the member-side
 //! reporting loop of [`crate::report`] records only what its injected probe
 //! source observes, and no production probe source exists yet, so a
-//! production store stays empty and every round fails closed), journal
-//! rotation or compaction (the whole journal is re-read on open), and any
-//! external coordination between store instances — one writer per directory
-//! is assumed, and concurrent writers are detected as corruption on the
-//! next load.
-
+//! production store stays empty and every round fails closed), in-place
+//! re-reads of only the journal tail on open (each open still re-reads the
+//! retained journal in full), and any external coordination between store
+//! instances — one writer per directory is assumed, and concurrent writers
+//! are detected as corruption on the next load.
 use crate::decision::{MemberReport, Round, SiteFenceState, WriterObservation};
 use crate::executor::ObservationSource;
 use crate::policy::REQUIRED_MEMBERS;
+#[cfg(test)]
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
@@ -59,10 +82,19 @@ use std::path::{Path, PathBuf};
 struct MemberJournal {
     /// Handle opened for appending; one write per record, flushed and synced.
     file: File,
+    /// Sequence of the first retained record: one after the last
+    /// checkpointed sequence, or one for a full journal. Sequence numbers of
+    /// `records` are this plus the record index.
+    first_sequence: u64,
     /// Sequence number the next append will take (`u64::MAX` is exhausted).
     next_sequence: u64,
-    /// Reports in append order; sequence is the index plus one.
+    /// Reports in append order.
     records: Vec<MemberReport>,
+    /// The compaction checkpoint currently on disk beside the journal
+    /// (`None` while no compaction ever dropped a record): kept in memory so
+    /// an append-time compaction extends the checkpoint's digest chain
+    /// instead of restarting it.
+    checkpoint: Option<Checkpoint>,
 }
 
 /// The durable consensus store: a membership record plus one append-only
@@ -148,7 +180,10 @@ impl ConsensusStore {
         }
         let mut journals = HashMap::with_capacity(members.len());
         for member in &members {
-            journals.insert(member.clone(), open_journal(&observations, member)?);
+            journals.insert(
+                member.clone(),
+                open_journal(&observations, member, observation_freshness_ms)?,
+            );
         }
         Ok(Self {
             directory,
@@ -161,15 +196,21 @@ impl ConsensusStore {
 
     /// Durably append one member's report to that member's journal. The
     /// report's member identity must belong to the durable membership; the
-    /// record is written, flushed and synced before this returns. A failed
-    /// append poisons the store: later calls fail and rounds stay empty.
+    /// record is written, flushed and synced before this returns. Appending
+    /// is one write per record, and an append that pushes the retained set
+    /// past the compaction bound rotates the journal immediately (see
+    /// [`compact_journal`]): the same retention rule and crash ordering as
+    /// the open-time compaction, so memory and disk stay bounded between
+    /// opens too. A failed append or rotation poisons the store: later calls
+    /// fail and rounds stay empty.
     pub fn record(&mut self, report: &MemberReport) -> Result<(), StoreError> {
         if self.failure.is_some() {
             return Err(StoreError::Failed);
         }
+        let member = report.member_id.clone();
         let journal = self
             .journals
-            .get_mut(&report.member_id)
+            .get_mut(&member)
             .ok_or_else(|| StoreError::UnknownMember(report.member_id.clone()))?;
         let sequence = journal.next_sequence;
         let Some(next_sequence) = sequence.checked_add(1) else {
@@ -193,6 +234,48 @@ impl ConsensusStore {
         }
         journal.next_sequence = next_sequence;
         journal.records.push(report.clone());
+        // The bound is continuous, not once-per-open: the append above may
+        // have pushed this journal past its retention bound (records aged
+        // out of the freshness window measured from the newest record, minus
+        // the floor tail), so the same compaction the next open would run
+        // runs now. A failure here is sticky exactly like an append failure:
+        // the appended record itself is durable, but the store fails closed
+        // instead of silently growing past the bound.
+        let observations = self.directory.join(OBSERVATIONS_DIR);
+        let journal = self
+            .journals
+            .get_mut(&member)
+            .expect("the member journal was resolved above");
+        match compact_journal(
+            &observations,
+            &member,
+            journal.first_sequence,
+            &mut journal.records,
+            journal.checkpoint.as_ref(),
+            self.observation_freshness_ms,
+        ) {
+            Ok((first_sequence, checkpoint)) => {
+                journal.first_sequence = first_sequence;
+                if let Some(checkpoint) = checkpoint {
+                    // The rewrite replaced the journal file, so the append
+                    // handle must move onto the retained journal: the old
+                    // handle would keep appending to the replaced-away file
+                    // and those records would vanish on the next open.
+                    journal.file = OpenOptions::new()
+                        .append(true)
+                        .open(observations.join(format!("{member}.journal")))
+                        .map_err(|error| {
+                            self.failure = Some(StoreError::Failed);
+                            StoreError::Io(error)
+                        })?;
+                    journal.checkpoint = Some(checkpoint);
+                }
+            }
+            Err(error) => {
+                self.failure = Some(StoreError::Failed);
+                return Err(error);
+            }
+        }
         Ok(())
     }
 
@@ -241,16 +324,25 @@ impl ConsensusStore {
             };
             let cursor = served.get(member).copied().unwrap_or(0);
             let mut last_served = cursor;
-            // Sequence numbers are the record index plus one, so records
-            // after `cursor` start at index `cursor`.
-            let skip = usize::try_from(cursor).unwrap_or(usize::MAX);
+            // A record's sequence is the journal's first sequence (one after
+            // any checkpointed prefix) plus its index, so the records after
+            // `cursor` start at the index of sequence `cursor + 1`. A cursor
+            // below the first retained sequence — only possible when a fresh
+            // in-memory cursor meets a compacted journal — restarts at the
+            // first retained record, which compaction itself has already
+            // made stale.
+            let skip = match cursor.checked_add(1) {
+                Some(next) if next > journal.first_sequence => {
+                    usize::try_from(next - journal.first_sequence).unwrap_or(usize::MAX)
+                }
+                _ => 0,
+            };
             for (index, report) in journal.records.iter().enumerate().skip(skip) {
                 if is_fresh(report.observed_at_ms, now_ms, self.observation_freshness_ms) {
                     reports.push(report.clone());
-                    last_served = u64::try_from(index)
-                        .ok()
-                        .and_then(|index| index.checked_add(1))
-                        .unwrap_or(u64::MAX);
+                    last_served = journal
+                        .first_sequence
+                        .saturating_add(u64::try_from(index).unwrap_or(u64::MAX));
                 }
             }
             if last_served > cursor {
@@ -516,6 +608,154 @@ impl JournalRecord {
 const MEMBERSHIP_FILE: &str = "membership";
 /// The subdirectory holding one append-only journal per member.
 const OBSERVATIONS_DIR: &str = "observations";
+/// Suffixes of the observations entries this store recognizes: each
+/// member's journal and compaction checkpoint, plus the temp files their
+/// atomic rewrites pass through — a crash can leave either temp behind, so
+/// it must not fail the next open. Any other entry is foreign.
+const KNOWN_ENTRY_SUFFIXES: [&str; 4] =
+    [".journal", ".checkpoint", ".journal.tmp", ".checkpoint.tmp"];
+/// Records every member journal retains after compaction even when all of
+/// them are stale: a bounded tail that keeps recent hysteresis and forensics
+/// evidence for an operator reopening the store. Eight comfortably holds a
+/// complete fence-then-promote replay per member — one healthy observation,
+/// three failed checks, one fencing-evidence round, one post-promotion
+/// observation and one restart observation.
+const JOURNAL_RETAINED_FLOOR: usize = 8;
+/// FNV-1a 64-bit offset basis and prime. Std-only (no new dependency) and
+/// stable forever, which a durable file format needs; see [`fnv1a64`].
+const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+/// Digest `bytes` into `seed` with 64-bit FNV-1a. This is a non-cryptographic
+/// checksum used for tamper *evidence* — detecting torn writes, restores and
+/// accidental modification — in kind with the store's otherwise structural
+/// integrity rules; it is not a defense against an attacker able to rewrite
+/// both the journal and its checkpoint, exactly as no unkeyed on-disk
+/// content in this store is.
+fn fnv1a64(seed: u64, bytes: &[u8]) -> u64 {
+    bytes.iter().fold(seed, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(FNV_PRIME)
+    })
+}
+
+/// The per-member compaction checkpoint: one line next to the journal it
+/// describes, recording what a journal rewrite dropped so the compacted
+/// history stays tamper-evidenced and the retained journal stays bound to
+/// its continuation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Checkpoint {
+    /// The owning member identity; a checkpoint claiming another identity
+    /// is spoofing and fails the load.
+    member_id: String,
+    /// The last sequence physically removed from the journal: the retained
+    /// journal continues from `last_compacted_sequence + 1`.
+    last_compacted_sequence: u64,
+    /// The observation timestamp of the newest compacted record, kept for
+    /// operator forensics (out-of-order timestamps mean it is not
+    /// necessarily the last compacted record's timestamp).
+    newest_compacted_at_ms: u64,
+    /// Running FNV-1a chain over the encoded lines of every compacted
+    /// record, seeded from the previous checkpoint's chain (or the offset
+    /// basis for a first compaction), so successive compactions extend one
+    /// anchor over the whole dropped history. Load cannot recompute it —
+    /// the bytes are gone by design — so it is evidence for a future
+    /// reconstruction from backups, not a load-time check. A crash between
+    /// a journal rewrite and its checkpoint can leave one silent gap where
+    /// the chain resumes from the previous checkpoint.
+    prefix_digest: u64,
+    /// Digest of the first retained record's encoded line, checked against
+    /// the journal on load so a checkpoint from another journal (or a
+    /// rewritten head) fails closed.
+    head_digest: u64,
+}
+
+impl Checkpoint {
+    /// Encode into the stable single-line checkpoint format
+    /// (`v1 member=… seq=… at=… prefix=<16 hex> head=<16 hex>`). Only a
+    /// checkpoint that actually compacted at least one record exists, so
+    /// the sequence is at least one.
+    fn encode(&self) -> Result<String, StoreError> {
+        if !member_is_file_safe(&self.member_id) {
+            return Err(StoreError::InvalidMembers(format!(
+                "member {:?} is not a safe journal file name",
+                self.member_id
+            )));
+        }
+        if self.last_compacted_sequence == 0 {
+            return Err(StoreError::InvalidMembers(
+                "a checkpoint must compact at least sequence one".to_owned(),
+            ));
+        }
+        Ok(format!(
+            "v1 member={} seq={} at={} prefix={:016x} head={:016x}\n",
+            self.member_id,
+            self.last_compacted_sequence,
+            self.newest_compacted_at_ms,
+            self.prefix_digest,
+            self.head_digest
+        ))
+    }
+}
+
+/// Parse a checkpoint produced by [`Checkpoint::encode`] for the member
+/// whose file it is. Anything else — wrong version, missing, extra or
+/// misordered fields, a zero sequence, malformed numbers or digests — is
+/// corruption and fails closed.
+fn decode_checkpoint(member: &str, content: &str) -> Result<Checkpoint, StoreError> {
+    let corrupt = |detail: &str| StoreError::CheckpointCorrupt {
+        member: member.to_owned(),
+        detail: detail.to_owned(),
+    };
+    let Some(single_line) = content.strip_suffix('\n') else {
+        return Err(corrupt("the checkpoint is torn: no final newline"));
+    };
+    if single_line.contains('\n') {
+        return Err(corrupt("the checkpoint has more than one line"));
+    }
+    let mut fields = single_line.split_whitespace();
+    if fields.next() != Some("v1") {
+        return Err(corrupt("not a v1 checkpoint"));
+    }
+    let mut field = |prefix: &str| -> Result<&str, StoreError> {
+        fields
+            .next()
+            .and_then(|field| field.strip_prefix(prefix))
+            .ok_or_else(|| corrupt("a checkpoint field is missing or misordered"))
+    };
+    let member_id = field("member=")?.to_owned();
+    if !member_is_file_safe(&member_id) {
+        return Err(corrupt(
+            "the member identity is not a safe journal file name",
+        ));
+    }
+    let last_compacted_sequence = field("seq=")?
+        .parse::<u64>()
+        .map_err(|_| corrupt("the last-compacted sequence is not a number"))?;
+    if last_compacted_sequence == 0 {
+        return Err(corrupt("the last-compacted sequence must be at least one"));
+    }
+    let newest_compacted_at_ms = field("at=")?
+        .parse::<u64>()
+        .map_err(|_| corrupt("the newest compacted timestamp is not a number"))?;
+    let digest = |raw: &str, name: &str| -> Result<u64, StoreError> {
+        if raw.len() != 16 || !raw.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(corrupt(&format!("the {name} digest is not 16 hex digits")));
+        }
+        u64::from_str_radix(raw, 16).map_err(|_| corrupt(&format!("the {name} digest is invalid")))
+    };
+    let prefix_digest = digest(field("prefix=")?, "prefix")?;
+    let head_digest = digest(field("head=")?, "head")?;
+    if fields.next().is_some() {
+        return Err(corrupt("trailing fields after the head digest"));
+    }
+    Ok(Checkpoint {
+        member_id,
+        last_compacted_sequence,
+        newest_compacted_at_ms,
+        prefix_digest,
+        head_digest,
+    })
+}
 
 /// Encode the durable membership record (`v1 members=a,b,c`).
 fn encode_membership(members: &[String]) -> Result<String, StoreError> {
@@ -590,6 +830,33 @@ pub enum StoreError {
         journal_member: String,
         record_member: String,
     },
+    /// The compaction checkpoint beside a member journal is torn or not a
+    /// checkpoint this version understands.
+    CheckpointCorrupt { member: String, detail: String },
+    /// A checkpoint claims another member identity than the journal it
+    /// sits beside.
+    CheckpointIdentitySpoof {
+        journal_member: String,
+        checkpoint_member: String,
+    },
+    /// The checkpoint's last-compacted sequence disagrees with the journal's
+    /// first record: the checkpoint claims records the journal still holds
+    /// (or the journal is empty under a checkpoint), which a compaction
+    /// never produces — only a journal restored over a newer checkpoint can.
+    CheckpointDisagrees {
+        member: String,
+        checkpoint_last_compacted: u64,
+        journal_first: u64,
+    },
+    /// The checkpoint's head digest does not anchor the retained journal's
+    /// first record: the checkpoint belongs to another journal, or the
+    /// retained head was rewritten.
+    CheckpointHeadMismatch { member: String },
+    /// The journal continues from a sequence above one but has no
+    /// checkpoint: its head was lost with no evidence it was ever
+    /// compacted. A journal starting at one is the legacy layout and needs
+    /// no checkpoint.
+    CheckpointMissing { member: String, journal_first: u64 },
     /// A report names a member outside the durable membership.
     UnknownMember(String),
     /// The member's next sequence number does not fit `u64`.
@@ -652,6 +919,41 @@ impl fmt::Display for StoreError {
             } => write!(
                 f,
                 "a record in the journal of {journal_member:?} claims identity {record_member:?}"
+            ),
+            StoreError::CheckpointCorrupt { member, detail } => write!(
+                f,
+                "the compaction checkpoint of {member:?} is corrupt: {detail}"
+            ),
+            StoreError::CheckpointIdentitySpoof {
+                journal_member,
+                checkpoint_member,
+            } => write!(
+                f,
+                "the checkpoint beside the journal of {journal_member:?} claims identity \
+                 {checkpoint_member:?}"
+            ),
+            StoreError::CheckpointDisagrees {
+                member,
+                checkpoint_last_compacted,
+                journal_first,
+            } => write!(
+                f,
+                "the checkpoint of {member:?} claims sequences through \
+                 {checkpoint_last_compacted} compacted but the journal holds records from \
+                 sequence {journal_first}: a journal restored over a newer checkpoint"
+            ),
+            StoreError::CheckpointHeadMismatch { member } => write!(
+                f,
+                "the checkpoint of {member:?} does not anchor the retained journal's first \
+                 record"
+            ),
+            StoreError::CheckpointMissing {
+                member,
+                journal_first,
+            } => write!(
+                f,
+                "the journal of {member:?} continues from sequence {journal_first} without a \
+                 checkpoint"
             ),
             StoreError::UnknownMember(member) => {
                 write!(f, "member {member:?} is outside the durable membership")
@@ -760,9 +1062,10 @@ fn parse_bool(value: &str) -> Result<bool, StoreError> {
     }
 }
 
-/// Refuse any observations entry that is not a journal file of a configured
-/// member: a journal from a previous membership or a stray file must not be
-/// mixed into this quorum's evidence.
+/// Refuse any observations entry that is not an artifact of a configured
+/// member: a journal, a compaction checkpoint, or either one's atomic-write
+/// temp file. A journal from a previous membership or a stray file must not
+/// be mixed into this quorum's evidence.
 fn scan_observations(observations: &Path, members: &[String]) -> Result<(), StoreError> {
     let entries = match fs::read_dir(observations) {
         Ok(entries) => entries,
@@ -772,12 +1075,15 @@ fn scan_observations(observations: &Path, members: &[String]) -> Result<(), Stor
     for entry in entries {
         let entry = entry.map_err(StoreError::Io)?;
         let name = entry.file_name().to_string_lossy().into_owned();
-        let is_journal_file =
-            entry.file_type().map_err(StoreError::Io)?.is_file() && name.ends_with(".journal");
-        let known_member = name
-            .strip_suffix(".journal")
-            .is_some_and(|member| members.iter().any(|known| known == member));
-        if !is_journal_file || !known_member {
+        let is_file = entry.file_type().map_err(StoreError::Io)?.is_file();
+        let known = KNOWN_ENTRY_SUFFIXES.iter().any(|suffix| {
+            is_file
+                && name.ends_with(suffix)
+                && name
+                    .strip_suffix(suffix)
+                    .is_some_and(|base| members.iter().any(|member| member == base))
+        });
+        if !known {
             return Err(StoreError::ForeignJournal(name));
         }
     }
@@ -793,25 +1099,40 @@ fn directory_has_entries(directory: &Path) -> Result<bool, StoreError> {
     }
 }
 
-/// Load one member's journal: validate every record's identity, sequence and
-/// encoding, then hold the append handle. A missing journal (a member that
-/// never reported under an existing membership) is created empty.
-fn open_journal(observations: &Path, member: &str) -> Result<MemberJournal, StoreError> {
-    let path = observations.join(format!("{member}.journal"));
-    let content = match fs::read(&path) {
+/// Load one member's journal: validate every record's identity, sequence
+/// continuity and encoding, reconcile it with the compaction checkpoint when
+/// one exists, compact the aged-out prefix (see [`compactable_prefix_len`]),
+/// then hold the append handle. A missing journal (a member that never
+/// reported under an existing membership) is created empty.
+fn open_journal(
+    observations: &Path,
+    member: &str,
+    observation_freshness_ms: u64,
+) -> Result<MemberJournal, StoreError> {
+    let journal_path = observations.join(format!("{member}.journal"));
+    let content = match fs::read(&journal_path) {
         Ok(content) => content,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             let file = OpenOptions::new()
                 .write(true)
                 .create_new(true)
-                .open(&path)
+                .open(&journal_path)
                 .map_err(StoreError::Io)?;
             file.sync_all().map_err(StoreError::Io)?;
             Vec::new()
         }
         Err(error) => return Err(StoreError::Io(error)),
     };
+    let checkpoint = match fs::read_to_string(observations.join(format!("{member}.checkpoint"))) {
+        Ok(content) => Some(decode_checkpoint(member, &content)?),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(StoreError::Io(error)),
+    };
     let mut records = Vec::new();
+    // The first record's sequence anchors the journal's continuation; its
+    // raw line is kept for the checkpoint's head-digest check.
+    let mut first_sequence: Option<u64> = None;
+    let mut first_line: Option<&[u8]> = None;
     if !content.is_empty() {
         if content.last() != Some(&b'\n') {
             return Err(StoreError::TruncatedTail {
@@ -821,7 +1142,6 @@ fn open_journal(observations: &Path, member: &str) -> Result<MemberJournal, Stor
         let lines = content[..content.len() - 1].split(|byte| *byte == b'\n');
         for (index, line) in lines.enumerate() {
             let line_number = index + 1;
-            let expected_sequence = line_number as u64;
             let record = JournalRecord::decode(std::str::from_utf8(line).map_err(|_| {
                 StoreError::CorruptRecord {
                     member: member.to_owned(),
@@ -838,30 +1158,244 @@ fn open_journal(observations: &Path, member: &str) -> Result<MemberJournal, Stor
                     record_member: record.report.member_id,
                 });
             }
-            if record.sequence != expected_sequence {
-                return Err(StoreError::SequenceBroken {
-                    member: member.to_owned(),
-                    expected: expected_sequence,
-                    found: record.sequence,
-                });
+            match first_sequence {
+                None => {
+                    if record.sequence == 0 {
+                        return Err(StoreError::SequenceBroken {
+                            member: member.to_owned(),
+                            expected: 1,
+                            found: 0,
+                        });
+                    }
+                    first_sequence = Some(record.sequence);
+                    first_line = Some(line);
+                }
+                Some(first) => {
+                    let expected = first.saturating_add(index as u64);
+                    if record.sequence != expected {
+                        return Err(StoreError::SequenceBroken {
+                            member: member.to_owned(),
+                            expected,
+                            found: record.sequence,
+                        });
+                    }
+                }
             }
             records.push(record.report);
         }
     }
+    // Reconcile the journal with its checkpoint. No checkpoint means the
+    // legacy full journal, which must start at sequence one; an empty
+    // journal likewise continues from one (reported as journal first zero
+    // in the disagrees error, which no real journal can produce).
+    let first_sequence = first_sequence.unwrap_or(1);
+    if let Some(checkpoint) = &checkpoint {
+        if checkpoint.member_id != member {
+            return Err(StoreError::CheckpointIdentitySpoof {
+                journal_member: member.to_owned(),
+                checkpoint_member: checkpoint.member_id.clone(),
+            });
+        }
+        if first_sequence <= checkpoint.last_compacted_sequence {
+            // The checkpoint claims records the journal still holds — or the
+            // journal is empty under a checkpoint: the only way either arises
+            // is a journal restored over a newer checkpoint, because
+            // compaction never empties a journal (the floor keeps a tail).
+            return Err(StoreError::CheckpointDisagrees {
+                member: member.to_owned(),
+                checkpoint_last_compacted: checkpoint.last_compacted_sequence,
+                journal_first: if records.is_empty() {
+                    0
+                } else {
+                    first_sequence
+                },
+            });
+        }
+        if first_sequence == checkpoint.last_compacted_sequence + 1 {
+            // The checkpoint anchors the retained journal's first record;
+            // a journal (or checkpoint) from anywhere else fails closed.
+            let Some(first_line) = first_line else {
+                return Err(StoreError::CheckpointDisagrees {
+                    member: member.to_owned(),
+                    checkpoint_last_compacted: checkpoint.last_compacted_sequence,
+                    journal_first: first_sequence,
+                });
+            };
+            if fnv1a64(FNV_OFFSET_BASIS, first_line) != checkpoint.head_digest {
+                return Err(StoreError::CheckpointHeadMismatch {
+                    member: member.to_owned(),
+                });
+            }
+        }
+        // Otherwise the journal starts above the checkpoint's continuation:
+        // the crash window of the compaction order (journal rewritten
+        // durably, checkpoint rename still pending). The journal on disk is
+        // the ground truth and loads; the head anchor covers a record the
+        // rewrite dropped, so it cannot be checked.
+    } else if first_sequence > 1 {
+        return Err(StoreError::CheckpointMissing {
+            member: member.to_owned(),
+            journal_first: first_sequence,
+        });
+    }
+    // The next sequence exists before anything is rewritten, so a journal
+    // too far along to continue fails closed without touching the disk.
+    let next_sequence = first_sequence
+        .checked_add(
+            u64::try_from(records.len())
+                .ok()
+                .ok_or(StoreError::SequenceExhausted)?,
+        )
+        .ok_or(StoreError::SequenceExhausted)?;
+    let (first_sequence, compacted) = compact_journal(
+        observations,
+        member,
+        first_sequence,
+        &mut records,
+        checkpoint.as_ref(),
+        observation_freshness_ms,
+    )?;
+    let checkpoint = compacted.or(checkpoint);
     let file = OpenOptions::new()
         .append(true)
-        .open(&path)
+        .open(&journal_path)
         .map_err(StoreError::Io)?;
-    let next_sequence = u64::try_from(records.len())
-        .ok()
-        .and_then(|len| len.checked_add(1))
-        .ok_or(StoreError::SequenceExhausted)?;
     Ok(MemberJournal {
         file,
+        first_sequence,
         next_sequence,
         records,
+        checkpoint,
     })
 }
+
+/// How many leading records of a loaded journal compaction may drop: the
+/// run of records that have aged out of the decision model's freshness
+/// window, measured from the newest observation in that journal — the store
+/// takes no clock of its own (every round injects `now_ms`, and open takes
+/// none), and anchoring at the newest record is the deterministic,
+/// conservative choice. The run stops at the first record inside the window,
+/// and the [`JOURNAL_RETAINED_FLOOR`] tail records are never dropped, so an
+/// all-stale journal still keeps its floor.
+fn compactable_prefix_len(records: &[MemberReport], observation_freshness_ms: u64) -> usize {
+    let Some(anchor) = records.iter().map(|report| report.observed_at_ms).max() else {
+        return 0;
+    };
+    let mut compactable = 0;
+    for report in records {
+        if is_fresh(report.observed_at_ms, anchor, observation_freshness_ms) {
+            break;
+        }
+        compactable += 1;
+    }
+    compactable.min(records.len().saturating_sub(JOURNAL_RETAINED_FLOOR))
+}
+
+/// Rewrite the member journal without its compactable prefix and write the
+/// checkpoint naming what was dropped. Order is the crash-safety contract:
+/// the new journal holding the retained tail is made durable (temp file,
+/// fsync, atomic rename) *first*, and only then is the checkpoint replaced.
+/// A crash in between leaves the rewritten journal beside the previous (or
+/// no) checkpoint — a state load accepts as the ground truth — so a
+/// checkpoint that runs ahead of its journal can never exist on disk;
+/// `open_journal` treats one as corruption. The in-memory `records` lose the
+/// compacted prefix; the return is the journal's new first sequence and,
+/// when a compaction ran, the checkpoint now on disk beside it.
+fn compact_journal(
+    observations: &Path,
+    member: &str,
+    first_sequence: u64,
+    records: &mut Vec<MemberReport>,
+    previous: Option<&Checkpoint>,
+    observation_freshness_ms: u64,
+) -> Result<(u64, Option<Checkpoint>), StoreError> {
+    let compactable = compactable_prefix_len(records, observation_freshness_ms);
+    if compactable == 0 {
+        return Ok((first_sequence, None));
+    }
+    // The floor guarantees a retained tail, so the head anchor always has a
+    // record to bind to.
+    let mut chain = previous.map_or(FNV_OFFSET_BASIS, |checkpoint| checkpoint.prefix_digest);
+    let mut newest_compacted_at_ms = 0;
+    let mut head_digest = None;
+    let mut retained = String::new();
+    for (index, report) in records.iter().enumerate() {
+        let line = JournalRecord {
+            sequence: first_sequence + index as u64,
+            report: report.clone(),
+        }
+        .encode()?;
+        if index < compactable {
+            chain = fnv1a64(chain, line.as_bytes());
+            newest_compacted_at_ms = newest_compacted_at_ms.max(report.observed_at_ms);
+        } else {
+            if head_digest.is_none() {
+                head_digest = Some(fnv1a64(FNV_OFFSET_BASIS, line.as_bytes()));
+            }
+            retained.push_str(&line);
+            retained.push('\n');
+        }
+    }
+    let checkpoint = Checkpoint {
+        member_id: member.to_owned(),
+        last_compacted_sequence: first_sequence + compactable as u64 - 1,
+        newest_compacted_at_ms,
+        prefix_digest: chain,
+        head_digest: head_digest.ok_or(StoreError::SequenceExhausted)?,
+    };
+    // Journal first, checkpoint second: the exact order load recovers from.
+    write_atomically(
+        &observations.join(format!("{member}.journal.tmp")),
+        &observations.join(format!("{member}.journal")),
+        retained.as_bytes(),
+    )?;
+    write_atomically(
+        &observations.join(format!("{member}.checkpoint.tmp")),
+        &observations.join(format!("{member}.checkpoint")),
+        checkpoint.encode()?.as_bytes(),
+    )?;
+    records.drain(..compactable);
+    Ok((first_sequence + compactable as u64, Some(checkpoint)))
+}
+
+// Test seam for the compaction crash-order contract: when set to
+// `Some(n)`, the next `n` [`write_atomically`] calls on this thread succeed
+// and the one after them fails before touching either file — a simulated
+// crash at that point in the journal-first, checkpoint-second order.
+// Production never sets it; it exists so the tests can crash exactly
+// between the two writes of one compaction.
+#[cfg(test)]
+thread_local! {
+    static FAIL_ATOMIC_WRITE_AFTER: Cell<Option<u32>> = const { Cell::new(None) };
+}
+
+/// Write `bytes` to `destination` atomically: create the temp file (also
+/// clearing any a previous crash left), write, flush and fsync, then rename
+/// over the destination — so a crash at any point leaves either the old or
+/// the new content, never a torn record.
+fn write_atomically(temp: &Path, destination: &Path, bytes: &[u8]) -> Result<(), StoreError> {
+    #[cfg(test)]
+    if FAIL_ATOMIC_WRITE_AFTER.with(|slot| match slot.get() {
+        Some(remaining) => {
+            slot.set(remaining.checked_sub(1));
+            remaining == 0
+        }
+        None => false,
+    }) {
+        return Err(StoreError::Io(io::Error::other(
+            "injected compaction crash before the atomic write",
+        )));
+    }
+    let mut file = File::create(temp).map_err(StoreError::Io)?;
+    file.write_all(bytes).map_err(StoreError::Io)?;
+    file.flush().map_err(StoreError::Io)?;
+    file.sync_all().map_err(StoreError::Io)?;
+    fs::rename(temp, destination).map_err(StoreError::Io)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod compaction_tests;
 
 #[cfg(test)]
 mod tests;
