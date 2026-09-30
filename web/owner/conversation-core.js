@@ -63,7 +63,7 @@
         if (ticket !== revision) throw new Error("Result unavailable. Do not retry automatically.");
         live();
         if (!["simulator_accepted", "queued"].includes(result?.status)) throw new Error("Result unavailable. Do not retry automatically.");
-        messages.push(Object.freeze({ direction: "outbound", body: approved.body })); draft = "";
+        messages.push(Object.freeze({ direction: "outbound", body: approved.body, status: result.status })); draft = "";
         return result;
       } finally { busy = false; }
     }
