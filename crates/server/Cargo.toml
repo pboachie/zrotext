@@ -45,10 +45,10 @@ futures-util = { version = "0.3.31", default-features = false, features = ["std"
 # Already locked through axum/hyper; names `Frame` for the ingress body-deadline wrapper.
 http-body = "1.1.0"
 
-# SMTP session pooling is enabled only off-Windows (founder decision, issue
-# #485): lettre's pool requires a live Tokio reactor at build and drop time,
-# and the resulting drop-time panic aborts local Windows test binaries; the
-# server itself always runs the pooled path in its Linux deployment.
+# lettre's SMTP session pool is enabled only for non-Windows targets (founder
+# decision, issue #485); Windows builds keep one connection per message.
+# http_auth/smtp_session.rs reuses a session only after a transaction
+# completed with a 2xx reply.
 [target.'cfg(not(windows))'.dependencies]
 lettre = { version = "0.11.23", default-features = false, features = ["builder", "pool", "smtp-transport", "tokio1-rustls-tls"] }
 

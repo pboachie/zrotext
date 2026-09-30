@@ -19,11 +19,8 @@ use axum::{
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use hmac::{Hmac, Mac, digest::KeyInit};
-#[cfg(not(windows))]
-use lettre::transport::smtp::PoolConfig as SmtpPoolConfig;
 use lettre::{
-    AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
-    transport::smtp::authentication::Credentials,
+    AsyncSmtpTransport, Message, Tokio1Executor, transport::smtp::authentication::Credentials,
 };
 use preauth::{MemberMutation, OwnerMutation};
 use serde::{Deserialize, Serialize};
@@ -45,6 +42,7 @@ pub mod preauth;
 mod seats_http;
 mod sms_lines;
 mod sms_owner_keys;
+mod smtp_session;
 pub mod trusted_cidrs;
 
 use std::net::SocketAddr;
@@ -189,59 +187,13 @@ impl VerificationDispatcher for DisabledVerificationDispatcher {
 pub struct SmtpVerificationDispatcher {
     from: lettre::message::Mailbox,
     reply_to: Option<lettre::message::Mailbox>,
-    transport: RuntimeSafeSmtpTransport,
-}
-
-/// A pooled SMTP transport whose shutdown needs a live Tokio reactor:
-/// lettre's pool spawns its close-out from `Drop`, which panics outside a
-/// runtime (in synchronous tests, or after the test runtime has shut down).
-/// Dropping inside a runtime defers the shutdown to it; with no reactor at
-/// all there is nothing left to shut down, so the transport is simply
-/// forgotten - that only happens in tests and at process exit.
-struct RuntimeSafeSmtpTransport(Option<AsyncSmtpTransport<Tokio1Executor>>);
-
-impl RuntimeSafeSmtpTransport {
-    fn new(transport: AsyncSmtpTransport<Tokio1Executor>) -> Self {
-        Self(Some(transport))
-    }
-
-    fn get(&self) -> &AsyncSmtpTransport<Tokio1Executor> {
-        self.0.as_ref().expect("transport present until drop")
-    }
-}
-
-impl Drop for RuntimeSafeSmtpTransport {
-    fn drop(&mut self) {
-        let Some(transport) = self.0.take() else {
-            return;
-        };
-        match tokio::runtime::Handle::try_current() {
-            Ok(runtime) => {
-                runtime.spawn(async move {
-                    drop(transport);
-                });
-            }
-            Err(_) => {
-                std::mem::forget(transport);
-            }
-        }
-    }
+    sessions: smtp_session::SmtpSessions,
 }
 
 fn verification_email_body(token: &str) -> String {
     format!(
         "Your ZROtext email verification code is:\n\n{token}\n\nOpen /owner/account#verify on your ZROtext server and enter this code together with the password you chose at sign-up. It expires in 24 hours. If you did not sign up for ZROtext, ignore this message.\n"
     )
-}
-
-/// The production SMTP pool shape (issue #485): two sessions, one-minute idle
-/// timeout. Shared with the Linux-only reuse test so it exercises exactly
-/// what the dispatcher builds.
-#[cfg(not(windows))]
-fn smtp_pool_config() -> SmtpPoolConfig {
-    SmtpPoolConfig::new()
-        .max_size(2)
-        .idle_timeout(std::time::Duration::from_secs(60))
 }
 
 impl SmtpVerificationDispatcher {
@@ -268,61 +220,26 @@ impl SmtpVerificationDispatcher {
             .map(|value| value.parse().map_err(|_| "invalid SMTP Reply-To"))
             .transpose()?;
         let credentials = Credentials::new(username, password);
-        // Reuse a bounded set of SMTP sessions instead of paying TCP,
-        // STARTTLS and AUTH per message (issue #485). Idle sessions close
-        // after one minute so a quiet hub holds no provider login open, and
-        // two sessions cover the mail worker's per-tick burst width.
-        let pooled = move || -> Result<AsyncSmtpTransport<Tokio1Executor>, &'static str> {
-            #[cfg(not(windows))]
-            let pooled_builder = (if port == 465 {
-                AsyncSmtpTransport::<Tokio1Executor>::relay(host)
-            } else {
-                AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host)
-            })
-            .map_err(|_| "invalid SMTP relay")?
-            .port(port)
-            .credentials(credentials)
-            // Reuse a bounded set of SMTP sessions instead of paying TCP,
-            // STARTTLS and AUTH per message (issue #485). Idle sessions
-            // close after one minute so a quiet hub holds no provider
-            // login open; two sessions cover the mail worker's burst width.
-            .pool_config(smtp_pool_config());
-            #[cfg(windows)]
-            let pooled_builder = (if port == 465 {
-                AsyncSmtpTransport::<Tokio1Executor>::relay(host)
-            } else {
-                AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host)
-            })
-            .map_err(|_| "invalid SMTP relay")?
-            .port(port)
-            .credentials(credentials);
-            let transport_inner = pooled_builder.build();
-            Ok(transport_inner)
-        };
-        // lettre's pool spawns its sweeper while the transport is built (and
-        // again when it is dropped), which panics without a live Tokio
-        // reactor. Production always constructs inside the server runtime;
-        // synchronous callers (configuration tests) get a throwaway one whose
-        // sweeper simply never runs again once it is dropped.
-        let transport = match tokio::runtime::Handle::try_current() {
-            Ok(_) => pooled()?,
-            Err(_) => {
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .map_err(|_| "invalid SMTP configuration")?;
-                runtime.block_on(async { pooled() })?
-            }
-        };
+        let builder = if port == 465 {
+            AsyncSmtpTransport::<Tokio1Executor>::relay(host).map_err(|_| "invalid SMTP relay")?
+        } else {
+            AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host)
+                .map_err(|_| "invalid SMTP relay")?
+        }
+        .port(port)
+        .credentials(credentials);
         Ok(Self {
             from,
             reply_to,
-            transport: RuntimeSafeSmtpTransport::new(transport),
+            // Reuses a bounded set of SMTP sessions instead of paying TCP,
+            // STARTTLS and AUTH per message (issue #485), and only after a
+            // transaction completed with a 2xx reply.
+            sessions: smtp_session::SmtpSessions::new(builder),
         })
     }
 
     pub async fn test_connection(&self) -> Result<(), DispatchFailure> {
-        match self.transport.get().test_connection().await {
+        match self.sessions.test_connection().await {
             Ok(true) => Ok(()),
             Ok(false) => Err(DispatchFailure::Connect),
             Err(error) => Err(DispatchFailure::from_smtp(&error)),
@@ -354,11 +271,13 @@ impl VerificationDispatcher for SmtpVerificationDispatcher {
                 .subject("Verify your ZROtext email")
                 .body(verification_email_body(token))
                 .map_err(|_| DispatchFailure::Message)?;
-            self.transport
-                .get()
+            self.sessions
                 .send(message)
                 .await
-                .map_err(|error| DispatchFailure::from_smtp(&error))?;
+                .map_err(|error| match error {
+                    smtp_session::SessionError::Smtp(error) => DispatchFailure::from_smtp(&error),
+                    smtp_session::SessionError::UnexpectedReply => DispatchFailure::Rejected,
+                })?;
             Ok(())
         })
     }
@@ -380,7 +299,7 @@ impl VerificationDispatcher for SmtpVerificationDispatcher {
                     "Your ZROtext password reset code is:\n\n{token}\n\nPaste this code into the password reset form. It expires in one hour. If you did not request it, ignore this message. The code is not a link.\n"
                 ))
                 .map_err(|_| ())?;
-            self.transport.get().send(message).await.map_err(|_| ())?;
+            self.sessions.send(message).await.map_err(|_| ())?;
             Ok(())
         })
     }
@@ -399,7 +318,7 @@ impl VerificationDispatcher for SmtpVerificationDispatcher {
                 .subject("Your ZROtext password was reset")
                 .body("Your ZROtext password was reset and all sessions were signed out. If you did not do this, contact support immediately.\n".to_owned())
                 .map_err(|_| ())?;
-            self.transport.get().send(message).await.map_err(|_| ())?;
+            self.sessions.send(message).await.map_err(|_| ())?;
             Ok(())
         })
     }
