@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Current-only authority for dormant outbound queue admission. No inbound
-//! session, root provisioning or manifest advancement is synthesized here.
+//! Current-only authority for dormant queue admission and owner reads. No
+//! device session, root provisioning or manifest advancement is synthesized.
 
 use super::{AdmissionError, ChainPosition, ManifestTrust, VerifiedManifest, wall_time};
 use crate::{
@@ -81,6 +81,25 @@ impl CurrentAuthority<'_, '_> {
         if wanted.kind != Kind::Outbound || wanted.account_id != *self.account.as_bytes() {
             return Err("outbound authority identity".into());
         }
+        self.current_context(wanted).await
+    }
+
+    /// Owner reads authorize existing inbound signatures against exact current
+    /// trust. This is not device-ingest authority or capture-time consent proof.
+    pub(crate) async fn inbound_context<'a>(
+        &'a mut self,
+        wanted: &EnvelopeAuthority<'a>,
+    ) -> Result<ExpectedContext<'a>, AdmissionError> {
+        if wanted.kind != Kind::Inbound || wanted.account_id != *self.account.as_bytes() {
+            return Err("inbound reader authority identity".into());
+        }
+        self.current_context(wanted).await
+    }
+
+    async fn current_context<'a>(
+        &'a mut self,
+        wanted: &EnvelopeAuthority<'a>,
+    ) -> Result<ExpectedContext<'a>, AdmissionError> {
         let row = self.tx.query_opt(
             "SELECT root_pin,root_fingerprint,generation,version,semantic_digest,manifest,last_verified_ms \
              FROM sealed_manifest_authorities WHERE account_id=$1 AND revoked_at IS NULL",

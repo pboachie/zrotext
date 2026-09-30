@@ -42,6 +42,17 @@ line revocation fails closed. Owner role/session/expiry is rechecked after
 later lock waits, before content leaves the transaction. At most one bounded
 envelope is returned per request.
 
+The reader locks the durable manifest authority **before** account/owner rows,
+matching sealed ingest's order. After waiting for the event row, it verifies
+the envelope signature again against the exact current owner-signed manifest
+and current signer/archive-reader roles. Manifest, signer or recipient expiry,
+revocation or missing trust returns 403. Historical-manifest envelopes return
+403 even after a renewal that leaves reader key bytes unchanged. This conservative
+current-epoch policy is intentional while the reader is dormant; historical
+read authority is not inferred or granted automatically. Owner and manifest
+freshness are checked again before commit. Withdrawal does not need a manifest
+lock, so it can complete while a reader waits for manifest authority.
+
 The sealed-ingest verifier and immutable stored envelope are the cryptographic
 admission boundary; this reader parses the already-verified envelope again to
 check its selectors. Synthetic tests use signed fixture envelopes with opaque
@@ -79,9 +90,10 @@ expiry and restore treatment remain integration gates.
 - Bind phone capture and server ingest to the same consent interval. Timestamp
   filters do **not** prove post-consent capture: an ahead-of-time phone clock
   can timestamp a queued pre-consent event after selection.
-- Enforce current browser recipient-key/trust authority, including revocation,
-  before mounting this reader. Browser key custody and secure decryption are
-  not implemented by this module.
+- Bind the current approved archive reader to the consenting browser's actual
+  key custody/session before mounting. Current manifest role authorization and
+  exact-epoch signature verification exist; browser key custody, consent-epoch
+  provenance and secure decryption are not implemented by this module.
 - Integrate phone-local separate consent and line/SIM continuity, durable
   protected upload, inbound event discovery/pagination, safe text rendering,
   exact-confirmed owner-session send and unknown-outcome handling.
