@@ -68,6 +68,11 @@ class RuntimeRoleTest(unittest.TestCase):
                         "WHERE source IN ('sms_review','sms_unsolicited_review');")
                 cls.sql("DROP INDEX CONCURRENTLY IF EXISTS "
                         "public.recipient_suppressions_active;")
+            if migration.name == "062_pending_recipient_index.sql":
+                cls.sql("CREATE INDEX CONCURRENTLY messages_pending_recipient "
+                        "ON public.messages(recipient_e164,account_id) "
+                        "WHERE state IN ('queued','claimed') "
+                        "AND recipient_e164 IS NOT NULL;")
             if migration.name == "061_inbound_events_attempt_fk_index.sql":
                 cls.sql("CREATE INDEX CONCURRENTLY erasure_fk_inbound_events_attempt "
                         "ON public.inbound_events(account_id,device_id,message_id,attempt_id);")

@@ -84,6 +84,66 @@ async fn present(db: &Client, table: &str, id: Uuid) -> bool {
     .get(0)
 }
 
+/// Embedded, reviewed schema order; never execute files discovered at
+/// runtime. The 062 gate file needs its index built first; a fresh
+/// fixture builds them with a plain CREATE INDEX, which differs from the
+/// migrator's concurrent build only in not being concurrent.
+const MIGRATIONS: &[&str] = &[
+    include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
+    include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+    include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
+    include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
+    include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+    include_str!("../../../../deploy/compose/migrations/006_usage_metering.sql"),
+    include_str!("../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"),
+    include_str!("../../../../deploy/compose/migrations/008_stripe_billing_foundation.sql"),
+    include_str!("../../../../deploy/compose/migrations/009_webhook_manual_replay.sql"),
+    include_str!("../../../../deploy/compose/migrations/010_billing_test_entitlement.sql"),
+    include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
+    include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
+    include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
+    include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
+    include_str!("../../../../deploy/compose/migrations/015_webhook_kek_commitments.sql"),
+    include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+    include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
+    include_str!("../../../../deploy/compose/migrations/018_sealed_inbound_identity.sql"),
+    include_str!("../../../../deploy/compose/migrations/019_line_activation_contract.sql"),
+    include_str!("../../../../deploy/compose/migrations/020_enrollment_retention_indexes.sql"),
+    include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+    include_str!("../../../../deploy/compose/migrations/022_pending_owner_expiry.sql"),
+    include_str!("../../../../deploy/compose/migrations/025_account_recovery.sql"),
+    include_str!("../../../../deploy/compose/migrations/026_data_retention.sql"),
+    include_str!("../../../../deploy/compose/migrations/027_billing_test_config.sql"),
+    include_str!("../../../../deploy/compose/migrations/028_billing_provider_failures.sql"),
+    include_str!("../../../../deploy/compose/migrations/029_webhook_dispatch_fairness.sql"),
+    include_str!("../../../../deploy/compose/migrations/030_terminal_dispatch_jobs.sql"),
+    include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
+    include_str!("../../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
+    include_str!("../../../../deploy/compose/migrations/038_owner_opt_out_hold_guards.sql"),
+    include_str!("../../../../deploy/compose/migrations/039_inbound_device_clock_offset.sql"),
+    include_str!("../../../../deploy/compose/migrations/041_device_preconditions.sql"),
+    include_str!("../../../../deploy/compose/migrations/047_device_network_service.sql"),
+    include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
+    "CREATE INDEX messages_pending_recipient \
+        ON messages(recipient_e164,account_id) \
+        WHERE state IN ('queued','claimed') AND recipient_e164 IS NOT NULL",
+    include_str!("../../../../deploy/compose/migrations/062_pending_recipient_index.sql"),
+    include_str!("../../../../deploy/compose/migrations/063_retention_blocked_stamp.sql"),
+];
+
+async fn migrated(db: &Client) -> String {
+    let schema = format!("retention_test_{}", Uuid::new_v4().simple());
+    db.batch_execute(&format!(
+        "CREATE SCHEMA {schema}; SET search_path TO {schema}"
+    ))
+    .await
+    .unwrap();
+    for migration in MIGRATIONS {
+        db.batch_execute(migration).await.unwrap();
+    }
+    schema
+}
+
 #[tokio::test]
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn retention_respects_each_cutoff_and_replay_fences() {
@@ -91,52 +151,7 @@ async fn retention_respects_each_cutoff_and_replay_fences() {
         .expect("set ZT_INBOUND_TEST_DATABASE_URL for PostgreSQL-backed tests");
     let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
-    let schema = format!("retention_test_{}", Uuid::new_v4().simple());
-    db.batch_execute(&format!(
-        "CREATE SCHEMA {schema}; SET search_path TO {schema}"
-    ))
-    .await
-    .unwrap();
-    // Embedded, reviewed schema order; never execute files discovered at runtime.
-    for migration in [
-        include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
-        include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
-        include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
-        include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
-        include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
-        include_str!("../../../../deploy/compose/migrations/006_usage_metering.sql"),
-        include_str!("../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"),
-        include_str!("../../../../deploy/compose/migrations/008_stripe_billing_foundation.sql"),
-        include_str!("../../../../deploy/compose/migrations/009_webhook_manual_replay.sql"),
-        include_str!("../../../../deploy/compose/migrations/010_billing_test_entitlement.sql"),
-        include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
-        include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
-        include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
-        include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
-        include_str!("../../../../deploy/compose/migrations/015_webhook_kek_commitments.sql"),
-        include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
-        include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
-        include_str!("../../../../deploy/compose/migrations/018_sealed_inbound_identity.sql"),
-        include_str!("../../../../deploy/compose/migrations/019_line_activation_contract.sql"),
-        include_str!("../../../../deploy/compose/migrations/020_enrollment_retention_indexes.sql"),
-        include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
-        include_str!("../../../../deploy/compose/migrations/022_pending_owner_expiry.sql"),
-        include_str!("../../../../deploy/compose/migrations/025_account_recovery.sql"),
-        include_str!("../../../../deploy/compose/migrations/026_data_retention.sql"),
-        include_str!("../../../../deploy/compose/migrations/027_billing_test_config.sql"),
-        include_str!("../../../../deploy/compose/migrations/028_billing_provider_failures.sql"),
-        include_str!("../../../../deploy/compose/migrations/029_webhook_dispatch_fairness.sql"),
-        include_str!("../../../../deploy/compose/migrations/030_terminal_dispatch_jobs.sql"),
-        include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
-        include_str!("../../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
-        include_str!("../../../../deploy/compose/migrations/038_owner_opt_out_hold_guards.sql"),
-        include_str!("../../../../deploy/compose/migrations/039_inbound_device_clock_offset.sql"),
-        include_str!("../../../../deploy/compose/migrations/041_device_preconditions.sql"),
-        include_str!("../../../../deploy/compose/migrations/047_device_network_service.sql"),
-        include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
-    ] {
-        db.batch_execute(migration).await.unwrap();
-    }
+    let schema = migrated(&db).await;
     let account = Uuid::new_v4();
     let device = Uuid::new_v4();
     db.execute("INSERT INTO accounts(id) VALUES($1)", &[&account])
@@ -286,6 +301,19 @@ async fn retention_respects_each_cutoff_and_replay_fences() {
     let second = prune(&mut db, RetentionPolicy::default(), 1).await.unwrap();
     assert_eq!(second.device_preconditions, 0);
     assert_eq!(second.inbound_events, 1);
+    // The fenced and replyable candidates are past the content cutoff but
+    // blocked; the prune stamps them instead of re-probing them every tick.
+    for id in [fenced, replyable] {
+        let stamped: bool = db
+            .query_one(
+                "SELECT retention_blocked_at IS NOT NULL FROM messages WHERE id=$1",
+                &[&id],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert!(stamped, "blocked candidate {id} must carry a recheck stamp");
+    }
     assert_eq!(
         second.idempotency_keys
             + second.messages
@@ -511,11 +539,37 @@ async fn retention_respects_each_cutoff_and_replay_fences() {
             "+15551234567"
         );
     }
-    // Once the sent callback leaves the event window, the recipient is
-    // retired first and the event row is deleted in the same pass.
+    // Once the sent callback leaves the event window the candidate is
+    // prunable, but the stamp from the pass above is still inside the recheck
+    // interval, so this pass defers it (#654): one reprobe per interval, not
+    // one per tick.
     db.execute(
         "UPDATE message_events SET received_at=now()-interval '91 days' WHERE id=$1",
         &[&replyable_callback],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        prune(&mut db, RetentionPolicy::default(), BATCH_SIZE)
+            .await
+            .unwrap(),
+        RetentionCounts::default()
+    );
+    assert_eq!(
+        db.query_one(
+            "SELECT recipient_e164 FROM messages WHERE id=$1",
+            &[&replyable]
+        )
+        .await
+        .unwrap()
+        .get::<_, String>(0),
+        "+15551234567"
+    );
+    // The recheck interval passes; the recipient is retired first and the
+    // event row is deleted in the same pass.
+    db.execute(
+        "UPDATE messages SET retention_blocked_at=now()-interval '2 hours' WHERE id=$1",
+        &[&replyable],
     )
     .await
     .unwrap();
@@ -540,6 +594,166 @@ async fn retention_respects_each_cutoff_and_replay_fences() {
         .is_none()
     );
     assert!(!present(&db, "message_events", replyable_callback).await);
+    db.batch_execute(&format!(
+        "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
+    ))
+    .await
+    .unwrap();
+}
+
+/// One failing table must not stop the others from pruning (#654): a
+/// trigger that makes the idempotency step raise leaves the messages step
+/// committed and the call still returning counts.
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn a_failing_table_does_not_stop_the_other_tables_from_pruning() {
+    let url = env::var("ZT_INBOUND_TEST_DATABASE_URL")
+        .expect("set ZT_INBOUND_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let schema = migrated(&db).await;
+    let account = Uuid::new_v4();
+    let device = Uuid::new_v4();
+    db.execute("INSERT INTO accounts(id) VALUES($1)", &[&account])
+        .await
+        .unwrap();
+    db.execute(
+        "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'virtual fixture')",
+        &[&device, &account],
+    )
+    .await
+    .unwrap();
+    let due = message(&db, account, device, "delivered", 31).await;
+    db.execute(
+        "INSERT INTO idempotency_keys(account_id,key,request_digest,message_id,expires_at)          VALUES($1,'stuck',$2,$3,now()-interval '1 day')",
+        &[&account, &vec![6_u8; 32], &due],
+    )
+    .await
+    .unwrap();
+    db.batch_execute(
+        "CREATE FUNCTION refuse_idempotency_delete() RETURNS trigger LANGUAGE plpgsql AS $$          BEGIN RAISE EXCEPTION 'synthetic per-table failure'; END $$;          CREATE TRIGGER refuse_delete BEFORE DELETE ON idempotency_keys          FOR EACH ROW EXECUTE FUNCTION refuse_idempotency_delete()",
+    )
+    .await
+    .unwrap();
+    let counts = prune(&mut db, RetentionPolicy::default(), BATCH_SIZE)
+        .await
+        .unwrap();
+    assert_eq!(
+        counts.idempotency_keys, 0,
+        "the failing step counts as zero"
+    );
+    assert_eq!(counts.messages, 1, "the other tables still prune");
+    assert!(
+        db.query_one(
+            "SELECT recipient_e164 IS NULL FROM messages WHERE id=$1",
+            &[&due],
+        )
+        .await
+        .unwrap()
+        .get::<_, bool>(0),
+        "the messages table must have pruned despite the idempotency failure"
+    );
+    // Every step failing still surfaces as an error rather than silence: an
+    // unresolvable search path makes every statement fail without touching
+    // any table.
+    db.batch_execute("SET search_path TO public").await.unwrap();
+    assert!(
+        prune(&mut db, RetentionPolicy::default(), BATCH_SIZE)
+            .await
+            .is_err()
+    );
+    db.batch_execute(&format!(
+        "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
+    ))
+    .await
+    .unwrap();
+}
+
+/// The candidate scans ride the migration-062 indexes instead of
+/// sequentially rescanning the messages table every tick (#654).
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn retention_candidates_scan_the_due_index_instead_of_the_table() {
+    let url = env::var("ZT_INBOUND_TEST_DATABASE_URL")
+        .expect("set ZT_INBOUND_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let (db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let schema = migrated(&db).await;
+    let account = Uuid::new_v4();
+    let device = Uuid::new_v4();
+    db.execute("INSERT INTO accounts(id) VALUES($1)", &[&account])
+        .await
+        .unwrap();
+    db.execute(
+        "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'virtual fixture')",
+        &[&device, &account],
+    )
+    .await
+    .unwrap();
+    // Half the terminal rows are past the cutoff, half are not; the cutoff
+    // predicate is therefore selective on this fixture as it is in production.
+    let rows = 2_000_i64;
+    for (state, age_expr) in [("delivered", "g"), ("queued", "g")] {
+        db.execute(
+            &format!(
+                "INSERT INTO messages(id,account_id,device_id,recipient_e164,recipient_digest, \
+                 transport_mode,transport_payload,request_digest,state,expires_at,created_at,updated_at) \
+                 SELECT gen_random_uuid(),$1,$2,'+15551234567',$3,'synthetic_alpha',$4,$5,$6, \
+                 now()+interval '1 hour',now()-({age_expr}) * interval '1 minute',now()-({age_expr}) * interval '1 minute' \
+                 FROM generate_series(1,$7::bigint) g"
+            ),
+            &[&account, &device, &vec![1_u8; 32], &b"synthetic body".as_slice(),
+              &vec![2_u8; 32], &state, &(rows / 2)],
+        )
+        .await
+        .unwrap();
+    }
+    // g ranges 1..1000 minutes (~16 hours) for both halves, so no row is past
+    // the 30-day cutoff yet; age every other delivered row past it.
+    db.batch_execute(
+        "UPDATE messages SET updated_at=now()-interval '40 days', \
+         created_at=now()-interval '40 days' \
+         WHERE state='delivered' AND id IN (SELECT id FROM messages WHERE state='delivered' LIMIT 500)",
+    )
+    .await
+    .unwrap();
+    db.batch_execute("ANALYZE messages").await.unwrap();
+    for (name, probe) in [
+        (
+            "messages_retention_due",
+            "SELECT m.id FROM messages m \
+             WHERE m.updated_at<=now()-30 * interval '1 day' \
+               AND m.recipient_e164 IS NOT NULL \
+               AND m.state IN ('delivered','failed','cancelled','expired') \
+               AND (m.retention_blocked_at IS NULL OR m.retention_blocked_at<=now()-interval '1 hour') \
+             ORDER BY m.updated_at,m.id LIMIT 100",
+        ),
+        (
+            "messages_pending_recipient",
+            "SELECT 1 FROM messages m \
+             WHERE m.account_id=$1 AND m.recipient_e164='+155500000001' \
+               AND m.state IN ('queued','claimed')",
+        ),
+    ] {
+        let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
+            if name == "messages_pending_recipient" {
+                vec![&account]
+            } else {
+                vec![]
+            };
+        let plan: String = db
+            .query(&format!("EXPLAIN (COSTS OFF) {probe}"), &params)
+            .await
+            .unwrap()
+            .iter()
+            .map(|row| row.get::<_, String>(0))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            plan.contains(name) && !plan.contains("Seq Scan"),
+            "candidate scan must use {name}: {plan}"
+        );
+    }
     db.batch_execute(&format!(
         "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
     ))

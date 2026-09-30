@@ -30,7 +30,7 @@ macro_rules! migration {
 
 // Holds are checked by admission and released by inbound, so these routes run
 // on the complete schema. SQL is embedded at build time.
-const TEST_MIGRATIONS: [(&str, &str); 61] = [
+const TEST_MIGRATIONS: [(&str, &str); 63] = [
     migration!("001_foundation.sql"),
     migration!("002_auth.sql"),
     migration!("003_delivery.sql"),
@@ -92,6 +92,8 @@ const TEST_MIGRATIONS: [(&str, &str); 61] = [
     migration!("059_erasure_fk_indexes.sql"),
     migration!("060_optout_review_indexes.sql"),
     migration!("061_inbound_events_attempt_fk_index.sql"),
+    migration!("062_pending_recipient_index.sql"),
+    migration!("063_retention_blocked_stamp.sql"),
 ];
 
 #[test]
@@ -333,6 +335,11 @@ async fn owner_holds_and_review_decisions_are_owner_bound_tenant_scoped_and_audi
         }
         if name == "061_inbound_events_attempt_fk_index.sql" {
             db.batch_execute("CREATE INDEX erasure_fk_inbound_events_attempt ON inbound_events(account_id,device_id,message_id,attempt_id)")
+                .await
+                .unwrap();
+        }
+        if name == "062_pending_recipient_index.sql" {
+            db.batch_execute("CREATE INDEX messages_pending_recipient ON messages(recipient_e164,account_id) WHERE state IN ('queued','claimed') AND recipient_e164 IS NOT NULL")
                 .await
                 .unwrap();
         }

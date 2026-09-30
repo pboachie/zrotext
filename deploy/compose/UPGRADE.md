@@ -154,7 +154,7 @@ migration credential in an API environment.
 
 - Migrations are numbered SQL files in `deploy/compose/migrations/`, append-only
   and consecutive from `001_foundation.sql`. The current highest migration in
-  this repository is **061** (`061_inbound_events_attempt_fk_index.sql`). Never
+  this repository is **063** (`063_retention_blocked_stamp.sql`). Never
   edit a file that is already applied; a change is always a new file with the
   next number.
 - The runner takes a fixed PostgreSQL advisory lock for the whole run, creates
@@ -167,7 +167,7 @@ migration credential in an API environment.
 - Editing an applied migration file makes the next run fail with
   "applied migration NNN differs from its file; restore the original file and
   add a new migration". Do not repair `schema_migrations` by hand.
-- Migrations 034, 040, 049, 050, 052, 057, 059, 060 and 061 are documented exceptions: they build their indexes with
+- Migrations 034, 040, 049, 050, 052, 057, 059, 060, 061 and 062 are documented exceptions: they build their indexes with
   `CREATE INDEX CONCURRENTLY` before recording the numbered file; see the
   [Compose guide](README.md) for the interrupted-build and rollback rules that
   apply to them. Migration 059 builds five foreign-key support indexes for
