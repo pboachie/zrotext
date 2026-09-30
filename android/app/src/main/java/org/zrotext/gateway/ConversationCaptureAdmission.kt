@@ -125,6 +125,12 @@ internal class ConversationCaptureAdmission(
 
     @Synchronized fun captureEligible(): Boolean = currentLease() != null
 
+    /** Fresh sanitized budget for the dormant runtime; storage state alone never implies active. */
+    @Synchronized fun remainingMs(expected: ConversationCaptureScope): Long {
+        val value = currentLease() ?: return 0
+        return if (value.scope == expected) (value.deadline - clock()).coerceIn(0, MAX_ADMISSION_MS) else 0
+    }
+
     /** Dormant adapters share the exact receiver/Pause monitor and scope fence. */
     @Synchronized fun <T> withCurrentScope(expected: ConversationCaptureScope, action: (() -> Unit) -> T): T = failClosed {
         val check = { check(checkNotNull(currentLease()).scope == expected) { "Conversation scope unavailable" } }

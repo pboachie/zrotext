@@ -90,6 +90,45 @@ Runtime owns stale action validation, worker dispatch and authoritative snapshot
 presentation owns UI-thread delivery, expiry display and no saved approval/secrets.
 No activity/receiver/service files are changed by these libraries.
 
+`ConversationPresentationRuntime` now dispatches this port through mandatory serial
+worker and UI executors. It consumes exact observed versions, rechecks review
+authority and expiry, ignores budget-only countdown differences, and cancels an
+installation before waiting for the shared admission monitor on Stop. Observers
+are removable, receive no secrets, and cannot break other observers by throwing.
+`ConversationJournalPresentationDomain` connects review to the protected journal,
+fresh-review recovery, authenticated acceptance/install exchange, live admission
+budget and durable local/remote closure hooks. Prepared or pending exchange never
+reports Active. Its exchange/verifier remain mandatory; no service mounts it.
+Review request IDs are ephemeral UI decision challenges, distinct from the durable
+server receipt ID. The domain retains the exact verified scope/evidence, checks the
+displayed disclosure digest, and consumes that review once. It checks both review
+expiry and cancellation after installation waits while holding the shared gate.
+
+`ConversationAuthorityTransport` implements nonce/session/scope matching and
+bounded time/closure replies through a mandatory `ConversationAuthenticatedChannel`.
+The channel owner must derive session identity from the authenticated connection,
+not payload fields. Closure success requires the exact request and durable server
+commit acknowledgement; timeout, session change, wrong peer or uncertain response
+cannot claim Closed. The existing socket still has no production implementation
+of these new messages: these are tested dormant adapters, not a deployed protocol.
+
+## Owner-root enrollment integration boundary
+
+The session-lifetime browser signer exposes only its public point and role-5 key
+ID after deliberate setup. The existing owner-controlled root custodian must
+independently verify the account, device, line and reader selection; show that
+exact new signer and bounded authorization for owner confirmation; and sign a
+successor manifest using the existing verified chain/version and role bindings.
+The signer cannot sign confirmations until that successor is independently
+verified and installed in its current authority source. No root private key is
+exported to the conversation runtime, and no new root is silently generated.
+Reload, root rotation or setup failure discards the session key and requires fresh
+setup. If the existing root custodian is unavailable, enrollment stays unavailable;
+fixture root signing demonstrates the boundary without provisioning user custody.
+An actual custodian UI/sign/publish adapter remains an integration gate. It must
+not accept a transport-success response as verified manifest enrollment, overwrite
+the pinned root on recovery, or automatically replay a failed owner confirmation.
+
 Before mounting: coordinate both service Pause paths and first-PDU receiver with
 one shared runtime, finish server/frame/verifier adapters and signer enrollment,
 integrate export/retention/guarded deletion/backup/reconciliation, update consent

@@ -12,7 +12,7 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28])
 class ConversationProductionBoundaryTest {
-    private val scope=ConversationCaptureScope(id(),id(),id(),1,"+12",id(),id(),id(),"11".repeat(32),"22".repeat(32),1,2,"33".repeat(32),"44".repeat(32))
+    private val scope=ConversationCaptureScope(id(),id(),id(),1,"+12",id(),id(),id(),Draft02OutboundPreparation.hash(ConversationActivationCodec.DISCLOSURE.toByteArray()),"22".repeat(32),1,2,"33".repeat(32),"44".repeat(32))
     private val phone=SealedDispatchExecutor.Session(UUID.fromString(scope.accountId),UUID.fromString(scope.deviceId),1,1,UUID.randomUUID(),"55".repeat(32))
     private var current:ConversationExecutionAuthority?=ConversationExecutionAuthority(scope,ConversationPhoneSession.from(phone),true,true,true,true,true)
     private var elapsed=100L
@@ -27,6 +27,8 @@ class ConversationProductionBoundaryTest {
     private var remoteCloseCalls=0;private var remoteCloseFails=false
     private var preparationCalls=0
     private var leaseChecks=0
+    private var duringLeaseVerification:()->Unit = {}
+    private var presentationClockFails=false
     private lateinit var initialChallenge:String
     private val protection=object:ConversationJournalProtection {
         // State-boundary fixture only; production protection remains mandatory encrypted custody.
@@ -40,7 +42,7 @@ class ConversationProductionBoundaryTest {
         dispatch=Room.inMemoryDatabaseBuilder(context,SmsJournalDatabase::class.java).allowMainThreadQueries().build()
         val verifier=object:ConversationActivationVerifier {
             override fun verifiedPreparation(evidence:ByteArray)=scope
-            override fun verifiedActiveLease(scope:ConversationCaptureScope,challenge:String,evidence:ByteArray):Long {leaseChecks++;return 60000L}
+            override fun verifiedActiveLease(scope:ConversationCaptureScope,challenge:String,evidence:ByteArray):Long {leaseChecks++;duringLeaseVerification();return 60000L}
         }
         admission=ConversationCaptureAdmission(capture.journal(),verifier,protection,{elapsed},{check(it==scope)})
         recoveryPolicy=ConversationFreshReviewRecovery(capture.journal(),admission,verifier){check(it==scope)}
@@ -56,6 +58,72 @@ class ConversationProductionBoundaryTest {
         return execution.prepare(scope,grant,byteArrayOf(1),phone,local)
     }
     @Test fun absentPermissionCannotReachExistingExecutorPreparation(){current=current!!.copy(sendPermission=false);assertSame(SealedDispatchExecutor.Unavailable,prepare());assertEquals(0,preparationCalls);assertEquals(0,dispatch.sealedPreparations().count())}
+    private fun presentationDomain(exchange:(ConversationRecoveryRequest)->ByteArray = {byteArrayOf(1)}):ConversationJournalPresentationDomain {
+        capture.close() // Separate fresh journal fixture: never reopen a durably closed interval.
+        capture=Room.inMemoryDatabaseBuilder(RuntimeEnvironment.getApplication(),ConversationCaptureDatabase::class.java).allowMainThreadQueries().build()
+        val verifier=object:ConversationActivationVerifier {
+            override fun verifiedPreparation(evidence:ByteArray)=scope
+            override fun verifiedActiveLease(scope:ConversationCaptureScope,challenge:String,evidence:ByteArray):Long {duringLeaseVerification();return 60000L}
+        }
+        admission=ConversationCaptureAdmission(capture.journal(),verifier,protection,{elapsed},{check(it==scope)})
+        recoveryPolicy=ConversationFreshReviewRecovery(capture.journal(),admission,verifier){check(it==scope)}
+        hooks=ConversationLifecycleHooks(admission,sends.sends(),clock,recoveryPolicy){check(it==scope);remoteCloseCalls++}
+        return ConversationJournalPresentationDomain(admission,recoveryPolicy,hooks,verifier,{check(!presentationClockFails);elapsed},exchange)
+    }
+    private fun phoneReview()=ConversationPhoneReview(id(),scope.intervalId,scope.lineId,1,scope.peer,
+        ConversationActivationCodec.DISCLOSURE,"conversation-content-v1",
+        Draft02OutboundPreparation.hash(ConversationActivationCodec.DISCLOSURE.toByteArray()),1000)
+    @Test fun runtimeIntegratesPhoneReviewProtectedJournalInstallAndDurableStop() {
+        val domain=presentationDomain();val review=phoneReview();domain.propose(review,byteArrayOf(1))
+        assertFalse(admission.captureEligible());assertEquals(ConversationPresentationPhase.AWAITING_PHONE_REVIEW,domain.sample().phase)
+        domain.approve(review){true};assertTrue(admission.captureEligible())
+        assertEquals("installed",capture.journal().installation()!!.state)
+        assertEquals(ConversationPresentationPhase.CONFIRMED_ACTIVE,domain.sample().phase)
+        domain.disableAdmission();assertFalse(admission.captureEligible())
+        assertEquals(ConversationPresentationPhase.DURABLY_CLOSED,domain.stop(scope.intervalId).phase)
+        assertEquals("closed",capture.journal().installation()!!.state);assertEquals(1,remoteCloseCalls)
+    }
+    @Test fun cancelledInstallResponseNeverOpensCapture() {
+        var accepted=true;val domain=presentationDomain {accepted=false;byteArrayOf(1)};val review=phoneReview()
+        domain.propose(review,byteArrayOf(1))
+        assertThrows(IllegalStateException::class.java){domain.approve(review){accepted}}
+        assertFalse(admission.captureEligible());assertEquals("prepared",capture.journal().installation()!!.state)
+    }
+    @Test fun noCaptureWhileServerAcceptancePending() {
+        val domain=presentationDomain {assertFalse(admission.captureEligible());assertEquals("prepared",capture.journal().installation()!!.state);byteArrayOf(1)}
+        val review=phoneReview();domain.propose(review,byteArrayOf(1));domain.approve(review){true};assertTrue(admission.captureEligible())
+    }
+    @Test fun freshCountdownCanApproveActualJournal() {
+        val domain=presentationDomain();domain.propose(phoneReview(),byteArrayOf(1));elapsed++
+        domain.approve(domain.sample().review!!){true};assertTrue(admission.captureEligible())
+    }
+    @Test fun activeScopeCannotBeSilentlyReplaced() {
+        val domain=presentationDomain();val review=phoneReview();domain.propose(review,byteArrayOf(1));domain.approve(review){true}
+        assertThrows(IllegalStateException::class.java){domain.propose(phoneReview(),byteArrayOf(1))}
+        assertTrue(admission.captureEligible())
+    }
+    @Test fun reviewExpiryDuringFinalInstallCannotLeaveAdmissionOpen() {
+        val domain=presentationDomain();val review=phoneReview();domain.propose(review,byteArrayOf(1))
+        duringLeaseVerification={elapsed+=1001}
+        assertThrows(IllegalStateException::class.java){domain.approve(review){true}}
+        assertFalse(admission.captureEligible())
+        assertEquals("installed",capture.journal().installation()!!.state) // Durable installed never means active.
+    }
+    @Test fun displayedDisclosureMustMatchVerifiedConsentScope() {
+        val verifier=object:ConversationActivationVerifier {
+            override fun verifiedPreparation(evidence:ByteArray)=scope.copy(disclosureDigest="99".repeat(32))
+            override fun verifiedActiveLease(scope:ConversationCaptureScope,challenge:String,evidence:ByteArray)=60000L
+        }
+        val domain=ConversationJournalPresentationDomain(admission,recoveryPolicy,hooks,verifier,{elapsed}){byteArrayOf(1)}
+        assertThrows(IllegalArgumentException::class.java){domain.propose(phoneReview(),byteArrayOf(1))}
+        assertFalse(admission.captureEligible())
+    }
+    @Test fun throwingFinalClockDisablesInstalledAdmissionBeforeReturning() {
+        val domain=presentationDomain();val review=phoneReview();domain.propose(review,byteArrayOf(1))
+        duringLeaseVerification={presentationClockFails=true}
+        assertThrows(IllegalStateException::class.java){domain.approve(review){true}}
+        assertFalse(admission.captureEligible());assertEquals("installed",capture.journal().installation()!!.state)
+    }
     @Test fun receivePermissionLossCannotPrepare(){current=current!!.copy(receivePermission=false);assertSame(SealedDispatchExecutor.Unavailable,prepare());assertEquals(0,preparationCalls)}
     @Test fun ownerLogoutCannotPrepare(){current=current!!.copy(ownerSessionLive=false);assertSame(SealedDispatchExecutor.Unavailable,prepare());assertEquals(0,preparationCalls)}
     @Test fun withdrawnContentConsentCannotPrepare(){current=current!!.copy(contentConsentLive=false);assertSame(SealedDispatchExecutor.Unavailable,prepare());assertEquals(0,preparationCalls)}
