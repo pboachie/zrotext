@@ -6,5 +6,9 @@
 
 pub mod recovery_kit;
 pub mod root_backup;
+/// Offline unlock signing, compiled only when the `unlock` feature is
+/// enabled. The server never enables it; only the owner CLI's own
+/// default-off `unlock` feature does.
+#[cfg(feature = "unlock")]
 pub mod root_unlock;
 pub mod sealed_root_enrollment;

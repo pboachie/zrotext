@@ -102,11 +102,18 @@ token without echo, authenticated backup opening and public pin comparison —
 with one addition. **Before any secret is requested**, the challenge's
 account, origin and root fingerprint are bound to the independently supplied
 identity and to the local clock's validity window, and the challenge ID and
-expiry are displayed. After exact `UNLOCK` consent, the token is read, the
+expiry are displayed. The generation line is honest about being offline: the
+tool prints `Generation: unknown offline`, because only the hub records the
+active generation. Consent is exact: typing `UNLOCK` proceeds; typing
+`decline-UNLOCK` ends the ceremony cleanly with nothing signed, no token
+requested and no state changed; anything else fails closed. After exact
+`UNLOCK` consent, the token is read, the
 backup is opened and compared, and the challenge transcript is signed once
 with the recovered root as canonical low-s `r || s` (64 bytes). The root and
 recovery secret are dropped before the fixed public `Signature:` line is
-displayed for transcription.
+displayed for transcription. The challenge file is read from an absolute
+drive path only: drive-relative, UNC, device and reparse-point paths are
+refused before any read.
 
 Threat and failure cases considered:
 

@@ -74,6 +74,30 @@ fn recovered_root_signs_one_bound_challenge_that_verifies() {
 }
 
 #[test]
+fn a_high_s_deterministic_signature_is_emitted_in_its_low_s_form() {
+    use p256::ecdsa::signature::Signer;
+    let (root, _recovery, expected) = material("ZROtext synthetic root-unlock high-s");
+    let unsigned = challenge(&expected, 1_000_000, 1_300_000);
+    let output = sign_enrollment(&root, &unsigned, &expected, 1_000_000).unwrap();
+    // Independently recompute the deterministic signature for this exact
+    // key and transcript.
+    let secret = p256::SecretKey::from_slice(root.as_bytes()).unwrap();
+    let statement = sealed_root_enrollment::transcript(&unsigned).unwrap();
+    let raw: p256::ecdsa::Signature = p256::ecdsa::SigningKey::from(secret).sign(&statement);
+    let raw_bytes = raw.to_bytes();
+    let raw_is_high = raw_bytes[32..] > *HALF_ORDER.as_slice();
+    let normalized = raw.normalize_s().to_bytes();
+    // The emitted form is the canonical low-s twin of the raw signature:
+    // identical when the raw signature was already low-s, flipped when it
+    // was high-s. Either way the high-s form itself never leaves the signer.
+    assert_eq!(output.as_slice(), normalized.as_slice());
+    if raw_is_high {
+        assert_ne!(output.as_slice(), raw_bytes.as_slice());
+    }
+    assert!(&output[32..] <= HALF_ORDER.as_slice());
+}
+
+#[test]
 fn challenges_for_any_other_identity_are_refused_before_signing() {
     let (root, _recovery, expected) = material("ZROtext synthetic root-unlock other identity");
     let unsigned = challenge(&expected, 1_000_000, 1_300_000);

@@ -165,6 +165,17 @@ fn prompt(text: &str, limit: usize) -> Result<zrotext_root_terminal::SensitiveLi
 }
 
 fn show_context(session: &mut Session, context: &PublicContext) -> Result<()> {
+    show_context_with_generation(session, context, "1 (unregistered)")
+}
+
+/// The generation note differs per flow: init and restore propose a first
+/// unregistered generation, while offline unlock cannot observe the hub's
+/// active generation and must not imply one.
+fn show_context_with_generation(
+    session: &mut Session,
+    context: &PublicContext,
+    generation_note: &str,
+) -> Result<()> {
     session
         .write_public_prompt(&format!(
             "Account: {}\r\n",
@@ -176,7 +187,7 @@ fn show_context(session: &mut Session, context: &PublicContext) -> Result<()> {
         .write_public_prompt(&context.origin)
         .map_err(|_| ())?;
     session
-        .write_public_prompt("\r\nGeneration: 1 (unregistered)\r\n")
+        .write_public_prompt(&format!("\r\nGeneration: {generation_note}\r\n"))
         .map_err(|_| ())
 }
 
@@ -273,16 +284,105 @@ fn run_restore_check(context: PublicContext, id: [u8; 16], parent: PathBuf) -> R
 fn read_challenge(path: &str) -> Result<Vec<u8>> {
     use std::io::Read;
     let bytes = path.as_bytes();
+    // Absolute drive path only: an ASCII drive letter, a colon and a
+    // separator, with a non-separator tail. This refuses drive-relative
+    // paths, UNC and device-path spellings (any leading separator),
+    // non-ASCII input, embedded NUL, trailing separators and absurd
+    // lengths, all before any filesystem access.
     if bytes.len() > 260
-        || bytes.len() < 3
+        || bytes.len() < 4
         || !path.is_ascii()
         || !bytes[0].is_ascii_alphabetic()
         || bytes.get(1) != Some(&b':')
+        || !(bytes[2] == b'\\' || bytes[2] == b'/')
+        || bytes[bytes.len() - 1] == b'\\'
+        || bytes[bytes.len() - 1] == b'/'
         || bytes.contains(&0)
     {
         return Err(());
     }
+    // Reserved DOS device names are refused in every component.
+    for component in path[3..].split(['\\', '/']) {
+        let stem = component.split('.').next().unwrap_or("");
+        if matches!(
+            stem.to_ascii_uppercase().as_str(),
+            "CON"
+                | "PRN"
+                | "AUX"
+                | "NUL"
+                | "COM1"
+                | "COM2"
+                | "COM3"
+                | "COM4"
+                | "COM5"
+                | "COM6"
+                | "COM7"
+                | "COM8"
+                | "COM9"
+                | "LPT1"
+                | "LPT2"
+                | "LPT3"
+                | "LPT4"
+                | "LPT5"
+                | "LPT6"
+                | "LPT7"
+                | "LPT8"
+                | "LPT9"
+        ) {
+            return Err(());
+        }
+    }
+    // Open the named path itself through the Win32 boundary with explicit
+    // flags: reparse points are not traversed and the object must already
+    // exist, so a symlink or junction cannot redirect a controlled path.
+    #[cfg(windows)]
+    let mut file = {
+        use std::os::windows::io::FromRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_BACKUP_SEMANTICS,
+            FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, OPEN_EXISTING,
+        };
+        let wide: Vec<u16> = path.encode_utf16().chain(Some(0)).collect();
+        // SAFETY: in-parameters only; the returned handle is owned below.
+        let handle = unsafe {
+            CreateFileW(
+                wide.as_ptr(),
+                FILE_GENERIC_READ,
+                0,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                std::ptr::null_mut(),
+            )
+        };
+        if handle as isize == -1 {
+            return Err(());
+        }
+        // SAFETY: we own the handle; CreateFileW succeeded.
+        unsafe { std::fs::File::from_raw_handle(handle as _) }
+    };
+    #[cfg(not(windows))]
     let mut file = std::fs::File::open(std::path::Path::new(path)).map_err(|_| ())?;
+    // The opened path must be a regular file, never a reparse point. The
+    // reparse attribute bit covers symlinks, junctions and mount points.
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        let metadata = file.metadata().map_err(|_| ())?;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+            || !metadata.file_type().is_file()
+        {
+            return Err(());
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        if !file.metadata().map_err(|_| ())?.is_file() {
+            return Err(());
+        }
+    }
+
     let mut buffer = [0_u8; 664];
     let mut filled = 0;
     loop {
@@ -323,7 +423,11 @@ fn run_unlock(
 ) -> Result<()> {
     verify_process_eligibility().map_err(|_| ())?;
     let mut session = Session::acquire().map_err(|_| ())?;
-    show_context(&mut session, &context)?;
+    show_context_with_generation(
+        &mut session,
+        &context,
+        "unknown offline (the hub records the active generation)",
+    )?;
     session
         .write_public_prompt("Enter full lowercase fingerprint from your independent kit: ")
         .map_err(|_| ())?;
@@ -359,9 +463,19 @@ fn run_unlock(
         .map_err(|_| ())?;
     drop(session);
     let consent = prompt(
-        "Type UNLOCK to recover the root once and sign this challenge: ",
-        6,
+        "Type UNLOCK to recover the root once and sign this challenge, or decline-UNLOCK to decline: ",
+        14,
     )?;
+    if consent.expose_ascii() == b"decline-UNLOCK" {
+        drop(consent);
+        let mut decline = Session::acquire().map_err(|_| ())?;
+        decline
+            .write_public_prompt(
+                "Declined. Nothing was signed and no enrollment, unlock state or file was created.\r\n",
+            )
+            .map_err(|_| ())?;
+        return decline.finish().map_err(|_| ());
+    }
     if consent.expose_ascii() != b"UNLOCK" {
         return Err(());
     }
