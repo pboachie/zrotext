@@ -285,6 +285,12 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "065_conversation_activation.sql",
         include_str!("../../../../deploy/compose/migrations/065_conversation_activation.sql"),
     ),
+    (
+        "066_conversation_confirmation_records.sql",
+        include_str!(
+            "../../../../deploy/compose/migrations/066_conversation_confirmation_records.sql"
+        ),
+    ),
 ];
 
 /// Indexes the Compose migrator prepares with CREATE INDEX CONCURRENTLY in
@@ -1668,7 +1674,7 @@ async fn account_disabled_during_erasure_wait_deletes_nothing() {
     // Once the request is parked on the user lock, connection B commits the
     // disable, then A releases. The fence locks the account row too
     // (FOR UPDATE OF u,m,a), so the disable committed before that grant
-    // fails the locked row's re-qualification — and the fence's final
+    // fails the locked row's re-qualification ΓÇö and the fence's final
     // fresh-statement recheck would catch it regardless.
     wait_until_handler_is_blocked_by(&admin, "zt_erasure_disable_race", blocker_pid).await;
     admin
@@ -1733,7 +1739,7 @@ async fn session_expires_during_erasure_wait_deletes_nothing() {
     // start, so only a post-lock `clock_timestamp()` recheck can catch it.
     // The fuse also has to pass inside production's bounded lock wait: the
     // server's pooled connections run with lock_timeout=3s
-    // (crate::runtime_db), after which the request fails closed with 503 —
+    // (crate::runtime_db), after which the request fails closed with 503 ΓÇö
     // so the fuse is set well below that bound while still clearing the
     // request's pre-fence proof work.
     db.execute(
@@ -3072,6 +3078,68 @@ async fn erasing_thousands_of_referenced_rows_completes_within_the_runtime_timeo
     ] {
         let count: i64 = db.query_one(sql, &[&a.account_id]).await.unwrap().get(0);
         assert_eq!(count, 0, "{sql} after erasure");
+    }
+    admin
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[test]
+fn confirmed_proof_delete_precedes_every_referenced_parent() {
+    let proof = DELETE_PLAN
+        .iter()
+        .position(|(table, _)| *table == "conversation_confirmation_records")
+        .unwrap();
+    for parent in ["conversation_intervals", "messages", "devices", "sessions"] {
+        assert!(
+            proof
+                < DELETE_PLAN
+                    .iter()
+                    .position(|(table, _)| *table == parent)
+                    .unwrap()
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn malformed_confirmation_schema_fails_erasure_closed_without_partial_deletes() {
+    let (admin, mut db, database_url, schema) = migrated_schema("proof_shape").await;
+    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(26)).unwrap());
+    let (a, session_a, _b, _session_b, app) = fixture(&mut db, &hasher, &database_url, None).await;
+    db.batch_execute("DROP TABLE conversation_confirmation_records; CREATE TABLE conversation_confirmation_records(account_id uuid NOT NULL)").await.unwrap();
+    db.execute(
+        "INSERT INTO conversation_confirmation_records(account_id) VALUES($1)",
+        &[&a.account_id],
+    )
+    .await
+    .unwrap();
+    let response = app
+        .oneshot(erasure_post(
+            Some(&session_a.token),
+            Some(&session_a.csrf_token),
+            Some(ORIGIN),
+            &crate::test_keys::password(1),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    for (table, column) in [
+        ("accounts", "id"),
+        ("messages", "account_id"),
+        ("conversation_confirmation_records", "account_id"),
+    ] {
+        let count: i64 = db
+            .query_one(
+                &format!("SELECT count(*) FROM {table} WHERE {column}=$1"),
+                &[&a.account_id],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert!(count > 0);
     }
     admin
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))

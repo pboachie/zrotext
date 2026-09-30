@@ -103,6 +103,10 @@ const BLOCKED_TABLES: &[&str] = &[
 /// counts stay honest.
 const DELETE_PLAN: &[(&str, &str)] = &[
     (
+        "conversation_confirmation_records",
+        "DELETE FROM conversation_confirmation_records WHERE account_id=$1",
+    ),
+    (
         "conversation_inbound_provenance",
         "DELETE FROM conversation_inbound_provenance WHERE account_id=$1",
     ),
@@ -635,8 +639,25 @@ async fn erase_account(
     }
     // Everything below is one transaction: any failure rolls the whole
     // erasure back, never leaving a half-erased account.
+    // The proof table is absent only before its allocated migration. No proof
+    // can be accepted then. Once installed it participates in the guarded plan.
+    let confirmation_installed =
+        match crate::http_owner_conversations::send::queue::lifecycle::installed(&tx).await {
+            Ok(value) => value,
+            Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+        };
+    if confirmation_installed
+        && !crate::http_owner_conversations::send::queue::lifecycle::validate(&tx)
+            .await
+            .unwrap_or(false)
+    {
+        return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
+    }
     let mut deleted = Vec::new();
     for &(table, sql) in DELETE_PLAN {
+        if table == "conversation_confirmation_records" && !confirmation_installed {
+            continue;
+        }
         let rows = match tx.execute(sql, &[&account_id]).await {
             Ok(rows) => rows,
             // A foreign key refusing an observer user delete is a blocker,

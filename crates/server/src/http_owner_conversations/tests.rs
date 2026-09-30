@@ -169,7 +169,7 @@ fn conversation_selectors_refuse_ambiguous_or_noncanonical_peers() {
         "+1 2",
         "+1\n2",
         "12",
-        "+１２",
+        "+∩╝æ∩╝Æ",
         "+1234567890123456",
     ] {
         selected.peer = invalid.into();
@@ -445,6 +445,11 @@ pub(super) async fn prepared() -> (Fixture, SessionPrincipal) {
     .unwrap();
     f.db.batch_execute(include_str!(
         "../../../../deploy/compose/migrations/065_conversation_activation.sql"
+    ))
+    .await
+    .unwrap();
+    f.db.batch_execute(include_str!(
+        "../../../../deploy/compose/migrations/066_conversation_confirmation_records.sql"
     ))
     .await
     .unwrap();

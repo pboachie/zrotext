@@ -76,6 +76,7 @@ pub struct RetentionCounts {
     pub conversation_admissions_closed: u64,
     pub conversation_provenance: u64,
     pub conversation_intervals: u64,
+    pub conversation_confirmations: u64,
 }
 
 impl RetentionCounts {
@@ -94,6 +95,7 @@ impl RetentionCounts {
             self.conversation_admissions_closed,
             self.conversation_provenance,
             self.conversation_intervals,
+            self.conversation_confirmations,
         ]
         .into_iter()
         .any(|count| count >= limit)
@@ -157,7 +159,7 @@ pub async fn prune(
     assert!((1..=1000).contains(&limit));
     let mut first_error: Option<Error> = None;
     let mut failures = 0_u8;
-    let steps = 10_u8;
+    let steps = 11_u8;
 
     let idempotency_keys = step(
         "idempotency_keys",
@@ -348,6 +350,13 @@ pub async fn prune(
         ),
     )
     .await;
+    let conversation_confirmations = step(
+        "conversation_confirmation_records",
+        &mut first_error,
+        &mut failures,
+        crate::http_owner_conversations::send::queue::lifecycle::redact(client, limit),
+    )
+    .await;
     if failures == steps
         && let Some(error) = first_error
     {
@@ -365,6 +374,7 @@ pub async fn prune(
         conversation_admissions_closed,
         conversation_provenance,
         conversation_intervals,
+        conversation_confirmations,
     })
 }
 

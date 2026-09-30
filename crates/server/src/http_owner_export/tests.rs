@@ -36,7 +36,7 @@ macro_rules! export_schema {
             [$(($name, include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/compose/migrations/", $name)))),+]
         };
     }
-const EXPORT_SCHEMA: [(&str, &str); 65] = export_schema!(
+const EXPORT_SCHEMA: [(&str, &str); 66] = export_schema!(
     "001_foundation.sql",
     "002_auth.sql",
     "003_delivery.sql",
@@ -102,6 +102,7 @@ const EXPORT_SCHEMA: [(&str, &str); 65] = export_schema!(
     "063_retention_blocked_stamp.sql",
     "064_owner_conversation_consent.sql",
     "065_conversation_activation.sql",
+    "066_conversation_confirmation_records.sql",
 );
 #[test]
 fn export_schema_includes_every_checked_in_migration() {
@@ -554,6 +555,9 @@ async fn export_paginates_full_history_beyond_the_first_page() {
         include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
         include_str!("../../../../deploy/compose/migrations/064_owner_conversation_consent.sql"),
         include_str!("../../../../deploy/compose/migrations/065_conversation_activation.sql"),
+        include_str!(
+            "../../../../deploy/compose/migrations/066_conversation_confirmation_records.sql"
+        ),
     ] {
         db.batch_execute(migration).await.unwrap();
     }

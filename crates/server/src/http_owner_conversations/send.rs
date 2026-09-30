@@ -11,7 +11,8 @@ use crate::{
 };
 use p256::ecdsa::{Signature, VerifyingKey, signature::Verifier};
 use sha2::{Digest, Sha256};
-use tokio_postgres::Client;
+use tokio_postgres::{Client, Transaction};
+pub mod queue;
 use uuid::Uuid;
 
 const DOMAIN: &[u8] = b"zrotext/conversation/confirm-send/v1\0";
@@ -167,6 +168,21 @@ pub async fn authorize_confirmed_send(
     confirmation: &[u8],
     signature: &[u8],
 ) -> Result<Confirmation, ConversationError> {
+    let tx = client.transaction().await?;
+    let c = authorize_in_transaction(&tx, owner, phone, envelope, confirmation, signature).await?;
+    tx.commit().await?;
+    Ok(c)
+}
+
+// Database locks remain held by the caller until its complete transaction commits.
+async fn authorize_in_transaction(
+    tx: &Transaction<'_>,
+    owner: &SessionPrincipal,
+    phone: InboundSession<'_>,
+    envelope: &[u8],
+    confirmation: &[u8],
+    signature: &[u8],
+) -> Result<Confirmation, ConversationError> {
     let c = Confirmation::decode(confirmation)?;
     let e = sealed_envelope::parse(envelope, Profile::Draft02Candidate)
         .map_err(|_| ConversationError::Invalid)?;
@@ -192,10 +208,9 @@ pub async fn authorize_confirmed_send(
     {
         return Err(ConversationError::Forbidden);
     }
-    let tx = client.transaction().await?;
-    let mut authority = lock_current(&tx, c.account).await?;
-    lock_owner(&tx, owner).await?;
-    let row = activation::load(&tx, c.account, c.interval).await?;
+    let mut authority = lock_current(tx, c.account).await?;
+    lock_owner(tx, owner).await?;
+    let row = activation::load(tx, c.account, c.interval).await?;
     let s = &row.statement;
     if row.phase != "active"
         || s.account != c.account
@@ -210,11 +225,11 @@ pub async fn authorize_confirmed_send(
     {
         return Err(ConversationError::Forbidden);
     }
-    lock_line(&tx, c.account, c.device, c.line, c.generation).await?;
+    lock_line(tx, c.account, c.device, c.line, c.generation).await?;
     if authority.conversation_keys(c.device, c.line).await? != (s.reader, s.signer) {
         return Err(ConversationError::Forbidden);
     }
-    activation::device_live(&tx, phone, s).await?;
+    activation::device_live(tx, phone, s).await?;
     let r = [
         ExpectedRecipient {
             role: 1,
@@ -245,7 +260,7 @@ pub async fn authorize_confirmed_send(
         .map_err(|_| ConversationError::Forbidden)?
         .verify(&c.transcript()?, &sig)
         .map_err(|_| ConversationError::Forbidden)?;
-    let now = activation::now(&tx).await?;
+    let now = activation::now(tx).await?;
     if c.expires_ms <= now
         || c.expires_ms - now > 30_000
         || e.observed_ms > now as u64
@@ -253,18 +268,17 @@ pub async fn authorize_confirmed_send(
     {
         return Err(ConversationError::Forbidden);
     }
-    fresh_owner(&tx, owner).await?;
-    activation::origin(&tx, s).await?;
-    activation::device_live(&tx, phone, s).await?;
+    fresh_owner(tx, owner).await?;
+    activation::origin(tx, s).await?;
+    activation::device_live(tx, phone, s).await?;
     authority.context(&w).await?;
     if authority.conversation_keys(c.device, c.line).await? != (s.reader, s.signer) {
         return Err(ConversationError::Forbidden);
     }
-    if activation::now(&tx).await? >= c.expires_ms {
+    if activation::now(tx).await? >= c.expires_ms {
         return Err(ConversationError::Forbidden);
     }
     drop(authority);
-    tx.commit().await?;
     Ok(c)
 }
 
