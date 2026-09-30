@@ -158,6 +158,14 @@ the conversation signer; its current-authority source must independently read th
 installed verified successor. Fixture custodian/CAS demonstrates this path; no
 user root, persistent credential storage or actual publication adapter is created.
 
+The isolated candidate also contains the reviewed `FutureConversationPane` without
+an activity mount. `ConversationPaneRuntimeTest` joins that pane to the real runtime,
+Room state machine and serialized closure adapter. Synthetic verifier, protection
+and server fixtures prove explicit approval before installation, no capture while
+pending, synchronous local Stop, and negative/unconfirmed remote ACK behavior.
+These tests do not establish actual server authentication, encrypted production
+custody, permission grants, carrier execution or device accessibility readiness.
+
 Before mounting: coordinate both service Pause paths and first-PDU receiver with
 one shared runtime, finish server/frame/verifier adapters and signer enrollment,
 integrate export/retention/guarded deletion/backup/reconciliation, update consent
