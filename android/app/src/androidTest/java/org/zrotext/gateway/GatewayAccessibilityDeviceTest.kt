@@ -20,7 +20,8 @@ class GatewayAccessibilityDeviceTest : GatewayAccessibilityChecks() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val activity = instrumentation.startActivitySync(
             Intent(instrumentation.targetContext, MainActivity::class.java)
-                .putExtra("gateway_screen", page)
+                .putExtra("gateway_screen", page.substringBefore('/'))
+                .putExtra("gateway_setup_step", page.substringAfter('/', "OVERVIEW"))
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         try {
             instrumentation.waitForIdleSync()

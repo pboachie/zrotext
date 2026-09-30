@@ -128,27 +128,55 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                     if (page == GatewayPage.SETUP) {
-                        GatewaySectionTitle("Set up this phone")
-                        Text("1. Choose access and a SIM. SMS access is optional for pairing and connection tests.")
-                        GatewayButton(onClick = { permissionDisclosure = GatewayPermissionPurpose.SIM }) { Text("Choose SIM permissions") }
-                        GatewayButton(onClick = { permissionDisclosure = GatewayPermissionPurpose.SEND }) { Text("Review SMS sending access") }
-                        GatewayButton(onClick = { permissionDisclosure = GatewayPermissionPurpose.RECEIVE }) { Text("Review SMS receiving access") }
-                        Text("SMS access is optional for pairing and connection tests. Pause stops the connection, but receiving access can still process incoming SMS locally. Revoke SMS access in Android app settings to stop that processing.")
-                        GatewayButton(onClick = {
-                            startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                                android.net.Uri.parse("package:$packageName")))
-                        }) { Text("Manage or revoke permissions") }
-                        Text("Selected SIM: ${selectedSim?.toString() ?: "none"}")
-                        sims.forEach { (id, label) ->
-                            GatewayButton(onClick = {
-                                selectedSim = id
-                                getSharedPreferences("gateway_selection", MODE_PRIVATE).edit()
-                                    .putInt("subscription_id", id).apply()
-                            }, modifier = Modifier.semantics {
-                                selected = selectedSim == id
-                                stateDescription = if (selectedSim == id) "Selected SIM" else "Not selected"
-                            }) { Text(label) }
-                        }
+                        GatewaySetupGuide(
+                            selectedSim = sims.firstOrNull { it.first == selectedSim }?.second ?: "Not selected",
+                            pairingStatus = pairingStatus,
+                            onConnection = { navigate(GatewayPage.CONNECTION) },
+                            initialStep = GatewaySetupStep.entries.firstOrNull {
+                                it.name == intent.getStringExtra("gateway_setup_step")
+                            } ?: GatewaySetupStep.OVERVIEW,
+                            accessContent = {
+                                GatewayButton(onClick = { permissionDisclosure = GatewayPermissionPurpose.SIM }) { Text("Choose SIM permissions") }
+                                GatewayButton(onClick = { permissionDisclosure = GatewayPermissionPurpose.SEND }) { Text("Review SMS sending access") }
+                                GatewayButton(onClick = { permissionDisclosure = GatewayPermissionPurpose.RECEIVE }) { Text("Review SMS receiving access") }
+                                Text("SMS access is optional for pairing and connection tests. Pause stops the connection, but receiving access can still process incoming SMS locally. Revoke SMS access in Android app settings to stop that processing.")
+                                GatewayButton(onClick = {
+                                    startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                        android.net.Uri.parse("package:$packageName")))
+                                }) { Text("Manage or revoke permissions") }
+                                GatewayPrivacyLinks()
+                            },
+                            simContent = {
+                                Text("Selected SIM: ${selectedSim?.toString() ?: "none"}")
+                                sims.forEach { (id, label) ->
+                                    GatewayButton(onClick = {
+                                        selectedSim = id
+                                        getSharedPreferences("gateway_selection", MODE_PRIVATE).edit()
+                                            .putInt("subscription_id", id).apply()
+                                    }, modifier = Modifier.semantics {
+                                        selected = selectedSim == id
+                                        stateDescription = if (selectedSim == id) "Selected SIM" else "Not selected"
+                                    }) { Text(label) }
+                                }
+                            },
+                            pairingContent = {
+                                Text("Enter the one-use pairing ID and token from the owner account. The phone will prove possession of its Keystore key. Compare both values below with the browser before approving there.")
+                                OutlinedTextField(value = pairingOrigin, onValueChange = { pairingOrigin = it },
+                                    label = { Text("HTTPS server origin") })
+                                OutlinedTextField(value = pairingId, onValueChange = { pairingId = it },
+                                    label = { Text("Pairing ID") })
+                                OutlinedTextField(value = pairingToken, onValueChange = { pairingToken = it },
+                                    label = { Text("One-use pairing token") }, visualTransformation = PasswordVisualTransformation())
+                                GatewayButton(onClick = { beginPairing() }) { Text("Claim pairing and prove key") }
+                                GatewayStatusText("Pairing status", pairingStatus)
+                                if (comparisonCode.isNotEmpty()) {
+                                    Text("Comparison code: $comparisonCode")
+                                    Text("Key fingerprint: $signingFingerprint")
+                                    Text("Key protection: $signingSecurity")
+                                    Text("Approve only when the browser shows the same code and fingerprint. This screen does not authorize SMS or establish a device session.")
+                                }
+                            }
+                        )
                     }
                     if (page == GatewayPage.CONNECTION) {
                         GatewaySectionTitle("Authenticated device heartbeat")
@@ -248,25 +276,6 @@ class MainActivity : ComponentActivity() {
                         }) { Text("Arm one test SMS") }
                         HorizontalDivider()
                         MmsSpikeSection(selectedSim, sims.map { it.first })
-                    }
-                    if (page == GatewayPage.SETUP) {
-                        Text("2. Pair with your owner account. Compare the phone and browser values before approving.")
-                        GatewaySectionTitle("Device pairing")
-                        Text("Enter the one-use pairing ID and token from the owner account. The phone will prove possession of its Keystore key. Compare both values below with the browser before approving there.")
-                        OutlinedTextField(value = pairingOrigin, onValueChange = { pairingOrigin = it },
-                            label = { Text("HTTPS server origin") })
-                        OutlinedTextField(value = pairingId, onValueChange = { pairingId = it },
-                            label = { Text("Pairing ID") })
-                        OutlinedTextField(value = pairingToken, onValueChange = { pairingToken = it },
-                            label = { Text("One-use pairing token") }, visualTransformation = PasswordVisualTransformation())
-                        GatewayButton(onClick = { beginPairing() }) { Text("Claim pairing and prove key") }
-                        GatewayStatusText("Pairing status", pairingStatus)
-                        if (comparisonCode.isNotEmpty()) {
-                            Text("Comparison code: $comparisonCode")
-                            Text("Key fingerprint: $signingFingerprint")
-                            Text("Key protection: $signingSecurity")
-                            Text("Approve only when the browser shows the same code and fingerprint. This screen does not authorize SMS or establish a device session.")
-                        }
                     }
                 }
             }
