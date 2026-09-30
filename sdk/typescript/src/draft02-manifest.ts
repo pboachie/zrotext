@@ -316,3 +316,18 @@ export function authorizeInbound02(manifest: Manifest02, claims: {
     fail("inbound reader set");
   }
 }
+
+/** Owned verified identity for explicit signer setup; no mutable directory authority. */
+export function verifiedManifestIdentity02(manifest: Manifest02, nowMs: bigint): Readonly<{accountId: Uint8Array; generation: bigint; version: bigint; digest: Uint8Array; rootPoint: Uint8Array}> {
+ const bound=verifiedSnapshots.get(manifest)?.authority;
+ if(!bound)fail("setup requires a just-verified manifest");
+ timeWindow(bound.issuedMs,bound.expiresMs,nowMs);
+ return {accountId:Uint8Array.from(bound.accountId),generation:bound.generation,version:bound.version,digest:Uint8Array.from(bound.digest),rootPoint:Uint8Array.from(bound.rootPoint)};
+}
+/** Reuse profile key-ID derivation for explicit role-5 enrollment. No storage/root creation. */
+export async function browserSignerKeyId02(point: Uint8Array): Promise<Uint8Array> {
+ const owned=Uint8Array.from(point);
+ if(owned.length!==65||owned[0]!==4)fail("browser signer point");
+ await crypto.subtle.importKey("raw",ab(owned),{name:"ECDSA",namedCurve:"P-256"},false,["verify"]);
+ return keyId(5,owned);
+}
