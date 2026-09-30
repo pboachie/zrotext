@@ -48,7 +48,7 @@ class GatewayCompanionInteractionTest {
         compose.onNodeWithText("Device status: Waiting for network").assertExists()
         compose.onNodeWithText("Heartbeat acknowledgments this session: 7").assertExists()
         compose.onNodeWithText("Setup").performClick()
-        compose.onNodeWithText("Device pairing").assertExists()
+        compose.onNodeWithText("3. Pair this phone").assertExists()
         compose.onNodeWithText("Arm one test SMS").assertDoesNotExist()
         compose.runOnIdle {
             assertEquals("Waiting for network", AuthenticatedGatewayStatus.value)
@@ -59,6 +59,7 @@ class GatewayCompanionInteractionTest {
 
     @Test fun navigationRetainsMaskedPairingInputAndBackReturnsHome() {
         compose.onNodeWithText("Setup").performClick()
+        compose.onNodeWithText("3. Pair this phone").performScrollTo().performClick()
         compose.onNodeWithText("One-use pairing token").performScrollTo().performTextInput("synthetic-token")
         val maskedBefore = compose.onNodeWithText("One-use pairing token").fetchSemanticsNode()
             .config[SemanticsProperties.EditableText].text
@@ -69,6 +70,8 @@ class GatewayCompanionInteractionTest {
         val field = compose.onNodeWithText("One-use pairing token").fetchSemanticsNode()
         assertTrue(field.config.contains(SemanticsProperties.Password))
         assertEquals(maskedBefore, field.config[SemanticsProperties.EditableText].text)
+        compose.runOnIdle { compose.activity.onBackPressedDispatcher.onBackPressed() }
+        compose.onNodeWithText("3. Pair this phone").assertExists()
         compose.runOnIdle { compose.activity.onBackPressedDispatcher.onBackPressed() }
         compose.onNodeWithText("Gateway home").assertExists()
         compose.runOnIdle { assertEquals("Paused", AuthenticatedGatewayStatus.value) }
@@ -97,6 +100,7 @@ class GatewayCompanionInteractionTest {
         RuntimeEnvironment.setFontScale(2f)
         compose.activityRule.scenario.recreate()
         compose.onNodeWithText("Setup").performClick()
+        compose.onNodeWithText("1. Review access").performScrollTo().performClick()
         compose.onNodeWithText("Review SMS receiving access").performScrollTo().performClick()
         compose.onNodeWithText(GatewayPermissionPurpose.RECEIVE.disclosure).assertExists()
         compose.onNodeWithText("Agree and continue").performScrollTo().assertIsDisplayed()
