@@ -97,3 +97,31 @@ test("a refused checkout directs the owner to the portal and refreshes status", 
   assert.match(byId("billing-error").textContent, /customer portal/);
   assert.equal(byId("checkout").disabled, true);
 });
+
+
+test("billing renders authoritative local counters and clears them during refresh and failure", async () => {
+  const { byId, requests } = billingPage();
+  const response = statusResponse();
+  const snapshot = await response.json();
+  snapshot.localUsage = { used_units: 5, reserved_units: 7, refunded_units: 2, limit_units: 5, period_start: "2030-01-01", period_end: "2030-02-01" };
+  requests.shift()({ ok: true, json: async () => snapshot }); await settle();
+  assert.match(byId("local-usage").textContent, /5 consumed, 7 gross reserved, 2 refunded/);
+  assert.match(byId("local-usage").textContent, /hard cap 5 \(reached\)/);
+  assert.match(byId("local-usage").textContent, /UTC period 2030-01-01 inclusive to 2030-02-01 exclusive/);
+  assert.match(byId("local-usage").textContent, /Soft cap unavailable/);
+  byId("refresh").listeners.click();
+  assert.equal(byId("local-usage").textContent, "Loading local usage…");
+  requests.shift()({ ok: false }); await settle();
+  assert.match(byId("local-usage").textContent, /unavailable/);
+  assert.doesNotMatch(byId("local-usage").textContent, /5 consumed/);
+});
+
+test("zero usage is valid but inconsistent and missing counters stay unavailable", async () => {
+  for (const usage of [null, { used_units: 4, reserved_units: 1, refunded_units: 2, limit_units: 5, period_start: "2030-01-01", period_end: "2030-02-01" }, { used_units: 0, reserved_units: 0, refunded_units: 0, limit_units: 0, period_start: "2030-01-01", period_end: "2030-02-01" }]) {
+    const { byId, requests } = billingPage();
+    const snapshot = await statusResponse().json(); snapshot.localUsage = usage;
+    requests.shift()({ ok: true, json: async () => snapshot }); await settle();
+    if (usage?.used_units === 0) assert.match(byId("local-usage").textContent, /0 consumed.*hard cap 0 \(reached\)/);
+    else assert.match(byId("local-usage").textContent, /unavailable/);
+  }
+});

@@ -3,6 +3,7 @@
 
 const state = document.getElementById("billing-state");
 const entitlementStatus = document.getElementById("entitlement-status");
+const localUsage = document.getElementById("local-usage");
 const deviceCapStatus = document.getElementById("device-cap-status");
 const manageDevices = document.getElementById("manage-devices");
 const list = document.getElementById("subscriptions");
@@ -36,6 +37,7 @@ async function loadStatus() {
   error.textContent = "";
   state.textContent = "Loading billing status…";
   entitlementStatus.textContent = "";
+  localUsage.textContent = "Loading local usage…";
   deviceCapStatus.textContent = "";
   manageDevices.hidden = true;
   portal.disabled = true;
@@ -46,6 +48,14 @@ async function loadStatus() {
     if (generation !== statusGeneration) return;
     if (result.mode !== "test") throw new Error("Unexpected billing mode.");
     if (!Array.isArray(result.subscriptions)) throw new Error("The billing status response was invalid.");
+    const usage = result.localUsage;
+    if (usage && [usage.used_units, usage.reserved_units, usage.refunded_units, usage.limit_units].every(value => Number.isSafeInteger(value) && value >= 0)
+        && usage.refunded_units <= usage.reserved_units && usage.used_units === usage.reserved_units - usage.refunded_units
+        && /^\d{4}-\d{2}-\d{2}$/.test(usage.period_start) && /^\d{4}-\d{2}-\d{2}$/.test(usage.period_end) && usage.period_end > usage.period_start) {
+      localUsage.textContent = `Local outbound admission usage: ${usage.used_units} consumed, ${usage.reserved_units} gross reserved, ${usage.refunded_units} refunded; hard cap ${usage.limit_units}${usage.used_units >= usage.limit_units ? " (reached)" : ""}. UTC period ${usage.period_start} inclusive to ${usage.period_end} exclusive. Soft cap unavailable. This is a local snapshot; it does not confirm delivery or provider billing.`;
+    } else {
+      localUsage.textContent = "Local usage unavailable; no current authoritative period. Soft cap unavailable.";
+    }
     list.replaceChildren();
     for (const subscription of result.subscriptions) {
       const item = document.createElement("li");
@@ -111,6 +121,7 @@ async function loadStatus() {
     if (generation !== statusGeneration) return;
     list.replaceChildren();
     state.textContent = "Billing status unavailable.";
+    localUsage.textContent = "Local usage unavailable. Refresh after signing in again; old usage is not shown.";
     entitlementStatus.textContent = "";
     deviceCapStatus.textContent = "";
     manageDevices.hidden = true;
