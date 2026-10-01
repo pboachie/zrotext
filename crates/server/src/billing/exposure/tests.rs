@@ -2,6 +2,7 @@
 use super::*;
 use crate::http_owner_conversations::context::decisions::{model::Decision, tests::Case};
 mod entitlement;
+mod invoice;
 mod resilience;
 
 struct Fixture {

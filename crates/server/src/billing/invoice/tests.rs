@@ -5,6 +5,10 @@ use hmac::{Hmac, KeyInit, Mac};
 use serde_json::json;
 use sha2::Sha256;
 use tokio_postgres::{Client, NoTls};
+mod lifecycle;
+mod races;
+mod recovery;
+mod security;
 
 struct Case {
     db: Client,
@@ -15,6 +19,7 @@ struct Case {
     start: i64,
     end: i64,
     generation: i64,
+    owner: crate::auth::SessionPrincipal,
 }
 
 impl Case {
@@ -32,16 +37,23 @@ impl Case {
         let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
         tokio::spawn(async move { connection.await.unwrap() });
         crate::auth::test_schema::apply(&db).await;
-        db.batch_execute(include_str!(
-            "../../../../../deploy/compose/migrations/081_invoice_bound_test_billing.sql"
-        ))
-        .await
-        .unwrap();
-        let account = Uuid::new_v4();
-        let device = Uuid::new_v4();
-        db.execute("INSERT INTO accounts(id) VALUES($1)", &[&account])
+        let hasher = crate::auth::TokenHasher::new(crate::test_keys::key(77)).unwrap();
+        let password = crate::test_keys::password(77);
+        let signup =
+            crate::auth::register(&mut db, &hasher, "invoice-owner@example.test", &password)
+                .await
+                .unwrap();
+        crate::auth::verify_email(&mut db, &hasher, &signup.verification_token)
             .await
             .unwrap();
+        let session = crate::auth::login(&db, &hasher, "invoice-owner@example.test", &password)
+            .await
+            .unwrap();
+        let owner = crate::auth::authenticate_session(&db, &hasher, &session.token)
+            .await
+            .unwrap();
+        let account = signup.account_id;
+        let device = Uuid::new_v4();
         billing::bind_customer(&mut db, account, "cus_invoice1")
             .await
             .unwrap();
@@ -66,6 +78,7 @@ impl Case {
             start: now - 60,
             end: now + 3600,
             generation: 0,
+            owner,
         }
     }
 
@@ -137,6 +150,19 @@ impl Case {
             .batch_execute(&format!("DROP SCHEMA {} CASCADE", self.schema))
             .await
             .unwrap();
+    }
+
+    async fn connect(&self) -> Client {
+        let base = std::env::var("ZT_AUTH_TEST_DATABASE_URL").unwrap();
+        let separator = if base.contains('?') { '&' } else { '?' };
+        let (db, connection) = tokio_postgres::connect(
+            &format!("{base}{separator}options=-csearch_path%3D{}", self.schema),
+            NoTls,
+        )
+        .await
+        .unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        db
     }
 
     async fn send(

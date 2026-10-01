@@ -63,3 +63,22 @@ pub(super) async fn apply(
     )
     .await
 }
+
+/// Private same-transaction bridge to independently checked invoice identity.
+/// This is only a policy fence; it never approves an action or settles spend.
+pub(crate) async fn exposure_period(
+    tx: &Transaction<'_>,
+    account: Uuid,
+) -> Result<Option<(i64, i64)>, BillingError> {
+    if !enabled(tx, account).await? {
+        return Ok(None);
+    }
+    let row = tx
+        .query_opt(
+            "SELECT start_ms,end_ms FROM current_billing_invoice_period($1)",
+            &[&account],
+        )
+        .await?
+        .ok_or(BillingError::InvalidEvent)?;
+    Ok(Some((row.get(0), row.get(1))))
+}

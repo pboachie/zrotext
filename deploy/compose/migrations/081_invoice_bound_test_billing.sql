@@ -3,6 +3,8 @@
 ALTER TABLE usage_quota_policies ADD COLUMN invoice_bound_test boolean NOT NULL DEFAULT false;
 ALTER TABLE usage_quota_policies ADD CONSTRAINT invoice_bound_test_source
     CHECK(NOT invoice_bound_test OR source='stripe_test');
+ALTER TABLE billing_reconciliations ADD CONSTRAINT invoice_reconciliation_tenant_identity
+    UNIQUE(account_id,stripe_subscription_id);
 
 CREATE TABLE billing_invoice_periods (
     id uuid PRIMARY KEY,
@@ -21,7 +23,8 @@ CREATE TABLE billing_invoice_periods (
     applied_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     UNIQUE(account_id,id),
     UNIQUE(account_id,subscription_id,start_ms,end_ms),
-    UNIQUE(account_id,invoice_id)
+    UNIQUE(account_id,invoice_id),
+    FOREIGN KEY(account_id,subscription_id) REFERENCES billing_reconciliations(account_id,stripe_subscription_id)
 );
 
 CREATE TABLE billing_invoice_entitlements (
@@ -39,6 +42,7 @@ CREATE TABLE billing_invoice_entitlements (
     generation bigint NOT NULL CHECK(generation>0),
     observed_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     FOREIGN KEY(account_id,customer_id) REFERENCES billing_customers(account_id,stripe_customer_id),
+    FOREIGN KEY(account_id,subscription_id) REFERENCES billing_reconciliations(account_id,stripe_subscription_id),
     FOREIGN KEY(account_id,period_id) REFERENCES billing_invoice_periods(account_id,id)
 );
 
@@ -70,6 +74,33 @@ CREATE TABLE billing_invoice_audit (
 );
 CREATE INDEX billing_invoice_audit_account ON billing_invoice_audit(account_id,id);
 CREATE INDEX billing_invoice_audit_retention ON billing_invoice_audit(recorded_at,id);
+
+-- Read-only shared current-period predicate. Callers retain their canonical
+-- account/customer/action locks; this function never takes reverse locks.
+CREATE FUNCTION current_billing_invoice_period(p_account uuid)
+RETURNS TABLE(period_id uuid,start_ms bigint,end_ms bigint) LANGUAGE sql AS $$
+SELECT p.id,p.start_ms,p.end_ms FROM billing_invoice_entitlements e
+JOIN billing_invoice_periods p ON (p.account_id,p.id)=(e.account_id,e.period_id)
+JOIN usage_quota_policies q ON q.account_id=e.account_id AND q.metric='outbound_message'
+JOIN billing_customers c ON (c.account_id,c.stripe_customer_id)=(e.account_id,e.customer_id)
+JOIN billing_reconciliations r ON (r.account_id,r.stripe_subscription_id)=(e.account_id,e.subscription_id)
+JOIN billing_subscriptions s ON (s.account_id,s.stripe_subscription_id)=(e.account_id,e.subscription_id)
+WHERE e.account_id=p_account AND q.source='stripe_test' AND q.invoice_bound_test
+AND e.phase IN ('active','grace') AND e.effective_limit>0
+AND p.start_ms<=floor(extract(epoch FROM clock_timestamp())*1000)::bigint
+AND p.end_ms>floor(extract(epoch FROM clock_timestamp())*1000)::bigint
+AND (e.cancel_at_ms IS NULL OR e.cancel_at_ms>floor(extract(epoch FROM clock_timestamp())*1000)::bigint)
+AND (e.phase<>'grace' OR e.grace_until_ms>floor(extract(epoch FROM clock_timestamp())*1000)::bigint)
+AND r.stripe_customer_id=e.customer_id AND r.state='queued'
+AND r.dirty_generation=r.processed_generation AND r.processed_generation=e.generation
+AND s.stripe_customer_id=e.customer_id AND s.stripe_price_id=e.effective_price_id
+AND s.latest_invoice_id=e.observed_invoice_id AND s.recognized_price
+AND ((e.phase='active' AND s.stripe_status='active') OR (e.phase='grace' AND s.stripe_status='past_due'))
+AND (SELECT count(*) FROM billing_subscriptions x WHERE x.account_id=p_account AND x.stripe_status NOT IN ('canceled','incomplete_expired','provider_deleted'))=1
+AND NOT EXISTS(SELECT 1 FROM billing_reconciliations x WHERE x.account_id=p_account AND x.dirty_generation<>x.processed_generation)
+AND NOT EXISTS(SELECT 1 FROM billing_risk_events x WHERE x.account_id=p_account AND x.state IN ('queued','held','needs_review'))
+AND NOT EXISTS(SELECT 1 FROM billing_payment_holds x WHERE x.account_id=p_account)
+$$;
 
 CREATE FUNCTION preserve_billing_invoice_period() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN

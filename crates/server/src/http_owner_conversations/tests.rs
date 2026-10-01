@@ -468,6 +468,11 @@ pub(super) async fn prepared() -> (Fixture, SessionPrincipal) {
     ))
     .await
     .unwrap();
+    f.db.batch_execute(include_str!(
+        "../../../../deploy/compose/migrations/081_invoice_bound_test_billing.sql"
+    ))
+    .await
+    .unwrap();
     for migration in [
         include_str!("../../../../deploy/compose/migrations/068_connector_registration.sql"),
         include_str!(

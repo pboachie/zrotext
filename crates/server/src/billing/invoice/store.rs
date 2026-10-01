@@ -18,6 +18,16 @@ pub(super) async fn enabled<C: GenericClient + Sync>(
         .await?
         .get(0);
     if !installed {
+        let policies: bool = db
+            .query_one(
+                "SELECT to_regclass('usage_quota_policies') IS NOT NULL",
+                &[],
+            )
+            .await?
+            .get(0);
+        if policies && db.query_opt("SELECT 1 FROM usage_quota_policies q WHERE account_id=$1 AND coalesce((to_jsonb(q)->>'invoice_bound_test')::boolean,false)", &[&account]).await?.is_some() {
+            return Err(BillingError::InvalidEvent);
+        }
         return Ok(false);
     }
     Ok(db.query_opt("SELECT coalesce((to_jsonb(q)->>'invoice_bound_test')::boolean,false) FROM usage_quota_policies q WHERE account_id=$1 AND metric='outbound_message'", &[&account]).await?

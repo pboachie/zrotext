@@ -77,3 +77,6 @@ fn invoice_error(error: BillingError) -> BillingError {
         other => other,
     }
 }
+
+#[cfg(test)]
+mod tests;
