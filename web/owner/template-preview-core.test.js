@@ -2,7 +2,8 @@
 "use strict";
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const { limits, parseValues, render } = require("./template-preview-core.js");
+const { readFileSync } = require("node:fs");
+const { limits, parseValues, render, estimateSegments } = require("./template-preview-core.js");
 
 test("variables render exact literal values, spaces, Unicode and repeated occurrences", () => {
   const values = parseValues("name= Alex 😀 \r\ntext={{name}}=<script>\r\nempty=");
@@ -65,4 +66,46 @@ test("unpaired surrogates are refused in every input, valid pairs stay exact", (
     assert.throws(() => render("{{name}}", { name: bad }));
   }
   assert.equal(render("😀{{name}}", { name: "😀" }), "😀😀");
+});
+
+test("segment estimates match the shared protocol vectors", () => {
+  const vectors = JSON.parse(readFileSync(
+    require("node:path").join(__dirname, "../../protocol/v1/vectors/sms-segment-estimate-01.json"),
+    "utf8",
+  ));
+  for (const vector of vectors.cases) {
+    if (vector.error) {
+      assert.throws(() => estimateSegments(vector.text), undefined, vector.name);
+    } else {
+      const got = estimateSegments(vector.text);
+      assert.equal(got.encoding, vector.estimate.encoding, vector.name);
+      assert.equal(got.parts, vector.estimate.parts, vector.name);
+      assert.equal(got.perPart, vector.estimate.perPart, vector.name);
+      assert.equal(got.length, vector.estimate.length, vector.name);
+      assert.equal(got.empty, vector.estimate.empty, vector.name);
+    }
+  }
+});
+
+test("gsm extension characters cost two septets and never switch encoding", () => {
+  assert.deepEqual(
+    { ...estimateSegments("a^b") },
+    { encoding: "gsm", parts: 1, perPart: 160, length: 4, empty: false },
+  );
+  const escapes = "\f^{}\\[~]|€";
+  assert.equal(estimateSegments(escapes).length, 20);
+  assert.equal(estimateSegments(escapes).encoding, "gsm");
+});
+
+test("one non-gsm character switches the whole text to ucs2", () => {
+  const got = estimateSegments("abc喵def");
+  assert.equal(got.encoding, "ucs2");
+  assert.equal(got.length, 7);
+  assert.equal(estimateSegments("👍").length, 2);
+});
+
+test("the six-part cap matches the device-side gate", () => {
+  assert.equal(estimateSegments("a".repeat(918)).parts, 6);
+  assert.throws(() => estimateSegments("a".repeat(919)), /six-part/);
+  assert.throws(() => estimateSegments("喵".repeat(403)), /six-part/);
 });

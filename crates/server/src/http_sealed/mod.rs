@@ -90,6 +90,7 @@ pub fn router(state: SealedHttpState) -> Router {
     Router::new()
         .route("/messages", post(accept))
         .route("/inbound-events", post(accept_inbound))
+        .merge(resources::routes())
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .layer(middleware::from_fn(no_store_response))
         .with_state(Arc::new(state))
@@ -301,6 +302,38 @@ impl axum::extract::FromRequestParts<Arc<SealedHttpState>> for SealedAcceptAuth 
     }
 }
 
+/// The resource-group extractor: the same enabled gate, bearer authentication
+/// and account slot as the admission extractor, but no sealed content type —
+/// resource reads are ordinary GETs and carry no envelope body.
+struct SealedResourceAuth {
+    principal: auth::ApiPrincipal,
+    _slot: crate::http_auth::preauth::AccountSlot,
+}
+
+impl axum::extract::FromRequestParts<Arc<SealedHttpState>> for SealedResourceAuth {
+    type Rejection = SealedHttpError;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        state: &Arc<SealedHttpState>,
+    ) -> Result<Self, SealedHttpError> {
+        if !state.enabled {
+            return Err(SealedHttpError::NotFound);
+        }
+        let token = bearer(&parts.headers)?;
+        let principal = {
+            let client = connect(&state.database_url).await?;
+            auth::authenticate_api_key(&client, &state.hasher, token)
+                .await
+                .map_err(map_auth)?
+        };
+        let _slot =
+            crate::http_auth::preauth::AccountSlot::try_acquire(principal.tenant.account_id())
+                .ok_or(SealedHttpError::RateLimited)?;
+        Ok(Self { principal, _slot })
+    }
+}
+
 #[derive(Serialize)]
 struct AcceptedBody {
     message_id: Uuid,
@@ -381,6 +414,8 @@ async fn accept_inbound(
     )
         .into_response())
 }
+
+mod resources;
 
 #[cfg(test)]
 mod tests;
