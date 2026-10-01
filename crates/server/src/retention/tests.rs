@@ -134,7 +134,6 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../../../deploy/compose/migrations/063_retention_blocked_stamp.sql"),
     include_str!("../../../../deploy/compose/migrations/064_owner_conversation_consent.sql"),
     include_str!("../../../../deploy/compose/migrations/065_conversation_activation.sql"),
-    include_str!("../../../../deploy/compose/migrations/075_workflow_context.sql"),
 ];
 
 async fn migrated(db: &Client) -> String {
@@ -298,7 +297,7 @@ async fn retention_respects_each_cutoff_and_replay_fences() {
             conversation_admissions_closed: 0,
             conversation_provenance: 0,
             conversation_intervals: 0,
-            workflow_contexts: 0,
+            conversation_confirmations: 0,
         }
     );
     assert_eq!(
@@ -770,4 +769,41 @@ async fn retention_candidates_scan_the_due_index_instead_of_the_table() {
     ))
     .await
     .unwrap();
+}
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn absent_optional_confirmation_table_cannot_mask_unavailable_mandatory_retention() {
+    let url = env::var("ZT_INBOUND_TEST_DATABASE_URL")
+        .expect("set ZT_INBOUND_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let schema = format!("retention_unavailable_{}", Uuid::new_v4().simple());
+    db.batch_execute(&format!(
+        "CREATE SCHEMA {schema}; SET search_path TO {schema}"
+    ))
+    .await
+    .unwrap();
+    assert!(
+        db.query_one(
+            "SELECT to_regclass('conversation_confirmation_records') IS NULL",
+            &[]
+        )
+        .await
+        .unwrap()
+        .get::<_, bool>(0),
+        "the optional proof schema is absent in this fixture"
+    );
+    let result = prune(&mut db, RetentionPolicy::default(), BATCH_SIZE).await;
+    db.batch_execute(&format!(
+        "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
+    ))
+    .await
+    .unwrap();
+    assert_eq!(
+        result
+            .expect_err("an absent optional table cannot mask unavailable mandatory pruning")
+            .code(),
+        Some(&SqlState::UNDEFINED_TABLE),
+        "the original mandatory-table failure must remain visible"
+    );
 }

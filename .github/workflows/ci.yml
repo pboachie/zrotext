@@ -134,8 +134,13 @@ jobs:
         run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_workflow_context.py'
       - name: Proposed sealed execution grant vectors
         run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_sealed_execution_grant_vectors.py'
+      - name: Sealed dispatch contract
+        run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_sealed_dispatch.py'
       - name: Authoritative message summary contract
         run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_message_summary_schema.py'
+
+      - name: Selected collaboration draft contract
+        run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_collaboration_drafts_schema.py'
       - name: Shared draft vector shape tests
         run: python3 -m unittest discover -s protocol/v1/tests -p 'test_ztse_draft_vectors.py'
       - name: Shared body-text vector tests

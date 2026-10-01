@@ -39,18 +39,7 @@ impl Fixture {
         let url = format!("{base}{separator}options=-csearch_path%3D{schema}");
         let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
         tokio::spawn(async move { connection.await.unwrap() });
-        for sql in [
-            include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
-            include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
-            include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
-            include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
-            include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
-            include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
-            include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
-            include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
-        ] {
-            db.batch_execute(sql).await.unwrap();
-        }
+        crate::auth::test_schema::apply_without_summary(&db).await;
         db.batch_execute(QUEUE_INDEX).await.unwrap();
         let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(29)).unwrap());
         let mut accounts = Vec::new();

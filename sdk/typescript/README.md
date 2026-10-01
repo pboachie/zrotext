@@ -367,3 +367,8 @@ adds a default-off customer-side proposal runner with durable provider budgets,
 selected-reader adapters and crash-safe uncertain outcomes. Live workflow and
 provider integration remains unavailable; generated actions always require
 separate exact owner confirmation.
+[Importable agent recipe previews](../../docs/agent-recipes.md) add a disabled n8n
+workflow and callable example using `agent-recipe`, the shared fixture adapter and
+a local customer-controlled reader. They exercise durable synthetic identities,
+owner review and bounded reply routing; production grants and activation remain
+unavailable.

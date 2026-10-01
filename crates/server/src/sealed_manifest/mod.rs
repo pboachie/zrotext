@@ -323,6 +323,26 @@ impl VerifiedManifest {
             .next()
     }
 
+    pub(crate) fn active_agent_signer(&self, line: &[u8; 16], signer: &[u8; 32], now: u64) -> bool {
+        self.roles.iter().any(|key| {
+            key.role == 5
+                && key.scope == 1
+                && key.line == *line
+                && key.id == *signer
+                && key.active(now)
+        })
+    }
+
+    pub(crate) fn active_agent_reader(&self, key_id: &[u8; 32], directions: u16, now: u64) -> bool {
+        [0, 4, 8, 12].contains(&directions)
+            && self.roles.iter().any(|key| {
+                key.role == 3
+                    && key.id == *key_id
+                    && key.scope & directions == directions
+                    && key.active(now)
+            })
+    }
+
     pub(crate) fn conversation_keys(
         &self,
         device: &[u8; 16],

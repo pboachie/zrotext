@@ -312,8 +312,18 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../../../../deploy/compose/migrations/071_sealed_grant_authority.sql"),
     ),
     (
-        "075_workflow_context.sql",
-        include_str!("../../../../deploy/compose/migrations/075_workflow_context.sql"),
+        "072_conversation_confirmation_records.sql",
+        include_str!(
+            "../../../../deploy/compose/migrations/072_conversation_confirmation_records.sql"
+        ),
+    ),
+    (
+        "073_collaboration_drafts.sql",
+        include_str!("../../../../deploy/compose/migrations/073_collaboration_drafts.sql"),
+    ),
+    (
+        "074_agent_authority.sql",
+        include_str!("../../../../deploy/compose/migrations/074_agent_authority.sql"),
     ),
 ];
 
@@ -3272,6 +3282,67 @@ async fn erasure_deletes_contacts_and_their_consent_history() {
         .unwrap()
         .get(0);
     assert_eq!(survivor, "+15550100001");
+    admin
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+#[test]
+fn confirmed_proof_delete_precedes_every_referenced_parent() {
+    let proof = DELETE_PLAN
+        .iter()
+        .position(|(table, _)| *table == "conversation_confirmation_records")
+        .unwrap();
+    for parent in ["conversation_intervals", "messages", "devices", "sessions"] {
+        assert!(
+            proof
+                < DELETE_PLAN
+                    .iter()
+                    .position(|(table, _)| *table == parent)
+                    .unwrap()
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn malformed_confirmation_schema_fails_erasure_closed_without_partial_deletes() {
+    let (admin, mut db, database_url, schema) = migrated_schema("proof_shape").await;
+    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(26)).unwrap());
+    let (a, session_a, _b, _session_b, app) = fixture(&mut db, &hasher, &database_url, None).await;
+    db.batch_execute("DROP TABLE conversation_confirmation_records; CREATE TABLE conversation_confirmation_records(account_id uuid NOT NULL)").await.unwrap();
+    db.execute(
+        "INSERT INTO conversation_confirmation_records(account_id) VALUES($1)",
+        &[&a.account_id],
+    )
+    .await
+    .unwrap();
+    let response = app
+        .oneshot(erasure_post(
+            Some(&session_a.token),
+            Some(&session_a.csrf_token),
+            Some(ORIGIN),
+            &crate::test_keys::password(1),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    for (table, column) in [
+        ("accounts", "id"),
+        ("messages", "account_id"),
+        ("conversation_confirmation_records", "account_id"),
+    ] {
+        let count: i64 = db
+            .query_one(
+                &format!("SELECT count(*) FROM {table} WHERE {column}=$1"),
+                &[&a.account_id],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert!(count > 0);
+    }
     admin
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
         .await

@@ -38,19 +38,7 @@ impl Fixture {
             .await
             .unwrap();
         tokio::spawn(async move { connection.await.unwrap() });
-        // This focused schema applies the actual named prerequisite files;
-        // unrelated delivery/Android metadata migrations are not synthesized.
-        for migration in [
-            include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
-            include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
-            include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
-            include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
-            include_str!("../../../../deploy/compose/migrations/025_account_recovery.sql"),
-            include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
-            include_str!("../../../../deploy/compose/migrations/055_trusted_browser_epoch.sql"),
-        ] {
-            db.batch_execute(migration).await.unwrap();
-        }
+        super::test_schema::apply(&db).await;
         let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(37)).unwrap());
         let password = Uuid::new_v4().to_string();
         let signup = register(&mut db, &hasher, "owner@example.test", &password)
