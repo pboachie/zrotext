@@ -135,6 +135,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../../../deploy/compose/migrations/064_owner_conversation_consent.sql"),
     include_str!("../../../../deploy/compose/migrations/065_conversation_activation.sql"),
     include_str!("../../../../deploy/compose/migrations/075_workflow_context.sql"),
+    include_str!("../../../../deploy/compose/migrations/076_workflow_decisions.sql"),
 ];
 
 async fn migrated(db: &Client) -> String {

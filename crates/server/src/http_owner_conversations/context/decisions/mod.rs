@@ -2,6 +2,8 @@
 //! Exact owner decisions over immutable workflow ciphertext. No mounted route.
 pub mod descriptor;
 pub mod fence;
+pub mod http;
+pub mod lifecycle;
 pub mod model;
 pub mod reply;
 pub mod responses;

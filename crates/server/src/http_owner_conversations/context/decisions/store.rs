@@ -105,7 +105,7 @@ pub(crate) async fn record(
         &[&account,&request,&context,&result.key.action_id,&op,&digest,&bytes,&owner.user_id]).await?;
     Ok(())
 }
-async fn version(
+pub(crate) async fn version(
     tx: &Transaction<'_>,
     d: &Descriptor,
     h: &wire::Header,

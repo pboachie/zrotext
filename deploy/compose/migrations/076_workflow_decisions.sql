@@ -30,6 +30,27 @@ CREATE TABLE workflow_actions (
 );
 CREATE INDEX workflow_actions_context ON workflow_actions(account_id,context_id,id);
 CREATE INDEX workflow_actions_routine ON workflow_actions(account_id,routine_id,id);
+CREATE FUNCTION workflow_stop_immutable() RETURNS trigger LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
+BEGIN
+    IF NEW.account_id IS DISTINCT FROM OLD.account_id OR
+       (OLD.stopped_at IS NOT NULL AND NEW.stopped_at IS DISTINCT FROM OLD.stopped_at) THEN
+        RAISE EXCEPTION 'workflow fence cannot reopen' USING ERRCODE='23514';
+    END IF;
+    IF TG_TABLE_NAME='workflow_routines' THEN
+        IF NEW.id IS DISTINCT FROM OLD.id OR NEW.context_id IS DISTINCT FROM OLD.context_id OR
+           NEW.generation IS DISTINCT FROM OLD.generation THEN
+            RAISE EXCEPTION 'workflow routine binding is immutable' USING ERRCODE='23514';
+        END IF;
+    ELSIF NEW.context_id IS DISTINCT FROM OLD.context_id OR
+          (OLD.actor_user_id IS NOT NULL AND NEW.actor_user_id IS DISTINCT FROM OLD.actor_user_id) THEN
+        RAISE EXCEPTION 'workflow takeover identity is immutable' USING ERRCODE='23514';
+    END IF;
+    RETURN NEW;
+END; $$;
+CREATE TRIGGER workflow_routine_stop BEFORE UPDATE ON workflow_routines
+    FOR EACH ROW EXECUTE FUNCTION workflow_stop_immutable();
+CREATE TRIGGER workflow_context_stop BEFORE UPDATE ON workflow_context_fences
+    FOR EACH ROW EXECUTE FUNCTION workflow_stop_immutable();
 CREATE TABLE workflow_action_versions (
     account_id uuid NOT NULL, action_id uuid NOT NULL, revision bigint NOT NULL,
     binding_digest bytea NOT NULL CHECK(octet_length(binding_digest)=32),

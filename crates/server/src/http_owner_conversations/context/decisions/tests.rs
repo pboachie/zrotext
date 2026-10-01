@@ -5,6 +5,8 @@ use model::{Decision, Phase};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 mod dispatch;
+mod http;
+mod lifecycle;
 mod support;
 pub(crate) use support::Case;
 
