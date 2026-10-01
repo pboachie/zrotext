@@ -82,15 +82,22 @@ impl BrowserAssets {
 
     pub fn load(directory: &std::path::Path) -> Result<Self, std::io::Error> {
         let root = directory.canonicalize()?;
+        checked_directory(directory, &root)?;
         let mut files = BTreeMap::new();
         let mut total = 0;
         let mut pending = vec![root.clone()];
         let mut visited = BTreeSet::new();
         while let Some(dir) = pending.pop() {
+            let dir = checked_directory(&dir, &root)?;
+            // Recheck each popped directory at the read_dir sink, including entries
+            // queued during an earlier traversal step. No request chooses this path.
+            if !dir.starts_with(&root) {
+                return Err(std::io::Error::other("SDK directory escapes package"));
+            }
             if !visited.insert(dir.clone()) || visited.len() > 64 {
                 return Err(std::io::Error::other("SDK directory cycle or bound"));
             }
-            for entry in std::fs::read_dir(dir)? {
+            for entry in std::fs::read_dir(&dir)? {
                 let path = entry?.path();
                 let actual = path.canonicalize()?;
                 if !actual.starts_with(&root) {
@@ -139,6 +146,88 @@ impl BrowserAssets {
         Router::new()
             .route("/v1/owner/conversation-sdk/{*asset}", get(asset))
             .with_state(self)
+    }
+}
+fn checked_directory(
+    directory: &std::path::Path,
+    root: &std::path::Path,
+) -> Result<std::path::PathBuf, std::io::Error> {
+    if directory.symlink_metadata()?.file_type().is_symlink() {
+        return Err(std::io::Error::other("SDK directory symlink refused"));
+    }
+    let actual = directory.canonicalize()?;
+    if !actual.starts_with(root) || !actual.is_dir() {
+        return Err(std::io::Error::other("SDK directory escapes package"));
+    }
+    Ok(actual)
+}
+
+#[cfg(test)]
+pub(super) mod test_files {
+    use std::{
+        io::Write,
+        path::{Path, PathBuf},
+    };
+
+    pub(crate) struct Package {
+        root: PathBuf,
+        namespace: PathBuf,
+    }
+    impl Package {
+        pub(crate) fn new() -> Self {
+            let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .canonicalize()
+                .unwrap();
+            let mut namespace = repository.clone();
+            for part in ["target", "conversation-browser-fixtures"] {
+                namespace.push(part);
+                match std::fs::create_dir(&namespace) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(error) => panic!("fixture namespace: {error}"),
+                }
+                assert!(
+                    !namespace
+                        .symlink_metadata()
+                        .unwrap()
+                        .file_type()
+                        .is_symlink()
+                );
+                assert!(namespace.canonicalize().unwrap().starts_with(&repository));
+            }
+            let root = namespace.join(uuid::Uuid::new_v4().to_string());
+            std::fs::create_dir(&root).unwrap();
+            std::fs::create_dir(root.join("sdk")).unwrap();
+            Self { root, namespace }
+        }
+        pub(crate) fn root(&self) -> &Path {
+            &self.root
+        }
+        pub(crate) fn write(&self, name: &str, bytes: &[u8]) -> std::io::Result<()> {
+            assert!(super::valid(name));
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(self.root.join(name))?;
+            file.write_all(bytes)
+        }
+    }
+    impl Drop for Package {
+        fn drop(&mut self) {
+            // Only this unique create_dir result is disposable, never its namespace.
+            if !self
+                .root
+                .symlink_metadata()
+                .is_ok_and(|m| m.file_type().is_symlink())
+                && self
+                    .root
+                    .canonicalize()
+                    .is_ok_and(|p| p.starts_with(&self.namespace))
+            {
+                std::fs::remove_dir_all(&self.root).unwrap();
+            }
+        }
     }
 }
 // Preserve strings and byte positions while ignoring documentation examples. This bounded
@@ -215,15 +304,11 @@ mod tests {
     use super::*;
     #[test]
     fn exact_packaged_entry_only_and_no_request_path_filesystem() {
-        let root = std::env::temp_dir().join(format!("conversation-sdk-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(root.join("sdk")).unwrap();
-        std::fs::write(
-            root.join("sdk/conversation-custody.js"),
-            b"export const fixture=true;",
-        )
-        .unwrap();
-        let assets = BrowserAssets::load(&root).unwrap();
-        std::fs::remove_dir_all(&root).unwrap();
+        let package = test_files::Package::new();
+        package
+            .write("sdk/conversation-custody.js", b"export const fixture=true;")
+            .unwrap();
+        let assets = BrowserAssets::load(package.root()).unwrap();
         assert!(assets.files.contains_key("sdk/conversation-custody.js"));
         assert!(assets.require_owner_setup().is_err());
         for name in [
@@ -239,12 +324,45 @@ mod tests {
     }
     #[test]
     fn package_without_entry_fails_closed() {
-        let root = std::env::temp_dir().join(format!("conversation-sdk-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir(&root).unwrap();
-        assert!(BrowserAssets::load(&root).is_err());
-        std::fs::remove_dir(root).unwrap();
+        let package = test_files::Package::new();
+        assert!(BrowserAssets::load(package.root()).is_err());
     }
 
+    #[test]
+    fn popped_directory_is_rechecked_against_exact_package_root() {
+        let package = test_files::Package::new();
+        let other = test_files::Package::new();
+        let root = package.root().canonicalize().unwrap();
+        assert_eq!(
+            checked_directory(&package.root().join("sdk"), &root).unwrap(),
+            root.join("sdk")
+        );
+        assert!(checked_directory(other.root(), &root).is_err());
+        package
+            .write("sdk/conversation-custody.js", b"export const fixture=true;")
+            .unwrap();
+        assert!(
+            checked_directory(&package.root().join("sdk/conversation-custody.js"), &root).is_err()
+        );
+        assert_eq!(
+            package
+                .write("sdk/conversation-custody.js", b"overwrite")
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn popped_symlink_directory_is_refused_even_when_target_is_inside_package() {
+        let package = test_files::Package::new();
+        let root = package.root().canonicalize().unwrap();
+        let link = package.root().join("linked-sdk");
+        std::os::unix::fs::symlink(package.root().join("sdk"), &link).unwrap();
+        assert!(checked_directory(&link, &root).is_err());
+        assert!(BrowserAssets::load(&link).is_err());
+    }
     #[test]
     fn ordinary_setup_requires_every_transitive_packaged_import() {
         let mut files = BTreeMap::new();

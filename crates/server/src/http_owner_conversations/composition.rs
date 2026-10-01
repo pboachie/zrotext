@@ -142,9 +142,7 @@ mod tests {
         };
         use std::sync::{Arc, atomic::AtomicBool};
         use tower::ServiceExt;
-        let package =
-            std::env::temp_dir().join(format!("conversation-startup-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(package.join("sdk")).unwrap();
+        let package = super::super::browser_assets::test_files::Package::new();
         for name in [
             "conversation-custody",
             "conversation-archive-custody",
@@ -152,16 +150,14 @@ mod tests {
             "conversation-refresh-proposal",
             "conversation-activation-proposal",
         ] {
-            std::fs::write(
-                package.join(format!("sdk/{name}.js")),
-                b"export const fixture = true;",
-            )
-            .unwrap();
+            package
+                .write(&format!("sdk/{name}.js"), b"export const fixture = true;")
+                .unwrap();
         }
-        let startup = Startup::load(true, Some(&package), Some("wss://example.org"))
+        let startup = Startup::load(true, Some(package.root()), Some("wss://example.org"))
             .unwrap()
             .unwrap();
-        std::fs::remove_dir_all(&package).unwrap();
+        drop(package);
         let hasher = Arc::new(crate::auth::TokenHasher::new(crate::test_keys::key(91)).unwrap());
         let owner = OwnerConversationsState {
             database_url: "unavailable".into(),
