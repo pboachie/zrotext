@@ -289,9 +289,19 @@ struct RouteCase {
     url: String,
 }
 
+async fn apply_agent_authority_schema(f: &Fixture) {
+    for sql in [
+        include_str!("../../../../deploy/compose/migrations/068_connector_registration.sql"),
+        include_str!("../../../../deploy/compose/migrations/074_agent_authority.sql"),
+    ] {
+        f.db.batch_execute(sql).await.unwrap();
+    }
+}
+
 impl RouteCase {
     async fn new() -> Self {
         let mut f = Fixture::new().await;
+        apply_agent_authority_schema(&f).await;
         let now = route_now(&f.db).await;
         f.bytes.truncate(150);
         f.bytes[37..45].copy_from_slice(&((now - 1000) as u64).to_be_bytes());
@@ -613,6 +623,7 @@ struct InboundCase {
 impl InboundCase {
     async fn new() -> Self {
         let mut f = Fixture::new().await;
+        apply_agent_authority_schema(&f).await;
         let now = route_now(&f.db).await;
         // The fixture's manifest already carries the inbound role set (an
         // archive reader and the device-bound event signer); publish it as

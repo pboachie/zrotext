@@ -60,7 +60,9 @@ struct ExportQuery {
     before: Option<Uuid>,
     sealed_before: Option<Uuid>,
     interval_before: Option<Uuid>,
+    confirmation_before: Option<Uuid>,
     contacts_before: Option<Uuid>,
+    agent_before: Option<Uuid>,
 }
 
 #[derive(Serialize)]
@@ -157,6 +159,8 @@ fn message_view(row: &Row) -> Result<MessageView, tokio_postgres::Error> {
 
 #[derive(Serialize)]
 struct ExportView {
+    confirmation_inventory: crate::http_owner_conversations::confirmation_records::ProofInventory,
+    agent_grants: crate::auth::agent_grants::GrantPage,
     conversation_inventory: crate::http_owner_conversations::lifecycle::ConversationInventory,
     generated_at_ms: i64,
     account: AccountView,
@@ -200,6 +204,12 @@ async fn export_account(
         Err(error) => return error.into_response(),
     };
     let account_id = principal.tenant.account_id();
+    let agent_grants =
+        match crate::auth::agent_grants::list(&client, &principal, query.agent_before).await {
+            Ok(Some(page)) => page,
+            Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+            Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        };
     let before_point: Option<(SystemTime, Uuid)> = if let Some(before) = query.before {
         match client
             .query_opt(
@@ -351,6 +361,18 @@ async fn export_account(
         next_cursor: contacts_next_cursor,
     } = contacts;
     Json(ExportView {
+        confirmation_inventory:
+            match crate::http_owner_conversations::confirmation_records::inventory(
+                &mut client,
+                &principal,
+                query.confirmation_before,
+            )
+            .await
+            {
+                Ok(view) => view,
+                Err(error) => return error.into_response(),
+            },
+        agent_grants,
         conversation_inventory,
         generated_at_ms: SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
