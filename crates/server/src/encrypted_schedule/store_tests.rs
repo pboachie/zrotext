@@ -380,3 +380,92 @@ async fn final_intent_constraint_rechecks_owner_expiry_after_real_phone_grant() 
     );
     c.cleanup().await;
 }
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn expiry_projection_waits_for_account_before_locking_occurrences() {
+    let (mut c, p) = prepared().await;
+    let now: i64 = c
+        .base
+        .f
+        .db
+        .query_one(
+            "SELECT floor(extract(epoch FROM clock_timestamp()))::bigint",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    c.descriptor.expires_at = now + 5;
+    let a = c.approved().await;
+    let o = reserve(
+        &c,
+        &p,
+        a.key,
+        ScheduleRequest {
+            request_id: Uuid::new_v4(),
+            series_id: Uuid::new_v4(),
+            ordinal: 0,
+        },
+    )
+    .await;
+    let wait: i64 = c
+        .base
+        .f
+        .db
+        .query_one(
+            "SELECT greatest($1-floor(extract(epoch FROM clock_timestamp())*1000)::bigint+1,0)",
+            &[&o.expires_at_ms],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    tokio::time::sleep(std::time::Duration::from_millis(wait as u64)).await;
+    let account = c.base.f.account;
+    let mut holder = c.base.f.connect().await;
+    let held = holder.transaction().await.unwrap();
+    held.query_one(
+        "SELECT id FROM accounts WHERE id=$1 FOR UPDATE",
+        &[&account],
+    )
+    .await
+    .unwrap();
+    let mut worker = c.base.f.connect().await;
+    let pid: i32 = worker
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await
+        .unwrap()
+        .get(0);
+    let task = tokio::spawn(async move {
+        let tx = worker.transaction().await.unwrap();
+        let count = expire_due(&tx, account, 1).await.unwrap();
+        tx.commit().await.unwrap();
+        count
+    });
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let blocked: bool = c
+            .base
+            .f
+            .db
+            .query_one("SELECT cardinality(pg_blocking_pids($1))>0", &[&pid])
+            .await
+            .unwrap()
+            .get(0);
+        if blocked {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "expiry worker did not reach account wait"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let mut probe = c.base.f.connect().await;
+    let tx = probe.transaction().await.unwrap();
+    tx.query_one("SELECT id FROM workflow_schedule_occurrences WHERE account_id=$1 AND id=$2 FOR UPDATE NOWAIT",&[&account,&o.id]).await.unwrap();
+    tx.rollback().await.unwrap();
+    held.commit().await.unwrap();
+    assert_eq!(task.await.unwrap(), 1);
+    c.cleanup().await;
+}
