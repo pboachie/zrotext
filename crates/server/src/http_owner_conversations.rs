@@ -162,7 +162,7 @@ impl From<AdmissionError> for ConversationError {
 
 /// Serialize with account disable, role changes and session revocation. Recheck
 /// wall-clock expiry after every later lock wait and before returning content.
-async fn lock_owner(
+pub(crate) async fn lock_owner(
     tx: &Transaction<'_>,
     owner: &SessionPrincipal,
 ) -> Result<(), ConversationError> {
@@ -177,7 +177,7 @@ async fn lock_owner(
     fresh_owner(tx, owner).await
 }
 
-async fn fresh_owner(
+pub(crate) async fn fresh_owner(
     tx: &Transaction<'_>,
     owner: &SessionPrincipal,
 ) -> Result<(), ConversationError> {

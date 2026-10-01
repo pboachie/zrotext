@@ -226,7 +226,7 @@ async fn reach_clock(db: &Client, deadline: i64) {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
-fn signed(f: &Fixture, bytes: &mut [u8]) {
+pub(crate) fn signed(f: &Fixture, bytes: &mut [u8]) {
     let end = bytes.len() - 64;
     let signature: Signature = f.event_signer.sign(
         &[
@@ -239,7 +239,7 @@ fn signed(f: &Fixture, bytes: &mut [u8]) {
     bytes[end..].copy_from_slice(&signature.normalize_s().to_bytes());
 }
 // Signed opaque SQL-composition fixtures; not a decryption/provider claim.
-fn envelope(f: &Fixture, id: Uuid, observed: i64, lifetime: i64) -> Vec<u8> {
+pub(crate) fn envelope(f: &Fixture, id: Uuid, observed: i64, lifetime: i64) -> Vec<u8> {
     let mut b = b"ZTSE\x02\x01\0\0".to_vec();
     b.extend(157u16.to_be_bytes());
     b.extend(f.account.as_bytes());

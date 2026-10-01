@@ -330,6 +330,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../../../../deploy/compose/migrations/075_workflow_context.sql"),
     ),
     (
+        "076_workflow_decisions.sql",
+        include_str!("../../../../deploy/compose/migrations/076_workflow_decisions.sql"),
+    ),
+    (
+        "077_encrypted_schedule.sql",
+        include_str!("../../../../deploy/compose/migrations/077_encrypted_schedule.sql"),
+    ),
+    (
         "../migration-candidates/NNN_conversation_execution_records.sql",
         include_str!(
             "../../../../deploy/compose/migration-candidates/NNN_conversation_execution_records.sql"

@@ -484,16 +484,33 @@ pub(super) async fn prepared() -> (Fixture, SessionPrincipal) {
     ))
     .await
     .unwrap();
-    f.db.batch_execute(include_str!(
-        "../../../../deploy/compose/migrations/072_conversation_confirmation_records.sql"
-    ))
-    .await
-    .unwrap();
+
     f.db.batch_execute(include_str!(
         "../../../../deploy/compose/migrations/075_workflow_context.sql"
     ))
     .await
     .unwrap();
+    f.db.batch_execute(include_str!(
+        "../../../../deploy/compose/migrations/067_contacts_consent.sql"
+    ))
+    .await
+    .unwrap();
+    f.db.batch_execute(include_str!(
+        "../../../../deploy/compose/migrations/076_workflow_decisions.sql"
+    ))
+    .await
+    .unwrap();
+    for migration in [
+        include_str!("../../../../deploy/compose/migrations/068_connector_registration.sql"),
+        include_str!(
+            "../../../../deploy/compose/migrations/072_conversation_confirmation_records.sql"
+        ),
+        include_str!("../../../../deploy/compose/migrations/073_collaboration_drafts.sql"),
+        include_str!("../../../../deploy/compose/migrations/074_agent_authority.sql"),
+        include_str!("../../../../deploy/compose/migrations/077_encrypted_schedule.sql"),
+    ] {
+        f.db.batch_execute(migration).await.unwrap();
+    }
     let owner = owner(&f).await;
     (f, owner)
 }

@@ -103,6 +103,50 @@ const BLOCKED_TABLES: &[&str] = &[
 /// counts stay honest.
 pub(crate) const DELETE_PLAN: &[(&str, &str)] = &[
     (
+        "workflow_schedule_audit",
+        "DELETE FROM workflow_schedule_audit WHERE account_id=$1",
+    ),
+    (
+        "workflow_schedule_occurrences",
+        "DELETE FROM workflow_schedule_occurrences WHERE account_id=$1",
+    ),
+    (
+        "workflow_schedule_series",
+        "DELETE FROM workflow_schedule_series WHERE account_id=$1",
+    ),
+    (
+        "workflow_schedule_policies",
+        "DELETE FROM workflow_schedule_policies WHERE account_id=$1",
+    ),
+    (
+        "workflow_message_links",
+        "DELETE FROM workflow_message_links WHERE account_id=$1",
+    ),
+    (
+        "workflow_reply_correlations",
+        "DELETE FROM workflow_reply_correlations WHERE account_id=$1",
+    ),
+    (
+        "workflow_action_mutations",
+        "DELETE FROM workflow_action_mutations WHERE account_id=$1",
+    ),
+    (
+        "workflow_action_versions",
+        "DELETE FROM workflow_action_versions WHERE account_id=$1",
+    ),
+    (
+        "workflow_actions",
+        "DELETE FROM workflow_actions WHERE account_id=$1",
+    ),
+    (
+        "workflow_routines",
+        "DELETE FROM workflow_routines WHERE account_id=$1",
+    ),
+    (
+        "workflow_context_fences",
+        "DELETE FROM workflow_context_fences WHERE account_id=$1",
+    ),
+    (
         "workflow_context_audit",
         "DELETE FROM workflow_context_audit WHERE account_id=$1",
     ),
