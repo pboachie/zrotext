@@ -38,6 +38,25 @@ class ConversationSocketWireTest {
         assertThrows(IllegalStateException::class.java){wire.exchange(request())};assertEquals(1,sent)
         respond={false};assertThrows(IllegalStateException::class.java){wire.exchange(request())};assertEquals(2,sent)
     }
+    @Test fun proposalBundleCrossesActualSocketOnlyWithExactChallengeAndBoundedFrame() {
+        wire=ConversationSocketWire(socket,{session},10)
+        val selected=UUID.randomUUID();val challenge=UUID.randomUUID()
+        val original=ByteArray(380);val manifest=ByteArray(364)
+        respond={bytes->
+            assertEquals(selected,ConversationChannelCodec.parseProposalRequest(bytes,phone).second)
+            assertFalse(wire.acceptReply(phone,ConversationChannelCodec.proposalReply(phone,UUID.randomUUID(),original,manifest)))
+            val correct=ConversationChannelCodec.proposalReply(phone,challenge,original,manifest)
+            assertFalse(wire.acceptReply(phone,correct+ByteArray(10898)))
+            assertFalse(wire.acceptReply(phone,correct+byteArrayOf(0)))
+            assertTrue(wire.acceptReply(phone,correct))
+            assertFalse(wire.acceptReply(phone,correct))
+            true
+        }
+        val response=wire.exchange(ConversationChannelCodec.proposalRequest(phone,challenge,selected))
+        val parsed=ConversationChannelCodec.parseProposalReply(response.bytes,phone)
+        assertEquals(challenge,parsed.first);assertArrayEquals(original,parsed.second);assertArrayEquals(manifest,parsed.third)
+        assertEquals(1,sent)
+    }
     @Test fun sessionRotationCannotAcceptOldReply() {
         wire=ConversationSocketWire(socket,{session},1)
         respond={bytes->val r=ConversationChannelCodec.parseTimeRequest(bytes,phone);session=phone.copy(connectionEpoch=2)
