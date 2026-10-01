@@ -486,6 +486,12 @@ pub(super) async fn prepared() -> (Fixture, SessionPrincipal) {
     .unwrap();
 
     f.db.batch_execute(include_str!(
+        "../../../../deploy/compose/migrations/072_owner_confirmed_execution.sql"
+    ))
+    .await
+    .unwrap();
+
+    f.db.batch_execute(include_str!(
         "../../../../deploy/compose/migrations/075_workflow_context.sql"
     ))
     .await
