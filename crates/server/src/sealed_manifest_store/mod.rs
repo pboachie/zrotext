@@ -20,6 +20,7 @@ use crate::{
 use tokio_postgres::Transaction;
 use uuid::Uuid;
 
+pub(crate) mod inbound_upload;
 pub(crate) mod outbound;
 
 #[derive(Debug, thiserror::Error)]

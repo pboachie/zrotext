@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 pub mod ingest;
 pub mod line_activation;
+pub mod upload;
 
 /// Checks the current writer session and a line binding marked active with
 /// both evidence digest fields. A future route must verify those enrollment
