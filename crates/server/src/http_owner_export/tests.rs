@@ -119,7 +119,7 @@ const EXPORT_SCHEMA: [(&str, &str); 82] = export_schema!(
     "079_workflow_integration_authority.sql",
     "080_test_exposure_reservations.sql",
     "081_invoice_bound_test_billing.sql",
-    "../migration-candidates/NNN_conversation_execution_records.sql",
+    "082_conversation_execution_records.sql",
 );
 #[test]
 fn export_schema_includes_every_checked_in_migration() {

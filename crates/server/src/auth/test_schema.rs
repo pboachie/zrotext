@@ -350,6 +350,12 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "081_invoice_bound_test_billing.sql",
         include_str!("../../../../deploy/compose/migrations/081_invoice_bound_test_billing.sql"),
     ),
+    (
+        "082_conversation_execution_records.sql",
+        include_str!(
+            "../../../../deploy/compose/migrations/082_conversation_execution_records.sql"
+        ),
+    ),
 ];
 
 async fn apply_selected(db: &Client, skip_summary: bool) {

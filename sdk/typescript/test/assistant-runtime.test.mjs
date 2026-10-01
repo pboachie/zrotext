@@ -148,11 +148,12 @@ test('timeout remains durable unknown with no automatic model or proposal retry'
   f.provider.generate=()=>{f.observed.calls++;return new Promise(()=>{});};
   assert.equal((await isolated.run(f.e)).state,'unknown');assert.equal((await isolated.run(f.e)).state,'unknown');assert.equal(f.observed.calls,1);
 });
-test('takeover while provider waits blocks renderer and proposal and preserves charged unknown',async t=>{
-  const f=await fixture(t);let release;
-  f.provider.generate=()=>{f.observed.calls++;return new Promise(resolve=>{release=resolve;});};
+test('takeover while provider waits blocks renderer and proposal and preserves charged unknown',{timeout:5000},async t=>{
+  const f=await fixture(t);let release, entered;
+  const providerEntered=new Promise(resolve=>{entered=resolve;});
+  f.provider.generate=()=>{f.observed.calls++;return new Promise(resolve=>{release=resolve;entered();});};
   const running=f.runner.run(f.e);
-  for(let waits=0;!release && waits<100;waits++) await new Promise(resolve=>setImmediate(resolve));
+  await Promise.race([providerEntered,running.then(()=>{throw new Error('provider did not start');})]);
   assert.equal(typeof release,'function');
   f.runner.withdraw('takeover');release({text:enc.encode('late model proposal')});
   assert.equal((await running).state,'unknown');assert.equal(f.observed.proposals.length,0);

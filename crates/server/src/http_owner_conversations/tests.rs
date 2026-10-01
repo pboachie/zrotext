@@ -472,6 +472,8 @@ async fn principal_for(f: &Fixture, account: Uuid, role: &str) -> SessionPrincip
         .unwrap()
 }
 
+// Deliberately stop before execution installation: callers exercise legacy proof
+// and explicit execution upgrade boundaries rather than applying the schema twice.
 pub(super) async fn prepared() -> (Fixture, SessionPrincipal) {
     let f = Fixture::new().await;
     f.db.batch_execute(include_str!(
