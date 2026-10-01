@@ -632,6 +632,9 @@ class ReleaseCandidateTest(unittest.TestCase):
                         release_candidate.secure_keystore(key)
 
     def test_signing_uses_fixed_private_paths_even_with_redirected_state_environment(self):
+        # Resolve the fixed expected path before the environment is redirected.
+        # Managed Windows can canonicalize LocalAppData into an app container.
+        expected_output = Path(os.path.realpath(release_candidate.ARTIFACT_ROOT / "candidate"))
         environment = {"LOCALAPPDATA": str(release_candidate.CUSTODY_BASE.parent),
                        "XDG_STATE_HOME": str(release_candidate.CUSTODY_BASE.parent),
                        "ZROTEXT_ANDROID_ARTIFACT_ROOT": str(release_candidate.CUSTODY_BASE.parent),
@@ -643,7 +646,7 @@ class ReleaseCandidateTest(unittest.TestCase):
             release_candidate.main()
         sign.assert_called_once_with(self.COMMIT, release_candidate.DEFAULT_KEYSTORE,
                                      release_candidate.SIGNING_ALIAS,
-                                     release_candidate.ARTIFACT_ROOT / "candidate")
+                                     expected_output)
 
     def test_signing_key_cannot_be_inside_transferable_artifacts(self):
         with tempfile.TemporaryDirectory(dir=release_candidate.CUSTODY_BASE) as directory:
