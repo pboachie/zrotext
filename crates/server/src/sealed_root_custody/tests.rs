@@ -452,11 +452,31 @@ async fn missing_comparison_foreign_bundle_and_removed_membership_never_publish(
         )
         .await
         .unwrap();
-    assert!(
-        complete(&o, &c, &backup, &card, compared, &signature)
-            .await
-            .is_err()
-    );
-    o.empty_authority().await;
+    assert!(matches!(
+        complete(&o, &c, &backup, &card, compared, &signature).await,
+        Err(CeremonyError::Rejected("owner membership"))
+    ));
+    // Removing the membership cascades its factor rows. Check the absence of
+    // all publication/authority writes directly rather than asking the shared
+    // fixture to inspect a factor which no longer exists.
+    for table in [
+        "sealed_root_custody",
+        "sealed_manifest_authorities",
+        "sealed_root_enrollments",
+        "sealed_root_receipts",
+        "known_signing_role_claims",
+        "known_signing_point_reservations",
+    ] {
+        let count: i64 =
+            o.f.db
+                .query_one(
+                    &format!("SELECT count(*) FROM {table} WHERE account_id=$1"),
+                    &[&o.principal.tenant.account_id()],
+                )
+                .await
+                .unwrap()
+                .get(0);
+        assert_eq!(count, 0, "{table}");
+    }
     o.f.cleanup().await;
 }
