@@ -112,4 +112,35 @@ class ConversationRuntimeTransportTest {
         assertTrue(disabled);queue.drain();delivery.drain()
         assertEquals(1,stops)
     }
+    @Test fun closureReleaseWaitsAcceptedAttemptAndRejectedRefreshCannotRelease() {
+        var reject = true
+        var releases = 0
+        val tested = ConversationPresentationRuntime(Executor {
+            if (reject) throw java.util.concurrent.RejectedExecutionException() else queue.execute(it)
+        }, delivery, domain)
+        tested.lifecycleStop(ConversationStopReason.PHONE_SESSION_LOST) { releases++ }
+        assertTrue(disabled); assertEquals(0, stops); assertEquals(0, releases)
+        reject = false
+        tested.refresh(); queue.drain(); delivery.drain()
+        assertEquals(0, releases)
+        tested.lifecycleStop(ConversationStopReason.PHONE_SESSION_LOST)
+        assertEquals(0, releases)
+        queue.drain(); delivery.drain()
+        assertEquals(1, stops); assertEquals(1, releases)
+    }
+    @Test fun pendingClosureReleasesOnlyAfterAttemptAndThrowingReleaseCannotDropAnother() {
+        var releases = 0
+        runtime.lifecycleStop(ConversationStopReason.PHONE_SESSION_LOST) {
+            assertEquals(1, stops); error("synthetic release failure")
+        }
+        runtime.lifecycleStop(ConversationStopReason.PHONE_SESSION_LOST) {
+            assertEquals(1, stops); releases++
+        }
+        assertTrue(disabled); assertEquals(0, releases); assertEquals(0, stops)
+        queue.drain(); delivery.drain()
+        assertEquals(1, stops); assertEquals(1, releases)
+        runtime.refresh(); queue.drain(); delivery.drain()
+        assertEquals(1, releases)
+    }
+
 }

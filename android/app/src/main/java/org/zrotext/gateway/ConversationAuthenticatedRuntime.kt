@@ -79,11 +79,11 @@ internal class ConversationAuthenticatedRuntime(
     }
 
     /** Closes eligibility before returning, including while activation is waiting on transport. */
-    fun lifecycleLost(reason: ConversationStopReason) {
+    fun lifecycleLost(reason: ConversationStopReason, afterAttempt: (() -> Unit)? = null) {
         synchronized(bindingLock) { blocked.set(true); epoch.incrementAndGet() }
         admission.disableForLifecycle()
         clock.invalidate()
-        runtime.lifecycleStop(reason)
+        runtime.lifecycleStop(reason, afterAttempt)
     }
 
 

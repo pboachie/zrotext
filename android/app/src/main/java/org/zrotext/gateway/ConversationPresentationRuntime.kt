@@ -33,6 +33,7 @@ internal class ConversationPresentationRuntime(
     private val notifications = java.util.concurrent.ConcurrentLinkedQueue<Pair<(ConversationPresentationSnapshot) -> Unit, ConversationPresentationSnapshot>>()
     private var last = ConversationPresentationSnapshot(1, ConversationPresentationPhase.UNAVAILABLE)
     private var stopping = false
+    private val closeAttemptCompletions = mutableListOf<() -> Unit>()
     override fun observe(listener: (ConversationPresentationSnapshot) -> Unit): AutoCloseable {
         val value = synchronized(this) { listeners.add(listener); last }
         deliver(listener, value)
@@ -106,8 +107,9 @@ internal class ConversationPresentationRuntime(
     override fun declinePhoneReview(requestId: String, observedVersion: Long) = reviewAction(requestId, observedVersion, false)
     override fun requestStop(intervalId: String, observedVersion: Long) = requestStop(intervalId, observedVersion, ConversationStopReason.USER_STOP)
     /** Same cancellation/gate fence as user Stop; no presentation port change. */
-    fun lifecycleStop(reason: ConversationStopReason) {
+    fun lifecycleStop(reason: ConversationStopReason, afterAttempt: (() -> Unit)? = null) {
         synchronized(this) {
+            afterAttempt?.let { closeAttemptCompletions.add(it) }
             if (stopping) return
             stopping = true // Lifecycle cancellation has no stale UI-version precondition.
             publish(ConversationPresentationSnapshot(1, ConversationPresentationPhase.PAUSING,
@@ -118,8 +120,17 @@ internal class ConversationPresentationRuntime(
         flush()
         enqueue(closing = true, reason = reason) {
             try { publish(domain.stopForLifecycle(reason)) } catch (_: Exception) { failed() }
-            finally { synchronized(this) { stopping = false }; flush() }
+            finally { completedCloseAttempt() }
         }
+    }
+    /** Invoked only by the accepted closure Runnable after its durable attempt, never by rejection. */
+    private fun completedCloseAttempt() {
+        val completions = synchronized(this) {
+            stopping = false
+            closeAttemptCompletions.toList().also { closeAttemptCompletions.clear() }
+        }
+        flush()
+        completions.forEach { runCatching { it() } }
     }
     private fun requestStop(intervalId: String, observedVersion: Long, reason: ConversationStopReason) {
         synchronized(this) {
@@ -135,7 +146,7 @@ internal class ConversationPresentationRuntime(
         flush()
         enqueue(closing = true, reason = reason) {
             try { publish(domain.stop(intervalId, reason)) } catch (_: Exception) { failed() }
-            finally { synchronized(this) { stopping = false }; flush() }
+            finally { completedCloseAttempt() }
         }
     }
 }
