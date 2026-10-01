@@ -1,6 +1,9 @@
 -- SPDX-License-Identifier: AGPL-3.0-only
--- Unnumbered candidate. Requires allocated confirmation records first; never
--- install from application code. Cryptographic admission remains in the server.
+-- Unnumbered execution installation candidate; keep outside numbered migrations
+-- until its installation slot is allocated. Requires the confirmation records
+-- from 072 and the sealed/workflow authority guards from 071 and 079.
+-- Install through the dedicated migrator only after allocation; never install
+-- from application code. Cryptographic admission remains in the server.
 -- Legacy NULL cannot authorize execution. The existing proof update guard
 -- includes this additive field in its immutable identity comparison.
 ALTER TABLE conversation_confirmation_records ADD COLUMN execution_metered boolean;
