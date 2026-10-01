@@ -11,6 +11,8 @@ use zrotext_domain::{Evidence, MessageState};
 mod recovery;
 pub use recovery::{RECOVERY_BATCH, RECOVERY_BATCHES_PER_TICK, RecoveryBacklog, RecoveryPass};
 pub mod billable;
+mod usage_projection;
+pub use usage_projection::{USAGE_PAGE_MAX, UsageHistoryPage, UsagePeriodView, usage_history};
 pub mod sealed;
 
 /// See [`DeliveryStore::synthetic_grant_may_be_due`]. Public so plan tests
@@ -1953,6 +1955,8 @@ mod hold_tests;
 
 #[cfg(test)]
 mod recovery_tests;
+#[cfg(test)]
+mod usage_projection_tests;
 
 #[cfg(test)]
 mod alpha_id_tests;
