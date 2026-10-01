@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://zrotext.com/protocol/v1/vectors/sealed-execution-grant.schema.json",
   "title": "PROPOSED optional sealed dispatch frames, grant version 1 (roadmap #539)",
-  "description": "Optional device-stream extension, sent only on a session that negotiated zrotext-device-status-v2+sealed-dispatch-v1. No hub emits these frames and no client negotiates them yet. A schema-valid grant is not authority: the device still refuses any binding mismatch.",
+  "description": "Optional default-off hub dispatch extension for sessions that negotiate zrotext-device-status-v2+sealed-dispatch-v1 and send one sealed_ready frame. Candidate-02 cryptographic live-profile approval remains unresolved; a schema-valid grant never replaces device verification.",
   "oneOf": [
     { "$ref": "#/$defs/sealed_execution_grant" },
     { "$ref": "#/$defs/sealed_execution_refusal" }

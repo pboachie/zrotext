@@ -80,6 +80,26 @@ Treat model output as a proposed action. Enforce permissions outside the model, 
 
 **Exit criteria:** the assistant completes an allowed routine and both directions of an owner conversation. Adversarial SMS cannot broaden scope, reveal other conversations or bypass approval. Provider errors, timeouts and human takeover do not trigger uncontrolled messages. Selected-content access and revocation are visible to the owner.
 
+### Agent messaging tools
+
+**Planned; unavailable.** [Agent integration track #614](https://github.com/pboachie/zrotext/issues/614) extends the customer-controlled connector so an existing agent can notify its owner, receive selected replies and request review. It uses the owner-provided Android phone and SIM. It does not provision a new number, bypass messaging readiness, or provide emergency delivery.
+
+| Work | Intended outcome | Tracking |
+|---|---|---|
+| Scoped authority | Separate read/send grants, selected recipients, exact-action approval, budgets, revocation and takeover enforced outside the model. | [#615](https://github.com/pboachie/zrotext/issues/615) |
+| MCP tools | Customer-run stdio tools for readiness, preview, permitted submission, status and cancellation; remote mode needs an explicit authorization decision. | [#616](https://github.com/pboachie/zrotext/issues/616) |
+| Reply events | Verify signatures, isolate selected conversations, checkpoint event consumption and review ambiguous replies. | [#617](https://github.com/pboachie/zrotext/issues/617) |
+| Guided setup | A setup command, supported client installers, short-lived pairing, local secret storage, configuration preservation and disconnect. | [#618](https://github.com/pboachie/zrotext/issues/618) |
+| SDK and function adapters | Reuse the [TypeScript SDK #537](https://github.com/pboachie/zrotext/issues/537); add Python and provider-neutral tool schemas over the same sealed services. | [#619](https://github.com/pboachie/zrotext/issues/619) |
+| Workflow recipes | Importable task-completion, owner-approval and reply-routing recipes using shared services and a customer-controlled content reader. | [#620](https://github.com/pboachie/zrotext/issues/620) |
+| Simulator quickstart | A synthetic first exchange and reproducible scope, replay, revocation, opt-out and unknown-submission cases. | [#621](https://github.com/pboachie/zrotext/issues/621) |
+
+Implement policy and the existing sealed SDK first, then MCP and reply adapters, then guided setup and recipes. A synthetic service-contract prototype may run sooner when clearly labeled. The simulator must not send real SMS or consume AI-provider credits. Client compatibility is established by tests against named versions; merely generating a configuration file does not prove support.
+
+The intended setup takes one guided command plus a supported client install action. Phone/SIM selection, Android permissions, key-fingerprint comparison and owner authorization remain explicit steps. Measure the actual path before claiming setup speed. Reuse the active Android setup work [#603](https://github.com/pboachie/zrotext/pull/603); this track does not replace its navigation or permission design.
+
+**Exit criteria:** a fresh supported environment completes a synthetic notification/reply/approval journey without hand-editing raw client configuration or exposing an owner credential to the agent. Replay, edited approvals, scope refusals, offline expiry, suppression, revocation and unknown submission pass regression tests. A separate controlled-device pilot and the existing general-send gates are required before real traffic or availability claims. Incoming SMS cannot change authority, and delivery is not acknowledgment.
+
 ### Workflow templates
 
 Publish repair updates, cancellation-slot offers, events/RSVPs and volunteer coordination using the shared services. The [catalog](USE-CASES.md) defines each journey and acceptance criteria. Household coordination, lending and operational acknowledgment remain later candidates until pilots establish demand.

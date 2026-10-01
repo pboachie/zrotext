@@ -37,7 +37,7 @@ macro_rules! export_schema {
             [$(($name, include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/compose/migrations/", $name)))),+]
         };
     }
-const EXPORT_SCHEMA: [(&str, &str); 69] = export_schema!(
+const EXPORT_SCHEMA: [(&str, &str); 71] = export_schema!(
     "001_foundation.sql",
     "002_auth.sql",
     "003_delivery.sql",
@@ -107,6 +107,8 @@ const EXPORT_SCHEMA: [(&str, &str); 69] = export_schema!(
     "067_contacts_consent.sql",
     "068_connector_registration.sql",
     "069_sealed_root_custody.sql",
+    "070_message_summary_metadata.sql",
+    "071_sealed_grant_authority.sql",
 );
 #[test]
 fn export_schema_includes_every_checked_in_migration() {
@@ -176,6 +178,16 @@ async fn export_is_tenant_bound_and_carries_owner_content() {
     let (mut db, connection) = tokio_postgres::connect(&database_url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
     for (name, migration) in EXPORT_SCHEMA {
+        if name == "070_message_summary_metadata.sql" {
+            db.batch_execute("CREATE INDEX CONCURRENTLY messages_summary_queue ON messages(account_id,state,created_at) WHERE state IN ('accepted','queued','claimed','submitting','submitted')").await.unwrap();
+            db.batch_execute("BEGIN").await.unwrap();
+            let result = db.batch_execute(migration).await;
+            db.batch_execute(if result.is_ok() { "COMMIT" } else { "ROLLBACK" })
+                .await
+                .unwrap();
+            result.unwrap();
+            continue;
+        }
         // CREATE INDEX CONCURRENTLY cannot run inside 034/040's own
         // transactional file, so the real migrator builds each index on
         // an autocommit connection before applying the file that only
@@ -786,6 +798,16 @@ async fn export_carries_contacts_with_consent_history_and_never_foreign_rows() {
     let (mut db, connection) = tokio_postgres::connect(&database_url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
     for (name, migration) in EXPORT_SCHEMA {
+        if name == "070_message_summary_metadata.sql" {
+            db.batch_execute("CREATE INDEX CONCURRENTLY messages_summary_queue ON messages(account_id,state,created_at) WHERE state IN ('accepted','queued','claimed','submitting','submitted')").await.unwrap();
+            db.batch_execute("BEGIN").await.unwrap();
+            let result = db.batch_execute(migration).await;
+            db.batch_execute(if result.is_ok() { "COMMIT" } else { "ROLLBACK" })
+                .await
+                .unwrap();
+            result.unwrap();
+            continue;
+        }
         if name == "034_delivery_sweep_index.sql" {
             db.batch_execute(
                 "CREATE INDEX CONCURRENTLY messages_in_flight_updated \

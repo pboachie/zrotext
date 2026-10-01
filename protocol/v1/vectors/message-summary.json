@@ -1,0 +1,4 @@
+[
+  {"scope":"account","device_id":null,"timezone":"UTC","day_start_ms":946684800000,"day_end_ms":946771200000,"observed_at_ms":946728000000,"max_age_ms":30000,"count_bound":1000,"submitted_today":{"value":0,"capped":false},"pending":{"value":0,"capped":false},"in_flight":{"value":0,"capped":false}},
+  {"scope":"device","device_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","timezone":"UTC","day_start_ms":946684800000,"day_end_ms":946771200000,"observed_at_ms":946728000000,"max_age_ms":30000,"count_bound":1000,"submitted_today":{"value":1000,"capped":true},"pending":{"value":1000,"capped":false},"in_flight":{"value":1,"capped":false}}
+]

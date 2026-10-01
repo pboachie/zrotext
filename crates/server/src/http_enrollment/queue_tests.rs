@@ -183,7 +183,7 @@ macro_rules! queue_schema {
         [$(($name, include_str!(concat!("../../../../deploy/compose/migrations/", $name)))),+]
     };
 }
-const QUEUE_SCHEMA: [(&str, &str); 69] = queue_schema!(
+const QUEUE_SCHEMA: [(&str, &str); 71] = queue_schema!(
     "001_foundation.sql",
     "002_auth.sql",
     "003_delivery.sql",
@@ -253,6 +253,8 @@ const QUEUE_SCHEMA: [(&str, &str); 69] = queue_schema!(
     "067_contacts_consent.sql",
     "068_connector_registration.sql",
     "069_sealed_root_custody.sql",
+    "070_message_summary_metadata.sql",
+    "071_sealed_grant_authority.sql",
 );
 #[test]
 fn queue_fixture_includes_every_checked_in_migration() {
@@ -271,6 +273,16 @@ fn queue_fixture_includes_every_checked_in_migration() {
 // Exercise production index choices, including online preparation.
 async fn apply_queue_schema(db: &Client) {
     for (name, sql) in QUEUE_SCHEMA {
+        if name == "070_message_summary_metadata.sql" {
+            db.batch_execute("CREATE INDEX CONCURRENTLY messages_summary_queue ON messages(account_id,state,created_at) WHERE state IN ('accepted','queued','claimed','submitting','submitted')").await.unwrap();
+            db.batch_execute("BEGIN").await.unwrap();
+            let result = db.batch_execute(sql).await;
+            db.batch_execute(if result.is_ok() { "COMMIT" } else { "ROLLBACK" })
+                .await
+                .unwrap();
+            result.unwrap();
+            continue;
+        }
         match name {
             "034_delivery_sweep_index.sql" => {
                 db.batch_execute("CREATE INDEX messages_in_flight_updated ON messages(updated_at,id) WHERE state IN ('claimed','submitting','submitted')").await.unwrap();
