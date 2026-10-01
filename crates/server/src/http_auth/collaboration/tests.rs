@@ -40,7 +40,7 @@ const MIGRATIONS: [&str; 11] = [
     include_str!("../../../../../deploy/compose/migrations/048_observer_memberships.sql"),
     include_str!("../../../../../deploy/compose/migrations/053_observer_seat_invitations.sql"),
     include_str!("../../../../../deploy/compose/migrations/055_trusted_browser_epoch.sql"),
-    include_str!("../../../../../deploy/compose/migrations/074_collaboration_drafts.sql"),
+    include_str!("../../../../../deploy/compose/migrations/073_collaboration_drafts.sql"),
 ];
 struct Fixture {
     db: Client,
