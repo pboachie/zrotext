@@ -145,6 +145,22 @@ internal class ConversationAuthenticatedRuntime(
     fun captureEligible(): Boolean = admission.captureEligible()
     fun currentScope(): ConversationCaptureScope? = if(blocked.get()) null else admission.activeScope()
     internal fun trustedNowMs():Long? = clock.nowMs()
+    /** Uses this runtime's actual admission/clock; no second lease or wall-clock authority. */
+    internal fun executionDeadline(scope: ConversationCaptureScope): Long? = runCatching {
+        val started = checkNotNull(clock.nowMs())
+        current(scope)
+        val remaining = admission.remainingMs(scope)
+        check(remaining > 0)
+        // Anchor before providers: their elapsed wait cannot extend the admitted lease.
+        val deadline = Math.addExact(started, remaining)
+        current(scope)
+        check(checkNotNull(clock.nowMs()) < deadline)
+        deadline
+    }.getOrNull()
+    internal fun executionBoundary(authority: () -> ConversationExecutionAuthority?,
+        db: SmsJournalDatabase, keys: DevicePayloadKeyStore,
+        preparation: (Draft02OutboundPreparation.Grant) -> Draft02OutboundPreparation.Current?) =
+        ConversationExecutionBoundary(admission, clock, authority, db, keys, preparation)
     fun firstReceiptBoundary() = admission.firstReceiptBoundary { if (blocked.get()) 0 else clock.nowMs() ?: 0 }
     fun observeAtBoundary(boundary: ConversationCaptureAdmission.ReceiptBoundary, token: String,
                           peer: String, line: String, generation: Long, body: String) =

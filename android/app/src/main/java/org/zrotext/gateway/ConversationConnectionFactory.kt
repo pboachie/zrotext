@@ -54,7 +54,8 @@ internal class ConversationConnectionFactory(
     private val proposalForSession: (ConversationPhoneSession, ConversationAuthenticatedWire) -> ConversationConnectionProposal,
     private val inputsForSession: (ConversationPhoneSession) -> ConversationConnectionInputs,
     private val publish: (Connection) -> Unit,
-    private val mount: ConversationRuntimeMount = ConversationProcessMount.runtime
+    private val mount: ConversationRuntimeMount = ConversationProcessMount.runtime,
+    private val dispatchForConnection: ((ConversationExecutionComposition.Connection) -> ConversationSendTransport)? = null
 ) {
     init { require(listOf(site, instance).all { it.length in 1..64 && it.all { ch -> ch.code in 33..126 } }) }
 
@@ -147,7 +148,10 @@ internal class ConversationConnectionFactory(
                         val scope = runtime.currentScope()
                         if (scope == null) null else authority(scope, checkNotNull(runtime.trustedNowMs()))
                     })
-                    val content = ConversationContentSession(runtime, crypto, inputs.dispatch, mount)
+                    val dispatch = if (dispatchForConnection == null) inputs.dispatch else
+                        checkNotNull(dispatchForConnection.invoke(ConversationExecutionComposition.Connection(
+                            runtime, crypto, wire, session, inputs, ::authority)))
+                    val content = ConversationContentSession(runtime, crypto, dispatch, mount)
                     candidate = Connection(runtime, content, activation, ::requireSession, inputs::releaseResources)
                     guard()
                     synchronized(gate) {
