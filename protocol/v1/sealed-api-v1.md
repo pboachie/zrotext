@@ -17,8 +17,10 @@ route is mounted for any endpoint in this document. With it on, the single
 admission handler accepts only the exact raw-binary content type, verifies the
 manifest chain, signer scope and envelope signature, and queues exact bytes
 toward the bound device; acceptance is never carrier evidence and never an
-execution grant, and sealed dispatch to devices remains deliberately
-unimplemented. `POST /v1/sealed/inbound-events` is likewise implemented
+execution grant. A separately gated, dormant [negotiated sealed dispatch
+extension](sealed-dispatch.md) implements exact-byte grants and enrolled-device
+signed retrieval; its live cryptographic profile and Android integration remain
+unapproved. `POST /v1/sealed/inbound-events` is likewise implemented
 behind the same flag (see its section below). Read-only device, webhook/delivery
 metadata and usage groups are also implemented behind that flag; their current
 handlers/tests define the actual projections, while prospective slice-2 schema
@@ -55,10 +57,11 @@ without incrementing its state version. Expired work and any irreversible
 grant return `409 cancellation_conflict`; the relay never reports unknown
 radio work as cancelled. Manifest/line/device staleness does not prevent
 removing ungranted work, but does not bypass current API-key authority or
-admission checks for replay. Existing sealed SQL constraints still allow only
-queued, cancelled and expired states: negotiated grant/fetch/dispatch remains
-separate work (#626). The schema preserves submitted/delivered/failed/unknown
-distinctions for that future evidence without enabling those transitions.
+admission checks for replay. Messages without an immutable segment-limit
+declaration retain the queued/cancelled/expired-only boundary. The separately
+gated dispatch extension (#626) permits effect states only with exact immutable
+grant provenance; it preserves submitted/delivered/failed/unknown distinctions
+and the existing one-use intent and reconciliation model.
 
 The TypeScript `SealedLifecycleClient` uses these canonical routes, validates
 metadata and page bounds, and never retries cancellation automatically. A

@@ -120,7 +120,19 @@ const outboundCek = pinned('outboundCek', 32);
 const outboundNonce = pinned('outboundNonce', 12);
 const deviceEkm = pinned('deviceEkm', 32);
 const archiveEkm = pinned('archiveEkm', 32);
-const expectedText = 'Cross-client synthetic ciphertext ✓';
+// Optional content override for the leakage-acceptance lane (issue #632): the
+// harness plants a synthetic marker as the client-side plaintext so downstream
+// surfaces can be scanned for unintended exposure. Omitted input keeps the
+// shared cross-client text; anything present must be a well-formed marker, so
+// this seam can never inject arbitrary content.
+let expectedText = 'Cross-client synthetic ciphertext ✓';
+if (input.contentText !== undefined) {
+  assert.equal(typeof input.contentText, 'string');
+  assert.ok(input.contentText.length >= 8 && input.contentText.length <= 120, 'Marker length');
+  assert.doesNotMatch(input.contentText, /[ -]/, 'Marker must be printable');
+  assert.match(input.contentText, /^ZTCANARY-[0-9a-z-]+$/, 'Marker must be a synthetic ZTCANARY string');
+  expectedText = input.contentText;
+}
 const common = { manifest, nowMs: now, deviceId: device, lineId: line,
   peer: ascii('+12'), observedMs: now, content: expectedText };
 const outbound = await prepareOutboundEnvelope02({ ...common, kind: 1, messageId: message,
