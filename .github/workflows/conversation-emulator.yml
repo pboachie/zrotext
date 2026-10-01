@@ -53,18 +53,75 @@ jobs:
           (cd android && ./gradlew -PisolatedConversationProbe=true :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon)
       - name: Boot owned isolated emulator and require round trip
         run: |
+          diagnostics="$RUNNER_TEMP/conversation-startup-diagnostics"
+          mkdir -p "$diagnostics"
+          emulator_pid=''
+          wait_pid=''
+          phase='preflight'
+          preserve_startup() {
+            status=$?
+            trap - EXIT
+            printf 'phase=%s\nstep_exit=%s\n' "$phase" "$status" > "$diagnostics/status.txt"
+            tail -c 65536 "$RUNNER_TEMP/conversation-emulator.log" > "$diagnostics/emulator-startup.log" 2>/dev/null || true
+            tail -c 16384 "$RUNNER_TEMP/conversation-adb-wait.log" > "$diagnostics/adb-wait.log" 2>/dev/null || true
+            if [ "$status" -ne 0 ]; then
+              echo '::group::Bounded synthetic emulator startup diagnostics'
+              cat "$diagnostics/status.txt"
+              tail -c 16384 "$diagnostics/emulator-startup.log"
+              tail -c 4096 "$diagnostics/adb-wait.log"
+              echo '::endgroup::'
+            fi
+            if [ -n "$wait_pid" ]; then
+              kill "$wait_pid" 2>/dev/null || true
+            fi
+            if [ -n "$emulator_pid" ]; then
+              timeout 5 adb -s emulator-5596 emu kill || true
+              kill "$emulator_pid" 2>/dev/null || true
+            fi
+            exit "$status"
+          }
+          require_emulator_process() {
+            if ! kill -0 "$emulator_pid" 2>/dev/null; then
+              if wait "$emulator_pid"; then emulator_exit=0; else emulator_exit=$?; fi
+              printf 'emulator_exit=%s\n' "$emulator_exit" > "$diagnostics/process-exit.txt"
+              echo "::error::Owned emulator exited during $phase (exit $emulator_exit)"
+              exit 1
+            fi
+          }
+          trap preserve_startup EXIT
           test -c /dev/kvm
           sudo chmod a+rw /dev/kvm
           echo no | avdmanager create avd --name ZROtext_Conversation_API28 --package 'system-images;android-28;google_apis;x86_64' --force
           emulator -avd ZROtext_Conversation_API28 -port 5596 -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect > "$RUNNER_TEMP/conversation-emulator.log" 2>&1 &
           emulator_pid=$!
-          trap 'adb -s emulator-5596 emu kill || true; kill "$emulator_pid" 2>/dev/null || true' EXIT
-          timeout 180 adb -s emulator-5596 wait-for-device
-          for attempt in $(seq 1 120); do
-            if [ "$(adb -s emulator-5596 shell getprop sys.boot_completed | tr -d '\r')" = 1 ]; then break; fi
+          phase='adb-connect'
+          timeout 180 adb -s emulator-5596 wait-for-device > "$RUNNER_TEMP/conversation-adb-wait.log" 2>&1 &
+          wait_pid=$!
+          while kill -0 "$wait_pid" 2>/dev/null; do
+            require_emulator_process
             sleep 1
           done
-          test "$(adb -s emulator-5596 shell getprop sys.boot_completed | tr -d '\r')" = 1
+          if wait "$wait_pid"; then :; else
+            status=$?
+            echo "::error::Owned emulator ADB connection failed (exit $status)"
+            exit "$status"
+          fi
+          wait_pid=''
+          phase='android-boot'
+          boot_completed=''
+          boot_deadline=$((SECONDS + 120))
+          while [ "$SECONDS" -lt "$boot_deadline" ]; do
+            require_emulator_process
+            remaining=$((boot_deadline - SECONDS))
+            if [ "$remaining" -le 0 ]; then break; fi
+            probe_timeout=5
+            if [ "$remaining" -lt "$probe_timeout" ]; then probe_timeout="$remaining"; fi
+            boot_completed="$(timeout "$probe_timeout" adb -s emulator-5596 shell getprop sys.boot_completed | tr -d '\r')" || boot_completed=''
+            if [ "$boot_completed" = 1 ]; then break; fi
+            sleep 1
+          done
+          test "$boot_completed" = 1
+          phase='compiled-roundtrip'
           python3 scripts/conversation_emulator.py --serial emulator-5596 --adb "$ANDROID_HOME/platform-tools/adb" --aapt "$ANDROID_HOME/build-tools/37.0.0/aapt" --toolchain 1.97.1 --skip-build
           python3 scripts/conversation_compiled_acceptance.py \
             --commit "$(git rev-parse HEAD)" \
@@ -72,3 +129,11 @@ jobs:
             --test-sha256 "$(sha256sum android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk | cut -d ' ' -f 1)" \
             --adb "$ANDROID_HOME/platform-tools/adb" --aapt "$ANDROID_HOME/build-tools/37.0.0/aapt" \
             --execute --handoff-reference "exclusive job-owned emulator after roundtrip"
+      - name: Preserve bounded synthetic emulator startup diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: conversation-emulator-startup-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/conversation-startup-diagnostics/
+          if-no-files-found: ignore
+          retention-days: 3
