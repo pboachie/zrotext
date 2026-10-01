@@ -38,6 +38,7 @@ use tokio_postgres::Client;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
+mod collaboration;
 pub mod preauth;
 mod root_custody;
 mod seats_http;
@@ -622,6 +623,8 @@ pub struct AuthHttpState {
     pub mfa_enrollment_enabled: bool,
     /// Dormant owner routes for SMS line activation; off by default.
     pub sms_line_activation_enabled: bool,
+    /// Selected collaboration ciphertext storage only; off by default.
+    pub collaboration_drafts_enabled: bool,
     /// Generation-one custody adapters; deliberately not enabled by main.
     pub root_custody_enabled: bool,
     /// Operator-configured networks trusted for the password-reset request
@@ -667,6 +670,7 @@ impl AuthHttpState {
             mfa_cipher: None,
             mfa_enrollment_enabled: false,
             sms_line_activation_enabled: false,
+            collaboration_drafts_enabled: false,
             root_custody_enabled: false,
             reset_trusted_networks: Arc::new(TrustedNetworks::default()),
         })
@@ -684,6 +688,11 @@ impl AuthHttpState {
 
     pub fn with_sms_line_activation_enabled(mut self) -> Self {
         self.sms_line_activation_enabled = true;
+        self
+    }
+
+    pub fn with_collaboration_drafts_enabled(mut self) -> Self {
+        self.collaboration_drafts_enabled = true;
         self
     }
 
@@ -757,6 +766,9 @@ pub fn router(state: AuthHttpState) -> Router {
             "/sms-lines/{line_id}/activations/{challenge_id}/approve",
             post(sms_lines::approve),
         );
+    if state.collaboration_drafts_enabled {
+        router = router.merge(collaboration::router());
+    }
     if state.root_custody_enabled {
         router = router
             .route("/sealed-root/challenge", post(root_custody::challenge))
