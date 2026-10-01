@@ -131,6 +131,22 @@ pub(crate) const DELETE_PLAN: &[(&str, &str)] = &[
         "DELETE FROM workflow_integration_grants WHERE account_id=$1",
     ),
     (
+        "exposure_reservation_scopes",
+        "DELETE FROM exposure_reservation_scopes WHERE account_id=$1",
+    ),
+    (
+        "exposure_reservations",
+        "DELETE FROM exposure_reservations WHERE account_id=$1",
+    ),
+    (
+        "exposure_scope_budgets",
+        "DELETE FROM exposure_scope_budgets WHERE account_id=$1",
+    ),
+    (
+        "exposure_route_policies",
+        "DELETE FROM exposure_route_policies WHERE account_id=$1",
+    ),
+    (
         "workflow_message_links",
         "DELETE FROM workflow_message_links WHERE account_id=$1",
     ),
