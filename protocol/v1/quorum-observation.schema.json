@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Authenticated quorum observation wire v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "namespace",
+    "purpose",
+    "journal",
+    "signature"
+  ],
+  "properties": {
+    "namespace": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "purpose": {
+      "enum": [
+        "probe",
+        "report"
+      ]
+    },
+    "journal": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "signature": {
+      "type": "string",
+      "minLength": 88,
+      "maxLength": 88,
+      "pattern": "^[A-Za-z0-9+/]{86}==$"
+    }
+  },
+  "description": "Structural schema only. Implementations additionally enforce a 4096-byte total JSON bound, canonical journal encoding, pinned signature/member/domain, original observation freshness and durable increasing sequences."
+}

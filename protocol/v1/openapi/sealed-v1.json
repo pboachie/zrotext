@@ -1617,10 +1617,12 @@
     },
     "/v1/sealed/usage": {
       "get": {
-        "tags": ["sealed-usage"],
+        "tags": [
+          "sealed-usage"
+        ],
         "operationId": "getSealedUsage",
-        "summary": "Get the current metering period's usage snapshot",
-        "description": "Proposed contract; no route exists. Read-only query of the durable outbound metering core (usage_periods and usage_ledger) for the authenticated account: the current UTC calendar-month period, its unit limit, reserved units, refunded units, the derived used units, and the period boundary at which counters reset. Sealed outbound acceptance meters exactly one unit per accepted sealed envelope in the same transaction as admission, identical to the existing metered core; an idempotent digest replay reuses the original reservation and never reserves a second unit, even across a month boundary. Refunds exist only through the existing pre-grant cancellation/expiry path and are written against the original period; whether sealed messages expose cancellation at all is deferred with the message status queries. The metric stays the shared outbound_message unit in v1: sealed acceptance does not introduce a second metric. Units are integer counts of accepted messages, never currency, invoices or per-recipient pricing. History queries beyond the current period and per-device or per-line breakdowns are deferred. Cache-Control: no-store.",
+        "summary": "List bounded usage history pages",
+        "description": "Read-only query of the single authoritative metering core (usage_periods and usage_ledger) for the authenticated account: bounded pages of UTC calendar-month periods, newest first, each with its unit limit, reserved units, refunded units and the derived used units (reserved - refunded). Counter semantics are fixed: reserved counts accepted messages, reserved in the same transaction as admission; refunds exist only through the pre-grant cancellation/expiry path, are written exactly once per message against the original period, and an idempotent digest replay reuses the original reservation. used units is a reservation counter and is never a submitted or delivered counter. Units are integer counts of accepted messages, never currency, invoices or per-recipient pricing. Per-device or per-line breakdowns do not exist and are not implied. The metric stays the shared outbound_message unit in v1.",
         "security": [
           {
             "bearerAuth": []
@@ -1628,7 +1630,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The current period's quota and usage counters.",
+            "description": "One bounded page of usage periods; empty history is an empty page.",
             "headers": {
               "Cache-Control": {
                 "$ref": "#/components/headers/NoStore"
@@ -1637,7 +1639,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SealedUsage"
+                  "$ref": "#/components/schemas/SealedUsagePage"
                 }
               }
             }
@@ -1654,7 +1656,9 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": { "code": "unauthorized" }
+                "example": {
+                  "code": "unauthorized"
+                }
               }
             }
           },
@@ -1670,7 +1674,9 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": { "code": "forbidden" }
+                "example": {
+                  "code": "forbidden"
+                }
               }
             }
           },
@@ -1686,11 +1692,55 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": { "code": "unavailable" }
+                "example": {
+                  "code": "unavailable"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request: out-of-bounds limit or malformed before cursor.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "code": "invalid_request"
+                }
               }
             }
           }
-        }
+        },
+        "parameters": [
+          {
+            "name": "before",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date"
+            },
+            "description": "Pagination cursor from a previous next_before: return periods with period_start strictly before this date. Malformed or calendrically impossible values are invalid_request."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 24,
+              "default": 12
+            },
+            "description": "Periods per page, 1 to 24, default 12. Out-of-bounds is invalid_request."
+          }
+        ]
       }
     },
       "/v1/sealed/messages/{message_id}": {
@@ -2411,8 +2461,16 @@
       },
       "SealedUsage": {
         "type": "object",
-        "description": "The account's current metering period snapshot from the durable usage core. Integer message counts only; never currency, invoices or pricing.",
-        "required": ["metric", "period_start", "period_end", "limit_units", "reserved_units", "refunded_units", "used_units"],
+        "description": "One metering period from the durable usage core. Integer message counts only; never currency, invoices or pricing.",
+        "required": [
+          "metric",
+          "period_start",
+          "period_end",
+          "limit_units",
+          "reserved_units",
+          "refunded_units",
+          "used_units"
+        ],
         "properties": {
           "metric": {
             "type": "string",
@@ -2422,12 +2480,12 @@
           "period_start": {
             "type": "string",
             "format": "date",
-            "description": "Inclusive UTC calendar-month start of the current period (YYYY-MM-DD)."
+            "description": "Inclusive UTC calendar-month start of the period (YYYY-MM-DD)."
           },
           "period_end": {
             "type": "string",
             "format": "date",
-            "description": "Exclusive end of the current period and reset boundary: counters restart at 00:00 UTC on this date."
+            "description": "Exclusive end of the period and reset boundary: counters restart at 00:00 UTC on this date."
           },
           "limit_units": {
             "type": "integer",
@@ -2571,7 +2629,33 @@
               "format": "uuid"
             }
           }
-        }
+        },
+      "SealedUsagePage": {
+        "type": "object",
+        "description": "One bounded page of the account's usage history, newest period first, read from the single authoritative metering core (#631). consumed = reserved - refunded is a reservation counter and is never a submitted or delivered counter. An account without periods is a consistent empty page, not an error and not a distinction beyond emptiness.",
+        "required": [
+          "usage",
+          "next_before"
+        ],
+        "properties": {
+          "usage": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SealedUsage"
+            },
+            "description": "Periods in descending period_start order."
+          },
+          "next_before": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date",
+            "description": "Cursor for the next older page: the last row's period_start, or null when the history is exhausted."
+          }
+        },
+        "additionalProperties": false
+      }
     }
   }
 }

@@ -354,6 +354,11 @@ networking, persistence, private-key generation or dispatch activation. The
 server's owner router remains unmounted. See
 [`workflow-context.md`](../../protocol/v1/workflow-context.md) for exact authenticated
 identity, version, ciphertext, exception and retention boundaries.
+[Importable agent recipe previews](../../docs/agent-recipes.md) add a disabled n8n
+workflow and callable example using `agent-recipe`, the shared fixture adapter and
+a local customer-controlled reader. They exercise durable synthetic identities,
+owner review and bounded reply routing; production grants and activation remain
+unavailable.
 
 `workflow-decisions.ts` supplies the complete `workflow-action-01` canonical
 descriptor and SHA-256 binding for customer proposals. It rejects missing or
@@ -367,8 +372,3 @@ adds a default-off customer-side proposal runner with durable provider budgets,
 selected-reader adapters and crash-safe uncertain outcomes. Live workflow and
 provider integration remains unavailable; generated actions always require
 separate exact owner confirmation.
-[Importable agent recipe previews](../../docs/agent-recipes.md) add a disabled n8n
-workflow and callable example using `agent-recipe`, the shared fixture adapter and
-a local customer-controlled reader. They exercise durable synthetic identities,
-owner review and bounded reply routing; production grants and activation remain
-unavailable.

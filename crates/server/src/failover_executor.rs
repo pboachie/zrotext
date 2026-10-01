@@ -55,10 +55,8 @@
 //! executor thread, the member-side reporting loop records this member's
 //! rounds into the same shared store (`FAILOVER_QUORUM_REPORT_MEMBER_ID`),
 //! through the crate's sink adapter — the store stays the only writer of
-//! its journals. No production probe source exists in this build: the
-//! deterministic placeholder behind the `ProbeSource` seam abstains every
-//! round, so nothing is recorded in production and every round still holds
-//! fail-closed until that probe lands (a documented follow-up).
+//! its journals. Optional authenticated HTTPS adapters supply explicit inputs
+//! and pinned member reports. Without adapter configuration, the source abstains.
 
 use std::collections::HashMap;
 use std::collections::hash_map::RandomState;
@@ -75,6 +73,9 @@ use zrotext_failover_quorum::decision::{FailoverConfig, Round, SiteFenceState};
 use zrotext_failover_quorum::executor::{
     AuthoritySnapshot, FailoverExecutor, FenceOutcome, ObservationSource, PromoteOutcome,
     WriterAuthority,
+};
+use zrotext_failover_quorum::fence::{
+    AnchorReading, AnchorRecord, ExternalEpochAnchor, ExternalFencing, NoopFenceAuthority,
 };
 use zrotext_failover_quorum::observe::{MemberObserver, ProbeFault, RoundProbes, WriterProbe};
 use zrotext_failover_quorum::policy::QuorumPolicy;
@@ -451,7 +452,7 @@ impl ExecutorEnv {
         self.probe_interval_ms
     }
 
-    /// The probe timeout the (future) production probe source will enforce.
+    /// The timeout enforced by the optional production probe source.
     pub fn probe_timeout_ms(&self) -> u64 {
         self.probe_timeout_ms
     }
@@ -1014,6 +1015,99 @@ impl WriterAuthority for PgWriterAuthority {
     }
 }
 
+mod pg_epoch_witness;
+
+/// PostgreSQL implementation of the `ExternalEpochAnchor` port (issue #647):
+/// the writer database's `deployment_authority.epoch` IS the anchored
+/// authority — the epoch every promotion's compare-and-set moves and nothing
+/// else ever writes — so the adapter witnesses it through the same
+/// singleton-row locking discipline the promotion transaction uses, on its
+/// own dedicated connection, and never becomes a second writer of the epoch.
+///
+/// * [`ExternalEpochAnchor::confirmed_epoch`] takes `FOR SHARE` on the
+///   singleton row: a read concurrent with a promotion's `FOR UPDATE`
+///   waits for that transaction to commit (bounded by the operation
+///   ceiling) and then observes the committed epoch — the anchor never
+///   answers mid-promotion. Every transport failure, timeout and
+///   out-of-range epoch folds into [`AnchorReading::Unconfirmed`]: a
+///   refusal, never a value (the port-level error is the executor's retry
+///   signal, exactly like an unreachable writer authority).
+/// * [`ExternalEpochAnchor::record_promotion`] verifies the row already
+///   serves `new_epoch` — recording is witnessing an applied promotion, not
+///   writing one. An epoch the row does not serve is refused, so the
+///   anchor's monotonic bound can only ever follow the authority forward.
+///   Equal or backward records are refused; completion replay is still safe
+///   because the executor treats witnessing as best effort after its CAS.
+///
+/// The honest limitation, stated plainly: because this anchor lives in the
+/// same database as the authority, it cannot witness a whole-database
+/// restore across process restart: its high-water witness exists only in
+/// this adapter instance. Within that instance, confirmed observations never
+/// regress, including after reconnect, so a later restore snapshot below the
+/// observed high-water fails closed. Restart loses that independent memory;
+/// durable restore detection still requires a genuinely external authority.
+pub struct PgExternalEpochAnchor {
+    /// A plain (unguarded) authority port used only as the connection
+    /// machinery: one dedicated connection, bounded operations, reconnect
+    /// after failure. The witness deliberately does NOT take the singleton
+    /// executor advisory lock — reading the anchored epoch is correct from
+    /// any connection, and a dormant replica's executor fails closed on its
+    /// authority reads long before it reaches an anchor question.
+    port: PgWriterAuthority,
+    witness: pg_epoch_witness::EpochWitness,
+}
+
+impl PgExternalEpochAnchor {
+    /// Build the anchor port. Fails only when the local runtime cannot be
+    /// created; the connection itself is opened lazily by the first read.
+    pub fn new(database_url: String) -> Result<Self, String> {
+        Ok(Self {
+            port: PgWriterAuthority::new(database_url)?,
+            witness: pg_epoch_witness::EpochWitness::default(),
+        })
+    }
+}
+
+impl ExternalEpochAnchor for PgExternalEpochAnchor {
+    fn confirmed_epoch(&mut self) -> AnchorReading {
+        let anchored = self.port.call(|client| {
+            Box::pin(async move {
+                let row = client
+                    .query_one(
+                        "SELECT epoch FROM deployment_authority WHERE singleton=TRUE FOR SHARE",
+                        &[],
+                    )
+                    .await?;
+                let epoch: i64 = row.get(0);
+                u64::try_from(epoch).map_err(|_| PgAuthorityError::EpochOutOfRange(epoch))
+            })
+        });
+        match anchored {
+            Ok(epoch) => self.witness.observe(epoch),
+            Err(_) => AnchorReading::Unconfirmed,
+        }
+    }
+
+    fn record_promotion(&mut self, new_epoch: u64) -> AnchorRecord {
+        let served = self.port.call(|client| {
+            Box::pin(async move {
+                let row = client
+                    .query_one(
+                        "SELECT epoch FROM deployment_authority WHERE singleton=TRUE",
+                        &[],
+                    )
+                    .await?;
+                let epoch: i64 = row.get(0);
+                u64::try_from(epoch).map_err(|_| PgAuthorityError::EpochOutOfRange(epoch))
+            })
+        });
+        match served {
+            Ok(epoch) => self.witness.record(epoch, new_epoch),
+            Err(_) => AnchorRecord::RefusedUnconfirmed,
+        }
+    }
+}
+
 /// Open the executor's consensus store. A store that cannot open — corrupt,
 /// truncated, foreign membership, unwritable — fails the executor closed
 /// rather than serving uncertain evidence: the failure is logged and
@@ -1106,20 +1200,26 @@ fn spawn_failover_reporter(
     env: ExecutorEnv,
     store: SharedStore,
     shutdown: Arc<AtomicBool>,
+    adapters: Option<crate::failover_adapters::Adapters>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::Builder::new()
         .name("failover-quorum-reporter".to_owned())
         .spawn(move || {
             eprintln!(
                 "failover quorum reporter running (reporting as {} every {}ms, {}ms probe \
-                 timeout; no production probe source in this build, so every round abstains \
-                 and nothing is recorded)",
+                 timeout; authenticated adapters configured={})",
                 env.report_member_id(),
                 env.probe_interval_ms(),
                 env.probe_timeout_ms(),
+                adapters.is_some(),
             );
             let observer = MemberObserver::new(env.report_member_id())
                 .expect("the report member id was validated at parse");
+            if let Some(adapters) = adapters {
+                let (probes, sink) = adapters.into_ports(store);
+                run_reporting_loop(ReportLoop::new(observer, probes, sink), &env, &shutdown);
+                return;
+            }
             let mut reporting = ReportLoop::new(
                 observer,
                 AbstainingProbeSource,
@@ -1176,8 +1276,8 @@ fn role_change_log(
         )),
         ExecutorRole::Active => Some(format!(
             "failover quorum executor acquired the singleton advisory lock and is running \
-             ({} members, writer site {}, standby site {}, {}ms checks, store {}); no transport \
-             reports into the store in this build, so rounds hold",
+             ({} members, writer site {}, standby site {}, {}ms checks, store {}); the controller \
+             uses only fresh authenticated observations",
             env.config().members().len(),
             env.config().writer_site_id(),
             env.config().standby_site_id(),
@@ -1208,15 +1308,25 @@ pub fn spawn_failover_executor(
     shutdown: Arc<AtomicBool>,
     healthy: Arc<AtomicBool>,
 ) -> Option<FailoverExecutorThreads> {
+    spawn_failover_executor_with_adapters(env, database_url, shutdown, healthy, None)
+}
+
+pub fn spawn_failover_executor_with_adapters(
+    env: Option<ExecutorEnv>,
+    database_url: String,
+    shutdown: Arc<AtomicBool>,
+    healthy: Arc<AtomicBool>,
+    adapters: Option<crate::failover_adapters::Adapters>,
+) -> Option<FailoverExecutorThreads> {
     let env = env?;
     let store = open_consensus_store(&env, &healthy)?;
     let store: SharedStore = Arc::new(Mutex::new(store));
-    let reporter = spawn_failover_reporter(env.clone(), store.clone(), shutdown.clone());
+    let reporter = spawn_failover_reporter(env.clone(), store.clone(), shutdown.clone(), adapters);
     let executor = std::thread::Builder::new()
         .name("failover-quorum-executor".to_owned())
         .spawn(move || {
             let (authority, role) = match PgWriterAuthority::new_for_executor(
-                database_url,
+                database_url.clone(),
                 Duration::from_millis(env.check_interval_ms()),
             ) {
                 Ok(pair) => pair,
@@ -1228,10 +1338,28 @@ pub fn spawn_failover_executor(
                     return;
                 }
             };
+            let anchor = match PgExternalEpochAnchor::new(database_url.clone()) {
+                Ok(anchor) => anchor,
+                Err(error) => {
+                    healthy.store(false, Ordering::Release);
+                    eprintln!(
+                        "failover quorum executor: {error}; the executor is not running and                          readiness reports failover_executor_failed"
+                    );
+                    return;
+                }
+            };
+            // The shipped external-fencing combination: the real
+            // PostgreSQL epoch anchor beside the refusing
+            // NoopFenceAuthority, because no external host-fencing backend
+            // exists in this build. The wiring exists and every promotion
+            // is refused at the external-fence precondition — automatic
+            // promotion stays impossible until a real backend lands, and
+            // enabling one is an explicit future change, never a default.
             let mut executor = FailoverExecutor::new(
                 env.config().clone(),
                 SharedStoreSource::new(store),
                 authority,
+                ExternalFencing::new(NoopFenceAuthority, anchor),
             );
             let interval = Duration::from_millis(env.check_interval_ms());
             let mut last_status = None;
@@ -1263,6 +1391,21 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0)
+}
+
+fn run_reporting_loop<P: ProbeSource, S: zrotext_failover_quorum::report::ObservationSink>(
+    mut reporting: ReportLoop<P, S>,
+    env: &ExecutorEnv,
+    shutdown: &AtomicBool,
+) {
+    let mut failure_logged = false;
+    while !shutdown.load(Ordering::Acquire) {
+        if reporting.run_round(now_ms()) == RoundOutcome::SinkFailed && !failure_logged {
+            eprintln!("failover quorum reporter: recording failed; reporting holds until restart");
+            failure_logged = true;
+        }
+        std::thread::sleep(Duration::from_millis(env.probe_interval_ms()));
+    }
 }
 
 #[cfg(test)]

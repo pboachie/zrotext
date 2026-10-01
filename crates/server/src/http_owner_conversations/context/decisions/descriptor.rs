@@ -93,15 +93,12 @@ impl Descriptor {
         self.key()?;
         if self.revision > 128
             || self.content_version > 128
-            || !matches!(
-                self.purpose_id.as_str(),
-                "transactional" | "operational" | "marketing"
-            )
             || self.timezone.bytes().any(|c| c < 33 || c == 127)
             || self.timezone == "unknown"
         {
             return Err(ConversationError::Invalid);
         }
+        self.purpose()?;
         self.expires_at_ms()?;
         self.not_before
             .checked_mul(1000)
@@ -112,6 +109,14 @@ impl Descriptor {
             content: identifier(&self.content_ref)?,
             routine: identifier(&self.routine_id)?,
         })
+    }
+    pub fn purpose(&self) -> Result<&'static str, ConversationError> {
+        match self.purpose_id.as_str() {
+            "00000000-0000-0000-0000-000000000001" => Ok("transactional"),
+            "00000000-0000-0000-0000-000000000002" => Ok("operational"),
+            "00000000-0000-0000-0000-000000000003" => Ok("marketing"),
+            _ => Err(ConversationError::Invalid),
+        }
     }
 }
 /// Parsed routing identities only; these values confer no checked authority.
@@ -147,12 +152,24 @@ pub fn hex(value: &[u8]) -> String {
     value.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ActionKey {
     pub account_id: Uuid,
     pub action_id: Uuid,
     pub revision: i64,
+    #[serde(with = "digest_json")]
     pub binding_digest: [u8; 32],
+}
+mod digest_json {
+    use serde::{Deserialize, Deserializer, Serializer};
+    pub fn serialize<S: Serializer>(value: &[u8; 32], s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&super::hex(value))
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<[u8; 32], D::Error> {
+        let value = String::deserialize(d)?;
+        super::decode_digest(&value).map_err(|_| serde::de::Error::custom("invalid binding digest"))
+    }
 }
 impl ActionKey {
     pub fn validate(&self) -> Result<(), ConversationError> {

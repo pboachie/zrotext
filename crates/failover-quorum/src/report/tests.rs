@@ -9,17 +9,24 @@
 //! or a decision round.
 
 use super::*;
+use crate::anchor::MemoryEpochAnchor;
 use crate::decision::{
     DEFAULT_OBSERVATION_FRESHNESS_MS, Decision, FailoverConfig, FailoverController, HoldReason,
     MemberReport, Round, SiteFenceState, WriterObservation,
 };
 use crate::executor::{Application, FailoverExecutor, WriterAuthority};
 use crate::executor_tests::MemoryAuthority;
+use crate::fence::{ExternalFencing, MemoryFenceAuthority};
 use crate::observe::{ProbeFault, StopConfirmation, WriterProbe};
 use crate::store::StoreObservationSource;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+
+/// The corpus's default external adapters (see `executor_tests`).
+fn confirming_fencing() -> ExternalFencing {
+    ExternalFencing::new(MemoryFenceAuthority::default(), MemoryEpochAnchor::new())
+}
 
 const MEMBERS: [&str; 3] = ["workload-a", "workload-b", "witness"];
 
@@ -497,6 +504,7 @@ fn a_sink_failure_is_sticky_and_no_further_reports_reach_the_store_or_authority(
         test_config(),
         StoreObservationSource::new(store),
         MemoryAuthority::new(5),
+        confirming_fencing(),
     );
     for at_ms in [1_000_u64, 2_000, 3_000] {
         let report = executor.tick(at_ms);
@@ -610,6 +618,7 @@ fn recorded_reports_drive_a_full_failover_through_the_store_backed_executor() {
         test_config(),
         StoreObservationSource::new(unwrap_store(shared)),
         MemoryAuthority::new(5),
+        confirming_fencing(),
     );
 
     // Steady: all three members observe the writer healthy at epoch 5.

@@ -8,11 +8,13 @@
 
 use super::decision::*;
 use super::executor::*;
+use crate::anchor::MemoryEpochAnchor;
+use crate::fence::{ExternalFencing, MemoryFenceAuthority};
 use std::collections::HashMap;
 
 const MEMBERS: [&str; 3] = ["workload-a", "workload-b", "witness"];
 
-fn test_config() -> FailoverConfig {
+pub(crate) fn test_config() -> FailoverConfig {
     FailoverConfig::new(
         MEMBERS.iter().map(|member| (*member).to_owned()).collect(),
         "site-a",
@@ -82,15 +84,15 @@ fn all(report_for: impl Fn(&str) -> MemberReport) -> Round {
     }
 }
 
-fn healthy_round(epoch: u64, now_ms: u64) -> Round {
+pub(crate) fn healthy_round(epoch: u64, now_ms: u64) -> Round {
     all(|member| reachable(member, epoch, now_ms))
 }
 
-fn failure_round(now_ms: u64) -> Round {
+pub(crate) fn failure_round(now_ms: u64) -> Round {
     all(|member| unreachable(member, now_ms))
 }
 
-fn evidence_round(now_ms: u64) -> Round {
+pub(crate) fn evidence_round(now_ms: u64) -> Round {
     all(|member| {
         let report = unreachable(member, now_ms);
         let report = fenced(report);
@@ -99,11 +101,11 @@ fn evidence_round(now_ms: u64) -> Round {
     })
 }
 
-fn former_writer_round(epoch: u64, now_ms: u64) -> Round {
+pub(crate) fn former_writer_round(epoch: u64, now_ms: u64) -> Round {
     all(|member| former_writer(reachable(member, epoch, now_ms), true))
 }
 
-fn source(rounds: &[Round]) -> InProcessSource {
+pub(crate) fn source(rounds: &[Round]) -> InProcessSource {
     let mut source = InProcessSource::default();
     for round in rounds {
         source.queue(round.clone());
@@ -111,8 +113,17 @@ fn source(rounds: &[Round]) -> InProcessSource {
     source
 }
 
+/// The corpus's default external adapters: a fence backend that confirms on
+/// demand and an anchor that confirms and records, so the pre-existing
+/// corpus pins the executor semantics with every external precondition
+/// satisfiable. The refusal matrix in `fence_tests` covers what happens when
+/// they are not.
+fn confirming_fencing() -> ExternalFencing {
+    ExternalFencing::new(MemoryFenceAuthority::default(), MemoryEpochAnchor::new())
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum AuthorityCall {
+pub(crate) enum AuthorityCall {
     LoadState,
     LoadJournal,
     Fence {
@@ -130,20 +141,20 @@ enum AuthorityCall {
 /// PostgreSQL port promises, plus fault injection and a call log. Shared with
 /// the consensus-store corpus, which drives full executor rounds through a
 /// store-backed source.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct MemoryAuthority {
-    epoch: u64,
-    dispatch_enabled: bool,
-    sites: HashMap<String, SiteFenceState>,
-    journal: Option<String>,
-    calls: Vec<AuthorityCall>,
-    promotions_applied: u64,
-    fail_load_state: bool,
-    fail_fence: bool,
-    fail_promote: bool,
+    pub(crate) epoch: u64,
+    pub(crate) dispatch_enabled: bool,
+    pub(crate) sites: HashMap<String, SiteFenceState>,
+    pub(crate) journal: Option<String>,
+    pub(crate) calls: Vec<AuthorityCall>,
+    pub(crate) promotions_applied: u64,
+    pub(crate) fail_load_state: bool,
+    pub(crate) fail_fence: bool,
+    pub(crate) fail_promote: bool,
     /// Adversarial: let `n` journal saves succeed after arming, then fail
     /// the next one (None = never).
-    fail_save_after: Option<usize>,
+    pub(crate) fail_save_after: Option<usize>,
     saves_since_arm: usize,
     /// Adversarial: another writer commits this epoch just before our
     /// promotion's compare-and-set runs.
@@ -189,11 +200,11 @@ impl MemoryAuthority {
         }
     }
 
-    fn site(&self, site_id: &str) -> SiteFenceState {
+    pub(crate) fn site(&self, site_id: &str) -> SiteFenceState {
         self.sites[site_id]
     }
 
-    fn journal_phase(&self) -> Option<RestorablePhase> {
+    pub(crate) fn journal_phase(&self) -> Option<RestorablePhase> {
         self.journal
             .as_deref()
             .and_then(|line| ControllerJournal::decode(line).ok())
@@ -346,7 +357,11 @@ impl WriterAuthority for MemoryAuthority {
     }
 }
 
-fn journal(config: &FailoverConfig, max_epoch_seen: u64, phase: RestorablePhase) -> String {
+pub(crate) fn journal(
+    config: &FailoverConfig,
+    max_epoch_seen: u64,
+    phase: RestorablePhase,
+) -> String {
     ControllerJournal {
         members: config.members().to_vec(),
         writer_site_id: config.writer_site_id().to_owned(),
@@ -358,11 +373,11 @@ fn journal(config: &FailoverConfig, max_epoch_seen: u64, phase: RestorablePhase)
     .unwrap()
 }
 
-type TestExecutor = FailoverExecutor<InProcessSource, MemoryAuthority>;
+pub(crate) type TestExecutor = FailoverExecutor<InProcessSource, MemoryAuthority>;
 
 /// Drive a fresh executor through a healthy round and three failure rounds,
 /// leaving it right after the fence decision and application.
-fn drive_to_fence(executor: &mut TestExecutor) {
+pub(crate) fn drive_to_fence(executor: &mut TestExecutor) {
     let decision = executor.tick(1_000);
     assert_eq!(
         decision.decision,
@@ -397,8 +412,8 @@ fn drive_to_fence(executor: &mut TestExecutor) {
     assert_eq!(executor.controller_phase(), Some(&Phase::FencingOldWriter));
 }
 
-fn full_executor(port: MemoryAuthority, rounds: &[Round]) -> TestExecutor {
-    FailoverExecutor::new(test_config(), source(rounds), port)
+pub(crate) fn full_executor(port: MemoryAuthority, rounds: &[Round]) -> TestExecutor {
+    FailoverExecutor::new(test_config(), source(rounds), port, confirming_fencing())
 }
 
 #[test]
@@ -492,8 +507,12 @@ fn a_reacquired_executor_reloads_instead_of_replaying_stale_pending_intent() {
     // the promotion and records the operator's reconciliation; the operator
     // then re-enables dispatch. That is the database's current truth.
     let (config, _source, port) = executor_a.into_parts();
-    let mut executor_b =
-        FailoverExecutor::new(config.clone(), source(&[evidence_round(6_000)]), port);
+    let mut executor_b = FailoverExecutor::new(
+        config.clone(),
+        source(&[evidence_round(6_000)]),
+        port,
+        confirming_fencing(),
+    );
     let report = executor_b.tick(6_000);
     assert_eq!(
         report.decision,
@@ -519,6 +538,7 @@ fn a_reacquired_executor_reloads_instead_of_replaying_stale_pending_intent() {
         config,
         source(&[evidence_round(7_000), evidence_round(8_000)]),
         port,
+        confirming_fencing(),
     );
     let report = executor_a.tick(7_000);
     assert_eq!(
@@ -580,7 +600,12 @@ fn a_reacquired_executor_refuses_operator_reconciliation_until_it_reloads() {
     let (config, _source, mut port) = executor.into_parts();
     let journal_before = port.journal.clone();
     port.reacquire();
-    let mut executor = FailoverExecutor::new(config, source(&[healthy_round(6, 7_000)]), port);
+    let mut executor = FailoverExecutor::new(
+        config,
+        source(&[healthy_round(6, 7_000)]),
+        port,
+        confirming_fencing(),
+    );
     assert_eq!(
         executor.reconcile_complete(),
         Err(ReconcileError::NotOutstanding),
@@ -782,7 +807,12 @@ fn a_promotion_confirmed_only_by_the_epoch_is_never_bumped_twice() {
         "the write-ahead intent survived"
     );
     // Restart: the intent replays against epoch 5 and confirms, not bumps.
-    let mut executor = FailoverExecutor::new(config, source(&[evidence_round(6_000)]), port);
+    let mut executor = FailoverExecutor::new(
+        config,
+        source(&[evidence_round(6_000)]),
+        port,
+        confirming_fencing(),
+    );
     let report = executor.tick(6_000);
     assert_eq!(
         report.decision,
@@ -854,6 +884,7 @@ fn crash_between_fence_and_promote_stays_fail_closed_and_promotes_once() {
         config,
         source(&[failure_round(5_000), evidence_round(6_000)]),
         port,
+        confirming_fencing(),
     );
     let report = executor.tick(5_000);
     assert_eq!(
@@ -905,12 +936,22 @@ fn a_round_replayed_after_a_crash_produces_identical_authority_state() {
     );
     // The same evidence round arrives again, first to the live executor and
     // then to one restored from the journal: both must change nothing.
-    let mut executor = FailoverExecutor::new(config, source(&[evidence_round(6_000)]), port);
+    let mut executor = FailoverExecutor::new(
+        config,
+        source(&[evidence_round(6_000)]),
+        port,
+        confirming_fencing(),
+    );
     let report = executor.tick(6_000);
     assert_eq!(report.decision, Some(Decision::KeepDispatchPaused));
     assert_eq!(report.application, Application::None);
     let (config, _, port) = executor.into_parts();
-    let mut executor = FailoverExecutor::new(config, source(&[evidence_round(7_000)]), port);
+    let mut executor = FailoverExecutor::new(
+        config,
+        source(&[evidence_round(7_000)]),
+        port,
+        confirming_fencing(),
+    );
     let report = executor.tick(7_000);
     assert_eq!(report.decision, Some(Decision::KeepDispatchPaused));
     assert_eq!(report.application, Application::None);
@@ -947,6 +988,7 @@ fn stale_reports_from_a_previous_incarnation_are_not_evidence() {
         config,
         source(&[evidence_round(1_000), evidence_round(90_000)]),
         port,
+        confirming_fencing(),
     );
     let report = executor.tick(80_000);
     assert_eq!(report.decision, Some(Decision::QuorumLost));
@@ -993,6 +1035,7 @@ fn a_journal_from_a_changed_configuration_is_discarded() {
             failure_round(8_000),
         ]),
         port,
+        confirming_fencing(),
     );
     let report = executor.tick(6_000);
     assert_eq!(
@@ -1094,6 +1137,7 @@ fn a_journal_claiming_an_unapplied_promotion_fails_closed() {
             test_config(),
             source(&[failure_round(1_000), evidence_round(2_000)]),
             port,
+            confirming_fencing(),
         );
         let report = executor.tick(1_000);
         assert_eq!(
@@ -1301,8 +1345,12 @@ fn reconciliation_and_one_time_rejoin_survive_a_restart() {
         })
     );
     // After the restart, healthy rounds must not re-emit the one-time rejoin.
-    let mut executor =
-        FailoverExecutor::new(config, source(&[former_writer_round(5, 400_000)]), port);
+    let mut executor = FailoverExecutor::new(
+        config,
+        source(&[former_writer_round(5, 400_000)]),
+        port,
+        confirming_fencing(),
+    );
     let report = executor.tick(400_000);
     assert_eq!(
         report.decision,
@@ -1329,6 +1377,7 @@ fn an_empty_source_never_touches_the_authority_beyond_the_initial_load() {
         test_config(),
         InProcessSource::default(),
         MemoryAuthority::new(4),
+        confirming_fencing(),
     );
     for now_ms in [1_000_u64, 2_000, 3_000] {
         let report = executor.tick(now_ms);
@@ -1509,6 +1558,7 @@ fn missing_site_rows_are_never_treated_as_a_fence_or_promotion() {
             failure_round(4_000),
         ]),
         port,
+        confirming_fencing(),
     );
     let _ = executor.tick(1_000);
     let _ = executor.tick(2_000);
@@ -1551,6 +1601,7 @@ fn missing_site_rows_are_never_treated_as_a_fence_or_promotion() {
             evidence_round(6_000),
         ]),
         port,
+        confirming_fencing(),
     );
     drive_to_fence(&mut executor);
     let report = executor.tick(5_000);
@@ -1715,7 +1766,12 @@ fn crash_after_the_promotion_intent_before_the_apply_resumes_that_exact_epoch() 
         Some(RestorablePhase::Promoting { new_epoch: 5 })
     );
     // Restart: the intent names epoch 5, so the resume promotes exactly 5.
-    let mut executor = FailoverExecutor::new(config, source(&[evidence_round(6_000)]), port);
+    let mut executor = FailoverExecutor::new(
+        config,
+        source(&[evidence_round(6_000)]),
+        port,
+        confirming_fencing(),
+    );
     let report = executor.tick(6_000);
     assert_eq!(
         report.decision,
@@ -1747,6 +1803,7 @@ fn a_promoting_intent_superseded_by_a_later_epoch_fails_closed_at_restore() {
         test_config(),
         source(&[evidence_round(1_000), evidence_round(2_000)]),
         port,
+        confirming_fencing(),
     );
     for now_ms in [1_000_u64, 2_000] {
         let report = executor.tick(now_ms);
