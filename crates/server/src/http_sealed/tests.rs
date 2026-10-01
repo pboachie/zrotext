@@ -20,6 +20,23 @@ use p256::{
 use sha2::{Digest, Sha256};
 use tower::ServiceExt;
 
+#[test]
+fn sealed_segment_declaration_rejects_ambiguous_or_unbounded_headers() {
+    let mut headers = HeaderMap::new();
+    assert_eq!(segment_limit(&headers).unwrap(), None);
+    for value in ["1", "6"] {
+        headers.insert("x-zrotext-sealed-segment-limit", value.parse().unwrap());
+        assert!(segment_limit(&headers).unwrap().is_some());
+    }
+    for value in ["0", "7", "01", "1 ", "-1", "1,2"] {
+        headers.insert("x-zrotext-sealed-segment-limit", value.parse().unwrap());
+        assert!(segment_limit(&headers).is_err());
+    }
+    headers.insert("x-zrotext-sealed-segment-limit", "1".parse().unwrap());
+    headers.append("x-zrotext-sealed-segment-limit", "1".parse().unwrap());
+    assert!(segment_limit(&headers).is_err());
+}
+
 /// A database URL that is never contacted: every stateless refusal test fails
 /// before the extractor takes a pooled connection.
 const UNREACHABLE_DATABASE_URL: &str = "postgresql://sealed-route-refusal.invalid/db";
