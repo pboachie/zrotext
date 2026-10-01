@@ -25,7 +25,13 @@ const vectors = JSON.parse(
 test("every shared vector matches the estimator", () => {
   for (const vector of vectors.cases) {
     if (vector.error) {
-      assert.throws(() => estimateSegments(vector.text), new RegExp(vector.error), vector.name);
+      // Compare the thrown message by substring, never by a data-built
+      // RegExp (CodeQL js/regex-injection).
+      assert.throws(
+        () => estimateSegments(vector.text),
+        (error) => error instanceof Error && error.message.includes(vector.error),
+        `${vector.name}: expected "${vector.error}"`,
+      );
     } else {
       assert.deepEqual(estimateSegments(vector.text), vector.estimate, vector.name);
     }
