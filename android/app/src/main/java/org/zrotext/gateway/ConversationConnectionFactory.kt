@@ -42,7 +42,7 @@ internal class ConversationConnectionInputs(
 internal class ConversationConnectionFactory(
     private val site: String, private val instance: String,
     private val elapsedMillis: () -> Long, private val worker: Executor,
-    private val proposalForSession: (ConversationPhoneSession) -> ConversationConnectionProposal,
+    private val proposalForSession: (ConversationPhoneSession, ConversationAuthenticatedWire) -> ConversationConnectionProposal,
     private val inputsForSession: (ConversationPhoneSession) -> ConversationConnectionInputs,
     private val publish: (Connection) -> Unit,
     private val mount: ConversationRuntimeMount = ConversationProcessMount.runtime
@@ -70,7 +70,7 @@ internal class ConversationConnectionFactory(
                 // Operations can hold the admission gate. Never take negotiation's monitor there:
                 // socket loss holds that monitor while synchronously closing admission.
                 fun requireSession() { check(!lost.get() && wire.currentSession() == session) }
-                val proposal = proposalForSession(session)
+                val proposal = proposalForSession(session, wire)
                 guard()
                 original = proposal.statement()
                 val parsed = validateProposal(checkNotNull(original), proposal.review, session, site, instance)

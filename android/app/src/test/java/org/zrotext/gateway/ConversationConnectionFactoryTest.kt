@@ -64,7 +64,7 @@ class ConversationConnectionFactoryTest {
     private fun factory(proposal: (ConversationPhoneSession) -> ConversationConnectionProposal = { providers++; proposal() },
         inputs: (ConversationPhoneSession) -> ConversationConnectionInputs = { error("Missing verified providers") },
         publish: (ConversationConnectionFactory.Connection) -> Unit = { publications++ }) =
-        ConversationConnectionFactory("fixture-site", "fixture-instance", { 100L }, worker, proposal, inputs, publish, mount)
+        ConversationConnectionFactory("fixture-site", "fixture-instance", { 100L }, worker, { session, _ -> proposal(session) }, inputs, publish, mount)
     private fun negotiate(factory: ConversationConnectionFactory): ConversationSocketNegotiation {
         val connection = factory.create(socket, identity, 7); connections.add(connection); connection.start()
         connection.accept(JSONObject().put("v",1).put("type","conversation_session")

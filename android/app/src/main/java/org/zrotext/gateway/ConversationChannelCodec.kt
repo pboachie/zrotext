@@ -46,6 +46,21 @@ internal object ConversationChannelCodec {
         return ConversationCaptureScope(ids[0],ids[1],ids[2],generation,peer.toString(Charsets.US_ASCII),ids[3],ids[4],ids[5],digests[0],digests[1],trust,version,digests[2],digests[3])
     }
     fun timeRequest(r:ConversationTrustedClock.Request)=write(1,r.session,r.challenge){}
+    fun proposalRequest(session:ConversationPhoneSession,challenge:UUID,interval:UUID)=
+        write(16,session,challenge){it.id(interval)}
+    fun parseProposalRequest(bytes:ByteArray,session:ConversationPhoneSession)=read(bytes,16,session,134){input,nonce->
+        nonce to input.id()
+    }
+    fun proposalReply(session:ConversationPhoneSession,challenge:UUID,statement:ByteArray,manifest:ByteArray):ByteArray {
+        require(statement.size in 380..1024 && manifest.size in 364..9751)
+        return write(17,session,challenge){it.writeShort(statement.size);it.write(statement);it.writeShort(manifest.size);it.write(manifest)}
+    }
+    fun parseProposalReply(bytes:ByteArray,session:ConversationPhoneSession)=read(bytes,17,session,10897){input,nonce->
+        val length=input.readUnsignedShort();require(length in 380..1024 && input.available()>=length+2)
+        val statement=ByteArray(length).also(input::readFully)
+        val manifestLength=input.readUnsignedShort();require(manifestLength in 364..9751 && input.available()==manifestLength)
+        Triple(nonce,statement,ByteArray(manifestLength).also(input::readFully))
+    }
     fun captureRequest(session:ConversationPhoneSession,challenge:UUID,scope:ConversationCaptureScope,envelope:ByteArray):ByteArray {
         val owned=envelope.copyOf();require(owned.size in 1..40000)
         return write(12,session,challenge){it.scope(bound(scope,session));it.writeInt(owned.size);it.write(owned)}
