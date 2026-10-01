@@ -2,7 +2,7 @@ use super::*;
 
 // Keep the admission fixtures on the complete, reviewed schema. SQL is
 // embedded at build time so tests never execute files discovered at runtime.
-const TEST_MIGRATIONS: [(&str, &str); 69] = [
+const TEST_MIGRATIONS: [(&str, &str); 71] = [
     (
         "001_foundation.sql",
         include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
@@ -285,12 +285,31 @@ const TEST_MIGRATIONS: [(&str, &str); 69] = [
         "069_sealed_root_custody.sql",
         include_str!("../../../deploy/compose/migrations/069_sealed_root_custody.sql"),
     ),
+    (
+        "070_message_summary_metadata.sql",
+        include_str!("../../../deploy/compose/migrations/070_message_summary_metadata.sql"),
+    ),
+    (
+        "071_sealed_grant_authority.sql",
+        include_str!("../../../deploy/compose/migrations/071_sealed_grant_authority.sql"),
+    ),
 ];
 
 /// Applies every numbered migration in order. Shared by the PostgreSQL-backed
 /// test modules so each one runs against the complete reviewed schema.
 pub(crate) async fn apply_test_migrations(client: &Client) {
     for (name, migration) in TEST_MIGRATIONS {
+        if name == "070_message_summary_metadata.sql" {
+            client.batch_execute("CREATE INDEX CONCURRENTLY messages_summary_queue ON messages(account_id,state,created_at) WHERE state IN ('accepted','queued','claimed','submitting','submitted')").await.unwrap();
+            client.batch_execute("BEGIN").await.unwrap();
+            let result = client.batch_execute(migration).await;
+            client
+                .batch_execute(if result.is_ok() { "COMMIT" } else { "ROLLBACK" })
+                .await
+                .unwrap();
+            result.unwrap();
+            continue;
+        }
         if name == "034_delivery_sweep_index.sql" {
             // Mirror the migrator's autocommit preparation before the
             // numbered, checksummed validation file.
