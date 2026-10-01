@@ -284,7 +284,7 @@ async fn list_deliveries(
 
 #[derive(Serialize)]
 struct UsageView {
-    metric: &'static str,
+    metric: String,
     period_start: String,
     period_end: String,
     limit_units: i64,
@@ -293,32 +293,64 @@ struct UsageView {
     used_units: i64,
 }
 
+/// Bounded usage history page over the authoritative metering projection
+/// (#631). Counter meanings are fixed by the delivery-store module: reserved
+/// counts admitted messages, refunded counts exactly-once releases for
+/// messages that never dispatched, used is their difference and is never a
+/// submitted or delivered counter. Integer message counts only; no price,
+/// currency, recipients or content.
+#[derive(Deserialize)]
+pub(crate) struct UsagePageQuery {
+    /// `YYYY-MM-DD` period-start cursor from a previous `next_before`.
+    before: Option<String>,
+    limit: Option<i32>,
+}
+
+const USAGE_PAGE_DEFAULT: i32 = 12;
+
+#[derive(Serialize)]
+struct UsagePage {
+    usage: Vec<UsageView>,
+    next_before: Option<String>,
+}
+
 async fn get_usage(
     State(state): State<Arc<super::SealedHttpState>>,
     auth: SealedResourceAuth,
-) -> Result<Json<UsageView>, SealedHttpError> {
+    Query(query): Query<UsagePageQuery>,
+) -> Result<Json<UsagePage>, SealedHttpError> {
     auth.principal.require_read_for(Scope::BillingRead)?;
+    let limit = query.limit.unwrap_or(USAGE_PAGE_DEFAULT);
+    if !(1..=zrotext_delivery_store::USAGE_PAGE_MAX).contains(&limit) {
+        return Err(SealedHttpError::BadRequest);
+    }
     let client = super::connect(&state.database_url).await?;
-    let row = client
-        .query_opt(
-            "SELECT period_start::text,period_end::text,limit_units,reserved_units,refunded_units \
-             FROM usage_periods WHERE account_id=$1 AND metric='outbound_message' \
-             AND period_start<=current_date AND period_end>current_date",
-            &[&auth.principal.tenant.account_id()],
-        )
-        .await
-        .map_err(|_| SealedHttpError::Unavailable)?
-        .ok_or(SealedHttpError::NotFound)?;
-    let reserved: i64 = row.get(3);
-    let refunded: i64 = row.get(4);
-    Ok(Json(UsageView {
-        metric: "outbound_message",
-        period_start: row.get(0),
-        period_end: row.get(1),
-        limit_units: row.get(2),
-        reserved_units: reserved,
-        refunded_units: refunded,
-        used_units: reserved - refunded,
+    let page = zrotext_delivery_store::usage_history(
+        &client,
+        auth.principal.tenant.account_id(),
+        query.before.as_deref(),
+        limit,
+    )
+    .await
+    .map_err(|error| match error {
+        zrotext_delivery_store::StoreError::InvalidInput => SealedHttpError::BadRequest,
+        _ => SealedHttpError::Unavailable,
+    })?;
+    Ok(Json(UsagePage {
+        usage: page
+            .periods
+            .into_iter()
+            .map(|period| UsageView {
+                used_units: period.consumed_units(),
+                metric: period.metric,
+                period_start: period.period_start,
+                period_end: period.period_end,
+                limit_units: period.limit_units,
+                reserved_units: period.reserved_units,
+                refunded_units: period.refunded_units,
+            })
+            .collect(),
+        next_before: page.next_before,
     }))
 }
 
