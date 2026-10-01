@@ -88,6 +88,7 @@ let preconditionTimer = null;
 let preconditionRows = [];
 const fleetRows = new Map();
 let selectedDeviceId = null;
+const activityRows = new Map();
 let fleetSnapshotFailed = false;
 
 function stopPreconditionAging() {
@@ -554,6 +555,7 @@ function clearOwnerState() {
   nextDeviceCursor = null;
   shownDeviceCount = 0;
   byId("message-list").replaceChildren();
+  activityRows.clear();
   byId("more-messages").hidden = true;
   nextMessageCursor = null;
   shownMessageCount = 0;
@@ -971,6 +973,7 @@ function deviceConnectivityText(device) {
 }
 
 function renderSelectedDevice() {
+  for (const row of activityRows.values()) updateActivityDeviceContext(row);
   const entry = fleetRows.get(selectedDeviceId);
   for (const [id, row] of fleetRows) row.select.setAttribute("aria-pressed", String(id === selectedDeviceId));
   const content = byId("device-detail-content");
@@ -1249,6 +1252,14 @@ function localTime(milliseconds) {
   return formatTime(milliseconds, "Time unavailable");
 }
 
+function updateActivityDeviceContext(row) {
+  const gateway = fleetRows.get(row.activityDeviceId);
+  row.activityDeviceLink.hidden = !gateway;
+  row.activityDeviceUnavailable.hidden = Boolean(gateway);
+  row.activityDeviceLink.textContent = gateway ? `View device ${gateway.device.display_name || row.activityDeviceId}` : "Device context unavailable";
+  row.activityDeviceUnavailable.textContent = `Device: ${row.activityDeviceId} · absent from loaded fleet pages`;
+}
+
 async function loadMessages(reset = true, automatic = false) {
   if (!reset && !nextMessageCursor) return;
   messageLoads += 1;
@@ -1260,12 +1271,6 @@ async function loadMessages(reset = true, automatic = false) {
   const moreButton = byId("more-messages");
   moreButton.disabled = true;
   if (!automatic) message("message-status", "Loading message states…");
-  if (reset && !automatic) {
-    byId("message-list").replaceChildren();
-    moreButton.hidden = true;
-    nextMessageCursor = null;
-    shownMessageCount = 0;
-  }
   try {
     const path = cursor
       ? `/v1/owner/messages?before=${encodeURIComponent(cursor)}`
@@ -1273,12 +1278,18 @@ async function loadMessages(reset = true, automatic = false) {
     const page = await api(path);
     if (stale()) return;
     if (automatic && (!canRefreshDashboard() || viewingList("message-list"))) return;
-    if (!page || !Array.isArray(page.messages) ||
-        !page.messages.every((item) => item && typeof item.state === "string" && Array.isArray(item.events))) {
+    if (!page || !Array.isArray(page.messages) || page.messages.length > 20 ||
+        new Set(page.messages.map(item => item && item.message_id)).size !== page.messages.length ||
+        !page.messages.every((item) => item && typeof item.message_id === "string" && typeof item.device_id === "string" &&
+          typeof item.state === "string" && Array.isArray(item.events) && item.events.length <= 32 &&
+          item.events.every(event => event && typeof event.evidence === "string" && typeof event.resulting_state === "string"))) {
       throw new Error("The message response was invalid.");
     }
-    if (automatic) {
-      byId("message-list").replaceChildren();
+    if (reset) {
+      const present = new Set(page.messages.map(item => item.message_id));
+      for (const [id, row] of activityRows) {
+        if (!present.has(id)) { row.remove(); activityRows.delete(id); }
+      }
       moreButton.hidden = true;
       nextMessageCursor = null;
       shownMessageCount = 0;
@@ -1289,30 +1300,67 @@ async function loadMessages(reset = true, automatic = false) {
       return;
     }
     nextMessageCursor = page.next_cursor || null;
-    shownMessageCount += page.messages.length;
+    shownMessageCount = new Set([...activityRows.keys(), ...page.messages.map(item => item.message_id)]).size;
     moreButton.hidden = !nextMessageCursor;
     message("message-status", `${shownMessageCount} message${shownMessageCount === 1 ? "" : "s"} shown${nextMessageCursor ? "; more available" : ""}.`);
     const rows = [];
     for (const item of page.messages) {
-      const row = document.createElement("li");
+      const previous = activityRows.get(item.message_id);
+      const row = previous || document.createElement("li");
+      const wasOpen = previous && previous.activityDetails.open;
+      const focused = previous && row.contains(document.activeElement) ? document.activeElement : null;
+      row.className = "activity-row";
       const state = document.createElement("strong");
       const id = document.createElement("code");
       const device = document.createElement("span");
       const created = document.createElement("time");
-      state.textContent = item.state.replaceAll("_", " ");
+      const states = { accepted: "Accepted · not sent", queued: "Queued · not sent", claimed: "Claimed · not sent",
+        submitting: "Submitting · radio attempt unconfirmed", submitted: "Sent callback · delivery unconfirmed",
+        delivered: "Delivered callback · unread status unknown", delivery_unknown: "Delivery unknown",
+        unknown: "Outcome unknown", failed: "Failed", cancelled: "Cancelled", expired: "Expired" };
+      state.textContent = Object.hasOwn(states, item.state) ? states[item.state] : "Unrecognized state · outcome unknown";
+      state.className = "activity-state";
+      state.setAttribute("data-state", Object.hasOwn(states, item.state) ? item.state : "unknown");
       id.textContent = item.message_id;
-      device.textContent = `Gateway ${item.device_id}`;
-      created.textContent = ` · Created ${localTime(item.created_at_ms)}`;
+      {
+        const link = document.createElement("button");
+        link.type = "button";
+        link.className = "quiet activity-device";
+        link.setAttribute("aria-controls", "device-detail-content");
+        link.addEventListener("click", () => {
+          if (requestEpoch !== ownerEpoch) return;
+          if (!fleetRows.has(item.device_id)) return;
+          selectedDeviceId = item.device_id;
+          renderSelectedDevice();
+          if (typeof byId("device-detail-title").scrollIntoView === "function") byId("device-detail-title").scrollIntoView({ block: "nearest" });
+          message("message-status", "Selected device context in the fleet panel. Message paging and history are unchanged.");
+        });
+        const unavailable = document.createElement("span");
+        device.append(link, unavailable);
+        row.activityDeviceId = item.device_id;
+        row.activityDeviceLink = link;
+        row.activityDeviceUnavailable = unavailable;
+        updateActivityDeviceContext(row);
+      }
+      created.textContent = `Time: ${localTime(item.created_at_ms)}`;
       const createdDate = new Date(item.created_at_ms);
       if (!Number.isNaN(createdDate.getTime())) created.dateTime = createdDate.toISOString();
-      row.append(state, id, device, created);
-      if (item.state === "unknown") {
+      const direction = document.createElement("span");
+      direction.textContent = "Direction: Outbound";
+      const recipient = document.createElement("span");
+      recipient.textContent = "Recipient: unavailable";
+      const cells = document.createElement("div");
+      cells.className = "activity-cells";
+      cells.append(created, direction, device, recipient, state);
+      row.replaceChildren(cells, id);
+      if (item.state === "unknown" || item.state === "delivery_unknown" || !Object.hasOwn(states, item.state)) {
         const warning = document.createElement("p");
         warning.className = "message-uncertain";
         warning.textContent = "Outcome unknown. The phone may have sent this SMS. Sending a new message could duplicate it.";
         row.append(warning);
       }
       const details = document.createElement("details");
+      details.open = Boolean(wasOpen);
       const summary = document.createElement("summary");
       summary.textContent = `Writer events (${item.events.length}${item.events_truncated ? " most recent" : ""})`;
       details.append(summary);
@@ -1326,19 +1374,27 @@ async function loadMessages(reset = true, automatic = false) {
           const entry = document.createElement("li");
           const segment = event.segment_index === null || event.segment_count === null
             ? "" : ` · segment ${event.segment_index + 1}/${event.segment_count}`;
-          entry.textContent = `${localTime(event.received_at_ms)} · ${event.evidence.replaceAll("_", " ")} → ${event.resulting_state.replaceAll("_", " ")}${segment}`;
+          const result = Object.hasOwn(states, event.resulting_state) ? states[event.resulting_state] : "Unrecognized state · outcome unknown";
+          entry.textContent = `${localTime(event.received_at_ms)} · ${event.evidence.replaceAll("_", " ")} → ${result}${segment}`;
           list.append(entry);
         }
         details.append(list);
       }
       row.append(details);
+      row.activityDetails = details;
+      activityRows.set(item.message_id, row);
+      if (focused) row.activityRestoreFocus = focused.tagName === "SUMMARY" ? summary : device.children[0];
       rows.push(row);
     }
     byId("message-list").append(...rows);
+    for (const row of rows) {
+      if (row.activityRestoreFocus && typeof row.activityRestoreFocus.focus === "function") row.activityRestoreFocus.focus();
+      row.activityRestoreFocus = null;
+    }
   } catch (error) {
     if (stale()) return;
     moreButton.disabled = false;
-    message("message-status", `Could not load messages. ${error.message}`);
+    message("message-status", `Could not load messages. ${activityRows.size ? "Showing older metadata; current states are unknown. " : ""}${error.message}`);
   } finally {
     messageLoads -= 1;
     if (messageLoads === 0 && messagesSignalDuringLoad) {
