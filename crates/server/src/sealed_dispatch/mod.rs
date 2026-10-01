@@ -268,6 +268,11 @@ pub async fn grant(
         Some(deadline),
     )
     .await?;
+    tx.query_one(
+        "SELECT require_live_agent_action($1,$2)",
+        &[&session.account_id, &message],
+    )
+    .await?;
     live(&tx, session, queued.line, queued.binding).await?;
     authority
         .context(&wanted)
@@ -429,6 +434,11 @@ pub async fn fetch(
     if verified.unsigned_digest().as_slice() != queued.unsigned_digest {
         return Err(Error::Refused);
     }
+    tx.query_one(
+        "SELECT require_live_agent_action($1,$2)",
+        &[&session.account_id, &grant.message_id],
+    )
+    .await?;
     live(&tx, &session, grant.line_id, grant.binding_generation).await?;
     if now(&tx).await? >= grant.expires_at_ms {
         return Err(Error::Refused);
