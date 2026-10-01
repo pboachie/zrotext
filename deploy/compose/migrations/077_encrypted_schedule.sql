@@ -159,6 +159,18 @@ END; $$;
 CREATE TRIGGER workflow_schedule_occurrence_before_write BEFORE INSERT OR UPDATE ON workflow_schedule_occurrences
     FOR EACH ROW EXECUTE FUNCTION workflow_schedule_occurrence_guard();
 
+CREATE FUNCTION workflow_schedule_message_link_guard() RETURNS trigger LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
+BEGIN
+    IF EXISTS(SELECT 1 FROM workflow_schedule_occurrences o WHERE o.account_id=NEW.account_id
+        AND o.action_id=NEW.action_id AND o.action_revision=NEW.revision
+        AND o.binding_digest=NEW.binding_digest AND o.dispatch_id<>NEW.dispatch_id) THEN
+        RAISE EXCEPTION 'workflow message link differs from reserved schedule dispatch' USING ERRCODE='23514';
+    END IF;
+    RETURN NEW;
+END; $$;
+CREATE TRIGGER workflow_schedule_link_before_insert BEFORE INSERT ON workflow_message_links
+    FOR EACH ROW EXECUTE FUNCTION workflow_schedule_message_link_guard();
+
 CREATE TRIGGER workflow_schedule_audit_before_update BEFORE UPDATE ON workflow_schedule_audit
     FOR EACH ROW EXECUTE FUNCTION workflow_schedule_policy_immutable();
 

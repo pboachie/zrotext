@@ -10,7 +10,9 @@ use uuid::Uuid;
 
 #[derive(Clone, Copy)]
 pub enum Actor {
+    /// User identity from the checked live owner principal.
     Owner(Uuid),
+    /// Exact executor workflow grant identity, never a connector identity.
     Integration(Uuid),
 }
 impl Actor {

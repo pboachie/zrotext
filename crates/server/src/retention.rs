@@ -78,6 +78,7 @@ pub struct RetentionCounts {
     pub conversation_intervals: u64,
     pub workflow_contexts: u64,
     pub conversation_confirmations: u64,
+    pub workflow_schedule: u64,
 }
 
 impl RetentionCounts {
@@ -98,6 +99,7 @@ impl RetentionCounts {
             self.conversation_intervals,
             self.workflow_contexts,
             self.conversation_confirmations,
+            self.workflow_schedule,
         ]
         .into_iter()
         .any(|count| count >= limit)
@@ -355,6 +357,7 @@ pub async fn prune(
     // An absent optional proof table must not turn total mandatory pruning
     // failure into a successful worker tick.
     let mandatory_unavailable = failures == mandatory_steps;
+    let workflow_schedule = step("workflow_schedule", &mut first_error, &mut failures, crate::encrypted_schedule::lifecycle::prune(client,policy.sealed_inbound_days,limit)).await;
     let workflow_contexts = step(
         "workflow_contexts",
         &mut first_error,
@@ -391,6 +394,7 @@ pub async fn prune(
         conversation_intervals,
         workflow_contexts,
         conversation_confirmations,
+        workflow_schedule,
     })
 }
 

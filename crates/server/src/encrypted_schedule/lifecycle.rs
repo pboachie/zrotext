@@ -99,38 +99,15 @@ async fn export_pages(
     })
 }
 
-/// Erasure order keeps reported per-table counts honest instead of relying
-/// solely on cascades from account/context/action deletion.
-pub(crate) const DELETE_PLAN: &[(&str, &str)] = &[
-    (
-        "workflow_schedule_audit",
-        "DELETE FROM workflow_schedule_audit WHERE account_id=$1",
-    ),
-    (
-        "workflow_schedule_occurrences",
-        "DELETE FROM workflow_schedule_occurrences WHERE account_id=$1",
-    ),
-    (
-        "workflow_schedule_series",
-        "DELETE FROM workflow_schedule_series WHERE account_id=$1",
-    ),
-    (
-        "workflow_schedule_policies",
-        "DELETE FROM workflow_schedule_policies WHERE account_id=$1",
-    ),
-];
-
 /// Prune only ended, expired work. A still-live action retains its replay
 /// identity even after cancellation; cleanup cannot revive its occurrence.
 pub(crate) async fn retain(
     tx: &Transaction<'_>,
     account: Uuid,
-    limit: u16,
-) -> Result<u64, ConversationError> {
-    if !(1..=100).contains(&limit) {
-        return Err(ConversationError::Invalid);
-    }
-    let rows=tx.query("SELECT id FROM workflow_schedule_occurrences WHERE account_id=$1 AND phase IN ('completed','failed','cancelled','expired','missed_window') AND expires_at_ms<=floor(extract(epoch FROM clock_timestamp())*1000)::bigint AND updated_at<clock_timestamp()-interval '30 days' ORDER BY updated_at,id LIMIT $2 FOR UPDATE SKIP LOCKED",&[&account,&i64::from(limit)]).await?;
+    days: i32,
+    limit: i64,
+) -> Result<u64, tokio_postgres::Error> {
+    let rows=tx.query("SELECT id FROM workflow_schedule_occurrences WHERE account_id=$1 AND phase IN ('completed','failed','cancelled','expired','missed_window') AND expires_at_ms<=floor(extract(epoch FROM clock_timestamp())*1000)::bigint AND updated_at<clock_timestamp()-$3::int*interval '1 day' ORDER BY updated_at,id LIMIT $2 FOR UPDATE SKIP LOCKED",&[&account,&limit,&days]).await?;
     let mut removed = 0;
     for row in rows {
         let id: Uuid = row.get(0);
@@ -141,7 +118,7 @@ pub(crate) async fn retain(
             )
             .await?;
     }
-    let audit=tx.query("SELECT id FROM workflow_schedule_audit WHERE account_id=$1 AND created_at<clock_timestamp()-interval '30 days' AND NOT EXISTS(SELECT 1 FROM workflow_schedule_occurrences o WHERE o.account_id=$1 AND o.id=workflow_schedule_audit.occurrence_id) ORDER BY created_at,id LIMIT $2 FOR UPDATE SKIP LOCKED",&[&account,&i64::from(limit)]).await?;
+    let audit=tx.query("SELECT id FROM workflow_schedule_audit WHERE account_id=$1 AND created_at<clock_timestamp()-$3::int*interval '1 day' AND NOT EXISTS(SELECT 1 FROM workflow_schedule_occurrences o WHERE o.account_id=$1 AND o.id=workflow_schedule_audit.occurrence_id) ORDER BY created_at,id LIMIT $2 FOR UPDATE SKIP LOCKED",&[&account,&(limit-removed as i64),&days]).await?;
     for row in audit {
         let id: Uuid = row.get(0);
         removed += tx
@@ -151,7 +128,7 @@ pub(crate) async fn retain(
             )
             .await?;
     }
-    let series=tx.query("SELECT s.id FROM workflow_schedule_series s JOIN workflow_contexts c ON (c.account_id,c.id)=(s.account_id,s.context_id) WHERE s.account_id=$1 AND (c.purged_at IS NOT NULL OR c.expires_at_ms<=floor(extract(epoch FROM clock_timestamp())*1000)::bigint) AND NOT EXISTS(SELECT 1 FROM workflow_schedule_occurrences o WHERE (o.account_id,o.series_id)=(s.account_id,s.id)) ORDER BY s.created_at,s.id LIMIT $2 FOR UPDATE OF s SKIP LOCKED",&[&account,&i64::from(limit)]).await?;
+    let series=tx.query("SELECT s.id FROM workflow_schedule_series s JOIN workflow_contexts c ON (c.account_id,c.id)=(s.account_id,s.context_id) WHERE s.account_id=$1 AND (c.purged_at IS NOT NULL OR c.expires_at_ms<=floor(extract(epoch FROM clock_timestamp())*1000)::bigint) AND NOT EXISTS(SELECT 1 FROM workflow_schedule_occurrences o WHERE (o.account_id,o.series_id)=(s.account_id,s.id)) ORDER BY s.created_at,s.id LIMIT $2 FOR UPDATE OF s SKIP LOCKED",&[&account,&(limit-removed as i64)]).await?;
     for row in series {
         let id: Uuid = row.get(0);
         removed += tx
@@ -161,7 +138,7 @@ pub(crate) async fn retain(
             )
             .await?;
     }
-    let policies=tx.query("SELECT p.id FROM workflow_schedule_policies p WHERE p.account_id=$1 AND p.created_at<clock_timestamp()-interval '30 days' AND NOT EXISTS(SELECT 1 FROM workflow_schedule_series s WHERE (s.account_id,s.policy_id)=(p.account_id,p.id)) ORDER BY p.created_at,p.id LIMIT $2 FOR UPDATE OF p SKIP LOCKED",&[&account,&i64::from(limit)]).await?;
+    let policies=tx.query("SELECT p.id FROM workflow_schedule_policies p WHERE p.account_id=$1 AND p.created_at<clock_timestamp()-$3::int*interval '1 day' AND NOT EXISTS(SELECT 1 FROM workflow_schedule_series s WHERE (s.account_id,s.policy_id)=(p.account_id,p.id)) ORDER BY p.created_at,p.id LIMIT $2 FOR UPDATE OF p SKIP LOCKED",&[&account,&(limit-removed as i64),&days]).await?;
     for row in policies {
         let id: String = row.get(0);
         removed += tx
@@ -185,4 +162,23 @@ pub(crate) async fn export(
     crate::http_owner_conversations::fresh_owner(&tx, owner).await?;
     tx.commit().await?;
     Ok(result)
+}
+
+/// One globally bounded batch under account locks, preserving live replay rows.
+pub(crate) async fn prune(
+    client: &mut Client,
+    days: i32,
+    limit: i64,
+) -> Result<u64, tokio_postgres::Error> {
+    let tx = client.transaction().await?;
+    let accounts = tx.query("SELECT a.id FROM accounts a WHERE EXISTS(SELECT 1 FROM workflow_schedule_occurrences o WHERE o.account_id=a.id AND o.phase IN ('completed','failed','cancelled','expired','missed_window') AND o.expires_at_ms<=floor(extract(epoch FROM clock_timestamp())*1000)::bigint AND o.updated_at<clock_timestamp()-$1::int*interval '1 day') OR EXISTS(SELECT 1 FROM workflow_schedule_audit x WHERE x.account_id=a.id AND x.created_at<clock_timestamp()-$1::int*interval '1 day') OR EXISTS(SELECT 1 FROM workflow_schedule_policies p WHERE p.account_id=a.id AND p.created_at<clock_timestamp()-$1::int*interval '1 day' AND NOT EXISTS(SELECT 1 FROM workflow_schedule_series s WHERE (s.account_id,s.policy_id)=(p.account_id,p.id))) OR EXISTS(SELECT 1 FROM workflow_schedule_series s JOIN workflow_contexts c ON(c.account_id,c.id)=(s.account_id,s.context_id) WHERE s.account_id=a.id AND (c.purged_at IS NOT NULL OR c.expires_at_ms<=floor(extract(epoch FROM clock_timestamp())*1000)::bigint) AND NOT EXISTS(SELECT 1 FROM workflow_schedule_occurrences o WHERE(o.account_id,o.series_id)=(s.account_id,s.id))) ORDER BY a.id LIMIT $2 FOR UPDATE OF a SKIP LOCKED", &[&days,&limit]).await?;
+    let mut removed = 0;
+    for account in accounts {
+        if removed >= limit as u64 {
+            break;
+        }
+        removed += retain(&tx, account.get(0), days, limit - removed as i64).await?;
+    }
+    tx.commit().await?;
+    Ok(removed)
 }

@@ -124,6 +124,9 @@ pub(crate) async fn schedule_core<'connection>(
         permit.recheck().await?;
         return Ok(result);
     }
+    if tx.query_one("SELECT EXISTS(SELECT 1 FROM workflow_message_links WHERE account_id=$1 AND action_id=$2 AND revision=$3)", &[&key.account_id,&key.action_id,&key.revision]).await?.get::<_,bool>(0) {
+        return Err(ConversationError::Conflict);
+    }
     let opens = policy.opens_minute as i16;
     let closes = policy.closes_minute as i16;
     let repeat = policy.repeat_every_days.map(|v| v as i16);
