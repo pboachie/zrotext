@@ -28,6 +28,7 @@ use tokio_postgres::{Client, Transaction};
 use uuid::Uuid;
 
 pub mod activation;
+pub(crate) mod confirmation_records;
 pub(crate) mod lifecycle;
 
 pub const DISCLOSURE_VERSION: &str = "conversation-content-v1";

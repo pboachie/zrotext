@@ -1,0 +1,305 @@
+{
+  "status": "PROPOSED_UNAVAILABLE",
+  "transcript_encoding": "symbolic canonical JSON, not RootTransition02 wire bytes",
+  "transcript_sha256": "1d5f838afe522037066fb6caea8a699510a6eaef3c961378690b8cc384a92da3",
+  "state": {
+    "account": "account_original",
+    "generation": 1,
+    "root": "root_original",
+    "manifest": "manifest_original",
+    "active_keys": [
+      "device_current",
+      "connector_current"
+    ],
+    "revoked": [
+      "device_revoked",
+      "connector_revoked"
+    ],
+    "grants": [
+      "grant_current"
+    ],
+    "archive_keys": [
+      "archive_original"
+    ],
+    "receipts": {},
+    "fork": false
+  },
+  "request": {
+    "operation": "rotate",
+    "account": "account_original",
+    "generation": 1,
+    "root": "root_original",
+    "manifest": "manifest_original",
+    "new_account": "account_new",
+    "new_root": "root_new",
+    "new_manifest": "manifest_new",
+    "backup_digest": "backup_new_digest",
+    "challenge": "challenge_fixture",
+    "expires": 200
+  },
+  "proof": {
+    "session_current": true,
+    "factor_fresh": true,
+    "now": 100,
+    "independent_comparison": true,
+    "old_signature": true,
+    "new_signature": true,
+    "publication_complete": true,
+    "custody_verified": true,
+    "new_keys": [
+      "device_new",
+      "connector_new"
+    ],
+    "backup_authenticated": true,
+    "material_matches": true,
+    "backup_identity": [
+      "account_original",
+      1,
+      "root_original"
+    ],
+    "fresh_enrollment": true
+  },
+  "historical_envelope": {
+    "account": "account_original",
+    "generation": 1,
+    "wrap_keys": [
+      "archive_original"
+    ]
+  },
+  "revoked_recipient_envelope": {
+    "account": "account_original",
+    "generation": 1,
+    "wrap_keys": [
+      "device_revoked"
+    ]
+  },
+  "cases": [
+    {
+      "name": "normal_rotation",
+      "expected": "committed"
+    },
+    {
+      "name": "missing_old_signature",
+      "expected": "signature_refused",
+      "proof_changes": {
+        "old_signature": false
+      }
+    },
+    {
+      "name": "missing_new_signature",
+      "expected": "signature_refused",
+      "proof_changes": {
+        "new_signature": false
+      }
+    },
+    {
+      "name": "partial_publish",
+      "expected": "incomplete",
+      "proof_changes": {
+        "publication_complete": false
+      }
+    },
+    {
+      "name": "unverified_custody",
+      "expected": "incomplete",
+      "proof_changes": {
+        "custody_verified": false
+      }
+    },
+    {
+      "name": "wrong_independent_root",
+      "expected": "comparison_required",
+      "proof_changes": {
+        "independent_comparison": false
+      }
+    },
+    {
+      "name": "expired_ceremony",
+      "expected": "expired",
+      "proof_changes": {
+        "now": 200
+      }
+    },
+    {
+      "name": "unbounded_ceremony",
+      "expected": "expired",
+      "request_changes": {
+        "expires": 401
+      }
+    },
+    {
+      "name": "revoked_session",
+      "expected": "owner_refused",
+      "proof_changes": {
+        "session_current": false
+      }
+    },
+    {
+      "name": "consumed_factor",
+      "expected": "owner_refused",
+      "proof_changes": {
+        "factor_fresh": false
+      }
+    },
+    {
+      "name": "manifest_fork",
+      "expected": "fork_refused",
+      "state_changes": {
+        "fork": true
+      }
+    },
+    {
+      "name": "wrong_account",
+      "expected": "predecessor_refused",
+      "request_changes": {
+        "account": "account_foreign"
+      }
+    },
+    {
+      "name": "wrong_generation",
+      "expected": "predecessor_refused",
+      "request_changes": {
+        "generation": 2
+      }
+    },
+    {
+      "name": "wrong_predecessor",
+      "expected": "predecessor_refused",
+      "request_changes": {
+        "manifest": "manifest_foreign"
+      }
+    },
+    {
+      "name": "revoked_device_resurrection",
+      "expected": "revoked_refused",
+      "proof_changes": {
+        "new_keys": [
+          "device_revoked"
+        ]
+      }
+    },
+    {
+      "name": "revoked_connector_resurrection",
+      "expected": "revoked_refused",
+      "proof_changes": {
+        "new_keys": [
+          "connector_revoked"
+        ]
+      }
+    },
+    {
+      "name": "new_root_required",
+      "expected": "new_root_required",
+      "request_changes": {
+        "new_root": "root_original"
+      }
+    },
+    {
+      "name": "root_backup_restore_same_identity",
+      "expected": "committed",
+      "request_changes": {
+        "operation": "restore_root"
+      }
+    },
+    {
+      "name": "wrong_recovery_material",
+      "expected": "material_refused",
+      "request_changes": {
+        "operation": "restore_root"
+      },
+      "proof_changes": {
+        "material_matches": false
+      }
+    },
+    {
+      "name": "wrong_backup_tag",
+      "expected": "material_refused",
+      "request_changes": {
+        "operation": "restore_root"
+      },
+      "proof_changes": {
+        "backup_authenticated": false
+      }
+    },
+    {
+      "name": "foreign_backup_identity",
+      "expected": "backup_identity_refused",
+      "request_changes": {
+        "operation": "restore_root"
+      },
+      "proof_changes": {
+        "backup_identity": [
+          "account_foreign",
+          1,
+          "root_original"
+        ]
+      }
+    },
+    {
+      "name": "old_generation_backup",
+      "expected": "backup_identity_refused",
+      "request_changes": {
+        "operation": "restore_root"
+      },
+      "proof_changes": {
+        "backup_identity": [
+          "account_original",
+          2,
+          "root_original"
+        ]
+      }
+    },
+    {
+      "name": "lost_login_same_pin",
+      "expected": "committed",
+      "request_changes": {
+        "operation": "restore_login",
+        "new_root": "root_original",
+        "new_manifest": "manifest_original"
+      }
+    },
+    {
+      "name": "login_cannot_replace_root",
+      "expected": "login_cannot_reset",
+      "request_changes": {
+        "operation": "restore_login"
+      }
+    },
+    {
+      "name": "lost_all_new_identity",
+      "expected": "new_account",
+      "request_changes": {
+        "operation": "lost_all"
+      }
+    },
+    {
+      "name": "lost_all_keeps_old_account_refused",
+      "expected": "new_identity_required",
+      "request_changes": {
+        "operation": "lost_all",
+        "new_account": "account_original"
+      }
+    },
+    {
+      "name": "lost_all_without_enrollment",
+      "expected": "fresh_enrollment_required",
+      "request_changes": {
+        "operation": "lost_all"
+      },
+      "proof_changes": {
+        "fresh_enrollment": false
+      }
+    },
+    {
+      "name": "login_alone_cannot_enroll",
+      "expected": "comparison_required",
+      "request_changes": {
+        "operation": "lost_all"
+      },
+      "proof_changes": {
+        "independent_comparison": false
+      }
+    }
+  ],
+  "transcript_hex": "5a5453452f726f6f742d7265636f766572792d73746174652d6d6f64656c2f7631007b226163636f756e74223a226163636f756e745f6f726967696e616c222c226261636b75705f646967657374223a226261636b75705f6e65775f646967657374222c226368616c6c656e6765223a226368616c6c656e67655f66697874757265222c2265787069726573223a3230302c2267656e65726174696f6e223a312c226d616e6966657374223a226d616e69666573745f6f726967696e616c222c226e65775f6163636f756e74223a226163636f756e745f6e6577222c226e65775f6d616e6966657374223a226d616e69666573745f6e6577222c226e65775f726f6f74223a22726f6f745f6e6577222c226f7065726174696f6e223a22726f74617465222c22726f6f74223a22726f6f745f6f726967696e616c227d"
+}

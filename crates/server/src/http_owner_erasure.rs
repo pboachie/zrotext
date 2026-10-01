@@ -102,6 +102,10 @@ const BLOCKED_TABLES: &[&str] = &[
 /// account row are deleted explicitly anyway, so the reported per-table
 /// counts stay honest.
 const DELETE_PLAN: &[(&str, &str)] = &[
+    (
+        "conversation_confirmation_records",
+        "DELETE FROM conversation_confirmation_records WHERE account_id=$1",
+    ),
     // Contacts and their append-only consent history: erasable account
     // records (unlike the schema-protected opt-out planes), deleted before
     // the memberships their recorder foreign keys point at.
@@ -167,6 +171,14 @@ const DELETE_PLAN: &[(&str, &str)] = &[
     ),
     // Delivery history before its messages, devices and attempts.
     (
+        "agent_authority_actions",
+        "DELETE FROM agent_authority_actions WHERE account_id=$1",
+    ),
+    (
+        "agent_authority_approvals",
+        "DELETE FROM agent_authority_approvals WHERE account_id=$1",
+    ),
+    (
         "message_events",
         "DELETE FROM message_events WHERE account_id=$1",
     ),
@@ -189,6 +201,10 @@ const DELETE_PLAN: &[(&str, &str)] = &[
         "DELETE FROM message_attempts WHERE account_id=$1",
     ),
     ("messages", "DELETE FROM messages WHERE account_id=$1"),
+    (
+        "agent_authority_grants",
+        "DELETE FROM agent_authority_grants WHERE account_id=$1",
+    ),
     // Enrollment before its device keys and devices.
     ("device_keys", "DELETE FROM device_keys WHERE account_id=$1"),
     (
@@ -610,6 +626,19 @@ async fn erase_account(
     {
         return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
     }
+    // Inspect proof storage before the final fence: schema preparation can wait.
+    let confirmation_installed =
+        match crate::http_owner_conversations::confirmation_records::installed(&tx).await {
+            Ok(value) => value,
+            Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+        };
+    if confirmation_installed
+        && !crate::http_owner_conversations::confirmation_records::validate(&tx)
+            .await
+            .unwrap_or(false)
+    {
+        return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
+    }
     // FINAL AUTH FENCE. Ordering inside this transaction is deliberate:
     // every read that can wait on a row lock — all the blocked-table
     // preflight counts above — has already run, and this fence is the last
@@ -645,6 +674,9 @@ async fn erase_account(
     // erasure back, never leaving a half-erased account.
     let mut deleted = Vec::new();
     for &(table, sql) in DELETE_PLAN {
+        if table == "conversation_confirmation_records" && !confirmation_installed {
+            continue;
+        }
         let rows = match tx.execute(sql, &[&account_id]).await {
             Ok(rows) => rows,
             // A foreign key refusing an observer user delete is a blocker,
