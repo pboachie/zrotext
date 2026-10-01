@@ -1046,7 +1046,7 @@ test("Android preconditions distinguish fresh, stale, disconnected and unavailab
     { device_id: endpointId, active_socket_lease: true, status_observed_at_ms: 2000, reported_preconditions: report },
     { device_id: otherEndpointId, active_socket_lease: true, status_observed_at_ms: 2000, reported_preconditions: { ...report, fresh: false } },
     { device_id: deliveryId, active_socket_lease: false, status_observed_at_ms: 2000, reported_preconditions: report },
-    { device_id: endpointId, active_socket_lease: true, status_observed_at_ms: 2000, reported_preconditions: null },
+    { device_id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", active_socket_lease: true, status_observed_at_ms: 2000, reported_preconditions: null },
   ];
   await element("refresh-devices").listeners.click();
   const rows = element("device-list").children.map(visibleText);
@@ -1269,4 +1269,82 @@ test("network observation expires in place without revival after clock rollback"
   assert.match(text,/stale report.*network service out of service.*Historical observations/);
   assert.doesNotMatch(text,/Network service limited:|fresh at snapshot time/);
   await element("logout").listeners.click();assert.equal(timers.size,0);
+});
+
+test("selected device details follow identity across refresh and clear when absent or signed out", async () => {
+  const { element, state } = await ownerPage();
+  state.devices = [{ device_id: endpointId, display_name: "First gateway", revoked: false },
+    { device_id: otherEndpointId, display_name: "Second gateway", revoked: false }];
+  await element("refresh-devices").listeners.click();
+  const row = element("device-list").children[1];
+  row.children[2].listeners.click();
+  assert.equal(element("device-detail-name").textContent, "Second gateway");
+  assert.equal(element("device-detail-content").hidden, false);
+  state.devices = [{ device_id: otherEndpointId, display_name: "Renamed gateway", revoked: true }];
+  await element("refresh-devices").listeners.click();
+  assert.equal(element("device-list").children[0], row);
+  assert.equal(element("device-detail-name").textContent, "Renamed gateway");
+  assert.match(element("device-detail-connectivity").textContent, /Revoked/);
+  assert.equal(row.children[1].hidden, true);
+  state.devices = [];
+  await element("refresh-devices").listeners.click();
+  assert.equal(element("device-detail-content").hidden, true);
+  assert.match(element("device-detail-status").textContent, /absent from this loaded page/);
+  assert.equal(element("device-detail-name").textContent, "");
+  await element("logout").listeners.click();
+  assert.equal(element("device-detail-content").hidden, true);
+  assert.match(element("device-detail-status").textContent, /Sign in/);
+});
+
+test("ambiguous device identities retain the prior snapshot with a stale warning", async () => {
+  const { element, state } = await ownerPage();
+  const device = { device_id: endpointId, display_name: "Synthetic gateway", revoked: false };
+  state.devices = [device];
+  await element("refresh-devices").listeners.click();
+  const row = element("device-list").children[0];
+  row.children[2].listeners.click();
+  state.devices = [device, { ...device, display_name: "Ambiguous duplicate" }];
+  await element("refresh-devices").listeners.click();
+  assert.equal(element("device-list").children[0], row);
+  assert.match(element("device-status").textContent, /ambiguous identities/);
+  assert.match(element("device-detail-status").textContent, /Refresh failed/);
+  assert.match(element("fleet-summary").textContent, /may be stale/);
+});
+
+test("selected preconditions expire locally without requests or changing selection", async (t) => {
+  let monotonic = 0;
+  t.mock.method(performance, "now", () => monotonic);
+  const { element, state, timers } = await ownerPage();
+  state.devices = [{ device_id: endpointId, display_name: "Synthetic gateway", revoked: false,
+    active_socket_lease: true, status_observed_at_ms: 90000, reported_preconditions: {
+      selected_sim: "active", sms_permission: "denied", airplane_mode: "disabled", received_at_ms: 1000, fresh: true } }];
+  await element("refresh-devices").listeners.click();
+  element("auto-refresh").checked = false;
+  element("auto-refresh").listeners.change();
+  const select = element("device-list").children[0].children[2];
+  select.listeners.click();
+  assert.match(element("device-detail-preconditions").textContent, /Reported local blockers/);
+  const count = state.requests.length;
+  const [id, timer] = [...timers][0];
+  timers.delete(id);
+  monotonic = 1001;
+  timer.callback();
+  assert.match(element("device-detail-preconditions").textContent, /Historical observations/);
+  assert.equal(select.attributes["aria-pressed"], "true");
+  assert.equal(state.requests.length, count);
+});
+
+test("failed refresh makes unselected cached preconditions historical immediately", async () => {
+  const { element, state } = await ownerPage();
+  state.devices = [{ device_id: endpointId, display_name: "Synthetic gateway", revoked: false,
+    active_socket_lease: true, status_observed_at_ms: 2000, reported_preconditions: {
+      selected_sim: "active", sms_permission: "granted", airplane_mode: "disabled", received_at_ms: 1000, fresh: true } }];
+  await element("refresh-devices").listeners.click();
+  const row = element("device-list").children[0];
+  assert.match(visibleText(row), /No reported local blockers/);
+  state.pendingDevices = Promise.resolve(response(503));
+  await element("refresh-devices").listeners.click();
+  assert.equal(element("device-list").children[0], row);
+  assert.match(visibleText(row), /Historical observations/);
+  assert.doesNotMatch(visibleText(row), /No reported local blockers/);
 });

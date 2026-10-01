@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 package org.zrotext.gateway
 
+import android.content.Context
 import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyInfo
@@ -40,13 +41,14 @@ class DevicePayloadPublic internal constructor(
  * This class exposes a validated public point and a single ECDH result, never the private scalar.
  * It does not implement or authorize HPKE, parse an envelope, or enable sealed radio operations.
  */
-class DevicePayloadKeyStore(private val alias: String) {
+class DevicePayloadKeyStore(context: Context, private val alias: String) {
+    private val lifecycle = PayloadKeyLifecycle(PayloadKeyLifecycleFileStore(context, alias))
     /** Creation is allowed only during explicit enrollment. A missing receive key is never replaced here. */
     @Synchronized
     fun getOrCreateForEnrollment(): DevicePayloadPublic {
         requireSupportedSdk(Build.VERSION.SDK_INT)
         if (Build.VERSION.SDK_INT < 31) error("Sealed payload keys require Android API 31+")
-        if (!openStore().containsAlias(alias)) {
+        return lifecycle.enroll(exists = { openStore().containsAlias(alias) }, create = {
             val spec = KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_AGREE_KEY)
                 .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
                 .setUserAuthenticationRequired(false)
@@ -55,8 +57,7 @@ class DevicePayloadKeyStore(private val alias: String) {
                 initialize(spec)
                 generateKeyPair()
             }
-        }
-        return loadExisting().second
+        }, load = { loadExisting() }, keyId = { it.second.keyId }).second
     }
 
     /** Looks up the pinned recipient identity without creating a replacement key. */
@@ -64,7 +65,16 @@ class DevicePayloadKeyStore(private val alias: String) {
     fun existingPublic(): DevicePayloadPublic {
         requireSupportedSdk(Build.VERSION.SDK_INT)
         if (Build.VERSION.SDK_INT < 31) error("Sealed payload keys require Android API 31+")
-        return loadExisting().second
+        return lifecycle.existing(null, { loadExisting() }, { it.second.keyId }) { it.second }
+    }
+
+    /** Local denial only, not a server/root revocation grant. The durable tombstone
+     * survives alias deletion and prevents reuse of this enrolled identity. */
+    @Synchronized
+    fun revokeExisting(pinnedKeyId: ByteArray) {
+        requireSupportedSdk(Build.VERSION.SDK_INT)
+        if (Build.VERSION.SDK_INT < 31) error("Sealed payload keys require Android API 31+")
+        lifecycle.revoke(pinnedKeyId)
     }
 
     /**
@@ -76,16 +86,16 @@ class DevicePayloadKeyStore(private val alias: String) {
         requireSupportedSdk(Build.VERSION.SDK_INT)
         if (Build.VERSION.SDK_INT < 31) error("Sealed payload keys require Android API 31+")
         require(pinnedKeyId.size == 32) { "Invalid payload key ID" }
-        val (privateKey, public) = loadExisting() // Never generate in the receive path.
-        require(MessageDigest.isEqual(public.keyId, pinnedKeyId)) { "Payload key identity changed" }
         val peer = decodePoint(enc)
-        return KeyAgreement.getInstance("ECDH", "AndroidKeyStore").run {
-            init(privateKey)
-            doPhase(peer, true)
-            generateSecret().also {
-                if (it.size != 32) {
-                    it.fill(0)
-                    error("Unexpected P-256 secret width")
+        return lifecycle.existing(pinnedKeyId, { loadExisting() }, { it.second.keyId }) { (privateKey, _) ->
+            KeyAgreement.getInstance("ECDH", "AndroidKeyStore").run {
+                init(privateKey)
+                doPhase(peer, true)
+                generateSecret().also {
+                    if (it.size != 32) {
+                        it.fill(0)
+                        error("Unexpected P-256 secret width")
+                    }
                 }
             }
         }

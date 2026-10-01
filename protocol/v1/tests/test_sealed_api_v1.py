@@ -33,7 +33,9 @@ WEBHOOK_PATHS = (
     "/v1/sealed/webhooks/{endpoint_id}/rotate",
 )
 PATH_METHODS = {
-    "/v1/sealed/messages": {"post"},
+    "/v1/sealed/messages": {"post", "get"},
+    "/v1/sealed/messages/{message_id}": {"get"},
+    "/v1/sealed/messages/{message_id}/cancel": {"post"},
     "/v1/sealed/inbound-events": {"post"},
     "/v1/sealed/devices": {"get"},
     "/v1/sealed/devices/{device_id}": {"get"},
@@ -124,12 +126,12 @@ class SealedApiContractTests(unittest.TestCase):
         self.assertIn("no server route", description)
         self.assertIn("2026-09-26", DOCUMENT["info"]["description"])
 
-    def test_document_discloses_exactly_one_implemented_slice_behind_default_off_flag(self):
+    def test_document_discloses_implemented_slices_behind_default_off_flag(self):
         description = DOCUMENT["info"]["description"].lower()
         self.assertIn("implemented: post /v1/sealed/messages", description)
         self.assertIn("sealed_admission_enabled", description)
-        # Everything except the message-plane submission stays proposal-only.
-        self.assertIn("proposal only: every other path", description)
+        self.assertIn("read-only devices", description)
+        self.assertIn("proposal only: webhook mutations", description)
         self.assertIn("/v1/sealed/inbound-events", description)
 
     def test_documented_path_method_surface_is_exactly_the_sealed_v1_map(self):
