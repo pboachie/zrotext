@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Synthetic keys and a hidden, exclusively owned limited-token console only.
 use super::*;
+#[path = "../native_fixture_path.rs"]
+mod fixture_path;
 use p256::ecdsa::{Signature, SigningKey, signature::Signer};
 use sha2::Digest;
 use std::{
@@ -312,10 +314,18 @@ fn child(stage: &str, parent: PathBuf) {
 fn native_console_activation_uses_existing_bundle_once() {
     if let Ok(stage) = std::env::var("ZT_ACTIVATION_NATIVE_CASE") {
         let result = std::panic::catch_unwind(|| {
-            child(&stage, PathBuf::from(std::env::var_os("TEMP").unwrap()))
+            let supplied = PathBuf::from(std::env::var_os("TEMP").unwrap());
+            let parent = fixture_path::validated_parent(
+                fixture_path::Purpose::Activation,
+                &supplied,
+                &stage,
+            )
+            .unwrap();
+            child(&stage, parent)
         });
         std::process::exit(if result.is_ok() { 0 } else { 90 });
     }
+    fixture_path::assert_shape_rejections(fixture_path::Purpose::Activation);
     let parent = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("target")
         .join("tmp-native-activation")
@@ -331,6 +341,19 @@ fn native_console_activation_uses_existing_bundle_once() {
     for stage in ["success", "scope", "decline", "token"] {
         let stage_parent = parent.join(stage);
         std::fs::create_dir_all(&stage_parent).unwrap();
+        assert_eq!(
+            fixture_path::validated_parent(fixture_path::Purpose::Activation, &stage_parent, stage)
+                .unwrap(),
+            stage_parent
+        );
+        assert!(
+            fixture_path::validated_parent(
+                fixture_path::Purpose::Activation,
+                &stage_parent.join("extra"),
+                stage
+            )
+            .is_err()
+        );
         launch(stage, &stage_parent);
     }
     if std::env::var_os("ZT_ACTIVATION_INTEROP_PROPOSAL_HEX").is_some() {
