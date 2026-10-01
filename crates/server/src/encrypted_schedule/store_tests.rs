@@ -5,14 +5,6 @@ use uuid::Uuid;
 
 async fn prepared() -> (Case, WindowPolicy) {
     let mut c = Case::new().await;
-    c.base
-        .f
-        .db
-        .batch_execute(include_str!(
-            "../../../../deploy/compose/migrations/077_encrypted_schedule.sql"
-        ))
-        .await
-        .unwrap();
     let row = c.base.f.db.query_one("SELECT to_char((clock_timestamp() AT TIME ZONE 'UTC')-interval '2 minutes','YYYY-MM-DD'),extract(hour FROM (clock_timestamp() AT TIME ZONE 'UTC')-interval '2 minutes')::int*60+extract(minute FROM (clock_timestamp() AT TIME ZONE 'UTC')-interval '2 minutes')::int",&[]).await.unwrap();
     let opens: i32 = row.get(1);
     let p = WindowPolicy {
