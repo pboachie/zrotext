@@ -19,8 +19,8 @@ internal class ConversationUserSetupController(
     private val elapsedMillis: () -> Long = SystemClock::elapsedRealtime
 ) : AutoCloseable {
     internal class Selection(
-        val session: ConversationPhoneSession, val intervalId: String,
-        val bundle: ConversationActivationBundle, val review: ConversationPhoneReview,
+        val identity: EvidenceIdentity, val intervalId: String, val lineId: String,
+        val bindingGeneration: Long, val peer: String,
         val bindings: ConversationConnectionBindings, val site: String, val instance: String
     ) {
         override fun toString() = "ConversationUserSelection(redacted)"
@@ -37,8 +37,12 @@ internal class ConversationUserSetupController(
     fun begin(selection: Selection, enabled: Boolean = false): Boolean = synchronized(gate) {
         check(!closed)
         if (!enabled || installed != null) return false
-        validate(selection, selection.session)
+        require(selection.bindingGeneration > 0)
         var wire: ConversationAuthenticatedWire? = null
+        var expectedSession: ConversationPhoneSession? = null
+        var bundle: ConversationActivationBundle? = null
+        var prepared: ConversationActivationCodec.Parsed? = null
+        var review: ConversationPhoneReview? = null
         var owned: ConversationAndroidConnectionInputs.Owned? = null
         val provider = ConversationAndroidConnectionInputs(application, lines, payloadAlias, delivery,
             { wire?.currentSession() }, object : ConversationSendTransport {
@@ -47,13 +51,30 @@ internal class ConversationUserSetupController(
             })
         val factory = ConversationConnectionFactory(selection.site, selection.instance, elapsedMillis, worker,
             { session, authenticated ->
-                requireOpen(); validate(selection, session); check(authenticated.currentSession() == session)
+                requireOpen(); validateIdentity(selection, session); check(authenticated.currentSession() == session)
+                check(expectedSession == null)
+                expectedSession = session
                 wire = authenticated
-                ConversationConnectionProposal(selection.bundle.statement(), selection.review)
+                val retrieved = ConversationProposalTransport(authenticated).proposal(selection.intervalId, selection.site, selection.instance)
+                requireOpen(); check(authenticated.currentSession() == session)
+                val parsed = ConversationActivationCodec.decode(retrieved.statement())
+                validateProposalSelection(selection, parsed)
+                val clock = ConversationTrustedClock(elapsedMillis, authenticated::currentSession)
+                ConversationAuthorityTransport(ConversationSerializedChannel(authenticated), clock,
+                    authenticated::currentSession, elapsedMillis).refreshTime()
+                requireOpen(); check(authenticated.currentSession() == session)
+                val now = checkNotNull(clock.nowMs()); check(now in 1 until parsed.expiresMs)
+                val shown = ConversationPhoneReview(UUID.randomUUID().toString(), parsed.scope.intervalId,
+                    parsed.scope.lineId, parsed.scope.bindingGeneration, parsed.scope.peer,
+                    ConversationActivationCodec.DISCLOSURE, "conversation-content-v1", parsed.scope.disclosureDigest,
+                    (parsed.expiresMs - now).coerceAtMost(60000))
+                bundle = retrieved; prepared = parsed; review = shown
+                ConversationConnectionProposal(retrieved.statement(), shown)
             }, { session ->
                 requireOpen()
-                val parsed = validate(selection, session)
-                val inputs = provider.openForUserAction(session, parsed.scope, selection.review, 0, selection.bindings)
+                validateIdentity(selection, session); check(session == expectedSession)
+                val parsed = checkNotNull(prepared)
+                val inputs = provider.openForUserAction(session, parsed.scope, checkNotNull(review), 0, selection.bindings)
                 try {
                     requireOpen()
                     val authenticated = checkNotNull(wire)
@@ -62,7 +83,7 @@ internal class ConversationUserSetupController(
                         authenticated::currentSession, elapsedMillis)
                     time.refreshTime()
                     fun now(): Long {
-                        requireOpen(); check(authenticated.currentSession() == selection.session)
+                        requireOpen(); check(authenticated.currentSession() == expectedSession && expectedSession == session)
                         return checkNotNull(clock.nowMs()).also { check(it in 1 until parsed.expiresMs) }
                     }
                     val trust = inputs.inputs.trust
@@ -70,7 +91,7 @@ internal class ConversationUserSetupController(
                     check(saved.status == Draft02TrustStore.Status.NEEDS_FRESHNESS)
                     val snapshot = checkNotNull(saved.snapshot)
                     check(snapshot.version > 0) // Never enroll a downloaded root or initial pin here.
-                    val manifest = selection.bundle.manifest()
+                    val manifest = checkNotNull(bundle).manifest()
                     try {
                         check(manifest.size in 364..9751 && manifest.copyOfRange(0, 5).contentEquals(byteArrayOf(90,84,77,65,2)))
                         check(ByteBuffer.wrap(manifest, 21, 8).long == parsed.scope.trustGeneration &&
@@ -119,6 +140,7 @@ internal class ConversationUserSetupController(
             }, dispatchForConnection = { value -> requireOpen(); execution.dispatch(value) })
         installed = ConversationSocketComposition.installOwned({ socket, identity, epoch ->
             requireOpen()
+            check(identity == selection.identity)
             val value = factory.create(socket, identity, epoch)
             if (!negotiation.compareAndSet(null, value)) { value.close(); error("Setup already attached") }
             try { requireOpen(); value } catch (error: Exception) { value.close(); throw error }
@@ -156,13 +178,14 @@ internal class ConversationUserSetupController(
         }
     }
     companion object {
-        internal fun validate(selection: Selection, session: ConversationPhoneSession): ConversationActivationCodec.Parsed {
-            check(session == selection.session)
-            val parsed = ConversationConnectionFactory.validateProposal(selection.bundle.statement(), selection.review,
-                session, selection.site, selection.instance)
-            check(parsed.scope.intervalId == selection.intervalId)
+        internal fun validateIdentity(selection: Selection, session: ConversationPhoneSession) {
+            check(session.account.toString() == selection.identity.accountId &&
+                session.device.toString() == selection.identity.deviceId && session.originHash == selection.identity.originHash)
+        }
+        internal fun validateProposalSelection(selection: Selection, parsed: ConversationActivationCodec.Parsed) {
+            check(parsed.scope.intervalId == selection.intervalId && parsed.scope.lineId == selection.lineId &&
+                parsed.scope.bindingGeneration == selection.bindingGeneration && parsed.scope.peer == selection.peer)
             check(DevicePayloadKeyStore.keyId(selection.bindings.archivePoint).contentEquals(hex(parsed.scope.readerKeyId)))
-            return parsed
         }
         private fun hex(value: String) = value.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
         private fun uuid(value: String) = UUID.fromString(value).let { ByteBuffer.allocate(16).putLong(it.mostSignificantBits).putLong(it.leastSignificantBits).array() }

@@ -19,7 +19,7 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class) @Config(sdk = [28])
 class ConversationUserSetupControllerTest {
     private val f = ConversationInputFixture
-    private fun selection(): ConversationUserSetupController.Selection {
+    private fun fixture(): Pair<ConversationUserSetupController.Selection, ConversationActivationCodec.Parsed> {
         val key = KeyPairGenerator.getInstance("EC").apply { initialize(ECGenParameterSpec("secp256r1")) }.generateKeyPair()
         val public = key.public as java.security.interfaces.ECPublicKey
         fun coordinate(value: java.math.BigInteger) = value.toByteArray().takeLast(32).toByteArray().let {
@@ -38,11 +38,12 @@ class ConversationUserSetupControllerTest {
             out.writeLong(1); out.write(ByteArray(32) { 4 }); out.writeLong(2); out.write(ByteArray(32) { 5 })
             out.writeLong(f.session.connectionEpoch); out.writeLong(f.session.deploymentEpoch); text("fixture-site"); text("fixture-instance")
         }
-        val statement = output.toByteArray(); val scope = ConversationActivationCodec.decode(statement).scope
-        return ConversationUserSetupController.Selection(f.session, scope.intervalId,
-            ConversationActivationBundle(statement, ByteArray(364)), f.review.copy(disclosureDigest = scope.disclosureDigest),
-            ConversationConnectionBindings(point, ByteArray(32) { 6 }), "fixture-site", "fixture-instance")
+        val parsed = ConversationActivationCodec.decode(output.toByteArray()); val scope = parsed.scope
+        return ConversationUserSetupController.Selection(EvidenceIdentity(scope.accountId, scope.deviceId, f.session.originHash),
+            scope.intervalId, scope.lineId, scope.bindingGeneration, scope.peer,
+            ConversationConnectionBindings(point, ByteArray(32) { 6 }), "fixture-site", "fixture-instance") to parsed
     }
+    private fun selection() = fixture().first
     @Test fun disabledSetupOpensNoResourceAndInstallsNoSocketFactory() {
         ConversationSocketComposition.clear()
         val app = RuntimeEnvironment.getApplication()
@@ -56,15 +57,16 @@ class ConversationUserSetupControllerTest {
             assertNull(ConversationSocketComposition.create(socket(), EvidenceIdentity(f.scope.accountId, f.scope.deviceId, f.session.originHash), 1))
         } finally { controller.close(); db.close(); ConversationSocketComposition.clear() }
     }
-    @Test fun selectionRejectsDifferentSessionAndIntervalBeforeAnyProvider() {
-        val selected = selection()
-        ConversationUserSetupController.validate(selected, f.session)
+    @Test fun selectionAcceptsNewNegotiatedSessionButRejectsForeignIdentityAndIntervalBeforeProvider() {
+        val (selected, parsed) = fixture()
+        ConversationUserSetupController.validateIdentity(selected, f.session.copy(session = UUID.randomUUID()))
+        ConversationUserSetupController.validateProposalSelection(selected, parsed)
         assertThrows(IllegalStateException::class.java) {
-            ConversationUserSetupController.validate(selected, f.session.copy(session = UUID.randomUUID()))
+            ConversationUserSetupController.validateIdentity(selected, f.session.copy(device = UUID.randomUUID()))
         }
-        val changed = ConversationUserSetupController.Selection(selected.session, UUID.randomUUID().toString(), selected.bundle,
-            selected.review, selected.bindings, selected.site, selected.instance)
-        assertThrows(IllegalStateException::class.java) { ConversationUserSetupController.validate(changed, f.session) }
+        val changed = ConversationUserSetupController.Selection(selected.identity, UUID.randomUUID().toString(), selected.lineId,
+            selected.bindingGeneration, selected.peer, selected.bindings, selected.site, selected.instance)
+        assertThrows(IllegalStateException::class.java) { ConversationUserSetupController.validateProposalSelection(changed, parsed) }
     }
     @Test fun closeWhileNegotiatedReadyIsQueuedCannotOpenOrPublishInputs() {
         ConversationSocketComposition.clear()
@@ -80,7 +82,7 @@ class ConversationUserSetupControllerTest {
             negotiation.start()
             negotiation.accept(JSONObject().put("v", 1).put("type", "conversation_session")
                 .put("challenge", JSONObject(sent).getString("challenge")).put("account_id", f.scope.accountId)
-                .put("device_id", f.scope.deviceId).put("phone_session", f.session.session.toString())
+                .put("device_id", f.scope.deviceId).put("phone_session", UUID.randomUUID().toString())
                 .put("connection_epoch", 1).put("deployment_epoch", 1).put("origin_hash", f.session.originHash))
             assertEquals(1, queue.size)
             controller.close()
