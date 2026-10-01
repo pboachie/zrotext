@@ -98,3 +98,14 @@ code, .eyebrow, .rail-label, .rail-status, .nav-note { font-family: Consolas, "C
   #device-list li, #key-list li, #message-list > li { flex-direction: column; align-items: flex-start; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation: none !important; transition: none !important; } }
+
+.fleet-summary { padding: .8rem; background: var(--owner-raised); border: 1px solid var(--owner-border); border-radius: .35rem; }
+.fleet-workspace { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(16rem, 1fr); gap: 1rem; align-items: start; }
+.fleet-table { min-width: 0; }
+.device-detail { min-width: 0; background: var(--owner-raised); border: 1px solid var(--owner-border); border-radius: .5rem; padding: 1rem; }
+.device-detail code { display: block; margin-top: .5rem; }
+#approved-devices #device-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto; padding: 1rem; margin-bottom: .75rem; background: var(--owner-canvas); border: 1px solid var(--owner-border); border-radius: .5rem; }
+#approved-devices #device-list li > div { grid-column: 1 / -1; min-width: 0; }
+#approved-devices #device-list li span { display: block; margin-top: .4rem; }
+.fleet-select[aria-pressed="true"] { background: var(--owner-raised); box-shadow: inset 0 0 0 2px var(--owner-accent); }
+@media (max-width: 75rem) { .fleet-workspace { grid-template-columns: minmax(0, 1fr); } }
