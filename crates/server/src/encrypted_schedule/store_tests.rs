@@ -312,3 +312,71 @@ async fn owner_export_is_scoped_and_retention_preserves_cancelled_live_action_id
     }
     c.cleanup().await;
 }
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn final_intent_constraint_rechecks_owner_expiry_after_real_phone_grant() {
+    let (mut c, p) = prepared().await;
+    let a = c.approved().await;
+    let o = reserve(
+        &c,
+        &p,
+        a.key,
+        ScheduleRequest {
+            request_id: Uuid::new_v4(),
+            series_id: Uuid::new_v4(),
+            ordinal: 0,
+        },
+    )
+    .await;
+    let bound = c.bind_with_dispatch(a, o.dispatch_id).await;
+    let message: Uuid = c
+        .base
+        .f
+        .db
+        .query_one("SELECT message_id FROM workflow_message_links", &[])
+        .await
+        .unwrap()
+        .get(0);
+    let mut db = c.base.f.connect().await;
+    let tx = db.transaction().await.unwrap();
+    let mut permit = lock_approved(&tx, &c.base.owner, bound.key).await.unwrap();
+    let lease = claim(&mut permit, o.id).await.unwrap().unwrap();
+    begin_dispatch(&mut permit, &lease, message).await.unwrap();
+    drop(permit);
+    tx.commit().await.unwrap();
+    let frame = c.grant().await.unwrap().unwrap();
+    assert_eq!(frame.message_id, message);
+    // Exercise the actual deferred database guard after a genuine granted
+    // attempt. This SQL regression does not impersonate the phone intent API.
+    let tx = db.transaction().await.unwrap();
+    tx.execute("INSERT INTO message_events(id,account_id,message_id,attempt_id,evidence_code,event_digest,observed_at,resulting_state) VALUES($1,$2,$3,$4,'durable_intent',$5,clock_timestamp(),'submitting')",&[&Uuid::new_v4(),&c.base.f.account,&message,&frame.attempt_id,&vec![7u8;32]]).await.unwrap();
+    tx.execute(
+        "UPDATE sessions SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1",
+        &[&c.base.owner.session_id],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        tx.commit().await.unwrap_err().code(),
+        Some(&tokio_postgres::error::SqlState::CHECK_VIOLATION)
+    );
+    assert_eq!(
+        db.query_one(
+            "SELECT count(*) FROM message_events WHERE evidence_code='durable_intent'",
+            &[]
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0),
+        0
+    );
+    assert_eq!(
+        db.query_one("SELECT count(*) FROM dispatch_fences", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        1
+    );
+    c.cleanup().await;
+}
