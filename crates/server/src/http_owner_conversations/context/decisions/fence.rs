@@ -55,7 +55,7 @@ pub(crate) async fn checked_descriptor<'tx, 'connection>(
     Ok((authority, header))
 }
 
-async fn contact(
+pub(crate) async fn contact(
     tx: &Transaction<'_>,
     descriptor: &Descriptor,
     header: &wire::Header,
@@ -195,23 +195,13 @@ impl<'tx, 'connection> LockedAction<'tx, 'connection> {
         dispatch: Uuid,
     ) -> Result<(), ConversationError> {
         self.recheck().await?;
-        if activation::now(self.tx).await? < self.descriptor.not_before * 1000 {
-            return Err(ConversationError::Conflict);
-        }
-        self.tx.query_opt("SELECT 1 FROM workflow_message_links WHERE account_id=$1 AND action_id=$2 AND revision=$3 AND binding_digest=$4 AND message_id=$5 AND dispatch_id=$6 FOR SHARE",
-            &[&self.key.account_id,&self.key.action_id,&self.key.revision,&&self.key.binding_digest[..],&message,&dispatch]).await?.ok_or(ConversationError::Forbidden)?;
-        if self.tx.execute("UPDATE workflow_actions SET phase='dispatching',record_version=record_version+1 WHERE account_id=$1 AND id=$2 AND revision=$3 AND binding_digest=$4 AND phase='approved'",
-            &[&self.key.account_id,&self.key.action_id,&self.key.revision,&&self.key.binding_digest[..]]).await?!=1 {return Err(ConversationError::Conflict);}
-        let state = super::store::head(self.tx, self.key.account_id, self.key.action_id).await?;
-        let digest = super::store::request_digest(7, &(self.key, message, dispatch))?;
-        super::store::record(
+        super::store::dispatch_transition(
             self.tx,
-            self.owner,
+            &self.descriptor,
             self.header.context,
+            super::proposal::Actor::Owner(self.owner.user_id),
+            message,
             dispatch,
-            7,
-            &digest,
-            &state,
         )
         .await?;
         self.recheck().await
