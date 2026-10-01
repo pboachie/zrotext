@@ -55,10 +55,8 @@
 //! executor thread, the member-side reporting loop records this member's
 //! rounds into the same shared store (`FAILOVER_QUORUM_REPORT_MEMBER_ID`),
 //! through the crate's sink adapter — the store stays the only writer of
-//! its journals. No production probe source exists in this build: the
-//! deterministic placeholder behind the `ProbeSource` seam abstains every
-//! round, so nothing is recorded in production and every round still holds
-//! fail-closed until that probe lands (a documented follow-up).
+//! its journals. Optional authenticated HTTPS adapters supply explicit inputs
+//! and pinned member reports. Without adapter configuration, the source abstains.
 
 use std::collections::HashMap;
 use std::collections::hash_map::RandomState;
@@ -451,7 +449,7 @@ impl ExecutorEnv {
         self.probe_interval_ms
     }
 
-    /// The probe timeout the (future) production probe source will enforce.
+    /// The timeout enforced by the optional production probe source.
     pub fn probe_timeout_ms(&self) -> u64 {
         self.probe_timeout_ms
     }
@@ -1106,20 +1104,26 @@ fn spawn_failover_reporter(
     env: ExecutorEnv,
     store: SharedStore,
     shutdown: Arc<AtomicBool>,
+    adapters: Option<crate::failover_adapters::Adapters>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::Builder::new()
         .name("failover-quorum-reporter".to_owned())
         .spawn(move || {
             eprintln!(
                 "failover quorum reporter running (reporting as {} every {}ms, {}ms probe \
-                 timeout; no production probe source in this build, so every round abstains \
-                 and nothing is recorded)",
+                 timeout; authenticated adapters configured={})",
                 env.report_member_id(),
                 env.probe_interval_ms(),
                 env.probe_timeout_ms(),
+                adapters.is_some(),
             );
             let observer = MemberObserver::new(env.report_member_id())
                 .expect("the report member id was validated at parse");
+            if let Some(adapters) = adapters {
+                let (probes, sink) = adapters.into_ports(store);
+                run_reporting_loop(ReportLoop::new(observer, probes, sink), &env, &shutdown);
+                return;
+            }
             let mut reporting = ReportLoop::new(
                 observer,
                 AbstainingProbeSource,
@@ -1176,8 +1180,8 @@ fn role_change_log(
         )),
         ExecutorRole::Active => Some(format!(
             "failover quorum executor acquired the singleton advisory lock and is running \
-             ({} members, writer site {}, standby site {}, {}ms checks, store {}); no transport \
-             reports into the store in this build, so rounds hold",
+             ({} members, writer site {}, standby site {}, {}ms checks, store {}); the controller \
+             uses only fresh authenticated observations",
             env.config().members().len(),
             env.config().writer_site_id(),
             env.config().standby_site_id(),
@@ -1208,10 +1212,20 @@ pub fn spawn_failover_executor(
     shutdown: Arc<AtomicBool>,
     healthy: Arc<AtomicBool>,
 ) -> Option<FailoverExecutorThreads> {
+    spawn_failover_executor_with_adapters(env, database_url, shutdown, healthy, None)
+}
+
+pub fn spawn_failover_executor_with_adapters(
+    env: Option<ExecutorEnv>,
+    database_url: String,
+    shutdown: Arc<AtomicBool>,
+    healthy: Arc<AtomicBool>,
+    adapters: Option<crate::failover_adapters::Adapters>,
+) -> Option<FailoverExecutorThreads> {
     let env = env?;
     let store = open_consensus_store(&env, &healthy)?;
     let store: SharedStore = Arc::new(Mutex::new(store));
-    let reporter = spawn_failover_reporter(env.clone(), store.clone(), shutdown.clone());
+    let reporter = spawn_failover_reporter(env.clone(), store.clone(), shutdown.clone(), adapters);
     let executor = std::thread::Builder::new()
         .name("failover-quorum-executor".to_owned())
         .spawn(move || {
@@ -1263,6 +1277,21 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0)
+}
+
+fn run_reporting_loop<P: ProbeSource, S: zrotext_failover_quorum::report::ObservationSink>(
+    mut reporting: ReportLoop<P, S>,
+    env: &ExecutorEnv,
+    shutdown: &AtomicBool,
+) {
+    let mut failure_logged = false;
+    while !shutdown.load(Ordering::Acquire) {
+        if reporting.run_round(now_ms()) == RoundOutcome::SinkFailed && !failure_logged {
+            eprintln!("failover quorum reporter: recording failed; reporting holds until restart");
+            failure_logged = true;
+        }
+        std::thread::sleep(Duration::from_millis(env.probe_interval_ms()));
+    }
 }
 
 #[cfg(test)]
