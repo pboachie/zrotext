@@ -45,6 +45,7 @@ pub use zrotext_root_material::sealed_root_enrollment;
 pub mod wakeups;
 pub mod webhook_egress;
 pub mod webhook_worker;
+pub mod workflow_runtime;
 
 #[cfg(test)]
 /// Synthetic recognizable plaintext markers for the sealed downgrade and

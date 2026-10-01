@@ -126,6 +126,55 @@ impl CurrentAuthority<'_, '_> {
         Ok(())
     }
 
+    /// Selected integration readers must be active in the same pinned current
+    /// manifest as the device/line. A stored registration alone is insufficient.
+    pub(crate) async fn integration_snapshot(
+        &mut self,
+        device: Uuid,
+        line: Uuid,
+        point: &[u8],
+    ) -> Result<(ManifestSnapshot, [u8; 32], u16), AdmissionError> {
+        let now = self.checked_time().await?;
+        self.manifest
+            .conversation_keys(device.as_bytes(), line.as_bytes(), now)?;
+        let (reader, scope, _) =
+            self.manifest
+                .active_integration_reader(point, now)
+                .ok_or(AdmissionError::Rejected(
+                    "selected integration reader authority",
+                ))?;
+        Ok((
+            ManifestSnapshot {
+                generation: self.generation(),
+                version: self.manifest.version() as i64,
+                digest: *self.manifest.digest(),
+                bytes: self.bytes.clone(),
+                accepted_ms: now as i64,
+            },
+            reader,
+            scope,
+        ))
+    }
+
+    /// A workflow signer is a distinct active role-5 key for this exact line.
+    pub(crate) async fn workflow_signer(
+        &mut self,
+        device: Uuid,
+        line: Uuid,
+        id: &[u8; 32],
+    ) -> Result<(), AdmissionError> {
+        let now = self.checked_time().await?;
+        self.manifest
+            .conversation_keys(device.as_bytes(), line.as_bytes(), now)?;
+        if !self
+            .manifest
+            .active_agent_signer(line.as_bytes(), id, now)
+        {
+            return Err(AdmissionError::Rejected("workflow signer authority"));
+        }
+        Ok(())
+    }
+
     /// Invoke after every potentially blocking storage operation, immediately
     /// before commit. Also detects authority changes made within this transaction.
     pub(crate) async fn context<'a>(

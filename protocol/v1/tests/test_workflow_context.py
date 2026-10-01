@@ -43,6 +43,17 @@ class WorkflowContextContractTest(unittest.TestCase):
                 scope[key] = "09" * 32
             self.assertNotEqual(aad(scope), aad(self.vector["scope"]), key)
 
+    def test_integration_representation_changes_only_the_selected_reader_aad(self):
+        vector = json.loads((ROOT / "workflow-context-integration-01.json").read_text(encoding="utf-8"))
+        jsonschema.validate(vector, self.schema, format_checker=jsonschema.FormatChecker())
+        header = aad(vector["scope"])
+        self.assertEqual(header.hex(), vector["aad_hex"])
+        self.assertEqual((b"ZT/workflow-context/hpke/v1\0" + header).hex(), vector["hpke_info_hex"])
+        archive = aad(self.vector["scope"])
+        self.assertEqual(header[:158], archive[:158])
+        self.assertNotEqual(header[158:190], archive[158:190])
+        self.assertEqual(header[190:], archive[190:])
+
     def test_schema_refuses_plaintext_fields_nil_ids_and_unbounded_revisions(self):
         for change in ({"plaintext": "synthetic"}, {"revision": 0}, {"revision": 129},
                        {"context_id": str(uuid.UUID(int=0))}, {"kind": 4}):
