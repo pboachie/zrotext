@@ -63,22 +63,37 @@ pub(crate) fn request_digest<T: Serialize>(
     hash.update(serde_json::to_vec(input).map_err(|_| ConversationError::Invalid)?);
     Ok(hash.finalize().to_vec())
 }
+pub(crate) async fn replay_bytes(
+    tx: &Transaction<'_>,
+    account: Uuid,
+    request: Uuid,
+    digest: &[u8],
+) -> Result<Option<Vec<u8>>, ConversationError> {
+    if request.is_nil() {
+        return Err(ConversationError::Invalid);
+    }
+    let rows=tx.query("SELECT request_digest,result FROM workflow_action_mutations WHERE account_id=$1 AND request_id=$2 UNION ALL SELECT takeover_digest,takeover_result FROM workflow_context_fences WHERE account_id=$1 AND takeover_request_id=$2 UNION ALL SELECT request_digest,result FROM workflow_reply_correlations WHERE account_id=$1 AND request_id=$2 AND safety_routine_id IS NOT NULL",&[&account,&request]).await?;
+    if rows.len() > 1 {
+        return Err(ConversationError::Conflict);
+    }
+    let Some(row) = rows.first() else {
+        return Ok(None);
+    };
+    if row.get::<_, Vec<u8>>(0) != digest {
+        return Err(ConversationError::Conflict);
+    }
+    Ok(Some(row.get(1)))
+}
 pub(crate) async fn replay(
     tx: &Transaction<'_>,
     account: Uuid,
     request: Uuid,
     digest: &[u8],
 ) -> Result<Option<ActionState>, ConversationError> {
-    if request.is_nil() {
-        return Err(ConversationError::Invalid);
-    }
-    let Some(row)=tx.query_opt("SELECT request_digest,result FROM workflow_action_mutations WHERE account_id=$1 AND request_id=$2",&[&account,&request]).await? else{return Ok(None)};
-    if row.get::<_, Vec<u8>>(0) != digest {
-        return Err(ConversationError::Conflict);
-    }
-    serde_json::from_slice(&row.get::<_, Vec<u8>>(1))
-        .map(Some)
-        .map_err(|_| ConversationError::Unavailable)
+    replay_bytes(tx, account, request, digest)
+        .await?
+        .map(|bytes| serde_json::from_slice(&bytes).map_err(|_| ConversationError::Conflict))
+        .transpose()
 }
 pub(crate) async fn record(
     tx: &Transaction<'_>,

@@ -69,6 +69,8 @@ pub fn edit(
     if !phase.editable()
         || previous.account_id != next.account_id
         || previous.action_id != next.action_id
+        || previous.content_ref != next.content_ref
+        || previous.routine_id != next.routine_id
         || previous.revision.checked_add(1) != Some(next.revision)
     {
         return Err(ConversationError::Conflict);
