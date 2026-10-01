@@ -162,7 +162,7 @@ def main():
                         print("Fixture cleanup incomplete: " + ", ".join(cleanup_errors), file=sys.stderr)
                     else:
                         raise RuntimeError("Fixture cleanup incomplete")
-        evidence = ("compiled isolated APK, actual consent UI, bound service/synthetic receiver, authenticated server channel, real Chromium incoming text/exact review/cancel, one synthetic reply, UNKNOWN replay fence, Stop/withdrawal"
+        evidence = ("compiled isolated APK, actual consent UI, bound service/synthetic receiver, production content-channel capture ACK and confirmed-packet delivery with fixture crypto, real Chromium incoming text/exact review/cancel, one synthetic reply, UNKNOWN replay fence, Stop/withdrawal; hardware content crypto and connection factory not exercised"
             if args.scenario == "roundtrip" else
             "compiled isolated APK, authenticated installation ACK held until " + args.scenario + ", no late activation or content capture")
         print("PASS-EMULATOR " + profile + " [" + args.scenario + "]: " + evidence)

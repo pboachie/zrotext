@@ -168,8 +168,18 @@ class ConversationProbeDeviceTest {
             syntheticReceipt();assertEquals(ConversationObservation.CAPTURED,ConversationProbeSession.observation.get())
             syntheticReceipt();assertEquals(ConversationObservation.DUPLICATE,ConversationProbeSession.observation.get())
             val captured=checkNotNull(runtime.retryCapture(token))
-            val encrypted=fixture.envelope(captured.body,captured.captureId,captured.firstObservedAtMs,1)
-            assertTrue(fixture.command("capture",data=encrypted.getString("envelope")).getBoolean("ok"))
+            val sealed=java.util.concurrent.atomic.AtomicReference<JSONObject?>()
+            val uploaded=java.util.concurrent.atomic.AtomicBoolean(false)
+            val uploadDone=java.util.concurrent.CountDownLatch(1)
+            // API28 uses disposable fixture crypto; transfer and nonce/event/digest ACK validation
+            // cross the production runtime/content channel, not the fixture capture HTTP command.
+            runtime.uploadCapture(token,{ value,sequence ->
+                assertEquals(captured,value)
+                val envelope=fixture.envelope(value.body,value.captureId,value.firstObservedAtMs,sequence)
+                sealed.set(envelope);decode(envelope.getString("envelope"))
+            }) { accepted -> uploaded.set(accepted);uploadDone.countDown() }
+            assertTrue(uploadDone.await(30,TimeUnit.SECONDS));assertTrue(uploaded.get())
+            val encrypted=checkNotNull(sealed.get())
             val event=UUID.fromString(captured.captureId)
             val before=fixture.command("history",event=event)
             assertEquals(body,fixture.open(before.getString("envelope")).getString("opened"))
@@ -180,7 +190,16 @@ class ConversationProbeDeviceTest {
             assertEquals(2,browser.getInt("signed"));assertEquals(1,browser.getInt("verified"));assertEquals(0,browser.getInt("midFlightSubmissions"))
             val packet=browser.getJSONObject("packet")
             val verifier=object:ConversationSendVerifier {
-                override fun verify(evidence:ByteArray)=fixture.verifiedSend(evidence,false)
+                override fun verify(evidence:ByteArray):VerifiedConversationSend {
+                    val transferred=ConversationContentCrypto.unpackConfirmedEvidence(evidence)
+                    val exact=JSONObject(packet.toString())
+                    for((field,bytes) in listOf("envelope" to transferred.envelope,
+                        "confirmation" to transferred.confirmation,"signature" to transferred.signature)) {
+                        assertArrayEquals(decode(packet.getString(field)),bytes)
+                        exact.put(field,fixture.b64(bytes))
+                    }
+                    return fixture.verifiedSend(exact.toString().toByteArray(Charsets.UTF_8),false)
+                }
             }
             val transport=object:ConversationSendTransport {
                 override fun submit(message:String,attempt:String,scope:ConversationCaptureScope,body:String):ConversationSubmission {
@@ -190,7 +209,12 @@ class ConversationProbeDeviceTest {
                 }
             }
             val sender=runtime.confirmedSender(verifier,transport)
-            sender.receiveConfirmed(packet.toString().toByteArray(Charsets.UTF_8))
+            val received=java.util.concurrent.atomic.AtomicBoolean(false)
+            val deliveryDone=java.util.concurrent.CountDownLatch(1)
+            runtime.receiveConfirmed(scope,packet.getString("message"),sender) { accepted ->
+                received.set(accepted);deliveryDone.countDown()
+            }
+            assertTrue(deliveryDone.await(30,TimeUnit.SECONDS));assertTrue(received.get())
             assertEquals(ConversationSubmission.UNKNOWN,sender.submitConfirmed(packet.getString("message")))
             assertEquals(1,submissions)
             assertThrows(IllegalStateException::class.java) {runtime.confirmedSender(verifier,transport).submitConfirmed(packet.getString("message"))}
