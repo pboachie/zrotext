@@ -65,6 +65,9 @@ for (const width of [320, 390, 1440]) {
     const { page } = await overview(width);
     try {
       await hierarchyAndFit(page);
+      // The declared fallback font has smaller native select metrics on some hosts.
+      await page.addStyleTag({ content: "#message-summary select { font-family: Arial, sans-serif; }" });
+      await hierarchyAndFit(page);
       assert.equal(await page.locator("#summary-submitted").textContent(), "19");
       assert.match(await page.locator("#fleet-summary").textContent(), /loaded pages only/);
       assert.match(await page.locator("#message-list").textContent(), /unknown/i);
