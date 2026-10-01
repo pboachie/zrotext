@@ -162,6 +162,7 @@ services:
       # Member-side reporting loop, also read only when enabled; the member
       # id must be this app's entry in FAILOVER_QUORUM_MEMBERS.
       FAILOVER_QUORUM_PROBE_INTERVAL_MS:
+      FAILOVER_QUORUM_ADAPTER_CONFIG:
       FAILOVER_QUORUM_PROBE_TIMEOUT_MS:
       FAILOVER_QUORUM_REPORT_MEMBER_ID: workload-a
     volumes:
@@ -260,6 +261,7 @@ services:
       # Member-side reporting loop; app_b reports as the second workload
       # member of the configured quorum.
       FAILOVER_QUORUM_PROBE_INTERVAL_MS:
+      FAILOVER_QUORUM_ADAPTER_CONFIG:
       FAILOVER_QUORUM_PROBE_TIMEOUT_MS:
       FAILOVER_QUORUM_REPORT_MEMBER_ID: workload-b
     volumes:

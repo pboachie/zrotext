@@ -7,6 +7,7 @@ pub mod billing;
 pub mod device_socket;
 pub mod encrypted_schedule;
 pub mod enrollment;
+pub mod failover_adapters;
 pub mod failover_executor;
 pub mod http_auth;
 pub mod http_enrollment;
