@@ -27,8 +27,9 @@ pub async fn schedule_action(
     tx.batch_execute("SET LOCAL lock_timeout='3s'; SET LOCAL statement_timeout='5s'")
         .await?;
     let mut permit = IntegrationAction::lock(&tx, principal, key, Operation::Schedule).await?;
-    if let Some(row) = tx.query_opt("SELECT actor_kind,actor_id FROM workflow_schedule_occurrences WHERE account_id=$1 AND request_id=$2", &[&key.account_id,&request.request_id]).await? {
-        if row.get::<_,String>(0) != "integration" || row.get::<_,uuid::Uuid>(1) != principal.grant_id() {return Err(AuthError::Conflict);}
+    if let Some(row) = tx.query_opt("SELECT actor_kind,actor_id FROM workflow_schedule_occurrences WHERE account_id=$1 AND request_id=$2", &[&key.account_id,&request.request_id]).await?
+        && (row.get::<_,String>(0) != "integration" || row.get::<_,uuid::Uuid>(1) != principal.grant_id()) {
+        return Err(AuthError::Conflict);
     }
     let result = store::schedule_core(&mut permit, request, policy)
         .await
