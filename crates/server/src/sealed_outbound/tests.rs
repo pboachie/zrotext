@@ -257,7 +257,7 @@ async fn candidate_queue_replays_without_spending_or_rehydration_and_refunds_onc
             .unwrap()
     );
     let cancellation = f.db.query_one(
-        "SELECT state,version,(SELECT count(*) FROM usage_ledger WHERE entry_kind='refund') FROM messages WHERE id=$1",
+        "SELECT state,state_version,(SELECT count(*) FROM usage_ledger WHERE entry_kind='refund') FROM messages WHERE id=$1",
         &[&id],
     ).await.unwrap();
     assert!(
@@ -267,7 +267,7 @@ async fn candidate_queue_replays_without_spending_or_rehydration_and_refunds_onc
             .unwrap()
     );
     let repeated = f.db.query_one(
-        "SELECT state,version,(SELECT count(*) FROM usage_ledger WHERE entry_kind='refund') FROM messages WHERE id=$1",
+        "SELECT state,state_version,(SELECT count(*) FROM usage_ledger WHERE entry_kind='refund') FROM messages WHERE id=$1",
         &[&id],
     ).await.unwrap();
     assert_eq!(cancellation.get::<_, String>(0), "cancelled");
