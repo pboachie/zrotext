@@ -256,12 +256,28 @@ async fn candidate_queue_replays_without_spending_or_rehydration_and_refunds_onc
             .await
             .unwrap()
     );
+    let cancellation = f.db.query_one(
+        "SELECT state,version,(SELECT count(*) FROM usage_ledger WHERE entry_kind='refund') FROM messages WHERE id=$1",
+        &[&id],
+    ).await.unwrap();
     assert!(
         DeliveryStore::new(&mut db)
             .cancel(f.account, id)
             .await
-            .is_err()
+            .unwrap()
     );
+    let repeated = f.db.query_one(
+        "SELECT state,version,(SELECT count(*) FROM usage_ledger WHERE entry_kind='refund') FROM messages WHERE id=$1",
+        &[&id],
+    ).await.unwrap();
+    assert_eq!(cancellation.get::<_, String>(0), "cancelled");
+    assert_eq!(
+        repeated.get::<_, String>(0),
+        cancellation.get::<_, String>(0)
+    );
+    assert_eq!(repeated.get::<_, i64>(1), cancellation.get::<_, i64>(1));
+    assert_eq!(cancellation.get::<_, i64>(2), 1);
+    assert_eq!(repeated.get::<_, i64>(2), 1);
     f.db.execute(
         "UPDATE messages SET updated_at=now()-interval '2 days' WHERE id=$1",
         &[&id],
