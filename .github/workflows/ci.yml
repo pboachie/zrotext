@@ -228,6 +228,24 @@ jobs:
       - name: Test without PostgreSQL-backed and live Stripe tests
         if: env.RUN_RUST == 'true'
         run: cargo test --locked --workspace
+      - name: Provision PostgreSQL lock capacity for parallel schema fixtures
+        if: env.RUN_RUST == 'true'
+        env:
+          POSTGRES_SERVICE_ID: ${{ job.services.postgres.id }}
+        run: |
+          # Four full-schema fixtures can concurrently lock tables, indexes and
+          # foreign-key dependencies during DROP SCHEMA CASCADE. Keep all tests
+          # and their concurrency; size the disposable server's lock table.
+          docker exec "$POSTGRES_SERVICE_ID" psql -U postgres -d postgres -v ON_ERROR_STOP=1 -c "ALTER SYSTEM SET max_locks_per_transaction = '256'"
+          docker restart "$POSTGRES_SERVICE_ID"
+          for attempt in {1..30}; do
+            if docker exec "$POSTGRES_SERVICE_ID" pg_isready -U postgres; then
+              break
+            fi
+            sleep 1
+          done
+          docker exec "$POSTGRES_SERVICE_ID" pg_isready -U postgres
+          test "$(docker exec "$POSTGRES_SERVICE_ID" psql -U postgres -d postgres -Atc 'SHOW max_locks_per_transaction')" = '256'
       - name: Test against PostgreSQL
         if: env.RUN_RUST == 'true'
         run: cargo test --locked --workspace -- --ignored --skip real_stripe_ --test-threads=4

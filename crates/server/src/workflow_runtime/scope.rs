@@ -279,8 +279,18 @@ impl CheckedScope<'_, '_> {
         {
             return Err(AuthError::Forbidden);
         }
-        self.tx.query_opt(
-        "SELECT 1 FROM workflow_integration_grants g JOIN sessions s ON s.id=g.created_session \
+        let deadline = self.tx.query_opt(
+        "SELECT LEAST(g.expires_ms,r.expires_ms,k.valid_until_ms, \
+         floor(extract(epoch FROM s.expires_at)*1000)::bigint, \
+         CASE WHEN $5::boolean THEN COALESCE((SELECT max(cg.expires_ms) FROM connector_grants cg \
+             WHERE cg.account_id=g.account_id AND cg.connector_id=g.connector_id AND cg.line_id=g.line_id \
+             AND cg.kind='read' AND (cg.read_directions & 8)=8 AND cg.revoked_ms IS NULL \
+             AND (cardinality(cg.conversation_restriction)=0 OR $4=ANY(cg.conversation_restriction))),0) ELSE 9223372036854775807 END, \
+         CASE WHEN $6::boolean THEN COALESCE((SELECT max(cg.expires_ms) FROM connector_grants cg \
+             WHERE cg.account_id=g.account_id AND cg.connector_id=g.connector_id AND cg.line_id=g.line_id \
+             AND cg.kind='send' AND cg.revoked_ms IS NULL \
+             AND (cardinality(cg.conversation_restriction)=0 OR $4=ANY(cg.conversation_restriction))),0) ELSE 9223372036854775807 END) \
+         FROM workflow_integration_grants g JOIN sessions s ON s.id=g.created_session \
          JOIN accounts a ON a.id=g.account_id \
          JOIN users u ON u.id=g.created_by_user \
          JOIN memberships m ON (m.account_id,m.user_id)=(g.account_id,g.created_by_user) \
@@ -307,8 +317,8 @@ impl CheckedScope<'_, '_> {
              AND (cardinality(cg.conversation_restriction)=0 OR $4=ANY(cg.conversation_restriction)))) \
          AND (NOT $6::boolean OR EXISTS(SELECT 1 FROM connector_grants cg WHERE cg.account_id=g.account_id AND cg.connector_id=g.connector_id AND cg.line_id=g.line_id AND cg.kind='send' AND cg.revoked_ms IS NULL AND cg.expires_ms>$3 AND (cardinality(cg.conversation_restriction)=0 OR $4=ANY(cg.conversation_restriction))))",
         &[&account,&principal.grant_id(),&current.accepted_ms,&self.header.interval, &read, &send, &permission, &principal.credential_hash().as_slice(), &content]
-    ).await?.ok_or(AuthError::Forbidden)?;
-        activation::origin(self.tx, &self.statement)
+    ).await?.ok_or(AuthError::Forbidden)?.get::<_,i64>(0);
+        let origin_deadline = activation::origin(self.tx, &self.statement)
             .await
             .map_err(|_| AuthError::Forbidden)?;
         if matches!(self.operation, Operation::Propose | Operation::Send) {
@@ -322,6 +332,19 @@ impl CheckedScope<'_, '_> {
                 .workflow_signer(device, line, &signer)
                 .await
                 .map_err(|_| AuthError::Forbidden)?;
+        }
+        // The SQL query and subsequent origin/signer checks can themselves
+        // wait. Their locked deadlines must be compared with a database clock
+        // sampled after those awaits, never with the earlier crypto snapshot.
+        let final_now = activation::now(self.tx)
+            .await
+            .map_err(|_| AuthError::Forbidden)?;
+        if final_now < current.accepted_ms
+            || final_now >= deadline.min(origin_deadline)
+            || final_now >= self.header.expires_ms
+            || final_now >= self.statement.expires_ms
+        {
+            return Err(AuthError::Forbidden);
         }
         Ok(())
     }
