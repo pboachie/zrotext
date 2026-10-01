@@ -17,6 +17,10 @@ rejected, including caller-selected actors, permission bits, approval flags,
 owner identities and message/dispatch markers. Every request ID is a nonzero
 UUID. An exact semantic replay retains its identity; reuse for a different
 operation or payload conflicts. Current authority is checked again on replay.
+Grant, context, interval, session and connector deadlines are checked against a
+fresh database clock after the final potentially blocking authority query.
+An earlier successful check cannot keep a grant live through a later query wait;
+expired issuance rolls back the credential records and MFA consumption.
 Credentials belong to transport authentication, never request bodies, responses
 or audit payloads. No owner-cookie/API-key/agent-key fallback is implied.
 
