@@ -21,14 +21,16 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 const PASSWORD: &str = "synthetic-workflow-password";
-struct Case {
-    f: Fixture,
-    owner: SessionPrincipal,
-    hasher: TokenHasher,
+pub(super) struct Case {
+    pub(super) f: Fixture,
+    pub(super) owner: SessionPrincipal,
+    pub(super) hasher: TokenHasher,
     cipher: mfa::MfaCipher,
     factor: String,
-    request: GrantRequest,
-    header: wire::Header,
+    pub(super) request: GrantRequest,
+    pub(super) header: wire::Header,
+    pub(super) outbound: Option<SigningKey>,
+    pub(super) phone_reader: Option<[u8; 32]>,
 }
 fn digest(domain: &[u8], value: &str) -> [u8; 32] {
     let mut mac =
@@ -39,10 +41,10 @@ fn digest(domain: &[u8], value: &str) -> [u8; 32] {
     mac.finalize().into_bytes().into()
 }
 impl Case {
-    async fn new() -> Self {
+    pub(super) async fn new() -> Self {
         Self::with_signer(None).await
     }
-    async fn with_signer(signer_lifetime: Option<i64>) -> Self {
+    pub(super) async fn with_signer(signer_lifetime: Option<i64>) -> Self {
         let (mut f, owner, s) = pending().await;
         activate(&f, &s).await;
 
@@ -71,6 +73,7 @@ impl Case {
         record.push(1);
         f.bytes.splice(300..300, record);
         f.bytes[150] = 4;
+        let mut outbound = None;
         let signer = signer_lifetime.map(|lifetime| {
             let key = SigningKey::generate_from_rng(&mut rand::rng());
             let point = key.verifying_key().to_sec1_point(false);
@@ -88,6 +91,28 @@ impl Case {
             record.push(1);
             f.bytes.splice(598..598, record);
             f.bytes[150] = 5;
+            outbound = Some(key);
+            id
+        });
+        // A real signed role-1 phone receiver is required for outbound wraps;
+        // direction 4 does not widen the existing inbound archive reader set.
+        let phone_reader = signer.map(|_| {
+            let key = SigningKey::generate_from_rng(&mut rand::rng());
+            let point = key.verifying_key().to_sec1_point(false);
+            let id: [u8; 32] =
+                Sha256::digest([b"ZTSE/key/v1\0".as_slice(), &[0, 16], point.as_bytes()].concat())
+                    .into();
+            let mut record = vec![1];
+            record.extend(id);
+            record.extend(point.as_bytes());
+            record.extend(f.device.as_bytes());
+            record.extend(f.line.as_bytes());
+            record.extend(4u16.to_be_bytes());
+            record.extend((now - 1000).to_be_bytes());
+            record.extend((now + 120000).to_be_bytes());
+            record.push(1);
+            f.bytes.splice(151..151, record);
+            f.bytes[150] = 6;
             id
         });
         f.resign();
@@ -144,12 +169,23 @@ impl Case {
             registry::RegistrationRequest {
                 display_name: "synthetic-workflow-reader".into(),
                 key_point: point.as_bytes().try_into().unwrap(),
-                grants: vec![registry::GrantRequest {
-                    kind: registry::GrantKind::Read { directions: 8 },
-                    line_id: f.line,
-                    conversation_restriction: vec![s.interval],
-                    expires_ms: (now + 60000) as u64,
-                }],
+                grants: {
+                    let mut grants = vec![registry::GrantRequest {
+                        kind: registry::GrantKind::Read { directions: 8 },
+                        line_id: f.line,
+                        conversation_restriction: vec![s.interval],
+                        expires_ms: (now + 60000) as u64,
+                    }];
+                    if signer.is_some() {
+                        grants.push(registry::GrantRequest {
+                            kind: registry::GrantKind::Send,
+                            line_id: f.line,
+                            conversation_restriction: vec![],
+                            expires_ms: (now + 60000) as u64,
+                        });
+                    }
+                    grants
+                },
                 expires_ms: (now + 60000) as u64,
             },
         )
@@ -223,9 +259,13 @@ impl Case {
             factor,
             request,
             header,
+            outbound,
+            phone_reader,
         }
     }
-    async fn descriptor(&self) -> crate::http_owner_conversations::context::decisions::Descriptor {
+    pub(super) async fn descriptor(
+        &self,
+    ) -> crate::http_owner_conversations::context::decisions::Descriptor {
         use crate::http_owner_conversations::context::decisions;
         let bytes: Vec<u8> = self
             .f
@@ -257,7 +297,7 @@ impl Case {
             commitment: "informational".into(),
         }
     }
-    async fn issue(&self) -> Result<IssuedCredential, auth::AuthError> {
+    pub(super) async fn issue(&self) -> Result<IssuedCredential, auth::AuthError> {
         issue_grant(
             &mut self.f.connect().await,
             &self.owner,
@@ -268,6 +308,15 @@ impl Case {
             &self.request,
         )
         .await
+    }
+    pub(super) async fn issue_another(&mut self) -> IssuedCredential {
+        self.factor = format!("zrc_{}", URL_SAFE_NO_PAD.encode(rand::random::<[u8; 16]>()));
+        let hash = digest(
+            b"mfa-recovery-v1",
+            &format!("{}:{}:{}", self.f.account, self.owner.user_id, self.factor),
+        );
+        self.f.db.execute("INSERT INTO owner_mfa_recovery_codes(account_id,user_id,code_hash) VALUES($1,$2,$3)", &[&self.f.account,&self.owner.user_id,&hash.as_slice()]).await.unwrap();
+        self.issue().await.unwrap()
     }
     async fn projection(&self) -> Vec<u8> {
         let reader: Vec<u8>=self.f.db.query_one("SELECT key_id FROM connector_registrations WHERE account_id=$1 AND connector_id=$2", &[&self.f.account,&self.request.connector]).await.unwrap().get(0);
@@ -280,6 +329,109 @@ impl Case {
         envelope.extend(33u32.to_be_bytes());
         envelope.extend([99; 33]);
         envelope
+    }
+    pub(super) async fn bind_message(
+        &mut self,
+        approved: context::decisions::ActionState,
+        dispatch: Uuid,
+    ) -> (context::decisions::ActionState, Uuid) {
+        let factor = format!("zrc_{}", URL_SAFE_NO_PAD.encode(rand::random::<[u8; 16]>()));
+        let hash = digest(
+            b"mfa-recovery-v1",
+            &format!("{}:{}:{factor}", self.f.account, self.owner.user_id),
+        );
+        self.f.db.execute("INSERT INTO owner_mfa_recovery_codes(account_id,user_id,code_hash) VALUES($1,$2,$3)", &[&self.f.account,&self.owner.user_id,&hash.as_slice()]).await.unwrap();
+        let credential = auth::account::create_api_key_with_proof(
+            &mut self.f.connect().await,
+            Some(&self.cipher),
+            &self.hasher,
+            &self.owner,
+            PASSWORD,
+            Some(&factor),
+            auth::account::ApiKeyRequest {
+                scopes: &[auth::Scope::MessagesSend],
+                bound_device_id: Some(self.f.device),
+                lifetime: auth::ApiKeyLifetime::Unspecified,
+            },
+        )
+        .await
+        .unwrap();
+        let api = auth::authenticate_api_key(&self.f.db, &self.hasher, &credential.token)
+            .await
+            .unwrap();
+        self.f.db.execute("INSERT INTO usage_quota_policies(account_id,metric,limit_units) VALUES($1,'outbound_message',1000) ON CONFLICT(account_id,metric) DO NOTHING", &[&self.f.account]).await.unwrap();
+        let now: i64 = self
+            .f
+            .db
+            .query_one(
+                "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        let message = Uuid::new_v4();
+        let original_signer = self.f.signer;
+        let original_key = self.f.event_signer.clone();
+        let original_readers = self.f.readers.clone();
+        self.f.signer = self.request.signer.unwrap();
+        self.f.event_signer = self.outbound.clone().unwrap();
+        self.f.readers = vec![
+            crate::sealed_envelope::ExpectedRecipient {
+                role: 1,
+                key_id: self.phone_reader.unwrap(),
+            },
+            crate::sealed_envelope::ExpectedRecipient {
+                role: 2,
+                key_id: self.header.reader,
+            },
+        ];
+        let descriptor = {
+            let tx = self.f.db.transaction().await.unwrap();
+            let descriptor = context::decisions::store::descriptor(&tx, approved.key)
+                .await
+                .unwrap();
+            tx.rollback().await.unwrap();
+            descriptor
+        };
+        let lifetime = (descriptor.expires_at_ms().unwrap() - now - 1).min(30000);
+        assert!(
+            lifetime > 0,
+            "owner binding must precede the exact action deadline"
+        );
+        let bytes = crate::sealed_outbound::tests::envelope(&self.f, message, now, lifetime);
+        self.f.signer = original_signer;
+        self.f.event_signer = original_key;
+        self.f.readers = original_readers;
+        crate::sealed_outbound::admit_candidate02_with_limit(
+            &mut self.f.connect().await,
+            &api,
+            &self.hasher,
+            crate::sealed_outbound::WriterContext {
+                site_id: "manifest-test",
+                deployment_epoch: 1,
+                billing_enabled: true,
+            },
+            &bytes,
+            Some(1),
+        )
+        .await
+        .unwrap();
+        let bound = context::decisions::bind_message(
+            &mut self.f.connect().await,
+            &self.owner,
+            Uuid::new_v4(),
+            approved.record_version,
+            approved.key,
+            context::decisions::store::RenderedBinding {
+                message_id: message,
+                dispatch_id: dispatch,
+                message_digest: context::decisions::descriptor::hex(&Sha256::digest(bytes)),
+            },
+        )
+        .await
+        .unwrap();
+        (bound, message)
     }
 }
 

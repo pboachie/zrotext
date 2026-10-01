@@ -127,6 +127,27 @@ async fn record_actor(
     digest: &[u8],
     result: &ActionState,
 ) -> Result<(), ConversationError> {
+    record_result(
+        tx,
+        identity,
+        context,
+        (request, op),
+        result.key.action_id,
+        digest,
+        result,
+    )
+    .await
+}
+pub(crate) async fn record_result<T: Serialize>(
+    tx: &Transaction<'_>,
+    identity: (Uuid, super::proposal::Actor),
+    context: Uuid,
+    request: (Uuid, i16),
+    subject: Uuid,
+    digest: &[u8],
+    result: &T,
+) -> Result<(), ConversationError> {
+    let (request, op) = request;
     let (account, actor) = identity;
     let count: i64 = tx
         .query_one(
@@ -141,13 +162,60 @@ async fn record_actor(
     let bytes = serde_json::to_vec(result).map_err(|_| ConversationError::Unavailable)?;
     match actor {
         super::proposal::Actor::Owner(user) => {
-            tx.execute("INSERT INTO workflow_action_mutations(account_id,request_id,context_id,subject_id,operation,request_digest,result,actor_user_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)", &[&account,&request,&context,&result.key.action_id,&op,&digest,&bytes,&user]).await?;
+            tx.execute("INSERT INTO workflow_action_mutations(account_id,request_id,context_id,subject_id,operation,request_digest,result,actor_user_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)", &[&account,&request,&context,&subject,&op,&digest,&bytes,&user]).await?;
         }
         super::proposal::Actor::Integration(grant) => {
-            tx.execute("INSERT INTO workflow_action_mutations(account_id,request_id,context_id,subject_id,operation,request_digest,result,actor_kind,actor_grant_id) VALUES($1,$2,$3,$4,$5,$6,$7,'integration',$8)", &[&account,&request,&context,&result.key.action_id,&op,&digest,&bytes,&grant]).await?;
+            tx.execute("INSERT INTO workflow_action_mutations(account_id,request_id,context_id,subject_id,operation,request_digest,result,actor_kind,actor_grant_id) VALUES($1,$2,$3,$4,$5,$6,$7,'integration',$8)", &[&account,&request,&context,&subject,&op,&digest,&bytes,&grant]).await?;
         }
     }
     Ok(())
+}
+/// The shared transition consumes an existing owner-confirmed message only.
+/// Callers retain their private authority fence before and after this write.
+pub(crate) async fn dispatch_transition(
+    tx: &Transaction<'_>,
+    descriptor: &Descriptor,
+    context: Uuid,
+    actor: super::proposal::Actor,
+    message: Uuid,
+    dispatch: Uuid,
+) -> Result<(), ConversationError> {
+    let key = descriptor.key()?;
+    if activation::now(tx).await?
+        < descriptor
+            .not_before
+            .checked_mul(1000)
+            .ok_or(ConversationError::Invalid)?
+    {
+        return Err(ConversationError::Conflict);
+    }
+    tx.query_opt("SELECT 1 FROM workflow_message_links l JOIN messages m ON (m.account_id,m.id)=(l.account_id,l.live_message_id) WHERE l.account_id=$1 AND l.action_id=$2 AND l.revision=$3 AND l.binding_digest=$4 AND l.message_id=$5 AND l.dispatch_id=$6 AND m.workflow_action_id=$2 AND m.state IN ('queued','claimed') AND m.transport_payload IS NOT NULL AND digest(m.transport_payload,'sha256')=l.message_digest AND NOT EXISTS(SELECT 1 FROM message_attempts a WHERE a.account_id=m.account_id AND a.message_id=m.id) FOR UPDATE OF m",
+        &[&key.account_id,&key.action_id,&key.revision,&&key.binding_digest[..],&message,&dispatch]).await?.ok_or(ConversationError::Forbidden)?;
+    if let super::proposal::Actor::Integration(grant) = actor {
+        if tx.execute("UPDATE messages SET workflow_executor_grant=$3 WHERE account_id=$1 AND id=$2 AND (workflow_executor_grant IS NULL OR workflow_executor_grant=$3)", &[&key.account_id,&message,&grant]).await? != 1 {
+            return Err(ConversationError::Forbidden);
+        }
+    }
+    if tx.execute("UPDATE workflow_actions SET phase='dispatching',record_version=record_version+1 WHERE account_id=$1 AND id=$2 AND revision=$3 AND binding_digest=$4 AND phase='approved'", &[&key.account_id,&key.action_id,&key.revision,&&key.binding_digest[..]]).await? != 1 {
+        return Err(ConversationError::Conflict);
+    }
+    let state = head(tx, key.account_id, key.action_id).await?;
+    let digest = match actor {
+        super::proposal::Actor::Owner(_) => request_digest(7, &(key, message, dispatch))?,
+        super::proposal::Actor::Integration(grant) => {
+            request_digest(7, &(grant, key, message, dispatch))?
+        }
+    };
+    record_actor(
+        tx,
+        (key.account_id, actor),
+        context,
+        dispatch,
+        7,
+        &digest,
+        &state,
+    )
+    .await
 }
 pub(crate) async fn version(
     tx: &Transaction<'_>,

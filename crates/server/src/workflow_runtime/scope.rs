@@ -182,6 +182,13 @@ pub(super) async fn lock_scope<'tx, 'connection>(
     Ok(result)
 }
 impl CheckedScope<'_, '_> {
+    pub(super) fn signer(&self) -> Result<[u8; 32], AuthError> {
+        self.row
+            .get::<_, Option<Vec<u8>>>(14)
+            .ok_or(AuthError::Forbidden)?
+            .try_into()
+            .map_err(|_| AuthError::Forbidden)
+    }
     pub(super) fn contact(&self) -> Uuid {
         self.row.get(12)
     }

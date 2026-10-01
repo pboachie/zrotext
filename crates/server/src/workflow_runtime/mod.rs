@@ -4,7 +4,15 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+mod action;
 mod authentication;
+pub mod contracts;
+mod dispatch;
+mod execution;
+mod scheduling;
+pub use dispatch::call;
+pub use execution::{SendOutcome, send_action};
+pub use scheduling::schedule_action;
 mod contacts;
 mod proposals;
 mod status;
@@ -12,6 +20,8 @@ pub use proposals::propose_action;
 pub use status::read_action_status;
 #[cfg(test)]
 mod database_tests;
+#[cfg(test)]
+mod execution_tests;
 mod grants;
 pub(crate) mod lifecycle;
 mod reads;
