@@ -35,6 +35,7 @@ fn content_reads() -> Vec<(&'static str, Router, String)> {
         database_url: NO_DATABASE.to_owned(),
         auth_hasher: hasher(),
         canonical_origin: ORIGIN.to_owned(),
+        contacts_vault: None,
     });
     let messages = http_owner_messages::router(http_owner_messages::OwnerMessagesState {
         database_url: NO_DATABASE.to_owned(),

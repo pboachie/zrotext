@@ -248,6 +248,13 @@ an authenticated freshness checkpoint; see the
 
 ## Test-only message-plane client (task 21 slice 3)
 
+`src/sealed-lifecycle-client.ts` provides metadata-only list/status and empty-body
+pre-grant cancellation for the default-off sealed queue. `SealedLifecycleClient`
+requires an HTTPS origin and scoped bearer, bounds response bytes/pages, rejects
+extra content fields, and never retries an uncertain cancellation automatically.
+It provides no ciphertext fetch or execution grant. See the current
+[lifecycle contract](../../protocol/v1/sealed-api-v1.md).
+
 `src/msgplane-client.ts` binds to the slice-1 sealed message-plane contract
 ([protocol/v1/sealed-api-v1.md](../../protocol/v1/sealed-api-v1.md) and its
 [OpenAPI document](../../protocol/v1/openapi/sealed-v1.json)). It is
