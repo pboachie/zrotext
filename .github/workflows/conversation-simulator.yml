@@ -87,14 +87,15 @@ jobs:
           cargo fmt --all --check
           cargo clippy --locked -p zrotext-server --all-targets --features conversation-simulator-tests -- -D warnings
           cargo test --locked -p zrotext-server --lib --features conversation-simulator-tests --no-run
-          (cd android && ./gradlew :app:compileDebugUnitTestKotlin --no-daemon --max-workers=2)
-      - name: Require synthetic capture, encrypted history, confirmed reply and closure
-        run: python3 scripts/conversation_simulator.py
       - name: Validate the complete simulator-enabled workspace
         # The journal bridge runs in the separate compiled-emulator workflow.
         # External Stripe tests require credentials and stay off.
         run: |
           cargo test --locked --workspace --features conversation-simulator-tests
           cargo test --locked --workspace --features conversation-simulator-tests -- --ignored --skip real_stripe_ --skip loopback_journal_bridge --test-threads=4
+      - name: Build the Android simulator contract tests
+        run: (cd android && ./gradlew :app:compileDebugUnitTestKotlin --no-daemon --max-workers=2)
+      - name: Require synthetic capture, encrypted history, confirmed reply and closure
+        run: python3 scripts/conversation_simulator.py
       - name: Require authenticated dormant runtime assembly
         run: python3 scripts/conversation_simulator.py --assembly
