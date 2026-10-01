@@ -75,6 +75,10 @@ struct ExportQuery {
     workflow_message_links_before: Option<String>,
     workflow_routines_before: Option<String>,
     workflow_context_fences_before: Option<String>,
+    schedule_policies_before: Option<String>,
+    schedule_series_before: Option<Uuid>,
+    schedule_occurrences_before: Option<Uuid>,
+    schedule_audit_before: Option<Uuid>,
 }
 
 #[derive(Serialize)]
@@ -173,6 +177,7 @@ fn message_view(row: &Row) -> Result<MessageView, tokio_postgres::Error> {
 struct ExportView {
     execution_inventory:
         crate::http_owner_conversations::channel::execution::lifecycle::ExecutionInventory,
+    workflow_schedule: crate::encrypted_schedule::lifecycle::ScheduleExport,
     workflow_context: crate::http_owner_conversations::context::lifecycle::WorkflowExport,
     confirmation_inventory: crate::http_owner_conversations::confirmation_records::ProofInventory,
     agent_grants: crate::auth::agent_grants::GrantPage,
@@ -421,9 +426,25 @@ async fn export_account(
             Ok(view) => view,
             Err(error) => return error.into_response(),
         };
+    let workflow_schedule = match crate::encrypted_schedule::lifecycle::export(
+        &mut client,
+        &principal,
+        crate::encrypted_schedule::lifecycle::Cursors {
+            policies: query.schedule_policies_before,
+            series: query.schedule_series_before,
+            occurrences: query.schedule_occurrences_before,
+            audit: query.schedule_audit_before,
+        },
+    )
+    .await
+    {
+        Ok(view) => view,
+        Err(error) => return error.into_response(),
+    };
     Json(ExportView {
         execution_inventory,
         workflow_decisions,
+        workflow_schedule,
         workflow_context,
         confirmation_inventory:
             match crate::http_owner_conversations::confirmation_records::inventory(
