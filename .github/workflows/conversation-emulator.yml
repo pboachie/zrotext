@@ -1,7 +1,7 @@
 name: Isolated conversation emulator
 on:
   pull_request:
-    paths: ['android/**', 'crates/**', 'sdk/typescript/**', 'web/owner/**', 'deploy/compose/migrations/**', 'scripts/conversation_emulator.py', 'scripts/test_conversation_emulator.py', '.github/workflows/conversation-emulator.yml']
+    paths: ['android/**', 'crates/**', 'sdk/typescript/**', 'web/owner/**', 'deploy/compose/migrations/**', 'scripts/conversation_emulator.py', 'scripts/test_conversation_emulator.py', 'scripts/conversation_compiled_acceptance.py', 'scripts/test_conversation_compiled_acceptance.py', '.github/workflows/conversation-emulator.yml']
   push:
     branches: [main]
 permissions:
@@ -47,6 +47,7 @@ jobs:
       - name: Build only synthetic emulator artifacts
         run: |
           python3 -m unittest discover -s scripts -p test_conversation_emulator.py
+          python3 -m unittest discover -s scripts -p test_conversation_compiled_acceptance.py
           (cd sdk/typescript && npm ci --ignore-scripts && npm run build)
           cargo +1.97.1 test --locked -p zrotext-server --lib --features conversation-simulator-tests --no-run
           (cd android && ./gradlew -PisolatedConversationProbe=true :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon)
@@ -65,3 +66,9 @@ jobs:
           done
           test "$(adb -s emulator-5596 shell getprop sys.boot_completed | tr -d '\r')" = 1
           python3 scripts/conversation_emulator.py --serial emulator-5596 --adb "$ANDROID_HOME/platform-tools/adb" --aapt "$ANDROID_HOME/build-tools/37.0.0/aapt" --toolchain 1.97.1 --skip-build
+          python3 scripts/conversation_compiled_acceptance.py \
+            --commit "$(git rev-parse HEAD)" \
+            --app-sha256 "$(sha256sum android/app/build/outputs/apk/debug/app-debug.apk | cut -d ' ' -f 1)" \
+            --test-sha256 "$(sha256sum android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk | cut -d ' ' -f 1)" \
+            --adb "$ANDROID_HOME/platform-tools/adb" --aapt "$ANDROID_HOME/build-tools/37.0.0/aapt" \
+            --execute --handoff-reference "exclusive job-owned emulator after roundtrip"
