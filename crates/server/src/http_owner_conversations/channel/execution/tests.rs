@@ -7,6 +7,59 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 const EXECUTION_SCHEMA: &str = include_str!(
     "../../../../../../deploy/compose/migration-candidates/NNN_conversation_execution_records.sql"
 );
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn execution_radio_event_cannot_borrow_another_devices_attempt() {
+    let case = prepared().await;
+    let (envelope, confirmation, signature) = case.packet(Uuid::new_v4(), 30_000).await;
+    case.enqueue(&envelope, &confirmation, &signature)
+        .await
+        .unwrap();
+    let session = delivery_identity(&case);
+    let frame = request(
+        &case,
+        &session,
+        confirmation.message,
+        Uuid::new_v4(),
+        &envelope,
+    );
+    issue(&case, &session, &frame).await.unwrap();
+    let other_device = Uuid::new_v4();
+    let other_message = Uuid::new_v4();
+    let other_attempt = Uuid::new_v4();
+    case.f.db.execute("INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'synthetic other device')",
+        &[&other_device,&case.f.account]).await.unwrap();
+    case.f.db.execute("INSERT INTO messages(id,account_id,device_id,recipient_e164,recipient_digest,transport_mode,transport_payload,request_digest,state,expires_at) \
+        VALUES($1,$2,$3,'+12',$4,'synthetic_alpha',$5,$4,'claimed',clock_timestamp()+interval '1 minute')",
+        &[&other_message,&case.f.account,&other_device,&vec![8u8;32],&b"synthetic".as_slice()]).await.unwrap();
+    case.f.db.execute("INSERT INTO message_attempts(id,account_id,message_id,device_id,generation,session_epoch,deployment_epoch,status) \
+        VALUES($1,$2,$3,$4,1,1,1,'granted')",&[&other_attempt,&case.f.account,&other_message,&other_device]).await.unwrap();
+    let before = state(&case).await;
+    let events: i64 = case
+        .f
+        .db
+        .query_one("SELECT count(*) FROM message_events", &[])
+        .await
+        .unwrap()
+        .get(0);
+    let error = case.f.db.execute("INSERT INTO message_events(id,account_id,message_id,attempt_id,evidence_code,event_digest,observed_at,resulting_state,segment_count) \
+        VALUES($1,$2,$3,$4,'durable_intent',$5,clock_timestamp(),'submitting',1)",
+        &[&Uuid::new_v4(),&case.f.account,&confirmation.message,&other_attempt,&vec![7u8;32]]).await.unwrap_err();
+    assert_eq!(error.as_db_error().unwrap().code().code(), "23514");
+    assert_eq!(state(&case).await, before);
+    assert_eq!(
+        case.f
+            .db
+            .query_one("SELECT count(*) FROM message_events", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        events
+    );
+    case.f.cleanup().await;
+}
+
 #[tokio::test]
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
 async fn execution_outbound_deadline_refuses_inbound_direction_and_foreign_account() {

@@ -939,12 +939,12 @@ async fn confirmed_queue_without_segment_authority_cannot_issue_an_ordinary_seal
     let before = case.counts().await;
     let job = dispatch_snapshot(&case).await;
     let mut db = case.f.connect().await;
-    assert!(
-        crate::sealed_dispatch::grant(&mut db, &session, &ready, &policy)
-            .await
-            .unwrap()
-            .is_none()
-    );
+    // Current admission may reject the request before selecting a queue row.
+    // Only the explicit refusal or no grant is valid; database errors fail.
+    assert!(matches!(
+        crate::sealed_dispatch::grant(&mut db, &session, &ready, &policy).await,
+        Ok(None) | Err(crate::sealed_dispatch::Error::Refused)
+    ));
     assert_eq!(case.counts().await, before);
     assert_eq!(dispatch_snapshot(&case).await, job);
     assert_eq!(

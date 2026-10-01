@@ -763,3 +763,61 @@ async fn reconnect_that_wins_session_lock_blocks_first_intent_after_fetch() {
     assert_eq!(state, "claimed");
     case.cleanup().await;
 }
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated disposable schema"]
+async fn execution_candidate_preserves_ordinary_sealed_grant_fetch_and_intent() {
+    let case = Case::new(Some(2)).await;
+    case.admission
+        .db
+        .batch_execute(include_str!(
+            "../../../../deploy/compose/migration-candidates/NNN_conversation_execution_records.sql"
+        ))
+        .await
+        .unwrap();
+    let frame = case.grant().await.unwrap().unwrap();
+    assert_eq!(frame.segment_count, 2);
+    assert_eq!(frame.message_id, case.message);
+    assert_eq!(
+        wire::digest(&frame.envelope_sha256).unwrap(),
+        <[u8; 32]>::from(Sha256::digest(&case.bytes))
+    );
+    assert!(case.grant().await.unwrap().is_none());
+    let request = case.request(frame.clone());
+    assert_eq!(case.fetch(&request).await.unwrap(), case.bytes);
+    assert_eq!(case.fetch(&request).await.unwrap(), case.bytes);
+    let mut connection = case.admission.connect().await;
+    let mut store = DeliveryStore::new(&mut connection);
+    let observed = case
+        .admission
+        .db
+        .query_one(
+            "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    let intent = RadioEvent {
+        event_id: Uuid::new_v4(),
+        account_id: frame.account_id,
+        device_id: frame.device_id,
+        message_id: frame.message_id,
+        attempt_id: frame.attempt_id,
+        evidence: Evidence::DurableSubmitIntent,
+        observed_at_ms: observed,
+        segment_index: None,
+        segment_count: None,
+    };
+    assert_eq!(
+        store.record_radio_event(intent).await.unwrap(),
+        zrotext_domain::MessageState::Submitting
+    );
+    assert_eq!(
+        store.record_radio_event(intent).await.unwrap(),
+        zrotext_domain::MessageState::Submitting
+    );
+    assert!(case.fetch(&request).await.is_err());
+    assert!(case.grant().await.unwrap().is_none());
+    case.cleanup().await;
+}
