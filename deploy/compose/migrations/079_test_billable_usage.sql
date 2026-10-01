@@ -256,6 +256,9 @@ CREATE TRIGGER billing_usage_success_outbox AFTER INSERT ON message_events
 -- mapping removes its otherwise orphaned receipt; shared mappings survive.
 CREATE FUNCTION billing_usage_error_cleanup() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
+    -- Serialize last-mapping cleanup; a fresh statement after the lock sees
+    -- another tenant's committed deletion rather than retaining an orphan.
+    PERFORM 1 FROM billing_usage_meter_error_receipts WHERE event_id=OLD.event_id FOR UPDATE;
     DELETE FROM billing_usage_meter_error_receipts r WHERE r.event_id=OLD.event_id
         AND NOT EXISTS(SELECT 1 FROM billing_usage_meter_errors e WHERE e.event_id=r.event_id);
     RETURN OLD;

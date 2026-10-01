@@ -49,8 +49,12 @@ occurs inside a delivery or worker-claim transaction. Current customer-row
 locking and a fresh post-lock lease check enforce one active worker lease per
 customer across replicas. Leases last 15 seconds; transport has a five-second
 deadline; seven attempts, capped exponential backoff and bounded `Retry-After`
-prevent an unbounded retry loop. Lost responses reuse the original identifier.
-Expired lease completions cannot overwrite a newer worker's result.
+prevent an unbounded retry loop. Lost responses reuse the original identifier. Provider reporting seconds are
+floored from the original UTC reservation timestamp, never rounded into the
+following second or calendar period.
+Expired lease completions cannot overwrite a newer worker's result. The exact
+lease row is locked before fresh expiry checks; a final database-clock check
+after the write rolls back a completion that outlived its lease.
 
 Exact-identifier TEST acknowledgements record HTTP acceptance separately from
 asynchronous validation. Unknown responses, 429 and 5xx defer; other HTTP
@@ -92,7 +96,9 @@ unavailable until the invoice policy and provider bridge are reviewed.
 An unmounted owner review helper requires exact origin/CSRF, current password,
 MFA where enabled, and a final locked live-owner/session fence. It records one
 immutable `request_credit` (-1 requested unit) or `retain_charge` (0) decision
-for an existing reviewed logical action. Changed replay conflicts; one action
+for an existing reviewed logical action. The protected write is followed by
+a fresh owner-session check before commit; expiry rolls back the request.
+Changed replay conflicts; one action
 cannot accumulate duplicate credit requests. Closed reason codes and owner
 identity are retained without message content. This is an attributed request,
 not an issued monetary credit, negative meter event, provider adjustment or
@@ -102,7 +108,8 @@ remain in review rather than being treated as a successful credit.
 
 Binding/finalized/outbox/reconciliation/adjustment rows cascade with existing
 tenant reservation and billing-customer erasure. Error receipts shared across
-tenant mappings disappear when the last mapping is removed. Retaining copied
+tenant mappings disappear when the last mapping is removed. Receipt-row locking
+serializes concurrent final mapping removals before the cleanup check. Retaining copied
 event/attempt UUIDs avoids coupling billable history to event-log retention;
 there are no message bodies, routing numbers or model output in these tables.
 

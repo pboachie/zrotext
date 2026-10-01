@@ -138,7 +138,7 @@ async fn claim_one(client: &mut Client) -> Result<ClaimResult, UsageError> {
     }
     let row = tx.query_opt(
         "SELECT o.message_id,o.identifier,o.attempts,p.event_name,p.stripe_customer_id,
-            extract(epoch FROM b.report_at)::bigint
+            floor(extract(epoch FROM b.report_at))::bigint
          FROM billing_usage_outbox o JOIN billing_usage_bindings b USING(account_id,message_id)
          JOIN billing_usage_test_policies p USING(account_id,policy_version)
          JOIN billing_customers c USING(account_id)
@@ -240,26 +240,40 @@ fn retry_disposition(
 }
 
 async fn finish(
-    client: &Client,
+    client: &mut Client,
     claim: Claim,
     response: MeterResponse,
 ) -> Result<WorkResult, UsageError> {
+    let tx = client.transaction().await?;
+    // Acquire the exact current lease before reading any expiry predicate.
+    let Some(row)=tx.query_opt("SELECT lease_until FROM billing_usage_outbox WHERE account_id=$1 AND message_id=$2 AND state='leased' AND lease_id=$3 FOR UPDATE",&[&claim.account,&claim.message,&claim.lease]).await? else {
+        return Ok(WorkResult::Stale);
+    };
+    // SystemTime transports a DB timestamp; it is never compared to the host clock.
+    let deadline: std::time::SystemTime = row.get(0);
     let (state, error, delay) = disposition(response, &claim);
     let delay = delay as i32;
-    let changed = client.execute(
+    let changed = tx.execute(
         "UPDATE billing_usage_outbox SET state=$4,lease_id=NULL,lease_until=NULL,
             acknowledged_at=CASE WHEN $4='acknowledged' THEN clock_timestamp() ELSE acknowledged_at END,
             error_class=NULLIF($5,''),next_attempt_at=clock_timestamp()+($6::integer*interval '1 second')
          WHERE account_id=$1 AND message_id=$2 AND state='leased' AND lease_id=$3
            AND lease_until>clock_timestamp()", &[&claim.account,&claim.message,&claim.lease,&state,&error,&delay]).await?;
-    Ok(if changed == 0 {
-        WorkResult::Stale
-    } else {
-        match state {
-            "acknowledged" => WorkResult::Acknowledged,
-            "pending" => WorkResult::Deferred,
-            _ => WorkResult::Review,
-        }
+    // A trigger, constraint or other awaited write may outlive the lease.
+    // Use the authoritative DB clock AFTER mutation and roll back a late result.
+    if changed == 0
+        || !tx
+            .query_one("SELECT $1::timestamptz>clock_timestamp()", &[&deadline])
+            .await?
+            .get::<_, bool>(0)
+    {
+        return Ok(WorkResult::Stale);
+    }
+    tx.commit().await?;
+    Ok(match state {
+        "acknowledged" => WorkResult::Acknowledged,
+        "pending" => WorkResult::Deferred,
+        _ => WorkResult::Review,
     })
 }
 

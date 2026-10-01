@@ -148,6 +148,40 @@ async fn exact_live_owner_review_is_immutable_and_revoked_cached_session_cannot_
         record_request(&mut db, &owner, &context, &foreign).await,
         Err(AuthError::Unauthorized)
     ));
+    // Reach the insert with a live owner, then stall the write beyond expiry.
+    db.batch_execute("CREATE SEQUENCE review_insert_reached; CREATE FUNCTION delay_review_insert() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM nextval('review_insert_reached'); PERFORM pg_sleep(6); RETURN NEW; END $$; CREATE TRIGGER delay_review_insert BEFORE INSERT ON billing_usage_adjustment_requests FOR EACH ROW EXECUTE FUNCTION delay_review_insert()").await.unwrap();
+    db.execute(
+        "UPDATE sessions SET expires_at=clock_timestamp()+interval '5 seconds' WHERE id=$1",
+        &[&owner.session_id],
+    )
+    .await
+    .unwrap();
+    let expired_result = record_request(&mut db, &owner, &context, &request).await;
+    assert!(
+        db.query_one("SELECT is_called FROM review_insert_reached", &[])
+            .await
+            .unwrap()
+            .get::<_, bool>(0),
+        "owner reached the protected insert before expiring"
+    );
+    assert!(matches!(expired_result, Err(AuthError::Unauthorized)));
+    assert_eq!(
+        db.query_one(
+            "SELECT count(*)::bigint FROM billing_usage_adjustment_requests",
+            &[]
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0),
+        0
+    );
+    db.batch_execute("DROP TRIGGER delay_review_insert ON billing_usage_adjustment_requests; DROP FUNCTION delay_review_insert()").await.unwrap();
+    db.execute(
+        "UPDATE sessions SET expires_at=clock_timestamp()+interval '1 hour' WHERE id=$1",
+        &[&owner.session_id],
+    )
+    .await
+    .unwrap();
     assert!(
         record_request(&mut db, &owner, &context, &request)
             .await

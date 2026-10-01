@@ -313,7 +313,7 @@ async fn response_loss_reuses_identity_and_async_error_preserves_acknowledgement
     let id = first.request.identifier.clone();
     assert_eq!(id, first.request.idempotency_key);
     assert_eq!(
-        finish(&db.client, first, MeterResponse::Unknown)
+        finish(&mut db.client, first, MeterResponse::Unknown)
             .await
             .unwrap(),
         WorkResult::Deferred
@@ -328,7 +328,7 @@ async fn response_loss_reuses_identity_and_async_error_preserves_acknowledgement
     assert_eq!(second.request.identifier, id);
     assert_eq!(
         finish(
-            &db.client,
+            &mut db.client,
             second,
             MeterResponse::Acknowledged {
                 identifier: id,
@@ -417,7 +417,7 @@ async fn crashed_lease_is_reclaimed_without_new_identity_and_stale_completion_ca
         .unwrap();
     assert_eq!(
         finish(
-            &db.client,
+            &mut db.client,
             first.clone(),
             MeterResponse::Acknowledged {
                 identifier: id.clone(),
@@ -435,7 +435,7 @@ async fn crashed_lease_is_reclaimed_without_new_identity_and_stale_completion_ca
     assert_ne!(second.lease, first.lease);
     assert_eq!(
         finish(
-            &db.client,
+            &mut db.client,
             first,
             MeterResponse::Acknowledged {
                 identifier: id.clone(),
@@ -448,7 +448,7 @@ async fn crashed_lease_is_reclaimed_without_new_identity_and_stale_completion_ca
     );
     assert_eq!(
         finish(
-            &db.client,
+            &mut db.client,
             second,
             MeterResponse::Http {
                 status: 400,
@@ -600,7 +600,7 @@ async fn concurrent_workers_serialize_customer_and_retry_deadline_requires_revie
     };
     assert_eq!(
         finish(
-            &db.client,
+            &mut db.client,
             winner,
             MeterResponse::Http {
                 status: 429,
@@ -710,7 +710,7 @@ async fn missing_invoice_stays_pending_and_changed_invoice_snapshot_conflicts() 
     };
     let identifier = claim.request.identifier.clone();
     finish(
-        &db.client,
+        &mut db.client,
         claim,
         MeterResponse::Acknowledged {
             identifier,
@@ -855,6 +855,277 @@ async fn shared_meter_error_is_once_bound_and_erasure_keeps_only_remaining_tenan
             .unwrap()
             .get::<_, i64>(0),
         0
+    );
+    db.close().await;
+}
+
+async fn probe_connection(schema: &str) -> Client {
+    let url = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL").unwrap();
+    let (client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        connection.await.unwrap();
+    });
+    client
+        .batch_execute(&format!("SET search_path TO {schema}"))
+        .await
+        .unwrap();
+    client
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; isolated schema, no provider or radio calls"]
+async fn completion_waiting_for_outbox_lock_cannot_acknowledge_after_lease_expiry() {
+    let mut db = Db::new().await;
+    db.submit(1).await;
+    let ClaimResult::Claim(claim) = claim_one(&mut db.client).await.unwrap() else {
+        panic!("missing claim")
+    };
+    db.client
+        .batch_execute(
+            "UPDATE billing_usage_outbox SET lease_until=clock_timestamp()+interval '5 seconds'",
+        )
+        .await
+        .unwrap();
+    let mut holder = probe_connection(&db.schema).await;
+    let lock = holder.transaction().await.unwrap();
+    lock.query_one("SELECT 1 FROM billing_usage_outbox FOR UPDATE", &[])
+        .await
+        .unwrap();
+    let mut worker = probe_connection(&db.schema).await;
+    let pid: i32 = worker
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await
+        .unwrap()
+        .get(0);
+    let identifier = claim.request.identifier.clone();
+    let lease = claim.lease;
+    let task = tokio::spawn(async move {
+        finish(
+            &mut worker,
+            claim,
+            MeterResponse::Acknowledged {
+                identifier,
+                livemode: false,
+            },
+        )
+        .await
+        .unwrap()
+    });
+    let mut blocked = false;
+    for _ in 0..250 {
+        blocked = lock
+            .query_one(
+                "SELECT EXISTS(SELECT 1 FROM pg_locks WHERE pid=$1 AND NOT granted)",
+                &[&pid],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        if blocked {
+            break;
+        }
+        assert!(
+            !task.is_finished(),
+            "worker must actually wait on the held outbox row"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(blocked, "completion reached the row-lock boundary");
+    assert!(
+        lock.query_one(
+            "SELECT lease_until>clock_timestamp() FROM billing_usage_outbox",
+            &[]
+        )
+        .await
+        .unwrap()
+        .get::<_, bool>(0),
+        "lease was live when completion blocked"
+    );
+    lock.query_one("SELECT pg_sleep(GREATEST(extract(epoch FROM (lease_until-clock_timestamp())),0)::double precision+0.1) FROM billing_usage_outbox",&[]).await.unwrap();
+    lock.commit().await.unwrap();
+    assert_eq!(task.await.unwrap(), WorkResult::Stale);
+    let row = db
+        .client
+        .query_one(
+            "SELECT state,acknowledged_at IS NULL,lease_id FROM billing_usage_outbox",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(row.get::<_, String>(0), "leased");
+    assert!(row.get::<_, bool>(1));
+    assert_eq!(row.get::<_, Uuid>(2), lease);
+    db.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; isolated schema, no provider calls"]
+async fn concurrent_last_tenant_mapping_erasure_removes_the_shared_error_receipt() {
+    let mut db = Db::new().await;
+    let other = Uuid::new_v4();
+    db.client
+        .execute("INSERT INTO accounts(id) VALUES($1)", &[&other])
+        .await
+        .unwrap();
+    db.client.execute("INSERT INTO billing_customers(account_id,stripe_customer_id) VALUES($1,'cus_SyntheticConcurrent')",&[&other]).await.unwrap();
+    db.client.execute("INSERT INTO billing_usage_test_policies(account_id,policy_version,stripe_customer_id,meter_id,event_name,active) VALUES($1,1,'cus_SyntheticConcurrent','mtr_Synthetic','synthetic_execution',true)",&[&other]).await.unwrap();
+    let event = MeterErrorObservation {
+        event_id: "evt_SyntheticConcurrent".into(),
+        meter_id: "mtr_Synthetic".into(),
+        body_digest: [9; 32],
+        validation_start: 1000,
+        validation_end: 2000,
+    };
+    record_meter_error(&mut db.client, db.account, 1, &event)
+        .await
+        .unwrap();
+    record_meter_error(&mut db.client, other, 1, &event)
+        .await
+        .unwrap();
+    let worker = probe_connection(&db.schema).await;
+    let pid: i32 = worker
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await
+        .unwrap()
+        .get(0);
+    let first = db.client.transaction().await.unwrap();
+    first
+        .execute(
+            "DELETE FROM billing_usage_meter_errors WHERE account_id=$1",
+            &[&db.account],
+        )
+        .await
+        .unwrap();
+    let second = tokio::spawn(async move {
+        worker
+            .execute(
+                "DELETE FROM billing_usage_meter_errors WHERE account_id=$1",
+                &[&other],
+            )
+            .await
+            .unwrap()
+    });
+    let mut reached = false;
+    for _ in 0..250 {
+        reached = second.is_finished()
+            || first
+                .query_one(
+                    "SELECT EXISTS(SELECT 1 FROM pg_locks WHERE pid=$1 AND NOT granted)",
+                    &[&pid],
+                )
+                .await
+                .unwrap()
+                .get::<_, bool>(0);
+        if reached {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        reached,
+        "second tenant erasure reached cleanup or completed before first commit"
+    );
+    first.commit().await.unwrap();
+    assert_eq!(second.await.unwrap(), 1);
+    assert_eq!(
+        db.client
+            .query_one(
+                "SELECT count(*)::bigint FROM billing_usage_meter_errors",
+                &[]
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        0
+    );
+    assert_eq!(
+        db.client
+            .query_one(
+                "SELECT count(*)::bigint FROM billing_usage_meter_error_receipts",
+                &[]
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        0
+    );
+    db.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; isolated schema, no provider or radio calls"]
+async fn completion_stalled_during_the_write_rolls_back_expired_acknowledgement() {
+    let mut db = Db::new().await;
+    db.submit(1).await;
+    let ClaimResult::Claim(claim) = claim_one(&mut db.client).await.unwrap() else {
+        panic!("missing claim")
+    };
+    let lease = claim.lease;
+    let identifier = claim.request.identifier.clone();
+    db.client
+        .batch_execute(
+            "UPDATE billing_usage_outbox SET lease_until=clock_timestamp()+interval '5 seconds'",
+        )
+        .await
+        .unwrap();
+    db.client.batch_execute("CREATE SEQUENCE usage_write_reached; CREATE FUNCTION delay_usage_write() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM nextval('usage_write_reached'); PERFORM pg_sleep(6); RETURN NEW; END $$; CREATE TRIGGER delay_usage_write BEFORE UPDATE ON billing_usage_outbox FOR EACH ROW EXECUTE FUNCTION delay_usage_write()").await.unwrap();
+    let result = finish(
+        &mut db.client,
+        claim,
+        MeterResponse::Acknowledged {
+            identifier,
+            livemode: false,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        db.client
+            .query_one("SELECT is_called FROM usage_write_reached", &[])
+            .await
+            .unwrap()
+            .get::<_, bool>(0),
+        "completion reached the live-lease write"
+    );
+    assert_eq!(result, WorkResult::Stale);
+    let row = db
+        .client
+        .query_one(
+            "SELECT state,acknowledged_at IS NULL,lease_id FROM billing_usage_outbox",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(row.get::<_, String>(0), "leased");
+    assert!(row.get::<_, bool>(1));
+    assert_eq!(row.get::<_, Uuid>(2), lease);
+    db.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; isolated schema, no provider or radio calls"]
+async fn report_timestamp_preserves_the_original_utc_second_without_rounding_forward() {
+    let mut db = Db::new().await;
+    // A deterministic fractional reservation time, within the allowed clock window.
+    db.client.batch_execute("ALTER TABLE usage_ledger ALTER COLUMN created_at SET DEFAULT (date_trunc('second',clock_timestamp())+interval '900 milliseconds')").await.unwrap();
+    db.submit(1).await;
+    let expected: i64 = db
+        .client
+        .query_one(
+            "SELECT floor(extract(epoch FROM report_at))::bigint FROM billing_usage_bindings",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    let ClaimResult::Claim(claim) = claim_one(&mut db.client).await.unwrap() else {
+        panic!("missing claim")
+    };
+    assert_eq!(
+        claim.request.timestamp, expected,
+        "provider timestamp must never move the reservation into a later UTC second"
     );
     db.close().await;
 }

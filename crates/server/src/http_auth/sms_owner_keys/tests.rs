@@ -303,6 +303,9 @@ const TEST_MIGRATIONS: [(&str, &str); 76] = [
     (
         "075_workflow_context.sql",
         migration!("075_workflow_context.sql"),
+    ),
+    (
+        "079_test_billable_usage.sql",
         migration!("079_test_billable_usage.sql"),
     ),
 ];

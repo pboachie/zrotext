@@ -89,6 +89,8 @@ pub async fn record_request(
     } else {
         false
     };
+    // Withhold the committed request if the protected write outlived its owner.
+    auth::require_current_owner(&tx, owner).await?;
     tx.commit().await?;
     Ok(inserted)
 }
