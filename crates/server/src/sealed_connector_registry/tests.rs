@@ -548,6 +548,113 @@ fn rejected_reason(error: RegistryError) -> &'static str {
     }
 }
 
+/// Simulate the authority-then-account prefix used by sealed admission and
+/// custody. Once the connector waits on that authority, the admission must
+/// still be able to lock the account; otherwise the two transactions cycle.
+async fn admission_account_lock_remains_available<F>(f: &Fixture, worker_pid: i32, operation: F)
+where
+    F: std::future::Future<Output = Result<(), RegistryError>>,
+{
+    let mut admission = f.connect().await;
+    let tx = admission.transaction().await.unwrap();
+    tx.batch_execute("SET LOCAL statement_timeout='500ms'")
+        .await
+        .unwrap();
+    let admission_pid: i32 = tx
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await
+        .unwrap()
+        .get(0);
+    tx.query_one(
+        "SELECT account_id FROM sealed_manifest_authorities WHERE account_id=$1 FOR UPDATE",
+        &[&f.account],
+    )
+    .await
+    .unwrap();
+    let probe = async {
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let blocked: bool =
+                    f.db.query_one(
+                        "SELECT $2=ANY(pg_blocking_pids($1))",
+                        &[&worker_pid, &admission_pid],
+                    )
+                    .await
+                    .unwrap()
+                    .get(0);
+                if blocked {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("connector must wait on the held authority lock");
+        let account_lock = tx
+            .query_one(
+                "SELECT id FROM accounts WHERE id=$1 FOR UPDATE",
+                &[&f.account],
+            )
+            .await;
+        tx.rollback().await.unwrap();
+        account_lock
+    };
+    let (connector, account_lock) = tokio::join!(operation, probe);
+    connector.unwrap();
+    assert!(
+        account_lock.is_ok(),
+        "connector held the account while waiting for manifest authority: {account_lock:?}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn connector_authorization_follows_admission_authority_lock_order() {
+    let f = Fixture::new().await;
+    let ticket = registered_connector(&f, 0).await;
+    let mut worker = f.connect().await;
+    let pid = worker
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await
+        .unwrap()
+        .get(0);
+    let operation = async {
+        authorize_reader_wrap(
+            &mut worker,
+            f.account,
+            &ticket.key_id,
+            f.line,
+            None,
+            READ_INBOUND,
+        )
+        .await
+        .map(|_| ())
+    };
+    admission_account_lock_remains_available(&f, pid, operation).await;
+    f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn connector_owner_proposal_follows_admission_authority_lock_order() {
+    let f = Fixture::new().await;
+    let owner = f.proposer().await;
+    let request = default_request(&f, f.integration_point(0));
+    let mut worker = f.connect().await;
+    let pid = worker
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await
+        .unwrap()
+        .get(0);
+    let operation = async {
+        propose(&mut worker, &f.hasher, &owner, request)
+            .await
+            .map(|_| ())
+    };
+    admission_account_lock_remains_available(&f, pid, operation).await;
+    f.cleanup().await;
+}
+
 #[tokio::test]
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn combined_read_requests_require_every_granted_direction() {

@@ -222,7 +222,10 @@ pub struct ErasedCounts {
     pub audit_events: u64,
 }
 
-async fn begin(client: &mut Client) -> Result<Transaction<'_>, RegistryError> {
+async fn begin<'client>(
+    client: &'client mut Client,
+    account: &Uuid,
+) -> Result<Transaction<'client>, RegistryError> {
     let tx = client
         .build_transaction()
         .isolation_level(IsolationLevel::ReadCommitted)
@@ -230,6 +233,17 @@ async fn begin(client: &mut Client) -> Result<Transaction<'_>, RegistryError> {
         .await?;
     tx.batch_execute("SET LOCAL lock_timeout='3s'; SET LOCAL statement_timeout='5s'")
         .await?;
+    // Sealed admission and custody lock manifest authority before account
+    // rows. Take that same first lock for every connector transaction, before
+    // owner/account and connector locks, so concurrent operations cannot cycle.
+    // A missing or revoked authority is not an authentication decision here:
+    // revocation and audit still work, and authority-consuming paths retain
+    // current_manifest's complete live-manifest verification below.
+    tx.query_opt(
+        "SELECT account_id FROM sealed_manifest_authorities WHERE account_id=$1 FOR UPDATE",
+        &[account],
+    )
+    .await?;
     Ok(tx)
 }
 
@@ -483,7 +497,7 @@ pub async fn propose(
         validate_grant_bounds(grant)?;
     }
     VerifyingKey::from_sec1_bytes(&request.key_point).map_err(|_| "key point")?;
-    let tx = begin(client).await?;
+    let tx = begin(client, &account).await?;
     owner_fence(&tx, principal).await?;
     if !abuse_limits::consume_owner_management(&tx, hasher, &principal.user_id.to_string()).await? {
         tx.commit().await?;
@@ -652,7 +666,7 @@ pub async fn approve(
     connector_id: Uuid,
 ) -> Result<RegistrationTicket, RegistryError> {
     let account = principal.tenant.account_id();
-    let tx = begin(client).await?;
+    let tx = begin(client, &account).await?;
     owner_fence(&tx, principal).await?;
     if !abuse_limits::consume_owner_management(&tx, hasher, &principal.user_id.to_string()).await? {
         tx.commit().await?;
@@ -752,7 +766,7 @@ pub async fn reject(
         return Err("rejection reason".into());
     }
     let account = principal.tenant.account_id();
-    let tx = begin(client).await?;
+    let tx = begin(client, &account).await?;
     owner_fence(&tx, principal).await?;
     if !abuse_limits::consume_owner_management(&tx, hasher, &principal.user_id.to_string()).await? {
         tx.commit().await?;
@@ -808,7 +822,7 @@ pub async fn rotate_key(
 ) -> Result<RegistrationTicket, RegistryError> {
     VerifyingKey::from_sec1_bytes(&new_point).map_err(|_| RegistryError::Rejected("key point"))?;
     let account = principal.tenant.account_id();
-    let tx = begin(client).await?;
+    let tx = begin(client, &account).await?;
     owner_fence(&tx, principal).await?;
     if !abuse_limits::consume_owner_management(&tx, hasher, &principal.user_id.to_string()).await? {
         tx.commit().await?;
@@ -940,7 +954,7 @@ pub async fn revoke(
         return Err("revocation reason".into());
     }
     let account = principal.tenant.account_id();
-    let tx = begin(client).await?;
+    let tx = begin(client, &account).await?;
     owner_fence(&tx, principal).await?;
     if !abuse_limits::consume_owner_management(&tx, hasher, &principal.user_id.to_string()).await? {
         tx.commit().await?;
@@ -1056,7 +1070,7 @@ async fn authorize_inner(
     direction: Option<u16>,
     send: bool,
 ) -> Result<AuthorizedInner, RegistryError> {
-    let tx = begin(client).await?;
+    let tx = begin(client, account).await?;
     tx.query_opt(
         "SELECT id FROM accounts WHERE id=$1 AND disabled_at IS NULL FOR UPDATE",
         &[account],
@@ -1270,7 +1284,7 @@ pub async fn list_registrations(
     principal: &SessionPrincipal,
 ) -> Result<Vec<RegistrationView>, RegistryError> {
     let account = principal.tenant.account_id();
-    let tx = begin(client).await?;
+    let tx = begin(client, &account).await?;
     owner_fence(&tx, principal).await?;
     let mut views = Vec::new();
     for row in tx
@@ -1341,7 +1355,7 @@ pub async fn export_access_records(
     principal: &SessionPrincipal,
 ) -> Result<AccessExport, RegistryError> {
     let account = principal.tenant.account_id();
-    let tx = begin(client).await?;
+    let tx = begin(client, &account).await?;
     owner_fence(&tx, principal).await?;
     let mut records = Vec::new();
     for row in tx
@@ -1367,7 +1381,7 @@ pub async fn export_access_records(
     let registrations = list_registrations(client, principal).await?;
     let stamped = match registrations.first() {
         Some(oldest) => {
-            let tx = begin(client).await?;
+            let tx = begin(client, &account).await?;
             owner_fence(&tx, principal).await?;
             let stamped = clock(&tx, 0).await?;
             journal(
@@ -1408,7 +1422,7 @@ pub async fn erase_access_records(
     connector_id: Uuid,
 ) -> Result<ErasedCounts, RegistryError> {
     let account = principal.tenant.account_id();
-    let tx = begin(client).await?;
+    let tx = begin(client, &account).await?;
     owner_fence(&tx, principal).await?;
     if !abuse_limits::consume_owner_management(&tx, hasher, &principal.user_id.to_string()).await? {
         tx.commit().await?;
