@@ -340,6 +340,9 @@ async fn authenticated_delivery_rejects_missing_redacted_and_expired_proof_witho
 }
 impl Case {
     async fn new() -> Self {
+        Self::with_extra_phone_reader(false).await
+    }
+    async fn with_extra_phone_reader(extra_reader: bool) -> Self {
         let (mut f, owner, interval) = activation::tests::pending().await;
         activation::tests::activate(&f, &interval).await;
         f.advance();
@@ -379,8 +382,15 @@ impl Case {
         let (phone, phone_id) = entry(1, &kem);
         let (signer, browser_id) = entry(5, &browser);
         f.bytes.truncate(150);
-        f.bytes.push(5);
-        f.bytes.extend(phone);
+        f.bytes.push(if extra_reader { 6 } else { 5 });
+        let mut phones = vec![phone];
+        if extra_reader {
+            phones.push(entry(1, &SigningKey::generate_from_rng(&mut rand::rng())).0);
+        }
+        phones.sort_by(|a, b| a[1..33].cmp(&b[1..33]));
+        for phone in phones {
+            f.bytes.extend(phone);
+        }
         f.bytes.extend(&old_entries[..298]);
         f.bytes.extend(signer);
         f.bytes.extend(&old_entries[298..]);

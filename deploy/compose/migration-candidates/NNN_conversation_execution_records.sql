@@ -65,6 +65,32 @@ LANGUAGE sql IMMUTABLE STRICT AS $$
  AND conversation_execution_u64(bytes,291+149*i)>=deadline);
 $$;
 
+-- Bounded Draft02 outbound reader extraction, not cryptographic admission.
+-- The conversation producer requires exactly the device and archive wraps.
+CREATE FUNCTION conversation_execution_payload_reader(bytes bytea) RETURNS bytea
+LANGUAGE plpgsql IMMUTABLE STRICT AS $$
+DECLARE n integer:=octet_length(bytes); protected_length integer; protected_end integer;
+ body_length bigint; body_end integer; peer_length integer;
+BEGIN
+ IF n<557 OR n>34213 OR substring(bytes FROM 1 FOR 8)<>decode('5a54534502010000','hex')
+ THEN RETURN NULL; END IF;
+ protected_length:=get_byte(bytes,8)*256+get_byte(bytes,9);
+ IF protected_length<157 OR protected_length>170 THEN RETURN NULL; END IF;
+ protected_end:=10+protected_length;
+ IF protected_end+16>n THEN RETURN NULL; END IF;
+ peer_length:=get_byte(bytes,163);
+ IF peer_length<3 OR peer_length>16 OR protected_length<>154+peer_length
+ THEN RETURN NULL; END IF;
+ body_length:=('x'||encode(substring(bytes FROM protected_end+13 FOR 4),'hex'))::bit(32)::bigint;
+ IF body_length<17 OR body_length>32784 THEN RETURN NULL; END IF;
+ body_end:=protected_end+16+body_length::integer;
+ IF body_end>=n THEN RETURN NULL; END IF;
+ IF get_byte(bytes,body_end)<>2 OR body_end+1+2*146+64<>n THEN RETURN NULL; END IF;
+ IF get_byte(bytes,body_end+1)<>1 OR get_byte(bytes,body_end+147)<>2 THEN RETURN NULL; END IF;
+ RETURN substring(bytes FROM body_end+3 FOR 32);
+END;
+$$;
+
 CREATE FUNCTION conversation_execution_initial_valid(r conversation_execution_records) RETURNS boolean
 LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
 DECLARE t bigint:=floor(extract(epoch FROM clock_timestamp())*1000)::bigint;
@@ -91,6 +117,7 @@ BEGIN
  AND m.transport_mode='sealed_candidate02' AND m.state IN ('queued','claimed','submitting')
  AND m.transport_payload IS NOT NULL AND m.expires_at>clock_timestamp()
  AND m.request_digest=r.unsigned_digest AND p.envelope_digest=r.envelope_digest
+ AND r.reader_key_id=conversation_execution_payload_reader(m.transport_payload)
  AND p.confirmation IS NOT NULL AND p.signature IS NOT NULL AND p.expires_at_ms>=r.expires_at_ms
  AND (m.sealed_line_id,m.sealed_binding_generation,m.sealed_manifest_generation,m.sealed_manifest_version,
  m.sealed_manifest_digest,m.sealed_signer_key_id)=(p.line_id,p.binding_generation,p.trust_generation,
