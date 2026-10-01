@@ -33,7 +33,7 @@ are contracts for every presentation change. No UI can widen authority.
 | Team and observer | `/owner/seats` and `/owner/observer`; device-status-only observer seats | Separate role navigation, seat lifecycle and current status; no decrypted-content/team/root authority for observer | #607/#633; cross-role destinations, removed membership and stale sessions |
 | Plans/usage | `/billing` and existing `/v1/billing` session, capacity and entitlement endpoints, TEST-only provider flow | Link the real owner billing dashboard; unavailable live prices/public usage stay labelled; do not add dead pricing links | #607/#631; TEST/disabled/pending/hold/over-cap states, no payment-success inference from navigation |
 | Android wordmark and signal | `GatewayCompanion.kt`, `GatewayVisuals.kt`, native theme; merged #603/#604 | Retain connection-state signal, reduced motion and lifecycle suspension, never artwork-derived connectivity | #611/#612; actual debug APK cold launch/resume/rotation and disabled animations |
-| Android Home | `GatewayHome`, session heartbeat acknowledgements, selected SIM, Pause and widgets; merged #693 adds read-only lifecycle-aware local Power | Compact Sending from/Power/Connection rows; truthful summary placeholders until #608 source exists | #611; missing observations, large text, portrait/landscape/keyboard and TalkBack order |
+| Android Home | `GatewayHome`, session heartbeat acknowledgements, selected SIM, Pause and widgets; merged #693 adds read-only lifecycle-aware local Power | Compact Sending from/Power/Connection rows; truthful summary placeholders until Android consumes the merged #695 authenticated source | #611; missing observations, large text, portrait/landscape/keyboard and TalkBack order |
 | Android Setup | `GatewaySetupGuide`, merged #648; explicit disclosure from #602 | Preserve steps, permission explanation/decline and fingerprint comparison; navigation itself grants nothing | #611/#612; Back, dismissal, interrupted setup and no permission/service/radio side effects |
 | Android Connection | Existing credential fields, test/authenticated statuses and explicit start/pause controls | Keep masked credentials and precise connecting/authenticated/repair states, reachable from Home | #611/#612; validation errors, revoked credentials, reconnect and resumed stale state |
 | Android Tools | Existing controlled test/diagnostic controls | Keep explicit test-only limitations and diagnostics; no widget or navigation auto-starts tests | #611/#612; opening/dismissing is free of radio/service effects |
@@ -105,5 +105,6 @@ not acceptance of the new Home/owner concept or a date/tag for the next release.
 The dormant conversation groundwork in merged #613/#650/#651/#652/#655 is not
 general customer conversation delivery. Sealed admission, inbound upload and metadata-only read/lifecycle projections
 are default-off prerequisites. Dormant Android grant execution groundwork is
-implemented; negotiated grants, live service integration and final API/runtime
-acceptance remain separately tracked.
+implemented. Merged #698 adds negotiated, default-off grants, device-bound
+payload fetch and dispatch metadata. The Android service gate remains
+unintegrated; live service routing and final API/runtime acceptance remain open.

@@ -202,16 +202,18 @@
           "evidence": [
             ["API outline", "ARCHITECTURE.md#planned-api-v1-outline"],
             ["sealed SDK preparation", "../sdk/typescript/README.md"],
-            ["#569", "https://github.com/pboachie/zrotext/pull/569"]
+            ["#569", "https://github.com/pboachie/zrotext/pull/569"],
+            ["TypeScript SDK #537", "https://github.com/pboachie/zrotext/issues/537"]
           ],
           "done": [
             "Route outline and sealed send shape ([outline](ARCHITECTURE.md#planned-api-v1-outline))",
             "Versioned device stream schema aligned with the wire format",
             "OpenAPI contract distinguishing implemented restricted routes and planned public aliases ([contract](../protocol/v1/openapi/public-v1.json))",
-            "TypeScript production envelope composition and shared vectors; no enabled general send or sealed lifecycle implied ([#569](https://github.com/pboachie/zrotext/pull/569))"
+            "TypeScript production envelope composition and shared vectors; no enabled general send or sealed lifecycle implied ([#569](https://github.com/pboachie/zrotext/pull/569))",
+            "Default-off negotiated grants, device-bound payload fetch and dispatch metadata are merged (#698); Android service routing remains unintegrated"
           ],
           "todo": [
-            "Complete canonical sealed message lifecycle, negotiated dispatch and scoped resource projections (#626/#627/#630/#631); public aliases remain planned",
+            "Integrate negotiated dispatch into the maintained Android service and complete scoped usage projections (#626/#627/#631); public aliases remain planned",
             "Integrated SDK/runtime compatibility after sealed provisioning and key-lifecycle gates"
           ]
         },
@@ -236,11 +238,65 @@
             "Accessibility review of the owner web pages ([review](ACCESSIBILITY-REVIEW.md))",
             "Accessibility review of the Android app ([review](ANDROID-ACCESSIBILITY.md))",
             "Supported-device list backed by repeatable tests ([compatibility matrix](DEVICE-COMPATIBILITY.md))",
-            "Native Home/Setup/Connection/Tools and explicit guided setup are merged (#603/#604/#648); navigation does not imply sending authority"
+            "Native Home/Setup/Connection/Tools and explicit guided setup are merged (#603/#604/#648); navigation does not imply sending authority",
+            "Read-only lifecycle-aware local Home Power observations are merged (#693); unavailable observations remain explicit"
           ],
           "todo": [
-            "Lifecycle-aware local power observations and compact truthful Home rows (#611)",
             "Integrated new Home/widget/navigation accessibility, actual TalkBack and physical motion acceptance (#612)"
+          ]
+        },
+        {
+          "id": "mcp",
+          "name": "MCP tools for customer-controlled agents",
+          "short": "MCP messaging tools",
+          "stage": "planned",
+          "evidence": [
+            ["agent integration proposal", "PRODUCT-PLAN.md#agent-messaging-tools"],
+            ["#615", "https://github.com/pboachie/zrotext/issues/615"],
+            ["#616", "https://github.com/pboachie/zrotext/issues/616"]
+          ],
+          "evidence_note": "planned work only; issues are acceptance criteria, not runtime or release evidence",
+          "done": [],
+          "todo": [
+            "Customer-run stdio server with typed readiness, preview, permitted send, status and cancellation tools",
+            "Separate read and send grants; enforce recipient scope, approvals, budgets, suppression and revocation outside the model",
+            "Two-client simulator verification; remote transport requires a separate authorization and deployment decision"
+          ]
+        },
+        {
+          "id": "agenttools",
+          "name": "Agent SDK adapters and reply events",
+          "short": "Agent adapters and replies",
+          "stage": "planned",
+          "evidence": [
+            ["agent integration proposal", "PRODUCT-PLAN.md#agent-messaging-tools"],
+            ["#617", "https://github.com/pboachie/zrotext/issues/617"],
+            ["#619", "https://github.com/pboachie/zrotext/issues/619"]
+          ],
+          "evidence_note": "planned work only; issues are acceptance criteria, not runtime or release evidence",
+          "done": [],
+          "todo": [
+            "Python and provider-neutral function adapters over the shared sealed API and tool schemas; reuse the TypeScript SDK in #537",
+            "Selected-content reply events with signature verification, durable checkpoints and event deduplication",
+            "Conversation isolation, bounded agent turns and owner review for ambiguous replies"
+          ]
+        },
+        {
+          "id": "agentsetup",
+          "name": "Guided agent setup and simulator quickstart",
+          "short": "Guided agent setup",
+          "stage": "planned",
+          "evidence": [
+            ["agent integration proposal", "PRODUCT-PLAN.md#agent-messaging-tools"],
+            ["#618", "https://github.com/pboachie/zrotext/issues/618"],
+            ["#621", "https://github.com/pboachie/zrotext/issues/621"]
+          ],
+          "evidence_note": "planned work only; issues are acceptance criteria, not runtime or release evidence",
+          "done": [],
+          "todo": [
+            "One guided setup command and supported client installers with scoped pairing, secret storage and reversible configuration",
+            "Synthetic first exchange before controlled Android phone and SIM activation; show unavailable readiness gates",
+            "Measure clean-install steps; preserve fingerprint and permission checks, reconnect diagnostics and revocation"
           ]
         }
       ]
@@ -441,14 +497,8 @@
           "short": "Contacts and conversations",
           "stage": "build",
           "evidence": [
-            [
-              "owner contacts API",
-              "SELF-HOSTING.md#contacts-and-consent"
-            ],
-            [
-              "product proposal",
-              "PRODUCT-PLAN.md#business-inbox"
-            ]
+            ["owner contacts API", "SELF-HOSTING.md#contacts-and-consent"],
+            ["product proposal", "PRODUCT-PLAN.md#business-inbox"]
           ],
           "evidence_note": "owner API provides account-scoped contacts, encrypted fields, bounded CSV import, purpose-specific consent history and takeout/erasure; workflow sending and conversations remain unavailable",
           "done": [
@@ -555,7 +605,15 @@
     ["hosted", "managedai"],
     ["export", "managedai"],
     ["api", "providers"],
-    ["approvals", "providers"]
+    ["approvals", "providers"],
+    ["api", "mcp"],
+    ["integrations", "mcp"],
+    ["api", "agenttools"],
+    ["integrations", "agenttools"],
+    ["diagnostics", "agentsetup"],
+    ["enrollment", "agentsetup"],
+    ["compose", "agentsetup"],
+    ["mcp", "agentsetup"]
   ],
   "track_map_order": [
     "gateway",
@@ -625,12 +683,7 @@
       "example": "Gather job details by text, draft a reply, and ask the owner to approve a quote.",
       "priority": "first",
       "availability": "planned",
-      "requires": [
-        "contacts",
-        "scheduling",
-        "approvals",
-        "assistant"
-      ],
+      "requires": ["contacts", "scheduling", "approvals", "assistant"],
       "journey": [
         "The owner connects a dedicated line and configures service facts, intake questions, hours and escalation rules.",
         "A customer texts an inquiry; approved intake questions collect the minimum details needed for a job summary.",
@@ -655,12 +708,7 @@
       "example": "Text your assistant a note or reminder; let approved routines communicate with selected contacts.",
       "priority": "first",
       "availability": "planned",
-      "requires": [
-        "contacts",
-        "scheduling",
-        "approvals",
-        "assistant"
-      ],
+      "requires": ["contacts", "scheduling", "approvals", "assistant"],
       "journey": [
         "The owner connects an assistant, pairs an owner channel, and chooses allowed contacts and routines in the authenticated dashboard.",
         "The owner texts a note, question or reminder; the connector decrypts the selected conversation and uses the chosen AI.",
@@ -678,6 +726,34 @@
       ]
     },
     {
+      "id": "agenttexts",
+      "title": "Agent task notifications and replies",
+      "audience": "Developers connecting an existing customer-controlled AI agent to their own SMS line.",
+      "problem": "An agent needs a scoped way to notify its owner, receive replies and request review without requiring the owner to keep an agent console open.",
+      "example": "Receive a task-completion text from your agent, reply with context, and review its proposed next action.",
+      "priority": "first",
+      "availability": "planned",
+      "requires": ["mcp", "agenttools", "agentsetup", "approvals", "integrations"],
+      "journey": [
+        "The owner installs a supported client integration and completes a synthetic first exchange through guided setup.",
+        "For a later controlled-device pilot, the owner pairs a dedicated Android phone and SIM, compares fingerprints and grants selected read or send authority.",
+        "The existing agent requests a task-completion notification within the approved recipient, routine, timing and budget.",
+        "The authorized connector verifies and routes the owner reply; any commitment or changed scope waits for authenticated owner review.",
+        "The owner can take over, disconnect or revoke the agent and see whether work is queued, submitted, delivered or unknown."
+      ],
+      "acceptance": [
+        "MCP, SDK and workflow actions share the same enforced permissions, suppression and honest delivery states.",
+        "Setup preserves existing client configuration and key ceremonies; agents never receive broad owner credentials or raw content keys in prompts.",
+        "Replayed events and ambiguous submission cannot create duplicate messages; untrusted SMS cannot grant permission.",
+        "The simulator sends no real SMS; carrier behavior requires a separate controlled-device verification.",
+        "The experience uses an owner-provided Android phone and SIM; number provisioning and emergency-delivery guarantees are outside its scope."
+      ],
+      "success_signals": [
+        "Measured time and manual steps to the first synthetic exchange on supported clients.",
+        "Verified revocation, replay refusal, scope refusals and owner takeover in a controlled pilot."
+      ]
+    },
+    {
       "id": "repairs",
       "title": "Repair and project updates",
       "audience": "Repair shops, makers and small project-based businesses.",
@@ -685,12 +761,7 @@
       "example": "Send a repair update and request approval before extra work.",
       "priority": "next",
       "availability": "planned",
-      "requires": [
-        "contacts",
-        "scheduling",
-        "approvals",
-        "integrations"
-      ],
+      "requires": ["contacts", "scheduling", "approvals", "integrations"],
       "journey": [
         "The owner records a job and selects update templates.",
         "A job milestone triggers an approved status update to the customer.",
@@ -715,12 +786,7 @@
       "example": "Offer an open slot in sequence and stop when one booking is confirmed.",
       "priority": "next",
       "availability": "planned",
-      "requires": [
-        "contacts",
-        "scheduling",
-        "approvals",
-        "integrations"
-      ],
+      "requires": ["contacts", "scheduling", "approvals", "integrations"],
       "journey": [
         "The owner enters an available slot and eligible waiting contacts.",
         "The workflow offers it to one contact with an expiry before moving to the next.",
@@ -745,13 +811,7 @@
       "example": "Send personalized invitations, collect RSVPs, and remind only unanswered guests.",
       "priority": "next",
       "availability": "planned",
-      "requires": [
-        "contacts",
-        "scheduling",
-        "approvals",
-        "integrations",
-        "export"
-      ],
+      "requires": ["contacts", "scheduling", "approvals", "integrations", "export"],
       "journey": [
         "The host imports or enters a guest list with permission records, reviews duplicate contacts and previews invitations.",
         "The host approves a paced batch with event details, recipient timing and expiry.",
@@ -776,12 +836,7 @@
       "example": "Fill an open shift by text and stop requests once it is covered.",
       "priority": "next",
       "availability": "planned",
-      "requires": [
-        "contacts",
-        "scheduling",
-        "approvals",
-        "integrations"
-      ],
+      "requires": ["contacts", "scheduling", "approvals", "integrations"],
       "journey": [
         "The coordinator defines an opening, capacity, expiry and opt-in contact group.",
         "An approved workflow sends paced requests and records replies.",
@@ -806,12 +861,7 @@
       "example": "Coordinate pickups, errands and recurring responsibilities through opt-in reminders and replies.",
       "priority": "later",
       "availability": "planned",
-      "requires": [
-        "contacts",
-        "scheduling",
-        "approvals",
-        "integrations"
-      ],
+      "requires": ["contacts", "scheduling", "approvals", "integrations"],
       "journey": [
         "An owner creates an opt-in household contact group and recurring reminders.",
         "A member receives a task and replies to accept, decline or report completion.",
@@ -836,12 +886,7 @@
       "example": "Request equipment by text, confirm availability, and receive return reminders.",
       "priority": "later",
       "availability": "planned",
-      "requires": [
-        "contacts",
-        "scheduling",
-        "approvals",
-        "integrations"
-      ],
+      "requires": ["contacts", "scheduling", "approvals", "integrations"],
       "journey": [
         "The owner records items, availability and borrowing rules.",
         "A member requests an item by text; the request enters the owner queue.",
@@ -866,12 +911,7 @@
       "example": "Notify a small team about a maintenance issue and record who will handle it.",
       "priority": "later",
       "availability": "planned",
-      "requires": [
-        "contacts",
-        "scheduling",
-        "approvals",
-        "integrations"
-      ],
+      "requires": ["contacts", "scheduling", "approvals", "integrations"],
       "journey": [
         "A configured integration creates a routine issue with an expiry and eligible contacts.",
         "An approved workflow notifies the group and collects acknowledgments.",

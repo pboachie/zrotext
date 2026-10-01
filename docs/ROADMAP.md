@@ -5,7 +5,7 @@ ZROtext is an open-source Android SMS gateway in active development. This page s
 <!-- Generated regions come from docs/roadmap.json. Edit that file, then run `python3 scripts/roadmap.py`. -->
 
 <!-- roadmap:overview -->
-<p align="center"><img src="assets/roadmap-overview.svg" alt="Roadmap at a glance: 22 capabilities in five tracks. Four are in a restricted pilot, nine are being built, three are in design and six are planned. None has reached general release." width="900"></p>
+<p align="center"><img src="assets/roadmap-overview.svg" alt="Roadmap at a glance: 25 capabilities in five tracks. Four are in a restricted pilot, nine are being built, three are in design and nine are planned. None has reached general release." width="900"></p>
 <!-- /roadmap:overview -->
 
 > [!NOTE]
@@ -27,6 +27,7 @@ Priority is delivery order, not availability or a release date. These outcomes a
 |---|---|---|---|
 | First | [Text receptionist](USE-CASES.md#receptionist) | Gather job details by text, draft a reply, and ask the owner to approve a quote. | Proposed; unavailable |
 | First | [Personal AI by SMS](USE-CASES.md#personalai) | Text your assistant a note or reminder; let approved routines communicate with selected contacts. | Proposed; unavailable |
+| First | [Agent task notifications and replies](USE-CASES.md#agenttexts) | Receive a task-completion text from your agent, reply with context, and review its proposed next action. | Proposed; unavailable |
 | Next | [Repair and project updates](USE-CASES.md#repairs) | Send a repair update and request approval before extra work. | Proposed; unavailable |
 | Next | [Cancellation-slot recovery](USE-CASES.md#waitlist) | Offer an open slot in sequence and stop when one booking is confirmed. | Proposed; unavailable |
 | Next | [Wedding and event concierge](USE-CASES.md#events) | Send personalized invitations, collect RSVPs, and remind only unanswered guests. | Proposed; unavailable |
@@ -42,17 +43,17 @@ Priority is delivery order, not availability or a release date. These outcomes a
 ```mermaid
 %%{init: {"themeVariables": {"pie1": "#b6f36a", "pie2": "#6f9b4b", "pie3": "#edbe70", "pie4": "#99a696", "pieSectionTextColor": "#0b0f0c", "pieStrokeColor": "#29332a", "pieOuterStrokeColor": "#29332a"}}}%%
 pie showData
-    title Capabilities by stage (22 tracked)
+    title Capabilities by stage (25 tracked)
     "Restricted pilot" : 4
     "Build" : 9
     "Design" : 3
-    "Planned" : 6
+    "Planned" : 9
 ```
 
 | Track | General release | Restricted pilot | Build | Design | Planned |
 |---|:---:|:---:|:---:|:---:|:---:|
 | [Gateway messaging](#gateway-messaging) |  | 4 | 1 |  |  |
-| [Self-hosting and integrations](#self-hosting-and-integrations) |  |  | 3 | 1 |  |
+| [Self-hosting and integrations](#self-hosting-and-integrations) |  |  | 3 | 1 | 3 |
 | [Privacy and account controls](#privacy-and-account-controls) |  |  | 2 | 1 |  |
 | [Managed service and resilience](#managed-service-and-resilience) |  |  | 2 | 1 | 2 |
 | [Workflows and AI](#workflows-and-ai) |  |  | 1 |  | 4 |
@@ -134,7 +135,15 @@ flowchart LR
         c_releases["Signed releases and SBOMs<br/>· build"]:::build
         c_api["Stable API v1 and SDK<br/>· design"]:::design
         c_diagnostics["Setup diagnostics<br/>· build"]:::build
+        c_mcp["MCP messaging tools<br/>· planned"]:::planned
+        c_agenttools["Agent adapters and replies<br/>· planned"]:::planned
+        c_agentsetup["Guided agent setup<br/>· planned"]:::planned
         c_compose --> c_releases
+        c_api --> c_mcp
+        c_api --> c_agenttools
+        c_diagnostics --> c_agentsetup
+        c_compose --> c_agentsetup
+        c_mcp --> c_agentsetup
     end
 
     subgraph t_workflows["Workflows and AI"]
@@ -173,6 +182,9 @@ flowchart LR
     c_export --> c_managedai
     c_api --> c_providers
     c_approvals --> c_providers
+    c_integrations --> c_mcp
+    c_integrations --> c_agenttools
+    c_enrollment --> c_agentsetup
 ```
 <!-- /roadmap:map -->
 
@@ -278,8 +290,11 @@ Make ZROtext practical to run, upgrade and build against.
 |---|---|---|
 | Compose deployment and upgrade guides | Build | [#35](https://github.com/pboachie/zrotext/pull/35), [#105](https://github.com/pboachie/zrotext/pull/105), [#173](https://github.com/pboachie/zrotext/pull/173), [#183](https://github.com/pboachie/zrotext/pull/183), [#259](https://github.com/pboachie/zrotext/pull/259), [#275](https://github.com/pboachie/zrotext/pull/275)<br/>**Release gate:** The listed deployment and upgrade work is complete for restricted development and pilot use. General production support and deployment acceptance are not established. |
 | Signed release artifacts and SBOMs | Build | [#86](https://github.com/pboachie/zrotext/pull/86), [#135](https://github.com/pboachie/zrotext/pull/135), [#169](https://github.com/pboachie/zrotext/pull/169), [#197](https://github.com/pboachie/zrotext/pull/197), [v0.1.6-rc.2](https://github.com/pboachie/zrotext/releases/tag/v0.1.6-rc.2) |
-| Stable public API v1 and client SDK | Design | [API outline](ARCHITECTURE.md#planned-api-v1-outline), [sealed SDK preparation](../sdk/typescript/README.md), [#569](https://github.com/pboachie/zrotext/pull/569) |
+| Stable public API v1 and client SDK | Design | [API outline](ARCHITECTURE.md#planned-api-v1-outline), [sealed SDK preparation](../sdk/typescript/README.md), [#569](https://github.com/pboachie/zrotext/pull/569), [TypeScript SDK #537](https://github.com/pboachie/zrotext/issues/537) |
 | Setup diagnostics and device guidance | Build | [#81](https://github.com/pboachie/zrotext/pull/81), [#189](https://github.com/pboachie/zrotext/pull/189), [#268](https://github.com/pboachie/zrotext/pull/268), [#313](https://github.com/pboachie/zrotext/pull/313), [#462](https://github.com/pboachie/zrotext/pull/462), [Android review](ANDROID-ACCESSIBILITY.md) Earlier accessibility review covers the legacy scrolling screen. Merged native Home/Setup/Connection/Tools and guided setup (#603/#604/#648) require their own integrated #612 acceptance; actual assistive-technology validation remains open<br/>**Release gate:** The listed setup diagnostics and device guidance work is complete for restricted pilot use. The compatibility matrix records virtual, host-simulator, and one manual physical record only; no physical device or carrier is proven supported, and the linked physical no-radio and opt-in radio procedures have not been executed on any listed phone. |
+| MCP tools for customer-controlled agents | Planned | [agent integration proposal](PRODUCT-PLAN.md#agent-messaging-tools), [#615](https://github.com/pboachie/zrotext/issues/615), [#616](https://github.com/pboachie/zrotext/issues/616) planned work only; issues are acceptance criteria, not runtime or release evidence |
+| Agent SDK adapters and reply events | Planned | [agent integration proposal](PRODUCT-PLAN.md#agent-messaging-tools), [#617](https://github.com/pboachie/zrotext/issues/617), [#619](https://github.com/pboachie/zrotext/issues/619) planned work only; issues are acceptance criteria, not runtime or release evidence |
+| Guided agent setup and simulator quickstart | Planned | [agent integration proposal](PRODUCT-PLAN.md#agent-messaging-tools), [#618](https://github.com/pboachie/zrotext/issues/618), [#621](https://github.com/pboachie/zrotext/issues/621) planned work only; issues are acceptance criteria, not runtime or release evidence |
 
 <a id="cap-compose"></a>
 <details>
@@ -315,7 +330,8 @@ Make ZROtext practical to run, upgrade and build against.
 - [x] Versioned device stream schema aligned with the wire format
 - [x] OpenAPI contract distinguishing implemented restricted routes and planned public aliases ([contract](../protocol/v1/openapi/public-v1.json))
 - [x] TypeScript production envelope composition and shared vectors; no enabled general send or sealed lifecycle implied ([#569](https://github.com/pboachie/zrotext/pull/569))
-- [ ] Complete canonical sealed message lifecycle, negotiated dispatch and scoped resource projections (#626/#627/#630/#631); public aliases remain planned
+- [x] Default-off negotiated grants, device-bound payload fetch and dispatch metadata are merged (#698); Android service routing remains unintegrated
+- [ ] Integrate negotiated dispatch into the maintained Android service and complete scoped usage projections (#626/#627/#631); public aliases remain planned
 - [ ] Integrated SDK/runtime compatibility after sealed provisioning and key-lifecycle gates
 
 </details>
@@ -330,8 +346,38 @@ Make ZROtext practical to run, upgrade and build against.
 - [x] Accessibility review of the Android app ([review](ANDROID-ACCESSIBILITY.md))
 - [x] Supported-device list backed by repeatable tests ([compatibility matrix](DEVICE-COMPATIBILITY.md))
 - [x] Native Home/Setup/Connection/Tools and explicit guided setup are merged (#603/#604/#648); navigation does not imply sending authority
-- [ ] Lifecycle-aware local power observations and compact truthful Home rows (#611)
+- [x] Read-only lifecycle-aware local Home Power observations are merged (#693); unavailable observations remain explicit
 - [ ] Integrated new Home/widget/navigation accessibility, actual TalkBack and physical motion acceptance (#612)
+
+</details>
+
+<a id="cap-mcp"></a>
+<details>
+<summary><b>MCP tools for customer-controlled agents</b> · planned</summary>
+
+- [ ] Customer-run stdio server with typed readiness, preview, permitted send, status and cancellation tools
+- [ ] Separate read and send grants; enforce recipient scope, approvals, budgets, suppression and revocation outside the model
+- [ ] Two-client simulator verification; remote transport requires a separate authorization and deployment decision
+
+</details>
+
+<a id="cap-agenttools"></a>
+<details>
+<summary><b>Agent SDK adapters and reply events</b> · planned</summary>
+
+- [ ] Python and provider-neutral function adapters over the shared sealed API and tool schemas; reuse the TypeScript SDK in #537
+- [ ] Selected-content reply events with signature verification, durable checkpoints and event deduplication
+- [ ] Conversation isolation, bounded agent turns and owner review for ambiguous replies
+
+</details>
+
+<a id="cap-agentsetup"></a>
+<details>
+<summary><b>Guided agent setup and simulator quickstart</b> · planned</summary>
+
+- [ ] One guided setup command and supported client installers with scoped pairing, secret storage and reversible configuration
+- [ ] Synthetic first exchange before controlled Android phone and SIM activation; show unavailable readiness gates
+- [ ] Measure clean-install steps; preserve fingerprint and permission checks, reconnect diagnostics and revocation
 
 </details>
 
