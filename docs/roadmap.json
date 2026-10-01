@@ -110,7 +110,7 @@
           "name": "Owner dashboard: device health and history",
           "short": "Owner dashboard",
           "stage": "build",
-          "release_gate_note": "The listed owner dashboard work is complete for restricted pilot use. Device readiness reporting is bounded to Android-reported preconditions and writer queue counts; carrier-level sendability is not measured.",
+          "release_gate_note": "Functional restricted-pilot controls exist, but concept fidelity and integrated owner/Android accessibility acceptance remain open (#605/#612). Readiness reports are bounded Android observations and writer counts, not carrier sendability. No design or draft PR advances release maturity.",
           "evidence": [
             ["#36", "https://github.com/pboachie/zrotext/pull/36"],
             ["#74", "https://github.com/pboachie/zrotext/pull/74"],
@@ -118,7 +118,8 @@
             ["#237", "https://github.com/pboachie/zrotext/pull/237"],
             ["#245", "https://github.com/pboachie/zrotext/pull/245"],
             ["#251", "https://github.com/pboachie/zrotext/pull/251"],
-            ["#255", "https://github.com/pboachie/zrotext/pull/255"]
+            ["#255", "https://github.com/pboachie/zrotext/pull/255"],
+            ["concept/state matrix", "CONCEPT-IMPLEMENTATION.md"]
           ],
           "done": [
             "Device pairing and management page",
@@ -129,9 +130,17 @@
             "SMS lines page: approval key, line list and activation approval ([#251](https://github.com/pboachie/zrotext/pull/251), [#255](https://github.com/pboachie/zrotext/pull/255))",
             "Device health and recent messages refresh every 15 seconds while the owner page is visible; pagination and active interactions pause their list ([#295](https://github.com/pboachie/zrotext/pull/295))",
             "Live device and message updates over an owner event stream; the 15-second snapshot refresh stays as the fallback",
-            "SIM, queue depth and radio readiness per device, from Android-reported preconditions and bounded writer counts ([#308](https://github.com/pboachie/zrotext/pull/308), [#317](https://github.com/pboachie/zrotext/pull/317), [#340](https://github.com/pboachie/zrotext/pull/340), [#396](https://github.com/pboachie/zrotext/pull/396))"
+            "SIM, queue depth and radio readiness per device, from Android-reported preconditions and bounded writer counts ([#308](https://github.com/pboachie/zrotext/pull/308), [#317](https://github.com/pboachie/zrotext/pull/317), [#340](https://github.com/pboachie/zrotext/pull/340), [#396](https://github.com/pboachie/zrotext/pull/396))",
+            "Shared responsive owner shell is merged (#683), with fleet-first navigation and separate observer roles",
+            "Fleet overview and selectable bounded device details are merged (#685), preserving live-refresh input and focus",
+            "Authoritative UTC writer summaries are merged (#695), with account/device scope, capped bounds and explicit freshness/unavailability",
+            "Responsive outbound writer activity is merged (#690), with conservative state labels, device links and preserved paging, expansion and focus; no unified inbound feed or decrypted sealed content is implied",
+            "Compact navigation readability and automated rendered candidate checks are merged (#701), including narrow and wide views at 200% text; human acceptance remains open"
           ],
-          "todo": []
+          "todo": [
+            "Concept-aligned responsive shared owner navigation and role-safe administration (#607)",
+            "Complete joint actual-browser/APK visual, state and human accessibility acceptance (#612); merged automated checks do not close this gate"
+          ]
         }
       ]
     },
@@ -161,7 +170,7 @@
             "Scripted fresh-install and database restore rehearsals",
             "Upgrade guide for moving between source snapshots ([guide](../deploy/compose/UPGRADE.md))",
             "Production hardening checklist ([checklist](../deploy/compose/README.md#production-hardening-checklist))",
-            "Upgrade notes for each tagged release ([v0.1.6-rc.1](https://github.com/pboachie/zrotext/releases/tag/v0.1.6-rc.1), [tagged upgrade guide](https://github.com/pboachie/zrotext/blob/v0.1.6-rc.1/deploy/compose/UPGRADE.md))"
+            "Upgrade notes for tagged restricted candidates ([v0.1.6-rc.2](https://github.com/pboachie/zrotext/releases/tag/v0.1.6-rc.2), [tagged upgrade guide](https://github.com/pboachie/zrotext/blob/v0.1.6-rc.2/deploy/compose/UPGRADE.md))"
           ],
           "todo": []
         },
@@ -175,15 +184,16 @@
             ["#135", "https://github.com/pboachie/zrotext/pull/135"],
             ["#169", "https://github.com/pboachie/zrotext/pull/169"],
             ["#197", "https://github.com/pboachie/zrotext/pull/197"],
-            ["v0.1.6-rc.1", "https://github.com/pboachie/zrotext/releases/tag/v0.1.6-rc.1"]
+            ["v0.1.6-rc.2", "https://github.com/pboachie/zrotext/releases/tag/v0.1.6-rc.2"]
           ],
           "done": [
             "Source and verified server release candidate published; image pinned, scanned and attested ([v0.1.6-rc.1](https://github.com/pboachie/zrotext/releases/tag/v0.1.6-rc.1))",
             "Release receipts gated on approved identity and SBOMs",
-            "Android release candidate with signing-key custody checks"
+            "Published restricted rc.2 signed Android candidate, checksums, source identity and runtime SBOM; its candidate receipt records signing-certificate identity"
           ],
           "todo": [
-            "First tagged public release with verified signed Android custody and artifacts; source/server candidate published ([process](RELEASING.md))"
+            "Next owner/Android candidate requires integrated concept and accessibility acceptance (#605/#612); no next tag/date is established",
+            "General-release device, custody and deployment acceptance beyond published restricted candidates ([process](RELEASING.md))"
           ]
         },
         {
@@ -193,16 +203,20 @@
           "stage": "design",
           "evidence": [
             ["API outline", "ARCHITECTURE.md#planned-api-v1-outline"],
-            ["test-only sealed reader", "../sdk/typescript/README.md"],
+            ["sealed SDK preparation", "../sdk/typescript/README.md"],
+            ["#569", "https://github.com/pboachie/zrotext/pull/569"],
             ["TypeScript SDK #537", "https://github.com/pboachie/zrotext/issues/537"]
           ],
           "done": [
             "Route outline and sealed send shape ([outline](ARCHITECTURE.md#planned-api-v1-outline))",
             "Versioned device stream schema aligned with the wire format",
-            "OpenAPI contract for `/v1/messages`, `/v1/devices`, `/v1/webhooks` and `/v1/usage` ([contract](../protocol/v1/openapi/public-v1.json))"
+            "OpenAPI contract distinguishing implemented restricted routes and planned public aliases ([contract](../protocol/v1/openapi/public-v1.json))",
+            "TypeScript production envelope composition and shared vectors; no enabled general send or sealed lifecycle implied ([#569](https://github.com/pboachie/zrotext/pull/569))",
+            "Default-off negotiated grants, device-bound payload fetch and dispatch metadata are merged (#698); Android service routing remains unintegrated"
           ],
           "todo": [
-            "TypeScript SDK with local encryption, after the sealed protocol is finalized"
+            "Integrate negotiated dispatch into the maintained Android service and complete scoped usage projections (#626/#627/#631); public aliases remain planned",
+            "Integrated SDK/runtime compatibility after sealed provisioning and key-lifecycle gates"
           ]
         },
         {
@@ -218,16 +232,22 @@
             ["#462", "https://github.com/pboachie/zrotext/pull/462"],
             ["Android review", "ANDROID-ACCESSIBILITY.md"]
           ],
-          "evidence_note": "Android review covers the current Compose screen and automated/emulator checks; interactive assistive-technology validation remains open",
+          "evidence_note": "Earlier accessibility review covers the legacy scrolling screen. Merged native Home/Setup/Connection/Tools and guided setup (#603/#604/#648) require their own integrated #612 acceptance; actual assistive-technology validation remains open",
           "release_gate_note": "The listed setup diagnostics and device guidance work is complete for restricted pilot use. The compatibility matrix records virtual, host-simulator, and one manual physical record only; no physical device or carrier is proven supported, and the linked physical no-radio and opt-in radio procedures have not been executed on any listed phone.",
           "done": [
             "Owner enrollment, account setup and mail diagnostics",
             "SMS and RCS readiness guidance for the gateway phone",
             "Accessibility review of the owner web pages ([review](ACCESSIBILITY-REVIEW.md))",
             "Accessibility review of the Android app ([review](ANDROID-ACCESSIBILITY.md))",
-            "Supported-device list backed by repeatable tests ([compatibility matrix](DEVICE-COMPATIBILITY.md))"
+            "Supported-device list backed by repeatable tests ([compatibility matrix](DEVICE-COMPATIBILITY.md))",
+            "Native Home/Setup/Connection/Tools and explicit guided setup are merged (#603/#604/#648); navigation does not imply sending authority",
+            "Read-only lifecycle-aware local Home Power observations are merged (#693); unavailable observations remain explicit",
+            "Automated landscape/status checks are merged (#701), using actual scrolling and the Compose frame clock to reveal platform-visible status and reachable Pause/disclosure; no spoken TalkBack or physical acceptance is implied"
           ],
-          "todo": []
+          "todo": [
+            "Actual TalkBack/Switch Access, keyboard-open masking/focus return, permission and lifecycle traversal, and physical OEM/motion acceptance remain open (#612)",
+            "Android Home consumption of the merged authenticated summary source (#608); local counters cannot substitute"
+          ]
         },
         {
           "id": "mcp",
@@ -309,12 +329,13 @@
             "Verified-email owner registration with closed-by-default policy",
             "MFA, session revocation and CSRF protection",
             "API keys with scopes, shown once at creation",
-            "MFA-bound SMS approval public-key registration and revocation; line activation remains an internal prerequisite ([contract](../protocol/v1/sms-line-activation-contract.md))",
+            "MFA-bound SMS approval public-key registration and revocation; end-to-end line activation is implemented default-off ([contract](../protocol/v1/sms-line-activation-contract.md))",
             "Verified-email and private-operator password recovery revokes sessions, API keys and pending MFA challenges while preserving MFA; authentication only, with production vault/content recovery still pending",
-            "Device-status observer seats: owner-issued, single-use, hashed-token invitations; invitee self-verification and sign-in; read-only device status; irreversible seat removal"
+            "Device-status observer seats: owner-issued, single-use, hashed-token invitations; invitee self-verification and sign-in; read-only device status; irreversible seat removal",
+            "Expiring single-use owner-registration invitation tokens are implemented; closed registration remains the default"
           ],
           "todo": [
-            "Remaining collaboration roles and owner-registration invitations"
+            "Selected additional collaboration role boundaries and revocation/export/erasure enforcement (#633)"
           ]
         },
         {
@@ -337,12 +358,14 @@
             "Test-only envelope parser and Android Keystore boundary",
             "Q1-Q11 decisions recorded with cross-client manifest vectors ([#260](https://github.com/pboachie/zrotext/pull/260))",
             "Recorded Q1-Q11 decisions re-verified against the evidence each row lists in the [protocol decision log](../protocol/drafts/zt-009-decision-log.md) ([#464](https://github.com/pboachie/zrotext/pull/464)); the Q9 Rust receiver gap it found is closed ([#525](https://github.com/pboachie/zrotext/pull/525))",
-            "Sealed v1 message admission route (`POST /v1/sealed/messages`) mounted behind the default-off `SEALED_ADMISSION_ENABLED` flag; acceptance stores exact envelope bytes and queues toward the bound device, never carrier evidence ([#538](https://github.com/pboachie/zrotext/issues/538))"
+            "Sealed v1 message admission route (`POST /v1/sealed/messages`) mounted behind the default-off `SEALED_ADMISSION_ENABLED` flag; acceptance stores exact envelope bytes and queues toward the bound device, never carrier evidence ([#538](https://github.com/pboachie/zrotext/issues/538))",
+            "Default-off sealed inbound upload and dormant protected conversation consent/read/capture groundwork (#613/#650/#651/#652/#655/#657), not general customer conversation delivery",
+            "Shared cross-client and adversarial vectors are delivered groundwork; runtime downgrade/leakage acceptance remains separately gated"
           ],
           "todo": [
-            "Cross-client interoperability and adversarial security tests",
+            "Integrated runtime downgrade/leakage acceptance (#632), beyond shared vector groundwork",
             "Recovery and unlock flows (first increment recorded as evidence only: offline unlock signing behind a disabled-by-default owner-CLI build feature, no server enablement)",
-            "Enabled in the gateway for real messages"
+            "Root custody/provisioning, maintained Android provider, negotiated grants and consent-bound customer inbound delivery (#623/#625/#626/#629) before enabling real messages"
           ]
         },
         {
@@ -394,7 +417,7 @@
             "First slice of usage limits and plans: quota-only usage-limit plans with enforced metered limits and honest over-limit responses, disabled by default and without any pricing decision"
           ],
           "todo": [
-            "Live payments, usage limits and plans",
+            "Explicit live-payment isolation and runtime implementation; quota-only limits/plans already exist default-off (#645)",
             "Customer support and status communication"
           ]
         },
@@ -478,14 +501,8 @@
           "short": "Contacts and conversations",
           "stage": "build",
           "evidence": [
-            [
-              "owner contacts API",
-              "SELF-HOSTING.md#contacts-and-consent"
-            ],
-            [
-              "product proposal",
-              "PRODUCT-PLAN.md#business-inbox"
-            ]
+            ["owner contacts API", "SELF-HOSTING.md#contacts-and-consent"],
+            ["product proposal", "PRODUCT-PLAN.md#business-inbox"]
           ],
           "evidence_note": "owner API provides account-scoped contacts, encrypted fields, bounded CSV import, purpose-specific consent history and takeout/erasure; workflow sending and conversations remain unavailable",
           "done": [
@@ -537,19 +554,14 @@
           "short": "Workflow integrations",
           "stage": "planned",
           "evidence": [
-            ["product proposal", "PRODUCT-PLAN.md#customer-controlled-assistant"],
-            ["#615", "https://github.com/pboachie/zrotext/issues/615"],
-            ["#617", "https://github.com/pboachie/zrotext/issues/617"],
-            ["#620", "https://github.com/pboachie/zrotext/issues/620"]
+            ["product proposal", "PRODUCT-PLAN.md#customer-controlled-assistant"]
           ],
           "evidence_note": "product proposal; dormant connector registration/key-lifecycle contract in crates/server/src/sealed_connector_registry (line-scoped read/send grants, independent approval, rotation, revocation, audit) with no runtime route enabled",
           "done": [],
           "todo": [
             "Shared services for dashboard actions, SDK tools and signed workflow events",
             "Authorized encryption/decryption connector with signature verification and event deduplication",
-            "An n8n recipe for connecting the shared messaging services; application templates have separate use-case acceptance criteria",
-            "Shared scoped agent policy for MCP, SDK functions and workflow actions; no owner administration through agent tools",
-            "Importable synthetic task-completion, owner-approval and reply-routing recipes with tested compatibility"
+            "An n8n recipe for connecting the shared messaging services; application templates have separate use-case acceptance criteria"
           ]
         },
         {
@@ -558,8 +570,7 @@
           "short": "Customer-controlled assistant",
           "stage": "planned",
           "evidence": [
-            ["product proposal", "PRODUCT-PLAN.md#customer-controlled-assistant"],
-            ["agent delivery track #614", "https://github.com/pboachie/zrotext/issues/614"]
+            ["product proposal", "PRODUCT-PLAN.md#customer-controlled-assistant"]
           ],
           "evidence_note": "proposal only; no runtime implementation",
           "done": [],

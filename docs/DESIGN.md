@@ -31,11 +31,17 @@ Never put essential status meaning in color alone. Buttons and inputs need keybo
 
 Account and device screens should include loading, empty, error, and stale states. Never represent offline or unknown as delivered.
 
+The [concept implementation matrix](CONCEPT-IMPLEMENTATION.md) binds each owner
+and Android concept component to its actual data source, current implementation,
+missing behavior and owning acceptance issue. It defines metric scope/freshness,
+unavailable controls and the joint #612 candidate gate. Artwork is not runtime
+evidence and a design change does not advance a release stage.
+
 Sealed dashboard rules: fetch metadata and ciphertext; decrypt locally; render messages as plain text; never send decrypted content through HTMX forms or analytics; server search only metadata. Keep a clear vault-locked state, local-search limit, and explicit export sensitivity prompt.
 
 ## Android companion screens
 
-The native gateway opens on **Home**, showing actual authenticated-service status, session heartbeat acknowledgments, the selected SIM and this session's pairing proof status. Test socket state stays separate. No sample queue, battery, usage or SMS-readiness metrics are displayed.
+The native gateway opens on **Home**, showing actual authenticated-service status, session heartbeat acknowledgments, the selected SIM, lifecycle-scoped local battery/charging observations and this session's pairing proof status. Test socket state stays separate. No sample queue, usage or SMS-readiness metrics are displayed.
 
 **Setup** contains purpose-specific permission disclosures, SIM selection and device pairing. **Connection** contains authenticated heartbeat controls and the explicit reboot-resume choice. **Tools** contains transport diagnostics and controlled inbound metadata, one-shot SMS and debug-only MMS pilots. Changing screens does not request permissions or start a session; Back returns to Home. Each screen scrolls with large text and the keyboard. Pause stops connections but does not revoke Android SMS receiving access or stop permission-enabled local SMS processing.
 

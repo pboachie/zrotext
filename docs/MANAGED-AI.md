@@ -14,6 +14,10 @@ process decrypts selected content and calls the model it chooses
 customers who want ZROtext to run that process. It is not a prerequisite for
 anything else, and phone-based workflows must stay usable without it.
 
+The [selected-reader and task lifecycle contract](../protocol/v1/managed-ai-grant-contract.md)
+pins the generic authority, wrapping and checkpoint rules. Its synthetic vectors
+and test-only oracle do not implement a managed service.
+
 A managed service is a new **content reader**. Under the
 [sealed-content design](SECURITY-DESIGN.md#claims-and-trust-boundaries), the
 relay routes ciphertext and visible metadata and cannot read bodies without
@@ -34,10 +38,11 @@ These hold whatever provider, pricing or retention periods are chosen later.
 3. **Separate identity and keys.** The service has its own decryption and
    signing keys, separate from relay, device, owner and webhook keys. Losing
    or rotating them does not affect other readers.
-4. **Scope is enforced by the relay and the service.** The grant's lines,
-   conversations and purposes limit what the relay encrypts to the service
-   and what the service will process. A service bug should not widen the
-   scope silently.
+4. **Scope is enforced by the relay, authorized client and service.** The
+   owner selects exact content and an existing authorized client creates its
+   reader wraps. The relay routes opaque wraps; it cannot encrypt new content
+   for a reader or decrypt/re-encrypt it. A task cannot widen its selected
+   lines, conversations, objects or purposes.
 5. **Budgets fail closed.** When a budget is exhausted, or cannot be checked,
    no provider call is made.
 6. **Revocation stops future access. It does not recall past access.** The
@@ -54,11 +59,11 @@ revokes. Proposed contents:
 
 | Field | Purpose |
 |---|---|
-| Scope | Selected lines, conversations or contact groups, and the permitted purposes (for example draft replies only, or replies within an approved routine) |
-| Reader identity | The service key set that receives sealed content for this grant |
+| Scope | Explicit selected line, conversation and content identities and permitted purpose; no implicit group expansion or future-content fanout |
+| Reader identity | Independently verified service public key identity and generation; an authorized client creates only the owner-selected wraps |
 | Provider route | Which approved provider configuration may process the content (see [provider access](#provider-access)) |
 | Budget | The per-account limits in [budgets](#per-account-budgets) |
-| Lifetime | Creation time, creator, optional expiry, and revocation time and actor |
+| Lifetime | Creation time, creator, mandatory expiry, grant version, revocation generation and actor |
 
 Creating or widening a grant would require an owner session with a fresh
 password and MFA confirmation, the same strength as other owner credential
@@ -126,7 +131,8 @@ Account erasure would:
    account's data, subject to the same retention exceptions as other account
    records;
 3. ask each provider configuration used by the account to delete retained
-   copies, where the configuration supports it, and record the outcome as
+   copies, where the configuration supports it, and record attempted, acknowledged,
+   unsupported, failed or unknown outcomes as
    content-free metadata.
 
 Erasure cannot recall content a provider has already processed. The erasure
@@ -136,21 +142,24 @@ confirmation must say so.
 
 When an owner revokes a grant, or it expires:
 
-- the relay stops encrypting new content to the grant's reader, and the
-  service refuses new tasks for it. The target is effect within one admission
-  check, with no cache that outlives it;
+- the relay stops serving wraps to the grant's reader, authorized clients
+  stop creating new wraps, and the service refuses new tasks. Current grant,
+  content, generation and budget checks serialize with each checkpoint;
 - a task that has not yet called the provider is cancelled;
-- a task already waiting on the provider is allowed to finish. Its output is
-  discarded unless the owner has already approved it, and the discard is
-  recorded;
+- for an in-flight provider call, request best-effort cancellation and
+  discard any later output. Prior owner approval does not permit sending
+  after revocation. A remote call may already have read content; cancellation
+  does not prove recall, and already committed sends remain irreversible;
 - key material specific to the grant is destroyed;
 - the access records remain, so the owner can review what was read.
 
 ## Per-account budgets
 
 Budgets bound cost and blast radius. Each would be checked when a task is
-admitted, before any provider call, in the same way as the existing
-per-account admission budgets for outbound messages:
+admitted and again immediately before a provider call or send. Reserve the
+worst-case provider units and a task slot atomically with call commitment;
+unknown provider acceptance keeps the reservation until reconciliation. Sending
+has separate budgets in addition to normal outbound admission:
 
 - tasks per period, and provider units (for example tokens) per period;
 - messages the service may propose for sending per period, in addition to
@@ -169,9 +178,9 @@ read counts as exhausted.
 | Cross-account or cross-conversation disclosure | Every task is keyed to one account and one grant. Tests use synthetic canaries in adjacent conversations. |
 | Revocation during a task | See [revocation](#revocation). No output is sent after revocation. |
 | Budget exhausted or budget store unavailable | Fail closed; no provider call. |
-| Provider outage or timeout | The task fails visibly. No automatic switch to another provider configuration unless the grant allows it. |
+| Provider outage or timeout | The task fails visibly. No automatic retry or provider switch; a fallback policy remains unselected. |
 | Provider returns content for the wrong task | Output bound to the task identity; a mismatch is discarded and recorded. |
-| Service key compromise | Rotate the service keys and re-grant. Exposure is limited to content granted since the last rotation. |
+| Service key compromise | Rotate, invalidate old tasks and require owner-confirmed re-grant and client-created wraps. A compromised key may expose retained old wraps; rotation cannot recall prior access. |
 | Plaintext in logs or crash reports | Blocked by design and tested with canaries. |
 | Loops (the service replying to its own messages, or two routines replying to each other) | Per-conversation reply limits and the proposal-send budget. |
 
