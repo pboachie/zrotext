@@ -17,9 +17,9 @@ use zrotext_delivery_store::{Claim, DeliveryStore, NewMessage, SessionRecord};
 #[cfg(feature = "sealed-interop-tests")]
 mod cross_client_interop;
 
+mod agent_authority;
 #[cfg(feature = "sealed-interop-tests")]
 mod sealed_boundary_acceptance;
-mod agent_authority;
 
 pub(crate) struct TestCase {
     pub(crate) fixture: Fixture,
