@@ -224,7 +224,7 @@ async fn owner() -> Owner {
         .f
         .db
         .batch_execute(include_str!(
-            "../../../../deploy/compose/migrations/070_sealed_root_custody.sql"
+            "../../../../deploy/compose/migrations/069_sealed_root_custody.sql"
         ))
         .await
         .unwrap();

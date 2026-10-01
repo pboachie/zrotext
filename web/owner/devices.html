@@ -83,15 +83,38 @@
       <section id="approved-devices" aria-labelledby="devices-title">
         <div class="section-head"><h2 id="devices-title">Approved devices</h2><button id="refresh-devices" type="button" class="quiet">Refresh</button></div>
         <label class="check"><input id="auto-refresh" type="checkbox" checked> Refresh devices and recent messages automatically</label>
+        <p id="device-cap-prompt" role="status" aria-live="polite" hidden></p>
+        <p id="device-status" role="status" aria-live="polite"></p>
+        <p id="fleet-summary" class="fleet-summary" role="status" aria-live="polite">Fleet observations are loading.</p>
+        <div class="fleet-workspace">
+          <div class="fleet-table">
+            <ul id="device-list" aria-label="Approved device snapshots"></ul>
+            <button id="more-devices" type="button" class="quiet" hidden>Load more devices</button>
+          </div>
+          <aside id="device-detail" class="device-detail" aria-labelledby="device-detail-title">
+            <h3 id="device-detail-title">Device details</h3>
+            <p id="device-detail-status" role="status" aria-live="polite">Choose a device to inspect its latest loaded snapshot.</p>
+            <div id="device-detail-content" hidden>
+              <p><strong id="device-detail-name"></strong><code id="device-detail-id"></code></p>
+              <p id="device-detail-connectivity"></p>
+              <p id="device-detail-queue"></p>
+              <p id="device-detail-preconditions"></p>
+              <p>Default SMS role, battery, charging and exact heartbeat age: not reported by this contract.</p>
+              <p>SIM phone digits are unavailable. Select the SIM in the gateway app and use <a href="/owner/sms-lines">SMS line activation</a> for line authority.</p>
+              <p>Remote Pause is unavailable. Revoke removes authorization; it is not a pause.</p>
+              <p>Private pilot sending remains gated. These observations do not establish carrier readiness or delivery.</p>
+            </div>
+          </aside>
+        </div>
+        <details class="fleet-help">
+          <summary>How to interpret freshness, queues and readiness</summary>
         <p>While this tab is visible, device and message updates arrive over a live same-origin event stream and lists refresh within a few seconds of a server-side change. If that stream cannot connect, updates fall back to a 15-second snapshot refresh. A list pauses while you browse older entries, focus a row, or open message events. Use Refresh to return to its latest entries.</p>
         <p>Approval permits a phone to connect. A displayed authenticated socket lease is a server observation that can lag a dropped connection by up to 90 seconds. It does not prove SMS permission, SIM service, or dispatch readiness. Check the gateway app on the phone before a controlled test.</p>
         <p>Pending counts accepted, queued and claimed messages; in flight counts submitting and submitted messages. These server states can include work awaiting expiry reconciliation. Counts stop at 1,000+ per category. Check the snapshot time and message timeline for unknown or final outcomes.</p>
-        <p id="device-cap-prompt" role="status" aria-live="polite" hidden></p>
-        <p id="device-status" role="status" aria-live="polite"></p>
         <p>Android reports describe selected SIM availability, SMS permission and airplane mode at the shown receipt time. Fresh reports explain local blockers to check on the phone. Saved reports become historical after the freshness window, even with automatic refresh paused. No reported blockers does not prove carrier readiness or delivery. Check the message timeline for actual callback evidence.</p>
-        <ul id="device-list"></ul>
-        <button id="more-devices" type="button" class="quiet" hidden>Load more devices</button>
+        </details>
       </section>
+
 
       <section id="message-activity" aria-labelledby="messages-title">
         <div class="section-head"><h2 id="messages-title">Message timeline</h2><button id="refresh-messages" type="button" class="quiet">Refresh</button></div>
