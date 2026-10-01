@@ -108,7 +108,7 @@ const EXPORT_SCHEMA: [(&str, &str); 71] = export_schema!(
     "068_connector_registration.sql",
     "069_sealed_root_custody.sql",
     "070_message_summary_metadata.sql",
-    "068_conversation_confirmation_records.sql",
+    "070_conversation_confirmation_records.sql",
 );
 #[test]
 fn export_schema_includes_every_checked_in_migration() {
