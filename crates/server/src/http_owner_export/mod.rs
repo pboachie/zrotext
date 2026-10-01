@@ -60,6 +60,7 @@ struct ExportQuery {
     before: Option<Uuid>,
     sealed_before: Option<Uuid>,
     interval_before: Option<Uuid>,
+    confirmation_before: Option<Uuid>,
     contacts_before: Option<Uuid>,
 }
 
@@ -157,6 +158,7 @@ fn message_view(row: &Row) -> Result<MessageView, tokio_postgres::Error> {
 
 #[derive(Serialize)]
 struct ExportView {
+    confirmation_inventory: crate::http_owner_conversations::confirmation_records::ProofInventory,
     conversation_inventory: crate::http_owner_conversations::lifecycle::ConversationInventory,
     generated_at_ms: i64,
     account: AccountView,
@@ -351,6 +353,17 @@ async fn export_account(
         next_cursor: contacts_next_cursor,
     } = contacts;
     Json(ExportView {
+        confirmation_inventory:
+            match crate::http_owner_conversations::confirmation_records::inventory(
+                &mut client,
+                &principal,
+                query.confirmation_before,
+            )
+            .await
+            {
+                Ok(view) => view,
+                Err(error) => return error.into_response(),
+            },
         conversation_inventory,
         generated_at_ms: SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
