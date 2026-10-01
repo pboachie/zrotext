@@ -88,6 +88,7 @@ struct Config {
     mfa_recovery_only: bool,
     mfa_enrollment_enabled: bool,
     sms_line_activation_enabled: bool,
+    collaboration_drafts_enabled: bool,
     mms_spike_policy: Arc<device_socket::MmsSpikePolicy>,
     sealed_admission_enabled: bool,
     retention: RetentionPolicy,
@@ -290,6 +291,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mfa_recovery_only = optional_bool("MFA_RECOVERY_ONLY")?;
     let mfa_enrollment_enabled = optional_bool("MFA_ENROLLMENT_ENABLED")?;
     let sms_line_activation_enabled = optional_bool("SMS_LINE_ACTIVATION_ENABLED")?;
+    let collaboration_drafts_enabled = optional_bool("COLLABORATION_DRAFTS_ENABLED")?;
     // Sealed v1 message admission. Disabled by default; off leaves the
     // route unmounted so no sealed code path runs.
     let sealed_admission_enabled = optional_bool("SEALED_ADMISSION_ENABLED")?;
@@ -346,6 +348,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         mfa_recovery_only,
         mfa_enrollment_enabled,
         sms_line_activation_enabled,
+        collaboration_drafts_enabled,
         mms_spike_policy,
         sealed_admission_enabled,
         retention: RetentionPolicy::from_env()?,
@@ -1085,6 +1088,9 @@ async fn account_routes(
     if config.sms_line_activation_enabled {
         auth_state = auth_state.with_sms_line_activation_enabled();
     }
+    if config.collaboration_drafts_enabled {
+        auth_state = auth_state.with_collaboration_drafts_enabled();
+    }
     let reset_trusted_cidrs = smtp_env_option("RESET_TRUSTED_CIDRS")?;
     let trusted_proxy_cidrs = smtp_env_option("TRUSTED_PROXY_CIDRS")?;
     let trusted_networks = TrustedNetworks::parse(
@@ -1530,6 +1536,7 @@ mod tests {
             mfa_recovery_only: false,
             mfa_enrollment_enabled: false,
             sms_line_activation_enabled: false,
+            collaboration_drafts_enabled: false,
             mms_spike_policy: Arc::new(device_socket::MmsSpikePolicy::disabled()),
             sealed_admission_enabled: false,
             retention: RetentionPolicy::default(),
@@ -1697,6 +1704,7 @@ mod tests {
             mfa_recovery_only: false,
             mfa_enrollment_enabled: false,
             sms_line_activation_enabled: false,
+            collaboration_drafts_enabled: false,
             mms_spike_policy: Arc::new(device_socket::MmsSpikePolicy::disabled()),
             sealed_admission_enabled: false,
             retention: RetentionPolicy::default(),
