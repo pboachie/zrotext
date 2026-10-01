@@ -12,9 +12,24 @@ internal class ConversationExecutionCurrent(val session:SealedDispatchExecutor.S
     init {require(trustedNowMs>0 && authorizedUntilMs>trustedNowMs)}
     override fun toString()="ConversationExecutionCurrent(redacted)"
 }
-/** Mandatory existing prepared-holder consumer. No body-only or default radio implementation. */
+/** Validated metadata, not bearer authority: only the guarded one-use holder permits consumption. */
+internal sealed interface ConversationPreparedSubmissionContext {
+    val message:String
+    val attempt:String
+    val scope:ConversationCaptureScope
+    val originalDeadlineMs:Long
+    val deadlineMs:Long
+    val grant:SealedExecutionGrantValidator.Fields
+    val session:SealedDispatchExecutor.Session
+    val local:SealedDispatchExecutor.Local
+}
+/**
+ * Mandatory synchronous prepared-holder consumer. It must not retain or asynchronously consume
+ * the holder. A writer ACK wait precedes guarded consumption, outside admission monitors; an ACK
+ * is not authority unless it binds the exact current session/message/attempt and permits submit.
+ */
 internal fun interface ConversationPreparedSubmission {
-    fun submit(message:String,attempt:String,scope:ConversationCaptureScope,
+    fun submit(context:ConversationPreparedSubmissionContext,
                prepared:Draft02OutboundPreparation.Prepared):ConversationSubmission
 }
 
@@ -35,6 +50,30 @@ internal class ConversationExecutionTransport internal constructor(
                          SealedDispatchExecutor.Session,SealedDispatchExecutor.Local)->SealedDispatchExecutor.Outcome,
     private val consumer:ConversationPreparedSubmission
 ) : ConversationClaimedEvidenceTransport {
+    /** Private implementation prevents callers constructing the transport's validated snapshot. */
+    private class SubmissionContext(
+        override val message:String,override val attempt:String,override val scope:ConversationCaptureScope,
+        override val originalDeadlineMs:Long, fields:SealedExecutionGrantValidator.Fields,
+        authority:ConversationExecutionCurrent
+    ) : ConversationPreparedSubmissionContext {
+        private val fields=copy(fields)
+        private val sourceSession=authority.session
+        private val sourceLocal=SealedDispatchExecutor.Local(authority.local.binding.copy(),
+            authority.local.pinnedReaderKeyId,authority.local.manifestGeneration,authority.local.manifestVersion,
+            authority.local.manifestDigest,authority.local.recipientDigest)
+        override val deadlineMs=minOf(originalDeadlineMs,fields.expiresAtMs,authority.authorizedUntilMs)
+        override val grant get()=copy(fields)
+        override val session get()=SealedDispatchExecutor.Session(sourceSession.accountId,sourceSession.deviceId,
+            sourceSession.connectionEpoch,sourceSession.deploymentEpoch,sourceSession.sessionId,sourceSession.originHash)
+        override val local get()=SealedDispatchExecutor.Local(sourceLocal.binding.copy(),sourceLocal.pinnedReaderKeyId,
+            sourceLocal.manifestGeneration,sourceLocal.manifestVersion,sourceLocal.manifestDigest,sourceLocal.recipientDigest)
+        override fun toString()="ConversationPreparedSubmissionContext(redacted)"
+        companion object {
+            private fun copy(value:SealedExecutionGrantValidator.Fields)=value.copy(
+                envelopeDigest=value.envelopeDigest.copyOf(),readerKeyId=value.readerKeyId.copyOf(),
+                unsignedDigest=value.unsignedDigest.copyOf())
+        }
+    }
     constructor(journal:ConversationSendDao,protection:ConversationJournalProtection,
         verifier:ConversationContentCrypto,wire:ConversationAuthenticatedWire,
         current:(ConversationCaptureScope)->ConversationExecutionCurrent?,boundary:ConversationExecutionBoundary,
@@ -133,7 +172,8 @@ internal class ConversationExecutionTransport internal constructor(
             prepared=outcome.prepared
             val final=live()
             check(final.trustedNowMs<fields.expiresAtMs && fields.expiresAtMs<=final.authorizedUntilMs)
-            consumer.submit(claim.message,claim.attempt,claim.scope,outcome.prepared)
+            consumer.submit(SubmissionContext(claim.message,claim.attempt,claim.scope,claim.deadline,fields,final),
+                outcome.prepared)
         } catch (_:Exception) {ConversationSubmission.UNKNOWN}
         finally {
             try {prepared?.close()} finally {

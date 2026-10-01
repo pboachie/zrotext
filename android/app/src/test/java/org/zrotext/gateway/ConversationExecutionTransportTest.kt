@@ -63,6 +63,8 @@ class ConversationExecutionTransportTest {
         var exchanges=0;var preparations=0;var submissions=0
         var edit:(JSONObject)->Unit={};var exchangeHook:()->Unit={};var prepareHook:()->Unit={}
         var throwConsumer=false;var unavailable=false
+        var consumerHook:(ConversationPreparedSubmissionContext)->Unit={}
+        var preparedFields:SealedExecutionGrantValidator.Fields?=null
         val preparedBody="Synthetic reply".toCharArray()
         // Existing ownership-only reflection seam; no new production holder or hardware grant.
         val prepared=Class.forName("org.zrotext.gateway.Draft02OutboundPreparation\$OwnedPrepared")
@@ -128,14 +130,53 @@ class ConversationExecutionTransportTest {
                 SealedDispatchExecutor.Session(session.account,session.device,session.connectionEpoch,session.deploymentEpoch,session.session,session.originHash),local,now,window)},
                 {selected,fields,envelope,_,_->
                     preparations++;assertEquals(scope,selected);assertEquals(1L,fields.attemptGeneration)
+                    preparedFields=fields
                     assertArrayEquals(ConversationContentCrypto.unpackConfirmedEvidence(original).envelope,envelope)
                     prepareHook();if(unavailable)SealedDispatchExecutor.Unavailable else SealedDispatchExecutor.Ready(prepared)
-                },ConversationPreparedSubmission{_,_,_,holder->
+                },ConversationPreparedSubmission{context,holder->
+                    assertEquals(uuid(message),context.message)
+                    assertEquals(db.sends().receipt(uuid(message))!!.attempt,context.attempt)
+                    assertEquals(scope,context.scope);consumerHook(context)
                     submissions++;if(throwConsumer)error("Synthetic uncertain submission")
                     holder.consume{assertEquals("Synthetic reply",String(it))};ConversationSubmission.SUBMITTED
                 })
         }
         override fun close(){prepared.close();db.close();cek.fill(0);original.fill(0)}
+    }
+    @Test fun consumerMetadataRetainsShortenedGrantDeadlineAndIndependentAuthority()=Fixture().use { f->
+        f.retain();f.consumerHook={context->
+            assertEquals(f.deadline,context.originalDeadlineMs)
+            assertEquals(f.deadline-1000,context.grant.expiresAtMs)
+            assertEquals(f.deadline-1000,context.deadlineMs)
+            assertEquals(f.session,ConversationPhoneSession.from(context.session))
+            assertEquals(f.binding,context.local.binding)
+            assertEquals(1L,context.grant.attemptGeneration)
+            assertArrayEquals(f.recipientId,context.local.pinnedReaderKeyId)
+            assertEquals("ConversationPreparedSubmissionContext(redacted)",context.toString())
+        }
+        assertEquals(ConversationSubmission.SUBMITTED,f.transport().submitClaimed(f.token()))
+    }
+    @Test fun consumerCannotMutateMetadataSnapshotsOrExtendOriginalGrantDeadline()=Fixture().use { f->
+        f.retain();f.consumerHook={context->
+            val original=context.grant
+            val envelope=original.envelopeDigest.copyOf();val reader=original.readerKeyId.copyOf()
+            val unsigned=original.unsignedDigest.copyOf()
+            original.envelopeDigest.fill(0);original.readerKeyId.fill(0);original.unsignedDigest.fill(0)
+            val forged=original.copy(expiresAtMs=f.deadline+1000,attemptGeneration=2)
+            context.local.pinnedReaderKeyId.fill(0)
+            assertTrue(forged.expiresAtMs>context.deadlineMs)
+            assertEquals(f.deadline-1000,context.grant.expiresAtMs)
+            assertEquals(f.deadline-1000,context.deadlineMs)
+            assertEquals(1L,context.grant.attemptGeneration)
+            assertArrayEquals(envelope,context.grant.envelopeDigest)
+            assertArrayEquals(reader,context.grant.readerKeyId)
+            assertArrayEquals(unsigned,context.grant.unsignedDigest)
+            assertArrayEquals(reader,checkNotNull(f.preparedFields).readerKeyId)
+            assertArrayEquals(envelope,checkNotNull(f.preparedFields).envelopeDigest)
+            assertArrayEquals(f.recipientId,context.local.pinnedReaderKeyId)
+            assertArrayEquals(f.recipientId,f.local.pinnedReaderKeyId)
+        }
+        assertEquals(ConversationSubmission.SUBMITTED,f.transport().submitClaimed(f.token()))
     }
     @Test fun actualProtectedClaimOriginalCiphertextAndBoundReplyReachPreparedHolderOnce()=Fixture().use { f->
         f.retain();val transport=f.transport();val token=f.token()
