@@ -47,17 +47,24 @@ class ConversationEntryOptInDeviceTest {
             return null
         }
         instrumentation.waitForIdleSync()
-        fun click(label: String) {
+        fun awaitNode(label: String): AccessibilityNodeInfo {
             val deadline = SystemClock.elapsedRealtime() + 5000
-            while (node(label) == null && SystemClock.elapsedRealtime() < deadline) Thread.sleep(25)
-            val action = checkNotNull(node(label)) { "Missing action: $label" }
+            var action = node(label)
+            while (action == null && SystemClock.elapsedRealtime() < deadline) {
+                Thread.sleep(25)
+                action = node(label)
+            }
+            return checkNotNull(action) { "Missing control: $label" }
+        }
+        fun click(label: String) {
+            val action = awaitNode(label)
             assertTrue(action.isEnabled); assertTrue(action.performAction(AccessibilityNodeInfo.ACTION_CLICK))
             instrumentation.waitForIdleSync()
         }
         try {
             click("Open conversation review")
             assertFalse(activity.conversationSetupEnabled)
-            assertFalse(checkNotNull(node("Enable review for this session")).isEnabled)
+            assertFalse(awaitNode("Enable review for this session").isEnabled)
             candidate.writeBytes(byteArrayOf(1))
             // Simulate the public picker result only; the actual provider/controller entry is unchanged.
             instrumentation.runOnMainSync { activity.acceptConversationSetupFile(Uri.fromFile(candidate)) }
@@ -71,14 +78,17 @@ class ConversationEntryOptInDeviceTest {
             val deadline = SystemClock.elapsedRealtime() + 5000
             while (activity.conversationSetupEnabled && SystemClock.elapsedRealtime() < deadline) Thread.sleep(25)
             assertFalse(activity.conversationSetupEnabled)
-            assertTrue(matchingText("The selected conversation could not be verified. Check pairing, the selected line and the setup file.").isNotEmpty())
+            val rejection = "The selected conversation could not be verified. Check pairing, the selected line and the setup file."
+            val renderedDeadline = SystemClock.elapsedRealtime() + 5000
+            while (matchingText(rejection).isEmpty() && SystemClock.elapsedRealtime() < renderedDeadline) Thread.sleep(25)
+            assertTrue(matchingText(rejection).isNotEmpty())
             assertTrue(matchingText("Agree and continue").isEmpty())
             assertTrue(matchingText("Content transfer: Confirmed for this interval").isEmpty())
             assertFalse(context.getDatabasePath(ConversationJournalStores.CAPTURE_FILE).exists())
             assertFalse(context.getDatabasePath(ConversationJournalStores.SEND_FILE).exists())
             click("Close conversation review")
             click("Open conversation review")
-            assertFalse(checkNotNull(node("Enable review for this session")).isEnabled)
+            assertFalse(awaitNode("Enable review for this session").isEnabled)
         } finally {
             instrumentation.runOnMainSync { activity.finish() }
             instrumentation.waitForIdleSync()
