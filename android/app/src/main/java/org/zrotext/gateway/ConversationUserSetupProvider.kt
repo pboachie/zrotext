@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 package org.zrotext.gateway
 
+import android.content.Context
 import android.os.Build
 import java.io.ByteArrayInputStream
 import java.io.DataInputStream
 import java.security.KeyStore
 
 /** Public file candidates select existing resources. They create no trust, session or key. */
-internal class ConversationUserSetupProvider(private val lines: SmsAttemptDao) {
+internal class ConversationUserSetupProvider(context: Context, private val lines: SmsAttemptDao) {
+    private val application = checkNotNull(context.applicationContext)
     class ExistingHardwareEnrollmentRequired : IllegalStateException("Existing enrolled hardware reader required")
     class Prepared internal constructor(val selection: ConversationUserSetupController.Selection,
                                         val payloadAlias: String) {
@@ -32,7 +34,7 @@ internal class ConversationUserSetupProvider(private val lines: SmsAttemptDao) {
             line.lineId == decoded.first.lineId && line.generation == decoded.first.bindingGeneration)
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         val matches = store.aliases().toList().mapNotNull { alias ->
-            runCatching { DevicePayloadKeyStore(alias).existingPublic() }.getOrNull()?.let { key ->
+            runCatching { DevicePayloadKeyStore(application, alias).existingPublic() }.getOrNull()?.let { key ->
                 alias.takeIf { key.security in setOf(PayloadKeySecurity.STRONGBOX, PayloadKeySecurity.TRUSTED_ENVIRONMENT) &&
                     key.keyId.contentEquals(decoded.second) }
             }

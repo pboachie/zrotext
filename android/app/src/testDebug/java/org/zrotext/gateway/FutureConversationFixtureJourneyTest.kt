@@ -24,7 +24,8 @@ import java.util.UUID
 @Config(sdk = [28, 34], qualifiers = "w320dp-h480dp")
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class FutureConversationFixtureJourneyTest {
-    @get:Rule val compose = createAndroidComposeRule<MainActivity>()
+    @get:Rule(order = 0) val receiverPermission = ConversationReceiverPermissionRule()
+    @get:Rule(order = 1) val compose = createAndroidComposeRule<MainActivity>()
     private val interval = UUID.randomUUID().toString()
     private val line = UUID.randomUUID().toString()
     private val request = UUID.randomUUID().toString()

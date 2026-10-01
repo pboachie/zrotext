@@ -463,7 +463,7 @@ class MainActivity : ComponentActivity() {
                             ?: error("Public file unavailable")
                         if (cancelled.get()) return@execute
                         val database = SmsJournalDatabase.get(applicationContext)
-                        val prepared = ConversationUserSetupProvider(database.attempts()).resolve(bytes, enabled = true)
+                        val prepared = ConversationUserSetupProvider(applicationContext, database.attempts()).resolve(bytes, enabled = true)
                             ?: error("Setup unavailable")
                         val binding = checkNotNull(database.attempts().currentLineBinding())
                         check(binding.accountId == prepared.selection.identity.accountId && binding.deviceId == prepared.selection.identity.deviceId &&

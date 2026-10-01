@@ -21,7 +21,8 @@ import java.util.UUID
 @Config(sdk = [28, 34], qualifiers = "w320dp-h640dp")
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class ConversationMainEntryTest {
-    @get:Rule val compose = createAndroidComposeRule<MainActivity>()
+    @get:Rule(order = 0) val receiverPermission = ConversationReceiverPermissionRule()
+    @get:Rule(order = 1) val compose = createAndroidComposeRule<MainActivity>()
     private val line = UUID.randomUUID().toString()
     private val interval = UUID.randomUUID().toString()
     private val request = UUID.randomUUID().toString()
@@ -33,7 +34,7 @@ class ConversationMainEntryTest {
         node.performClick()
     }
     private fun open() {
-        if (ports.isEmpty()) compose.onNodeWithText("Connection").performClick()
+        if (ports.isEmpty()) compose.onNode(hasText("Connection") and hasClickAction()).performClick()
         click("Open conversation review")
     }
     private fun installFixture(closeFailure: Boolean = false, verifiedLabel: String? = "Fixture line") {

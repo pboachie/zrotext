@@ -37,7 +37,7 @@ abstract class GatewayAccessibilityChecks {
             "SETUP/ACCESS" -> listOf("Set up this phone", "Review access", "Android access")
             "SETUP/SIM" -> listOf("Set up this phone", "Choose a SIM")
             "SETUP/PAIRING" -> listOf("Set up this phone", "Device pairing")
-            "CONNECTION" -> listOf("Authenticated device heartbeat")
+            "CONNECTION" -> listOf("Conversation content", "Authenticated device heartbeat")
             "TOOLS" -> listOf("Advanced pilots", "Gateway connection test", "Controlled SMS test") +
                 debugOnly("Controlled MMS spike")
             else -> error("Unknown test screen")
