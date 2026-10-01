@@ -85,7 +85,7 @@ Explore [all proposed use cases](docs/USE-CASES.md), including event invitations
 
 ## Design preview
 
-Try the [interactive text receptionist simulation](docs/RECEPTIONIST-DEMO.md): review a service inquiry, wedding RSVP, or personal assistant request, then approve a scripted reply. It uses synthetic data and sends no SMS.
+Try the [interactive text receptionist simulation](docs/RECEPTIONIST-DEMO.md): review a service inquiry, wedding RSVP, or personal assistant request, then approve a scripted reply. It uses synthetic data and sends no SMS. For a terminal-only walkthrough of the planned agent experience, run the [agent texting quickstart](docs/AGENT-QUICKSTART.md) over the delivery simulator; it is equally synthetic.
 
 These interface studies use synthetic devices, messages and traffic. Click an image to inspect it at full size.
 
