@@ -842,3 +842,70 @@ async fn confirmed_proof_retention_session_revocation_and_schema_absence_are_exp
     assert!(case.enqueue(&b, &c, &sig).await.is_err());
     case.f.cleanup().await;
 }
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn confirmed_queue_without_segment_authority_cannot_issue_an_ordinary_sealed_grant() {
+    let case = Case::new().await;
+    let (bytes, confirmation, signature) = case.packet(Uuid::new_v4(), 30_000).await;
+    case.enqueue(&bytes, &confirmation, &signature)
+        .await
+        .unwrap();
+    let limit: Option<i16> = case
+        .f
+        .db
+        .query_one(
+            "SELECT sealed_segment_limit FROM messages WHERE account_id=$1 AND id=$2",
+            &[&case.f.account, &confirmation.message],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        limit, None,
+        "ZTCR v1 supplies no authenticated ordinary-dispatch ceiling"
+    );
+    let session = zrotext_delivery_store::SessionRecord {
+        account_id: case.f.account,
+        device_id: case.f.device,
+        site_id: "manifest-test".into(),
+        instance_id: "fixture".into(),
+        epoch: 1,
+        deployment_epoch: 1,
+    };
+    let ready = crate::sealed_dispatch::wire::Ready {
+        grant_version: 1,
+        connection_epoch: 1,
+        line_id: case.f.line,
+        binding_generation: 1,
+        reader_key_id: base64::Engine::encode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            case.phone_reader.key_id,
+        ),
+    };
+    let policy = crate::alpha_policy::AlphaPolicy::parse(
+        Some("true"),
+        Some(&case.f.account.to_string()),
+        Some("+12"),
+    )
+    .unwrap();
+    let before = case.counts().await;
+    let job = dispatch_snapshot(&case).await;
+    let mut db = case.f.connect().await;
+    assert!(
+        crate::sealed_dispatch::grant(&mut db, &session, &ready, &policy)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(case.counts().await, before);
+    assert_eq!(dispatch_snapshot(&case).await, job);
+    assert_eq!(
+        db.query_one("SELECT count(*) FROM message_attempts", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        0
+    );
+    case.f.cleanup().await;
+}

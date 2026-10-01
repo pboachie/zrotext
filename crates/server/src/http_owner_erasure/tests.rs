@@ -3502,3 +3502,116 @@ async fn execution_schema_wait_expired_owner_rolls_back_disable_and_all_deletes(
         .await
         .unwrap();
 }
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn execution_record_wait_holds_owner_lock_and_expiry_rolls_back_all_deletes() {
+    let (admin, mut db, database_url, schema) = migrated_schema("execution_record_expiry").await;
+    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(26)).unwrap());
+    let handler_database_url = handler_url(&database_url, "zt_execution_record_expiry");
+    let (a, session, _b, _bsession, app) =
+        fixture(&mut db, &hasher, &handler_database_url, None).await;
+    db.execute(
+        "UPDATE sessions SET last_used_at=clock_timestamp() WHERE id=$1",
+        &[&session.id],
+    )
+    .await
+    .unwrap();
+    let pid = db
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await
+        .unwrap()
+        .get::<_, i32>(0);
+    let blocker = db.transaction().await.unwrap();
+    blocker
+        .batch_execute("LOCK TABLE conversation_execution_records IN EXCLUSIVE MODE")
+        .await
+        .unwrap();
+    let token = session.token.clone();
+    let csrf = session.csrf_token.clone();
+    let request = tokio::spawn(async move {
+        app.oneshot(erasure_post(
+            Some(&token),
+            Some(&csrf),
+            Some(ORIGIN),
+            &crate::test_keys::password(1),
+            None,
+        ))
+        .await
+        .unwrap()
+    });
+    wait_until_handler_is_blocked_by(&admin, "zt_execution_record_expiry", pid).await;
+    // EXCLUSIVE permits schema SELECTs but blocks the exact FOR UPDATE record
+    // acquisition. Observe the known blocker while the owner is still live.
+    let waiting:String=admin.query_one("SELECT query FROM pg_stat_activity WHERE application_name='zt_execution_record_expiry' AND $1=ANY(pg_blocking_pids(pid))",&[&pid]).await.unwrap().get(0);
+    assert!(waiting.contains("SELECT message_id FROM conversation_execution_records"));
+    assert!(
+        admin
+            .query_one(
+                &format!("SELECT expires_at>clock_timestamp() FROM {schema}.sessions WHERE id=$1"),
+                &[&session.id]
+            )
+            .await
+            .unwrap()
+            .get::<_, bool>(0)
+    );
+    let account_lock = admin
+        .query_one(
+            &format!("SELECT id FROM {schema}.accounts WHERE id=$1 FOR UPDATE NOWAIT"),
+            &[&a.account_id],
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        account_lock.code(),
+        Some(&tokio_postgres::error::SqlState::LOCK_NOT_AVAILABLE)
+    );
+    // Arm expiry only after proving the record wait and prior owner/account lock.
+    // No session lock or approval is acquired before the final complete fence.
+    admin.execute(&format!("UPDATE {schema}.sessions SET expires_at=clock_timestamp()+interval '500 milliseconds' WHERE id=$1"), &[&session.id]).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if admin
+                .query_one(
+                    &format!(
+                        "SELECT expires_at<=clock_timestamp() FROM {schema}.sessions WHERE id=$1"
+                    ),
+                    &[&session.id],
+                )
+                .await
+                .unwrap()
+                .get::<_, bool>(0)
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    blocker.commit().await.unwrap();
+    assert_eq!(request.await.unwrap().status(), StatusCode::UNAUTHORIZED);
+    assert!(
+        db.query_one(
+            "SELECT disabled_at IS NULL FROM accounts WHERE id=$1",
+            &[&a.account_id]
+        )
+        .await
+        .unwrap()
+        .get::<_, bool>(0)
+    );
+    assert_eq!(
+        db.query_one(
+            "SELECT count(*) FROM messages WHERE account_id=$1",
+            &[&a.account_id]
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0),
+        2
+    );
+    admin
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
