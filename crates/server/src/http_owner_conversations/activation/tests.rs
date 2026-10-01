@@ -575,22 +575,25 @@ async fn origin_expiry_while_provenance_insert_waits_rolls_back_content() {
         .get(0);
     let bytes = envelope(&f, event, 1, observed as u64, b"+12");
     let mut blocker = f.connect().await;
-    let lock = blocker.transaction().await.unwrap();
-    lock.batch_execute("LOCK TABLE conversation_inbound_provenance IN SHARE MODE")
+    let blocker_pid: i32 = blocker
+        .query_one("SELECT pg_backend_pid()", &[])
         .await
-        .unwrap();
-    f.db.execute(
-        "UPDATE sessions SET expires_at=clock_timestamp()+interval '2 seconds' WHERE id=$1",
-        &[&owner.session_id],
-    )
-    .await
-    .unwrap();
+        .unwrap()
+        .get(0);
     let mut client = f.connect().await;
     let pid: i32 = client
         .query_one("SELECT pg_backend_pid()", &[])
         .await
         .unwrap()
         .get(0);
+    let lock = blocker.transaction().await.unwrap();
+    lock.batch_execute("LOCK TABLE conversation_inbound_provenance IN SHARE MODE")
+        .await
+        .unwrap();
+    // Arm only after connections and blocker setup. Debug signature verification
+    // must reach the exact provenance write before this bounded expiry, which is
+    // shorter than the fixture's ten-second PostgreSQL statement deadline.
+    let deadline:i64=f.db.query_one("UPDATE sessions SET expires_at=clock_timestamp()+interval '9 seconds' WHERE id=$1 RETURNING floor(extract(epoch FROM expires_at)*1000)::bigint",&[&owner.session_id]).await.unwrap().get(0);
     let session = f.session();
     let line = f.line;
     let manifest = f.bytes.clone();
@@ -610,17 +613,51 @@ async fn origin_expiry_while_provenance_insert_waits_rolls_back_content() {
         .await
     });
     let mut waiting = false;
-    for _ in 0..100 {
-        waiting=f.db.query_one("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE pid=$1 AND wait_event_type='Lock')",&[&pid]).await.unwrap().get(0);
-        if waiting {
+    loop {
+        let row=f.db.query_one("SELECT EXISTS(SELECT 1 FROM pg_locks WHERE pid=$1 AND locktype='relation' AND relation='conversation_inbound_provenance'::regclass AND mode='RowExclusiveLock' AND NOT granted) AND $2=ANY(pg_blocking_pids($1)), floor(extract(epoch FROM clock_timestamp())*1000)::bigint",&[&pid,&blocker_pid]).await.unwrap();
+        let clock: i64 = row.get(1);
+        assert!(
+            clock < deadline,
+            "origin must remain live until the exact provenance write is blocked"
+        );
+        if row.get::<_, bool>(0) {
+            waiting = true;
+            break;
+        }
+        if task.is_finished() {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    assert!(waiting, "ingest must reach the post-check storage wait");
-    tokio::time::sleep(std::time::Duration::from_millis(2100)).await;
+    if !waiting {
+        lock.rollback().await.unwrap();
+        let outcome = task.await.unwrap();
+        panic!("ingest finished before the provenance storage wait: {outcome:?}");
+    }
+    loop {
+        let clock: i64 =
+            f.db.query_one(
+                "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        if clock >= deadline {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
     lock.commit().await.unwrap();
-    assert!(task.await.unwrap().is_err());
+    assert!(
+        matches!(
+            task.await.unwrap(),
+            Err(crate::sealed_inbound::ingest::IngestError::Conversation(
+                ConversationError::Forbidden
+            ))
+        ),
+        "expired origin must reject after the observed provenance wait; database timeout is not proof"
+    );
     assert_eq!(
         f.db.query_one(
             "SELECT COUNT(*) FROM sealed_inbound_events WHERE id=$1",
