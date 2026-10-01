@@ -474,6 +474,18 @@ async fn migrated_schema(
     String,
     String,
 ) {
+    migrated_schema_with_execution(label, true).await
+}
+
+async fn migrated_schema_with_execution(
+    label: &str,
+    execution: bool,
+) -> (
+    tokio_postgres::Client,
+    tokio_postgres::Client,
+    String,
+    String,
+) {
     let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
         .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
     let (admin, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
@@ -488,6 +500,9 @@ async fn migrated_schema(
     let (db, connection) = tokio_postgres::connect(&database_url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
     for (file, migration) in MIGRATIONS {
+        if !execution && *file == "../migration-candidates/NNN_conversation_execution_records.sql" {
+            continue;
+        }
         if *file == "070_message_summary_metadata.sql" {
             db.batch_execute("CREATE INDEX CONCURRENTLY messages_summary_queue ON messages(account_id,state,created_at) WHERE state IN ('accepted','queued','claimed','submitting','submitted')").await.unwrap();
             db.batch_execute("BEGIN").await.unwrap();
@@ -3384,14 +3399,10 @@ async fn malformed_confirmation_schema_fails_erasure_closed_without_partial_dele
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; isolated synthetic schema"]
 async fn execution_installed_schema_erasure_succeeds_and_absence_keeps_existing_behavior() {
     for absent in [false, true] {
-        let (admin, mut db, database_url, schema) = migrated_schema("execution_erase").await;
+        let (admin, mut db, database_url, schema) =
+            migrated_schema_with_execution("execution_erase", !absent).await;
         let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(26)).unwrap());
         let (a, session, _b, _bsession, app) = fixture(&mut db, &hasher, &database_url, None).await;
-        if absent {
-            db.batch_execute("DROP TABLE conversation_execution_records CASCADE")
-                .await
-                .unwrap();
-        }
         let response = app
             .oneshot(erasure_post(
                 Some(&session.token),
@@ -3402,7 +3413,11 @@ async fn execution_installed_schema_erasure_succeeds_and_absence_keeps_existing_
             ))
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "execution candidate absent={absent}"
+        );
         let report = body(response).await;
         let listed = report["deleted"]
             .as_array()
@@ -3435,7 +3450,7 @@ async fn execution_schema_wait_expired_owner_rolls_back_disable_and_all_deletes(
     let handler_database_url = handler_url(&database_url, "zt_execution_erase_expiry");
     let (a, session, _b, _bsession, app) =
         fixture(&mut db, &hasher, &handler_database_url, None).await;
-    db.execute("UPDATE sessions SET last_used_at=clock_timestamp(),expires_at=clock_timestamp()+interval '2 seconds' WHERE id=$1",&[&session.id]).await.unwrap();
+    db.execute("UPDATE sessions SET last_used_at=clock_timestamp(),expires_at=clock_timestamp()+interval '1 hour' WHERE id=$1",&[&session.id]).await.unwrap();
     let pid = db
         .query_one("SELECT pg_backend_pid()", &[])
         .await
@@ -3464,26 +3479,22 @@ async fn execution_schema_wait_expired_owner_rolls_back_disable_and_all_deletes(
     // final owner fence, rather than on an earlier password/session read.
     let waiting:String=admin.query_one("SELECT query FROM pg_stat_activity WHERE application_name='zt_execution_erase_expiry' AND $1=ANY(pg_blocking_pids(pid))",&[&pid]).await.unwrap().get(0);
     assert!(waiting.contains("conversation_execution_records"));
-    tokio::time::timeout(std::time::Duration::from_secs(4), async {
-        loop {
-            if admin
-                .query_one(
-                    &format!(
-                        "SELECT expires_at<=clock_timestamp() FROM {schema}.sessions WHERE id=$1"
-                    ),
-                    &[&session.id],
-                )
-                .await
-                .unwrap()
-                .get::<_, bool>(0)
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .unwrap();
+    assert!(
+        admin
+            .query_one(
+                &format!("SELECT expires_at>clock_timestamp() FROM {schema}.sessions WHERE id=$1"),
+                &[&session.id],
+            )
+            .await
+            .unwrap()
+            .get::<_, bool>(0)
+    );
+    // Expire only after observing the schema wait, so password verification
+    // cannot consume a short fixture deadline before reaching this barrier.
+    admin.execute(
+        &format!("UPDATE {schema}.sessions SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1"),
+        &[&session.id],
+    ).await.unwrap();
     blocker.commit().await.unwrap();
     assert_eq!(request.await.unwrap().status(), StatusCode::UNAUTHORIZED);
     assert!(
@@ -3617,6 +3628,53 @@ async fn execution_record_wait_holds_owner_lock_and_expiry_rolls_back_all_delete
         .unwrap()
         .get::<_, i64>(0),
         2
+    );
+    admin
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn execution_partial_schema_erasure_fails_without_disabling_or_deleting_account_data() {
+    let (admin, mut db, database_url, schema) = migrated_schema("execution_partial").await;
+    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(26)).unwrap());
+    let (a, session, _b, _bsession, app) = fixture(&mut db, &hasher, &database_url, None).await;
+    db.batch_execute("DROP TABLE conversation_execution_records CASCADE")
+        .await
+        .unwrap();
+    let snapshot = "SELECT jsonb_build_object('accounts',(SELECT jsonb_agg(to_jsonb(a) ORDER BY a.id) FROM accounts a), \
+        'messages',(SELECT jsonb_agg(to_jsonb(m) ORDER BY m.id) FROM messages m), \
+        'attempts',(SELECT jsonb_agg(to_jsonb(a) ORDER BY a.id) FROM message_attempts a), \
+        'fences',(SELECT jsonb_agg(to_jsonb(f) ORDER BY f.attempt_id) FROM dispatch_fences f), \
+        'devices',(SELECT jsonb_agg(to_jsonb(d) ORDER BY d.id) FROM devices d), \
+        'sessions',(SELECT jsonb_agg(id ORDER BY id) FROM sessions), \
+        'users',(SELECT jsonb_agg(id ORDER BY id) FROM users), \
+        'memberships',(SELECT jsonb_agg(to_jsonb(member) ORDER BY member.account_id,member.user_id) FROM memberships member), \
+        'confirmation',(SELECT jsonb_agg(to_jsonb(p) ORDER BY p.message_id) FROM conversation_confirmation_records p))";
+    let before: serde_json::Value = db.query_one(snapshot, &[]).await.unwrap().get(0);
+    let response = app
+        .oneshot(erasure_post(
+            Some(&session.token),
+            Some(&session.csrf_token),
+            Some(ORIGIN),
+            &crate::test_keys::password(1),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let after: serde_json::Value = db.query_one(snapshot, &[]).await.unwrap().get(0);
+    assert_eq!(after, before);
+    assert!(
+        db.query_one(
+            "SELECT disabled_at IS NULL FROM accounts WHERE id=$1",
+            &[&a.account_id]
+        )
+        .await
+        .unwrap()
+        .get::<_, bool>(0)
     );
     admin
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
