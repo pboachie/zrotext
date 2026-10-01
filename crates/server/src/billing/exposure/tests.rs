@@ -3,6 +3,7 @@ use super::*;
 use crate::http_owner_conversations::context::decisions::{model::Decision, tests::Case};
 mod entitlement;
 mod resilience;
+mod retention;
 
 struct Fixture {
     case: Case,

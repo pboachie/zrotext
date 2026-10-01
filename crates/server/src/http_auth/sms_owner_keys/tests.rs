@@ -309,8 +309,8 @@ const TEST_MIGRATIONS: [(&str, &str); 77] = [
         migration!("076_workflow_decisions.sql"),
     ),
     (
-        "080_test_exposure_reservations.sql",
-        migration!("080_test_exposure_reservations.sql"),
+        "079_test_exposure_reservations.sql",
+        migration!("079_test_exposure_reservations.sql"),
     ),
 ];
 

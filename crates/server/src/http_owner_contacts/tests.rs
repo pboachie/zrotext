@@ -114,7 +114,7 @@ const TEST_MIGRATIONS: [(&str, &str); 77] = [
     migration!("074_agent_authority.sql"),
     migration!("075_workflow_context.sql"),
     migration!("076_workflow_decisions.sql"),
-    migration!("080_test_exposure_reservations.sql"),
+    migration!("079_test_exposure_reservations.sql"),
 ];
 
 #[test]

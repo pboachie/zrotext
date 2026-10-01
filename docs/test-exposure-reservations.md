@@ -51,7 +51,9 @@ for the same action revision and operation.
 ## Intent, uncertainty and completion
 
 The first synthetic intent requires a fresh exact owner permit and current
-policy, entitlement, original period and not-before time. It commits one
+policy, entitlement, original period and not-before time. Final database time
+checks every original policy period after the last authority/policy wait, and
+the intent lease never extends beyond those period ends. It commits one
 durable nonce and lease before returning a non-deserializable process-local
 TEST settlement proof. No second intent can be minted from that action,
 including after a process restart, expired lease, unknown result or changed
@@ -85,6 +87,10 @@ eligibility bridge is pending #675.
 The ledger contains opaque scope/action/actor identities, policy versions,
 counts, times, digests and lifecycle state. It copies no recipient number,
 message content, plaintext model input, credential or provider response body.
+Context/action metadata retirement tombstones the separate live-action reference
+without changing the immutable reservation identity, counters or settlement
+proof. A tombstoned reservation cannot acquire an intent or restore authority;
+already-issued TEST settlement still conserves liability.
 Tenant erasure removes reservation mappings, reservations and local policies
 before their workflow/device dependencies. Deployment aggregate units contain
 no tenant identity and remain conservatively counted after erasure; deletion

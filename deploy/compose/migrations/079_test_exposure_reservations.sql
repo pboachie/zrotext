@@ -84,6 +84,9 @@ CREATE TABLE exposure_reservations (
     action_id uuid NOT NULL,
     revision bigint NOT NULL CHECK(revision BETWEEN 1 AND 128),
     binding_digest bytea NOT NULL CHECK(octet_length(binding_digest)=32),
+    live_action_id uuid,
+    live_revision bigint,
+    live_binding_digest bytea,
     route_policy_id uuid NOT NULL,
     operation text NOT NULL CHECK(operation IN ('provider','ai')),
     policy_version bigint NOT NULL CHECK(policy_version>0),
@@ -105,8 +108,12 @@ CREATE TABLE exposure_reservations (
     created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     PRIMARY KEY(account_id,id),
     UNIQUE(account_id,action_id,revision,operation),
-    FOREIGN KEY(account_id,action_id,revision,binding_digest)
-        REFERENCES workflow_action_versions(account_id,action_id,revision,binding_digest),
+    FOREIGN KEY(account_id,live_action_id,live_revision,live_binding_digest)
+        REFERENCES workflow_action_versions(account_id,action_id,revision,binding_digest)
+        ON DELETE SET NULL (live_action_id,live_revision,live_binding_digest),
+    CHECK((live_action_id IS NULL AND live_revision IS NULL AND live_binding_digest IS NULL)
+        OR (live_action_id IS NOT NULL AND live_revision IS NOT NULL AND live_binding_digest IS NOT NULL
+            AND (live_action_id,live_revision,live_binding_digest)=(action_id,revision,binding_digest))),
     FOREIGN KEY(account_id,route_policy_id,policy_version,deployment_id,operation)
         REFERENCES exposure_route_policies(account_id,id,version,deployment_id,operation) ON DELETE CASCADE,
     FOREIGN KEY(account_id,device_id) REFERENCES devices(account_id,id),
@@ -149,11 +156,25 @@ CREATE TRIGGER exposure_scope_immutable BEFORE UPDATE ON exposure_scope_budgets
 
 CREATE FUNCTION exposure_reservation_immutable() RETURNS trigger LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
 BEGIN
-    IF (to_jsonb(NEW)-'state'-'lease_id'-'lease_until_ms'-'actual_units'-'result_digest') IS DISTINCT FROM
-       (to_jsonb(OLD)-'state'-'lease_id'-'lease_until_ms'-'actual_units'-'result_digest') THEN
+    IF TG_OP='INSERT' THEN
+        NEW.live_action_id:=NEW.action_id;
+        NEW.live_revision:=NEW.revision;
+        NEW.live_binding_digest:=NEW.binding_digest;
+        RETURN NEW;
+    END IF;
+    IF (NEW.live_action_id,NEW.live_revision,NEW.live_binding_digest) IS DISTINCT FROM
+       (OLD.live_action_id,OLD.live_revision,OLD.live_binding_digest) AND
+       NOT (OLD.live_action_id IS NOT NULL AND NEW.live_action_id IS NULL
+            AND NEW.live_revision IS NULL AND NEW.live_binding_digest IS NULL) THEN
+        RAISE EXCEPTION 'exposure live action cannot be restored or replaced' USING ERRCODE='23514';
+    END IF;
+    IF (to_jsonb(NEW)-'state'-'lease_id'-'lease_until_ms'-'actual_units'-'result_digest'-'live_action_id'-'live_revision'-'live_binding_digest') IS DISTINCT FROM
+       (to_jsonb(OLD)-'state'-'lease_id'-'lease_until_ms'-'actual_units'-'result_digest'-'live_action_id'-'live_revision'-'live_binding_digest') THEN
         RAISE EXCEPTION 'exposure reservation identity is immutable' USING ERRCODE='23514';
     END IF;
-    IF OLD.state IN ('settled','released') AND NEW IS DISTINCT FROM OLD THEN
+    IF OLD.state IN ('settled','released') AND
+       (to_jsonb(NEW)-'live_action_id'-'live_revision'-'live_binding_digest') IS DISTINCT FROM
+       (to_jsonb(OLD)-'live_action_id'-'live_revision'-'live_binding_digest') THEN
         RAISE EXCEPTION 'exposure settlement is immutable' USING ERRCODE='23514';
     END IF;
     IF OLD.lease_id IS NOT NULL AND
@@ -169,5 +190,5 @@ BEGIN
     END IF;
     RETURN NEW;
 END; $$;
-CREATE TRIGGER exposure_reservation_immutable BEFORE UPDATE ON exposure_reservations
+CREATE TRIGGER exposure_reservation_immutable BEFORE INSERT OR UPDATE ON exposure_reservations
     FOR EACH ROW EXECUTE FUNCTION exposure_reservation_immutable();

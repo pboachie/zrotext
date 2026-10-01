@@ -260,7 +260,7 @@ const QUEUE_SCHEMA: [(&str, &str); 77] = queue_schema!(
     "074_agent_authority.sql",
     "075_workflow_context.sql",
     "076_workflow_decisions.sql",
-    "080_test_exposure_reservations.sql",
+    "079_test_exposure_reservations.sql",
 );
 #[test]
 fn queue_fixture_includes_every_checked_in_migration() {
