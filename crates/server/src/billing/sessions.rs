@@ -48,6 +48,7 @@ pub struct SessionState {
     success_url: String,
     cancel_url: String,
     portal_return_url: String,
+    portal_configuration: Option<String>,
 }
 
 impl SessionState {
@@ -85,6 +86,7 @@ impl SessionState {
             .build()
             .map_err(|_| "cannot configure Stripe test client")?;
         Ok(Self {
+            portal_configuration: None,
             success_url: format!("{origin}/billing/success"),
             cancel_url: format!("{origin}/billing/cancel"),
             portal_return_url: format!("{origin}/billing"),
@@ -96,6 +98,13 @@ impl SessionState {
             }),
             checkout_price_id,
         })
+    }
+
+    /// Select an explicit TEST portal; never inherit Stripe's mutable default.
+    pub fn with_portal_configuration(mut self, id: String) -> Result<Self, &'static str> {
+        valid_id(&id, "bpc_").map_err(|_| "invalid Stripe TEST portal configuration")?;
+        self.portal_configuration = Some(id);
+        Ok(self)
     }
 }
 
@@ -300,10 +309,14 @@ async fn portal(
     let customer_id = bound_customer(&db, owner.tenant.account_id())
         .await?
         .ok_or(AuthHttpError::NotFound)?;
+    let configuration = state
+        .portal_configuration
+        .as_deref()
+        .ok_or(AuthHttpError::Unavailable)?;
     consume_session_budget(&db, &state, owner.tenant.account_id()).await?;
     let url = state
         .stripe
-        .create_portal(&customer_id, &state.portal_return_url)
+        .create_portal(&customer_id, &state.portal_return_url, configuration)
         .await?;
     Ok(Json(SessionUrl { url }))
 }
@@ -629,13 +642,25 @@ impl StripeClient {
         &self,
         customer_id: &str,
         return_url: &str,
+        configuration: &str,
     ) -> Result<String, AuthHttpError> {
+        valid_id(configuration, "bpc_").map_err(|_| AuthHttpError::Unavailable)?;
+        let request = self
+            .http
+            .get(format!(
+                "{}/v1/billing_portal/configurations/{configuration}",
+                self.api_base
+            ))
+            .bearer_auth(&self.secret_key);
+        let selected = Self::read_json(request, MAX_RESPONSE_BYTES).await?;
+        validate_portal_configuration(&selected, configuration)?;
         let result = self
             .post(
                 StripeEndpoint::Portal,
                 &[
                     ("customer", customer_id.into()),
                     ("return_url", return_url.into()),
+                    ("configuration", configuration.into()),
                 ],
                 None,
             )
@@ -644,6 +669,7 @@ impl StripeClient {
             || result["livemode"] != false
             || result["customer"] != customer_id
             || result["return_url"] != return_url
+            || result["configuration"] != configuration
         {
             return Err(AuthHttpError::Unavailable);
         }
@@ -654,6 +680,28 @@ impl StripeClient {
         .map_err(|_| AuthHttpError::Unavailable)?;
         hosted_url(&result["url"], "billing.stripe.com")
     }
+}
+
+fn validate_portal_configuration(value: &Value, id: &str) -> Result<(), AuthHttpError> {
+    if value["object"] != "billing_portal.configuration"
+        || value["id"] != id
+        || value["active"] != true
+        || value["livemode"] != false
+        || [
+            "invoice_history",
+            "payment_method_update",
+            "subscription_cancel",
+        ]
+        .iter()
+        .any(|feature| value["features"][feature]["enabled"] != true)
+        || !matches!(
+            value["features"]["subscription_cancel"]["mode"].as_str(),
+            Some("at_period_end" | "immediately")
+        )
+    {
+        return Err(AuthHttpError::Unavailable);
+    }
+    Ok(())
 }
 
 fn hosted_url(value: &Value, host: &str) -> Result<String, AuthHttpError> {

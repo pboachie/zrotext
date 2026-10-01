@@ -177,3 +177,38 @@ subscription event requeues its row. A changed billing configuration also
 requeues subscription and payment-risk review rows through the configuration reset transaction. Risk rows with
 no Charge or PaymentIntent pointer stay in review, because migration 023 allows such a row only in review; an ordinary
 restart retains review state so a permanently failing read cannot loop forever.
+
+
+## Explicit TEST customer portal and local usage
+
+Hosted TEST sessions now require `STRIPE_TEST_PORTAL_CONFIGURATION_ID`, an
+explicit `bpc_` configuration. Before creating each portal session, the server
+retrieves that exact configuration and requires active TEST mode, payment-method
+updates, invoice history and subscription cancellation with a known
+`at_period_end` or `immediately` mode. It supplies and checks that exact
+configuration on the returned session. Missing, inactive, mismatched, incomplete
+or unavailable configurations refuse handoff; the default portal is never
+silently inherited. The existing shared account session budget pays for the
+attempt, including provider failure, after owner/CSRF checks. Configure only
+synthetic TEST objects; this does not enable live payments.
+
+The existing owner billing refresh includes the same current local outbound
+usage projection used by the scoped usage read API. UTC date bounds are
+inclusive start/exclusive end. Gross reservations and refunds come from durable
+admission counters; consumed units equal reservations minus refunds and do not
+prove SMS delivery. The hard cap is the local period's persisted limit. No soft
+cap exists in this projection, so the page explicitly says it is unavailable.
+Missing periods remain unavailable, while a real zero counter remains zero.
+Refresh clears old values and failures leave no stale tenant snapshot. Stripe
+meter summaries do not enforce these counters. No additional polling is added.
+
+Portal returns remain informational: only reconciled provider reads affect
+entitlement. The selected cancellation mode is displayed by Stripe's configured
+portal; a return URL does not prove cancellation, payment or quota recovery.
+Invoice-period entitlement changes and hosted mode enforcement are separate
+work; this bounded TEST flow does not claim production hosted readiness.
+Local billing records follow existing export, erasure and retention controls;
+this change stores no card details, invoices, hosted session URLs or new ledger.
+
+API references: [configuration retrieval](https://docs.stripe.com/api/customer_portal/configurations/retrieve)
+and [explicit session configuration](https://docs.stripe.com/api/customer_portal/sessions/create).

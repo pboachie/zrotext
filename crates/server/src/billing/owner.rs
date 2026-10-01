@@ -18,6 +18,7 @@ use uuid::Uuid;
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BillingStatus {
+    local_usage: Option<super::usage::UsageView>,
     mode: &'static str,
     customer_bound: bool,
     pending_reconciliations: i64,
@@ -166,6 +167,9 @@ async fn status(
         })
         .collect();
     Ok(Json(BillingStatus {
+        local_usage: super::usage::current(&db, account_id)
+            .await
+            .map_err(|_| AuthHttpError::Unavailable)?,
         mode: "test",
         customer_bound,
         pending_reconciliations,
