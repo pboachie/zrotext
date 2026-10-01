@@ -95,6 +95,7 @@ internal class ConversationConnectionFactory(
                     { checkNotNull(runtime.trustedNowMs()) }, inputs.signingKeys::signConversationStatement)
                 try {
                     val decisionConsumed = AtomicBoolean(false)
+                    val enrolledReader = java.util.concurrent.atomic.AtomicReference<ByteArray?>(null)
                     fun authority(scope: ConversationCaptureScope, now: Long): ConversationCryptoCurrent {
                         requireSession()
                         check(scope == parsed.scope && inputs.lifecycleLoss() == null)
@@ -109,6 +110,8 @@ internal class ConversationConnectionFactory(
                         val recipient = inputs.payloadKeys.existingPublic()
                         check(recipient.security in setOf(PayloadKeySecurity.STRONGBOX, PayloadKeySecurity.TRUSTED_ENVIRONMENT))
                         val deviceReader = recipient.keyId
+                        enrolledReader.compareAndSet(null, deviceReader.copyOf())
+                        check(checkNotNull(enrolledReader.get()).contentEquals(deviceReader))
                         fun context(inbound: Boolean, at: Long) = verified.context(Draft02ManifestAuthority.Request(
                             if (inbound) Draft02ManifestAuthority.Direction.INBOUND else Draft02ManifestAuthority.Direction.OUTBOUND,
                             uuid(scope.accountId), uuid(scope.intervalId), uuid(scope.deviceId), uuid(scope.lineId),

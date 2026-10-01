@@ -144,6 +144,12 @@ internal class ConversationAuthenticatedRuntime(
 
     fun captureEligible(): Boolean = admission.captureEligible()
     fun currentScope(): ConversationCaptureScope? = if(blocked.get()) null else admission.activeScope()
+    /** Existing admission gate prevents Stop from racing explicit reply-binding publication. */
+    internal fun <T> withActiveScope(scope: ConversationCaptureScope, action: () -> T): T =
+        admission.withCurrentScope(scope) { fresh ->
+            fresh(); check(!blocked.get()); action()
+        }
+    internal fun requireExecutionOpen() { check(!blocked.get()) }
     internal fun trustedNowMs():Long? = clock.nowMs()
     /** Uses this runtime's actual admission/clock; no second lease or wall-clock authority. */
     internal fun executionDeadline(scope: ConversationCaptureScope): Long? = runCatching {

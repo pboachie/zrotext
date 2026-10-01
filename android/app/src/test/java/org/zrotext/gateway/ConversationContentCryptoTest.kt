@@ -227,14 +227,14 @@ class ConversationContentCryptoTest {
         override fun sign(unsigned:ByteArray,point:ByteArray):ByteArray {signCalls++;assertArrayEquals(ConversationContentCryptoTest.point(phone),point);val result=signature(phone,ascii("ZTSE/sign/v2\u0000")+int(unsigned.size)+unsigned);onSign();return result}
         override fun open(parts:Draft02OutboundEnvelope.Parts):ByteArray {openCalls++;return cek.copyOf().also{lastCek=it;onOpen()}}
         fun evidence(body:String,edit:(ByteArray)->Unit={}):ByteArray {
-            val protected=account+message+device+line+long(1)+live!!.authority.digest+id(browser,5)+long(now)+long(now+20_000)+byteArrayOf(1,3)+ascii("+12")
+            val protected=account+message+device+line+long(live!!.authority.version)+live!!.authority.digest+id(browser,5)+long(now)+long(now+20_000)+byteArrayOf(1,3)+ascii("+12")
             val header=ascii("ZTSE")+byteArrayOf(2,1,0,0)+ByteBuffer.allocate(2).putShort(protected.size.toShort()).array()
             val nonce=ByteArray(12){8};val cipher=Cipher.getInstance("AES/GCM/NoPadding");cipher.init(Cipher.ENCRYPT_MODE,SecretKeySpec(cek,"AES"),GCMParameterSpec(128,nonce));cipher.updateAAD(ascii("ZTSE/body/v2\u0000")+header+protected)
             val encrypted=cipher.doFinal(body.toByteArray(Charsets.UTF_8))
             val wraps=byteArrayOf(1)+recipientId+point(recipient)+ByteArray(48)+byteArrayOf(2)+archiveId+point(archive)+ByteArray(48)
             val unsigned=header+protected+nonce+int(encrypted.size)+encrypted+byteArrayOf(2)+wraps
             val envelope=unsigned+signature(browser,ascii("ZTSE/sign/v2\u0000")+int(unsigned.size)+unsigned)
-            val confirmation=ascii("ZTCS")+byteArrayOf(1)+account+device+line+uuid(scope.intervalId)+uuid(scope.initiatingSessionId)+message+long(1)+long(1)+long(1)+long(now+20_000)+byteArrayOf(3)+ascii("+12")+id(browser,5)+archiveId+live!!.authority.digest+sha(envelope)+sha(body.toByteArray(Charsets.UTF_8))
+            val confirmation=ascii("ZTCS")+byteArrayOf(1)+account+device+line+uuid(scope.intervalId)+uuid(scope.initiatingSessionId)+message+long(1)+long(1)+long(live!!.authority.version)+long(now+20_000)+byteArrayOf(3)+ascii("+12")+id(browser,5)+archiveId+live!!.authority.digest+sha(envelope)+sha(body.toByteArray(Charsets.UTF_8))
             edit(confirmation)
             return ConversationContentCrypto.packConfirmedEvidence(envelope,confirmation,signature(browser,ascii("zrotext/conversation/confirm-send/v1\u0000")+int(confirmation.size)+confirmation))
         }

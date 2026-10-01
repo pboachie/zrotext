@@ -8,6 +8,7 @@ import java.security.KeyStore
 
 /** Public file candidates select existing resources. They create no trust, session or key. */
 internal class ConversationUserSetupProvider(private val lines: SmsAttemptDao) {
+    class ExistingHardwareEnrollmentRequired : IllegalStateException("Existing enrolled hardware reader required")
     class Prepared internal constructor(val selection: ConversationUserSetupController.Selection,
                                         val payloadAlias: String) {
         override fun toString() = "ConversationPreparedSetup(redacted)"
@@ -36,7 +37,7 @@ internal class ConversationUserSetupProvider(private val lines: SmsAttemptDao) {
                     key.keyId.contentEquals(decoded.second) }
             }
         }
-        check(matches.size == 1) { "ConversationExistingHardwareEnrollmentRequired" }
+        if (matches.size != 1) throw ExistingHardwareEnrollmentRequired()
         host.requireCurrent()
         check(lines.currentLineBinding() == line)
         host.requireCurrent()
@@ -59,7 +60,7 @@ internal class ConversationUserSetupProvider(private val lines: SmsAttemptDao) {
                 Draft02OutboundPreparation.hex(DevicePayloadKeyStore.keyId(archive)) == parsed.scope.readerKeyId)
             return ConversationUserSetupController.Selection(identity, parsed.scope.intervalId, parsed.scope.lineId,
                 parsed.scope.bindingGeneration, parsed.scope.peer, ConversationConnectionBindings(archive, ByteArray(32)),
-                parsed.site, parsed.instance) to reader.copyOf()
+                parsed.site, parsed.instance, reader) to reader.copyOf()
         }
 
         fun decodeReplyAuthority(bytes: ByteArray): ReplyAuthority {

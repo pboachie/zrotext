@@ -161,7 +161,7 @@ internal class Draft02ManifestAuthority private constructor(
     /** Enrollment-only successor: preserve every prior record and add exactly this reply signer. */
     fun requireReplySuccessor(prior: Draft02ManifestAuthority, signerId: ByteArray) {
         require(prior.version < Long.MAX_VALUE && version == prior.version + 1 && generation == prior.generation &&
-            same(account, prior.account) && records.size == prior.records.size + 1)
+            same(account, prior.account) && expires == prior.expires && records.size == prior.records.size + 1)
         fun identical(a: Key, b: Key) = a.role == b.role && same(a.id,b.id) && same(a.point,b.point) &&
             same(a.device,b.device) && same(a.line,b.line) && a.scope == b.scope && a.from == b.from &&
             a.until == b.until && a.state == b.state
