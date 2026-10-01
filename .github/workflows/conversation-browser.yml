@@ -1,0 +1,25 @@
+name: Conversation browser contracts
+on:
+  pull_request:
+    paths: ['web/owner/**', 'scripts/conversation_browser_qa.cjs', '.github/workflows/conversation-browser.yml']
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  conversation-browser:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Install isolated pinned browser test tooling
+        run: |
+          npm install --prefix "$RUNNER_TEMP/conversation-browser-tools" --no-save --ignore-scripts playwright@1.58.2
+          node "$RUNNER_TEMP/conversation-browser-tools/node_modules/playwright/cli.js" install --with-deps chromium
+      - name: Test the dormant page with synthetic in-memory adapters
+        run: node scripts/conversation_browser_qa.cjs --tools "$RUNNER_TEMP/conversation-browser-tools"

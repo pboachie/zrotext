@@ -231,7 +231,7 @@ pub async fn begin(
     Ok(s)
 }
 
-async fn device_live(
+pub(super) async fn device_live(
     tx: &Transaction<'_>,
     session: InboundSession<'_>,
     s: &Statement,

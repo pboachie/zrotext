@@ -10,13 +10,31 @@ import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.RoomDatabase
 import androidx.room.Transaction
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 
 /** Separate dormant database: no receiver, service or production builder opens it. */
-@Database(entities = [ConversationInstallation::class, ConversationReceipt::class, ConversationClosedInterval::class], version = 1,
+@Database(entities = [ConversationInstallation::class, ConversationReceipt::class, ConversationClosedInterval::class, ConversationWireCapture::class], version = 2,
     exportSchema = false)
 abstract class ConversationCaptureDatabase : RoomDatabase() {
     abstract fun journal(): ConversationCaptureDao
+    companion object {
+        val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS conversation_wire_captures (sequence INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, token TEXT NOT NULL, captureId TEXT NOT NULL, intervalId TEXT NOT NULL, protectedEnvelope BLOB, nonce BLOB)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_conversation_wire_captures_token ON conversation_wire_captures(token)")
+            }
+        }
+    }
 }
+
+/** Counter and receipt identity survive ciphertext purge; retries never create another envelope. */
+@Entity(tableName = "conversation_wire_captures", indices = [androidx.room.Index(value = ["token"], unique = true)])
+data class ConversationWireCapture(
+    @PrimaryKey(autoGenerate = true) val sequence: Long = 0,
+    val token: String, val captureId: String, val intervalId: String,
+    val protectedEnvelope: ByteArray? = null, val nonce: ByteArray? = null
+) { override fun toString() = "ConversationWireCapture(redacted)" }
 
 @Entity(tableName = "conversation_closed_intervals")
 data class ConversationClosedInterval(@PrimaryKey val intervalId: String) {
@@ -51,6 +69,42 @@ data class ConversationReceipt(
 
 @Dao
 abstract class ConversationCaptureDao {
+    @Query("SELECT * FROM conversation_wire_captures WHERE token=:token")
+    abstract fun wireCapture(token: String): ConversationWireCapture?
+    @Query("SELECT COUNT(*) FROM conversation_wire_captures")
+    protected abstract fun wireCount(): Int
+    @Insert protected abstract fun insertWire(value: ConversationWireCapture): Long
+    @Query("UPDATE conversation_wire_captures SET protectedEnvelope=:content,nonce=:nonce WHERE sequence=:sequence AND protectedEnvelope IS NULL AND nonce IS NULL")
+    protected abstract fun setWire(sequence: Long, content: ByteArray, nonce: ByteArray): Int
+    @Query("UPDATE conversation_wire_captures SET protectedEnvelope=NULL,nonce=NULL WHERE intervalId=:interval")
+    protected abstract fun clearWire(interval: String): Int
+    @Query("UPDATE conversation_wire_captures SET protectedEnvelope=NULL,nonce=NULL WHERE token IN (SELECT token FROM conversation_receipts WHERE firstObservedAtMs<:cutoff)")
+    protected abstract fun purgeWireBefore(cutoff: Long): Int
+
+    @Transaction open fun reserveWire(token: String, capture: String, interval: String, checkLive: () -> Unit): ConversationWireCapture {
+        checkLive()
+        val receipt = checkNotNull(receipt(token))
+        check(receipt.captureId == capture && receipt.intervalId == interval && receipt.protectedCapture != null)
+        check(isClosed(interval) == 0)
+        val old = wireCapture(token)
+        if (old != null) {
+            check(old.captureId == capture && old.intervalId == interval && old.sequence > 0)
+            checkLive(); return old
+        }
+        check(wireCount() < RECEIPT_CAPACITY)
+        val sequence = insertWire(ConversationWireCapture(token=token,captureId=capture,intervalId=interval))
+        check(sequence > 0); checkLive()
+        return checkNotNull(wireCapture(token))
+    }
+    @Transaction open fun storeWire(row: ConversationWireCapture, content: ByteArray, nonce: ByteArray, checkLive: () -> Unit) {
+        checkLive(); check(isClosed(row.intervalId) == 0)
+        val receipt = checkNotNull(receipt(row.token))
+        check(receipt.captureId == row.captureId && receipt.intervalId == row.intervalId && receipt.protectedCapture != null)
+        val old = checkNotNull(wireCapture(row.token))
+        check(old.sequence == row.sequence && old.captureId == row.captureId && old.intervalId == row.intervalId)
+        check(setWire(row.sequence,content,nonce) == 1)
+        checkLive()
+    }
     @Query("SELECT COUNT(*) FROM conversation_closed_intervals WHERE intervalId = :interval")
     abstract fun isClosed(interval: String): Int
 
@@ -92,7 +146,11 @@ abstract class ConversationCaptureDao {
     protected abstract fun discardReceipt(token: String): Int
 
     @Query("UPDATE conversation_receipts SET protectedCapture = NULL, nonce = NULL WHERE firstObservedAtMs < :cutoff")
-    abstract fun purgeContentBefore(cutoff: Long): Int
+    protected abstract fun purgeReceiptsBefore(cutoff: Long): Int
+    @Transaction open fun purgeContentBefore(cutoff: Long): Int {
+        purgeWireBefore(cutoff)
+        return purgeReceiptsBefore(cutoff)
+    }
 
     @Transaction
     open fun prepare(value: ConversationInstallation, checkLive: () -> Unit) {
@@ -125,6 +183,7 @@ abstract class ConversationCaptureDao {
         check(existing == null || existing.intervalId == interval) { "Installation identity changed" }
         check(isClosed(interval) != 0 || closedCount() < RECEIPT_CAPACITY) { "Closed interval capacity exhausted" }
         insertClosed(ConversationClosedInterval(interval))
+        clearWire(interval)
         if (existing != null && existing.state != "closed") check(setState(interval, "closed") == 1)
     }
 

@@ -21,6 +21,20 @@ import org.json.JSONObject
 
 /** Fresh fixture keys and loopback server only. Implements no shipped transport or credentials. */
 internal class ConversationSimulatorFixture(private val ready: JSONObject) : ConversationActivationVerifier {
+    /** Session comes out-of-band from the isolated fixture server, never decoded from frame claims. */
+    val channelSession: ConversationPhoneSession by lazy {
+        val s=ready.getJSONObject("channelSession")
+        ConversationPhoneSession(UUID.fromString(s.getString("account")),UUID.fromString(s.getString("device")),
+            UUID.fromString(s.getString("session")),s.getLong("connectionEpoch"),s.getLong("deploymentEpoch"),s.getString("originHash"))
+    }
+    fun authenticatedWire() = object:ConversationAuthenticatedWire {
+        override fun currentSession() = channelSession
+        override fun exchange(request:ByteArray):ConversationAuthenticatedWire.Reply {
+            val response=command("channel",data=b64(request))
+            check(response.getBoolean("ok")) { "Synthetic authenticated channel refused" }
+            return ConversationAuthenticatedWire.Reply(channelSession,bytes(response.getString("frame")))
+        }
+    }
     val statement = bytes(ready.getString("statement"))
     val parsed = ConversationActivationCodec.decode(statement)
     private val parameters = AlgorithmParameters.getInstance("EC").apply {
@@ -71,14 +85,15 @@ internal class ConversationSimulatorFixture(private val ready: JSONObject) : Con
             ByteBuffer.allocate(16).putLong(id.mostSignificantBits).putLong(id.leastSignificantBits).array() + ByteBuffer.allocate(8).putLong(duration).array()
         val proof = bytes(response.getString("proof")); val signature = bytes(response.getString("signature"))
         check(proof.contentEquals(wanted) && signature.size == 64 && BigInteger(1, signature.copyOfRange(32, 64)) <= order.shiftRight(1))
-        check(Signature.getInstance("SHA256withECDSAinP1363Format").apply { initVerify(root); update(proof) }.verify(signature))
+        check(Signature.getInstance("SHA256withECDSA").apply { initVerify(root); update(proof) }.verify(rawDer(signature)))
         return duration
     }
 
     fun sign(domain: ByteArray): String {
-        val raw = Signature.getInstance("SHA256withECDSAinP1363Format").apply {
+        val der = Signature.getInstance("SHA256withECDSA").apply {
             initSign(signer); update(ConversationActivationCodec.transcript(domain, statement))
         }.sign()
+        val raw = Draft01SignaturePrimitive.canonicalRawFromDer(der)
         val s = BigInteger(1, raw.copyOfRange(32, 64))
         if (s > order.shiftRight(1)) {
             val low = order.subtract(s).toByteArray().takeLast(32).toByteArray()
@@ -89,7 +104,7 @@ internal class ConversationSimulatorFixture(private val ready: JSONObject) : Con
     }
 
     fun command(op: String, data: String? = null, signature: String? = null,
-                challenge: UUID? = null, event: UUID? = null): JSONObject {
+                challenge: UUID? = null, event: UUID? = null, confirmation: String? = null): JSONObject {
         val port = ready.getInt("port")
         require(port in 1..65535)
         val uri = URI("http", null, "localhost", port, "/fixture", null, null)
@@ -100,6 +115,7 @@ internal class ConversationSimulatorFixture(private val ready: JSONObject) : Con
         val json = JSONObject().put("token", ready.getString("token")).put("op", op)
         data?.let { json.put("data", it) }; signature?.let { json.put("signature", it) }
         challenge?.let { json.put("challenge", it.toString()) }; event?.let { json.put("event", it.toString()) }
+        confirmation?.let { json.put("confirmation", it) }
         try {
             connection.outputStream.use { it.write(json.toString().toByteArray(Charsets.UTF_8)) }
             return JSONObject((if (connection.responseCode == 200) connection.inputStream else connection.errorStream).use {
@@ -111,10 +127,42 @@ internal class ConversationSimulatorFixture(private val ready: JSONObject) : Con
     fun envelope(body: String, capture: String, observed: Long, sequence: Long): JSONObject = sdk(
         JSONObject().put("op", "prepare").put("body", body).put("capture", capture).put("observed", observed).put("sequence", sequence))
     fun open(envelope: String): JSONObject = sdk(JSONObject().put("op", "open").put("envelope", envelope))
-    private fun sdk(input: JSONObject): JSONObject {
+    fun browser(event: UUID, inbound: String): JSONObject = sdk(JSONObject().put("event", event.toString()).put("inbound", inbound).put("closeDuringDecrypt", System.getenv("ZT_CONVERSATION_SIM_MODE") == "send_close"), ready.getString("browserTool"))
+    fun verifiedSend(evidence: ByteArray, closeAfterDecrypt: Boolean = false): VerifiedConversationSend {
+        val packet = JSONObject(evidence.toString(Charsets.UTF_8))
+        val tool = java.io.File(java.io.File(ready.getString("browserTool")).parentFile, "conversation-phone-send-verifier.mjs").path
+        val expected = JSONObject().put("account", parsed.scope.accountId).put("device", parsed.scope.deviceId)
+            .put("line", parsed.scope.lineId).put("interval", parsed.scope.intervalId).put("session", parsed.scope.initiatingSessionId)
+            .put("generation", parsed.scope.bindingGeneration.toString()).put("peer", parsed.scope.peer)
+            .put("reader", b64(hex(parsed.scope.readerKeyId)))
+        val value = sdk(JSONObject().put("evidencePacket", packet).put("expectedScope", expected).put("closeAfterDecrypt", closeAfterDecrypt), tool)
+        val authenticated = value.getJSONObject("scope")
+        expected.keys().forEach { field -> check(authenticated.getString(field) == expected.getString(field)) }
+        return VerifiedConversationSend(parsed.scope, value.getString("message"), value.getString("deadline").toLong(), value.getString("body"))
+    }
+    // Verified deadline comes from the independently checked signed proof. The
+    // clock executes inside the shared monitor, after any admission-lock wait.
+    fun recordVerifiedAcceptance(admission: ConversationCaptureAdmission, deadline: Long,
+                                 now: () -> Long = System::currentTimeMillis, record: () -> Unit): Boolean = synchronized(admission) {
+        if (!admission.captureEligible() || now() >= deadline) false
+        else { record(); true }
+    }
+    private fun sdk(input: JSONObject, tool: String = ready.getString("sdkTool")): JSONObject {
         input.put("ready", ready).put("device", parsed.scope.deviceId).put("line", parsed.scope.lineId).put("peer", parsed.scope.peer)
+        if (ready.has("hostBridgePort")) {
+            val port = ready.getInt("hostBridgePort"); require(port in 1..65535)
+            val connection = URI("http", null, "localhost", port, "/sdk", null, null).toURL().openConnection() as HttpURLConnection
+            connection.connectTimeout=10000;connection.readTimeout=30000;connection.requestMethod="POST";connection.doOutput=true
+            connection.setRequestProperty("Content-Type","application/json")
+            val request=JSONObject().put("token",ready.getString("token")).put("tool",tool.replace('\\','/').substringAfterLast('/')).put("input",input)
+            try {
+                connection.outputStream.use {it.write(request.toString().toByteArray(Charsets.UTF_8))}
+                check(connection.responseCode==200) { "Fixture host bridge failed" }
+                return JSONObject(connection.inputStream.use {it.readBytes().toString(Charsets.UTF_8)})
+            } finally {connection.disconnect()}
+        }
         val file = java.io.File.createTempFile("conversation-sdk-", ".json")
-        val process = ProcessBuilder("node", ready.getString("sdkTool")).redirectErrorStream(true).redirectOutput(file).start()
+        val process = ProcessBuilder("node", tool).redirectErrorStream(true).redirectOutput(file).start()
         try {
             process.outputStream.use { it.write(input.toString().toByteArray(Charsets.UTF_8)) }
             check(process.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)) { "Synthetic SDK adapter timed out" }
@@ -124,6 +172,15 @@ internal class ConversationSimulatorFixture(private val ready: JSONObject) : Con
             if (process.isAlive) { process.destroyForcibly(); process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS) }
             file.delete()
         }
+    }
+    private fun rawDer(raw:ByteArray):ByteArray {
+        require(raw.size==64)
+        fun integer(bytes:ByteArray):ByteArray {
+            val encoded=BigInteger(1,bytes).toByteArray()
+            return byteArrayOf(2,encoded.size.toByte())+encoded
+        }
+        val values=integer(raw.copyOfRange(0,32))+integer(raw.copyOfRange(32,64))
+        return byteArrayOf(0x30,values.size.toByte())+values
     }
     fun b64(b: ByteArray): String = Base64.getEncoder().encodeToString(b)
     private fun bytes(s: String) = Base64.getDecoder().decode(s)

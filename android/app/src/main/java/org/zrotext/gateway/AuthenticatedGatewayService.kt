@@ -76,6 +76,8 @@ class AuthenticatedGatewayService : Service() {
     @Volatile private var lastAckAtNanos = 0L
     /** Computed once per authenticated session; the inputs cannot change within it. */
     @Volatile private var sessionIdentity: EvidenceIdentity? = null
+    @Volatile private var conversationConnection: ConversationSocketNegotiation? = null
+    private var conversationHost: AutoCloseable? = null
     @Volatile private var awaitingEventId: String? = null
     @Volatile private var awaitingEventSentAtNanos = 0L
     @Volatile private var awaitingInboundId: String? = null
@@ -103,6 +105,7 @@ class AuthenticatedGatewayService : Service() {
     @Synchronized
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_PAUSE) {
+            ConversationProcessMount.runtime.pause(ConversationStopReason.USER_STOP)
             val rebootResumeCleared = HeartbeatResumeStore.clear(this)
             halt()
             if (rebootResumeCleared) {
@@ -246,6 +249,7 @@ class AuthenticatedGatewayService : Service() {
         socket = null
         retry?.cancel(false)
         alphaPump.onConnectionReset()
+        closeConversationConnection()
         sessionIdentity = null
         awaitingEventId = null
         awaitingEventSentAtNanos = 0L
@@ -282,6 +286,7 @@ class AuthenticatedGatewayService : Service() {
                     check(frame.opt("v") is Number && frame.getInt("v") == 1)
                     check(frame.opt("type") is String)
                     when (frame.getString("type")) {
+                        "conversation_session" -> checkNotNull(conversationConnection).accept(frame)
                         "challenge" -> {
                             requireFields(frame, setOf("v", "type", "challenge_id", "account_id", "device_id", "nonce"))
                             val proof = machine.challenge(
@@ -382,8 +387,28 @@ class AuthenticatedGatewayService : Service() {
                                     disconnect(currentGeneration, DeviceReconnectPolicy.Loss.TRANSPORT)
                                 }
                             }, 15, 15, TimeUnit.SECONDS)
-                            sessionIdentity = EvidenceIdentity.fromStream(
-                                machine.activeAccountId(), machine.activeDeviceId(), url)
+                            synchronized(this@AuthenticatedGatewayService) {
+                                if (generation != currentGeneration || socket !== webSocket) return
+                                val identity = EvidenceIdentity.fromStream(machine.activeAccountId(), machine.activeDeviceId(), url)
+                                sessionIdentity = identity
+                                conversationHost = ConversationSocketComposition.registerAuthenticatedHost(webSocket, identity, epoch,
+                                    scheduler, {
+                                        check(generation == currentGeneration && socket === webSocket && sessionIdentity == identity &&
+                                            machine.phase == DeviceStreamMachine.Phase.ACTIVE && machine.heartbeatEpoch() == epoch)
+                                    }, { candidate, guard ->
+                                        synchronized(this@AuthenticatedGatewayService) {
+                                            guard()
+                                            check(conversationConnection == null)
+                                            conversationConnection = candidate // Publish before readiness can receive an early reply.
+                                            candidate.startIfCurrent(guard)
+                                            true
+                                        }
+                                    }, { candidate ->
+                                        synchronized(this@AuthenticatedGatewayService) {
+                                            if (conversationConnection === candidate) conversationConnection = null
+                                        }
+                                    })
+                            }
                             if (inboundUploadRequested || lineOptOutUploadRequested) {
                                 eventPump = scheduler.scheduleAtFixedRate({
                                     if (generation == currentGeneration) {
@@ -473,9 +498,15 @@ class AuthenticatedGatewayService : Service() {
                         "radio_event_ack" -> {
                             requireFields(frame, setOf("v", "type", "event_id", "state", "submit_permitted"))
                             check(frame.opt("state") is String && frame.opt("submit_permitted") is Boolean)
-                            handleAlphaAck(webSocket, machine, url, currentGeneration,
-                                uuid(frame, "event_id").toString(), frame.getString("state"),
-                                frame.getBoolean("submit_permitted"))
+                            check(machine.phase == DeviceStreamMachine.Phase.ACTIVE)
+                            val event = uuid(frame, "event_id").toString()
+                            val state = frame.getString("state")
+                            val permitted = frame.getBoolean("submit_permitted")
+                            val route = conversationConnection?.radioAck(event, state, permitted)
+                                ?: ConversationRadioAckRoute.NOT_OURS
+                            // Known late/duplicate conversation ACKs never enter the alpha radio path.
+                            if (route == ConversationRadioAckRoute.NOT_OURS)
+                                handleAlphaAck(webSocket, machine, url, currentGeneration, event, state, permitted)
                         }
                         "inbound_event_ack" -> {
                             check(inboundUploadRequested && machine.phase == DeviceStreamMachine.Phase.ACTIVE)
@@ -531,7 +562,9 @@ class AuthenticatedGatewayService : Service() {
             }
 
             override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-                disconnect(currentGeneration, DeviceReconnectPolicy.Loss.PROTOCOL_REJECTED)
+                if(generation!=currentGeneration)return
+                if(conversationConnection?.binary(bytes.toByteArray())!=true)
+                    disconnect(currentGeneration, DeviceReconnectPolicy.Loss.PROTOCOL_REJECTED)
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
@@ -580,7 +613,8 @@ class AuthenticatedGatewayService : Service() {
                 val grant = activeGrant
                 if (work.retireOrphans && (grant == null || grant.connectionEpoch != epoch ||
                         System.currentTimeMillis() >= grant.expiresAtMs)) {
-                    dao.retireOrphanedAlphaIntents(System.currentTimeMillis())
+                    dao.retireOrphanedAlphaIntents(System.currentTimeMillis(),
+                        ConversationRadioIntentOwnership.excluded(identity), ConversationRadioIntentOwnership::owns)
                 }
                 if (work.quarantineForeign &&
                     dao.quarantineForeignAlpha(identity.accountId, identity.deviceId,
@@ -590,7 +624,8 @@ class AuthenticatedGatewayService : Service() {
                         "Authenticated heartbeat; older device evidence quarantined"
                 }
                 val event = dao.nextAlphaEvent(identity.accountId, identity.deviceId,
-                    identity.originHash) ?: return@execute
+                    identity.originHash, ConversationRadioIntentOwnership.excluded(identity)) ?: return@execute
+                if (ConversationRadioIntentOwnership.owns(event)) return@execute
                 if (awaitingEventId != null && awaitingEventId != event.eventId) {
                     // A contradictory callback can retract an unsent no-radio
                     // proof. Do not let its retired ID block the conflict event.
@@ -610,6 +645,11 @@ class AuthenticatedGatewayService : Service() {
                     frame.put("segment_index", event.segmentIndex)
                         .put("segment_count", event.segmentCount)
                 }
+                // The permanent sealed-preparation SQL filter handles inserted rows even if
+                // the process registry is lost; refresh the live owner after selection too.
+                if (ConversationRadioIntentOwnership.owns(event) ||
+                    (event.evidence == "durable_submit_intent" &&
+                        event.eventId in ConversationRadioIntentOwnership.excluded(identity))) return@execute
                 awaitingEventId = event.eventId
                 awaitingEventSentAtNanos = System.nanoTime()
                 if (!webSocket.send(frame.toString())) {
@@ -986,9 +1026,10 @@ class AuthenticatedGatewayService : Service() {
     @Synchronized
     private fun disconnect(currentGeneration: Int, reason: DeviceReconnectPolicy.Loss) {
         if (generation != currentGeneration) return
+        generation += 1 // Fence callbacks before potentially blocking conversation closure.
+        closeConversationConnection()
         Log.i("ZTReconnect", "disconnect reason=$reason")
         timingTrace.mark(HeartbeatTraceEvent.DISCONNECT, traceEpoch.get(), reason)
-        generation += 1 // Fence queued callbacks, grants and radio authorization before any retry.
         cancelTimers()
         socket?.cancel()
         socket = null
@@ -1086,9 +1127,16 @@ class AuthenticatedGatewayService : Service() {
         }
     }
 
+    private fun closeConversationConnection() {
+        val host=conversationHost;conversationHost=null
+        val old=conversationConnection;conversationConnection=null
+        try {host?.close()} finally {old?.close()}
+    }
     private fun halt() {
+        generation += 1 // Fence listener callbacks before admission/storage closure can wait.
+        closeConversationConnection()
+        ConversationProcessMount.runtime.pause(ConversationStopReason.PHONE_SESSION_LOST)
         reconnect.pause()
-        generation += 1
         JournalWriteSignal.replace(null)
         cancelTimers()
         retry?.cancel(false)
@@ -1104,6 +1152,7 @@ class AuthenticatedGatewayService : Service() {
     }
 
     private fun cancelTimers() {
+        closeConversationConnection()
         networkServiceSampler.cancel()
         heartbeat?.cancel(false)
         watchdog?.cancel(false)
@@ -1115,6 +1164,7 @@ class AuthenticatedGatewayService : Service() {
 
     @Synchronized
     override fun onDestroy() {
+        ConversationProcessMount.runtime.pause(ConversationStopReason.WORKER_SHUTDOWN)
         processActive = false
         halt()
         connectivity.unregisterNetworkCallback(networkCallback)

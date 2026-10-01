@@ -169,7 +169,7 @@ fn conversation_selectors_refuse_ambiguous_or_noncanonical_peers() {
         "+1 2",
         "+1\n2",
         "12",
-        "+１２",
+        "+∩╝æ∩╝Æ",
         "+1234567890123456",
     ] {
         selected.peer = invalid.into();
@@ -277,14 +277,30 @@ async fn expiry_during_event_wait(expire_reader: bool) {
     enable_conversation(&mut f.connect().await, &owner, &consent(f.device, f.line))
         .await
         .unwrap();
-    let expires =
+    // Prepare every connection before signing the short lease. The initial
+    // verified capture must complete while this authority is genuinely live.
+    let mut capture_client = f.connect().await;
+    let mut blocker = f.connect().await;
+    let blocker_pid: i32 = blocker
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await
+        .unwrap()
+        .get(0);
+    let mut reader = f.connect().await;
+    let reader_pid: i32 = reader
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await
+        .unwrap()
+        .get(0);
+    let observed: i64 =
         f.db.query_one(
-            "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint+1000",
+            "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint",
             &[],
         )
         .await
         .unwrap()
-        .get::<_, i64>(0);
+        .get(0);
+    let expires = observed + 9000;
     if expire_reader {
         // Keep manifest/version/digest unchanged during the wait. Only the
         // archive reader's validity ends; manifest expiry remains in the future.
@@ -294,13 +310,17 @@ async fn expiry_during_event_wait(expire_reader: bool) {
     }
     f.resign();
     let event = Uuid::new_v4();
-    capture(&f, event, 1, b"+12", 0).await;
-    let mut blocker = f.connect().await;
-    let blocker_pid: i32 = blocker
-        .query_one("SELECT pg_backend_pid()", &[])
-        .await
-        .unwrap()
-        .get(0);
+    let bytes = envelope(&f, event, 1, (observed + 1) as u64, b"+12");
+    crate::sealed_inbound::ingest::ingest_candidate02(
+        &mut capture_client,
+        f.session(),
+        f.line,
+        1,
+        &f.bytes,
+        &bytes,
+    )
+    .await
+    .unwrap();
     let tx = blocker.transaction().await.unwrap();
     tx.query_one(
         "SELECT id FROM sealed_inbound_events WHERE id=$1 FOR UPDATE",
@@ -308,16 +328,22 @@ async fn expiry_during_event_wait(expire_reader: bool) {
     )
     .await
     .unwrap();
-    let mut reader = f.connect().await;
-    let reader_pid: i32 = reader
-        .query_one("SELECT pg_backend_pid()", &[])
-        .await
-        .unwrap()
-        .get(0);
     let pending = read_event(&mut reader, &owner, event);
     tokio::pin!(pending);
     blocked(&f.db, pending.as_mut(), reader_pid, blocker_pid).await;
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    assert!(
+        f.db.query_one(
+            "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint<$1",
+            &[&expires]
+        )
+        .await
+        .unwrap()
+        .get::<_, bool>(0),
+        "signed authority must remain live when the known event blocker is observed"
+    );
+    // The signed lease and therefore the remaining event lock wait are shorter
+    // than the fixture's ten-second statement deadline. A timeout cannot pass.
+    tokio::time::timeout(std::time::Duration::from_secs(9), async {
         while f
             .db
             .query_one(
@@ -335,6 +361,16 @@ async fn expiry_during_event_wait(expire_reader: bool) {
     .unwrap();
     tx.commit().await.unwrap();
     assert!(matches!(pending.await, Err(ConversationError::Forbidden)));
+    assert_eq!(
+        f.db.query_one(
+            "SELECT envelope FROM sealed_inbound_events WHERE id=$1",
+            &[&event]
+        )
+        .await
+        .unwrap()
+        .get::<_, Vec<u8>>(0),
+        bytes
+    );
     f.cleanup().await;
 }
 
@@ -448,6 +484,13 @@ pub(super) async fn prepared() -> (Fixture, SessionPrincipal) {
     ))
     .await
     .unwrap();
+
+    f.db.batch_execute(include_str!(
+        "../../../../deploy/compose/migrations/072_conversation_confirmation_records.sql"
+    ))
+    .await
+    .unwrap();
+
     f.db.batch_execute(include_str!(
         "../../../../deploy/compose/migrations/075_workflow_context.sql"
     ))
@@ -470,9 +513,6 @@ pub(super) async fn prepared() -> (Fixture, SessionPrincipal) {
     .unwrap();
     for migration in [
         include_str!("../../../../deploy/compose/migrations/068_connector_registration.sql"),
-        include_str!(
-            "../../../../deploy/compose/migrations/072_conversation_confirmation_records.sql"
-        ),
         include_str!("../../../../deploy/compose/migrations/073_collaboration_drafts.sql"),
         include_str!("../../../../deploy/compose/migrations/074_agent_authority.sql"),
         include_str!("../../../../deploy/compose/migrations/077_encrypted_schedule.sql"),

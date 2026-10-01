@@ -191,6 +191,10 @@ pub(crate) const DELETE_PLAN: &[(&str, &str)] = &[
         "DELETE FROM workflow_contexts WHERE account_id=$1",
     ),
     (
+        "conversation_execution_records",
+        "DELETE FROM conversation_execution_records WHERE account_id=$1",
+    ),
+    (
         "conversation_confirmation_records",
         "DELETE FROM conversation_confirmation_records WHERE account_id=$1",
     ),
@@ -727,6 +731,52 @@ async fn erase_account(
     {
         return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
     }
+    let execution_installed =
+        match crate::http_owner_conversations::channel::execution::lifecycle::installed(&tx).await {
+            Ok(value) => value,
+            Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+        };
+    if execution_installed {
+        if !crate::http_owner_conversations::channel::execution::lifecycle::validate(&tx)
+            .await
+            .unwrap_or(false)
+        {
+            return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
+        }
+        // Serialize manifest-first producers before taking the canonical owner
+        // locks. Missing authority is not approval and does not prevent erasure.
+        if tx
+            .query(
+                "SELECT account_id FROM sealed_manifest_authorities WHERE account_id=$1 FOR UPDATE",
+                &[&account_id],
+            )
+            .await
+            .is_err()
+        {
+            return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
+        }
+        // Main's owner mutation order is user/member before account. Acquire only
+        // those rows first; password/MFA verification remains the final fence.
+        match tx.query_opt("SELECT 1 FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE u.id=$1 AND m.account_id=$2 AND m.role='owner' AND a.disabled_at IS NULL FOR UPDATE OF u,m", &[&principal.user_id,&account_id]).await {
+            Ok(Some(_)) => {}
+            Ok(None) => return auth_error(AuthError::Unauthorized),
+            Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+        }
+        // The existing helper acquires billing-customer before account, including
+        // the concurrent-new-binding recheck. SQL locks belong to the transaction.
+        match zrotext_delivery_store::sealed::lock_account(&tx, account_id, false).await {
+            Ok(_) => {}
+            Err(zrotext_delivery_store::StoreError::Revoked) => {
+                return auth_error(AuthError::Unauthorized);
+            }
+            Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+        }
+        // Manifest -> user/member -> billing/account -> execution record. All
+        // waits precede the single complete password/MFA/current-session fence.
+        if tx.query("SELECT message_id FROM conversation_execution_records WHERE account_id=$1 ORDER BY message_id FOR UPDATE",&[&account_id]).await.is_err() {
+            return error_response(StatusCode::SERVICE_UNAVAILABLE,"unavailable");
+        }
+    }
     // FINAL AUTH FENCE. Ordering inside this transaction is deliberate:
     // every read that can wait on a row lock — all the blocked-table
     // preflight counts above — has already run, and this fence is the last
@@ -760,12 +810,37 @@ async fn erase_account(
     }
     // Everything below is one transaction: any failure rolls the whole
     // erasure back, never leaving a half-erased account.
+    // The proof table is absent only before its allocated migration. No proof
+    // can be accepted then. Once installed it participates in the guarded plan.
+    if execution_installed {
+        let still_live=tx.query_one("SELECT EXISTS(SELECT 1 FROM sessions s JOIN memberships m ON (m.account_id,m.user_id)=(s.account_id,s.user_id) JOIN accounts a ON a.id=s.account_id JOIN users u ON u.id=s.user_id WHERE s.id=$1 AND s.account_id=$2 AND s.user_id=$3 AND s.revoked_at IS NULL AND s.expires_at>clock_timestamp() AND m.role='owner' AND m.revoked_at IS NULL AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL)",&[&principal.session_id,&account_id,&principal.user_id]).await;
+        match still_live {
+            Ok(row) if row.get::<_, bool>(0) => {}
+            Ok(_) => return auth_error(crate::auth::AuthError::Unauthorized),
+            Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+        }
+        // This disable and every deletion commit together; any failure rolls
+        // back both. All rows which could wait have now been fenced.
+        if tx
+            .execute(
+                "UPDATE accounts SET disabled_at=clock_timestamp() WHERE id=$1",
+                &[&account_id],
+            )
+            .await
+            .is_err()
+        {
+            return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
+        }
+    }
     let integration_installed = match crate::workflow_runtime::lifecycle::installed(&tx).await {
         Ok(value) => value,
         Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
     };
     let mut deleted = Vec::new();
     for &(table, sql) in DELETE_PLAN {
+        if table == "conversation_execution_records" && !execution_installed {
+            continue;
+        }
         if [
             "workflow_integration_access",
             "workflow_connector_context_envelopes",

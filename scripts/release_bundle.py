@@ -44,6 +44,13 @@ WEB_FILES = (
     "web/owner/template-preview.js",
     "web/owner/template-preview-core.js",
     "web/owner/template-preview.css",
+    "web/owner/conversation.html",
+    "web/owner/conversation.js",
+    "web/owner/conversation-core.js",
+    "web/owner/conversation-bootstrap.js",
+    "web/owner/conversation-owner-adapter.js",
+    "web/owner/conversation-owner-setup.js",
+    "web/owner/conversation.css",
     "crates/server/static/billing-dashboard.html",
     "crates/server/static/billing-dashboard.js",
 )

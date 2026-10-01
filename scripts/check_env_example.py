@@ -19,6 +19,9 @@ TEST_ONLY = {
     # Compiled only in the isolated native-console test harness, not runtime code.
     "ZT_TERMINAL_NATIVE_CASE",
     "ZT_OWNER_NATIVE_CASE",
+    "ZT_REFRESH_NATIVE_CASE",
+    "ZT_REFRESH_INTEROP_NOW",
+    "ZT_REFRESH_INTEROP_PROPOSAL_HEX",
     # Compiled only under cfg(test) + conversation-simulator-tests; never a server setting.
     "ZT_CONVERSATION_SIM_DIR",
     "ZT_AUTH_TEST_DATABASE_URL",
@@ -40,6 +43,34 @@ COMPOSE_ONLY = {
     "EDGE_BIND", "EDGE_DOMAIN", "EDGE_HTTP_PORT", "EDGE_HTTPS_PORT",
     "STRIPE_BILLING_RECONCILIATION_KEY",
 }
+
+
+def runtime_reads(source: str, relative_path: str) -> set[str]:
+    """Exclude fixture markers only in their isolated cfg(test) source modules."""
+    reads = set(READ.findall(source))
+    fixture_reads = {
+        "crates/owner-cli/src/windows/conversation_refresh/native_tests.rs": {"TEMP"},
+        "crates/root-material/src/archive_backup/tests.rs": {"ZT_ARCHIVE_INTEROP"},
+        "crates/owner-cli/src/windows/conversation_activation/native_tests.rs": {
+            "TEMP", "ZT_ACTIVATION_NATIVE_CASE", "ZT_ACTIVATION_INTEROP_NOW",
+            "ZT_ACTIVATION_INTEROP_PROPOSAL_HEX",
+        },
+    }
+    reads.difference_update(fixture_reads.get(relative_path, set()))
+    if relative_path == "crates/root-material/src/conversation_activation.rs":
+        tests = re.search(r'(?m)^#\[cfg\(test\)\]\r?\nmod tests \{', source)
+        if tests:
+            fixture = re.search(
+                r'(?ms)^    #\[test\]\r?\n    fn existing_root_signs_only_preserved_activation_and_public_interop\(\) \{\r?\n.*?^    \}',
+                source[tests.start():],
+            )
+            if fixture:
+                start, end = (tests.start() + position for position in fixture.span())
+                reads = {match.group(1) for match in READ.finditer(source)
+                         if not (match.group(1) == "ZT_ACTIVATION_INTEROP" and start <= match.start() < end)}
+    for primary, alias in SMTP_ALIAS.findall(source):
+        reads.update((primary, alias))
+    return reads
 
 
 def compose_app_environment(source: str, service: str) -> set[str]:
@@ -66,9 +97,7 @@ def main() -> int:
     used = set()
     for path in (ROOT / "crates").rglob("*.rs"):
         source = path.read_text(encoding="utf-8")
-        used.update(READ.findall(source))
-        for primary, alias in SMTP_ALIAS.findall(source):
-            used.update((primary, alias))
+        used.update(runtime_reads(source, path.relative_to(ROOT).as_posix()))
 
     documented = set(DOCUMENTED.findall((ROOT / ".env.example").read_text(encoding="utf-8")))
     missing = sorted(used - TEST_ONLY - documented)

@@ -73,7 +73,39 @@ class DeviceSigningKeyStore(
     }
 
     fun signDeviceChallenge(accountId: UUID, deviceId: UUID, challengeId: UUID, nonce: ByteArray): ByteArray =
-        sign(EnrollmentProof.deviceAuthBytes(accountId, deviceId, challengeId, nonce))
+          sign(EnrollmentProof.deviceAuthBytes(accountId, deviceId, challengeId, nonce))
+
+    /** Explicit approved conversation only; missing/unsupported existing keys are never created. */
+    internal fun signConversationStatement(domain:ByteArray,statement:ByteArray,expectedPoint:ByteArray):ByteArray {
+        ConversationActivationCodec.decode(statement)
+        val key=privateKey()
+        check(securityLevel(key) in setOf(SigningKeySecurity.STRONGBOX,SigningKeySecurity.TRUSTED_ENVIRONMENT))
+        val public=openStore().getCertificate(alias)?.publicKey as? ECPublicKey ?: error("Existing conversation signer unavailable")
+        check(DevicePayloadKeyStore.encodePoint(public).contentEquals(expectedPoint))
+        val der=Signature.getInstance("SHA256withECDSA").run {initSign(key);update(ConversationActivationCodec.transcript(domain,statement));sign()}
+        return Draft01SignaturePrimitive.canonicalRawFromDer(der)
+    }
+
+    /** Existing hardware identity only; restricted to the canonical inbound conversation envelope. */
+    internal fun signConversationEnvelope(unsigned: ByteArray, expectedPoint: ByteArray): ByteArray {
+        val owned = unsigned.copyOf()
+        val point = expectedPoint.copyOf()
+        ConversationContentCrypto.checkInboundUnsigned(owned, point)
+        val key = privateKey()
+        check(key.encoded == null && securityLevel(key) in setOf(
+            SigningKeySecurity.STRONGBOX, SigningKeySecurity.TRUSTED_ENVIRONMENT))
+        val public = openStore().getCertificate(alias)?.publicKey as? ECPublicKey
+            ?: error("Existing conversation signer unavailable")
+        check(java.security.MessageDigest.isEqual(DevicePayloadKeyStore.encodePoint(public), point))
+        val der = Signature.getInstance("SHA256withECDSA").run {
+            initSign(key)
+            update("ZTSE/sign/v2\u0000".toByteArray(Charsets.US_ASCII))
+            update(java.nio.ByteBuffer.allocate(4).putInt(owned.size).array())
+            update(owned)
+            sign()
+        }
+        return Draft01SignaturePrimitive.canonicalRawFromDer(der)
+    }
 
     internal fun signInboundMetadata(accountId: UUID, deviceId: UUID, upload: InboundUpload,
                                      event: InboundEvent): ByteArray =

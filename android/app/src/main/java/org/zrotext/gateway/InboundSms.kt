@@ -167,17 +167,22 @@ internal object InboundVault {
 class InboundSmsReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Telephony.Sms.Intents.SMS_RECEIVED_ACTION) return
+        val conversationReceipt = ConversationProcessMount.runtime.firstReceipt()
         val pending = goAsync()
         val app = context.applicationContext
         io.execute {
-            try { capture(app, intent) } catch (_: Exception) {
+            try { ConversationProcessMount.runtime.prepareAndReceive { capture(app, intent, conversationReceipt) } } catch (_: Exception) {
+                ConversationProcessMount.runtime.pause(ConversationStopReason.WORKER_SHUTDOWN)
                 // No body, sender, PDU, or exception message is written to a log.
             } finally { pending.finish() }
         }
     }
 
-    private fun capture(context: Context, intent: Intent) {
-        val (pdus, message) = InboundPduParser.decode(intent) ?: return
+    private fun capture(context: Context, intent: Intent, conversationReceipt: ConversationRuntimeMount.Receipt?) {
+        val (pdus, message) = InboundPduParser.decode(intent) ?: run {
+            ConversationProcessMount.runtime.pause(ConversationStopReason.WORKER_SHUTDOWN)
+            return
+        }
         val now = System.currentTimeMillis()
         val senderToken = InboundVault.token("sender-v1", message.senderE164.toByteArray(Charsets.US_ASCII))
         val dao = SmsJournalDatabase.get(context).attempts()
@@ -196,6 +201,12 @@ class InboundSmsReceiver : BroadcastReceiver() {
         val rawSub = intent.extras?.get("subscription")
         val observedSub = (rawSub as? Number)?.toLong()
             ?.takeIf { it in 0..Int.MAX_VALUE.toLong() }?.toInt()
+        // An absent subscription never becomes the owner's/default SIM. Conversation authority is separate.
+        try { ConversationProcessMount.runtime.receive(conversationReceipt, observedSub, dedupeToken,
+            message.senderE164, message.body) } catch (_: Exception) {
+            ConversationProcessMount.runtime.pause(ConversationStopReason.WORKER_SHUTDOWN)
+        }
+
         if (optAction == OptOutParser.OPT_OUT || optAction == OptOutParser.OPT_OUT_REVIEW) {
             // A failed Keystore operation must not prevent the local radio block.
             val sealedSender = InboundVault.sealSenderOrNull(message.senderE164, dedupeToken)

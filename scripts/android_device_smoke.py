@@ -57,6 +57,47 @@ def selected_tests(root=ROOT):
     return expected
 
 
+MAX_PRIVATE_EVIDENCE_BYTES = 256 * 1024
+
+
+def public_test_methods(root=ROOT):
+    """Only published test method names may appear in a hosted failure message."""
+    names = set()
+    for source_set in ("androidTest", "sharedTest"):
+        directory = root / f"android/app/src/{source_set}/java"
+        for source in directory.rglob("*.kt"):
+            names.update(re.findall(r"@Test(?:\s*\([^)]*\))?\s+fun\s+([A-Za-z_][A-Za-z0-9_]*)", source.read_text(encoding="utf-8")))
+    return names
+
+
+def failure_identity(status, expected, code):
+    class_name = status.get("class")
+    if class_name not in expected:
+        class_name = "unselected"
+    method = status.get("test")
+    if class_name == "unselected" or method not in public_test_methods():
+        method = "unavailable"
+    reported_code = str(code) if code in (-1, -2, -3, -4) else "unsupported"
+    return f"class={class_name}; test={method}; status={reported_code}"
+
+
+def verify_with_private_evidence(output, expected):
+    """Keep bounded raw diagnostics only in owner-created private temporary storage."""
+    try:
+        return verify_results(output, expected)
+    except ValueError:
+        # Never upload or print raw platform output: stacks can contain private state.
+        directory = Path(tempfile.mkdtemp(prefix="zrotext-device-smoke-failure-"))
+        os.chmod(directory, 0o700)
+        path = directory / "instrumentation.txt"
+        bounded = output[-MAX_PRIVATE_EVIDENCE_BYTES:].encode("utf-8")[-MAX_PRIVATE_EVIDENCE_BYTES:]
+        with path.open("xb") as stream:
+            os.chmod(path, 0o600)
+            stream.write(bounded)
+        print("Bounded private instrumentation evidence retained in runner temporary storage")
+        raise
+
+
 def verify_results(output, expected):
     """Require distinct successful test completions, not an adb exit code alone."""
     status = {}
@@ -68,9 +109,12 @@ def verify_results(output, expected):
             if separator:
                 status[key] = value
         elif line.startswith("INSTRUMENTATION_STATUS_CODE: "):
-            code = int(line.removeprefix("INSTRUMENTATION_STATUS_CODE: "))
+            try:
+                code = int(line.removeprefix("INSTRUMENTATION_STATUS_CODE: "))
+            except ValueError:
+                raise ValueError("Malformed instrumentation status code") from None
             if code not in (0, 1):
-                raise ValueError("Instrumentation reported a failed or skipped test")
+                raise ValueError("Instrumentation reported a failed or skipped test: " + failure_identity(status, expected, code))
             identity = (status.get("class"), status.get("test"))
             if identity[0] not in expected or not identity[1]:
                 raise ValueError("Instrumentation ran an unexpected test class")
@@ -124,10 +168,7 @@ def main():
                      "-e", "a11yIsolatedEmulator", "true",
                      "-e", "networkServiceIsolatedEmulator", "true",
                      "org.zrotext.gateway.test/androidx.test.runner.AndroidJUnitRunner", timeout=420)
-    # Raw platform output stays temporary, never in a public artifact or repository.
-    with tempfile.TemporaryDirectory(prefix="zrotext-device-smoke-") as temporary:
-        Path(temporary, "instrumentation.txt").write_text(output, encoding="utf-8")
-        custody = verify_results(output, expected)
+    custody = verify_with_private_evidence(output, expected)
     print(f"Selected no-radio device tests passed: {sum(expected.values())}; zero failures or skips")
     if custody:
         print(f"Root storage custody branch exercised: {custody}")

@@ -1,0 +1,50 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+"use strict";
+const test=require("node:test"),assert=require("node:assert/strict");
+const {create}=require("./conversation-owner-adapter.js");
+const scope={account:"a",session:"s",interval:"i",device:"d",line:"l",generation:"1",peer:"+12",reader:"r",manifest:"m"};
+const messageId="12345678-1234-1234-1234-123456789abc";
+function packet(){const bytes=Buffer.alloc(297);bytes.write("ZTCS");bytes[4]=1;Buffer.from(messageId.replaceAll("-",""),"hex").copy(bytes,85);return {confirmation:bytes.toString("base64"),envelope:"synthetic",signature:"synthetic"};}
+function fixture() {
+ let current={phase:"active",scope:{...scope},validForMs:1000},calls=[],signed=0;
+ let duringSign=()=>{},csrf="fixture-csrf";
+ const custody={openSealed:async()=>"synthetic incoming",prepare:async(s,body)=>({s,body}),signReviewed:async(review,s,body)=>{
+   assert.deepEqual(review,{s,body});signed++;await duringSign();return packet();},close:()=>{current=null;}};
+ const adapter=create({enabled:true,currentCsrf:()=>csrf,readAuthority:async()=>current,custody,endpoints:{read:event=>"/v1/owner/conversation/events/"+event,submit:"/v1/owner/conversation/send"},
+ fetch:async(url,options)=>{calls.push({url,options});return {ok:true,headers:new Headers({"Content-Type":"application/vnd.zrotext.sealed.v1"}),arrayBuffer:async()=>new Uint8Array(500).buffer,json:async()=>({status:"queued"})};}});
+ return {adapter,calls,custody,csrf:v=>{csrf=v;},get signed(){return signed;},replace:v=>{current=v;},duringSign:fn=>{duringSign=fn;}};
+}
+test("owner adapter defaults disabled and never fetches",async()=>{await assert.rejects(create({}).authority());});
+test("custody failure closes transport and notifies presentation without retry",async()=>{const f=fixture();let notifications=0;f.adapter.onClose(()=>{notifications++;});f.custody.openSealed=async()=>{throw Error("Reader revoked");};await assert.rejects(f.adapter.read({scope,event:"synthetic"}));assert.equal(notifications,1);await assert.rejects(f.adapter.authority());f.adapter.close();assert.equal(notifications,1);});
+test("sampled owner authority loss closes custody even without a logout notification",async()=>{const f=fixture();let notifications=0;f.adapter.onClose(()=>{notifications++;});f.replace({phase:"closed",scope,validForMs:1000});await assert.rejects(f.adapter.prepare({scope,body:"Synthetic"}));assert.equal(notifications,1);assert.equal(f.calls.length,0);await assert.rejects(f.adapter.authority());});
+test("presentation listener failure cannot prevent other closure notifications",async()=>{const f=fixture();let notifications=0;f.adapter.onClose(()=>{throw Error("Presentation unavailable");});f.adapter.onClose(()=>{notifications++;});f.adapter.close();assert.equal(notifications,1);await assert.rejects(f.adapter.authority());});
+test("throwing custody close still delivers every closure notification and disables transport",async()=>{const f=fixture();let notifications=0;f.custody.close=()=>{throw Error("Synthetic custody close failure");};f.adapter.onClose(()=>{throw Error("Presentation unavailable");});f.adapter.onClose(()=>{notifications++;});f.adapter.onClose(()=>{notifications++;});assert.throws(()=>f.adapter.close(),/Synthetic custody close failure/);assert.equal(notifications,2);f.adapter.close();assert.equal(notifications,2);await assert.rejects(f.adapter.authority());assert.equal(f.calls.length,0);});
+test("explicit close releases supplied custody even on a disabled transport",()=>{let closes=0;const adapter=create({custody:{close:()=>{closes++;}}});adapter.close();adapter.close();assert.equal(closes,1);});
+test("initial discovery is a canonical nonzero event hint and never grants authority",async()=>{const event="12345678-1234-1234-1234-123456789abc",adapter=create({initialEvent:event});assert.equal(adapter.initialEvent,event);await assert.rejects(adapter.authority());for(const invalid of ["../event",event.toUpperCase(),"00000000-0000-0000-0000-000000000000",null])assert.throws(()=>create({initialEvent:invalid}),/discovery/);});
+test("cancelled review makes no signature or request",async()=>{const f=fixture();await f.adapter.prepare({scope,body:"exact synthetic"});assert.equal(f.signed,0);assert.equal(f.calls.length,0);});
+test("one exact confirmation uses owner cookie and cannot replay",async()=>{const f=fixture(),candidate=await f.adapter.prepare({scope,body:"exact synthetic"});assert.deepEqual(await candidate.confirm(()=>{}),{status:"queued"});assert.equal(f.signed,1);assert.equal(f.calls.length,1);assert.equal(f.calls[0].options.credentials,"same-origin");assert.equal(f.calls[0].options.headers["x-zrotext-csrf"],"fixture-csrf");assert.equal(f.calls[0].options.redirect,"error");await assert.rejects(candidate.confirm(()=>{}));assert.equal(f.calls.length,1);});
+test("edit during signing creates no submission",async()=>{const f=fixture();let changed=false;f.duringSign(()=>{changed=true;});const candidate=await f.adapter.prepare({scope,body:"exact synthetic"});await assert.rejects(candidate.confirm(()=>{if(changed)throw Error("revision changed");}));assert.equal(f.calls.length,0);});
+test("account or session change and close reject stale confirmation",async()=>{const f=fixture(),candidate=await f.adapter.prepare({scope,body:"synthetic"});f.replace({phase:"active",scope:{...scope,session:"other"},validForMs:1000});await assert.rejects(candidate.confirm(()=>{}));assert.equal(f.signed,0);f.adapter.close();await assert.rejects(f.adapter.authority());});
+test("only verified bounded sealed content can become browser text",async()=>{const f=fixture();assert.equal(await f.adapter.read({scope,event:"synthetic"}),"synthetic incoming");await assert.rejects(f.adapter.read({scope,event:"../escape"}));assert.equal(f.calls.length,1);});
+
+test("missing CSRF prevents custody preparation and all network",async()=>{const f=fixture();f.csrf(null);await assert.rejects(f.adapter.prepare({scope,body:"synthetic"}));await assert.rejects(f.adapter.read({scope,event:"synthetic"}));assert.equal(f.signed,0);assert.equal(f.calls.length,0);});
+test("CSRF rotation during signing prevents submission",async()=>{const f=fixture();f.duringSign(()=>f.csrf("rotated-fixture-csrf"));const c=await f.adapter.prepare({scope,body:"synthetic"});await assert.rejects(c.confirm(()=>{}));assert.equal(f.calls.length,0);});
+
+test("custody close event immediately clears presentation and denies transport",async()=>{const f=fixture();let notify,plaintext="synthetic",closures=0;const custody={...f.custody,onClose:listener=>{notify=listener;},close:()=>{closures++;}};const adapter=create({enabled:true,custody,currentCsrf:()=>"synthetic",readAuthority:async()=>({phase:"active",scope,validForMs:1000}),fetch:async()=>{throw Error("No network expected");},endpoints:{read:()=>"/v1/owner/conversation/events/synthetic",submit:"/v1/owner/conversation/send"}});adapter.onClose(()=>{plaintext="";});notify();assert.equal(plaintext,"");assert.equal(closures,1);await assert.rejects(adapter.authority());adapter.close();assert.equal(closures,1);});
+
+test("accepted POST with lost acknowledgement closes custody and latches identity without another send",async()=>{
+ const core=require("./conversation-core.js");let posts=0,closes=0;
+ const custody={prepare:async()=>({}),signReviewed:async()=>packet(),openSealed:async()=>"Synthetic",close:()=>{closes++;}};
+ const adapter=create({enabled:true,custody,currentCsrf:()=>"synthetic",readAuthority:async()=>({phase:"active",scope,validForMs:1000}),endpoints:{read:()=>"/v1/owner/conversation/events/synthetic",submit:"/v1/owner/conversation/send"},fetch:async()=>{posts++;throw Error("Synthetic accepted response lost");}});
+ const c=core.create(adapter);adapter.onClose(()=>c.clear());await c.authorize();c.edit("Synthetic private reply");await c.prepare();
+ await assert.rejects(c.confirm(),error=>error.outcome==="unknown"&&error.messageId===messageId);
+ assert.deepEqual(c.state().uncertain,{messageId});assert.equal(c.state().draft,"");assert.equal(c.state().scope,null);assert.equal(closes,1);
+ c.clear();await assert.rejects(c.authorize());await assert.rejects(c.prepare());await assert.rejects(c.confirm());assert.equal(posts,1);assert.deepEqual(c.state().uncertain,{messageId});
+});
+
+for(const result of ["malformed", "refused", "lost-after-ack"])test(result+" post-attempt acknowledgement retains UNKNOWN identity",async()=>{
+ let posts=0,closes=0;
+ const adapter=create({enabled:true,custody:{prepare:async()=>({}),signReviewed:async()=>packet(),openSealed:async()=>"Synthetic",close:()=>closes++},currentCsrf:()=>"synthetic",readAuthority:async()=>({phase:"active",scope,validForMs:1000}),endpoints:{read:()=>"/v1/owner/conversation/events/synthetic",submit:"/v1/owner/conversation/send"},fetch:async()=>{posts++;return {ok:result!=="refused",json:async()=>{if(result==="lost-after-ack")throw Error("Synthetic response lost");return {status:"unexpected"};}};}});
+ const candidate=await adapter.prepare({scope,body:"Synthetic"});await assert.rejects(candidate.confirm(()=>{}),error=>error.outcome==="unknown"&&error.messageId===messageId);assert.equal(posts,1);assert.equal(closes,1);await assert.rejects(candidate.confirm(()=>{}));assert.equal(posts,1);
+});
+test("definite validation failure before POST never claims an unknown send",async()=>{const f=fixture();f.custody.signReviewed=async()=>({confirmation:"invalid"});const c=await f.adapter.prepare({scope,body:"Synthetic"});await assert.rejects(c.confirm(()=>{}),error=>error.outcome===undefined);assert.equal(f.calls.length,0);});

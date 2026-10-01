@@ -271,8 +271,67 @@ async fn sms_line_activation_frames_are_gated_bound_to_the_connection_and_resent
         });
         (address, server)
     };
+    let conversation_state = enabled.clone();
     let (disabled_address, disabled_server) = serve(disabled).await;
     let (address, enabled_server) = serve(enabled).await;
+
+    // The default route must reject negotiation; a separately composed route
+    // authenticates with the same enrolled-device proof before accepting it.
+    let (mut dormant, dormant_epoch) =
+        open_socket(disabled_address, account, device, &device_key).await;
+    send_json(&mut dormant,json!({"v":1,"type":"conversation_ready","connection_epoch":dormant_epoch,"challenge":Uuid::new_v4()})).await;
+    assert_eq!(receive_close_code(&mut dormant).await, close_code::POLICY);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let conversation_address = listener.local_addr().unwrap();
+    let conversation_server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router_with_conversations(conversation_state, "wss://example.org").unwrap(),
+        )
+        .await
+        .unwrap();
+    });
+    let (mut negotiated, negotiated_epoch) =
+        open_socket(conversation_address, account, device, &device_key).await;
+    let challenge = Uuid::new_v4();
+    send_json(&mut negotiated,json!({"v":1,"type":"conversation_ready","connection_epoch":negotiated_epoch,"challenge":challenge})).await;
+    let reply = receive_type(&mut negotiated, "conversation_session").await;
+    assert_eq!(reply["account_id"], account.to_string());
+    assert_eq!(reply["device_id"], device.to_string());
+    assert_eq!(reply["challenge"], challenge.to_string());
+    let phone_session = Uuid::parse_str(reply["phone_session"].as_str().unwrap()).unwrap();
+    let origin: [u8; 32] = Sha256::digest(b"wss://example.org:443").into();
+    let nonce = Uuid::new_v4();
+    let mut binary = b"ZTCW\x01\x01".to_vec();
+    for id in [account, device, phone_session] {
+        binary.extend_from_slice(id.as_bytes());
+    }
+    binary.extend_from_slice(&negotiated_epoch.to_be_bytes());
+    binary.extend_from_slice(&1_i64.to_be_bytes());
+    binary.extend_from_slice(&origin);
+    binary.extend_from_slice(nonce.as_bytes());
+    negotiated
+        .send(Message::Binary(binary.into()))
+        .await
+        .unwrap();
+    let Message::Binary(time) = timeout(Duration::from_secs(10), negotiated.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap()
+    else {
+        panic!("expected authenticated time reply");
+    };
+    assert_eq!(time.len(), 126);
+    assert_eq!(&time[..6], b"ZTCW\x01\x02");
+    assert_eq!(&time[102..118], nonce.as_bytes());
+    // Negotiation is single-use per authenticated connection.
+    send_json(&mut negotiated,json!({"v":1,"type":"conversation_ready","connection_epoch":negotiated_epoch,"challenge":Uuid::new_v4()})).await;
+    assert_eq!(
+        receive_close_code(&mut negotiated).await,
+        close_code::POLICY
+    );
+    conversation_server.abort();
 
     // A dormant hub refuses the frame outright.
     let (mut socket, epoch) = open_socket(disabled_address, account, device, &device_key).await;
