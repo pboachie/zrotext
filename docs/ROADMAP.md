@@ -154,7 +154,8 @@ flowchart LR
         c_integrations["Workflow integrations<br/>· planned"]:::planned
         c_assistant["Customer-controlled assistant<br/>· planned"]:::planned
         c_contacts --> c_scheduling
-        c_scheduling --> c_approvals
+        c_contacts --> c_approvals
+        c_approvals --> c_scheduling
         c_approvals --> c_integrations
         c_integrations --> c_assistant
     end
@@ -490,7 +491,7 @@ Build useful conversations for local service operators and individuals through t
 |---|---|---|
 | Contacts, consent and conversations | Planned | [product proposal](PRODUCT-PLAN.md#business-inbox) proposal only; no runtime implementation |
 | Templates and scheduled follow-ups | Planned | [product proposal](PRODUCT-PLAN.md#business-inbox), [Local preview only](TEMPLATE-PREVIEW.md) browser-only personalized text preview; no saved templates, segment estimate or scheduling implementation |
-| Approvals and reply tracking | Planned | [product proposal](PRODUCT-PLAN.md#business-inbox), [synthetic demo PR #244](https://github.com/pboachie/zrotext/pull/244) proposal only; scripted approval and handoff simulation in #244; no runtime implementation |
+| Approvals and reply tracking | Planned | [product proposal](PRODUCT-PLAN.md#business-inbox), [synthetic demo PR #244](https://github.com/pboachie/zrotext/pull/244), [exact action contract](../protocol/v1/workflow-action-contract.md) exact-action authority/state contract and synthetic conformance vectors; scripted demo in #244; no runtime implementation |
 | Workflow connector and integrations | Planned | [product proposal](PRODUCT-PLAN.md#customer-controlled-assistant), [#615](https://github.com/pboachie/zrotext/issues/615), [#617](https://github.com/pboachie/zrotext/issues/617), [#620](https://github.com/pboachie/zrotext/issues/620) proposal only; no runtime implementation |
 | Customer-controlled AI assistant | Planned | [product proposal](PRODUCT-PLAN.md#customer-controlled-assistant), [agent delivery track #614](https://github.com/pboachie/zrotext/issues/614) proposal only; no runtime implementation |
 

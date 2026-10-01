@@ -75,7 +75,55 @@
     }
     return output;
   }
-  const api = Object.freeze({ limits, parseValues, render });
+
+  // Bounded SMS segment estimate per protocol/v1/sms-segment-estimate.md.
+  // Composition aid only: no carrier or billing claim, and the device
+  // re-checks the real bounds with divideMessage before dispatch.
+  const gsmDefaultChars =
+    "@\u00a3$\u00a5\u00e8\u00e9\u00f9\u00ec\u00f2\u00c7\n\u00d8\u00f8\r\u00c5\u00e5" +
+    "\u0394_\u03a6\u0393\u039b\u03a9\u03a0\u03a8\u03a3\u0398\u039e\u00c6\u00e6\u00df" +
+    "\u00c9 !\"#\u00a4%&'()*+,-./0123456789:;<=>?\u00a1" +
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ\u00c4\u00d6\u00d1\u00dc\u00a7\u00bf" +
+    "abcdefghijklmnopqrstuvwxyz\u00e4\u00f6\u00f1\u00fc\u00e0";
+  const gsmExtensionChars = "\u000c^{}\\[~]|\u20ac";
+  const gsmDefault = new Set(gsmDefaultChars);
+  const gsmExtension = new Set(gsmExtensionChars);
+  const MAX_PARTS = 6;
+
+  function estimateSegments(text) {
+    if (typeof text !== "string") throw new Error("Rendered text must be a string.");
+    for (let i = 0; i < text.length; i++) {
+      const code = text.charCodeAt(i);
+      if (code >= 0xD800 && code <= 0xDBFF) {
+        const next = text.charCodeAt(++i);
+        if (!(next >= 0xDC00 && next <= 0xDFFF)) throw new Error("Text contains an incomplete Unicode character.");
+      } else if (code >= 0xDC00 && code <= 0xDFFF) {
+        throw new Error("Text contains an incomplete Unicode character.");
+      } else if (code < 0x20 && code !== 0x0a && code !== 0x0d && code !== 0x0c) {
+        throw new Error("Control characters cannot be sent as SMS text.");
+      }
+    }
+    let gsm = true;
+    for (const ch of text) {
+      if (!gsmDefault.has(ch) && !gsmExtension.has(ch)) { gsm = false; break; }
+    }
+    if (gsm) {
+      let septets = 0;
+      for (const ch of text) septets += gsmExtension.has(ch) ? 2 : 1;
+      const single = septets <= 160;
+      const perPart = single ? 160 : 153;
+      const parts = single ? 1 : Math.ceil(septets / perPart);
+      if (parts > MAX_PARTS) throw new Error("The text exceeds the six-part segment limit.");
+      return { encoding: "gsm", parts, perPart, length: septets, empty: text.length === 0 };
+    }
+    const single = text.length <= 70;
+    const perPart = single ? 70 : 67;
+    const parts = single ? 1 : Math.ceil(text.length / perPart);
+    if (parts > MAX_PARTS) throw new Error("The text exceeds the six-part segment limit.");
+    return { encoding: "ucs2", parts, perPart, length: text.length, empty: text.length === 0 };
+  }
+
+  const api = Object.freeze({ limits, parseValues, render, estimateSegments });
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.ZtTemplatePreview = api;
 })(globalThis);
