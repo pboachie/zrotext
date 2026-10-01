@@ -235,9 +235,8 @@ transaction as admission; sealed outbound acceptance meters exactly one unit
 per accepted envelope; an idempotent digest replay reuses the original
 reservation and never reserves a second unit, even across a month boundary.
 Refunds exist only through the pre-grant cancellation/expiry path, are
-written exactly once per message against the original period, and whether
-sealed messages expose cancellation at all is deferred with the message
-status queries. `used_units` is a reservation counter; it is never a
+written exactly once per message against the original period. The existing
+message cancellation endpoint remains governed by its pre-grant rules. `used_units` is a reservation counter; it is never a
 submitted or delivered counter (those summaries belong to the owner
 interfaces, not this API). Units are integer message counts, never currency
 or pricing; per-device or per-line breakdowns do not exist and are not
