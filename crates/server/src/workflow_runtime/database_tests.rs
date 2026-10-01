@@ -19,16 +19,17 @@ use hmac::{Hmac, Mac, digest::KeyInit as HmacKeyInit};
 use p256::{ecdsa::SigningKey, elliptic_curve::Generate};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 mod grant_origin;
 
-const PASSWORD: &str = "synthetic-workflow-password";
 mod scope_expiry;
 pub(super) struct Case {
     pub(super) f: Fixture,
     pub(super) owner: SessionPrincipal,
     pub(super) hasher: TokenHasher,
     cipher: mfa::MfaCipher,
+    password: Zeroizing<String>,
     factor: String,
     pub(super) request: GrantRequest,
     pub(super) header: wire::Header,
@@ -223,6 +224,7 @@ impl Case {
         Self::with_signer(None).await
     }
     pub(super) async fn with_signer(signer_lifetime: Option<i64>) -> Self {
+        let password = Zeroizing::new(URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>()));
         let (mut f, owner, s) = pending().await;
         activate(&f, &s).await;
 
@@ -303,7 +305,7 @@ impl Case {
         drop(admission);
         tx.commit().await.unwrap();
         let hash = Argon2::default()
-            .hash_password(PASSWORD.as_bytes())
+            .hash_password(password.as_bytes())
             .unwrap()
             .to_string();
         f.db.execute(
@@ -434,6 +436,7 @@ impl Case {
             owner,
             hasher,
             cipher,
+            password,
             factor,
             request,
             header,
@@ -481,7 +484,7 @@ impl Case {
             &self.owner,
             &self.hasher,
             &self.cipher,
-            PASSWORD,
+            &self.password,
             &self.factor,
             &self.request,
         )
@@ -531,7 +534,7 @@ impl Case {
             Some(&self.cipher),
             &self.hasher,
             &self.owner,
-            PASSWORD,
+            &self.password,
             Some(&factor),
             auth::account::ApiKeyRequest {
                 scopes: &[auth::Scope::MessagesSend],
