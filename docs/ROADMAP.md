@@ -5,7 +5,7 @@ ZROtext is an open-source Android SMS gateway in active development. This page s
 <!-- Generated regions come from docs/roadmap.json. Edit that file, then run `python3 scripts/roadmap.py`. -->
 
 <!-- roadmap:overview -->
-<p align="center"><img src="assets/roadmap-overview.svg" alt="Roadmap at a glance: 22 capabilities in five tracks. Four are in a restricted pilot, eight are being built, three are in design and seven are planned. None has reached general release." width="900"></p>
+<p align="center"><img src="assets/roadmap-overview.svg" alt="Roadmap at a glance: 22 capabilities in five tracks. Four are in a restricted pilot, nine are being built, three are in design and six are planned. None has reached general release." width="900"></p>
 <!-- /roadmap:overview -->
 
 > [!NOTE]
@@ -44,9 +44,9 @@ Priority is delivery order, not availability or a release date. These outcomes a
 pie showData
     title Capabilities by stage (22 tracked)
     "Restricted pilot" : 4
-    "Build" : 8
+    "Build" : 9
     "Design" : 3
-    "Planned" : 7
+    "Planned" : 6
 ```
 
 | Track | General release | Restricted pilot | Build | Design | Planned |
@@ -55,7 +55,7 @@ pie showData
 | [Self-hosting and integrations](#self-hosting-and-integrations) |  |  | 3 | 1 |  |
 | [Privacy and account controls](#privacy-and-account-controls) |  |  | 2 | 1 |  |
 | [Managed service and resilience](#managed-service-and-resilience) |  |  | 2 | 1 | 2 |
-| [Workflows and AI](#workflows-and-ai) |  |  |  |  | 5 |
+| [Workflows and AI](#workflows-and-ai) |  |  | 1 |  | 4 |
 <!-- /roadmap:summary -->
 
 ## Path to general sending
@@ -139,7 +139,7 @@ flowchart LR
 
     subgraph t_workflows["Workflows and AI"]
         direction TB
-        c_contacts["Contacts and conversations<br/>· planned"]:::planned
+        c_contacts["Contacts and conversations<br/>· build"]:::build
         c_scheduling["Templates and scheduling<br/>· planned"]:::planned
         c_approvals["Approvals and reply tracking<br/>· planned"]:::planned
         c_integrations["Workflow integrations<br/>· planned"]:::planned
@@ -444,17 +444,20 @@ Build useful conversations for local service operators and individuals through t
 
 | Capability | Stage | Evidence |
 |---|---|---|
-| Contacts, consent and conversations | Planned | [product proposal](PRODUCT-PLAN.md#business-inbox) proposal only; no runtime implementation |
+| Contacts, consent and conversations | Build | [owner contacts API](SELF-HOSTING.md#contacts-and-consent), [product proposal](PRODUCT-PLAN.md#business-inbox) owner API provides account-scoped contacts, encrypted fields, bounded CSV import, purpose-specific consent history and takeout/erasure; workflow sending and conversations remain unavailable |
 | Templates and scheduled follow-ups | Planned | [product proposal](PRODUCT-PLAN.md#business-inbox), [Local preview only](TEMPLATE-PREVIEW.md) browser-only personalized text preview; no saved templates, segment estimate or scheduling implementation |
 | Approvals and reply tracking | Planned | [product proposal](PRODUCT-PLAN.md#business-inbox), [synthetic demo PR #244](https://github.com/pboachie/zrotext/pull/244), [exact action contract](../protocol/v1/workflow-action-contract.md) exact-action authority/state contract and synthetic conformance vectors; scripted demo in #244; no runtime implementation |
-| Workflow connector and integrations | Planned | [product proposal](PRODUCT-PLAN.md#customer-controlled-assistant) proposal only; no runtime implementation |
+| Workflow connector and integrations | Planned | [product proposal](PRODUCT-PLAN.md#customer-controlled-assistant) product proposal; dormant connector registration/key-lifecycle contract in crates/server/src/sealed_connector_registry (line-scoped read/send grants, independent approval, rotation, revocation, audit) with no runtime route enabled |
 | Customer-controlled AI assistant | Planned | [product proposal](PRODUCT-PLAN.md#customer-controlled-assistant) proposal only; no runtime implementation |
 
 <a id="cap-contacts"></a>
 <details>
-<summary><b>Contacts, consent and conversations</b> · planned</summary>
+<summary><b>Contacts, consent and conversations</b> · build</summary>
 
-- [ ] Contacts with purpose-specific consent records, duplicate handling and conversation history
+- [x] Account-scoped contacts with duplicate handling, encrypted fields and bounded CSV import
+- [x] Append-only per-purpose consent records with coherent transitions, expiry, withdrawal and explicit re-grant
+- [x] Owner takeout and account erasure include contacts and consent history
+- [ ] Conversation history and eligible-recipient enforcement in future workflow sending
 - [ ] Owner-entered job or appointment details and an exceptions inbox, with locally decrypted content
 
 </details>

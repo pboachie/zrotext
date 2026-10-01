@@ -421,14 +421,25 @@
           "id": "contacts",
           "name": "Contacts, consent and conversations",
           "short": "Contacts and conversations",
-          "stage": "planned",
+          "stage": "build",
           "evidence": [
-            ["product proposal", "PRODUCT-PLAN.md#business-inbox"]
+            [
+              "owner contacts API",
+              "SELF-HOSTING.md#contacts-and-consent"
+            ],
+            [
+              "product proposal",
+              "PRODUCT-PLAN.md#business-inbox"
+            ]
           ],
-          "evidence_note": "proposal only; no runtime implementation",
-          "done": [],
+          "evidence_note": "owner API provides account-scoped contacts, encrypted fields, bounded CSV import, purpose-specific consent history and takeout/erasure; workflow sending and conversations remain unavailable",
+          "done": [
+            "Account-scoped contacts with duplicate handling, encrypted fields and bounded CSV import",
+            "Append-only per-purpose consent records with coherent transitions, expiry, withdrawal and explicit re-grant",
+            "Owner takeout and account erasure include contacts and consent history"
+          ],
           "todo": [
-            "Contacts with purpose-specific consent records, duplicate handling and conversation history",
+            "Conversation history and eligible-recipient enforcement in future workflow sending",
             "Owner-entered job or appointment details and an exceptions inbox, with locally decrypted content"
           ]
         },
@@ -473,7 +484,7 @@
           "evidence": [
             ["product proposal", "PRODUCT-PLAN.md#customer-controlled-assistant"]
           ],
-          "evidence_note": "proposal only; no runtime implementation",
+          "evidence_note": "product proposal; dormant connector registration/key-lifecycle contract in crates/server/src/sealed_connector_registry (line-scoped read/send grants, independent approval, rotation, revocation, audit) with no runtime route enabled",
           "done": [],
           "todo": [
             "Shared services for dashboard actions, SDK tools and signed workflow events",

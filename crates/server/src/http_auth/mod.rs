@@ -39,6 +39,7 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 pub mod preauth;
+mod root_custody;
 mod seats_http;
 mod sms_lines;
 mod sms_owner_keys;
@@ -621,6 +622,8 @@ pub struct AuthHttpState {
     pub mfa_enrollment_enabled: bool,
     /// Dormant owner routes for SMS line activation; off by default.
     pub sms_line_activation_enabled: bool,
+    /// Generation-one custody adapters; deliberately not enabled by main.
+    pub root_custody_enabled: bool,
     /// Operator-configured networks trusted for the password-reset request
     /// lane. Empty unless configured; never grants any other route.
     pub reset_trusted_networks: Arc<TrustedNetworks>,
@@ -664,6 +667,7 @@ impl AuthHttpState {
             mfa_cipher: None,
             mfa_enrollment_enabled: false,
             sms_line_activation_enabled: false,
+            root_custody_enabled: false,
             reset_trusted_networks: Arc::new(TrustedNetworks::default()),
         })
     }
@@ -683,6 +687,13 @@ impl AuthHttpState {
         self
     }
 
+    /// Library opt-in for controlled provisioning tests/embedding. The normal
+    /// binary has no environment switch or call to this method.
+    pub fn with_root_custody_enabled(mut self) -> Self {
+        self.root_custody_enabled = true;
+        self
+    }
+
     /// Trust the configured networks for the reset request lane. Invalid
     /// configuration is a startup error, never a silently trusted network.
     pub fn with_reset_trusted_networks(mut self, networks: TrustedNetworks) -> Self {
@@ -697,7 +708,7 @@ impl AuthHttpState {
 }
 
 pub fn router(state: AuthHttpState) -> Router {
-    Router::new()
+    let mut router = Router::new()
         .route("/register", post(register))
         .route("/resend-verification", post(resend_verification))
         .route("/verify-email", post(verify_email))
@@ -745,7 +756,16 @@ pub fn router(state: AuthHttpState) -> Router {
         .route(
             "/sms-lines/{line_id}/activations/{challenge_id}/approve",
             post(sms_lines::approve),
-        )
+        );
+    if state.root_custody_enabled {
+        router = router
+            .route("/sealed-root/challenge", post(root_custody::challenge))
+            .route(
+                "/sealed-root",
+                get(root_custody::export).post(root_custody::complete),
+            );
+    }
+    router
         .layer(DefaultBodyLimit::max(16 * 1024))
         .layer(middleware::from_fn(no_store_response))
         .with_state(Arc::new(state))

@@ -15,7 +15,7 @@ import java.util.UUID
 class SealedPreparationBoundaryTest {
     private fun db() = Room.inMemoryDatabaseBuilder(RuntimeEnvironment.getApplication(), SmsJournalDatabase::class.java)
         .allowMainThreadQueries().build()
-    private fun key() = DevicePayloadKeyStore("zrotext.test.unavailable.${UUID.randomUUID()}")
+    private fun key() = DevicePayloadKeyStore(RuntimeEnvironment.getApplication(), "zrotext.test.unavailable.${UUID.randomUUID()}")
 
     @Test fun unavailableOrMismatchedAuthenticatedBindingsCannotReserveOrReachKeyUse() {
         val f = PreparationFixture(); val g = f.grant(); val db = db()

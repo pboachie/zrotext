@@ -53,6 +53,7 @@ use zrotext_server::{
     http_enrollment::{self, EnrollmentHttpState},
     http_messages::{self, MessagesHttpState},
     http_observer::{self, ObserverState},
+    http_owner_contacts::{self, OwnerContactsState, vault::ContactFieldVault},
     http_owner_erasure::{self, OwnerErasureState},
     http_owner_events::{self, OwnerEventsState, OwnerStreamLimits},
     http_owner_export::{self, OwnerExportState},
@@ -752,10 +753,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             draining: config.draining.clone(),
             drain_notify: config.drain_notify.clone(),
         };
+        let contacts_vault = contacts_vault().map(Arc::new);
         let owner_export_state = OwnerExportState {
             database_url: config.database_url.clone(),
             auth_hasher: auth_state.hasher.clone(),
             canonical_origin: auth_state.canonical_origin.clone(),
+            contacts_vault: contacts_vault.clone(),
         };
         let owner_erasure_state = OwnerErasureState {
             database_url: config.database_url.clone(),
@@ -779,6 +782,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             auth_hasher: auth_state.hasher.clone(),
             canonical_origin: auth_state.canonical_origin.clone(),
         };
+        let owner_contacts_state = OwnerContactsState {
+            database_url: config.database_url.clone(),
+            auth_hasher: auth_state.hasher.clone(),
+            canonical_origin: auth_state.canonical_origin.clone(),
+            vault: contacts_vault,
+        };
         let observer_state = ObserverState {
             database_url: config.database_url.clone(),
             auth_hasher: auth_state.hasher.clone(),
@@ -792,6 +801,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .merge(http_owner_messages::router(owner_messages_state))
             .merge(http_owner_events::router(owner_events_state))
             .merge(http_owner_review::router(owner_review_state))
+            .merge(http_owner_contacts::router(owner_contacts_state))
             .merge(owner_ui::router())
             .merge(device_socket::router_with_account_share(
                 socket_state,
@@ -961,6 +971,38 @@ fn webhook_config() -> Result<(Option<WebhookSecretVault>, bool), Box<dyn std::e
         }
     };
     Ok((vault, delivery_enabled))
+}
+
+/// Optional contacts key-encryption key for display names and notes. Set
+/// version and 32-byte base64 key together; during rotation set both
+/// secondary values together, exactly like the webhook KEK. Without it the
+/// contacts routes still work but accept and serve no encrypted fields.
+fn contacts_vault() -> Option<ContactFieldVault> {
+    let secondary = match (
+        env::var("CONTACTS_KEK_SECONDARY_VERSION"),
+        env::var("CONTACTS_KEK_SECONDARY_B64"),
+    ) {
+        (Err(env::VarError::NotPresent), Err(env::VarError::NotPresent)) => None,
+        (Ok(version), Ok(encoded)) => {
+            let version: i32 = version.parse().ok()?;
+            let decoded = Zeroizing::new(STANDARD.decode(encoded.as_bytes()).ok()?);
+            Some((version, decoded))
+        }
+        _ => return None,
+    };
+    match (
+        env::var("CONTACTS_KEK_VERSION"),
+        env::var("CONTACTS_KEK_B64"),
+    ) {
+        (Ok(version), Ok(encoded)) => {
+            let version: i32 = version.parse().ok()?;
+            let decoded = Zeroizing::new(STANDARD.decode(encoded.as_bytes()).ok()?);
+            ContactFieldVault::with_secondary(version, decoded, secondary).ok()
+        }
+        _ if secondary.is_none() => None,
+        // A secondary key without the active pair cannot seal anything.
+        _ => None,
+    }
 }
 
 async fn account_routes(
