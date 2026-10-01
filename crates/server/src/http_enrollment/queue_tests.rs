@@ -183,7 +183,7 @@ macro_rules! queue_schema {
         [$(($name, include_str!(concat!("../../../../deploy/compose/migrations/", $name)))),+]
     };
 }
-const QUEUE_SCHEMA: [(&str, &str); 65] = queue_schema!(
+const QUEUE_SCHEMA: [(&str, &str); 66] = queue_schema!(
     "001_foundation.sql",
     "002_auth.sql",
     "003_delivery.sql",
@@ -249,6 +249,7 @@ const QUEUE_SCHEMA: [(&str, &str); 65] = queue_schema!(
     "063_retention_blocked_stamp.sql",
     "064_owner_conversation_consent.sql",
     "065_conversation_activation.sql",
+    "066_conversation_interval_session_index.sql",
 );
 #[test]
 fn queue_fixture_includes_every_checked_in_migration() {
@@ -304,6 +305,9 @@ async fn apply_queue_schema(db: &Client) {
             }
             "062_pending_recipient_index.sql" => {
                 db.batch_execute("CREATE INDEX CONCURRENTLY messages_pending_recipient ON messages(recipient_e164,account_id) WHERE state IN ('queued','claimed') AND recipient_e164 IS NOT NULL").await.unwrap();
+            }
+            "066_conversation_interval_session_index.sql" => {
+                db.batch_execute("CREATE INDEX CONCURRENTLY erasure_fk_conversation_interval_session ON conversation_intervals(account_id,initiating_session_id)").await.unwrap();
             }
             "050_message_attempts_recent_index.sql" => {
                 db.batch_execute("CREATE INDEX message_attempts_device_created ON message_attempts(account_id,device_id,created_at)").await.unwrap();

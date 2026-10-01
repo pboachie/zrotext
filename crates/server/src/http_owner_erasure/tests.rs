@@ -285,10 +285,16 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "065_conversation_activation.sql",
         include_str!("../../../../deploy/compose/migrations/065_conversation_activation.sql"),
     ),
+    (
+        "066_conversation_interval_session_index.sql",
+        include_str!(
+            "../../../../deploy/compose/migrations/066_conversation_interval_session_index.sql"
+        ),
+    ),
 ];
 
 /// Indexes the Compose migrator prepares with CREATE INDEX CONCURRENTLY in
-/// autocommit mode before the numbered 034, 040, 049, 050, 052, 059, 060 and 061 files record
+/// autocommit mode before the numbered 034, 040, 049, 050, 052, 059, 060, 061, 062 and 066 files record
 /// their checksum gates (deploy/compose/README.md, "Migration 034 is a narrow
 /// online-index exception"). The gate SQL validates the exact index
 /// definition; a fresh fixture schema builds the identical index with a
@@ -341,6 +347,10 @@ const PREPARED_INDEXES: &[(&str, &str)] = &[
     (
         "062_pending_recipient_index.sql",
         "CREATE INDEX messages_pending_recipient ON messages(recipient_e164,account_id) WHERE state IN ('queued','claimed') AND recipient_e164 IS NOT NULL",
+    ),
+    (
+        "066_conversation_interval_session_index.sql",
+        "CREATE INDEX erasure_fk_conversation_interval_session ON conversation_intervals(account_id,initiating_session_id)",
     ),
 ];
 
@@ -2875,6 +2885,41 @@ async fn erasing_thousands_of_referenced_rows_completes_within_the_runtime_timeo
         let count: i64 = db.query_one(sql, &[&a.account_id]).await.unwrap().get(0);
         assert_eq!(count, rows + 1);
     }
+    // Conversation intervals require a line binding, and the registry
+    // forbids deleting bindings, so an account owning intervals can never be
+    // erased. Seed them for the OTHER fixture account: erasing this account
+    // still deletes its sessions, and every deleted session runs the
+    // referential-integrity probe against the cross-tenant table (#660) -
+    // an unindexed probe would sequentially scan it per deleted session.
+    let conversation_line = Uuid::new_v4();
+    db.execute(
+        "INSERT INTO phone_lines(id,account_id) VALUES($1,$2)",
+        &[&conversation_line, &_b.account_id],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO device_line_bindings(account_id,line_id,device_id,generation)          SELECT $1,$2,d.id,1 FROM devices d WHERE d.account_id=$1",
+        &[&_b.account_id, &conversation_line],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO conversation_intervals(account_id,id,receipt_id,device_id,line_id, \
+         binding_generation,initiating_session_id,statement,statement_digest,manifest, \
+         trust_generation,activation_version,activation_digest,expires_at_ms,phase, \
+         accepted_at_ms,approval_signature,installation_signature,closed_at) \
+         SELECT $1,gen_random_uuid(),gen_random_uuid(),d.id,$2,1,s.id, \
+                convert_to(repeat('c',400),'UTF8'),sha256(convert_to('conv','UTF8')), \
+                convert_to(repeat('m',400),'UTF8'),1,2,sha256(convert_to('conv','UTF8')), \
+                9999999999999,'history',1,convert_to(repeat('s',64),'UTF8'), \
+                convert_to(repeat('t',64),'UTF8'),now() \
+         FROM sessions s JOIN devices d ON d.account_id=s.account_id \
+         WHERE s.account_id=$1",
+        &[&_b.account_id, &conversation_line],
+    )
+    .await
+    .unwrap();
     // Production tables carry planner statistics (autovacuum analyzes them
     // after bulk writes), and the foreign-key trigger probes run as generic
     // plans, so a fresh unanalyzed fixture can pick a different shape than
@@ -2990,6 +3035,18 @@ async fn erasing_thousands_of_referenced_rows_completes_within_the_runtime_timeo
     // that can be erased never has any, and step (1) already pins their
     // probes to the account-scoped index.
     {
+        let erased_sessions: i64 = db
+            .query_one(
+                "SELECT count(*) FROM sessions WHERE account_id=$1",
+                &[&a.account_id],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert!(
+            erased_sessions > 0,
+            "the erased account must own sessions for the probe to fire"
+        );
         let tx = db.transaction().await.unwrap();
         let started = std::time::Instant::now();
         for &(_, sql) in DELETE_PLAN {
@@ -2999,6 +3056,25 @@ async fn erasing_thousands_of_referenced_rows_completes_within_the_runtime_timeo
             "DELETE_PLAN over {rows} referenced rows took {:?}",
             started.elapsed()
         );
+        // Every deleted session row probes the conversation-interval
+        // foreign key once, whatever account owns the intervals.
+        {
+            let index = "erasure_fk_conversation_interval_session";
+            let row = tx
+                .query_one(
+                    "SELECT to_regclass($1) IS NOT NULL, \
+                            coalesce(pg_stat_get_xact_numscans(to_regclass($1)), 0)",
+                    &[&index],
+                )
+                .await
+                .unwrap();
+            assert!(row.get::<_, bool>(0), "index {index} must exist");
+            let scans: i64 = row.get(1);
+            assert!(
+                scans >= erased_sessions,
+                "every deleted session must probe {index}: {scans} scans for {erased_sessions} sessions"
+            );
+        }
         for index in [
             "erasure_fk_webhook_deliveries_event",
             "erasure_fk_suppressions_event",
@@ -3026,6 +3102,7 @@ async fn erasing_thousands_of_referenced_rows_completes_within_the_runtime_timeo
             "webhook_deliveries",
             "recipient_suppressions",
             "inbound_events",
+            "conversation_intervals",
         ] {
             let seq_scans: i64 = tx
                 .query_one(
