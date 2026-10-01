@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use super::{IntegrationPrincipal, Operation};
 use crate::{
-    auth::AuthError, http_owner_conversations::context::wire,
+    auth::AuthError,
+    http_owner_conversations::{activation, context::wire},
     sealed_manifest_store::outbound::lock_current,
 };
 use sha2::{Digest, Sha256};
@@ -120,6 +121,31 @@ async fn read_context(
     {
         return Err(AuthError::Forbidden);
     }
+    let interval = activation::load(&tx, account, header.interval)
+        .await
+        .map_err(|_| AuthError::Forbidden)?;
+    let statement = interval.statement;
+    if interval.phase != "active"
+        || (
+            statement.device,
+            statement.line,
+            statement.generation,
+            statement.trust_generation,
+            statement.reader,
+        ) != (
+            header.device,
+            header.line,
+            header.binding_generation,
+            header.trust_generation,
+            header.reader,
+        )
+        || Sha256::digest(statement.peer.as_bytes()).as_slice() != header.peer_digest
+    {
+        return Err(AuthError::Forbidden);
+    }
+    activation::origin(&tx, &statement)
+        .await
+        .map_err(|_| AuthError::Forbidden)?;
     let point: Vec<u8> = row.get(7);
     let (snapshot, reader, scope) = authority
         .integration_snapshot(device, line, &point)
@@ -191,7 +217,10 @@ async fn read_context(
         .integration_snapshot(device, line, &point)
         .await
         .map_err(|_| AuthError::Forbidden)?;
-    if current.accepted_ms >= header.expires_ms || current.accepted_ms >= row.get::<_, i64>(11) {
+    if current.accepted_ms >= header.expires_ms
+        || current.accepted_ms >= row.get::<_, i64>(11)
+        || current.accepted_ms >= statement.expires_ms
+    {
         return Err(AuthError::Forbidden);
     }
     tx.query_opt(
@@ -205,6 +234,9 @@ async fn read_context(
              AND (cardinality(cg.conversation_restriction)=0 OR $4=ANY(cg.conversation_restriction)))",
         &[&account,&principal.grant_id(),&current.accepted_ms,&header.interval]
     ).await?.ok_or(AuthError::Forbidden)?;
+    activation::origin(&tx, &statement)
+        .await
+        .map_err(|_| AuthError::Forbidden)?;
     drop(authority);
     tx.commit().await?;
     Ok((header, projection))

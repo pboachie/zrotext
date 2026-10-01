@@ -43,7 +43,6 @@ impl Case {
         let (mut f, owner, s) = pending().await;
         activate(&f, &s).await;
         for sql in [
-            include_str!("../../../../deploy/compose/migrations/067_contacts_consent.sql"),
             include_str!("../../../../deploy/compose/migrations/068_connector_registration.sql"),
             include_str!(
                 "../../../../deploy/compose/migrations/078_workflow_integration_authority.sql"
@@ -513,5 +512,46 @@ async fn content_only_grant_returns_its_owner_declared_projection_and_cannot_reh
         .unwrap()
         .get(0);
     assert_eq!(count, 1);
+    case.f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; disposable workflow schema"]
+async fn interval_withdrawal_refuses_content_before_retention_scrubs_either_representation() {
+    let mut case = Case::new().await;
+    case.request.permissions = Permissions::new(&[Operation::ContextContent]).unwrap();
+    case.request.content_envelope = Some(case.projection().await);
+    let issued = case.issue().await.unwrap();
+    let principal = authenticate(&case.f.db, &case.hasher, &issued.token)
+        .await
+        .unwrap();
+    crate::http_owner_conversations::activation::close(
+        &mut case.f.connect().await,
+        &case.owner,
+        case.header.interval,
+        true,
+    )
+    .await
+    .unwrap();
+    let retained: bool=case.f.db.query_one("SELECT envelope IS NOT NULL FROM workflow_connector_context_envelopes WHERE grant_id=$1", &[&issued.grant_id]).await.unwrap().get(0);
+    assert!(retained);
+    assert!(
+        read_context_content(
+            &mut case.f.connect().await,
+            &principal,
+            Uuid::new_v4(),
+            case.header.context
+        )
+        .await
+        .is_err()
+    );
+    let count: i64 = case
+        .f
+        .db
+        .query_one("SELECT count(*) FROM workflow_integration_access", &[])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(count, 0);
     case.f.cleanup().await;
 }
