@@ -699,8 +699,36 @@ async fn erase_account(
         {
             return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
         }
-        // Account-before-record matches execution admission. These locks may
-        // wait, so repeat the live owner check before staging any disable/delete.
+        // Serialize manifest-first producers before taking the canonical owner
+        // locks. Missing authority is not approval and does not prevent erasure.
+        if tx
+            .query(
+                "SELECT account_id FROM sealed_manifest_authorities WHERE account_id=$1 FOR UPDATE",
+                &[&account_id],
+            )
+            .await
+            .is_err()
+        {
+            return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
+        }
+        // Main's owner mutation order is user/member before account. Acquire only
+        // those rows first; password/MFA verification remains the final fence.
+        match tx.query_opt("SELECT 1 FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE u.id=$1 AND m.account_id=$2 AND m.role='owner' AND a.disabled_at IS NULL FOR UPDATE OF u,m", &[&principal.user_id,&account_id]).await {
+            Ok(Some(_)) => {}
+            Ok(None) => return auth_error(AuthError::Unauthorized),
+            Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+        }
+        // The existing helper acquires billing-customer before account, including
+        // the concurrent-new-binding recheck. SQL locks survive this guard's drop.
+        match zrotext_delivery_store::sealed::lock_account(&tx, account_id, false).await {
+            Ok(guard) => drop(guard),
+            Err(zrotext_delivery_store::StoreError::Revoked) => {
+                return auth_error(AuthError::Unauthorized);
+            }
+            Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+        }
+        // Manifest -> user/member -> billing/account -> execution record. All
+        // waits precede the single complete password/MFA/current-session fence.
         if tx.query("SELECT message_id FROM conversation_execution_records WHERE account_id=$1 ORDER BY message_id FOR UPDATE",&[&account_id]).await.is_err() {
             return error_response(StatusCode::SERVICE_UNAVAILABLE,"unavailable");
         }

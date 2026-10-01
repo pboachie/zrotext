@@ -405,7 +405,10 @@ impl Case {
         admitted.context(&f.wanted()).await.unwrap();
         drop(admitted);
         tx.commit().await.unwrap();
-        if !lifecycle::installed(&f.db).await.unwrap() {
+        if !crate::http_owner_conversations::confirmation_records::installed(&f.db)
+            .await
+            .unwrap()
+        {
             f.db.batch_execute(SCHEMA).await.unwrap();
         }
         f.db.execute("INSERT INTO usage_quota_policies(account_id,metric,limit_units) VALUES($1,'outbound_message',1000)",&[&f.account]).await.unwrap();
@@ -749,20 +752,32 @@ async fn confirmed_proof_lifecycle_redacts_bounded_content_and_exports_only_meta
     // Admission and proof binding are tested separately with real signed packets.
     case.f.db.batch_execute("WITH added AS (INSERT INTO messages SELECT (jsonb_populate_record(NULL::messages,to_jsonb(m)||jsonb_build_object('id',gen_random_uuid()))).* FROM messages m CROSS JOIN generate_series(1,100) RETURNING id) INSERT INTO conversation_confirmation_records SELECT (jsonb_populate_record(NULL::conversation_confirmation_records,to_jsonb(c)||jsonb_build_object('message_id',a.id))).* FROM conversation_confirmation_records c CROSS JOIN added a").await.unwrap();
     let mut db = case.f.connect().await;
-    let first = lifecycle::inventory(&mut db, &case.owner, None)
-        .await
-        .unwrap();
+    let first = crate::http_owner_conversations::confirmation_records::inventory(
+        &mut db,
+        &case.owner,
+        None,
+    )
+    .await
+    .unwrap();
     assert_eq!(first.records.len(), 100);
     assert!(first.truncated);
-    let last = lifecycle::inventory(&mut db, &case.owner, first.next_cursor)
-        .await
-        .unwrap();
+    let last = crate::http_owner_conversations::confirmation_records::inventory(
+        &mut db,
+        &case.owner,
+        first.next_cursor,
+    )
+    .await
+    .unwrap();
     assert_eq!(last.records.len(), 1);
     assert!(!last.truncated);
     assert!(
-        lifecycle::inventory(&mut db, &case.owner, Some(Uuid::new_v4()))
-            .await
-            .is_err()
+        crate::http_owner_conversations::confirmation_records::inventory(
+            &mut db,
+            &case.owner,
+            Some(Uuid::new_v4())
+        )
+        .await
+        .is_err()
     );
     let serialized = serde_json::to_string(&first).unwrap();
     for forbidden in [
@@ -777,12 +792,31 @@ async fn confirmed_proof_lifecycle_redacts_bounded_content_and_exports_only_meta
     activation::close(&mut db, &case.owner, case.interval.interval, false)
         .await
         .unwrap();
-    assert_eq!(lifecycle::redact(&db, 1).await.unwrap(), 1);
-    assert_eq!(lifecycle::redact(&db, 100).await.unwrap(), 100);
-    assert_eq!(lifecycle::redact(&db, 100).await.unwrap(), 0);
-    let inventory = lifecycle::inventory(&mut db, &case.owner, None)
-        .await
-        .unwrap();
+    assert_eq!(
+        crate::http_owner_conversations::confirmation_records::redact(&db, 1)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        crate::http_owner_conversations::confirmation_records::redact(&db, 100)
+            .await
+            .unwrap(),
+        100
+    );
+    assert_eq!(
+        crate::http_owner_conversations::confirmation_records::redact(&db, 100)
+            .await
+            .unwrap(),
+        0
+    );
+    let inventory = crate::http_owner_conversations::confirmation_records::inventory(
+        &mut db,
+        &case.owner,
+        None,
+    )
+    .await
+    .unwrap();
     assert!(inventory.records.iter().all(|p| !p.proof_retained));
     let hashes: i64 = db.query_one("SELECT count(*) FROM conversation_confirmation_records WHERE octet_length(confirmation_digest)=32 AND signature IS NULL AND confirmation IS NULL",&[]).await.unwrap().get(0);
     assert_eq!(hashes, 101);
@@ -807,9 +841,13 @@ async fn confirmed_proof_lifecycle_redacts_bounded_content_and_exports_only_meta
     .await
     .unwrap();
     assert!(
-        lifecycle::inventory(&mut db, &case.owner, None)
-            .await
-            .is_err()
+        crate::http_owner_conversations::confirmation_records::inventory(
+            &mut db,
+            &case.owner,
+            None
+        )
+        .await
+        .is_err()
     );
     case.f.cleanup().await;
 }
@@ -837,8 +875,84 @@ async fn confirmed_proof_retention_session_revocation_and_schema_absence_are_exp
     db.batch_execute("DROP TABLE conversation_confirmation_records")
         .await
         .unwrap();
-    assert!(!lifecycle::installed(&db).await.unwrap());
-    assert_eq!(lifecycle::redact(&db, 100).await.unwrap(), 0);
+    assert!(
+        !crate::http_owner_conversations::confirmation_records::installed(&db)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        crate::http_owner_conversations::confirmation_records::redact(&db, 100)
+            .await
+            .unwrap(),
+        0
+    );
     assert!(case.enqueue(&b, &c, &sig).await.is_err());
+    case.f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn confirmed_queue_without_segment_authority_cannot_issue_an_ordinary_sealed_grant() {
+    let case = Case::new().await;
+    let (bytes, confirmation, signature) = case.packet(Uuid::new_v4(), 30_000).await;
+    case.enqueue(&bytes, &confirmation, &signature)
+        .await
+        .unwrap();
+    let limit: Option<i16> = case
+        .f
+        .db
+        .query_one(
+            "SELECT sealed_segment_limit FROM messages WHERE account_id=$1 AND id=$2",
+            &[&case.f.account, &confirmation.message],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        limit, None,
+        "ZTCR v1 supplies no authenticated ordinary-dispatch ceiling"
+    );
+    let session = zrotext_delivery_store::SessionRecord {
+        account_id: case.f.account,
+        device_id: case.f.device,
+        site_id: "manifest-test".into(),
+        instance_id: "fixture".into(),
+        epoch: 1,
+        deployment_epoch: 1,
+    };
+    let ready = crate::sealed_dispatch::wire::Ready {
+        grant_version: 1,
+        connection_epoch: 1,
+        line_id: case.f.line,
+        binding_generation: 1,
+        reader_key_id: base64::Engine::encode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            case.phone_reader.key_id,
+        ),
+    };
+    let policy = crate::alpha_policy::AlphaPolicy::parse(
+        Some("true"),
+        Some(&case.f.account.to_string()),
+        Some("+12"),
+    )
+    .unwrap();
+    let before = case.counts().await;
+    let job = dispatch_snapshot(&case).await;
+    let mut db = case.f.connect().await;
+    assert!(
+        crate::sealed_dispatch::grant(&mut db, &session, &ready, &policy)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(case.counts().await, before);
+    assert_eq!(dispatch_snapshot(&case).await, job);
+    assert_eq!(
+        db.query_one("SELECT count(*) FROM message_attempts", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        0
+    );
     case.f.cleanup().await;
 }

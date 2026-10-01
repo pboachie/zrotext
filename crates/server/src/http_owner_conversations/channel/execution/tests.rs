@@ -419,7 +419,7 @@ async fn execution_cancel_refund_prevents_grant_and_historical_status_cannot_reo
         .await
         .unwrap();
     assert_eq!(
-        crate::http_owner_conversations::send::queue::lifecycle::redact(&case.f.db, 10)
+        crate::http_owner_conversations::confirmation_records::redact(&case.f.db, 10)
             .await
             .unwrap(),
         1

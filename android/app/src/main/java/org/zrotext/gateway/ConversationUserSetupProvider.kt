@@ -8,8 +8,7 @@ import java.io.DataInputStream
 import java.security.KeyStore
 
 /** Public file candidates select existing resources. They create no trust, session or key. */
-internal class ConversationUserSetupProvider(context: Context, private val lines: SmsAttemptDao) {
-    private val application = checkNotNull(context.applicationContext)
+internal class ConversationUserSetupProvider(private val context: Context, private val lines: SmsAttemptDao) {
     class ExistingHardwareEnrollmentRequired : IllegalStateException("Existing enrolled hardware reader required")
     class Prepared internal constructor(val selection: ConversationUserSetupController.Selection,
                                         val payloadAlias: String) {
@@ -26,6 +25,7 @@ internal class ConversationUserSetupProvider(context: Context, private val lines
     fun resolve(publicSetupBytes: ByteArray, enabled: Boolean = false): Prepared? {
         if (!enabled) return null
         check(Build.VERSION.SDK_INT >= 31)
+        val application = checkNotNull(context.applicationContext)
         val host = checkNotNull(ConversationSocketComposition.currentAuthenticatedIdentity())
         val identity = host.identity
         val decoded = decodeSelection(publicSetupBytes, identity)
