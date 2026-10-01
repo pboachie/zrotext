@@ -85,8 +85,15 @@ or model adapter or create an invoice from an operator-defined epoch.
 
 ## Owner lifecycle and limitations
 
-The owner billing status includes the last locally reconciled invoice-period
-metadata and its consumption; it remains informational. Owner takeout provides
+The owner billing status labels stored phase and allowance as
+`lastObservedPhase` and `lastObservedEffectiveLimit`. `currentPeriodEligible`
+and `effectiveLimit` independently recheck the current invoice fence, including
+deadlines, dirty generations and risk holds. An ineligible period reports a
+zero current ceiling; missing observations remain null. Enabled accounts also
+use that current ceiling for `projectedEntitlement`, rather than the legacy
+calendar projection. These readings remain informational and do not authorize
+admission, establish remaining capacity or bypass any other fence.
+Owner takeout provides
 three independent 20-row pages using `invoice_periods_after`,
 `invoice_usage_after` and `invoice_audit_after`. Cursors must belong to the same
 account. Export rechecks the actual live owner session before committing.

@@ -167,13 +167,21 @@ async fn status(
             payment_grace_ends_at_unix: row.get(4),
         })
         .collect();
+    let invoice_period = super::invoice::lifecycle::status(&mut db, &owner)
+        .await
+        .map_err(|_| AuthHttpError::Unavailable)?;
+    let (reason, outbound_limit) = invoice_period.as_ref().map_or_else(
+        || (projection.get::<_, Option<String>>(1), projection.get(2)),
+        |invoice| {
+            let (reason, limit) = invoice.projection();
+            (Some(reason.to_owned()), limit)
+        },
+    );
     Ok(Json(BillingStatus {
         local_usage: super::usage::current(&db, account_id)
             .await
             .map_err(|_| AuthHttpError::Unavailable)?,
-        invoice_period: super::invoice::lifecycle::status(&mut db, &owner)
-            .await
-            .map_err(|_| AuthHttpError::Unavailable)?,
+        invoice_period,
         mode: "test",
         customer_bound,
         pending_reconciliations,
@@ -184,8 +192,8 @@ async fn status(
         more_subscriptions,
         device_capacity,
         projected_entitlement: ProjectedEntitlementView {
-            reason: projection.get(1),
-            outbound_limit: projection.get(2),
+            reason,
+            outbound_limit,
             device_cap: limit,
             payment_hold: projection
                 .get::<_, Option<bool>>(3)

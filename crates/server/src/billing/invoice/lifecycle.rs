@@ -30,17 +30,30 @@ pub(crate) struct InvoiceExport {
     pub audit_next: Option<i64>,
 }
 
-#[derive(Serialize)]
+#[derive(Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PeriodStatus {
-    phase: String,
+    last_observed_phase: Option<String>,
+    last_observed_effective_limit: Option<i64>,
+    current_period_eligible: bool,
     start_ms: Option<i64>,
     end_ms: Option<i64>,
     effective_limit: i64,
-    consumed_units: i64,
-    previous_open_units: i64,
+    consumed_units: Option<i64>,
+    previous_open_units: Option<i64>,
     grace_until_ms: Option<i64>,
     cancel_at_ms: Option<i64>,
+}
+
+impl PeriodStatus {
+    pub(crate) fn projection(&self) -> (&'static str, Option<i64>) {
+        let reason = if self.current_period_eligible {
+            "invoice_current"
+        } else {
+            "invoice_restricted"
+        };
+        (reason, Some(self.effective_limit))
+    }
 }
 
 /// Informational current invoice projection. It creates no admission permit.
@@ -55,7 +68,23 @@ pub(crate) async fn status(
         .await
         .map_err(|_| ConversationError::Unavailable)?
     {
-        tx.query_opt("SELECT e.phase,p.start_ms,p.end_ms,e.effective_limit,coalesce(p.reserved_units-p.refunded_units,0),(SELECT coalesce(sum(q.open_units),0)::bigint FROM billing_invoice_periods q WHERE q.account_id=e.account_id AND q.id IS DISTINCT FROM e.period_id),e.grace_until_ms,e.cancel_at_ms FROM billing_invoice_entitlements e LEFT JOIN billing_invoice_periods p ON (p.account_id,p.id)=(e.account_id,e.period_id) WHERE e.account_id=$1", &[&account]).await?.map(|r|PeriodStatus { phase:r.get(0),start_ms:r.get(1),end_ms:r.get(2),effective_limit:r.get(3),consumed_units:r.get(4),previous_open_units:r.get(5),grace_until_ms:r.get(6),cancel_at_ms:r.get(7) })
+        let row = tx.query_opt("SELECT e.phase,p.start_ms,p.end_ms,e.effective_limit,p.reserved_units-p.refunded_units,(SELECT coalesce(sum(q.open_units),0)::bigint FROM billing_invoice_periods q WHERE q.account_id=e.account_id AND q.id IS DISTINCT FROM e.period_id),e.grace_until_ms,e.cancel_at_ms,EXISTS(SELECT 1 FROM current_billing_invoice_period($1) live WHERE live.period_id=e.period_id) FROM billing_invoice_entitlements e LEFT JOIN billing_invoice_periods p ON (p.account_id,p.id)=(e.account_id,e.period_id) WHERE e.account_id=$1", &[&account]).await?;
+        Some(row.map_or_else(PeriodStatus::default, |r| {
+            let eligible: bool = r.get(8);
+            let observed_limit: i64 = r.get(3);
+            PeriodStatus {
+                last_observed_phase: Some(r.get(0)),
+                last_observed_effective_limit: Some(observed_limit),
+                current_period_eligible: eligible,
+                start_ms: r.get(1),
+                end_ms: r.get(2),
+                effective_limit: if eligible { observed_limit } else { 0 },
+                consumed_units: r.get(4),
+                previous_open_units: Some(r.get(5)),
+                grace_until_ms: r.get(6),
+                cancel_at_ms: r.get(7),
+            }
+        }))
     } else {
         None
     };

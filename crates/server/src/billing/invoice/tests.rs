@@ -9,6 +9,7 @@ mod lifecycle;
 mod races;
 mod recovery;
 mod security;
+mod status;
 
 struct Case {
     db: Client,
@@ -83,17 +84,34 @@ impl Case {
     }
 
     fn observation(&self, status: &str, invoice_status: &str, reason: &str) -> CurrentInvoice {
+        self.observation_for_price(
+            status,
+            invoice_status,
+            reason,
+            "price_invoice1",
+            "in_invoice1",
+        )
+    }
+
+    fn observation_for_price(
+        &self,
+        status: &str,
+        invoice_status: &str,
+        reason: &str,
+        price: &str,
+        invoice_id: &str,
+    ) -> CurrentInvoice {
         let subscription = json!({"id":"sub_invoice1","object":"subscription","livemode":false,
-            "customer":"cus_invoice1","status":status,"latest_invoice":"in_invoice1",
+            "customer":"cus_invoice1","status":status,"latest_invoice":invoice_id,
             "cancel_at":null,"cancel_at_period_end":false,
             "items":{"object":"list","has_more":false,"data":[{"id":"si_invoice1","quantity":1,
-                "price":{"id":"price_invoice1"},"current_period_start":self.start,"current_period_end":self.end}]}});
-        let invoice = json!({"id":"in_invoice1","object":"invoice","livemode":false,
+                "price":{"id":price},"current_period_start":self.start,"current_period_end":self.end}]}});
+        let invoice = json!({"id":invoice_id,"object":"invoice","livemode":false,
             "customer":"cus_invoice1","status":invoice_status,"billing_reason":reason,
             "parent":{"type":"subscription_details","subscription_details":{"subscription":"sub_invoice1"}},
             "lines":{"object":"list","has_more":false,"data":[{"id":"il_invoice1",
                 "parent":{"type":"subscription_item_details","subscription_item_details":{"subscription_item":"si_invoice1","proration":false}},
-                "period":{"start":self.start,"end":self.end},"pricing":{"price_details":{"price":"price_invoice1"}}}]}});
+                "period":{"start":self.start,"end":self.end},"pricing":{"price_details":{"price":price}}}]}});
         CurrentInvoice {
             observation: model::parse(
                 &serde_json::to_vec(&subscription).unwrap(),
