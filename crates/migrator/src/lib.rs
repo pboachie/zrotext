@@ -953,6 +953,8 @@ mod admission_pending_index_tests;
 #[cfg(test)]
 mod conversation_erasure_fk_indexes_tests;
 #[cfg(test)]
+mod conversation_execution_installation_tests;
+#[cfg(test)]
 mod erasure_fk_index_tests;
 #[cfg(test)]
 mod inbound_events_attempt_fk_index_tests;
