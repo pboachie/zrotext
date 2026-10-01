@@ -112,6 +112,12 @@ Provide an n8n recipe using its documented [Webhook](https://docs.n8n.io/integra
 
 ### Managed AI and larger campaigns
 
+The [hosted engineering readiness contract](HOSTED-READINESS.md) stages
+metering, reservations, invoice-bound recovery and owner presentation behind
+core messaging acceptance. It reuses existing owners and keeps self-hosted
+mode and each optional service's authority separate. TEST billing groundwork
+does not establish hosted launch readiness or authorize activation.
+
 These are independent later additions, not prerequisites for the customer-controlled assistant.
 
 **Managed AI:** require explicit opt-in to a separate ZROtext-managed content reader. Specify selected lines/conversations, model-provider access, retention, export, deletion, revocation and budgets. The service must receive explicitly authorized decryption/signing roles; it must not introduce a silent plaintext fallback to the sealed API. Revocation stops future access but cannot undo content already read. Complete hosted-service operations and the relevant export/deletion capability before release. The [data-handling proposal](MANAGED-AI.md) details these properties and the open decisions.
