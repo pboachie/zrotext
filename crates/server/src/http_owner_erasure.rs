@@ -102,6 +102,14 @@ const BLOCKED_TABLES: &[&str] = &[
 /// account row are deleted explicitly anyway, so the reported per-table
 /// counts stay honest.
 const DELETE_PLAN: &[(&str, &str)] = &[
+    // Contacts and their append-only consent history: erasable account
+    // records (unlike the schema-protected opt-out planes), deleted before
+    // the memberships their recorder foreign keys point at.
+    (
+        "contact_consent_records",
+        "DELETE FROM contact_consent_records WHERE account_id=$1",
+    ),
+    ("contacts", "DELETE FROM contacts WHERE account_id=$1"),
     (
         "conversation_inbound_provenance",
         "DELETE FROM conversation_inbound_provenance WHERE account_id=$1",
