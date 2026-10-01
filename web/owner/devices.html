@@ -80,6 +80,17 @@
 
     <div id="owner-content" hidden>
       <div class="owner-entry-actions"><a class="action-link" href="#pair-phone">Pair a phone</a><a href="#account-security">Security & sessions</a></div>
+      <section id="message-summary" aria-labelledby="summary-title">
+        <div class="section-head"><h2 id="summary-title">Writer summary</h2><button id="refresh-summary" type="button" class="quiet">Refresh summary</button></div>
+        <div class="summary-scope"><label for="summary-device">Summary scope</label>
+        <select id="summary-device"><option value="">All devices in this account</option></select></div>
+        <p id="summary-status" role="status" aria-live="polite">Loading authoritative metadata…</p>
+        <div class="summary-cards">
+          <div role="group" aria-labelledby="summary-submitted-label"><h3 id="summary-submitted-label">Submitted today (UTC)</h3><p class="summary-value" id="summary-submitted">Loading…</p><p>First complete successful sent-callback evidence received by the writer. Delivery is not established.</p></div>
+          <div role="group" aria-labelledby="summary-pending-label"><h3 id="summary-pending-label">Waiting or claimed</h3><p class="summary-value" id="summary-pending">Loading…</p><p>Accepted, queued and claimed writer states. Claimed work may already hold a grant; this is not ungranted queue depth.</p></div>
+          <div role="group" aria-labelledby="summary-flight-label"><h3 id="summary-flight-label">Submitting / awaiting receipt</h3><p class="summary-value" id="summary-flight">Loading…</p><p>Submitting and submitted writer states. Unknown and final outcomes are separate; connectivity does not prove sending.</p></div>
+        </div>
+      </section>
       <section id="approved-devices" aria-labelledby="devices-title">
         <div class="section-head"><h2 id="devices-title">Approved devices</h2><button id="refresh-devices" type="button" class="quiet">Refresh</button></div>
         <label class="check"><input id="auto-refresh" type="checkbox" checked> Refresh devices and recent messages automatically</label>
@@ -116,17 +127,6 @@
       </section>
 
 
-      <section id="message-summary" aria-labelledby="summary-title">
-        <div class="section-head"><h2 id="summary-title">Writer summary</h2><button id="refresh-summary" type="button" class="quiet">Refresh summary</button></div>
-        <label for="summary-device">Summary scope</label>
-        <select id="summary-device"><option value="">All devices in this account</option></select>
-        <p id="summary-status" role="status" aria-live="polite">Loading authoritative metadata…</p>
-        <div class="summary-cards">
-          <div role="group" aria-labelledby="summary-submitted-label"><h3 id="summary-submitted-label">Submitted today (UTC)</h3><p class="summary-value" id="summary-submitted">Loading…</p><p>First complete successful sent-callback evidence received by the writer. Delivery is not established.</p></div>
-          <div role="group" aria-labelledby="summary-pending-label"><h3 id="summary-pending-label">Waiting or claimed</h3><p class="summary-value" id="summary-pending">Loading…</p><p>Accepted, queued and claimed writer states. Claimed work may already hold a grant; this is not ungranted queue depth.</p></div>
-          <div role="group" aria-labelledby="summary-flight-label"><h3 id="summary-flight-label">Submitting / awaiting receipt</h3><p class="summary-value" id="summary-flight">Loading…</p><p>Submitting and submitted writer states. Unknown and final outcomes are separate; connectivity does not prove sending.</p></div>
-        </div>
-      </section>
       <section id="message-activity" aria-labelledby="messages-title">
         <div class="section-head"><h2 id="messages-title">Message activity</h2><button id="refresh-messages" type="button" class="quiet">Refresh</button></div>
         <p>Message history shows server states and device events from controlled tests. A delivery callback does not prove the recipient read a message.</p>
