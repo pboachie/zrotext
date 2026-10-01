@@ -12,6 +12,8 @@ import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import org.junit.Assert.*
 import org.junit.Rule
+import org.junit.rules.ExternalResource
+import org.junit.rules.RuleChain
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -24,8 +26,16 @@ import java.util.UUID
 @Config(sdk = [28, 34], qualifiers = "w320dp-h480dp")
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class FutureConversationFixtureJourneyTest {
-    @get:Rule(order = 0) val receiverPermission = ConversationReceiverPermissionRule()
-    @get:Rule(order = 1) val compose = createAndroidComposeRule<MainActivity>()
+    val compose = createAndroidComposeRule<MainActivity>()
+    @get:Rule val rules: RuleChain = RuleChain.outerRule(object : ExternalResource() {
+        override fun before() {
+            // Android grants this merged AndroidX signature permission at installation.
+            // Robolectric needs the grant before MainActivity registers Home's receiver.
+            val app = org.robolectric.RuntimeEnvironment.getApplication()
+            org.robolectric.Shadows.shadowOf(app)
+                .grantPermissions("${app.packageName}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION")
+        }
+    }).around(compose)
     private val interval = UUID.randomUUID().toString()
     private val line = UUID.randomUUID().toString()
     private val request = UUID.randomUUID().toString()

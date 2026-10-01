@@ -6,10 +6,10 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
 import android.net.Uri
 import android.os.SystemClock
+import android.os.Handler
+import android.os.Looper
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.foundation.text.KeyboardOptions
@@ -394,10 +394,10 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        clearSummaryReader(clearKey = true)
-        summaryWorker.shutdownNow()
         closeConversationEntry()
         conversationWorker.shutdownNow()
+        clearSummaryReader(clearKey = true)
+        summaryWorker.shutdownNow()
         pairingWorker.shutdownNow()
         super.onDestroy()
     }

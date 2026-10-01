@@ -99,18 +99,21 @@ impl BrowserAssets {
                 return Err(std::io::Error::other("SDK directory cycle or bound"));
             }
             for entry in std::fs::read_dir(&dir)? {
-                let path = entry?.path();
+                let entry = entry?;
+                let path = entry.path();
                 // Validate the exact directory-entry path before inspecting that
                 // named object; checking a different canonical value is insufficient.
                 if !path.starts_with(&root) {
                     return Err(std::io::Error::other("SDK entry escapes package"));
                 }
+                // Inspect the entry returned by this checked directory, without
+                // following its target or masking filesystem inspection errors.
+                if entry.file_type()?.is_symlink() {
+                    return Err(std::io::Error::other("SDK symlink refused"));
+                }
                 let actual = path.canonicalize()?;
                 if !actual.starts_with(&root) {
                     return Err(std::io::Error::other("SDK asset escapes package"));
-                }
-                if path.is_symlink() {
-                    return Err(std::io::Error::other("SDK symlink refused"));
                 }
                 if actual.is_dir() {
                     pending.push(actual);
@@ -388,16 +391,64 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn broken_package_symlink_is_refused_before_resolving_its_target() {
+        let package = test_files::Package::new();
+        package
+            .write("sdk/conversation-custody.js", b"export const fixture=true;")
+            .unwrap();
+        std::os::unix::fs::symlink(
+            package.root().join("sdk/missing.js"),
+            package.root().join("sdk/linked.js"),
+        )
+        .unwrap();
+        let error = BrowserAssets::load(package.root()).err().unwrap();
+        assert_eq!(error.to_string(), "SDK symlink refused");
+    }
+
     #[test]
     fn popped_parent_traversal_cannot_reach_a_sibling_package() {
         let package = test_files::Package::new();
         let other = test_files::Package::new();
         let root = package.root().canonicalize().unwrap();
-        let candidate = package
-            .root()
+        let lexical_root = package.root().to_path_buf();
+        // Windows verbatim paths both normalize pushed `..` and forbid literal
+        // `..` at the filesystem boundary. Use the equivalent ordinary prefix
+        // to exercise a resolvable lexical traversal, keeping the canonical root.
+        #[cfg(windows)]
+        let lexical_root = {
+            use std::path::{Component, Prefix};
+            let mut parts = lexical_root.components();
+            let ordinary = match parts.next() {
+                Some(Component::Prefix(prefix)) => match prefix.kind() {
+                    Prefix::VerbatimDisk(drive) => {
+                        Some(std::ffi::OsString::from(format!("{}:", char::from(drive))))
+                    }
+                    Prefix::VerbatimUNC(server, share) => {
+                        let mut prefix = std::ffi::OsString::from(r"\\");
+                        prefix.push(server);
+                        prefix.push(r"\");
+                        prefix.push(share);
+                        Some(prefix)
+                    }
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(prefix) = ordinary {
+                let mut path = std::path::PathBuf::from(prefix);
+                path.push(parts.as_path());
+                path
+            } else {
+                lexical_root
+            }
+        };
+        assert_eq!(lexical_root.canonicalize().unwrap(), root);
+        let candidate = lexical_root
             .join("..")
             .join(other.root().file_name().unwrap());
-        assert!(candidate.starts_with(package.root()));
+        assert!(candidate.starts_with(&lexical_root));
         assert!(checked_directory(&candidate, &root).is_err());
         assert!(!candidate.canonicalize().unwrap().starts_with(&root));
     }
