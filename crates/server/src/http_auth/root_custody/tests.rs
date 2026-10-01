@@ -49,7 +49,7 @@ async fn authenticated_http_custody_requires_csrf_and_exports_same_independently
     let o = Owner::new().await;
     o.f.db
         .batch_execute(include_str!(
-            "../../../../../deploy/compose/migrations/069_sealed_root_custody.sql"
+            "../../../../../deploy/compose/migrations/070_sealed_root_custody.sql"
         ))
         .await
         .unwrap();

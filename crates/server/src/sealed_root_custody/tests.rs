@@ -224,7 +224,7 @@ async fn owner() -> Owner {
         .f
         .db
         .batch_execute(include_str!(
-            "../../../../deploy/compose/migrations/069_sealed_root_custody.sql"
+            "../../../../deploy/compose/migrations/070_sealed_root_custody.sql"
         ))
         .await
         .unwrap();
@@ -422,7 +422,7 @@ async fn concurrent_publication_has_one_winner_and_revoked_session_cannot_read()
 
 #[tokio::test]
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; disposable PostgreSQL custody tests"]
-async fn missing_comparison_foreign_bundle_and_revoked_membership_never_publish() {
+async fn missing_comparison_foreign_bundle_and_removed_membership_never_publish() {
     let o = owner().await;
     let c = o.challenge().await;
     let (backup, card, compared) = bundle(&o.root, &o.pin, o.principal.tenant.account_id());
@@ -445,8 +445,13 @@ async fn missing_comparison_foreign_bundle_and_revoked_membership_never_publish(
             .is_err()
     );
     o.empty_authority().await;
-    o.f.db.execute("UPDATE memberships SET role='observer',revoked_at=clock_timestamp() WHERE account_id=$1 AND user_id=$2",
-        &[&o.principal.tenant.account_id(),&o.principal.user_id]).await.unwrap();
+    o.f.db
+        .execute(
+            "DELETE FROM memberships WHERE account_id=$1 AND user_id=$2",
+            &[&o.principal.tenant.account_id(), &o.principal.user_id],
+        )
+        .await
+        .unwrap();
     assert!(
         complete(&o, &c, &backup, &card, compared, &signature)
             .await

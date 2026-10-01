@@ -87,7 +87,7 @@ signature over a substituted bundle cannot be authorized by a stolen login.
 
 ## Persistence, replay, retention and history
 
-Migration 069 adds one immutable generation-one custody row per account; storage
+Migration 070 adds one immutable generation-one custody row per account; storage
 is intrinsically bounded without a pagination or unbounded draft-upload queue.
 There is no update, overwrite, restore, reset, rotation or rewrap endpoint. A
 concurrent completion has at most one winner under existing account/challenge
