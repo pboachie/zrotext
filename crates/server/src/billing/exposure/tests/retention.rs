@@ -168,5 +168,18 @@ async fn exposure_period_expiry_during_final_policy_await_rolls_back_first_inten
     assert_eq!(f.liability().await, (1, 0));
     // The delay's transactional marker also rolls back; wall time proves it ran.
     assert!(f.case.base.f.db.query_one("SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint>=period_end_ms FROM exposure_deployment_budgets",&[]).await.unwrap().get::<_,bool>(0));
+    // Restore the test-only latency seam before restricted fixture teardown.
+    f.case
+        .base
+        .f
+        .db
+        .batch_execute(
+            "DROP VIEW exposure_scope_budgets;
+        ALTER TABLE exposure_scope_storage RENAME TO exposure_scope_budgets;
+        DROP FUNCTION exposure_test_pause(text);
+        DROP TABLE exposure_test_pause_count;",
+        )
+        .await
+        .unwrap();
     f.case.cleanup().await;
 }
