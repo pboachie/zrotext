@@ -120,8 +120,10 @@ export class AssistantRunner {
       if (rawSelected && typeof rawSelected==='object')
         for (const field of ['instructions','content']) held.push(Object.getOwnPropertyDescriptor(rawSelected,field)?.value);
       const selected=object(rawSelected,['instructions','content']);
-      const instructions=bytes(selected.instructions,8192), content=bytes(selected.content,32768);
-      held.push(instructions,content);
+      const instructions=bytes(selected.instructions,8192);
+      held.push(instructions);
+      const content=bytes(selected.content,32768);
+      held.push(content);
       authority=await this.#current(e,controller.signal);
       const reservation=object(await this.#service.reserveProvider(authority,{requestId,units:p.callUnits,expiresMs:e.expiresMs},{signal:controller.signal}),['requestId','units','generation','state']);
       if (reservation.requestId!==requestId || reservation.units!==p.callUnits || reservation.generation!==p.generation || reservation.state!=='fresh') fail('budget_unavailable');

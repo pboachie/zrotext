@@ -253,3 +253,26 @@ test('only closed consent purpose and matching stable descriptor identity are ac
   f.authority.purpose='marketing';await assert.rejects(f.runner.run(f.e),/authority_unavailable/);
   assert.equal(f.observed.calls,0);
 });
+
+
+test('invalid selected content still zeroizes the already-owned instruction copy',async t=>{
+  const f=await fixture(t);
+  const instructions=enc.encode('rejected instruction copy canary');
+  const content=Uint8Array.of(0xff);
+  f.reader.readSelected=async()=>({instructions,content});
+  const original=Uint8Array.from;
+  let owned;
+  Uint8Array.from=function(value,...args){
+    const copy=Reflect.apply(original,this,[value,...args]);
+    if(value===instructions) owned=copy;
+    return copy;
+  };
+  try { await assert.rejects(f.runner.run(f.e),/invalid_content/); }
+  finally { Uint8Array.from=original; }
+  assert.ok(owned,'the valid instructions were copied before content refused');
+  assert.ok(owned.every(byte=>byte===0),'owned instruction plaintext must be zeroized');
+  assert.ok(instructions.every(byte=>byte===0));
+  assert.ok(content.every(byte=>byte===0));
+  assert.equal(f.observed.calls,0);
+  assert.equal(f.observed.proposals.length,0);
+});
