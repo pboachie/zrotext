@@ -18,6 +18,7 @@
     if(enabled && (typeof request!=="function" || typeof readAuthority!=="function" || typeof currentCsrf!=="function" ||
        !custody || ["openSealed","prepare","signReviewed","close"].some(k=>typeof custody[k]!=="function") ||
        typeof endpoints?.read!=="function" || typeof endpoints?.submit!=="string")) throw Error("Owner integration unavailable");
+    if(enabled&&typeof custody.onClose==="function")custody.onClose(close);
     if(initialEvent!==undefined && (typeof initialEvent!=="string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(initialEvent) || initialEvent==="00000000-0000-0000-0000-000000000000"))throw Error("Owner event discovery unavailable");
     const path=value=>{if(typeof value!=="string" || !/^\/v1\/owner\/[A-Za-z0-9/_-]+$/.test(value))throw Error("Owner endpoint refused");return value;};
     const csrf=()=>{let value;try{value=currentCsrf?.();}catch(error){close();throw error;}if(typeof value!=="string" || !value || value.length>256){close();throw Error("Owner CSRF unavailable");}return value;};

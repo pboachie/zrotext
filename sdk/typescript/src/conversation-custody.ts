@@ -5,10 +5,11 @@ import { createConversationEnrollment02 } from "./conversation-enrollment.js";
 import { canonicalSignature02, verifiedManifestIdentity02, verifiedManifestTrust02, verifyManifest02, type Manifest02 } from "./draft02-manifest.js";
 import { openConversationInbound02, parseConversationInbound02 } from "./conversation-reader.js";
 import { type Draft02TrustStore } from "./draft02-trust-store.js";
+import type {ArchiveReaderLease02} from "./conversation-archive-custody.js";
 type Enrollment=Parameters<typeof createConversationEnrollment02>;
 export type ConversationOwnerScope02=Readonly<{account:string;session:string;interval:string;device:string;line:string;generation:string;peer:string;reader:string;manifest:string}>;
 export type ConversationCustodyOptions02=Readonly<{
- binding:ConversationSignerBinding02;archivePrivateKey:CryptoKey;
+ binding:ConversationSignerBinding02;archivePrivateKey?:CryptoKey;archiveLease?:ArchiveReaderLease02;
  signal?:AbortSignal;
  readCurrent:()=>Promise<ConversationSignerCurrent02|null>;
  consumeSetupDecision:Parameters<typeof prepareConversationSignerSetup02>[1];
@@ -34,14 +35,18 @@ export function existingConversationRootCustodian02(privateKey:CryptoKey):Enroll
  */
 export async function prepareConversationCustody02(options:ConversationCustodyOptions02){
  options={...options,history:options.history?{...options.history}:undefined};
- const binding=copy(options.binding),archive=options.archivePrivateKey;
- if(archive.type!=="private"||archive.extractable||archive.algorithm.name!=="ECDH"||(archive.algorithm as EcKeyAlgorithm).namedCurve!=="P-256"||!archive.usages.includes("deriveBits"))throw Error("Existing nonextractable archive reader required");
+ const binding=copy(options.binding);let archive=options.archivePrivateKey??null,lease=options.archiveLease??null;
+ options={...options,archivePrivateKey:undefined,archiveLease:undefined};
+ if(Boolean(archive)===Boolean(lease)){const held=lease;lease=null;archive=null;held?.close();throw Error("Exactly one existing archive custodian required");}
+ if(archive&&(archive.type!=="private"||archive.extractable||archive.algorithm.name!=="ECDH"||(archive.algorithm as EcKeyAlgorithm).namedCurve!=="P-256"||!archive.usages.includes("deriveBits")))throw Error("Existing nonextractable archive reader required");
  let closed=false,busy=false,enrolled=false,lastNow=0n,lastVersion=0n,lastDigest:Uint8Array|null=null,root:Uint8Array|null=null,generation:bigint|null=null;
  let signer:Awaited<ReturnType<typeof prepareConversationSignerSetup02>>|null=null;
  type Signer=Awaited<ReturnType<typeof prepareConversationSignerSetup02>>;
  const history=new Map<string,Manifest02>();let reviews=new WeakMap<object,Awaited<ReturnType<Signer["prepareReview"]>>>(),expiryTimer:ReturnType<typeof setTimeout>|null=null;
- const close=()=>{closed=true;signer?.close();signer=null;history.clear();reviews=new WeakMap();if(expiryTimer!==null)clearTimeout(expiryTimer);options.signal?.removeEventListener("abort",close);};
- if(options.signal?.aborted)throw Error("Custody setup closed");options.signal?.addEventListener("abort",close,{once:true});
+ const closeListeners=new Set<()=>void>();let releaseLease:(()=>void)|null=null;
+ const close=()=>{if(closed)return;closed=true;const held=lease;lease=null;archive=null;try{signer?.close();}finally{signer=null;try{held?.close();}finally{history.clear();reviews=new WeakMap();if(expiryTimer!==null)clearTimeout(expiryTimer);for(const cleanup of [()=>options.signal?.removeEventListener("abort",close),()=>releaseLease?.()])try{cleanup();}catch{}releaseLease=null;for(const listener of closeListeners)try{listener();}catch{}closeListeners.clear();}}};
+ releaseLease=lease?.onClose(close)??null;
+ if(options.signal?.aborted){close();throw Error("Custody setup closed");}options.signal?.addEventListener("abort",close,{once:true});
  async function current():Promise<ConversationSignerCurrent02>{
   if(closed)throw Error("Custody closed");
   const sampled=await options.readCurrent();
@@ -57,7 +62,7 @@ export async function prepareConversationCustody02(options:ConversationCustodyOp
   const reader=manifest.keys.find(k=>k.role===2&&same(k.keyId,binding.archiveReader));
   if(!reader||reader.state!==1||!(reader.scope&8)||reader.fromMs>value.nowMs||value.nowMs>=reader.untilMs)throw Error("Custody reader revoked");
   if(enrolled){const key=manifest.keys.find(k=>k.role===5&&same(k.keyId,signer!.keyId));if(!key||key.state!==1||key.fromMs>value.nowMs||value.nowMs>=key.untilMs)throw Error("Custody signer expired or revoked");}
-  root=identity.rootPoint;generation=identity.generation;lastNow=value.nowMs;lastVersion=identity.version;lastDigest=identity.digest;
+  if(lease)await lease.withKey(binding,async()=>{});if(closed)throw Error("Custody closed");root=identity.rootPoint;generation=identity.generation;lastNow=value.nowMs;lastVersion=identity.version;lastDigest=identity.digest;
   const digest=b64(identity.digest);if(!history.has(digest)&&history.size>=64)throw Error("Custody history full");history.set(digest,manifest);
   return {...value,binding:copy(binding),manifest};
  }
@@ -74,11 +79,11 @@ export async function prepareConversationCustody02(options:ConversationCustodyOp
   enrolled=true;
   const remaining=key.untilMs-installed.nowMs;if(remaining<=0n||remaining>1800000n)throw Error("Custody lifetime invalid");
   expiryTimer=setTimeout(close,Number(remaining));
-  return Object.freeze({close,
+  return Object.freeze({close,onClose:(listener:()=>void)=>{if(closed)listener();else closeListeners.add(listener);return()=>{closeListeners.delete(listener);};},
    authority:()=>operation(async()=>{const value=await current(),key=value.manifest.keys.find(k=>k.role===5&&same(k.keyId,signer!.keyId));if(!key||key.state!==1||value.nowMs>=key.untilMs)throw Error("Custody signer expired");return Object.freeze({phase:"active",scope:scopeFor(value),validForMs:Number(key.untilMs-value.nowMs>60000n?60000n:key.untilMs-value.nowMs)});}),
    prepare:(scope:ConversationOwnerScope02,body:string)=>operation(async()=>{await selected(scope);const review=await signer!.prepareReview(body);await selected(scope);const ticket=Object.freeze({});reviews.set(ticket,review);return ticket;}),
    signReviewed:(ticket:object,scope:ConversationOwnerScope02,body:string)=>operation(async()=>{const review=reviews.get(ticket);reviews.delete(ticket);if(!review||review.body!==body)throw Error("Custody review unavailable");await selected(scope);const signature=await signer!.signReviewed(review.proof,review.envelope,body,options.consumeConfirmation);await selected(scope);return Object.freeze({envelope:b64(review.envelope),confirmation:b64(review.proof),signature:b64(signature)});}),
-   openSealed:(bytes:Uint8Array,scope:ConversationOwnerScope02)=>{const owned=Uint8Array.from(bytes);return operation(async()=>{const value=await selected(scope),parsed=parseConversationInbound02(owned);let historic=history.get(b64(parsed.manifestDigest));if(!historic&&options.history){if(options.history.loadChain){const chain=await options.history.loadChain(Uint8Array.from(parsed.manifestDigest),Uint8Array.from(value.manifest.digest));historic=await options.history.trustStore.verifyHistory(chain,parsed.observedMs);}else historic=await options.history.trustStore.verifyStoredHistory(parsed.manifestDigest,parsed.observedMs);await selected(scope);}if(!historic||!same(historic.digest,parsed.manifestDigest))throw Error("Accepted history provenance unavailable");const text=await openConversationInbound02(owned,{...binding,archivePrivateKey:archive,historical:historic,current:value.manifest,nowMs:value.nowMs});await selected(scope);return text;});}
+   openSealed:(bytes:Uint8Array,scope:ConversationOwnerScope02)=>{const owned=Uint8Array.from(bytes);return operation(async()=>{const value=await selected(scope),parsed=parseConversationInbound02(owned);let historic=history.get(b64(parsed.manifestDigest));if(!historic&&options.history){if(options.history.loadChain){const chain=await options.history.loadChain(Uint8Array.from(parsed.manifestDigest),Uint8Array.from(value.manifest.digest));historic=await options.history.trustStore.verifyHistory(chain,parsed.observedMs);}else historic=await options.history.trustStore.verifyStoredHistory(parsed.manifestDigest,parsed.observedMs);await selected(scope);}if(!historic||!same(historic.digest,parsed.manifestDigest))throw Error("Accepted history provenance unavailable");const open=(key:CryptoKey)=>openConversationInbound02(owned,{...binding,archivePrivateKey:key,historical:historic!,current:value.manifest,nowMs:value.nowMs});const text=lease?await lease.withKey(binding,open):await open(archive!);await selected(scope);return text;});}
   });
  }catch(e){close();throw e;}
 }

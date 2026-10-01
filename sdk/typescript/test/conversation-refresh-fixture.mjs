@@ -30,3 +30,7 @@ export async function refreshFixture(nowMs=2000n){
  if(!review)throw Error("Synthetic review unavailable");
  return {review,predecessor,origin:"https://owner.invalid",comparedRootFingerprint:fingerprint,nowMs};
 }
+
+export async function signFixtureSuccessor02(f,unsigned=f.review.unsigned){
+ const rootPoint=point(1),scalar=new Uint8Array(32);scalar[31]=1;const b64=b=>Buffer.from(b).toString("base64url"),key=await crypto.subtle.importKey("jwk",{kty:"EC",crv:"P-256",x:b64(rootPoint.subarray(1,33)),y:b64(rootPoint.subarray(33)),d:b64(scalar)},{name:"ECDSA",namedCurve:"P-256"},false,["sign"]);scalar.fill(0);const n=new Uint8Array(4);new DataView(n.buffer).setUint32(0,unsigned.length);return join(unsigned,canonicalSignature02(new Uint8Array(await crypto.subtle.sign({name:"ECDSA",hash:"SHA-256"},key,join(enc.encode("ZTSE/manifest/v2\0"),n,unsigned)))));
+}
