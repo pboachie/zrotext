@@ -479,9 +479,15 @@ class AuthenticatedGatewayService : Service() {
                         "radio_event_ack" -> {
                             requireFields(frame, setOf("v", "type", "event_id", "state", "submit_permitted"))
                             check(frame.opt("state") is String && frame.opt("submit_permitted") is Boolean)
-                            handleAlphaAck(webSocket, machine, url, currentGeneration,
-                                uuid(frame, "event_id").toString(), frame.getString("state"),
-                                frame.getBoolean("submit_permitted"))
+                            check(machine.phase == DeviceStreamMachine.Phase.ACTIVE)
+                            val event = uuid(frame, "event_id").toString()
+                            val state = frame.getString("state")
+                            val permitted = frame.getBoolean("submit_permitted")
+                            val route = conversationConnection?.radioAck(event, state, permitted)
+                                ?: ConversationRadioAckRoute.NOT_OURS
+                            // Known late/duplicate conversation ACKs never enter the alpha radio path.
+                            if (route == ConversationRadioAckRoute.NOT_OURS)
+                                handleAlphaAck(webSocket, machine, url, currentGeneration, event, state, permitted)
                         }
                         "inbound_event_ack" -> {
                             check(inboundUploadRequested && machine.phase == DeviceStreamMachine.Phase.ACTIVE)
@@ -1001,10 +1007,10 @@ class AuthenticatedGatewayService : Service() {
     @Synchronized
     private fun disconnect(currentGeneration: Int, reason: DeviceReconnectPolicy.Loss) {
         if (generation != currentGeneration) return
+        generation += 1 // Fence callbacks before potentially blocking conversation closure.
         closeConversationConnection()
         Log.i("ZTReconnect", "disconnect reason=$reason")
         timingTrace.mark(HeartbeatTraceEvent.DISCONNECT, traceEpoch.get(), reason)
-        generation += 1 // Fence queued callbacks, grants and radio authorization before any retry.
         cancelTimers()
         socket?.cancel()
         socket = null
@@ -1106,10 +1112,10 @@ class AuthenticatedGatewayService : Service() {
         val old=conversationConnection;conversationConnection=null;old?.close()
     }
     private fun halt() {
+        generation += 1 // Fence listener callbacks before admission/storage closure can wait.
         closeConversationConnection()
         ConversationProcessMount.runtime.pause(ConversationStopReason.PHONE_SESSION_LOST)
         reconnect.pause()
-        generation += 1
         JournalWriteSignal.replace(null)
         cancelTimers()
         retry?.cancel(false)

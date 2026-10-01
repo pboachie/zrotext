@@ -45,6 +45,8 @@ internal class ConversationSocketNegotiation(private val socket:WebSocket,
         }} catch(error:Exception){close();throw error}
     }
     fun binary(bytes:ByteArray):Boolean = session.get()?.let {wire.acceptReply(it,bytes)} ?: false
+    fun radioAck(event:String,state:String,permitted:Boolean):ConversationRadioAckRoute =
+        wire.acceptRadioAck(session.get(),event,state,permitted)
     @Synchronized fun close(){closed=true;lifecycle.lost()}
 }
 

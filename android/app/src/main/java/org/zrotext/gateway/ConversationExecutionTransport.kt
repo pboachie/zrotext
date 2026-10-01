@@ -18,6 +18,7 @@ internal sealed interface ConversationPreparedSubmissionContext {
     val attempt:String
     val scope:ConversationCaptureScope
     val originalDeadlineMs:Long
+    val evidenceDigest:String
     val deadlineMs:Long
     val grant:SealedExecutionGrantValidator.Fields
     val session:SealedDispatchExecutor.Session
@@ -53,7 +54,7 @@ internal class ConversationExecutionTransport internal constructor(
     /** Private implementation prevents callers constructing the transport's validated snapshot. */
     private class SubmissionContext(
         override val message:String,override val attempt:String,override val scope:ConversationCaptureScope,
-        override val originalDeadlineMs:Long, fields:SealedExecutionGrantValidator.Fields,
+        override val originalDeadlineMs:Long, override val evidenceDigest:String, fields:SealedExecutionGrantValidator.Fields,
         authority:ConversationExecutionCurrent
     ) : ConversationPreparedSubmissionContext {
         private val fields=copy(fields)
@@ -172,7 +173,7 @@ internal class ConversationExecutionTransport internal constructor(
             prepared=outcome.prepared
             val final=live()
             check(final.trustedNowMs<fields.expiresAtMs && fields.expiresAtMs<=final.authorizedUntilMs)
-            consumer.submit(SubmissionContext(claim.message,claim.attempt,claim.scope,claim.deadline,fields,final),
+            consumer.submit(SubmissionContext(claim.message,claim.attempt,claim.scope,claim.deadline,claim.evidenceDigest,fields,final),
                 outcome.prepared)
         } catch (_:Exception) {ConversationSubmission.UNKNOWN}
         finally {

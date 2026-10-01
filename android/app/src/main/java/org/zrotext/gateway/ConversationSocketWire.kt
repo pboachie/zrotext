@@ -14,7 +14,7 @@ import okio.ByteString.Companion.toByteString
  */
 internal class ConversationSocketWire(private val socket: WebSocket,
     private val authenticatedSession: () -> ConversationPhoneSession?, private val timeoutMs: Long = 5000
-): ConversationAuthenticatedWire {
+): ConversationAuthenticatedWire, ConversationRadioIntentWire {
     init { require(timeoutMs in 1..5000) }
     private class Waiting(val session: ConversationPhoneSession, val challenge: UUID, val replyKind: Int) {
         val latch=CountDownLatch(1)
@@ -23,6 +23,12 @@ internal class ConversationSocketWire(private val socket: WebSocket,
     private val lock=Any()
     private var waiting:Waiting?=null
     private var closed=false
+    private class RadioWaiting(val session:ConversationPhoneSession, val event:String) {
+        val latch=CountDownLatch(1)
+        var permitted:Boolean?=null
+    }
+    private var radioWaiting:RadioWaiting?=null
+    private val radioAttempted=mutableSetOf<String>()
     override fun currentSession()=synchronized(lock) { if(closed) null else authenticatedSession() }
     override fun exchange(request:ByteArray):ConversationAuthenticatedWire.Reply {
         val owned=request.copyOf()
@@ -84,7 +90,43 @@ internal class ConversationSocketWire(private val socket: WebSocket,
         if(challenge!=pending.challenge || pending.reply!=null) return@synchronized false
         pending.reply=bytes.copyOf();pending.latch.countDown();true
     }
-    fun invalidate() = synchronized(lock) {closed=true;waiting?.latch?.countDown()}
+    override fun submitIntent(session:ConversationPhoneSession,event:AlphaRadioEvent):Boolean {
+        require(event.evidence=="durable_submit_intent" && event.segmentIndex==null && event.segmentCount==null &&
+            event.acknowledgedAtMs==null && event.quarantinedAtMs==null && event.observedAtMs>0)
+        require(event.accountId==session.account.toString() && event.deviceId==session.device.toString() &&
+            event.originHash==session.originHash)
+        listOf(event.eventId,event.messageId,event.attemptId).forEach {
+            require(UUID.fromString(it)!=UUID(0,0) && UUID.fromString(it).toString()==it)
+        }
+        val pending=RadioWaiting(session,event.eventId)
+        synchronized(lock) {
+            check(!closed && authenticatedSession()==session && radioWaiting==null &&
+                radioAttempted.size<1024 && radioAttempted.add(event.eventId))
+            radioWaiting=pending
+        }
+        try {
+            val frame=org.json.JSONObject().put("v",1).put("type","radio_event")
+                .put("connection_epoch",session.connectionEpoch).put("event_id",event.eventId)
+                .put("message_id",event.messageId).put("attempt_id",event.attemptId)
+                .put("evidence",event.evidence).put("observed_at_ms",event.observedAtMs)
+            check(socket.send(frame.toString()))
+            check(pending.latch.await(timeoutMs,TimeUnit.MILLISECONDS))
+            return synchronized(lock) {
+                check(!closed && authenticatedSession()==session)
+                checkNotNull(pending.permitted)
+            }
+        } finally { synchronized(lock) { if(radioWaiting===pending)radioWaiting=null } }
+    }
+    /** Feed only an already strictly parsed ACK from this socket's current authenticated listener. */
+    fun acceptRadioAck(session:ConversationPhoneSession?,event:String,state:String,permitted:Boolean):ConversationRadioAckRoute = synchronized(lock) {
+        if(event !in radioAttempted)return@synchronized ConversationRadioAckRoute.NOT_OURS
+        val pending=radioWaiting ?: return@synchronized ConversationRadioAckRoute.KNOWN_STALE
+        if(closed || authenticatedSession()!=session || pending.session!=session || pending.event!=event ||
+            pending.permitted!=null || (permitted && state!="submitting"))
+            return@synchronized ConversationRadioAckRoute.KNOWN_STALE
+        pending.permitted=permitted;pending.latch.countDown();ConversationRadioAckRoute.CONSUMED
+    }
+    fun invalidate() = synchronized(lock) {closed=true;waiting?.latch?.countDown();radioWaiting?.latch?.countDown()}
 }
 
 /** Socket listener owns this bridge. Every graceful/failure path must invoke lost synchronously. */
