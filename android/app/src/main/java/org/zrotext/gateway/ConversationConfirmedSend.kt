@@ -93,9 +93,17 @@ internal class ConversationConfirmedSend(
         val result=try {evidenceTransport.submitClaimed(claim)}
             catch (_:Exception){ConversationSubmission.UNKNOWN}
             finally {claim.close()}
-        synchronized(this){journal.recordOutcome(message,claim.attempt,
-            if(result==ConversationSubmission.SUBMITTED)"submitted" else "unknown")}
-        return result
+        return synchronized(this) {
+            try {
+                journal.recordOutcome(message,claim.attempt,
+                    if(result==ConversationSubmission.SUBMITTED)"submitted" else "unknown")
+                result
+            } catch (_:Exception) {
+                // Async lifecycle cleanup may already have closed this DAO. The committed claim
+                // remains a permanent replay fence; losing an outcome write never permits retry.
+                ConversationSubmission.UNKNOWN
+            }
+        }
     }
     private fun claimEvidence(message:String):ConversationClaimedEvidence {
         val row=checkNotNull(journal.receipt(message))

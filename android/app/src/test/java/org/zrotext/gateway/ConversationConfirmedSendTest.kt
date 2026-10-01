@@ -98,6 +98,28 @@ class ConversationConfirmedSendTest {
         assertTrue(handed!!.all{it==0.toByte()});assertEquals("unknown",db.sends().receipt(verified.message)!!.state)
         assertThrows(IllegalStateException::class.java){sender.submitConfirmed(verified.message)};assertEquals(1,calls)
     }
+    @Test fun typedOutcomeWriteAfterActualDaoClosureReturnsUnknownAndReopenedClaimNeverRetries() {
+        val input=evidence();var calls=0
+        val transport=object:ConversationClaimedEvidenceTransport {
+            override fun submit(message:String,attempt:String,scope:ConversationCaptureScope,body:String):ConversationSubmission=error("Body port forbidden")
+            override fun submitClaimed(claim:ConversationClaimedEvidence):ConversationSubmission {
+                assertEquals("claimed",db.sends().receipt(claim.message)!!.state)
+                assertEquals(claim.attempt,db.sends().receipt(claim.message)!!.attempt)
+                claim.take().fill(0)
+                calls++;db.close()
+                return ConversationSubmission.SUBMITTED // Synthetic callback result, no radio.
+            }
+        }
+        val sender=ConversationConfirmedSend(db.sends(),gate,verifier,protection,{wall},transport)
+        sender.receiveConfirmed(input)
+        assertEquals(ConversationSubmission.UNKNOWN,sender.submitConfirmed(verified.message))
+        db=openDb()
+        assertEquals("claimed",db.sends().receipt(verified.message)!!.state)
+        assertNotNull(db.sends().receipt(verified.message)!!.attempt)
+        val reopened=newSender()
+        assertThrows(IllegalStateException::class.java){reopened.submitConfirmed(verified.message)}
+        assertEquals(1,calls);assertEquals(0,submits)
+    }
     private fun reopen(){db.close();db=openDb();sender=newSender()}
 
     @Test fun confirmedCiphertextAndIdentitySurviveReopenWithoutPlaintext(){val input=receive();val row=db.sends().receipt(verified.message)!!;assertFalse(String(row.protectedPayload!!).contains(verified.body));reopen();assertArrayEquals(row.protectedPayload,db.sends().receipt(verified.message)!!.protectedPayload);sender.receiveConfirmed(input);assertArrayEquals(row.protectedPayload,db.sends().receipt(verified.message)!!.protectedPayload)}
