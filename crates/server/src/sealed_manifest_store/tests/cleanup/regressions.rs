@@ -8,6 +8,10 @@ async fn teardown_removes_owned_triggers_and_composite_function_dependencies_bef
     f.db.batch_execute(
         r#"
         CREATE TABLE typed_cleanup_row(id uuid);
+        CREATE FUNCTION checked_cleanup_value(item uuid) RETURNS boolean
+            LANGUAGE sql AS 'SELECT item IS NOT NULL';
+        ALTER TABLE typed_cleanup_row ADD CONSTRAINT typed_cleanup_check
+            CHECK (checked_cleanup_value(id));
         CREATE FUNCTION a_typed_predicate(item typed_cleanup_row) RETURNS boolean
             LANGUAGE sql BEGIN ATOMIC SELECT (item).id IS NOT NULL; END;
         CREATE FUNCTION z_typed_dependent(item typed_cleanup_row) RETURNS boolean
@@ -37,6 +41,8 @@ async fn teardown_removes_owned_triggers_and_composite_function_dependencies_bef
         // can still clean its generated fixture, then assert the captured result.
         f.db.batch_execute(
             r#"
+            ALTER TABLE typed_cleanup_row DROP CONSTRAINT IF EXISTS typed_cleanup_check;
+            DROP FUNCTION IF EXISTS checked_cleanup_value(uuid);
             DROP TRIGGER IF EXISTS typed_cleanup_before_insert ON typed_cleanup_row;
             DROP FUNCTION IF EXISTS typed_cleanup_trigger();
             DROP FUNCTION IF EXISTS z_typed_dependent(typed_cleanup_row);

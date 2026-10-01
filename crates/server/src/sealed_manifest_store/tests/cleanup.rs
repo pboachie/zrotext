@@ -63,7 +63,7 @@ pub(super) async fn drop_fixture(db: &Client, schema: &str) -> Result<(), String
         return Err("foreign fixture dependency".into());
     }
     let prefix = quote(schema);
-    let constraints = db.query("SELECT c.relname,k.conname FROM pg_constraint k JOIN pg_class c ON c.oid=k.conrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=$1 AND k.contype='f' ORDER BY c.relname,k.conname", &[&schema]).await.map_err(|e|e.to_string())?;
+    let constraints = db.query("SELECT c.relname,k.conname FROM pg_constraint k JOIN pg_class c ON c.oid=k.conrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=$1 AND (k.contype='f' OR (k.contype='c' AND EXISTS(SELECT 1 FROM pg_depend d JOIN pg_proc p ON d.refclassid='pg_proc'::regclass AND p.oid=d.refobjid JOIN pg_namespace pn ON pn.oid=p.pronamespace WHERE d.classid='pg_constraint'::regclass AND d.objid=k.oid AND pn.nspname=$1))) ORDER BY (k.contype='f') DESC,c.relname,k.conname", &[&schema]).await.map_err(|e|e.to_string())?;
     for row in constraints {
         step(
             db,
