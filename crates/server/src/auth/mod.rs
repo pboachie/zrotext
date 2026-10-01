@@ -35,6 +35,7 @@ const REGISTRATION_ADVISORY_LOCK: i64 = 0x5a54524547495354;
 
 pub mod abuse_limits;
 pub mod account;
+pub mod agent_grants;
 pub mod mfa;
 mod password_work;
 #[cfg(test)]
@@ -1010,7 +1011,7 @@ pub async fn authenticate_api_key(
     let hash = hasher.digest(b"api-key-v1", token);
     let row = client
         .query_typed_opt(
-            "SELECT k.id,k.account_id,k.token_hash,k.scopes,k.bound_device_id,(k.last_used_at IS NULL OR k.last_used_at<now()-($2::integer * interval '1 minute')) FROM api_keys k JOIN memberships m ON (m.account_id,m.user_id)=(k.account_id,k.created_by_user_id) JOIN users u ON u.id=k.created_by_user_id JOIN accounts a ON a.id=k.account_id WHERE m.role='owner' AND k.public_prefix=$1 AND k.revoked_at IS NULL AND (k.expires_at IS NULL OR k.expires_at>now()) AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL",
+            "SELECT k.id,k.account_id,k.token_hash,k.scopes,k.bound_device_id,(k.last_used_at IS NULL OR k.last_used_at<now()-($2::integer * interval '1 minute')) FROM api_keys k JOIN memberships m ON (m.account_id,m.user_id)=(k.account_id,k.created_by_user_id) JOIN users u ON u.id=k.created_by_user_id JOIN accounts a ON a.id=k.account_id WHERE m.role='owner' AND m.revoked_at IS NULL AND NOT EXISTS (SELECT 1 FROM agent_authority_grants g WHERE g.api_key_id=k.id) AND k.public_prefix=$1 AND k.revoked_at IS NULL AND (k.expires_at IS NULL OR k.expires_at>now()) AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL",
             &[(&prefix, Type::TEXT), (&ACTIVITY_WRITE_MINUTES, Type::INT4)],
         )
         .await?
@@ -1400,3 +1401,6 @@ pub fn session_cookies(credentials: &SessionCredentials) -> [String; 2] {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) mod test_schema;

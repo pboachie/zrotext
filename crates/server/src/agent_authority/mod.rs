@@ -6,6 +6,8 @@
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+pub(crate) mod store;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Operation {
     Metadata,

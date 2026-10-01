@@ -42,6 +42,7 @@ pub struct SealedHttpState {
     database_url: String,
     hasher: Arc<TokenHasher>,
     enabled: bool,
+    agent_enabled: bool,
     site_id: Arc<str>,
     deployment_epoch: i64,
     billing_enabled: bool,
@@ -68,6 +69,7 @@ impl SealedHttpState {
             database_url,
             hasher,
             enabled: true,
+            agent_enabled: false,
             site_id: site_id.into(),
             deployment_epoch,
             billing_enabled,
@@ -81,10 +83,17 @@ impl SealedHttpState {
             database_url,
             hasher,
             enabled: false,
+            agent_enabled: false,
             site_id: "".into(),
             deployment_epoch: 0,
             billing_enabled: false,
         }
+    }
+
+    /// Library opt-in only. The shipped runtime does not enable agent routes.
+    pub fn with_agent_authority_enabled(mut self) -> Self {
+        self.agent_enabled = true;
+        self
     }
 }
 
@@ -95,6 +104,7 @@ pub fn router(state: SealedHttpState) -> Router {
         .route("/messages/{message_id}/cancel", post(lifecycle::cancel))
         .route("/inbound-events", post(accept_inbound))
         .merge(resources::routes())
+        .merge(agents::routes())
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .layer(middleware::from_fn(no_store_response))
         .with_state(Arc::new(state))
@@ -442,6 +452,7 @@ async fn accept_inbound(
         .into_response())
 }
 
+mod agents;
 mod resources;
 
 #[cfg(test)]

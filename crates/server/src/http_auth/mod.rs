@@ -38,6 +38,7 @@ use tokio_postgres::Client;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
+mod agent_grants;
 pub mod preauth;
 mod root_custody;
 mod seats_http;
@@ -624,6 +625,8 @@ pub struct AuthHttpState {
     pub sms_line_activation_enabled: bool,
     /// Generation-one custody adapters; deliberately not enabled by main.
     pub root_custody_enabled: bool,
+    /// Owner agent-grant pilot, never enabled by the shipped server.
+    pub agent_grants_enabled: bool,
     /// Operator-configured networks trusted for the password-reset request
     /// lane. Empty unless configured; never grants any other route.
     pub reset_trusted_networks: Arc<TrustedNetworks>,
@@ -668,8 +671,14 @@ impl AuthHttpState {
             mfa_enrollment_enabled: false,
             sms_line_activation_enabled: false,
             root_custody_enabled: false,
+            agent_grants_enabled: false,
             reset_trusted_networks: Arc::new(TrustedNetworks::default()),
         })
+    }
+
+    pub fn with_agent_grants_enabled(mut self) -> Self {
+        self.agent_grants_enabled = true;
+        self
     }
 
     pub fn with_registration_policy(mut self, policy: RegistrationPolicy) -> Self {
@@ -757,6 +766,25 @@ pub fn router(state: AuthHttpState) -> Router {
             "/sms-lines/{line_id}/activations/{challenge_id}/approve",
             post(sms_lines::approve),
         );
+    if state.agent_grants_enabled {
+        router = router
+            .route(
+                "/agent-grants",
+                get(agent_grants::list).post(agent_grants::create),
+            )
+            .route(
+                "/agent-grants/{grant_id}/revoke",
+                post(agent_grants::revoke),
+            )
+            .route(
+                "/agent-grants/{grant_id}/takeover",
+                post(agent_grants::takeover),
+            )
+            .route(
+                "/agent-grants/{grant_id}/approvals",
+                post(agent_grants::approve).layer(DefaultBodyLimit::max(50 * 1024)),
+            );
+    }
     if state.root_custody_enabled {
         router = router
             .route("/sealed-root/challenge", post(root_custody::challenge))
