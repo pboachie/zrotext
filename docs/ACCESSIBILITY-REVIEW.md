@@ -1,5 +1,10 @@
 # Owner web pages accessibility review
 
+This historical source review is complemented by the current
+[integrated candidate gate](CANDIDATE-ACCESSIBILITY.md), which describes actual
+browser-rendered checks and their limits. Its current shell, fleet and summary
+tests do not turn the earlier source-only findings into a conformance claim.
+
 The separate [Android gateway review](ANDROID-ACCESSIBILITY.md) covers the app's
 Compose screen and records the limits of its automated and emulator checks.
 
