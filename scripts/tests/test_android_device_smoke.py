@@ -106,7 +106,14 @@ class DeviceSmokeTests(unittest.TestCase):
             source = root / "android/app/src/androidTest/java/org/zrotext/gateway/GatewayAccessibilityDeviceTest.kt"
             source.parent.mkdir(parents=True)
             source.touch()
-            self.assertEqual(smoke.selected_tests(root), {smoke.PRECONDITIONS: 1, smoke.ACCESSIBILITY: 5})
+            expected = {smoke.PRECONDITIONS: 1, smoke.ACCESSIBILITY: 6}
+            self.assertEqual(smoke.selected_tests(root), expected)
+            partial = result(smoke.PRECONDITIONS) + ''.join(
+                result(smoke.ACCESSIBILITY, f'check{index}') for index in range(5))
+            with self.assertRaises(ValueError):
+                smoke.verify_results(partial + 'INSTRUMENTATION_CODE: -1\n', expected)
+            smoke.verify_results(partial + result(smoke.ACCESSIBILITY, 'homeObservationsKeepReadOnlyLabelsAndReadingOrderAtCurrentTextScale')
+                                 + 'INSTRUMENTATION_CODE: -1\n', expected)
 
     def test_manifest_authority_is_selected_only_when_source_exists(self):
         with tempfile.TemporaryDirectory() as temporary:

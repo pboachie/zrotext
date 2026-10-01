@@ -248,6 +248,13 @@ an authenticated freshness checkpoint; see the
 
 ## Test-only message-plane client (task 21 slice 3)
 
+`src/sealed-lifecycle-client.ts` provides metadata-only list/status and empty-body
+pre-grant cancellation for the default-off sealed queue. `SealedLifecycleClient`
+requires an HTTPS origin and scoped bearer, bounds response bytes/pages, rejects
+extra content fields, and never retries an uncertain cancellation automatically.
+It provides no ciphertext fetch or execution grant. See the current
+[lifecycle contract](../../protocol/v1/sealed-api-v1.md).
+
 `src/msgplane-client.ts` binds to the slice-1 sealed message-plane contract
 ([protocol/v1/sealed-api-v1.md](../../protocol/v1/sealed-api-v1.md) and its
 [OpenAPI document](../../protocol/v1/openapi/sealed-v1.json)). It is
@@ -334,5 +341,7 @@ This is one slice of ZT-010 evidence. Independent Rust cross-open, full manifest
 chain/rollback vectors, production key lifecycle, and the Q1–Q11 decisions
 remain separate gates. The candidate profile says vectors must be regenerated
 after those decisions and versioning.
+
+The [local stdio MCP server](../../docs/mcp-local-tools.md) exposes SDK syntax previews and gated tool discovery; live scoped messaging remains unavailable.
 
 The [synthetic agent adapter foundation](../../docs/agent-adapter-simulator.md) adds callable fixture handling and a Python wrapper over this SDK. It cannot activate live messaging or grant agent authority.

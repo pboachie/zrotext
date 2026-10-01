@@ -25,9 +25,12 @@ class SealedPreparationDeviceTest {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null, null) }
         check(!store.containsAlias(alias))
         try {
-            val key = DevicePayloadKeyStore(alias)
+            val key = DevicePayloadKeyStore(InstrumentationRegistry.getInstrumentation().targetContext, alias)
             block(key, key.getOrCreateForEnrollment()) { store.deleteEntry(alias) }
-        } finally { if (store.containsAlias(alias)) store.deleteEntry(alias) }
+        } finally {
+            if (store.containsAlias(alias)) store.deleteEntry(alias)
+            clearPayloadLifecycleFixture(InstrumentationRegistry.getInstrumentation().targetContext, alias)
+        }
         check(!store.containsAlias(alias))
     }
 
@@ -47,6 +50,7 @@ class SealedPreparationDeviceTest {
         lose()
         assertThrows(Exception::class.java) { open() }
         assertThrows(Exception::class.java) { key.existingPublic() }
+        assertThrows(Exception::class.java) { key.getOrCreateForEnrollment() }
     }
 
     @Test fun preparationRequiresActualReportedHardwareAndNeverProducesAlphaState() = withKey { key, public, _ ->

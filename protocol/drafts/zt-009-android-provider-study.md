@@ -1,5 +1,10 @@
 # Android Keystore HPKE provider study (draft Q5)
 
+The current [local custody lifecycle](android-recipient-lifecycle-01.md) adds
+durable pending/identity/revocation fences to the dormant key boundary. It does
+not close the required nonempty `info`/AAD provider gate or claim physical
+reboot/lifecycle evidence. The evaluated paths below remain decision inputs.
+
 **Test and decision aid, 2026-09-24.** This does not accept draft 01, enable
 sealed mode, or add a production decryptor. The required wrap is RFC 9180 base
 mode DHKEM(P-256, HKDF-SHA256) / HKDF-SHA256 / AES-128-GCM, with a raw 65-byte

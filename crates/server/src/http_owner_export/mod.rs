@@ -5,7 +5,7 @@
 //! always no-store and never cached. Full history pages through the
 //! same `before` cursor semantics as the timeline.
 
-use crate::{auth::TokenHasher, http_auth::require_owner_read};
+use crate::{auth::TokenHasher, http_auth::require_owner_read, http_owner_contacts::FieldError};
 use axum::{
     Json, Router,
     extract::{Query, Request, State},
@@ -25,12 +25,17 @@ use uuid::Uuid;
 // One takeout page stays bounded; full-history exports walk the same
 // before/next_cursor pagination as the pilot timeline.
 const EXPORT_MESSAGE_LIMIT: usize = 500;
+const EXPORT_CONTACT_LIMIT: usize = 500;
 
 #[derive(Clone)]
 pub struct OwnerExportState {
     pub database_url: String,
     pub auth_hasher: Arc<TokenHasher>,
     pub canonical_origin: String,
+    /// Opens the encrypted contact fields for the takeout. Encrypted fields
+    /// written under a since-removed key make the export fail closed rather
+    /// than shipping ciphertext that cannot be read later.
+    pub contacts_vault: Option<Arc<crate::http_owner_contacts::vault::ContactFieldVault>>,
 }
 
 pub fn router(state: OwnerExportState) -> Router {
@@ -55,6 +60,7 @@ struct ExportQuery {
     before: Option<Uuid>,
     sealed_before: Option<Uuid>,
     interval_before: Option<Uuid>,
+    contacts_before: Option<Uuid>,
 }
 
 #[derive(Serialize)]
@@ -155,9 +161,27 @@ struct ExportView {
     generated_at_ms: i64,
     account: AccountView,
     devices: Vec<DeviceView>,
+    contacts: Vec<ContactExportView>,
+    contacts_truncated: bool,
+    contacts_next_cursor: Option<Uuid>,
     messages: Vec<MessageView>,
     messages_truncated: bool,
     next_cursor: Option<Uuid>,
+}
+
+/// One contact with its decrypted fields and full consent history. The
+/// takeout is owner-authenticated and no-store, so the plaintext travels
+/// only to the account's owner the same way message bodies do.
+#[derive(Serialize)]
+struct ContactExportView {
+    contact_id: Uuid,
+    recipient_e164: String,
+    display_name: Option<String>,
+    notes: Option<String>,
+    created_at_ms: i64,
+    updated_at_ms: i64,
+    consents: Vec<crate::http_owner_contacts::consents::ConsentStateView>,
+    consent_history: Vec<crate::http_owner_contacts::consents::ConsentRecordView>,
 }
 
 async fn export_account(
@@ -231,6 +255,10 @@ async fn export_account(
             })
             .collect::<Vec<_>>(),
         Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    };
+    let contacts = match export_contacts(&client, &state, account_id, query.contacts_before).await {
+        Ok(contacts) => contacts,
+        Err(field_error) => return field_error.response(),
     };
     let message_rows = match client
         .query(
@@ -317,6 +345,11 @@ async fn export_account(
         Ok(view) => view,
         Err(error) => return error.into_response(),
     };
+    let ContactsPage::Ready {
+        contacts,
+        truncated: contacts_truncated,
+        next_cursor: contacts_next_cursor,
+    } = contacts;
     Json(ExportView {
         conversation_inventory,
         generated_at_ms: SystemTime::now()
@@ -325,11 +358,152 @@ async fn export_account(
             .unwrap_or_default(),
         account,
         devices: device_rows,
+        contacts,
+        contacts_truncated,
+        contacts_next_cursor,
         messages,
         messages_truncated,
         next_cursor,
     })
     .into_response()
+}
+
+/// One bounded page of the account's contacts with decrypted fields and
+/// consent history, newest first, paged by the same `before` cursor
+/// semantics as messages. A stored ciphertext the configured vault cannot
+/// open fails the whole export instead of exporting unreadable fields.
+enum ContactsPage {
+    Ready {
+        contacts: Vec<ContactExportView>,
+        truncated: bool,
+        next_cursor: Option<Uuid>,
+    },
+}
+
+async fn export_contacts(
+    client: &tokio_postgres::Client,
+    state: &OwnerExportState,
+    account_id: Uuid,
+    before: Option<Uuid>,
+) -> Result<ContactsPage, crate::http_owner_contacts::FieldError> {
+    let before_point: Option<(SystemTime, Uuid)> = if let Some(before) = before {
+        match client
+            .query_opt(
+                "SELECT created_at FROM contacts WHERE account_id=$1 AND id=$2",
+                &[&account_id, &before],
+            )
+            .await
+        {
+            Ok(Some(row)) => Some((row.get(0), before)),
+            Ok(None) => return Err(FieldError::MissingContactCursor),
+            Err(_) => return Err(FieldError::Unreadable),
+        }
+    } else {
+        None
+    };
+    let before_at = before_point.as_ref().map(|point| point.0);
+    let before_id = before_point.as_ref().map(|point| point.1);
+    let rows = match client
+        .query(
+            "SELECT id,recipient_e164,display_name_ciphertext,notes_ciphertext, \
+             (extract(epoch FROM created_at)*1000)::bigint, \
+             (extract(epoch FROM updated_at)*1000)::bigint \
+             FROM contacts WHERE account_id=$1 \
+             AND ($2::timestamptz IS NULL OR (created_at,id)<($2,$3::uuid)) \
+             ORDER BY created_at DESC,id DESC LIMIT $4",
+            &[
+                &account_id,
+                &before_at,
+                &before_id,
+                &((EXPORT_CONTACT_LIMIT + 1) as i64),
+            ],
+        )
+        .await
+    {
+        Ok(rows) => rows,
+        Err(_) => return Err(FieldError::Unreadable),
+    };
+    let truncated = rows.len() > EXPORT_CONTACT_LIMIT;
+    let page: Vec<&Row> = rows.iter().take(EXPORT_CONTACT_LIMIT).collect();
+    let next_cursor = if truncated {
+        page.last().map(|row| row.get::<_, Uuid>(0))
+    } else {
+        None
+    };
+    let now_ms = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or_default();
+    let mut contacts = Vec::with_capacity(page.len());
+    for row in page {
+        let contact_id: Uuid = row.get(0);
+        let display_name = match open_contact_field(
+            &state.contacts_vault,
+            account_id,
+            contact_id,
+            crate::http_owner_contacts::vault::ContactField::DisplayName,
+            row.get::<_, Option<Vec<u8>>>(2).as_deref(),
+        ) {
+            Ok(value) => value,
+            Err(field_error) => return Err(field_error),
+        };
+        let notes = match open_contact_field(
+            &state.contacts_vault,
+            account_id,
+            contact_id,
+            crate::http_owner_contacts::vault::ContactField::Notes,
+            row.get::<_, Option<Vec<u8>>>(3).as_deref(),
+        ) {
+            Ok(value) => value,
+            Err(field_error) => return Err(field_error),
+        };
+        let history = match crate::http_owner_contacts::consents::consent_history(
+            client, account_id, contact_id,
+        )
+        .await
+        {
+            Ok(history) => history,
+            Err(_) => return Err(FieldError::Unreadable),
+        };
+        let consents = crate::http_owner_contacts::consents::consent_states(&history, now_ms);
+        contacts.push(ContactExportView {
+            contact_id,
+            recipient_e164: row.get(1),
+            display_name,
+            notes,
+            created_at_ms: row.get(4),
+            updated_at_ms: row.get(5),
+            consents,
+            consent_history: history,
+        });
+    }
+    Ok(ContactsPage::Ready {
+        contacts,
+        truncated,
+        next_cursor,
+    })
+}
+
+/// Opens one optional contact field for the takeout. Ciphertext without a
+/// configured vault refuses the export rather than shipping an unreadable
+/// blob; a ciphertext that fails its binding fails the same way.
+fn open_contact_field(
+    vault: &Option<Arc<crate::http_owner_contacts::vault::ContactFieldVault>>,
+    account_id: Uuid,
+    contact_id: Uuid,
+    field: crate::http_owner_contacts::vault::ContactField,
+    packed: Option<&[u8]>,
+) -> Result<Option<String>, crate::http_owner_contacts::FieldError> {
+    let Some(packed) = packed else {
+        return Ok(None);
+    };
+    let Some(vault) = vault else {
+        return Err(crate::http_owner_contacts::FieldError::Unconfigured);
+    };
+    vault
+        .open(account_id, contact_id, field, packed)
+        .map(|plaintext| Some(String::from_utf8_lossy(&plaintext).into_owned()))
+        .map_err(|_| crate::http_owner_contacts::FieldError::Unreadable)
 }
 
 #[cfg(test)]
