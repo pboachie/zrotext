@@ -548,8 +548,168 @@ fn rejected_reason(error: RegistryError) -> &'static str {
     }
 }
 
-// Pure bound checks: no database needed.
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn combined_read_requests_require_every_granted_direction() {
+    let f = Fixture::new().await;
+    let mut request = default_request(&f, f.integration_point(0));
+    request.grants[0].kind = GrantKind::Read {
+        directions: READ_INBOUND,
+    };
+    let ticket = registered_connector_with(&f, 0, request).await;
+    assert!(
+        authorize_reader_wrap(
+            &mut f.connect().await,
+            f.account,
+            &ticket.key_id,
+            f.line,
+            None,
+            READ_INBOUND
+        )
+        .await
+        .is_ok()
+    );
+    assert_eq!(
+        rejected_reason(
+            authorize_reader_wrap(
+                &mut f.connect().await,
+                f.account,
+                &ticket.key_id,
+                f.line,
+                None,
+                READ_BOTH
+            )
+            .await
+            .unwrap_err()
+        ),
+        "no live grant for line/kind"
+    );
+    f.cleanup().await;
+}
 
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn rotation_preserves_the_union_of_separate_read_grants() {
+    let f = Fixture::with_integration(vec![
+        (SigningKey::generate_from_rng(&mut rand::rng()), READ_BOTH),
+        (
+            SigningKey::generate_from_rng(&mut rand::rng()),
+            READ_INBOUND,
+        ),
+    ])
+    .await;
+    let mut request = default_request(&f, f.integration_point(0));
+    request.grants[0].kind = GrantKind::Read {
+        directions: READ_INBOUND,
+    };
+    request.grants.push(GrantRequest {
+        kind: GrantKind::Read {
+            directions: READ_OUTBOUND,
+        },
+        line_id: f.other_line,
+        conversation_restriction: vec![],
+        expires_ms: request.expires_ms,
+    });
+    let ticket = registered_connector_with(&f, 0, request).await;
+    let approver = f.approver().await;
+    assert_eq!(
+        rejected_reason(
+            rotate_key(
+                &mut f.connect().await,
+                &f.hasher,
+                &approver,
+                ticket.connector_id,
+                f.integration_point(1)
+            )
+            .await
+            .unwrap_err()
+        ),
+        "rotation narrower than held read grants"
+    );
+    f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn disabled_accounts_cannot_authorize_existing_connector_grants() {
+    let f = Fixture::new().await;
+    let ticket = registered_connector(&f, 0).await;
+    f.db.execute(
+        "UPDATE accounts SET disabled_at=now() WHERE id=$1",
+        &[&f.account],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        rejected_reason(
+            authorize_reader_wrap(
+                &mut f.connect().await,
+                f.account,
+                &ticket.key_id,
+                f.line,
+                None,
+                READ_INBOUND
+            )
+            .await
+            .unwrap_err()
+        ),
+        "inactive account"
+    );
+    assert_eq!(
+        rejected_reason(
+            authorize_send(&mut f.connect().await, f.account, &ticket.key_id, f.line)
+                .await
+                .unwrap_err()
+        ),
+        "inactive account"
+    );
+    f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn current_manifest_scope_fences_existing_read_grants() {
+    let mut f = Fixture::new().await;
+    let ticket = registered_connector(&f, 0).await;
+    let count = f.bytes[150] as usize;
+    let mut changed = false;
+    for index in 0..count {
+        let offset = 151 + index * 149;
+        if f.bytes[offset] == 3 && f.bytes[offset + 1..offset + 33] == ticket.key_id {
+            f.bytes[offset + 130..offset + 132].copy_from_slice(&READ_INBOUND.to_be_bytes());
+            changed = true;
+        }
+    }
+    assert!(changed);
+    f.advance_manifest().await;
+    assert!(
+        authorize_reader_wrap(
+            &mut f.connect().await,
+            f.account,
+            &ticket.key_id,
+            f.line,
+            None,
+            READ_INBOUND
+        )
+        .await
+        .is_ok()
+    );
+    assert!(
+        authorize_reader_wrap(
+            &mut f.connect().await,
+            f.account,
+            &ticket.key_id,
+            f.line,
+            None,
+            READ_OUTBOUND
+        )
+        .await
+        .is_err()
+    );
+    f.cleanup().await;
+}
+
+// Pure bound checks: no database needed.
 #[test]
 fn grant_directions_are_limited_to_manifest_reader_bits() {
     for directions in [0u16, 1, 2, 3, 5, 16, 12 | 16] {
@@ -791,12 +951,16 @@ async fn authorization_is_account_scoped_and_unknown_keys_write_nothing() {
     let f = Fixture::new().await;
     let ticket = registered_connector(&f, 0).await;
     let mut db = f.connect().await;
-    // A different account has no such connector: fail closed, no journal row.
+    // A different active account has no such connector: fail closed, no journal row.
+    let other_account = Uuid::new_v4();
+    db.execute("INSERT INTO accounts(id) VALUES($1)", &[&other_account])
+        .await
+        .unwrap();
     assert_eq!(
         rejected_reason(
             authorize_reader_wrap(
                 &mut db,
-                Uuid::new_v4(),
+                other_account,
                 &ticket.key_id,
                 f.line,
                 None,
@@ -1264,11 +1428,14 @@ async fn expired_registrations_and_grants_fail_closed() {
     let f = Fixture::new().await;
     let proposer = f.proposer().await;
     let approver = f.approver().await;
-    // A short-lived registration and an even shorter-lived read grant.
+    // Leave enough setup time on loaded hosts, then wait for real database
+    // deadlines rather than assuming fixed sleeps crossed each expiry.
+    let grant_expiry = now_ms() + 30_000;
+    let registration_expiry = grant_expiry + 30_000;
     let mut request = default_request(&f, f.integration_point(0));
-    request.expires_ms = now_ms() + 8_000;
+    request.expires_ms = registration_expiry;
     request.grants.truncate(1);
-    request.grants[0].expires_ms = now_ms() + 3_000;
+    request.grants[0].expires_ms = grant_expiry;
     let ticket = propose(&mut f.connect().await, &f.hasher, &proposer, request)
         .await
         .unwrap();
@@ -1284,7 +1451,26 @@ async fn expired_registrations_and_grants_fail_closed() {
     authorize_reader_wrap(&mut db, f.account, &ticket.key_id, f.line, None, READ_BOTH)
         .await
         .unwrap();
-    tokio::time::sleep(std::time::Duration::from_millis(3_500)).await;
+    async fn wait_for_expiry(db: &Client, expiry: u64) {
+        loop {
+            let now: i64 = db
+                .query_one(
+                    "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint",
+                    &[],
+                )
+                .await
+                .unwrap()
+                .get(0);
+            if now as u64 >= expiry {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(
+                (expiry - now as u64).min(1_000),
+            ))
+            .await;
+        }
+    }
+    wait_for_expiry(&db, grant_expiry).await;
     assert_eq!(
         rejected_reason(
             authorize_reader_wrap(
@@ -1300,7 +1486,7 @@ async fn expired_registrations_and_grants_fail_closed() {
         ),
         "no live grant for line/kind"
     );
-    tokio::time::sleep(std::time::Duration::from_millis(5_000)).await;
+    wait_for_expiry(&db, registration_expiry).await;
     assert_eq!(
         rejected_reason(
             authorize_reader_wrap(

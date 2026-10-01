@@ -853,7 +853,7 @@ pub async fn rotate_key(
     }
     let held: Option<i16> = tx
         .query_opt(
-            "SELECT max(read_directions) FROM connector_grants \
+            "SELECT bit_or(read_directions) FROM connector_grants \
          WHERE account_id=$1 AND connector_id=$2 AND kind='read' AND revoked_ms IS NULL",
             &[&account, &connector_id],
         )
@@ -1057,6 +1057,12 @@ async fn authorize_inner(
     send: bool,
 ) -> Result<AuthorizedInner, RegistryError> {
     let tx = begin(client).await?;
+    tx.query_opt(
+        "SELECT id FROM accounts WHERE id=$1 AND disabled_at IS NULL FOR UPDATE",
+        &[account],
+    )
+    .await?
+    .ok_or(RegistryError::Rejected("inactive account"))?;
     let (connector, key_point, bound_generation, expires_ms, now) =
         load_active_registration(&tx, account, key_id).await?;
     macro_rules! deny {
@@ -1093,11 +1099,11 @@ async fn authorize_inner(
     if manifest.generation() as i64 != bound_generation {
         deny!("manifest generation changed; re-register");
     }
-    let (verified_key_id, _) = match require_integration_reader(&manifest, manifest_now, &key_point)
-    {
-        Ok(value) => value,
-        Err(_) => deny!("integration reader authority"),
-    };
+    let (verified_key_id, current_scope) =
+        match require_integration_reader(&manifest, manifest_now, &key_point) {
+            Ok(value) => value,
+            Err(_) => deny!("integration reader authority"),
+        };
     if &verified_key_id != key_id {
         deny!("integration key identity changed");
     }
@@ -1108,12 +1114,15 @@ async fn authorize_inner(
     } else {
         direction.unwrap_or(0) as i32
     };
+    if !send && current_scope & wanted as u16 != wanted as u16 {
+        deny!("read direction outside current manifest scope");
+    }
     let row = match tx
         .query_opt(
             "SELECT grant_id,conversation_restriction FROM connector_grants \
          WHERE account_id=$1 AND connector_id=$2 AND kind=$3 AND line_id=$4 \
          AND revoked_ms IS NULL AND expires_ms>$5 \
-         AND ($6=0 OR read_directions & $6 <> 0) \
+         AND ($6=0 OR read_directions & $6 = $6) \
          ORDER BY created_ms DESC,grant_id DESC LIMIT 1 FOR UPDATE",
             &[
                 account,
