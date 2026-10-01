@@ -10,6 +10,56 @@ use std::collections::VecDeque;
 use zrotext_failover_quorum::decision::{
     Decision, FailoverConfig, HoldReason, MemberReport, Round, SiteFenceState, WriterObservation,
 };
+use zrotext_failover_quorum::fence::{FenceAuthority, FenceStatus, FenceToken, HostFenceOutcome};
+
+/// A fence backend that confirms on demand — the stand-in for the external
+/// host-fencing backend these PostgreSQL tests do not have. The shipped
+/// default is `NoopFenceAuthority`, which refuses everything.
+struct ConfirmingFence;
+
+impl FenceAuthority for ConfirmingFence {
+    fn fence_status(&mut self, _host_site_id: &str) -> FenceStatus {
+        FenceStatus::Unfenced
+    }
+
+    fn fence_host(&mut self, _host_site_id: &str, token: FenceToken) -> HostFenceOutcome {
+        HostFenceOutcome::Fenced { token }
+    }
+}
+
+/// An anchor that confirms and records — the stand-in for a real external
+/// epoch authority these PostgreSQL tests do not have (the production
+/// PgExternalEpochAnchor reads the database itself).
+#[derive(Default)]
+struct RecordingAnchor {
+    anchored_epoch: u64,
+}
+
+impl zrotext_failover_quorum::fence::ExternalEpochAnchor for RecordingAnchor {
+    fn confirmed_epoch(&mut self) -> zrotext_failover_quorum::fence::AnchorReading {
+        zrotext_failover_quorum::fence::AnchorReading::Confirmed {
+            epoch: self.anchored_epoch,
+        }
+    }
+
+    fn record_promotion(&mut self, new_epoch: u64) -> zrotext_failover_quorum::fence::AnchorRecord {
+        if new_epoch <= self.anchored_epoch {
+            return zrotext_failover_quorum::fence::AnchorRecord::Refused {
+                anchored_epoch: self.anchored_epoch,
+            };
+        }
+        self.anchored_epoch = new_epoch;
+        zrotext_failover_quorum::fence::AnchorRecord::Recorded
+    }
+}
+
+/// Confirming external adapters for the PostgreSQL executor tests: every
+/// external precondition is satisfiable, so those tests pin the port and
+/// journal semantics rather than the fencing refusals (covered by the
+/// crate's corpus and the refusing-backend test below).
+fn confirming_external_fencing() -> ExternalFencing {
+    ExternalFencing::new(ConfirmingFence, RecordingAnchor::default())
+}
 use zrotext_failover_quorum::executor::{
     Application, ExecutorStatus, InProcessSource, ObservationSource,
 };
@@ -1513,6 +1563,7 @@ fn a_reacquired_executor_reloads_from_the_database_instead_of_replaying_stale_in
             evidence_round(members, 8_000),
         ]),
         authority_a,
+        confirming_external_fencing(),
     );
     executor_a.tick(1_000);
     assert_eq!(role_a.load(), ExecutorRole::Active);
@@ -1565,6 +1616,7 @@ fn a_reacquired_executor_reloads_from_the_database_instead_of_replaying_stale_in
         config.clone(),
         queued_source(vec![evidence_round(members, 6_000)]),
         authority_b,
+        confirming_external_fencing(),
     );
     let report = executor_b.tick(6_000);
     assert_eq!(
@@ -1892,6 +1944,7 @@ fn pg_writer_authority_is_idempotent_and_refuses_unsafe_writes() {
             evidence_round(members, 6_000),
         ]),
         authority,
+        confirming_external_fencing(),
     );
     let report = executor.tick(1_000);
     assert_eq!(
@@ -1927,6 +1980,7 @@ fn pg_writer_authority_is_idempotent_and_refuses_unsafe_writes() {
         config,
         queued_source(vec![evidence_round(members, 7_000)]),
         authority,
+        confirming_external_fencing(),
     );
     let report = executor.tick(7_000);
     assert_eq!(report.decision, Some(Decision::KeepDispatchPaused));
@@ -1942,6 +1996,292 @@ fn pg_writer_authority_is_idempotent_and_refuses_unsafe_writes() {
     assert!(snapshot.writer_site.unwrap().draining);
 
     // Cleanup: drop the whole throwaway schema, tables and rows together.
+    let cleanup_schema = schema.clone();
+    runtime.block_on(admin(&base_url, |client| async move {
+        client
+            .batch_execute(&format!("DROP SCHEMA {cleanup_schema} CASCADE"))
+            .await
+            .unwrap();
+    }));
+}
+
+/// The PostgreSQL epoch anchor (issue #647): the served epoch reads back as
+/// a confirmed anchor, and a promotion is witnessed only once the authority
+/// row already serves it — the anchor follows the authority forward and
+/// never writes the epoch itself.
+#[test]
+#[ignore = "requires ZT_FAILOVER_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+fn pg_epoch_anchor_witnesses_only_applied_promotions() {
+    let base_url = std::env::var("ZT_FAILOVER_TEST_DATABASE_URL")
+        .expect("set ZT_FAILOVER_TEST_DATABASE_URL for PostgreSQL-backed failover tests");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime");
+
+    let writer_site = format!("failover-pg-anchor-w-{}", uuid::Uuid::new_v4().simple());
+    let standby_site = format!("failover-pg-anchor-s-{}", uuid::Uuid::new_v4().simple());
+    let schema = format!("failover_epoch_anchor_{}", uuid::Uuid::new_v4().simple());
+    let create_schema = schema.clone();
+    runtime.block_on(admin(&base_url, |client| async move {
+        client
+            .batch_execute(&format!("CREATE SCHEMA {create_schema}"))
+            .await
+            .unwrap();
+    }));
+    let separator = if base_url.contains('?') { '&' } else { '?' };
+    let url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
+
+    let (writer, standby) = (writer_site.clone(), standby_site.clone());
+    let baseline_epoch: i64 = runtime.block_on(async {
+        let (client, connection) = zrotext_postgres_connection::connect(&url).await.unwrap();
+        let driver = tokio::spawn(connection);
+        client.batch_execute(MIGRATION_FOUNDATION).await.unwrap();
+        client
+            .batch_execute(MIGRATION_FAILOVER_JOURNAL)
+            .await
+            .unwrap();
+        client
+            .execute(
+                "INSERT INTO sites(site_id) VALUES($1),($2)",
+                &[&writer, &standby],
+            )
+            .await
+            .unwrap();
+        let epoch: i64 = client
+            .query_one(
+                "UPDATE deployment_authority SET dispatch_enabled=TRUE RETURNING epoch",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        drop(client);
+        let _ = driver.await;
+        epoch
+    });
+    let base_epoch = u64::try_from(baseline_epoch).unwrap();
+    let new_epoch = base_epoch + 3;
+
+    let mut anchor = PgExternalEpochAnchor::new(url.clone()).unwrap();
+    assert_eq!(
+        anchor.confirmed_epoch(),
+        AnchorReading::Confirmed { epoch: base_epoch },
+        "the served epoch is the confirmed anchor"
+    );
+    assert_eq!(
+        anchor.record_promotion(new_epoch),
+        AnchorRecord::Refused {
+            anchored_epoch: base_epoch
+        },
+        "a promotion the authority never applied is not witnessed"
+    );
+    // The Pg adapter's record is a verification, not a write: the row
+    // serving an epoch IS the anchor's confirmation of it, so recording the
+    // currently served epoch is witnessed. The refused record above is what
+    // keeps the anchor from ever claiming an epoch the authority lacks.
+    assert_eq!(
+        anchor.record_promotion(base_epoch),
+        AnchorRecord::Recorded,
+        "the row serving the epoch is the anchor's own confirmation"
+    );
+    assert_eq!(
+        anchor.confirmed_epoch(),
+        AnchorReading::Confirmed { epoch: base_epoch },
+        "nothing moved: the anchor reads exactly what the row serves"
+    );
+
+    // Apply a promotion through the writer-authority port (fence, then the
+    // epoch compare-and-set); only now does the witness record succeed.
+    let mut authority = PgWriterAuthority::new(url.clone()).unwrap();
+    assert_eq!(
+        authority.fence_writer_site(&writer_site).unwrap(),
+        FenceOutcome::Fenced
+    );
+    assert_eq!(
+        authority
+            .promote_standby(&standby_site, &writer_site, new_epoch)
+            .unwrap(),
+        PromoteOutcome::Promoted
+    );
+    assert_eq!(anchor.record_promotion(new_epoch), AnchorRecord::Recorded);
+    assert_eq!(
+        anchor.confirmed_epoch(),
+        AnchorReading::Confirmed { epoch: new_epoch },
+        "the anchor follows the authority forward"
+    );
+
+    drop(authority);
+    drop(anchor);
+    let cleanup_schema = schema.clone();
+    runtime.block_on(admin(&base_url, |client| async move {
+        client
+            .batch_execute(&format!("DROP SCHEMA {cleanup_schema} CASCADE"))
+            .await
+            .unwrap();
+    }));
+}
+
+/// The anchor folds every transport failure into `Unconfirmed`: a database
+/// that cannot be reached is never a confirmed anchor, and it records
+/// nothing. The refused port fails the connect immediately (nothing
+/// listens), so this runs without a database.
+#[test]
+fn the_pg_epoch_anchor_is_unconfirmed_when_the_database_is_unreachable() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind to a free port");
+    let port = listener.local_addr().expect("listener address").port();
+    drop(listener);
+    let mut anchor = PgExternalEpochAnchor::new(format!("postgres://127.0.0.1:{port}/postgres"))
+        .expect("anchor port");
+    assert_eq!(anchor.confirmed_epoch(), AnchorReading::Unconfirmed);
+    assert_eq!(
+        anchor.record_promotion(5),
+        AnchorRecord::RefusedUnconfirmed,
+        "an unreachable authority records nothing"
+    );
+}
+
+/// The shipped external-fencing wiring fails closed: an enabled executor
+/// with the production combination — the real PostgreSQL epoch anchor beside
+/// the refusing `NoopFenceAuthority` — never promotes, even with full
+/// fencing and readiness evidence from every member. Until a real external
+/// fence backend exists, the promotion is refused at the external-fence
+/// precondition and the epoch compare-and-set never runs.
+#[test]
+#[ignore = "requires ZT_FAILOVER_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+fn an_enabled_executor_with_the_refusing_fence_backend_never_promotes() {
+    let base_url = std::env::var("ZT_FAILOVER_TEST_DATABASE_URL")
+        .expect("set ZT_FAILOVER_TEST_DATABASE_URL for PostgreSQL-backed failover tests");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime");
+
+    let writer_site = format!("failover-pg-noop-w-{}", uuid::Uuid::new_v4().simple());
+    let standby_site = format!("failover-pg-noop-s-{}", uuid::Uuid::new_v4().simple());
+    let members = ["member-a", "member-b", "member-c"];
+    let schema = format!("failover_executor_noop_{}", uuid::Uuid::new_v4().simple());
+    let create_schema = schema.clone();
+    runtime.block_on(admin(&base_url, |client| async move {
+        client
+            .batch_execute(&format!("CREATE SCHEMA {create_schema}"))
+            .await
+            .unwrap();
+    }));
+    let separator = if base_url.contains('?') { '&' } else { '?' };
+    let url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
+
+    let (writer, standby) = (writer_site.clone(), standby_site.clone());
+    let baseline_epoch: i64 = runtime.block_on(async {
+        let (client, connection) = zrotext_postgres_connection::connect(&url).await.unwrap();
+        let driver = tokio::spawn(connection);
+        client.batch_execute(MIGRATION_FOUNDATION).await.unwrap();
+        client
+            .batch_execute(MIGRATION_FAILOVER_JOURNAL)
+            .await
+            .unwrap();
+        client
+            .execute(
+                "INSERT INTO sites(site_id) VALUES($1),($2)",
+                &[&writer, &standby],
+            )
+            .await
+            .unwrap();
+        let epoch: i64 = client
+            .query_one(
+                "UPDATE deployment_authority SET dispatch_enabled=TRUE RETURNING epoch",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        drop(client);
+        let _ = driver.await;
+        epoch
+    });
+    let base_epoch = u64::try_from(baseline_epoch).unwrap();
+
+    let config = FailoverConfig::new(
+        members.iter().map(|member| (*member).to_owned()).collect(),
+        writer_site.clone(),
+        standby_site.clone(),
+    )
+    .unwrap();
+    let mut anchor = PgExternalEpochAnchor::new(url.clone()).unwrap();
+    assert_eq!(
+        anchor.confirmed_epoch(),
+        AnchorReading::Confirmed { epoch: base_epoch },
+        "the anchor half of the shipped wiring works"
+    );
+    let mut executor = FailoverExecutor::new(
+        config,
+        queued_source(vec![
+            healthy_round(members, base_epoch, 1_000),
+            failure_round(members, 2_000),
+            failure_round(members, 3_000),
+            failure_round(members, 4_000),
+            evidence_round(members, 5_000),
+            evidence_round(members, 6_000),
+            evidence_round(members, 7_000),
+        ]),
+        PgWriterAuthority::new(url.clone()).unwrap(),
+        // The production shape: a real anchor beside the refusing fence.
+        ExternalFencing::new(NoopFenceAuthority, anchor),
+    );
+    let _ = executor.tick(1_000);
+    let _ = executor.tick(2_000);
+    let _ = executor.tick(3_000);
+    let report = executor.tick(4_000);
+    assert_eq!(
+        report.decision,
+        Some(Decision::FenceOldWriter {
+            site_id: writer_site.clone()
+        })
+    );
+    assert!(
+        matches!(report.application, Application::Applied { .. }),
+        "the site-row fence is independent of the external fence"
+    );
+    let report = executor.tick(5_000);
+    assert_eq!(
+        report.decision,
+        Some(Decision::PromoteStandby {
+            site_id: standby_site.clone(),
+            new_epoch: base_epoch + 1
+        })
+    );
+    assert!(
+        matches!(report.application, Application::Pending { .. }),
+        "the refusing fence backend holds the promotion: {:?}",
+        report.application
+    );
+    // Later rounds hold the promoted phase (dispatch paused) while the
+    // promotion stays pending on the external-fence refusal.
+    for now_ms in [6_000_u64, 7_000] {
+        let report = executor.tick(now_ms);
+        assert_eq!(
+            report.decision,
+            Some(Decision::KeepDispatchPaused),
+            "the decision loop itself is unaffected at {now_ms}ms"
+        );
+        assert!(
+            matches!(report.application, Application::Pending { .. }),
+            "the refusing fence backend holds the promotion at {now_ms}ms: {:?}",
+            report.application
+        );
+    }
+    let (_, _, mut authority) = executor.into_parts();
+    let snapshot = authority.load_state(&writer_site, &standby_site).unwrap();
+    assert_eq!(
+        snapshot.epoch, base_epoch,
+        "the epoch compare-and-set never ran"
+    );
+    assert!(
+        snapshot.writer_site.unwrap().draining,
+        "the site-row fence stays applied"
+    );
+
+    drop(authority);
     let cleanup_schema = schema.clone();
     runtime.block_on(admin(&base_url, |client| async move {
         client
