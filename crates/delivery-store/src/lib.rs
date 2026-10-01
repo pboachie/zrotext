@@ -1027,6 +1027,17 @@ impl<'a> DeliveryStore<'a> {
                     &[(&event.account_id, Type::UUID)],
                 )
                 .await?;
+                // Match enrollment revocation's device-before-session order.
+                // Do not filter revoked rows: historical receipt replays are
+                // still reconciled below without issuing new authority.
+                tx.query_typed_opt(
+                    "SELECT id FROM devices WHERE account_id=$1 AND id=$2 FOR SHARE",
+                    &[
+                        (&event.account_id, Type::UUID),
+                        (&event.device_id, Type::UUID),
+                    ],
+                )
+                .await?;
                 // Hold the current identity rows through the final intent
                 // guard and commit. Reconnect/line/device/writer changes must
                 // serialize, while historical exact receipt replays remain

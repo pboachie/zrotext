@@ -51,3 +51,8 @@ Cross-account, wrong digest, revoked, expired and consumed identities receive
 the same refusal without plaintext or message-existence details. Submission
 intent consumes the existing fence; historical callbacks and uncertain outcomes
 retain the established reconciliation model and never trigger automatic resend.
+
+Grant, retrieval and first-intent transactions lock the device before its
+session, matching enrollment revocation. Revocation that wins the device lock
+can remove the session without a reverse lock dependency; subsequent authority
+checks refuse new execution while historical exact receipts remain reconcilable.

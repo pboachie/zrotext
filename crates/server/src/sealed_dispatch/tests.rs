@@ -10,6 +10,116 @@ use zrotext_domain::Evidence;
 
 #[tokio::test]
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated disposable schema"]
+async fn device_revocation_serializes_without_deadlock_with_grant_fetch_and_first_intent() {
+    for operation in ["grant", "fetch", "intent"] {
+        let case = Case::new(Some(1)).await;
+        let frame = if operation == "grant" {
+            None
+        } else {
+            case.grant().await.unwrap()
+        };
+        let request = frame.clone().map(|frame| case.request(frame));
+        let observed = case
+            .admission
+            .db
+            .query_one(
+                "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        let mut blocker = case.admission.connect().await;
+        let revocation = blocker.transaction().await.unwrap();
+        revocation
+            .execute(
+                "UPDATE devices SET revoked_at=clock_timestamp() WHERE id=$1",
+                &[&case.admission.device],
+            )
+            .await
+            .unwrap();
+        let mut connection = case.admission.connect().await;
+        let pid: i32 = connection
+            .query_one("SELECT pg_backend_pid()", &[])
+            .await
+            .unwrap()
+            .get(0);
+        let execute = async {
+            match operation {
+                "grant" => grant(&mut connection, &case.session, &case.ready, &case.policy)
+                    .await
+                    .map(|_| ())
+                    .map_err(|error| format!("{error:?}")),
+                "fetch" => fetch(
+                    &mut connection,
+                    request.as_ref().unwrap(),
+                    "manifest-test",
+                    1,
+                    &case.policy,
+                )
+                .await
+                .map(|_| ())
+                .map_err(|error| format!("{error:?}")),
+                _ => DeliveryStore::new(&mut connection)
+                    .record_radio_event(RadioEvent {
+                        event_id: Uuid::new_v4(),
+                        account_id: case.admission.account,
+                        device_id: case.admission.device,
+                        message_id: case.message,
+                        attempt_id: frame.as_ref().unwrap().attempt_id,
+                        evidence: Evidence::DurableSubmitIntent,
+                        observed_at_ms: observed,
+                        segment_index: None,
+                        segment_count: None,
+                    })
+                    .await
+                    .map(|_| ())
+                    .map_err(|error| format!("{error:?}")),
+            }
+        };
+        let revoke = async {
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                loop {
+                    let waiting: bool = case.admission.db.query_one(
+                        "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE pid=$1 AND wait_event_type='Lock')",
+                        &[&pid],
+                    ).await.unwrap().get(0);
+                    if waiting { break; }
+                    tokio::task::yield_now().await;
+                }
+            }).await.unwrap();
+            revocation
+                .execute(
+                    "UPDATE device_keys SET revoked_at=clock_timestamp() WHERE device_id=$1",
+                    &[&case.admission.device],
+                )
+                .await
+                .unwrap();
+            revocation
+                .execute(
+                    "DELETE FROM device_sessions WHERE device_id=$1",
+                    &[&case.admission.device],
+                )
+                .await
+                .unwrap();
+            revocation.commit().await.unwrap();
+        };
+        let (result, ()) = tokio::join!(execute, revoke);
+        let error = result.expect_err("revocation must fence new execution");
+        assert!(!error.contains("40P01"), "{operation} deadlocked: {error}");
+        let row = case.admission.db.query_one(
+            "SELECT (SELECT count(*) FROM device_sessions), (SELECT count(*) FROM message_attempts), \
+             (SELECT count(*) FROM message_events WHERE evidence_code='durable_intent')", &[],
+        ).await.unwrap();
+        assert_eq!(row.get::<_, i64>(0), 0);
+        assert_eq!(row.get::<_, i64>(1), i64::from(operation != "grant"));
+        assert_eq!(row.get::<_, i64>(2), 0);
+        case.cleanup().await;
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated disposable schema"]
 async fn intent_that_expires_during_final_fence_write_rolls_back_all_effects() {
     let case = Case::new(Some(1)).await;
     let frame = case.grant().await.unwrap().unwrap();

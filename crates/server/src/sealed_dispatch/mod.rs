@@ -59,6 +59,14 @@ async fn live(
     )
     .await?
     .ok_or(Error::Refused)?;
+    // Enrollment revocation locks the device before removing its session.
+    // Take that fence separately before the join can lock a session row.
+    tx.query_opt(
+        "SELECT id FROM devices WHERE account_id=$1 AND id=$2 AND revoked_at IS NULL FOR SHARE",
+        &[&session.account_id, &session.device_id],
+    )
+    .await?
+    .ok_or(Error::Refused)?;
     let row = tx.query_opt(
         "SELECT k.signing_key_sec1 FROM device_sessions ds \
          JOIN devices d ON (d.account_id,d.id)=(ds.account_id,ds.device_id) \
