@@ -33,6 +33,7 @@ pub mod channel;
 pub mod confirmed_http;
 pub mod enrollment;
 pub(crate) mod lifecycle;
+pub mod owner_host;
 pub mod send;
 
 /// Future explicit composition. The ordinary main/router never supplies SDK assets.

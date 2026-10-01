@@ -43,7 +43,7 @@ fn request(
     bytes: &[u8],
 ) -> Result<(u8, Uuid), ConversationError> {
     if !(118..=48_000).contains(&bytes.len())
-        || !matches!(bytes[5], 1 | 3 | 5 | 6 | 8 | 10 | 12 | 14)
+        || !matches!(bytes[5], 1 | 3 | 5 | 6 | 8 | 10 | 12 | 14 | 16)
     {
         return Err(ConversationError::Invalid);
     }
@@ -55,6 +55,7 @@ fn request(
     if kind != 12 && bytes.len() > 1208
         || kind == 12 && bytes.len() < 375
         || kind == 14 && !(386..=399).contains(&bytes.len())
+        || kind == 16 && bytes.len() != 134
         || kind == 1 && bytes.len() != 118
         || kind == 3 && !(370..=383).contains(&bytes.len())
         || kind == 5
@@ -164,6 +165,9 @@ pub async fn handle(
     bytes: &[u8],
 ) -> Result<Vec<u8>, ConversationError> {
     let (kind, challenge) = request(authenticated, bytes)?;
+    if kind == 16 {
+        return proposal::handle(client, authenticated, challenge, bytes).await;
+    }
     if kind == 12 {
         return capture::handle(client, authenticated, challenge, bytes).await;
     }
@@ -218,5 +222,6 @@ pub async fn handle(
 mod capture;
 mod delivery;
 mod installation;
+mod proposal;
 #[cfg(test)]
 mod tests;
