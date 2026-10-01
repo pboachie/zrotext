@@ -771,7 +771,9 @@ async fn execution_candidate_preserves_ordinary_sealed_grant_fetch_and_intent() 
     for migration in [
         include_str!("../../../../deploy/compose/migrations/064_owner_conversation_consent.sql"),
         include_str!("../../../../deploy/compose/migrations/065_conversation_activation.sql"),
-        include_str!("../../../../deploy/compose/migrations/072_conversation_confirmation_records.sql"),
+        include_str!(
+            "../../../../deploy/compose/migrations/072_conversation_confirmation_records.sql"
+        ),
     ] {
         case.admission.db.batch_execute(migration).await.unwrap();
     }
