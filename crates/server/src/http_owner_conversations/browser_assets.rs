@@ -99,18 +99,21 @@ impl BrowserAssets {
                 return Err(std::io::Error::other("SDK directory cycle or bound"));
             }
             for entry in std::fs::read_dir(&dir)? {
-                let path = entry?.path();
+                let entry = entry?;
+                let path = entry.path();
                 // Validate the exact directory-entry path before inspecting that
                 // named object; checking a different canonical value is insufficient.
                 if !path.starts_with(&root) {
                     return Err(std::io::Error::other("SDK entry escapes package"));
                 }
+                // Inspect the entry returned by this checked directory, without
+                // following its target or masking filesystem inspection errors.
+                if entry.file_type()?.is_symlink() {
+                    return Err(std::io::Error::other("SDK symlink refused"));
+                }
                 let actual = path.canonicalize()?;
                 if !actual.starts_with(&root) {
                     return Err(std::io::Error::other("SDK asset escapes package"));
-                }
-                if path.is_symlink() {
-                    return Err(std::io::Error::other("SDK symlink refused"));
                 }
                 if actual.is_dir() {
                     pending.push(actual);
@@ -386,6 +389,22 @@ mod tests {
             std::os::unix::fs::symlink(target, package.root().join("sdk/linked.js")).unwrap();
             assert!(BrowserAssets::load(package.root()).is_err());
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn broken_package_symlink_is_refused_before_resolving_its_target() {
+        let package = test_files::Package::new();
+        package
+            .write("sdk/conversation-custody.js", b"export const fixture=true;")
+            .unwrap();
+        std::os::unix::fs::symlink(
+            package.root().join("sdk/missing.js"),
+            package.root().join("sdk/linked.js"),
+        )
+        .unwrap();
+        let error = BrowserAssets::load(package.root()).err().unwrap();
+        assert_eq!(error.to_string(), "SDK symlink refused");
     }
 
     #[test]
