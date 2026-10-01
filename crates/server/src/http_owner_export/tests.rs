@@ -104,7 +104,7 @@ const EXPORT_SCHEMA: [(&str, &str); 67] = export_schema!(
     "064_owner_conversation_consent.sql",
     "065_conversation_activation.sql",
     "066_conversation_interval_session_index.sql",
-    "068_contacts_consent.sql",
+    "067_contacts_consent.sql",
 );
 #[test]
 fn export_schema_includes_every_checked_in_migration() {
@@ -569,6 +569,7 @@ async fn export_paginates_full_history_beyond_the_first_page() {
         include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
         include_str!("../../../../deploy/compose/migrations/064_owner_conversation_consent.sql"),
         include_str!("../../../../deploy/compose/migrations/065_conversation_activation.sql"),
+        include_str!("../../../../deploy/compose/migrations/067_contacts_consent.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }

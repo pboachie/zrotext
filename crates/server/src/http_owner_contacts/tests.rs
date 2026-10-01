@@ -102,7 +102,7 @@ const TEST_MIGRATIONS: [(&str, &str); 67] = [
     migration!("064_owner_conversation_consent.sql"),
     migration!("065_conversation_activation.sql"),
     migration!("066_conversation_interval_session_index.sql"),
-    migration!("068_contacts_consent.sql"),
+    migration!("067_contacts_consent.sql"),
 ];
 
 #[test]

@@ -235,6 +235,8 @@ pub(crate) enum FieldError {
     Unreadable,
     /// A paging cursor named a contact this account does not have.
     MissingContactCursor,
+    /// The database query itself failed; ordinary unavailability.
+    Database,
 }
 
 impl FieldError {
@@ -246,6 +248,7 @@ impl FieldError {
             ),
             Self::Unreadable => error(StatusCode::SERVICE_UNAVAILABLE, "contacts_unreadable"),
             Self::MissingContactCursor => error(StatusCode::NOT_FOUND, "not_found"),
+            Self::Database => error(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
         }
     }
 }
