@@ -109,6 +109,17 @@ code, .eyebrow, .rail-label, .rail-status, .nav-note { font-family: Consolas, "C
 #approved-devices #device-list li span { display: block; margin-top: .4rem; }
 .fleet-select[aria-pressed="true"] { background: var(--owner-raised); box-shadow: inset 0 0 0 2px var(--owner-accent); }
 @media (max-width: 75rem) { .fleet-workspace { grid-template-columns: minmax(0, 1fr); } }
+/* Outbound writer metadata stays readable without revealing sealed content. */
+#message-activity .activity-head, #message-activity .activity-cells { display:grid;grid-template-columns:1.3fr .8fr 1.5fr 1fr 1.4fr;gap:.75rem;align-items:start; }
+#message-activity .activity-head { padding:.75rem;border-bottom:1px solid var(--owner-border);font-weight:700; }
+#message-activity #message-list { display:block;padding:0;list-style:none; }
+#message-activity .activity-row { display:block;padding:1rem 0;border-bottom:1px solid var(--owner-border);overflow-wrap:anywhere; }
+#message-activity .activity-row code { display:block;margin:.5rem 0;color:var(--owner-secondary); }
+#message-activity .activity-state { display:block;border:1px solid var(--owner-border);border-radius:.5rem;padding:.35rem .5rem; }
+#message-activity .activity-state[data-state="unknown"], #message-activity .activity-state[data-state="delivery_unknown"] { border-color:var(--owner-caution); }
+#message-activity .activity-device { width:100%;white-space:normal;text-align:left; }
+#message-activity .activity-row summary { min-height:44px;cursor:pointer;padding:.65rem 0; }
+@media(max-width:60rem) { #message-activity .activity-head { display:none; } #message-activity .activity-cells { grid-template-columns:1fr;gap:.5rem; } }
 .summary-cards { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1rem;margin-top:1rem; }
 .summary-cards > div { background:var(--owner-raised);border:1px solid var(--owner-border);border-radius:.5rem;padding:1rem;min-width:0;overflow-wrap:anywhere; }
 .summary-value { font-size:2rem;font-weight:700;margin:.5rem 0;color:var(--owner-accent); }
