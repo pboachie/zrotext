@@ -82,9 +82,8 @@ async fn device_rows(
 }
 
 fn assemble_device_page(rows: Vec<tokio_postgres::Row>) -> DevicePage {
-    let has_more = rows.len() > DEVICES_PAGE_SIZE;
     let mut devices: Vec<DeviceView> = Vec::new();
-    for row in rows.iter().take(DEVICES_PAGE_SIZE) {
+    for row in &rows {
         let id: Uuid = row.get(0);
         if devices.last().is_none_or(|last| last.device_id != id) {
             devices.push(DeviceView {
@@ -110,6 +109,8 @@ fn assemble_device_page(rows: Vec<tokio_postgres::Row>) -> DevicePage {
             });
         }
     }
+    let has_more = devices.len() > DEVICES_PAGE_SIZE;
+    devices.truncate(DEVICES_PAGE_SIZE);
     DevicePage {
         next_cursor: if has_more {
             devices.last().map(|last| last.device_id)

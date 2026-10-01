@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use super::*;
+mod resource_pagination;
 use crate::sealed_envelope::ExpectedRecipient;
 use crate::sealed_manifest_store::tests::Fixture;
 use axum::{
