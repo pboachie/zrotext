@@ -320,7 +320,7 @@ async fn current_manifest(
 ) -> Result<(VerifiedManifest, u64), RegistryError> {
     let row = tx
         .query_opt(
-            "SELECT root_pin,root_fingerprint,generation,version,semantic_digest,manifest \
+            "SELECT root_pin,root_fingerprint,generation,version,semantic_digest,manifest,last_verified_ms \
          FROM sealed_manifest_authorities WHERE account_id=$1 AND revoked_at IS NULL FOR UPDATE",
             &[account],
         )
@@ -328,6 +328,7 @@ async fn current_manifest(
         .ok_or(RegistryError::Rejected(
             "missing/revoked manifest authority",
         ))?;
+    let high_water: i64 = row.get(6);
     let pin: Vec<u8> = row.get(0);
     let fingerprint: Vec<u8> = row.get(1);
     let generation: i64 = row.get(2);
@@ -351,7 +352,12 @@ async fn current_manifest(
             digest,
         },
     };
-    let now = clock(tx, previous_clock).await?;
+    // Floor trusted time on the stored high water exactly like the manifest
+    // store's wall_time: a host clock step backwards must fail closed instead
+    // of tripping the authority's monotonicity guard or rewinding freshness.
+    // This read does not write last_verified_ms: the admitting device owns
+    // that hot row, and connector traffic must not contend on it.
+    let now = clock(tx, (high_water.max(0) as u64).max(previous_clock)).await?;
     let manifest = sealed_manifest::verify(&pin, &bytes, &trust, now)
         .map_err(|_| "manifest authority not verifiable")?;
     Ok((manifest, now))
@@ -391,15 +397,20 @@ async fn point_aliases_device_or_root(
         .get::<_, bool>(0))
 }
 
+/// One audit fact to append: identifiers, action, outcome and reason only.
+struct Audit<'a> {
+    connector: &'a Uuid,
+    grant: Option<&'a Uuid>,
+    action: &'static str,
+    actor: Option<&'a Uuid>,
+    outcome: &'static str,
+    reason: &'static str,
+}
+
 async fn journal(
     tx: &Transaction<'_>,
     account: &Uuid,
-    connector: &Uuid,
-    grant: Option<&Uuid>,
-    action: &str,
-    actor: Option<&Uuid>,
-    outcome: &str,
-    reason: &str,
+    audit: Audit<'_>,
     recorded_ms: u64,
 ) -> Result<(), RegistryError> {
     tx.execute(
@@ -408,12 +419,12 @@ async fn journal(
          VALUES($1,$2,$3,$4,$5,$6,$7,$8)",
         &[
             account,
-            connector,
-            &grant,
-            &action,
-            &actor,
-            &outcome,
-            &reason,
+            audit.connector,
+            &audit.grant,
+            &audit.action,
+            &audit.actor,
+            &audit.outcome,
+            &audit.reason,
             &(recorded_ms as i64),
         ],
     )
@@ -523,11 +534,11 @@ pub async fn propose(
         return Err("key point already used in account".into());
     }
     for grant in &request.grants {
-        if let GrantKind::Read { directions } = grant.kind {
-            if directions & scope != directions {
-                tx.commit().await?;
-                return Err("read grant wider than manifest scope".into());
-            }
+        if let GrantKind::Read { directions } = grant.kind
+            && directions & scope != directions
+        {
+            tx.commit().await?;
+            return Err("read grant wider than manifest scope".into());
         }
         let active_line: bool = tx
             .query_one(
@@ -570,7 +581,7 @@ pub async fn propose(
     tx.execute(
         "INSERT INTO connector_keys \
          (account_id,connector_id,key_id,key_point,valid_from_ms,valid_until_ms) \
-         VALUES($1,$2,$3,$4,$5,least($6,$7))",
+         VALUES($1,$2,$3,$4,$5,least($6::bigint,$7::bigint))",
         &[
             &account,
             &connector,
@@ -607,12 +618,14 @@ pub async fn propose(
     journal(
         &tx,
         &account,
-        &connector,
-        None,
-        "proposed",
-        Some(&principal.user_id),
-        "recorded",
-        "proposal stored pending independent approval",
+        Audit {
+            connector: &connector,
+            grant: None,
+            action: "proposed",
+            actor: Some(&principal.user_id),
+            outcome: "recorded",
+            reason: "proposal stored pending independent approval",
+        },
         now,
     )
     .await?;
@@ -649,7 +662,7 @@ pub async fn approve(
     let row = tx
         .query_opt(
             "SELECT key_point,key_id,manifest_generation,manifest_version,manifest_digest, \
-         proposed_session,expires_ms FROM connector_registrations \
+         proposed_session,expires_ms,proposed_ms FROM connector_registrations \
          WHERE account_id=$1 AND connector_id=$2 AND state='pending' FOR UPDATE",
             &[&account, &connector_id],
         )
@@ -660,6 +673,7 @@ pub async fn approve(
         tx.commit().await?;
         return Err("independent approval session required".into());
     }
+    let proposed_ms: i64 = row.get(7);
     let expires_ms: i64 = row.get(6);
     if expires_ms <= now as i64 {
         tx.commit().await?;
@@ -684,6 +698,9 @@ pub async fn approve(
         tx.commit().await?;
         return Err("integration key identity changed".into());
     }
+    // Storage requires approved_ms >= proposed_ms; a host clock step backwards
+    // between the two transactions must not fail an otherwise-valid approval.
+    let approved_ms = manifest_now.max(proposed_ms as u64);
     tx.execute(
         "UPDATE connector_registrations SET state='active',approved_by_user=$3, \
          approved_session=$4,approved_ms=$5 WHERE account_id=$1 AND connector_id=$2",
@@ -692,20 +709,22 @@ pub async fn approve(
             &connector_id,
             &principal.user_id,
             &principal.session_id,
-            &(manifest_now as i64),
+            &(approved_ms as i64),
         ],
     )
     .await?;
     journal(
         &tx,
         &account,
-        &connector_id,
-        None,
-        "approved",
-        Some(&principal.user_id),
-        "recorded",
-        "registration activated by an independent session",
-        manifest_now,
+        Audit {
+            connector: &connector_id,
+            grant: None,
+            action: "approved",
+            actor: Some(&principal.user_id),
+            outcome: "recorded",
+            reason: "registration activated by an independent session",
+        },
+        approved_ms,
     )
     .await?;
     tx.commit().await?;
@@ -760,12 +779,14 @@ pub async fn reject(
     journal(
         &tx,
         &account,
-        &connector_id,
-        None,
-        "rejected",
-        Some(&principal.user_id),
-        "recorded",
-        "pending proposal rejected before activation",
+        Audit {
+            connector: &connector_id,
+            grant: None,
+            action: "rejected",
+            actor: Some(&principal.user_id),
+            outcome: "recorded",
+            reason: "pending proposal rejected before activation",
+        },
         now,
     )
     .await?;
@@ -838,18 +859,18 @@ pub async fn rotate_key(
         )
         .await?
         .and_then(|r| r.get(0));
-    if let Some(directions) = held {
-        if directions as u16 & new_scope != directions as u16 {
-            tx.commit().await?;
-            return Err("rotation narrower than held read grants".into());
-        }
+    if let Some(directions) = held
+        && directions as u16 & new_scope != directions as u16
+    {
+        tx.commit().await?;
+        return Err("rotation narrower than held read grants".into());
     }
     let record_until = manifest
         .active_integration_reader(new_point.as_slice(), manifest_now)
         .map(|(_, _, until)| until)
         .ok_or(RegistryError::Rejected("integration reader authority"))?;
     tx.execute(
-        "UPDATE connector_keys SET retired_ms=$3,valid_until_ms=least(valid_until_ms,$3) \
+        "UPDATE connector_keys SET retired_ms=$3 \
          WHERE account_id=$1 AND connector_id=$2 AND retired_ms IS NULL",
         &[&account, &connector_id, &(manifest_now as i64)],
     )
@@ -857,7 +878,7 @@ pub async fn rotate_key(
     tx.execute(
         "INSERT INTO connector_keys \
          (account_id,connector_id,key_id,key_point,valid_from_ms,valid_until_ms) \
-         VALUES($1,$2,$3,$4,$5,least($6,$7))",
+         VALUES($1,$2,$3,$4,$5,least($6::bigint,$7::bigint))",
         &[
             &account,
             &connector_id,
@@ -882,12 +903,14 @@ pub async fn rotate_key(
     journal(
         &tx,
         &account,
-        &connector_id,
-        None,
-        "rotated",
-        Some(&principal.user_id),
-        "recorded",
-        "connector key rotated; previous point retired permanently",
+        Audit {
+            connector: &connector_id,
+            grant: None,
+            action: "rotated",
+            actor: Some(&principal.user_id),
+            outcome: "recorded",
+            reason: "connector key rotated; previous point retired permanently",
+        },
         manifest_now,
     )
     .await?;
@@ -968,12 +991,14 @@ pub async fn revoke(
     journal(
         &tx,
         &account,
-        &connector_id,
-        None,
-        "revoked",
-        Some(&principal.user_id),
-        "recorded",
-        "registration and all grants fenced",
+        Audit {
+            connector: &connector_id,
+            grant: None,
+            action: "revoked",
+            actor: Some(&principal.user_id),
+            outcome: "recorded",
+            reason: "registration and all grants fenced",
+        },
         now,
     )
     .await?;
@@ -1039,16 +1064,18 @@ async fn authorize_inner(
             journal(
                 &tx,
                 account,
-                &connector,
-                None,
-                if send {
-                    "send_denied"
-                } else {
-                    "reader_wrap_denied"
+                Audit {
+                    connector: &connector,
+                    grant: None,
+                    action: if send {
+                        "send_denied"
+                    } else {
+                        "reader_wrap_denied"
+                    },
+                    actor: None,
+                    outcome: "denied",
+                    reason: $reason,
                 },
-                None,
-                "denied",
-                $reason,
                 now,
             )
             .await?;
@@ -1075,10 +1102,11 @@ async fn authorize_inner(
         deny!("integration key identity changed");
     }
     let kind = if send { "send" } else { "read" };
-    let wanted: i16 = if send {
+    // smallint & int4 widens to int4 in PostgreSQL, so bind an i32 here.
+    let wanted: i32 = if send {
         0
     } else {
-        direction.unwrap_or(0) as i16
+        direction.unwrap_or(0) as i32
     };
     let row = match tx
         .query_opt(
@@ -1128,19 +1156,21 @@ async fn authorize_inner(
     journal(
         &tx,
         account,
-        &connector,
-        Some(&grant_id),
-        if send {
-            "send_authorized"
-        } else {
-            "reader_wrap_authorized"
-        },
-        None,
-        "allowed",
-        if send {
-            "live send grant held for line"
-        } else {
-            "live read grant held for line"
+        Audit {
+            connector: &connector,
+            grant: Some(&grant_id),
+            action: if send {
+                "send_authorized"
+            } else {
+                "reader_wrap_authorized"
+            },
+            actor: None,
+            outcome: "allowed",
+            reason: if send {
+                "live send grant held for line"
+            } else {
+                "live read grant held for line"
+            },
         },
         manifest_now,
     )
@@ -1334,12 +1364,14 @@ pub async fn export_access_records(
             journal(
                 &tx,
                 &account,
-                &oldest.connector_id,
-                None,
-                "exported",
-                Some(&principal.user_id),
-                "recorded",
-                "access records exported for owner review",
+                Audit {
+                    connector: &oldest.connector_id,
+                    grant: None,
+                    action: "exported",
+                    actor: Some(&principal.user_id),
+                    outcome: "recorded",
+                    reason: "access records exported for owner review",
+                },
                 stamped,
             )
             .await?;
@@ -1401,12 +1433,14 @@ pub async fn erase_access_records(
     journal(
         &tx,
         &account,
-        &connector_id,
-        None,
-        "erased",
-        Some(&principal.user_id),
-        "recorded",
-        "access records erased after revocation",
+        Audit {
+            connector: &connector_id,
+            grant: None,
+            action: "erased",
+            actor: Some(&principal.user_id),
+            outcome: "recorded",
+            reason: "access records erased after revocation",
+        },
         now,
     )
     .await?;

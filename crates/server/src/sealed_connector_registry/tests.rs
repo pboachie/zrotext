@@ -70,7 +70,9 @@ fn build_manifest(
     bytes.extend(account.as_bytes());
     bytes.extend(generation.to_be_bytes());
     bytes.extend(version.to_be_bytes());
-    bytes.extend((now as u64 - 1_000).to_be_bytes());
+    // Issue in the past: hosts step the wall clock backwards by seconds under
+    // load, and freshness must survive that between fixture setup and use.
+    bytes.extend((now as u64 - 11_000).to_be_bytes());
     bytes.extend((now as u64 + 300_000).to_be_bytes());
     bytes.extend(anchor);
     bytes.extend(root_point.as_bytes());
@@ -79,7 +81,7 @@ fn build_manifest(
         .iter()
         .map(|r| (r.role, key_id(r.role, &r.point), r))
         .collect();
-    records.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
+    records.sort_by_key(|a| (a.0, a.1));
     for (_, _, record) in records {
         bytes.push(record.role);
         bytes.extend(key_id(record.role, &record.point));
@@ -87,7 +89,7 @@ fn build_manifest(
         bytes.extend(record.device);
         bytes.extend(record.line);
         bytes.extend(record.scope.to_be_bytes());
-        bytes.extend((now as u64 - 2_000).to_be_bytes());
+        bytes.extend((now as u64 - 12_000).to_be_bytes());
         bytes.extend((now as u64 + 400_000).to_be_bytes());
         bytes.push(1);
     }
@@ -304,7 +306,11 @@ impl Fixture {
         db.execute(
             "UPDATE sealed_manifest_authorities SET version=1,semantic_digest=$2,manifest=$3, \
          accepted_at_ms=$4,last_verified_ms=$4 WHERE account_id=$1",
-            &[&account, &digest, &bytes, &now],
+            // Seed the durable high-water ten seconds in the past: a manifest
+            // admitted slightly ago is realistic, and hosts step the wall
+            // clock backwards by seconds under load, which must not trip the
+            // fail-closed floor between fixture setup and use.
+            &[&account, &digest, &bytes, &(now - 10_000)],
         )
         .await
         .unwrap();
@@ -429,44 +435,6 @@ impl Fixture {
         key_id(3, &self.integration_point(index))
     }
 
-    /// Replace the authority with `bytes` under `pin`/`generation`, modeling
-    /// what an accepted ceremony plus admission leaves in storage.
-    pub(crate) async fn accept_manifest(
-        &self,
-        bytes: &[u8],
-        generation: i64,
-        anchor: &[u8],
-        pin: &[u8],
-    ) {
-        let digest = Sha256::digest(&bytes[..bytes.len() - 64]).to_vec();
-        let fingerprint = Sha256::digest([b"ZTSE/root-pin/v2\0".as_slice(), pin].concat()).to_vec();
-        self.db
-            .execute(
-                "DELETE FROM sealed_manifest_authorities WHERE account_id=$1",
-                &[&self.account],
-            )
-            .await
-            .unwrap();
-        self.db
-            .execute(
-                "INSERT INTO sealed_manifest_authorities(account_id,root_pin,root_fingerprint,generation,anchor_digest, \
-             version,semantic_digest,manifest,accepted_at_ms,last_verified_ms) \
-             VALUES($1,$2,$3,$4,$5,1,$6,$7,$8,$8)",
-                &[
-                    &self.account,
-                    &pin,
-                    &fingerprint,
-                    &generation,
-                    &anchor,
-                    &digest,
-                    &bytes,
-                    &(now_ms() as i64),
-                ],
-            )
-            .await
-            .unwrap();
-    }
-
     /// Advance the accepted chain: same generation, next version.
     pub(crate) async fn advance_manifest(&mut self) {
         let digest: [u8; 32] = Sha256::digest(&self.bytes[..self.bytes.len() - 64]).into();
@@ -484,29 +452,7 @@ impl Fixture {
         );
         self.bytes[n..].copy_from_slice(&signature.normalize_s().to_bytes());
         let new_digest = Sha256::digest(&self.bytes[..n]).to_vec();
-        self.db
-            .execute(
-                "UPDATE sealed_manifest_authorities SET version=$2,semantic_digest=$3,manifest=$4, \
-             accepted_at_ms=$5,last_verified_ms=$5 WHERE account_id=$1",
-                &[
-                    &self.account,
-                    &(version as i64 + 1),
-                    &new_digest,
-                    &self.bytes,
-                    &(now_ms() as i64),
-                ],
-            )
-            .await
-            .unwrap();
-    }
-
-    /// Root rotation: a fresh generation with a new root, same role points,
-    /// so an unchanged connector key is still listed but its stored binding
-    /// generation is stale.
-    pub(crate) async fn rotate_generation(&mut self) {
-        let new_root = SigningKey::generate_from_rng(&mut rand::rng());
-        let generation = 2u64;
-        let now: i64 = self
+        let stamp: i64 = self
             .db
             .query_one(
                 "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint",
@@ -515,62 +461,20 @@ impl Fixture {
             .await
             .unwrap()
             .get(0);
-        let mut roles = vec![
-            RoleRecord {
-                role: 2,
-                point: random_point(),
-                scope: 12,
-                device: [0; 16],
-                line: [0; 16],
-            },
-            RoleRecord {
-                role: 4,
-                point: random_point(),
-                scope: 2,
-                device: [7; 16],
-                line: *self.line.as_bytes(),
-            },
-            RoleRecord {
-                role: 6,
-                point: point_bytes(&new_root),
-                scope: 0,
-                device: [0; 16],
-                line: [0; 16],
-            },
-        ];
-        for (key, scope) in &self.integration {
-            roles.push(RoleRecord {
-                role: 3,
-                point: point_bytes(key),
-                scope: *scope,
-                device: [0; 16],
-                line: [0; 16],
-            });
-        }
-        let old_digest: Vec<u8> = self
-            .db
-            .query_one(
-                "SELECT semantic_digest FROM sealed_manifest_authorities WHERE account_id=$1",
-                &[&self.account],
+        self.db
+            .execute(
+                "UPDATE sealed_manifest_authorities SET version=$2,semantic_digest=$3,manifest=$4, \
+             accepted_at_ms=$5,last_verified_ms=greatest($5,last_verified_ms) WHERE account_id=$1",
+                &[
+                    &self.account,
+                    &(version as i64 + 1),
+                    &new_digest,
+                    &self.bytes,
+                    &(stamp - 10_000),
+                ],
             )
             .await
-            .unwrap()
-            .get(0);
-        let bytes = build_manifest(
-            &self.account,
-            generation,
-            1,
-            now,
-            old_digest.clone().try_into().unwrap(),
-            &new_root,
-            &roles,
-        );
-        let pin = pin_for(&self.account, generation, &new_root);
-        self.root = new_root;
-        self.pin = pin.clone();
-        self.bytes = bytes.clone();
-        self.accept_manifest(&bytes, generation as i64, &old_digest, &pin)
-            .await;
+            .unwrap();
     }
 
     pub(crate) async fn cleanup(self) {
@@ -994,6 +898,19 @@ async fn registration_refuses_non_integration_points_and_device_key_aliasing() {
         &[&device, &f.account, &&point[..], &vec![5u8; 32]],
     ).await.unwrap();
     let alias = Fixture::with_integration(vec![(device_key, READ_BOTH)]).await;
+    let alias_device = Uuid::new_v4();
+    alias
+        .db
+        .execute(
+            "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'synthetic')",
+            &[&alias_device, &alias.account],
+        )
+        .await
+        .unwrap();
+    alias.db.execute(
+        "INSERT INTO device_keys(device_id,account_id,signing_key_sec1,fingerprint) VALUES($1,$2,$3,$4)",
+        &[&alias_device, &alias.account, &&point[..], &vec![6u8; 32]],
+    ).await.unwrap();
     let alias_proposer = alias.proposer().await;
     let alias_request = default_request(&alias, point);
     assert_eq!(
@@ -1266,12 +1183,39 @@ async fn approval_refuses_advanced_and_forked_manifests() {
 #[tokio::test]
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn authorization_and_rotation_refuse_incompatible_generations() {
-    let mut f = Fixture::new().await;
+    let f = Fixture::new().await;
     let approver = f.approver().await;
     let ticket = registered_connector(&f, 0).await;
-    // Root rotation replaced the manifest generation even though the same
-    // integration key is present: every stored binding is now stale.
-    f.rotate_generation().await;
+    // Root enrollment history is immutable, so a real generation change needs
+    // a fresh account; the stored binding is also fenced at the storage layer.
+    assert!(
+        f.db.execute(
+            "UPDATE connector_registrations SET manifest_generation=2 WHERE account_id=$1",
+            &[&f.account],
+        )
+        .await
+        .is_err()
+    );
+    // Simulate a drifted binding anyway (guard explicitly disabled for the
+    // drill): the module must still refuse to honor a stale generation.
+    f.db.execute(
+        "ALTER TABLE connector_registrations DISABLE TRIGGER connector_registration_before_update",
+        &[],
+    )
+    .await
+    .unwrap();
+    f.db.execute(
+        "UPDATE connector_registrations SET manifest_generation=2 WHERE account_id=$1",
+        &[&f.account],
+    )
+    .await
+    .unwrap();
+    f.db.execute(
+        "ALTER TABLE connector_registrations ENABLE TRIGGER connector_registration_before_update",
+        &[],
+    )
+    .await
+    .unwrap();
     assert_eq!(
         rejected_reason(
             authorize_reader_wrap(
