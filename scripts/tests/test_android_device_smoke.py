@@ -1,8 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
+import contextlib
+import io
 import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 SPEC = importlib.util.spec_from_file_location("android_device_smoke", Path(__file__).resolve().parents[1] / "android_device_smoke.py")
 smoke = importlib.util.module_from_spec(SPEC)
@@ -14,6 +17,40 @@ def result(class_name, name="sample", code=0):
 
 
 class DeviceSmokeTests(unittest.TestCase):
+    def test_failed_identity_is_public_only_and_preserves_nonpassing_status(self):
+        expected = {smoke.PRECONDITIONS: 1}
+        for code in (-1, -2, -3, -4):
+            with self.subTest(code=code), mock.patch.object(smoke, "public_test_methods", return_value={"sample"}):
+                output = result(smoke.PRECONDITIONS, code=code).replace(
+                    "INSTRUMENTATION_STATUS_CODE", "INSTRUMENTATION_STATUS: stack=synthetic-private-diagnostic\nINSTRUMENTATION_STATUS_CODE")
+                with self.assertRaises(ValueError) as failure:
+                    smoke.verify_results(output, expected)
+                self.assertIn(smoke.PRECONDITIONS, str(failure.exception))
+                self.assertIn("test=sample", str(failure.exception))
+                self.assertIn(f"status={code}", str(failure.exception))
+                self.assertNotIn("synthetic-private-diagnostic", str(failure.exception))
+        with mock.patch.object(smoke, "public_test_methods", return_value=set()):
+            with self.assertRaises(ValueError) as failure:
+                smoke.verify_results(result("unpublished.Class", "unpublishedMethod", -2), expected)
+            self.assertNotIn("unpublished", str(failure.exception))
+        with self.assertRaisesRegex(ValueError, "Malformed instrumentation status code") as failure:
+            smoke.verify_results("INSTRUMENTATION_STATUS_CODE: synthetic-private-diagnostic", expected)
+        self.assertNotIn("synthetic-private-diagnostic", str(failure.exception))
+
+    def test_failure_retains_only_bounded_private_output_and_success_retains_nothing(self):
+        expected = {smoke.PRECONDITIONS: 1}
+        output = result(smoke.PRECONDITIONS, code=-2) + "x" * (smoke.MAX_PRIVATE_EVIDENCE_BYTES + 100)
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(smoke.tempfile, "mkdtemp", return_value=directory), contextlib.redirect_stdout(io.StringIO()) as printed:
+                with self.assertRaises(ValueError):
+                    smoke.verify_with_private_evidence(output, expected)
+            evidence = Path(directory, "instrumentation.txt").read_bytes()
+            self.assertEqual(len(evidence), smoke.MAX_PRIVATE_EVIDENCE_BYTES)
+            self.assertNotIn("INSTRUMENTATION_STATUS", printed.getvalue())
+        with mock.patch.object(smoke.tempfile, "mkdtemp") as temporary:
+            smoke.verify_with_private_evidence(result(smoke.PRECONDITIONS) + "INSTRUMENTATION_CODE: -1\n", expected)
+            temporary.assert_not_called()
+
     def test_outbound_corpus_requires_exact_ten_successful_cases(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
