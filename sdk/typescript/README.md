@@ -338,3 +338,9 @@ after those decisions and versioning.
 The [local stdio MCP server](../../docs/mcp-local-tools.md) exposes SDK syntax previews and gated tool discovery; live scoped messaging remains unavailable.
 
 The [synthetic agent adapter foundation](../../docs/agent-adapter-simulator.md) adds callable fixture handling and a Python wrapper over this SDK. It cannot activate live messaging or grant agent authority.
+
+[Importable agent recipe previews](../../docs/agent-recipes.md) add a disabled n8n
+workflow and callable example using `agent-recipe`, the shared fixture adapter and
+a local customer-controlled reader. They exercise durable synthetic identities,
+owner review and bounded reply routing; production grants and activation remain
+unavailable.
