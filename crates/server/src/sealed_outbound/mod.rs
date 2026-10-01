@@ -95,6 +95,22 @@ pub async fn admit_candidate02(
     writer: WriterContext<'_>,
     bytes: &[u8],
 ) -> Result<AcceptOutcome, AdmitError> {
+    admit_candidate02_with_limit(client, principal, hasher, writer, bytes, None).await
+}
+
+/// The optional bounded declaration is authorization metadata, never plaintext.
+/// An exact replay cannot add, remove or change its originally declared ceiling.
+pub async fn admit_candidate02_with_limit(
+    client: &mut Client,
+    principal: &ApiPrincipal,
+    hasher: &TokenHasher,
+    writer: WriterContext<'_>,
+    bytes: &[u8],
+    segment_limit: Option<u8>,
+) -> Result<AcceptOutcome, AdmitError> {
+    if segment_limit.is_some_and(|limit| !(1..=6).contains(&limit)) {
+        return Err(AdmitError::Invalid);
+    }
     let claims = sealed_envelope::parse(bytes, Profile::Draft02Candidate)
         .map_err(|_| AdmitError::Invalid)?;
     if claims.kind != Kind::Outbound || writer.site_id.is_empty() || writer.deployment_epoch <= 0 {
@@ -172,6 +188,7 @@ pub async fn admit_candidate02(
             recipient: std::str::from_utf8(claims.peer).map_err(|_| AdmitError::Invalid)?,
             envelope: bytes,
             expires_at_ms: expires,
+            segment_limit,
         })
         .await?;
     if bindings(&tx, principal, &writer, device, line).await? != generation {
@@ -185,4 +202,4 @@ pub async fn admit_candidate02(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

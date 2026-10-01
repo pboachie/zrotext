@@ -31,6 +31,7 @@ pub use zrotext_root_material::root_backup;
 pub mod runtime_db;
 pub mod sealed_body;
 pub mod sealed_connector_registry;
+pub mod sealed_dispatch;
 pub mod sealed_envelope;
 pub mod sealed_inbound;
 pub mod sealed_manifest;
@@ -42,6 +43,68 @@ pub use zrotext_root_material::sealed_root_enrollment;
 pub mod wakeups;
 pub mod webhook_egress;
 pub mod webhook_worker;
+
+#[cfg(test)]
+/// Synthetic recognizable plaintext markers for the sealed downgrade and
+/// leakage acceptance harness (issue #632). A marker is planted in fixture
+/// message content on the client side; every server-side surface the harness
+/// can observe — database values, digests, HTTP responses — must never
+/// contain it. The scan helper has its own positive controls so an all-clear
+/// result can never pass vacuously.
+pub(crate) mod sealed_marker {
+    /// One per-run marker text, unique across tests and runs.
+    pub(crate) struct Marker {
+        text: String,
+    }
+    impl Marker {
+        /// `ZTCANARY-<label>-<random hex>`: a synthetic string that cannot
+        /// collide with protocol bytes, identifiers or error codes.
+        pub(crate) fn generate(label: &str) -> Self {
+            let entropy = rand::random::<[u8; 8]>();
+            let suffix: String = entropy.iter().map(|b| format!("{b:02x}")).collect();
+            Self {
+                text: format!("ZTCANARY-{label}-{suffix}"),
+            }
+        }
+        pub(crate) fn as_str(&self) -> &str {
+            &self.text
+        }
+        pub(crate) fn as_bytes(&self) -> &[u8] {
+            self.text.as_bytes()
+        }
+    }
+    /// Byte-wise subslice scan over any observable surface. An empty needle
+    /// detects nothing; a needle longer than the haystack detects nothing.
+    pub(crate) fn present(haystack: &[u8], needle: &[u8]) -> bool {
+        !needle.is_empty()
+            && haystack
+                .windows(needle.len())
+                .any(|window| window == needle)
+    }
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        #[test]
+        fn scan_finds_a_planted_marker() {
+            let marker = Marker::generate("self");
+            let mut surface = vec![0u8; 64];
+            let width = marker.as_bytes().len();
+            surface[17..17 + width].copy_from_slice(marker.as_bytes());
+            assert!(present(&surface, marker.as_bytes()));
+            assert!(marker.as_str().starts_with("ZTCANARY-self-"));
+        }
+        #[test]
+        fn scan_ignores_empty_needles_and_near_misses() {
+            let marker = Marker::generate("self");
+            let mut near_miss = marker.as_bytes().to_vec();
+            let last = near_miss.len() - 1;
+            near_miss[last] ^= 1;
+            assert!(!present(&near_miss, marker.as_bytes()));
+            assert!(!present(b"anything", b""));
+            assert!(!present(b"short", marker.as_bytes()));
+        }
+    }
+}
 
 #[cfg(test)]
 pub(crate) mod test_keys {
