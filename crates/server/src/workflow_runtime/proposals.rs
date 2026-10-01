@@ -91,6 +91,13 @@ pub async fn propose_action(
     let result = decisions::store::register_core(&mut permit, request)
         .await
         .map_err(error)?;
+    let digest = decisions::store::request_digest(1, &(principal.grant_id(), &permit.descriptor))
+        .map_err(error)?;
+    permit
+        .scope
+        .record_access(request, result.key.action_id, &digest)
+        .await?;
+    permit.recheck().await.map_err(error)?;
     drop(permit);
     tx.commit().await?;
     Ok(result)

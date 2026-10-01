@@ -32,9 +32,14 @@ pub async fn call(
             }))
         }
         Request::ContextMetadata(v) => {
-            let header =
-                super::read_context_metadata(client, principal, v.request_id, v.context_id).await?;
-            Ok(Response::ContextMetadata(metadata(&header)))
+            let (header, source_digest) = super::reads::read_context_metadata_binding(
+                client,
+                principal,
+                v.request_id,
+                v.context_id,
+            )
+            .await?;
+            Ok(Response::ContextMetadata(metadata(&header, &source_digest)))
         }
         Request::ContextContent(v) => {
             let bytes =
@@ -88,9 +93,10 @@ fn digest_hex(bytes: &[u8; 32]) -> String {
         })
         .collect()
 }
-fn metadata(header: &wire::Header) -> ContextMetadataResponse {
+fn metadata(header: &wire::Header, source_digest: &[u8; 32]) -> ContextMetadataResponse {
     ContextMetadataResponse {
         context_id: header.context,
+        source_content_digest: digest_hex(source_digest),
         revision: header.revision,
         kind: header.kind,
         expires_at_ms: header.expires_ms,
@@ -129,7 +135,7 @@ mod tests {
     }
     #[test]
     fn content_identity_and_bytes_come_from_the_actual_projection() {
-        use p256::elliptic_curve::sec1::ToEncodedPoint;
+        use p256::elliptic_curve::sec1::ToSec1Point;
         let header = wire::Header {
             kind: 1,
             account: uuid::Uuid::from_u128(1),
@@ -148,7 +154,7 @@ mod tests {
         };
         let mut bytes = header.aad().unwrap();
         let ephemeral = p256::SecretKey::from_slice(&[1; 32]).unwrap();
-        bytes.extend(ephemeral.public_key().to_encoded_point(false).as_bytes());
+        bytes.extend(ephemeral.public_key().to_sec1_point(false).as_bytes());
         bytes.extend(17u32.to_be_bytes());
         bytes.extend([0; 17]);
         let result = content(&bytes).unwrap();
@@ -159,7 +165,8 @@ mod tests {
             bytes
         );
         assert!(!result.envelope_base64url.contains('='));
-        let public = serde_json::to_value(metadata(&header)).unwrap();
+        let public = serde_json::to_value(metadata(&header, &[0xab; 32])).unwrap();
+        assert_eq!(public["source_content_digest"], "ab".repeat(32));
         assert!(public.get("reader").is_none());
         assert!(public.get("envelope_base64url").is_none());
         // This synthetic shape test proves serialization, not authenticated decryption.

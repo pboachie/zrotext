@@ -44,7 +44,11 @@ async fn prepared_bounded(
         pacing_seconds: 60,
     };
     let mut descriptor = case.descriptor().await;
-    descriptor.window_id = policy.identity().unwrap();
+    descriptor.window_id = if !future && !permissions.contains(&Operation::Schedule) {
+        IMMEDIATE_WINDOW_ID.into()
+    } else {
+        policy.identity().unwrap()
+    };
     if short {
         descriptor.expires_at = case
             .f
@@ -296,6 +300,20 @@ async fn integration_schedule_and_send_require_separate_bits_and_actual_owner_ap
     );
     assert_eq!(counts(&flow.case).await, (0, 0, 0));
     flow.case.f.cleanup().await;
+    let flow = prepared(&[Operation::Send], false).await;
+    assert!(
+        send_action(
+            &mut flow.case.f.connect().await,
+            &flow.principal,
+            Uuid::new_v4(),
+            flow.action.key,
+            None
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(counts(&flow.case).await, (0, 0, 0));
+    flow.case.f.cleanup().await;
 }
 
 #[tokio::test]
@@ -356,17 +374,6 @@ async fn integration_schedule_waits_for_exact_owner_binding_then_prepares_once_w
         .unwrap(),
         SendOutcome::WaitingOwnerBinding
     ));
-    let id = Uuid::new_v4();
-    for _ in 0..2 {
-        assert!(
-            matches!(send_action(&mut flow.case.f.connect().await, &flow.principal, id, bound.key, Some(occurrence.id)).await.unwrap(), SendOutcome::Prepared { message_id, dispatch_id } if message_id==message && dispatch_id==occurrence.dispatch_id)
-        );
-    }
-    assert_eq!(counts(&flow.case).await, (1, 1, 1));
-    let row = flow.case.f.db.query_one("SELECT (SELECT count(*) FROM message_attempts),(SELECT count(*) FROM message_events),(SELECT count(*) FROM usage_ledger WHERE entry_kind='reserve')", &[]).await.unwrap();
-    assert_eq!(row.get::<_, i64>(0), 0);
-    assert_eq!(row.get::<_, i64>(1), 0);
-    assert_eq!(row.get::<_, i64>(2), 1);
     let issued = flow.case.issue_another().await;
     let other = authenticate(&flow.case.f.db, &flow.case.hasher, &issued.token)
         .await
@@ -393,6 +400,17 @@ async fn integration_schedule_waits_for_exact_owner_binding_then_prepares_once_w
         .await
         .is_err()
     );
+    let id = Uuid::new_v4();
+    for _ in 0..2 {
+        assert!(
+            matches!(send_action(&mut flow.case.f.connect().await, &flow.principal, id, bound.key, Some(occurrence.id)).await.unwrap(), SendOutcome::Prepared { message_id, dispatch_id } if message_id==message && dispatch_id==occurrence.dispatch_id)
+        );
+    }
+    assert_eq!(counts(&flow.case).await, (1, 1, 1));
+    let row = flow.case.f.db.query_one("SELECT (SELECT count(*) FROM message_attempts),(SELECT count(*) FROM message_events),(SELECT count(*) FROM usage_ledger WHERE entry_kind='reserve')", &[]).await.unwrap();
+    assert_eq!(row.get::<_, i64>(0), 0);
+    assert_eq!(row.get::<_, i64>(1), 0);
+    assert_eq!(row.get::<_, i64>(2), 1);
     let original: Uuid = flow
         .case
         .f
@@ -460,6 +478,80 @@ async fn immediate_send_only_uses_a_real_owner_binding_and_cannot_replay_after_r
     assert_eq!(row.get::<_, i64>(0), 1);
     assert_eq!(row.get::<_, i64>(1), 0);
     assert_eq!(row.get::<_, i64>(2), 1);
+    flow.case.f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; disposable workflow schema"]
+async fn send_only_cannot_omit_the_occurrence_for_an_owner_approved_canonical_window() {
+    let mut flow = prepared_window(&[Operation::Send], true, true).await;
+    let (bound, _) = flow.case.bind_message(flow.action, Uuid::new_v4()).await;
+    assert_eq!(counts(&flow.case).await, (0, 1, 0));
+    assert!(
+        send_action(
+            &mut flow.case.f.connect().await,
+            &flow.principal,
+            Uuid::new_v4(),
+            bound.key,
+            None
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(counts(&flow.case).await, (0, 1, 0));
+    flow.case.f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; disposable workflow schema"]
+async fn exhausted_normal_admission_keeps_the_next_workflow_waiting_for_owner_binding() {
+    let mut flow = prepared(&[Operation::Send], true).await;
+    flow.case.f.db.execute("INSERT INTO usage_quota_policies(account_id,metric,limit_units) VALUES($1,'outbound_message',1)", &[&flow.case.f.account]).await.unwrap();
+    flow.case.bind_message(flow.action, Uuid::new_v4()).await;
+    let mut descriptor = flow.case.descriptor().await;
+    descriptor.window_id = IMMEDIATE_WINDOW_ID.into();
+    let proposed = decisions::register(
+        &mut flow.case.f.connect().await,
+        &flow.case.owner,
+        Uuid::new_v4(),
+        descriptor,
+    )
+    .await
+    .unwrap();
+    let approved = decisions::decide(
+        &mut flow.case.f.connect().await,
+        &flow.case.owner,
+        Uuid::new_v4(),
+        proposed.record_version,
+        proposed.key,
+        Decision::Approve,
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        flow.case
+            .try_bind_message(approved.clone(), Uuid::new_v4())
+            .await,
+        Err(crate::sealed_outbound::AdmitError::Queue(
+            zrotext_delivery_store::StoreError::QuotaExceeded
+        ))
+    ));
+    assert!(matches!(
+        send_action(
+            &mut flow.case.f.connect().await,
+            &flow.principal,
+            Uuid::new_v4(),
+            approved.key,
+            None
+        )
+        .await
+        .unwrap(),
+        SendOutcome::WaitingOwnerBinding
+    ));
+    assert_eq!(counts(&flow.case).await, (0, 1, 0));
+    let row = flow.case.f.db.query_one("SELECT (SELECT count(*) FROM usage_ledger WHERE entry_kind='reserve'),(SELECT count(*) FROM workflow_message_links)", &[]).await.unwrap();
+    assert_eq!(row.get::<_, i64>(0), 1);
+    assert_eq!(row.get::<_, i64>(1), 1);
     flow.case.f.cleanup().await;
 }
 

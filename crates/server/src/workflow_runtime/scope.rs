@@ -182,6 +182,11 @@ pub(super) async fn lock_scope<'tx, 'connection>(
     Ok(result)
 }
 impl CheckedScope<'_, '_> {
+    /// Exact locked archive-source ciphertext identity for descriptor binding.
+    /// This digest is not a reader grant or a proof of plaintext equivalence.
+    pub(super) fn source_digest(&self) -> [u8; 32] {
+        Sha256::digest(self.row.get::<_, Vec<u8>>(8)).into()
+    }
     pub(super) fn signer(&self) -> Result<[u8; 32], AuthError> {
         self.row
             .get::<_, Option<Vec<u8>>>(14)

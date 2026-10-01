@@ -32,6 +32,181 @@ pub(super) struct Case {
     pub(super) outbound: Option<SigningKey>,
     pub(super) phone_reader: Option<[u8; 32]>,
 }
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; disposable workflow schema"]
+async fn proposal_and_metadata_read_cannot_reuse_each_others_request_identity() {
+    for proposal_first in [false, true] {
+        let mut case = Case::with_signer(Some(120000)).await;
+        case.request.permissions =
+            Permissions::new(&[Operation::Propose, Operation::ContextMetadata]).unwrap();
+        let issued = case.issue().await.unwrap();
+        let principal = authenticate(&case.f.db, &case.hasher, &issued.token)
+            .await
+            .unwrap();
+        let descriptor = case.descriptor().await;
+        let request = Uuid::new_v4();
+        if proposal_first {
+            propose_action(
+                &mut case.f.connect().await,
+                &principal,
+                request,
+                descriptor.clone(),
+            )
+            .await
+            .unwrap();
+            assert!(matches!(
+                read_context_metadata(
+                    &mut case.f.connect().await,
+                    &principal,
+                    request,
+                    case.header.context
+                )
+                .await,
+                Err(auth::AuthError::Conflict)
+            ));
+            read_context_metadata(
+                &mut case.f.connect().await,
+                &principal,
+                Uuid::new_v4(),
+                case.header.context,
+            )
+            .await
+            .unwrap();
+        } else {
+            read_context_metadata(
+                &mut case.f.connect().await,
+                &principal,
+                request,
+                case.header.context,
+            )
+            .await
+            .unwrap();
+            assert!(matches!(
+                propose_action(
+                    &mut case.f.connect().await,
+                    &principal,
+                    request,
+                    descriptor.clone()
+                )
+                .await,
+                Err(auth::AuthError::Conflict)
+            ));
+            let actions: i64 = case
+                .f
+                .db
+                .query_one("SELECT count(*) FROM workflow_actions", &[])
+                .await
+                .unwrap()
+                .get(0);
+            assert_eq!(
+                actions, 0,
+                "the conflicting proposal must roll back its action"
+            );
+            propose_action(
+                &mut case.f.connect().await,
+                &principal,
+                Uuid::new_v4(),
+                descriptor,
+            )
+            .await
+            .unwrap();
+        }
+        let row = case.f.db.query_one("SELECT (SELECT count(*) FROM workflow_integration_access),(SELECT count(*) FROM workflow_actions),(SELECT count(*) FROM messages)", &[]).await.unwrap();
+        assert_eq!(row.get::<_, i64>(0), 2);
+        assert_eq!(row.get::<_, i64>(1), 1);
+        assert_eq!(row.get::<_, i64>(2), 0);
+        case.f.cleanup().await;
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; disposable workflow schema"]
+async fn dispatcher_proposes_exact_content_using_the_returned_source_digest_without_a_database_read()
+ {
+    use super::contracts::{ContextRequest, ProposalRequest, Request, Response};
+    let mut case = Case::with_signer(Some(120000)).await;
+    case.request.permissions =
+        Permissions::new(&[Operation::ContextMetadata, Operation::Propose]).unwrap();
+    let issued = case.issue().await.unwrap();
+    let principal = authenticate(&case.f.db, &case.hasher, &issued.token)
+        .await
+        .unwrap();
+    case.f.db.execute("INSERT INTO contact_consent_records(id,account_id,contact_id,purpose,action,source,effective_at,recorded_by) VALUES($1,$2,$3,'operational','grant','manual_entry',clock_timestamp(),$4)", &[&Uuid::new_v4(),&case.f.account,&case.request.contact,&case.owner.user_id]).await.unwrap();
+    let Response::ContextMetadata(metadata) = call(
+        &mut case.f.connect().await,
+        &principal,
+        Request::ContextMetadata(ContextRequest {
+            request_id: Uuid::new_v4(),
+            context_id: case.header.context,
+        }),
+    )
+    .await
+    .unwrap() else {
+        panic!("dispatcher must return the selected source metadata")
+    };
+    // Identity and selected purpose are client configuration; the content digest
+    // and version come solely from the actual scoped service response.
+    let descriptor = context::decisions::Descriptor {
+        account_id: case.f.account.to_string(),
+        action_id: Uuid::new_v4().to_string(),
+        revision: 1,
+        line_id: case.f.line.to_string(),
+        recipient_id: case.request.contact.to_string(),
+        purpose_id: Purpose::Operational.action_id().to_string(),
+        content_ref: metadata.context_id.to_string(),
+        content_version: metadata.revision,
+        content_digest: metadata.source_content_digest,
+        not_before: 0,
+        expires_at: metadata.expires_at_ms / 1000,
+        timezone: "UTC".into(),
+        window_id: IMMEDIATE_WINDOW_ID.into(),
+        routine_id: Uuid::new_v4().to_string(),
+        authority_generation: 1,
+        commitment: "informational".into(),
+    };
+    let request = Uuid::new_v4();
+    let Response::Action(action) = call(
+        &mut case.f.connect().await,
+        &principal,
+        Request::Propose(ProposalRequest {
+            request_id: request,
+            descriptor: descriptor.clone(),
+        }),
+    )
+    .await
+    .unwrap() else {
+        panic!("dispatcher must return the proposed action")
+    };
+    assert_eq!(action.phase, context::decisions::model::Phase::Proposed);
+    assert_eq!(action.key, descriptor.key().unwrap());
+    let mut changed = descriptor;
+    changed.action_id = Uuid::new_v4().to_string();
+    changed.routine_id = Uuid::new_v4().to_string();
+    let replacement = if changed.content_digest.starts_with('0') {
+        "1"
+    } else {
+        "0"
+    };
+    changed.content_digest.replace_range(..1, replacement);
+    assert!(
+        call(
+            &mut case.f.connect().await,
+            &principal,
+            Request::Propose(ProposalRequest {
+                request_id: Uuid::new_v4(),
+                descriptor: changed
+            })
+        )
+        .await
+        .is_err()
+    );
+    let row = case.f.db.query_one("SELECT (SELECT count(*) FROM workflow_actions),(SELECT count(*) FROM messages),(SELECT count(*) FROM workflow_integration_access)", &[]).await.unwrap();
+    assert_eq!(row.get::<_, i64>(0), 1);
+    assert_eq!(row.get::<_, i64>(1), 0);
+    assert_eq!(row.get::<_, i64>(2), 2);
+    case.f.cleanup().await;
+}
 fn digest(domain: &[u8], value: &str) -> [u8; 32] {
     let mut mac =
         <Hmac<Sha256> as HmacKeyInit>::new_from_slice(&crate::test_keys::key(84)).unwrap();
@@ -335,6 +510,13 @@ impl Case {
         approved: context::decisions::ActionState,
         dispatch: Uuid,
     ) -> (context::decisions::ActionState, Uuid) {
+        self.try_bind_message(approved, dispatch).await.unwrap()
+    }
+    pub(super) async fn try_bind_message(
+        &mut self,
+        approved: context::decisions::ActionState,
+        dispatch: Uuid,
+    ) -> Result<(context::decisions::ActionState, Uuid), crate::sealed_outbound::AdmitError> {
         let factor = format!("zrc_{}", URL_SAFE_NO_PAD.encode(rand::random::<[u8; 16]>()));
         let hash = digest(
             b"mfa-recovery-v1",
@@ -415,8 +597,7 @@ impl Case {
             &bytes,
             Some(1),
         )
-        .await
-        .unwrap();
+        .await?;
         let bound = context::decisions::bind_message(
             &mut self.f.connect().await,
             &self.owner,
@@ -431,7 +612,7 @@ impl Case {
         )
         .await
         .unwrap();
-        (bound, message)
+        Ok((bound, message))
     }
 }
 

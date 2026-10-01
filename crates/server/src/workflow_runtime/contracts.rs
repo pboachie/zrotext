@@ -194,6 +194,9 @@ pub struct ContactResponse {
 #[serde(deny_unknown_fields)]
 pub struct ContextMetadataResponse {
     pub context_id: Uuid,
+    /// SHA-256 of exact archive-source bytes for Descriptor.content_digest.
+    /// It proves neither plaintext meaning nor role-3 ciphertext equivalence.
+    pub source_content_digest: String,
     pub revision: i64,
     pub kind: u8,
     pub expires_at_ms: i64,
@@ -474,6 +477,7 @@ mod tests {
     fn metadata_never_serializes_source_reader_or_content_proof_claims() {
         let value = serde_json::to_value(ContextMetadataResponse {
             context_id: Uuid::new_v4(),
+            source_content_digest: "ab".repeat(32),
             revision: 1,
             kind: 1,
             expires_at_ms: 1,
@@ -482,6 +486,7 @@ mod tests {
             manifest_version: 1,
         })
         .unwrap();
+        assert_eq!(value["source_content_digest"], "ab".repeat(32));
         for field in [
             "reader",
             "reader_key_id",

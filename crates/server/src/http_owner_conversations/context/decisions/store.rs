@@ -189,7 +189,7 @@ pub(crate) async fn dispatch_transition(
     {
         return Err(ConversationError::Conflict);
     }
-    tx.query_opt("SELECT 1 FROM workflow_message_links l JOIN messages m ON (m.account_id,m.id)=(l.account_id,l.live_message_id) WHERE l.account_id=$1 AND l.action_id=$2 AND l.revision=$3 AND l.binding_digest=$4 AND l.message_id=$5 AND l.dispatch_id=$6 AND m.workflow_action_id=$2 AND m.state IN ('queued','claimed') AND m.transport_payload IS NOT NULL AND digest(m.transport_payload,'sha256')=l.message_digest AND NOT EXISTS(SELECT 1 FROM message_attempts a WHERE a.account_id=m.account_id AND a.message_id=m.id) FOR UPDATE OF m",
+    tx.query_opt("SELECT 1 FROM workflow_message_links l JOIN messages m ON (m.account_id,m.id)=(l.account_id,l.live_message_id) WHERE l.account_id=$1 AND l.action_id=$2 AND l.revision=$3 AND l.binding_digest=$4 AND l.message_id=$5 AND l.dispatch_id=$6 AND m.workflow_action_id=$2 AND m.state IN ('queued','claimed') AND m.transport_payload IS NOT NULL AND sha256(m.transport_payload)=l.message_digest AND NOT EXISTS(SELECT 1 FROM message_attempts a WHERE a.account_id=m.account_id AND a.message_id=m.id) FOR UPDATE OF m",
         &[&key.account_id,&key.action_id,&key.revision,&&key.binding_digest[..],&message,&dispatch]).await?.ok_or(ConversationError::Forbidden)?;
     if let super::proposal::Actor::Integration(grant) = actor {
         if tx.execute("UPDATE messages SET workflow_executor_grant=$3 WHERE account_id=$1 AND id=$2 AND (workflow_executor_grant IS NULL OR workflow_executor_grant=$3)", &[&key.account_id,&message,&grant]).await? != 1 {

@@ -11,7 +11,7 @@ mod dispatch;
 mod execution;
 mod scheduling;
 pub use dispatch::call;
-pub use execution::{SendOutcome, send_action};
+pub use execution::{IMMEDIATE_WINDOW_ID, SendOutcome, send_action};
 pub use scheduling::schedule_action;
 mod contacts;
 mod proposals;

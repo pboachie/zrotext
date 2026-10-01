@@ -5,7 +5,7 @@ service or a production sending capability. Its seven methods share the existing
 workflow context, exact-action decision and recipient-local scheduling stores.
 It adds no queue, approval ledger, crypto implementation or background worker.
 The executable DTOs are `workflow_runtime::contracts`; the library dispatcher
-`workflow_runtime::dispatch::call` invokes the seven actual checked service
+`workflow_runtime::call` invokes the seven actual checked service
 functions and preserves typed authorization errors. Transport wrappers must
 authenticate the separate workflow credential and call the checked service;
 parsing a DTO or reading the catalog never grants authority.
@@ -81,8 +81,10 @@ shared routine/context/action/schedule transaction fences, and rechecks current
 authority through commit and the existing phone grant/intent boundary. Missing
 owner binding produces durable `waiting_owner_binding`; an unopened or pacing-
 blocked scheduled occurrence produces durable `waiting_window`. Omitting or
-setting `occurrence_id` to null requests immediate independent Send; it refuses
-if the action already has an occurrence. A nonnull occurrence must be nonzero
+setting `occurrence_id` to null requests immediate independent Send. It requires
+the exact owner-approved descriptor to name `immediate-v1` and refuses if the
+action already has an occurrence. A canonical scheduled policy cannot become
+immediate by omitting its occurrence, even before scheduling. A nonnull occurrence must be nonzero
 and the exact occurrence owned by the same authenticated workflow grant, which
 must also possess Schedule. Caller-selected occurrences do not grant authority.
 
@@ -106,15 +108,21 @@ These are serialization shapes, not tokens a caller can replay as authority.
 
 Contact metadata contains no phone numbers or decrypted notes. `peer_digest` is
 lowercase SHA-256 hex of the exact approved peer identity. Public context metadata
-contains only context UUID, revision, numeric kind, expiry and binding/trust/
-manifest generations. It omits the source archive reader, ciphertext digest and
-content-proof claims. It must not relabel the source role-2 header as a role-3
+contains context UUID, revision, numeric kind, expiry, binding/trust/manifest
+generations and explicitly named `source_content_digest`: lowercase SHA-256 hex
+of the exact locked archive-source envelope. This field binds
+`Descriptor.content_digest` to the same stored source revision; it is not the
+hash of the separately encrypted role-3 projection. It proves neither plaintext
+meaning, decryption access nor equivalence between two encrypted representations.
+It omits the source archive reader and content-proof claims. It must not relabel the source role-2 header as a role-3
 projection.
 
 Content returns the separately owner-declared role-3 ZTWC envelope as canonical
 unpadded base64url, never archive-reader bytes as a fallback. The client verifies
 the actual envelope header, selected reader, manifest and authenticated binding
-before decryption. Metadata alone does not prove successful encryption, content
+before decryption. For proposal construction the client uses metadata
+`source_content_digest` with the exact context UUID/revision; it must not
+substitute a digest computed from the role-3 envelope. Metadata alone does not prove successful encryption, content
 meaning, reader access or authority. The server stores/forwards opaque bytes.
 
 Action status uses the existing `ActionState`: exact `key`, `record_version` and

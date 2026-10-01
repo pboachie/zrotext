@@ -14,6 +14,10 @@ use serde::{Deserialize, Serialize};
 use tokio_postgres::Client;
 use uuid::Uuid;
 
+/// Explicit independently owner-approved immediate timing. A scheduled policy
+/// cannot acquire this timing merely by omitting its occurrence identifier.
+pub const IMMEDIATE_WINDOW_ID: &str = "immediate-v1";
+
 /// Durable service outcomes. Prepared records dispatch authority, never carrier delivery.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
@@ -50,7 +54,7 @@ pub async fn send_action(
         {
             principal.require(Operation::Schedule)?;
         }
-        (None, None) => {}
+        (None, None) if permit.descriptor().window_id == IMMEDIATE_WINDOW_ID => {}
         _ => return Err(AuthError::Forbidden),
     }
     let digest =
