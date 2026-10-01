@@ -19,6 +19,9 @@ TEST_ONLY = {
     # Compiled only in the isolated native-console test harness, not runtime code.
     "ZT_TERMINAL_NATIVE_CASE",
     "ZT_OWNER_NATIVE_CASE",
+    "ZT_REFRESH_NATIVE_CASE",
+    "ZT_REFRESH_INTEROP_NOW",
+    "ZT_REFRESH_INTEROP_PROPOSAL_HEX",
     # Compiled only under cfg(test) + conversation-simulator-tests; never a server setting.
     "ZT_CONVERSATION_SIM_DIR",
     "ZT_AUTH_TEST_DATABASE_URL",
@@ -66,7 +69,12 @@ def main() -> int:
     used = set()
     for path in (ROOT / "crates").rglob("*.rs"):
         source = path.read_text(encoding="utf-8")
-        used.update(READ.findall(source))
+        reads = set(READ.findall(source))
+        # Reduced-token native children receive an explicitly owned TEMP fixture directory.
+        # This cfg(test) module does not introduce a server/Compose runtime setting.
+        if path.relative_to(ROOT).as_posix() == "crates/owner-cli/src/windows/conversation_refresh/native_tests.rs":
+            reads.discard("TEMP")
+        used.update(reads)
         for primary, alias in SMTP_ALIAS.findall(source):
             used.update((primary, alias))
 
