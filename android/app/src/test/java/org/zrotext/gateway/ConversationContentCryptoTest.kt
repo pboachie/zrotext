@@ -23,6 +23,35 @@ import javax.crypto.spec.SecretKeySpec
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class ConversationContentCryptoTest {
+    @Test fun captureOwningAuthorityGateCannotDeadlockConcurrentReplyVerification() {
+        val f=Fixture();val evidence=f.evidence("Synthetic reply");val capture=f.capture("Synthetic capture")
+        val authorityGate=Any()
+        val captureEntered=java.util.concurrent.CountDownLatch(1)
+        val verifySampling=java.util.concurrent.CountDownLatch(1)
+        val failures=java.util.concurrent.ConcurrentLinkedQueue<Throwable>()
+        val crypto=ConversationContentCrypto(f) {
+            if(Thread.currentThread().name=="reply-verification")verifySampling.countDown()
+            synchronized(authorityGate){f.live}
+        }
+        val captureThread=Thread({try {
+            synchronized(authorityGate) {
+                captureEntered.countDown()
+                check(verifySampling.await(2,java.util.concurrent.TimeUnit.SECONDS))
+                crypto.sealCapture(capture,1)
+            }
+        } catch(error:Throwable){failures.add(error)}},"capture-authority")
+        val verifyThread=Thread({try {
+            check(captureEntered.await(2,java.util.concurrent.TimeUnit.SECONDS))
+            crypto.verify(evidence)
+        } catch(error:Throwable){failures.add(error)}},"reply-verification")
+        // A regression must fail a bounded assertion rather than leave the test JVM hung.
+        captureThread.isDaemon=true;verifyThread.isDaemon=true
+        captureThread.start();verifyThread.start()
+        captureThread.join(3000);verifyThread.join(3000)
+        assertFalse("Capture blocked by verification authority sampling",captureThread.isAlive)
+        assertFalse("Verification blocked by capture authority sampling",verifyThread.isAlive)
+        assertTrue(failures.toString(),failures.isEmpty())
+    }
     @Test fun confirmationMatchesIndependentServerVectorAndContainerRejectsMalformedBounds() {
         val vector=JSONObject(javaClass.classLoader!!.getResourceAsStream("conversation-send.json")!!.bufferedReader().use{it.readText()})
         val bytes=hex(vector.getString("canonical_hex"))

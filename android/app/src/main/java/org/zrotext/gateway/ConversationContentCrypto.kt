@@ -47,14 +47,23 @@ internal class ConversationContentCrypto internal constructor(private val keys: 
     },current)
     private var latestNow = 0L
     private var clockFailed = false
+    private val timeLock = Any()
     private fun live(): ConversationCryptoCurrent {
-        check(!clockFailed) { "Trusted clock requires recovery" }
-        val value = try { current() } catch (failure: Exception) { clockFailed = true; throw failure }
-        if (value == null || value.trustedNowMs <= 0 || value.trustedNowMs < latestNow) {
-            clockFailed = true
-            error("Trusted crypto state unavailable")
+        synchronized(timeLock) { check(!clockFailed) { "Trusted clock requires recovery" } }
+        // Authority providers may sample the admission gate. Never invoke them under a
+        // crypto monitor: capture already owns admission, while sends verify before admission.
+        val value = try { current() } catch (failure: Exception) {
+            synchronized(timeLock) { clockFailed = true }; throw failure
         }
-        latestNow = value.trustedNowMs
+        synchronized(timeLock) {
+            check(!clockFailed) { "Trusted clock requires recovery" }
+            if (value == null || value.trustedNowMs <= 0 || value.trustedNowMs < latestNow) {
+                clockFailed = true
+                error("Trusted crypto state unavailable")
+            }
+            latestNow = value.trustedNowMs
+        }
+        checkNotNull(value)
         check(value.authority.generation == value.scope.trustGeneration)
         check(value.authority.version >= value.scope.activationVersion)
         return value
@@ -74,7 +83,7 @@ internal class ConversationContentCrypto internal constructor(private val keys: 
                 Draft02ManifestAuthority.Reader(2, unhex(v.scope.readerKeyId)))
 
     /** One immutable capture identity and positive journal sequence; caller admission remains mandatory. */
-    @Synchronized fun sealCapture(capture: ConversationCapturedBody, sequence: Long): ByteArray {
+    fun sealCapture(capture: ConversationCapturedBody, sequence: Long): ByteArray {
         DevicePayloadKeyStore.requireSupportedSdk(Build.VERSION.SDK_INT)
         require(sequence > 0)
         val initial = live()
@@ -114,7 +123,7 @@ internal class ConversationContentCrypto internal constructor(private val keys: 
         } finally { content.fill(0); cek.fill(0); nonce.fill(0) }
     }
 
-    @Synchronized override fun verify(evidence: ByteArray): VerifiedConversationSend {
+    override fun verify(evidence: ByteArray): VerifiedConversationSend {
         DevicePayloadKeyStore.requireSupportedSdk(Build.VERSION.SDK_INT)
         val parts = unpackConfirmedEvidence(evidence)
         val c = Confirmation.decode(parts.confirmation)
