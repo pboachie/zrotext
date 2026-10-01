@@ -224,7 +224,7 @@ impl Fixture {
             ),
             include_str!("../../../../deploy/compose/migrations/045_sealed_outbound_queue.sql"),
             include_str!("../../../../deploy/compose/migrations/046_sealed_root_ceremonies.sql"),
-            include_str!("../../../../deploy/compose/migrations/067_connector_registration.sql"),
+            include_str!("../../../../deploy/compose/migrations/069_connector_registration.sql"),
         ] {
             // Mirror the migrator's autocommit index preparation.
             if sql.contains("CREATE FUNCTION messages_in_flight_index_ready") {
