@@ -197,3 +197,28 @@ class DeviceSmokeTests(unittest.TestCase):
             for incomplete in (result(smoke.PRECONDITIONS), result(smoke.PRECONDITIONS) + result(smoke.NETWORK_SERVICE, code=-3)):
                 with self.assertRaises(ValueError):
                     smoke.verify_results(incomplete + "INSTRUMENTATION_CODE: -1\n", expected)
+
+    def test_conversation_entry_is_selected_and_opted_in_only_when_present(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            absent = smoke.selected_tests(root)
+            self.assertNotIn("entryOptInIsolatedEmulator", smoke.instrumentation_arguments(absent))
+            source = root / "android/app/src/androidTest/java/org/zrotext/gateway/ConversationEntryOptInDeviceTest.kt"
+            source.parent.mkdir(parents=True)
+            source.touch()
+            expected = {smoke.PRECONDITIONS: 1, smoke.ENTRY_OPT_IN: 1}
+            self.assertEqual(smoke.selected_tests(root), expected)
+            arguments = smoke.instrumentation_arguments(expected)
+            self.assertIn(smoke.ENTRY_OPT_IN, arguments[arguments.index("class") + 1].split(","))
+            position = arguments.index("entryOptInIsolatedEmulator")
+            self.assertEqual(arguments[position - 1:position + 2], ["-e", "entryOptInIsolatedEmulator", "true"])
+
+    def test_missing_skipped_or_substituted_conversation_entry_never_passes(self):
+        expected = {smoke.PRECONDITIONS: 1, smoke.ENTRY_OPT_IN: 1}
+        prefix = result(smoke.PRECONDITIONS)
+        suffix = "INSTRUMENTATION_CODE: -1\n"
+        smoke.verify_results(prefix + result(smoke.ENTRY_OPT_IN, smoke.ENTRY_OPT_IN_METHOD) + suffix, expected)
+        for entry in ("", result(smoke.ENTRY_OPT_IN, smoke.ENTRY_OPT_IN_METHOD, -3),
+                      result(smoke.ENTRY_OPT_IN, "unrelatedPassingTest")):
+            with self.subTest(entry=entry), self.assertRaises(ValueError):
+                smoke.verify_results(prefix + entry + suffix, expected)
