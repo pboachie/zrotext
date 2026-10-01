@@ -295,6 +295,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "067_contacts_consent.sql",
         include_str!("../../../../deploy/compose/migrations/067_contacts_consent.sql"),
     ),
+    (
+        "068_connector_registration.sql",
+        include_str!("../../../../deploy/compose/migrations/068_connector_registration.sql"),
+    ),
+    (
+        "069_sealed_root_custody.sql",
+        include_str!("../../../../deploy/compose/migrations/069_sealed_root_custody.sql"),
+    ),
 ];
 
 /// Indexes the Compose migrator prepares with CREATE INDEX CONCURRENTLY in
