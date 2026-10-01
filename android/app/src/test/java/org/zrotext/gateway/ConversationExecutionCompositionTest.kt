@@ -5,6 +5,7 @@ import androidx.room.Room
 import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -93,6 +94,7 @@ class ConversationExecutionCompositionTest {
         assertNull(capture.journal().installation())
         val worker = Executors.newSingleThreadExecutor(); val mount = ConversationRuntimeMount()
         var releases = 0; var hooks = 0; var publications = 0; var sent = ""
+        val released = CountDownLatch(1)
         val socket = object : okhttp3.WebSocket {
             override fun request() = okhttp3.Request.Builder().url("https://example.org").build()
             override fun queueSize() = 0L
@@ -110,7 +112,7 @@ class ConversationExecutionCompositionTest {
             Executor { it.run() }, { _, _ -> error("No selected keys") }, { _, _ -> error("No authority") },
             { error("No decision") }, { null }, { null }, object : ConversationSendTransport {
                 override fun submit(message: String, attempt: String, scope: ConversationCaptureScope, body: String) = error("No legacy fallback")
-            }, { releases++ })
+            }, { releases++; released.countDown() })
         val composition = ConversationExecutionComposition(app, sms) // Disabled without explicit opt-in.
         val factory = ConversationConnectionFactory("fixture-site", "fixture-instance", { 100L }, worker,
             { _, _ -> proposal() }, { inputs }, { value -> publications++; assertEquals(1, hooks); value.close() }, mount,
@@ -135,6 +137,8 @@ class ConversationExecutionCompositionTest {
                 .put("connection_epoch", 7).put("deployment_epoch", 3).put("origin_hash", f.session.originHash))
             worker.submit {}.get(5, TimeUnit.SECONDS)
             assertEquals(1, hooks); assertEquals(if (throws) 0 else 1, publications)
+            // Runtime cleanup is queued separately behind the negotiation task and its barrier.
+            assertTrue(released.await(5, TimeUnit.SECONDS))
             assertEquals(1, releases); assertNull(negotiation.wire.currentSession()); assertNull(mount.firstReceipt())
         } finally { negotiation.close(); worker.shutdownNow(); capture.close(); sends.close(); sms.close() }
     }
