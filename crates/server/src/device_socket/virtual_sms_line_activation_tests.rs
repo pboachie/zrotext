@@ -250,6 +250,7 @@ async fn sms_line_activation_frames_are_gated_bound_to_the_connection_and_resent
         auth_hasher: Arc::new(TokenHasher::new(crate::test_keys::key(10)).unwrap()),
         alpha_policy: Arc::new(AlphaPolicy::parse(None, None, None).unwrap()),
         dispatch_runtime_enabled: false,
+        sealed_dispatch_enabled: false,
         inbound_pilot_enabled: false,
         line_opt_out_enabled: false,
         sms_line_activation_enabled: true,

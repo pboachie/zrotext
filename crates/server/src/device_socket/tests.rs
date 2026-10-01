@@ -106,6 +106,7 @@ async fn handshake_closes_with_retry_code_when_database_is_down() {
         auth_hasher: Arc::new(TokenHasher::new(crate::test_keys::key(78)).unwrap()),
         alpha_policy: Arc::new(AlphaPolicy::parse(None, None, None).unwrap()),
         dispatch_runtime_enabled: false,
+        sealed_dispatch_enabled: false,
         inbound_pilot_enabled: false,
         line_opt_out_enabled: false,
         sms_line_activation_enabled: false,
@@ -179,6 +180,7 @@ fn stream_schema_examples_match_serde_frames() {
             ClientFrame::DeviceStatus { .. } => "device_status",
             ClientFrame::DeviceStatusV2 { .. } => "device_status_v2",
             ClientFrame::AlphaReady { .. } => "alpha_ready",
+            ClientFrame::SealedReady { .. } => "sealed_ready",
             ClientFrame::MmsSpikeReady { .. } => "mms_spike_ready",
             ClientFrame::RadioEvent { .. } => "radio_event",
             ClientFrame::InboundEvent { .. } => "inbound_event",
@@ -288,6 +290,96 @@ fn stream_schema_examples_match_serde_frames() {
         };
         assert_eq!(documented["type"], variant);
         assert_eq!(serde_json::to_value(actual).unwrap(), *documented);
+    }
+}
+
+#[test]
+fn sealed_ready_contract_has_no_unbound_or_unknown_fields() {
+    let vector: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../protocol/v1/vectors/sealed-dispatch-01.json"
+    ))
+    .unwrap();
+    let mut ready = vector["ready"].clone();
+    assert!(matches!(
+        serde_json::from_value::<ClientFrame>(ready.clone()).unwrap(),
+        ClientFrame::SealedReady { v: 1, .. }
+    ));
+    ready["recipient"] = "unexpected".into();
+    assert!(serde_json::from_value::<ClientFrame>(ready).is_err());
+}
+
+#[tokio::test]
+async fn sealed_subprotocol_requires_both_gates_and_an_explicit_client_offer() {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let sealed = crate::sealed_dispatch::wire::PROTOCOL;
+    for (enabled, dispatch, offered, expected) in [
+        (false, true, sealed, None),
+        (true, false, sealed, None),
+        (
+            true,
+            true,
+            preconditions::PROTOCOL_V2,
+            Some(preconditions::PROTOCOL_V2),
+        ),
+        (true, true, sealed, Some(sealed)),
+    ] {
+        let state = DeviceSocketState {
+            database_url: "postgresql://negotiation-refusal.invalid/db".into(),
+            site_id: "negotiation-test".into(),
+            instance_id: "fixture".into(),
+            deployment_epoch: 1,
+            enrollment_hasher: Arc::new(EnrollmentHasher::new(crate::test_keys::key(77)).unwrap()),
+            auth_hasher: Arc::new(TokenHasher::new(crate::test_keys::key(78)).unwrap()),
+            alpha_policy: Arc::new(AlphaPolicy::parse(None, None, None).unwrap()),
+            dispatch_runtime_enabled: dispatch,
+            sealed_dispatch_enabled: enabled,
+            inbound_pilot_enabled: false,
+            line_opt_out_enabled: false,
+            sms_line_activation_enabled: false,
+            mms_spike_policy: Arc::new(mms_spike_policy::MmsSpikePolicy::disabled()),
+            draining: Arc::new(AtomicBool::new(false)),
+            drain_notify: Arc::new(Notify::new()),
+        };
+        let listener = tokio::net::TcpListener::bind(std::net::SocketAddr::new(
+            std::net::Ipv4Addr::LOCALHOST.into(),
+            0,
+        ))
+        .await
+        .unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router(state)).await.unwrap();
+        });
+        let mut request = format!("ws://{address}/v1/device-stream")
+            .into_client_request()
+            .unwrap();
+        request
+            .headers_mut()
+            .insert("sec-websocket-protocol", offered.parse().unwrap());
+        let connection = tokio_tungstenite::connect_async(request).await;
+        if expected.is_none() {
+            use tokio_tungstenite::tungstenite::{
+                Error,
+                error::{ProtocolError, SubProtocolError},
+            };
+            assert!(matches!(
+                connection,
+                Err(Error::Protocol(
+                    ProtocolError::SecWebSocketSubProtocolError(SubProtocolError::NoSubProtocol)
+                ))
+            ));
+        } else {
+            let (mut socket, response) = connection.unwrap();
+            assert_eq!(
+                response
+                    .headers()
+                    .get("sec-websocket-protocol")
+                    .map(|value| value.to_str().unwrap()),
+                expected
+            );
+            socket.close(None).await.unwrap();
+        }
+        server.abort();
     }
 }
 
@@ -507,6 +599,7 @@ async fn lost_intent_ack_across_hubs_needs_no_radio_proof_before_regrant() {
         auth_hasher: Arc::new(TokenHasher::new(crate::test_keys::key(78)).unwrap()),
         alpha_policy: policy,
         dispatch_runtime_enabled: true,
+        sealed_dispatch_enabled: false,
         inbound_pilot_enabled: false,
         line_opt_out_enabled: false,
         sms_line_activation_enabled: false,
@@ -749,6 +842,7 @@ async fn writer_claim_replay_epoch_and_revocation() {
         auth_hasher: Arc::new(TokenHasher::new(crate::test_keys::key(78)).unwrap()),
         alpha_policy: Arc::new(AlphaPolicy::parse(None, None, None).unwrap()),
         dispatch_runtime_enabled: false,
+        sealed_dispatch_enabled: false,
         inbound_pilot_enabled: false,
         line_opt_out_enabled: false,
         sms_line_activation_enabled: false,
@@ -938,6 +1032,7 @@ async fn writer_claim_replay_epoch_and_revocation() {
             .unwrap(),
         ),
         dispatch_runtime_enabled: true,
+        sealed_dispatch_enabled: false,
         ..state.clone()
     };
     assert!(

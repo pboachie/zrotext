@@ -1,0 +1,323 @@
+{
+  "format": "managed-ai-grant-01",
+  "grant": {
+    "account_id": "account-a",
+    "grant_id": "grant-a",
+    "grant_version": 1,
+    "revocation_generation": 1,
+    "reader_id": "reader-a",
+    "key_generation": 1,
+    "provider_id": "provider-a",
+    "purpose_id": "purpose-a",
+    "routine_generation": 1,
+    "expires_at": 100,
+    "revoked": false,
+    "account_deleted": false,
+    "line_ids": [
+      "line-a"
+    ],
+    "conversation_ids": [
+      "conversation-a"
+    ],
+    "object_ids": [
+      "content-a"
+    ]
+  },
+  "task": {
+    "account_id": "account-a",
+    "grant_id": "grant-a",
+    "grant_version": 1,
+    "revocation_generation": 1,
+    "reader_id": "reader-a",
+    "key_generation": 1,
+    "provider_id": "provider-a",
+    "purpose_id": "purpose-a",
+    "routine_generation": 1,
+    "expires_at": 100,
+    "task_id": "task-a",
+    "line_id": "line-a",
+    "conversation_id": "conversation-a",
+    "maximum_units": 5,
+    "objects": [
+      {
+        "object_id": "content-a",
+        "version": 1,
+        "digest": "abababababababababababababababababababababababababababababababab"
+      }
+    ]
+  },
+  "content": {
+    "content-a": {
+      "account_id": "account-a",
+      "line_id": "line-a",
+      "conversation_id": "conversation-a",
+      "version": 1,
+      "digest": "abababababababababababababababababababababababababababababababab",
+      "deleted": false,
+      "wrap_reader_id": "reader-a",
+      "wrap_key_generation": 1,
+      "wrap_task_id": "task-a",
+      "wrap_grant_id": "grant-a",
+      "wrap_grant_version": 1,
+      "wrap_purpose_id": "purpose-a"
+    },
+    "content-adjacent": {
+      "account_id": "account-a",
+      "line_id": "line-a",
+      "conversation_id": "conversation-adjacent",
+      "version": 1,
+      "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+      "deleted": false,
+      "wrap_reader_id": "reader-a",
+      "wrap_key_generation": 1,
+      "wrap_task_id": "task-a",
+      "wrap_grant_id": "grant-a",
+      "wrap_grant_version": 1,
+      "wrap_purpose_id": "purpose-a"
+    }
+  },
+  "budget": {
+    "available": true,
+    "remaining_units": 10,
+    "remaining_tasks": 2,
+    "hard_ceiling": 10
+  },
+  "response": {
+    "task_id": "task-a",
+    "reader_id": "reader-a",
+    "provider_id": "provider-a",
+    "call_id": "task-a-call",
+    "encrypted_draft_digest": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef"
+  },
+  "rejected_checkpoints": [
+    {
+      "name": "foreign-account",
+      "target": "task",
+      "changes": {
+        "account_id": "account-b"
+      }
+    },
+    {
+      "name": "wrong-reader",
+      "target": "task",
+      "changes": {
+        "reader_id": "reader-b"
+      }
+    },
+    {
+      "name": "wrong-task-wrap",
+      "target": "task",
+      "changes": {
+        "task_id": "task-b"
+      }
+    },
+    {
+      "name": "wrong-provider",
+      "target": "task",
+      "changes": {
+        "provider_id": "provider-b"
+      }
+    },
+    {
+      "name": "wrong-purpose",
+      "target": "task",
+      "changes": {
+        "purpose_id": "purpose-b"
+      }
+    },
+    {
+      "name": "wrong-line",
+      "target": "task",
+      "changes": {
+        "line_id": "line-b"
+      }
+    },
+    {
+      "name": "adjacent-conversation-canary",
+      "target": "task",
+      "changes": {
+        "conversation_id": "conversation-adjacent"
+      }
+    },
+    {
+      "name": "adjacent-content-canary",
+      "target": "task",
+      "changes": {
+        "objects": [
+          {
+            "object_id": "content-adjacent",
+            "version": 1,
+            "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+          }
+        ]
+      }
+    },
+    {
+      "name": "scope-narrowed",
+      "target": "grant",
+      "changes": {
+        "object_ids": []
+      }
+    },
+    {
+      "name": "revoked",
+      "target": "grant",
+      "changes": {
+        "revoked": true
+      }
+    },
+    {
+      "name": "grant-generation-stale",
+      "target": "grant",
+      "changes": {
+        "grant_version": 2
+      }
+    },
+    {
+      "name": "revocation-generation-stale",
+      "target": "grant",
+      "changes": {
+        "revocation_generation": 2
+      }
+    },
+    {
+      "name": "reader-rotation",
+      "target": "grant",
+      "changes": {
+        "key_generation": 2
+      }
+    },
+    {
+      "name": "routine-rotation",
+      "target": "grant",
+      "changes": {
+        "routine_generation": 2
+      }
+    },
+    {
+      "name": "account-erased",
+      "target": "grant",
+      "changes": {
+        "account_deleted": true
+      }
+    },
+    {
+      "name": "deleted-content",
+      "target": "content",
+      "changes": {
+        "deleted": true
+      }
+    },
+    {
+      "name": "content-edit",
+      "target": "content",
+      "changes": {
+        "version": 2
+      }
+    },
+    {
+      "name": "wrong-ciphertext",
+      "target": "content",
+      "changes": {
+        "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+      }
+    },
+    {
+      "name": "foreign-content",
+      "target": "content",
+      "changes": {
+        "account_id": "account-b"
+      }
+    },
+    {
+      "name": "wrap-reader-mismatch",
+      "target": "content",
+      "changes": {
+        "wrap_reader_id": "reader-b"
+      }
+    },
+    {
+      "name": "wrap-key-mismatch",
+      "target": "content",
+      "changes": {
+        "wrap_key_generation": 2
+      }
+    },
+    {
+      "name": "wrap-grant-mismatch",
+      "target": "content",
+      "changes": {
+        "wrap_grant_id": "grant-b"
+      }
+    },
+    {
+      "name": "wrap-version-mismatch",
+      "target": "content",
+      "changes": {
+        "wrap_grant_version": 2
+      }
+    },
+    {
+      "name": "wrap-purpose-mismatch",
+      "target": "content",
+      "changes": {
+        "wrap_purpose_id": "purpose-b"
+      }
+    },
+    {
+      "name": "expired-grant",
+      "target": "grant",
+      "changes": {
+        "expires_at": 20
+      }
+    },
+    {
+      "name": "expired-task",
+      "target": "task",
+      "changes": {
+        "expires_at": 20
+      }
+    }
+  ],
+  "rejected_budgets": [
+    {
+      "available": false
+    },
+    {
+      "remaining_units": 4
+    },
+    {
+      "remaining_tasks": 0
+    },
+    {
+      "hard_ceiling": 4
+    }
+  ],
+  "deletion_outcomes": [
+    {
+      "local_deleted": true,
+      "provider_status": "attempted",
+      "prior_access_recalled": false
+    },
+    {
+      "local_deleted": true,
+      "provider_status": "acknowledged",
+      "prior_access_recalled": false
+    },
+    {
+      "local_deleted": true,
+      "provider_status": "unsupported",
+      "prior_access_recalled": false
+    },
+    {
+      "local_deleted": true,
+      "provider_status": "failed",
+      "prior_access_recalled": false
+    },
+    {
+      "local_deleted": true,
+      "provider_status": "unknown",
+      "prior_access_recalled": false
+    }
+  ]
+}
