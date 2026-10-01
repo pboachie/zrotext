@@ -34,13 +34,33 @@ tool does not discover or edit a guessed global configuration location.
 
 Commands below use `SERVER`, `EXPECTED_SHA256` and `CLIENT_CONFIG` for the reviewed
 artifact path, reviewed fingerprint and explicit local client file. Quote paths.
-Run the doctor before modifying configuration:
+Run from the checkout root. The selected configuration's parent directory must
+already exist. Keep this checkout and built SDK in place: the installed launcher
+references the setup script and server by absolute path.
+
+Run the doctor before modifying configuration. In a POSIX shell:
 
 ```sh
 python scripts/agent_setup.py doctor --server "$SERVER" --sha256 "$EXPECTED_SHA256" --client mcp-json
 python scripts/agent_setup.py demo --server "$SERVER" --sha256 "$EXPECTED_SHA256"
 python scripts/agent_setup.py install --server "$SERVER" --sha256 "$EXPECTED_SHA256" --client mcp-json --config "$CLIENT_CONFIG"
 ```
+
+In PowerShell, explicitly set the reviewed paths and fingerprint. Replace both
+placeholders below with the reviewed digest and selected existing client file.
+
+```powershell
+$Server = (Resolve-Path -LiteralPath 'sdk/mcp/server.mjs').Path
+$ExpectedSha256 = 'REPLACE_WITH_REVIEWED_LOWERCASE_SHA256'
+$ClientConfig = (Resolve-Path -LiteralPath 'REPLACE_WITH_SELECTED_CLIENT_CONFIG.json').Path
+python scripts/agent_setup.py doctor --server "$Server" --sha256 "$ExpectedSha256" --client mcp-json
+python scripts/agent_setup.py demo --server "$Server" --sha256 "$ExpectedSha256"
+python scripts/agent_setup.py install --server "$Server" --sha256 "$ExpectedSha256" --client mcp-json --config "$ClientConfig"
+```
+
+Check each command's exit status before continuing (PowerShell:
+`$LASTEXITCODE`). Success returns zero; setup refusals return 2 with a JSON `code`.
+Do not overwrite an existing client file with a copied example.
 
 The first exchange defaults to the shared synthetic envelope fixture. The demo
 launches only the reviewed stdio artifact and exercises initialize, readiness and
@@ -56,6 +76,14 @@ the command and rerun with `--apply --review-digest` containing the displayed
 digest. This explicitly confirms the concrete change; a different configuration
 or plan requires another preview. There is no automatic apply or privilege change.
 Reload the selected MCP client yourself after applying.
+
+After inspecting the install preview in PowerShell, copy its `reviewDigest` and
+apply that exact plan:
+
+```powershell
+$ReviewDigest = 'REPLACE_WITH_INSPECTED_INSTALL_REVIEW_DIGEST'
+python scripts/agent_setup.py install --server "$Server" --sha256 "$ExpectedSha256" --client mcp-json --config "$ClientConfig" --apply --review-digest "$ReviewDigest"
+```
 
 The installed launcher rechecks the artifact fingerprint and Node version before
 starting stdio. It supplies no tokens or secrets. Live gates cannot be enabled by
@@ -94,6 +122,45 @@ the exact owned entry. Changed/foreign entries are refused. Restart the client
 explicitly; removal does not stop an already-running child. `grantRevoked: false`
 is deliberate: this local slice creates no grant and cannot revoke a future
 remote grant. Never describe local configuration removal as server-side revocation.
+
+In PowerShell, preview removal with the same original paths and fingerprint:
+
+```powershell
+python scripts/agent_setup.py disconnect --server "$Server" --sha256 "$ExpectedSha256" --client mcp-json --config "$ClientConfig"
+```
+
+Inspect that removal preview, then copy its new digest before applying:
+
+```powershell
+$RemovalReviewDigest = 'REPLACE_WITH_INSPECTED_REMOVAL_REVIEW_DIGEST'
+python scripts/agent_setup.py disconnect --server "$Server" --sha256 "$ExpectedSha256" --client mcp-json --config "$ClientConfig" --apply --review-digest "$RemovalReviewDigest"
+```
+
+Do not reuse the install digest. Disconnect can remove the exact owned entry even
+if the server artifact has disappeared, without launching it; the original server
+path and fingerprint still identify the entry.
+
+## Troubleshooting a refused local setup
+
+These codes come from `scripts/agent_setup.py`. Resolve the prerequisite and rerun
+the preview; refusal does not authorize overwriting a conflicting entry.
+
+| JSON `code` | Next step |
+| --- | --- |
+| `invalid_artifact_digest` | Supply exactly 64 lowercase hexadecimal characters from the reviewed fingerprint. |
+| `artifact_missing`, `artifact_changed` | Check the regular `.mjs` file and reviewed revision. Review a changed artifact before accepting a new fingerprint; hashing alone does not establish trust. |
+| `node_missing`, `node_unavailable`, `node_unsupported` | Check `node --version` in this shell; use Node.js 22 or later on its PATH. |
+| `invalid_config_path` | Select a nonsymlink file whose parent directory exists. |
+| `invalid_config`, `duplicate_config_key`, `config_size_limit` | Review the selected UTF-8 JSON object and its `mcpServers` object through the client's normal configuration workflow. Remove duplicate keys; the tool refuses oversized files rather than truncating them. |
+| `entry_conflict` | Inspect the existing entry locally. Use the original checkout, server path and fingerprint to preview disconnect; foreign or changed entries require manual review. |
+| `review_required_or_configuration_changed`, `configuration_changed` | Close the client/editor, rerun the preview, inspect it and use its current digest. |
+| `setup_busy` | Check for another setup process. Follow the lock recovery steps above only after confirming none is running. |
+| `connector_demo_unavailable`, `unexpected_connector_response` | Check the reviewed server's [SDK build prerequisites](mcp-local-tools.md#run-from-source), then retry the synthetic demo. A failed demo does not diagnose phone or SIM readiness. |
+| `local_io_failure` | Check local file/directory access, preserve the existing configuration and rerun the preview after resolving the I/O problem. |
+
+Doctor's `artifactVerified: true` verifies the selected file fingerprint only.
+`liveAvailable: false` and unknown phone/SIM observations are expected for this
+local preview; repeated installation cannot turn them into live readiness.
 
 Remaining #618 acceptance: authenticated short-lived pairing and least-privilege
 grants/secret-store custody; authoritative server/version/gate/line/Android/SIM
