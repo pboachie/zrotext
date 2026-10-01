@@ -192,6 +192,14 @@ async fn grant_issuance_rolls_back_when_its_final_connector_query_crosses_expiry
         .unwrap()
         .get(0);
     let refused = matches!(result, Err(auth::AuthError::Forbidden));
+    // The deliberate query-latency view is not part of the real migration
+    // inventory. Restore its backing table only after collecting the result
+    // and all rollback assertions, then use the shared restricted teardown.
+    case.f
+        .db
+        .batch_execute("DROP VIEW connector_registrations; ALTER TABLE connector_registration_wait_rows RENAME TO connector_registrations")
+        .await
+        .unwrap();
     case.f.cleanup().await;
     assert!(
         refused,
