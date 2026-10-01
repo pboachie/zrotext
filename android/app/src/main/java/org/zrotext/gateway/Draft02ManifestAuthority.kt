@@ -158,6 +158,28 @@ internal class Draft02ManifestAuthority private constructor(
             generation, version, semanticDigest, request.peer(), signer.id, signer.point, readers)
     }
 
+    /** Enrollment-only successor: preserve every prior record and add exactly this reply signer. */
+    fun requireReplySuccessor(prior: Draft02ManifestAuthority, signerId: ByteArray) {
+        require(prior.version < Long.MAX_VALUE && version == prior.version + 1 && generation == prior.generation &&
+            same(account, prior.account) && records.size == prior.records.size + 1)
+        fun identical(a: Key, b: Key) = a.role == b.role && same(a.id,b.id) && same(a.point,b.point) &&
+            same(a.device,b.device) && same(a.line,b.line) && a.scope == b.scope && a.from == b.from &&
+            a.until == b.until && a.state == b.state
+        require(prior.records.all { old -> records.count { identical(old,it) } == 1 })
+        val added = records.filter { next -> prior.records.none { identical(it,next) } }
+        require(added.size == 1 && added.single().role == 5 && same(added.single().id,signerId))
+    }
+
+    /** Lookup-only device reader check, independent of a reply signer. */
+    fun requireDeviceReader(accountId: ByteArray, deviceId: ByteArray, lineId: ByteArray,
+                            readerId: ByteArray, nowMs: Long) {
+        window(issued, expires, nowMs)
+        require(same(accountId, account) && readerId.size == 32)
+        val key = records.singleOrNull { it.role == 1 && same(it.id, readerId) }
+        require(key != null && key.active(nowMs) && key.scope and 4 != 0 &&
+            same(key.device, deviceId) && same(key.line, lineId)) { "Selected device reader" }
+    }
+
     private class Key(val role: Int, val id: ByteArray, val point: ByteArray, val device: ByteArray,
                       val line: ByteArray, val scope: Int, val from: Long, val until: Long, val state: Int) {
         fun active(now: Long) = state == 1 && from <= now && now < until

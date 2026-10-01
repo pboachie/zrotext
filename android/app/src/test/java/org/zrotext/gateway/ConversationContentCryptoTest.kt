@@ -23,6 +23,30 @@ import javax.crypto.spec.SecretKeySpec
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class ConversationContentCryptoTest {
+    @Test fun inboundCaptureNeedsNoReplySignerAndExplicitPreservedSuccessorEnablesReply() {
+        val f=Fixture(false); val crypto=f.crypto()
+        f.authority.requireDeviceReader(f.account,f.device,f.line,f.recipientId,f.now)
+        assertTrue(crypto.sealCapture(f.capture("Inbound before reply enrollment"),1).isNotEmpty())
+        assertThrows(Exception::class.java) { crypto.verify(f.evidence("No reply authority")) }
+        assertEquals(0,f.openCalls)
+        val next=f.replySuccessor()
+        next.requireReplySuccessor(f.authority,id(f.browser,5))
+        f.live=ConversationCryptoCurrent(f.scope,next,point(f.archive),id(f.browser,5),id(f.phone,4),f.now)
+        next.context(Draft02ManifestAuthority.Request(Draft02ManifestAuthority.Direction.OUTBOUND,
+            f.account,f.message,f.device,f.line,ascii("+12"),id(f.browser,5),
+            listOf(Draft02ManifestAuthority.Reader(1,f.recipientId),Draft02ManifestAuthority.Reader(2,f.archiveId))),f.now)
+        assertTrue(crypto.sealCapture(f.capture("Inbound after reply enrollment"),2).isNotEmpty())
+        assertEquals("Reply after enrollment",crypto.verify(f.evidence("Reply after enrollment")).body)
+    }
+    @Test fun replySuccessorCannotReplaceExistingPhoneAuthorityAndReaderCheckRejectsWrongLineOrTime() {
+        val f=Fixture(false)
+        assertThrows(Exception::class.java) { f.replySuccessor(true).requireReplySuccessor(f.authority,id(f.browser,5)) }
+        assertThrows(Exception::class.java) { f.authority.requireDeviceReader(f.account,f.device,ByteArray(16){9},f.recipientId,f.now) }
+        assertThrows(Exception::class.java) { f.authority.requireDeviceReader(f.account,f.device,f.line,f.recipientId,f.now+60_000) }
+        assertTrue(f.live!!.outboundSignerKeyId.all { it == 0.toByte() })
+        assertThrows(Exception::class.java) { f.crypto().verify(f.evidence("Still unavailable")) }
+        assertEquals(0,f.openCalls)
+    }
     @Test fun captureOwningAuthorityGateCannotDeadlockConcurrentReplyVerification() {
         val f=Fixture();val evidence=f.evidence("Synthetic reply");val capture=f.capture("Synthetic capture")
         val authorityGate=Any()
@@ -163,7 +187,7 @@ class ConversationContentCryptoTest {
         assertThrows(Exception::class.java){f.crypto().verify(ConversationContentCrypto.packConfirmedEvidence(parts.envelope,parts.confirmation,wrong))}
     }
 
-    private class Fixture:ConversationContentKeyOperations {
+    private class Fixture(includeReply: Boolean = true):ConversationContentKeyOperations {
         val account=ByteArray(16){1};val device=ByteArray(16){2};val line=ByteArray(16){3};val message=ByteArray(16){4}
         val root=pair();val recipient=pair();val archive=pair();val phone=pair();val browser=pair()
         val archiveId=id(archive,2);val recipientId=id(recipient,1)
@@ -177,14 +201,25 @@ class ConversationContentCryptoTest {
         var security=PayloadKeySecurity.TRUSTED_ENVIRONMENT;var lastCek:ByteArray?=null
         private var cek=ByteArray(32){7}
         init {
-            val records=listOf(1 to recipient,2 to archive,4 to phone,5 to browser,6 to root).map{(role,key)->
+            val records=(listOf(1 to recipient,2 to archive,4 to phone) + (if(includeReply) listOf(5 to browser) else emptyList()) + listOf(6 to root)).map{(role,key)->
                 byteArrayOf(role.toByte())+id(key,role)+point(key)+(if(role==1||role==4)device else ByteArray(16))+
                     (if(role==1||role==4||role==5)line else ByteArray(16))+ByteBuffer.allocate(2).putShort(when(role){1->4;2->12;4->2;5->1;else->0}.toShort()).array()+long(now-1000)+long(now+60_000)+byteArrayOf(1)}
             val unsigned=ascii("ZTMA")+byteArrayOf(2)+account+long(1)+long(1)+long(now-1000)+long(now+60_000)+ByteArray(32)+point(root)+records.size.toByte()+records.fold(ByteArray(0)){a,b->a+b}
             manifest=unsigned+signature(root,ascii("ZTSE/manifest/v2\u0000")+int(unsigned.size)+unsigned)
             authority=Draft02ManifestAuthority.verify(pin,manifest,Draft02ManifestAuthority.Trust(account,sha(ascii("ZTSE/root-pin/v2\u0000")+pin),1,Draft02ManifestAuthority.Position.genesis(ByteArray(32))),now)
             scope=ConversationCaptureScope(str(account),str(device),str(line),1,"+12",str(ByteArray(16){5}),str(ByteArray(16){6}),str(ByteArray(16){7}),"01".repeat(32),hex(archiveId),1,1,hex(authority.digest),"02".repeat(32))
-            live=ConversationCryptoCurrent(scope,authority,point(archive),id(browser,5),id(phone,4),now)
+            live=ConversationCryptoCurrent(scope,authority,point(archive),if(includeReply) id(browser,5) else ByteArray(32),id(phone,4),now)
+        }
+        fun replySuccessor(wrongPhone: Boolean = false): Draft02ManifestAuthority {
+            val original = manifest.copyOfRange(151, manifest.size - 64).asList().chunked(149).map { it.toByteArray() }
+            val records = original.toMutableList()
+            if(wrongPhone) records[2] = records[2].copyOf().also { it[148] = 2 }
+            val record = byteArrayOf(5)+id(browser,5)+point(browser)+ByteArray(16)+line+
+                ByteBuffer.allocate(2).putShort(1).array()+long(now-1000)+long(now+60_000)+byteArrayOf(1)
+            records.add(records.size-1, record)
+            val unsigned=ascii("ZTMA")+byteArrayOf(2)+account+long(1)+long(2)+long(now-1000)+long(now+60_000)+authority.digest+point(root)+records.size.toByte()+records.fold(ByteArray(0)){a,b->a+b}
+            val signed=unsigned+signature(root,ascii("ZTSE/manifest/v2\u0000")+int(unsigned.size)+unsigned)
+            return Draft02ManifestAuthority.verify(pin,signed,Draft02ManifestAuthority.Trust(account,sha(ascii("ZTSE/root-pin/v2\u0000")+pin),1,Draft02ManifestAuthority.Position.after(authority.version,authority.digest)),now)
         }
         fun crypto()=ConversationContentCrypto(this){live}
         fun capture(body:String)=ConversationCapturedBody(scope,str(message),now,1,body)
@@ -192,14 +227,14 @@ class ConversationContentCryptoTest {
         override fun sign(unsigned:ByteArray,point:ByteArray):ByteArray {signCalls++;assertArrayEquals(ConversationContentCryptoTest.point(phone),point);val result=signature(phone,ascii("ZTSE/sign/v2\u0000")+int(unsigned.size)+unsigned);onSign();return result}
         override fun open(parts:Draft02OutboundEnvelope.Parts):ByteArray {openCalls++;return cek.copyOf().also{lastCek=it;onOpen()}}
         fun evidence(body:String,edit:(ByteArray)->Unit={}):ByteArray {
-            val protected=account+message+device+line+long(1)+authority.digest+id(browser,5)+long(now)+long(now+20_000)+byteArrayOf(1,3)+ascii("+12")
+            val protected=account+message+device+line+long(1)+live!!.authority.digest+id(browser,5)+long(now)+long(now+20_000)+byteArrayOf(1,3)+ascii("+12")
             val header=ascii("ZTSE")+byteArrayOf(2,1,0,0)+ByteBuffer.allocate(2).putShort(protected.size.toShort()).array()
             val nonce=ByteArray(12){8};val cipher=Cipher.getInstance("AES/GCM/NoPadding");cipher.init(Cipher.ENCRYPT_MODE,SecretKeySpec(cek,"AES"),GCMParameterSpec(128,nonce));cipher.updateAAD(ascii("ZTSE/body/v2\u0000")+header+protected)
             val encrypted=cipher.doFinal(body.toByteArray(Charsets.UTF_8))
             val wraps=byteArrayOf(1)+recipientId+point(recipient)+ByteArray(48)+byteArrayOf(2)+archiveId+point(archive)+ByteArray(48)
             val unsigned=header+protected+nonce+int(encrypted.size)+encrypted+byteArrayOf(2)+wraps
             val envelope=unsigned+signature(browser,ascii("ZTSE/sign/v2\u0000")+int(unsigned.size)+unsigned)
-            val confirmation=ascii("ZTCS")+byteArrayOf(1)+account+device+line+uuid(scope.intervalId)+uuid(scope.initiatingSessionId)+message+long(1)+long(1)+long(1)+long(now+20_000)+byteArrayOf(3)+ascii("+12")+id(browser,5)+archiveId+authority.digest+sha(envelope)+sha(body.toByteArray(Charsets.UTF_8))
+            val confirmation=ascii("ZTCS")+byteArrayOf(1)+account+device+line+uuid(scope.intervalId)+uuid(scope.initiatingSessionId)+message+long(1)+long(1)+long(1)+long(now+20_000)+byteArrayOf(3)+ascii("+12")+id(browser,5)+archiveId+live!!.authority.digest+sha(envelope)+sha(body.toByteArray(Charsets.UTF_8))
             edit(confirmation)
             return ConversationContentCrypto.packConfirmedEvidence(envelope,confirmation,signature(browser,ascii("zrotext/conversation/confirm-send/v1\u0000")+int(confirmation.size)+confirmation))
         }

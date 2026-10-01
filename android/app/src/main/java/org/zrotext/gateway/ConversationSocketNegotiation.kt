@@ -115,6 +115,12 @@ internal object ConversationSocketComposition {
             requireCurrent()
             check(!closed.get() && assigned.get()===value && authenticatedHost===this && factory===value)
         }
+        fun identitySnapshot(): EvidenceIdentity {
+            check(!closed.get() && authenticatedHost === this)
+            requireCurrent()
+            check(!closed.get() && authenticatedHost === this)
+            return identity.copy()
+        }
         fun schedule(value:(WebSocket,EvidenceIdentity,Long)->ConversationSocketNegotiation) {
             try {scheduler.execute {
                 var candidate:ConversationSocketNegotiation?=null
@@ -135,6 +141,19 @@ internal object ConversationSocketComposition {
         }
         private fun closeConnection() {connection.getAndSet(null)?.let {try{it.close()}finally{unpublishOwned(it)}}}
         fun close(){closed.set(true);assigned.set(null);closeConnection()}
+    }
+    internal class AuthenticatedIdentitySnapshot internal constructor(val identity: EvidenceIdentity,
+        private val current: () -> Unit) {
+        fun requireCurrent() = current()
+        override fun toString() = "ConversationAuthenticatedIdentity(redacted)"
+    }
+    /** Exact proof-host lifetime, not identity equality across replacement hosts. */
+    fun currentAuthenticatedIdentity(): AuthenticatedIdentitySnapshot? {
+        val host = authenticatedHost ?: return null
+        return runCatching {
+            val identity = host.identitySnapshot()
+            AuthenticatedIdentitySnapshot(identity) { check(host.identitySnapshot() == identity) }
+        }.getOrNull()
     }
     fun create(socket:WebSocket,identity:EvidenceIdentity,epoch:Long)=factory?.invoke(socket,identity,epoch)
     fun clear(){

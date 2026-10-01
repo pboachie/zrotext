@@ -116,7 +116,8 @@ internal class ConversationConnectionFactory(
                             (if (inbound) emptyList() else listOf(Draft02ManifestAuthority.Reader(1,
                                 deviceReader))) +
                                 Draft02ManifestAuthority.Reader(2, hex(scope.readerKeyId))), at)
-                        context(true, now); context(false, now)
+                        context(true, now)
+                        verified.requireDeviceReader(uuid(scope.accountId), uuid(scope.deviceId), uuid(scope.lineId), deviceReader, now)
                         requireSession()
                         check(inputs.lifecycleLoss() == null)
                         inputs.requireAuthority(scope, trustedNow())
@@ -129,7 +130,8 @@ internal class ConversationConnectionFactory(
                         // All potentially blocking storage/key/provider work precedes this sample.
                         // Context checks below use only the verified immutable manifest/key IDs.
                         val completedNow = trustedNow()
-                        context(true, completedNow); context(false, completedNow)
+                        context(true, completedNow)
+                        verified.requireDeviceReader(uuid(scope.accountId), uuid(scope.deviceId), uuid(scope.lineId), deviceReader, completedNow)
                         requireSession()
                         return ConversationCryptoCurrent(scope, verified, selected.archivePoint,
                             selected.outboundSigner, parsed.signerId, completedNow)

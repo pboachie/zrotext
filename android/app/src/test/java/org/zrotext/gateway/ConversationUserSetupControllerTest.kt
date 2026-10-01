@@ -18,6 +18,7 @@ import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class) @Config(sdk = [28])
 class ConversationUserSetupControllerTest {
+    private var fixtureStatement = ByteArray(0)
     private val f = ConversationInputFixture
     private fun fixture(): Pair<ConversationUserSetupController.Selection, ConversationActivationCodec.Parsed> {
         val key = KeyPairGenerator.getInstance("EC").apply { initialize(ECGenParameterSpec("secp256r1")) }.generateKeyPair()
@@ -38,12 +39,47 @@ class ConversationUserSetupControllerTest {
             out.writeLong(1); out.write(ByteArray(32) { 4 }); out.writeLong(2); out.write(ByteArray(32) { 5 })
             out.writeLong(f.session.connectionEpoch); out.writeLong(f.session.deploymentEpoch); text("fixture-site"); text("fixture-instance")
         }
-        val parsed = ConversationActivationCodec.decode(output.toByteArray()); val scope = parsed.scope
+        fixtureStatement = output.toByteArray()
+        val parsed = ConversationActivationCodec.decode(fixtureStatement); val scope = parsed.scope
         return ConversationUserSetupController.Selection(EvidenceIdentity(scope.accountId, scope.deviceId, f.session.originHash),
             scope.intervalId, scope.lineId, scope.bindingGeneration, scope.peer,
-            ConversationConnectionBindings(point, ByteArray(32) { 6 }), "fixture-site", "fixture-instance") to parsed
+            ConversationConnectionBindings(point, ByteArray(32)), "fixture-site", "fixture-instance") to parsed
     }
     private fun selection() = fixture().first
+    @Test fun publicSetupDecodesExactUntrustedSelectionAndRejectsForeignIdentityOrTrailingBytes() {
+        val selected = selection()
+        val identity = selected.identity.copy(originHash = "01".repeat(32))
+        val output=ByteArrayOutputStream()
+        DataOutputStream(output).use { it.write(byteArrayOf(90,84,80,83,1)); it.writeShort(fixtureStatement.size)
+            it.write(fixtureStatement); it.write(selected.bindings.archivePoint); it.write(ByteArray(32){7}) }
+        val bytes=output.toByteArray()
+        val decoded=ConversationUserSetupProvider.decodeSelection(bytes,identity).first
+        assertEquals(selected.intervalId,decoded.intervalId)
+        assertTrue(decoded.bindings.outboundSigner.all { it == 0.toByte() })
+        assertThrows(Exception::class.java) { ConversationUserSetupProvider.decodeSelection(bytes+byteArrayOf(0),identity) }
+        assertThrows(Exception::class.java) { ConversationUserSetupProvider.decodeSelection(bytes,identity.copy(deviceId=UUID.randomUUID().toString())) }
+        assertThrows(Exception::class.java) { ConversationUserSetupProvider.decodeSelection(bytes.copyOf().also { it[it.size-40]=(it[it.size-40].toInt() xor 1).toByte() },identity) }
+    }
+    @Test fun replyFileIsBoundedImmutableCandidateAndPendingControllerCannotInstallAuthority() {
+        val output=ByteArrayOutputStream()
+        DataOutputStream(output).use { it.write(byteArrayOf(90,84,80,82,1)); it.writeShort(364)
+            it.write(ByteArray(364){2}); it.write(ByteArray(32){3}) }
+        val bytes=output.toByteArray(); val decoded=ConversationUserSetupProvider.decodeReplyAuthority(bytes)
+        bytes.fill(0); assertEquals(2,decoded.signedSuccessor()[0].toInt())
+        assertThrows(Exception::class.java) { ConversationUserSetupProvider.decodeReplyAuthority(output.toByteArray()+byteArrayOf(0)) }
+        val app=RuntimeEnvironment.getApplication()
+        val db=Room.inMemoryDatabaseBuilder(app,SmsJournalDatabase::class.java).allowMainThreadQueries().build()
+        val controller=ConversationUserSetupController(app,db.attempts(),"fixture-existing",Executor { it.run() },
+            Executor { it.run() },ConversationExecutionComposition(app,db), { error("No publication") })
+        try {
+            var accepted=true
+            controller.installReplyAuthority(decoded.signedSuccessor(),decoded.signerId()) { accepted=it }
+            assertFalse(accepted)
+            controller.close()
+            controller.installReplyAuthority(decoded.signedSuccessor(),decoded.signerId()) { accepted=it }
+            assertFalse(accepted)
+        } finally { controller.close();db.close() }
+    }
     @Test fun disabledSetupOpensNoResourceAndInstallsNoSocketFactory() {
         ConversationSocketComposition.clear()
         val app = RuntimeEnvironment.getApplication()

@@ -35,6 +35,12 @@ internal class ConversationAndroidConnectionInputs(
     fun openForUserAction(session: ConversationPhoneSession, scope: ConversationCaptureScope,
                          review: ConversationPhoneReview, observedVersion: Long,
                          bindings: ConversationConnectionBindings): Owned {
+        return openForUserAction(session, scope, review, observedVersion) { bindings }
+    }
+
+    internal fun openForUserAction(session: ConversationPhoneSession, scope: ConversationCaptureScope,
+                                  review: ConversationPhoneReview, observedVersion: Long,
+                                  bindings: () -> ConversationConnectionBindings): Owned {
         check(currentSession() == session)
         val decision = ConversationPhoneDecision(session, scope, review, observedVersion,
             SystemClock::elapsedRealtime, currentSession)
@@ -54,7 +60,7 @@ internal class ConversationAndroidConnectionInputs(
             owned.requireLocal(scope)
             owned.preparedInputs = ConversationConnectionInputs(handles.capture, handles.sends,
                 protection, Draft02TrustStore(storage), payloadKeys, signingKeys,
-                delivery, { expected, _ -> owned.requireLocal(expected); bindings },
+                delivery, { expected, _ -> owned.requireLocal(expected); bindings() },
                 { expected, _ -> owned.requireLocal(expected); handles.requireOpen() },
                 { expected -> owned.requireLocal(expected); decision.consume(expected); owned.requireLocal(expected) },
                 { subscription -> owned.observedLine(subscription) }, { owned.loss() }, dispatch, owned::close)

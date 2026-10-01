@@ -31,13 +31,16 @@ internal class ConversationUserSetupController(
     private var installed: AutoCloseable? = null
     private val connection = AtomicReference<ConversationConnectionFactory.Connection?>(null)
     private val negotiation = AtomicReference<ConversationSocketNegotiation?>(null)
+    private val executionConnection = AtomicReference<ConversationExecutionComposition.Connection?>(null)
+    private val selectedBindings = AtomicReference<ConversationConnectionBindings?>(null)
     private fun requireOpen() = synchronized(gate) { check(!closed) }
 
     /** Called only for a deliberate selected interval. False opens no journal, key or trust handle. */
     fun begin(selection: Selection, enabled: Boolean = false): Boolean = synchronized(gate) {
         check(!closed)
         if (!enabled || installed != null) return false
-        require(selection.bindingGeneration > 0)
+        require(selection.bindingGeneration > 0 && selection.bindings.outboundSigner.all { it == 0.toByte() })
+        selectedBindings.set(selection.bindings)
         var wire: ConversationAuthenticatedWire? = null
         var expectedSession: ConversationPhoneSession? = null
         var bundle: ConversationActivationBundle? = null
@@ -74,7 +77,7 @@ internal class ConversationUserSetupController(
                 requireOpen()
                 validateIdentity(selection, session); check(session == expectedSession)
                 val parsed = checkNotNull(prepared)
-                val inputs = provider.openForUserAction(session, parsed.scope, checkNotNull(review), 0, selection.bindings)
+                val inputs = provider.openForUserAction(session, parsed.scope, checkNotNull(review), 0) { checkNotNull(selectedBindings.get()) }
                 try {
                     requireOpen()
                     val authenticated = checkNotNull(wire)
@@ -114,7 +117,9 @@ internal class ConversationUserSetupController(
                                 if (inbound) parsed.signerId else selection.bindings.outboundSigner,
                                 (if (inbound) emptyList() else listOf(Draft02ManifestAuthority.Reader(1, recipient.keyId))) +
                                     Draft02ManifestAuthority.Reader(2, hex(parsed.scope.readerKeyId)))
-                            authority.context(request(true), now()); authority.context(request(false), now())
+                            authority.context(request(true), now())
+                            authority.requireDeviceReader(uuid(parsed.scope.accountId), uuid(parsed.scope.deviceId),
+                                uuid(parsed.scope.lineId), recipient.keyId, now())
                         }
                         contexts(candidate) // Reject wrong roles/bindings before durable trust CAS.
                         check(trust.acceptManifest(snapshot, manifest, ::now).status == Draft02TrustStore.Status.NEEDS_FRESHNESS)
@@ -137,7 +142,9 @@ internal class ConversationUserSetupController(
                     try { requireOpen(); value.requireLive(); onReady(presentation) }
                     catch (_: Exception) { close() }
                 }
-            }, dispatchForConnection = { value -> requireOpen(); execution.dispatch(value) })
+            }, dispatchForConnection = { value ->
+                requireOpen(); check(executionConnection.compareAndSet(null, value)); execution.dispatch(value)
+            })
         installed = ConversationSocketComposition.installOwned({ socket, identity, epoch ->
             requireOpen()
             check(identity == selection.identity)
@@ -146,6 +153,66 @@ internal class ConversationUserSetupController(
             try { requireOpen(); value } catch (error: Exception) { value.close(); throw error }
         }, enabled = true)
         installed != null
+    }
+
+    /** Explicit worker action; no reply authority is available before actual phone activation. */
+    fun installReplyAuthority(signedSuccessor: ByteArray, signerId: ByteArray,
+                              completion: (Boolean) -> Unit = {}) {
+        require(signedSuccessor.size in 364..9751 && signerId.size == 32 && signerId.any { it != 0.toByte() })
+        val bytes = signedSuccessor.copyOf(); val signer = signerId.copyOf()
+        worker.execute {
+            val accepted = runCatching {
+                requireOpen()
+                val handle = checkNotNull(connection.get()); handle.requireLive()
+                val active = checkNotNull(executionConnection.get())
+                val scope = checkNotNull(active.runtime.currentScope())
+                fun now(): Long {
+                    requireOpen(); handle.requireLive()
+                    check(active.wire.currentSession() == active.phone && active.runtime.currentScope() == scope &&
+                        active.runtime.captureEligible() && active.inputs.lifecycleLoss() == null)
+                    val value = checkNotNull(active.runtime.trustedNowMs())
+                    active.inputs.requireAuthority(scope, value)
+                    return checkNotNull(active.runtime.trustedNowMs()).also { check(it >= value) }
+                }
+                val before = active.currentCrypto(scope, now())
+                val saved = active.inputs.trust.inspect()
+                val snapshot = checkNotNull(saved.snapshot)
+                check(saved.status == Draft02TrustStore.Status.NEEDS_FRESHNESS && snapshot.version == before.authority.version)
+                val candidate = Draft02ManifestAuthority.verify(snapshot.pin, bytes,
+                    Draft02ManifestAuthority.Trust(uuid(scope.accountId), Draft02RootComparison.fingerprint(snapshot.pin),
+                        scope.trustGeneration, Draft02ManifestAuthority.Position.after(before.authority.version, before.authority.digest)), now())
+                candidate.requireReplySuccessor(before.authority, signer)
+                val bindings = checkNotNull(selectedBindings.get())
+                fun checkRoles(authority: Draft02ManifestAuthority) {
+                    val reader = active.inputs.payloadKeys.existingPublic()
+                    check(reader.security in setOf(PayloadKeySecurity.STRONGBOX, PayloadKeySecurity.TRUSTED_ENVIRONMENT))
+                    val at = now()
+                    authority.requireDeviceReader(uuid(scope.accountId), uuid(scope.deviceId), uuid(scope.lineId), reader.keyId, at)
+                    fun request(inbound: Boolean) = Draft02ManifestAuthority.Request(
+                        if (inbound) Draft02ManifestAuthority.Direction.INBOUND else Draft02ManifestAuthority.Direction.OUTBOUND,
+                        uuid(scope.accountId), uuid(scope.intervalId), uuid(scope.deviceId), uuid(scope.lineId),
+                        scope.peer.toByteArray(Charsets.US_ASCII), if (inbound) before.phoneSignerKeyId else signer,
+                        (if (inbound) emptyList() else listOf(Draft02ManifestAuthority.Reader(1, reader.keyId))) +
+                            Draft02ManifestAuthority.Reader(2, hex(scope.readerKeyId)))
+                    authority.context(request(true), at); authority.context(request(false), at)
+                }
+                checkRoles(candidate)
+                val current = active.inputs.trust.currentAuthority(::now)
+                check(current.version == before.authority.version && current.digest.contentEquals(before.authority.digest))
+                check(active.inputs.trust.acceptManifest(snapshot, bytes, ::now).status == Draft02TrustStore.Status.NEEDS_FRESHNESS)
+                val installedAuthority = active.inputs.trust.currentAuthority(::now)
+                check(installedAuthority.version == candidate.version && installedAuthority.digest.contentEquals(candidate.digest))
+                checkRoles(installedAuthority)
+                now()
+                synchronized(gate) {
+                    check(!closed && connection.get() === handle && executionConnection.get() === active)
+                    check(selectedBindings.compareAndSet(bindings, ConversationConnectionBindings(bindings.archivePoint, signer)))
+                }
+                true
+            }.getOrDefault(false)
+            bytes.fill(0); signer.fill(0)
+            delivery.execute { completion(accepted) }
+        }
     }
 
     override fun close() {
