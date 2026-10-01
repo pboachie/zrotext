@@ -3,6 +3,9 @@ package org.zrotext.gateway
 
 import java.io.*
 import java.util.UUID
+import java.nio.ByteBuffer
+import java.nio.charset.CodingErrorAction
+import org.json.JSONObject
 
 /** Proposed dormant channel frames. Authentication comes from the existing connection, not bytes.
  * Fixed-width network order, exact kinds/lengths, no Java modified UTF or local journal encoding.
@@ -88,6 +91,75 @@ internal object ConversationChannelCodec {
         val length=input.readInt();require(length in 1..40000 && input.available()==length)
         nonce to ByteArray(length).also(input::readFully)
     }
+    fun executionRequest(session:ConversationPhoneSession, challenge:UUID, scope:ConversationCaptureScope,
+                         message:UUID, attempt:UUID, envelopeDigest:ByteArray):ByteArray {
+        require(envelopeDigest.size==32)
+        val digest=envelopeDigest.copyOf()
+        return write(18,session,challenge){it.scope(bound(scope,session));it.id(message);it.id(attempt);it.write(digest)}
+    }
+    fun parseExecutionRequest(bytes:ByteArray,session:ConversationPhoneSession):ConversationExecutionRequest {
+        require(bytes.size in 434..447)
+        return read(bytes,18,session,447){input,nonce->
+            ConversationExecutionRequest(nonce,bound(input.scope(),session),input.id(),input.id(),ByteArray(32).also(input::readFully))
+        }
+    }
+    fun executionReply(session:ConversationPhoneSession,challenge:UUID,json:ByteArray):ByteArray {
+        require(json.size in 1..2048)
+        val owned=json.copyOf();strictGrant(owned)
+        return write(19,session,challenge){it.writeShort(owned.size);it.write(owned)}
+    }
+    fun parseExecutionReply(bytes:ByteArray,session:ConversationPhoneSession)=read(bytes,19,session,2168){input,nonce->
+        val length=input.readUnsignedShort();require(length in 1..2048 && input.available()==length)
+        nonce to strictGrant(ByteArray(length).also(input::readFully))
+    }
+    /** Existing grant semantics plus bounded strict JSON: no duplicate names or permissive tokens. */
+    private fun strictGrant(bytes:ByteArray):SealedExecutionGrantValidator.Fields {
+        val text=Charsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
+            .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(bytes)).toString()
+        val fields=SealedExecutionGrantFrame.parse(GrantJson(text).parse())
+        require(fields.readerRole==1 && fields.segmentCount in 1..6)
+        return fields
+    }
+    private class GrantJson(private val text:String) {
+        private var at=0
+        private fun space(){while(at<text.length && text[at] in " \t\r\n")at++}
+        private fun expected(ch:Char){space();require(at<text.length && text[at++]==ch)}
+        private fun string():String {
+            space();val start=at;require(at<text.length && text[at++]=='"')
+            while(at<text.length){
+                val ch=text[at++]
+                if(ch=='"')return JSONObject("{\"value\":"+text.substring(start,at)+"}").getString("value")
+                require(ch.code>=32)
+                if(ch=='\\'){
+                    require(at<text.length)
+                    when(text[at++]){
+                        '"','\\','/','b','f','n','r','t'->Unit
+                        'u'->{require(at+4<=text.length && text.substring(at,at+4).all{it in "0123456789abcdefABCDEF"});at+=4}
+                        else->error("Grant JSON escape")
+                    }
+                }
+            };error("Grant JSON string")
+        }
+        fun parse():JSONObject {
+            val result=JSONObject();val names=mutableSetOf<String>();expected('{')
+            while(true){
+                space();require(at<text.length)
+                if(text[at]=='}'){at++;break}
+                val key=string();require(names.add(key));expected(':');space();require(at<text.length)
+                val value:Any=if(text[at]=='"')string() else {
+                    val start=at;while(at<text.length && text[at] in '0'..'9')at++
+                    val number=text.substring(start,at)
+                    require(number.matches(Regex("[1-9][0-9]*")))
+                    number.toLong().also{require(it in 1..9007199254740991L)}
+                }
+                result.put(key,value);space();require(at<text.length)
+                if(text[at]=='}'){at++;break}
+                expected(',');space();require(at<text.length && text[at]!='}')
+            }
+            space();require(at==text.length)
+            return result
+        }
+    }
     fun parseTimeRequest(bytes:ByteArray, session:ConversationPhoneSession)=read(bytes,1,session){_,nonce->ConversationTrustedClock.Request(nonce,session)}
     fun timeReply(r:ConversationTimeReply)=write(2,r.session,r.challenge){require(r.sentUtcMs>0);it.writeLong(r.sentUtcMs)}
     fun parseTimeReply(bytes:ByteArray,session:ConversationPhoneSession)=read(bytes,2,session){input,nonce->ConversationTimeReply(session,nonce,input.positive())}
@@ -114,6 +186,12 @@ internal object ConversationChannelCodec {
     }
 }
 internal data class ConversationCaptureAck(val challenge:UUID,val event:UUID,val digest:String,val created:Boolean)
+internal class ConversationExecutionRequest(val challenge:UUID,val scope:ConversationCaptureScope,
+    val message:UUID,val attempt:UUID,envelopeDigest:ByteArray) {
+    private val digest=envelopeDigest.copyOf()
+    val envelopeDigest get()=digest.copyOf()
+    override fun toString()="ConversationExecutionRequest(redacted)"
+}
 
 /** Socket owner supplies out-of-band authenticated session for every response; no default exists. */
 internal interface ConversationAuthenticatedWire {

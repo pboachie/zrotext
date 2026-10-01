@@ -34,6 +34,7 @@ internal class ConversationSocketWire(private val socket: WebSocket,
             12 -> ConversationChannelCodec.parseCaptureRequest(owned,session)
             14 -> ConversationChannelCodec.parseDeliveryRequest(owned,session)
             16 -> ConversationChannelCodec.parseProposalRequest(owned,session)
+            18 -> ConversationChannelCodec.parseExecutionRequest(owned,session)
             1 -> ConversationChannelCodec.parseTimeRequest(owned,session)
             3 -> ConversationChannelCodec.parseCloseRequest(owned,session)
             6,8 -> {
@@ -53,7 +54,7 @@ internal class ConversationSocketWire(private val socket: WebSocket,
             }
             else -> error("Conversation request kind unavailable")
         }
-        val pending=Waiting(session,challenge,when(kind){1->2;6->7;8,10->9;12->13;14->15;16->17;else->4})
+        val pending=Waiting(session,challenge,when(kind){1->2;6->7;8,10->9;12->13;14->15;16->17;18->19;else->4})
         synchronized(lock) {check(!closed && waiting==null && authenticatedSession()==session);waiting=pending}
         try {
             check(socket.send(owned.toByteString())) { "Socket submission refused" }
@@ -66,7 +67,7 @@ internal class ConversationSocketWire(private val socket: WebSocket,
     }
     fun acceptReply(session:ConversationPhoneSession, bytes:ByteArray):Boolean = synchronized(lock) {
         val pending=waiting ?: return@synchronized false
-        val maximum=when(pending.replyKind){15->40122;17->10897;else->512}
+        val maximum=when(pending.replyKind){15->40122;17->10897;19->2168;else->512}
         if(closed || session!=pending.session || authenticatedSession()!=session || bytes.size !in 118..maximum) return@synchronized false
         val challenge=runCatching {
             when(pending.replyKind) {
@@ -76,6 +77,7 @@ internal class ConversationSocketWire(private val socket: WebSocket,
                 13 -> ConversationChannelCodec.parseCaptureReply(bytes,session).challenge
                 15 -> ConversationChannelCodec.parseDeliveryReply(bytes,session).first
                 17 -> ConversationChannelCodec.parseProposalReply(bytes,session).first
+                19 -> ConversationChannelCodec.parseExecutionReply(bytes,session).first
                 else -> ConversationChannelCodec.parseCloseReply(bytes,session).challenge
             }
         }.getOrNull()

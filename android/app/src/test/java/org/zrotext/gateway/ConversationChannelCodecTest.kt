@@ -3,7 +3,11 @@ package org.zrotext.gateway
 import java.util.UUID
 import org.junit.Test
 import org.junit.Assert.*
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
+@RunWith(RobolectricTestRunner::class) @Config(sdk=[28])
 class ConversationChannelCodecTest {
     private fun id()=UUID.randomUUID().toString()
     private val scope=ConversationCaptureScope(id(),id(),id(),1,"+12",id(),id(),id(),"11".repeat(32),"22".repeat(32),1,2,"33".repeat(32),"44".repeat(32))
@@ -30,6 +34,31 @@ class ConversationChannelCodecTest {
     private val clock=ConversationTrustedClock({elapsed},{session})
     private val transport=ConversationAuthorityTransport(ConversationSerializedChannel(wire),clock,{session},{elapsed})
     @Test fun serializedTimeAndClosureIntegrateAuthenticatedAdapter() {transport.refreshTime();assertEquals(100000L,clock.nowMs());transport.close(scope)}
+    @Test fun executionRequestHasExactWidthsAndRejectsEveryTruncationOrSuffix() {
+        val s=checkNotNull(session);val challenge=UUID.randomUUID();val message=UUID.randomUUID();val attempt=UUID.randomUUID()
+        val bytes=ConversationChannelCodec.executionRequest(s,challenge,scope,message,attempt,ByteArray(32){7})
+        assertEquals(434,bytes.size)
+        val parsed=ConversationChannelCodec.parseExecutionRequest(bytes,s)
+        assertEquals(scope,parsed.scope);assertEquals(challenge,parsed.challenge);assertEquals(message,parsed.message);assertEquals(attempt,parsed.attempt)
+        for(size in 0 until bytes.size)assertThrows(Exception::class.java){ConversationChannelCodec.parseExecutionRequest(bytes.copyOf(size),s)}
+        assertThrows(Exception::class.java){ConversationChannelCodec.parseExecutionRequest(bytes+byteArrayOf(0),s)}
+        assertEquals(447,ConversationChannelCodec.executionRequest(s,challenge,scope.copy(peer="+123456789012345"),message,attempt,ByteArray(32)).size)
+    }
+    @Test fun strictExecutionGrantJsonRejectsDuplicatePermissiveUnsafeAndInvalidUtf8Frames() {
+        val s=checkNotNull(session);val nonce=UUID.randomUUID()
+        val json=ConversationGrantFixture.json(s,scope,UUID.randomUUID(),UUID.randomUUID(),ByteArray(32),ByteArray(32),ByteArray(32),100000).toString()
+        val reply=ConversationChannelCodec.executionReply(s,nonce,json.toByteArray())
+        assertEquals(nonce,ConversationChannelCodec.parseExecutionReply(reply,s).first)
+        val invalid=listOf(json.dropLast(1)+",\"v\":1}",json.dropLast(1)+",}",json+" true",
+            json.replace("\"v\":1","\"v\":1.0"),json.replace("\"v\":1","\"v\":01"),
+            json.replace("\"v\":1","\"v\":true"),json.replace("\"v\":1","\"v\":9007199254740992"),
+            json.replace("\"reader_role\":1","\"reader_role\":2"),json.replace("\"segment_count\":6","\"segment_count\":7"),
+            json.dropLast(1)+",\"unknown\":1}",json.replace("\"v\"","'v'"))
+        invalid.forEach{bad->assertThrows(Exception::class.java){ConversationChannelCodec.parseExecutionReply(ConversationGrantFixture.rawReply(s,nonce,bad.toByteArray()),s)}}
+        assertThrows(Exception::class.java){ConversationChannelCodec.parseExecutionReply(ConversationGrantFixture.rawReply(s,nonce,byteArrayOf(0xc3.toByte(),0x28)),s)}
+        for(size in 0 until reply.size)assertThrows(Exception::class.java){ConversationChannelCodec.parseExecutionReply(reply.copyOf(size),s)}
+        assertThrows(Exception::class.java){ConversationChannelCodec.parseExecutionReply(reply+byteArrayOf(0),s)}
+    }
     @Test fun frameKindsAndNetworkOrderHaveExactWidths() {
         val request=ConversationTrustedClock.Request(UUID.randomUUID(),session!!)
         val bytes=ConversationChannelCodec.timeRequest(request)

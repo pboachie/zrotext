@@ -23,6 +23,25 @@ internal interface ConversationSendTransport {
     /** One synchronous submission boundary; no retry or carrier-success inference. */
     fun submit(message: String, attempt: String, scope: ConversationCaptureScope, body: String): ConversationSubmission
 }
+/** Production transport receives protected-original evidence identity only after the durable claim. */
+internal interface ConversationClaimedEvidenceTransport : ConversationSendTransport {
+    fun submitClaimed(claim: ConversationClaimedEvidence): ConversationSubmission
+}
+/** Same-process, one-use handoff. This token supplies no authority; the adapter must reload Room. */
+internal class ConversationClaimedEvidence(val message:String, val attempt:String,
+    val scope:ConversationCaptureScope, val evidenceDigest:String, val deadline:Long, evidence:ByteArray) : AutoCloseable {
+    private var original:ByteArray?=evidence.copyOf()
+    init {
+        require(evidence.size in 1..40*1024 && deadline>0 && evidenceDigest.matches(Regex("[0-9a-f]{64}")))
+        listOf(message,attempt).forEach{require(UUID.fromString(it).toString()==it && UUID.fromString(it)!=UUID(0,0))}
+    }
+    @Synchronized fun take():ByteArray {
+        val bytes=checkNotNull(original);original=null
+        return bytes
+    }
+    @Synchronized override fun close(){original?.fill(0);original=null}
+    override fun toString()="ConversationClaimedEvidence(redacted)"
+}
 
 /**
  * Library only. Adapters are mandatory; no transport, key provisioning or builder default exists.
@@ -82,7 +101,12 @@ internal class ConversationConfirmedSend(
             fresh(verified)
             checkAdmission()
             fresh(verified)
-            val result = try { transport.submit(message, attempt, verified.scope, verified.body) }
+            val result = try {
+                if(transport is ConversationClaimedEvidenceTransport) {
+                    val claim=ConversationClaimedEvidence(message,attempt,verified.scope,row.evidenceDigest,verified.expiresAt,raw)
+                    try { transport.submitClaimed(claim) } finally { claim.close() }
+                } else transport.submit(message, attempt, verified.scope, verified.body)
+            }
                 catch (_: Exception) { ConversationSubmission.UNKNOWN }
             journal.recordOutcome(message, attempt, if (result == ConversationSubmission.SUBMITTED) "submitted" else "unknown")
             result

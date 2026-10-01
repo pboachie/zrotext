@@ -6,7 +6,11 @@ import okhttp3.WebSocket
 import okio.ByteString
 import org.junit.Test
 import org.junit.Assert.*
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
+@RunWith(RobolectricTestRunner::class) @Config(sdk=[28])
 class ConversationSocketWireTest {
     private val phone=ConversationPhoneSession(UUID.randomUUID(),UUID.randomUUID(),UUID.randomUUID(),1,1,"11".repeat(32))
     private var session:ConversationPhoneSession?=phone
@@ -22,6 +26,23 @@ class ConversationSocketWireTest {
         override fun cancel()=Unit
     }
     private fun request()=ConversationChannelCodec.timeRequest(ConversationTrustedClock.Request(UUID.randomUUID(),phone))
+    @Test fun executionGrantCrossesNormalSocketOnlyForActualRequestNonceSessionAndStrictKind() {
+        wire=ConversationSocketWire(socket,{session},10)
+        val scope=ConversationCaptureScope(phone.account.toString(),phone.device.toString(),UUID.randomUUID().toString(),1,"+12",
+            UUID.randomUUID().toString(),UUID.randomUUID().toString(),UUID.randomUUID().toString(),"11".repeat(32),"22".repeat(32),1,1,"33".repeat(32),"44".repeat(32))
+        val nonce=UUID.randomUUID();val message=UUID.randomUUID();val attempt=UUID.randomUUID()
+        val json=ConversationGrantFixture.json(phone,scope,message,attempt,ByteArray(32),ByteArray(32),ByteArray(32),100000).toString().toByteArray()
+        respond={bytes->
+            val parsed=ConversationChannelCodec.parseExecutionRequest(bytes,phone);assertEquals(attempt,parsed.attempt)
+            assertFalse(wire.acceptReply(phone,ConversationChannelCodec.executionReply(phone,UUID.randomUUID(),json)))
+            val reply=ConversationChannelCodec.executionReply(phone,nonce,json)
+            assertFalse(wire.acceptReply(phone,reply+byteArrayOf(0)))
+            assertFalse(wire.acceptReply(phone,reply.copyOf().also{it[5]=17}))
+            assertTrue(wire.acceptReply(phone,reply));assertFalse(wire.acceptReply(phone,reply));true
+        }
+        val reply=wire.exchange(ConversationChannelCodec.executionRequest(phone,nonce,scope,message,attempt,ByteArray(32)))
+        assertEquals(nonce,ConversationChannelCodec.parseExecutionReply(reply.bytes,phone).first);assertEquals(1,sent)
+    }
     @Test fun actualSocketAdapterAcceptsOnlyBoundNonceAndSession() {
         wire=ConversationSocketWire(socket,{session},10)
         respond={bytes->
