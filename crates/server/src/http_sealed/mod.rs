@@ -17,7 +17,7 @@ use axum::{
     http::{HeaderMap, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::post,
+    routing::{get, post},
 };
 use serde::Serialize;
 use std::sync::Arc;
@@ -34,6 +34,8 @@ const MIN_ENVELOPE_BYTES: usize = 426;
 const MAX_ENVELOPE_BYTES: usize = 34_213;
 const MAX_INBOUND_ENVELOPE_BYTES: usize = 34_082;
 const IDEMPOTENCY_HEADER: &str = "idempotency-key";
+
+mod lifecycle;
 
 #[derive(Clone)]
 pub struct SealedHttpState {
@@ -88,7 +90,9 @@ impl SealedHttpState {
 
 pub fn router(state: SealedHttpState) -> Router {
     Router::new()
-        .route("/messages", post(accept))
+        .route("/messages", post(accept).get(lifecycle::list))
+        .route("/messages/{message_id}", get(lifecycle::status))
+        .route("/messages/{message_id}/cancel", post(lifecycle::cancel))
         .route("/inbound-events", post(accept_inbound))
         .merge(resources::routes())
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
@@ -121,6 +125,7 @@ enum SealedHttpError {
     StaleEvent,
     EventIdConflict,
     SequenceConflict,
+    CancellationConflict,
 }
 
 impl IntoResponse for SealedHttpError {
@@ -142,6 +147,7 @@ impl IntoResponse for SealedHttpError {
             Self::StaleEvent => (StatusCode::BAD_REQUEST, "stale_event"),
             Self::EventIdConflict => (StatusCode::CONFLICT, "event_id_conflict"),
             Self::SequenceConflict => (StatusCode::CONFLICT, "sequence_conflict"),
+            Self::CancellationConflict => (StatusCode::CONFLICT, "cancellation_conflict"),
         };
         let mut response = (status, Json(ErrorBody { code })).into_response();
         if status == StatusCode::TOO_MANY_REQUESTS || code == "billing_pending" {
