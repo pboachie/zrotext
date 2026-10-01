@@ -120,3 +120,8 @@ code, .eyebrow, .rail-label, .rail-status, .nav-note { font-family: Consolas, "C
 #message-activity .activity-device { width:100%;white-space:normal;text-align:left; }
 #message-activity .activity-row summary { min-height:44px;cursor:pointer;padding:.65rem 0; }
 @media(max-width:60rem) { #message-activity .activity-head { display:none; } #message-activity .activity-cells { grid-template-columns:1fr;gap:.5rem; } }
+.summary-cards { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1rem;margin-top:1rem; }
+.summary-cards > div { background:var(--owner-raised);border:1px solid var(--owner-border);border-radius:.5rem;padding:1rem;min-width:0;overflow-wrap:anywhere; }
+.summary-value { font-size:2rem;font-weight:700;margin:.5rem 0;color:var(--owner-accent); }
+#message-summary[data-stale="true"] .summary-value { color:var(--owner-caution); }
+@media(max-width:55rem) { .summary-cards { grid-template-columns:1fr; } }

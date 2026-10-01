@@ -126,6 +126,8 @@ async function ownerPage() {
       return state.unauthorized ? response(401) : response(200,
         state.webhookPages.shift() || { deliveries: [], next_before: null });
     }
+    // These legacy fleet/history fixtures model a server without summary metadata.
+    if (url.startsWith("/v1/owner/message-summary")) return response(404);
     throw new Error(`Unexpected request: ${url}`);
   };
   globalThis.document = { hidden: false, activeElement: null, addEventListener(name, callback) { documentListeners[name] = callback; }, cookie: "__Host-zrotext_csrf=ztc_synthetic", getElementById: element, createElement: makeElement };

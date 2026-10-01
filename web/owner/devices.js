@@ -30,6 +30,16 @@ let availableWebhookEndpointIds = new Set();
 let sessionLoadGeneration = 0;
 let deviceLoadGeneration = 0;
 let messageLoadGeneration = 0;
+let summaryGeneration = 0;
+let summaryBusy = false;
+let summaryActiveRequest = null;
+let summaryLastAttempt = 0;
+let summaryLastStarted = 0;
+let summaryRetryable = false;
+let summaryQueued = false;
+let summarySnapshot = null;
+let summaryTimer = null;
+const summaryDevices = new Map();
 let keyLoadGeneration = 0;
 const requestTimeoutMs = 30_000;
 const dashboardRefreshMs = 15_000;
@@ -363,9 +373,11 @@ async function api(path, method = "GET", body = undefined) {
       signal: typeof AbortSignal.timeout === "function" ? AbortSignal.timeout(requestTimeoutMs) : undefined,
     });
   } catch (error) {
-    throw new Error(error && error.name === "TimeoutError"
+    const failure = new Error(error && error.name === "TimeoutError"
       ? "The server did not respond in time. Try again."
       : "Could not reach the server. Check your connection and try again.");
+    failure.retryable = true;
+    throw failure;
   }
   if (requestEpoch !== ownerEpoch) {
     throw new Error("Your sign-in expired. Sign in again.");
@@ -427,7 +439,7 @@ async function completeSignIn() {
 function loadOwnerData() {
   // The above-the-fold sections load first and alone; the below-the-fold
   // panels wait for them so a sign-in never occupies half the request pool.
-  return Promise.all([loadDevices(), loadMessages()]).finally(() => loadBelowFoldSections());
+  return Promise.all([loadDevices(), loadMessages()]).then(() => loadSummary()).finally(() => loadBelowFoldSections());
 }
 
 function loadBelowFoldSections() {
@@ -501,6 +513,20 @@ function clearWebhookEndpoints() {
 }
 
 function clearOwnerState() {
+  summaryBusy = false;
+  summaryActiveRequest = null;
+  summaryLastAttempt = 0;
+  summaryLastStarted = 0;
+  summaryRetryable = false;
+  summaryGeneration += 1;
+  summaryQueued = false;
+  summarySnapshot = null;
+  if (summaryTimer !== null) window.clearTimeout(summaryTimer);
+  summaryTimer = null;
+  summaryDevices.clear();
+  byId("summary-device").value = "";
+  updateSummaryDevices([], true);
+  renderSummary("Sign in to load authoritative metadata.");
   ownerEpoch += 1;
   browsingOlderDevices = false;
   browsingOlderMessages = false;
@@ -1058,6 +1084,7 @@ async function loadDevices(reset = true, automatic = false) {
     if (devices.some(device => !device || typeof device.device_id !== "string" ||
         !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(device.device_id)) ||
         new Set(devices.map(device => device.device_id)).size !== devices.length) throw new Error("The device response contained ambiguous identities.");
+    updateSummaryDevices(devices, reset);
     const focused = document.activeElement;
     if (reset) {
       clearPreconditionRows();
@@ -1095,6 +1122,131 @@ async function loadDevices(reset = true, automatic = false) {
     if (!stale()) moreButton.disabled = false;
   }
 }
+
+function updateSummaryDevices(devices, reset) {
+  const select = byId("summary-device");
+  const selected = select.value;
+  if (reset) summaryDevices.clear();
+  for (const device of devices) if (device && uuidPattern.test(device.device_id)) summaryDevices.set(device.device_id, device.display_name || "Unnamed gateway");
+  const all = document.createElement("option");
+  all.value = ""; all.textContent = "All devices in this account";
+  const options = [all];
+  for (const [id, name] of summaryDevices) {
+    const option = document.createElement("option"); option.value = id; option.textContent = name; options.push(option);
+  }
+  if (selected && !summaryDevices.has(selected)) {
+    const option = document.createElement("option"); option.value = selected;
+    option.textContent = "Selected device (absent from loaded fleet pages)"; options.push(option);
+  }
+  select.replaceChildren(...options);
+  select.value = selected;
+}
+
+function validSummary(value, device) {
+  const count = item => item && Number.isSafeInteger(item.value) && item.value >= 0 && item.value <= value.count_bound &&
+    typeof item.capped === "boolean" && (!item.capped || item.value === value.count_bound);
+  return value && value.scope === (device ? "device" : "account") && value.device_id === (device || null) && value.timezone === "UTC" &&
+    Number.isSafeInteger(value.day_start_ms) && Number.isSafeInteger(value.day_end_ms) &&
+    value.day_end_ms - value.day_start_ms === 86_400_000 &&
+    Number.isSafeInteger(value.observed_at_ms) && value.observed_at_ms >= value.day_start_ms && value.observed_at_ms < value.day_end_ms &&
+    value.count_bound === 1000 && value.max_age_ms === 30000 &&
+    count(value.submitted_today) && count(value.pending) && count(value.in_flight);
+}
+
+function renderSummary(status = "") {
+  const snapshot = summarySnapshot;
+  byId("message-summary").setAttribute("data-stale", String(Boolean(snapshot && snapshot.expired)));
+  for (const [id, field] of [["summary-submitted", "submitted_today"], ["summary-pending", "pending"], ["summary-flight", "in_flight"]]) {
+    byId(id).textContent = snapshot ? `${snapshot.value[field].value}${snapshot.value[field].capped ? "+ (capped)" : ""}${snapshot.expired ? " (stale)" : ""}` :
+      summaryBusy ? "Loading…" : "Unavailable";
+  }
+  if (status) message("summary-status", status);
+  else if (snapshot) message("summary-status", `${snapshot.error ? snapshot.error + ". " : ""}${snapshot.value.scope === "account" ? "Account" : "Selected device"} observation: ${dateText(snapshot.value.observed_at_ms)}. UTC day; capped values are lower bounds. ${snapshot.expired ? "Historical metadata; current counts are unknown." : "These writer states do not establish delivery."}`);
+}
+
+function ageSummary() {
+  if (summaryTimer !== null) window.clearTimeout(summaryTimer);
+  summaryTimer = null;
+  if (!summarySnapshot || !dashboardSignedIn) { scheduleSummaryRetry(); return; }
+  const elapsed = Math.max(0, performance.now() - summarySnapshot.started, Date.now() - summarySnapshot.wallStarted);
+  summarySnapshot.expired ||= elapsed >= summarySnapshot.remaining || (typeof navigator !== "undefined" && navigator.onLine === false);
+  renderSummary();
+  if (!dashboardPageActive || document.hidden) return;
+  const automatic = byId("auto-refresh").checked;
+  const delay = summarySnapshot.expired ? 15000 : Math.min(15000, Math.max(1, Math.ceil(summarySnapshot.remaining - elapsed)));
+  if (!automatic && summarySnapshot.expired) return;
+  summaryTimer = window.setTimeout(() => {
+    summaryTimer = null;
+    if (automatic && summaryRefreshDue() && canRefreshDashboard() && (typeof navigator === "undefined" || navigator.onLine !== false)) loadSummary(true);
+    else ageSummary();
+  }, delay);
+}
+
+function summaryRefreshDue() {
+  return Math.max(Date.now() - summaryLastAttempt, performance.now() - summaryLastStarted) >= 15000;
+}
+
+function resumeSummary() {
+  ageSummary();
+  if (summarySnapshot && summarySnapshot.expired && summaryRefreshDue() && canRefreshDashboard()) loadSummary(true);
+}
+
+function scheduleSummaryRetry() {
+  if (!summaryRetryable || !dashboardSignedIn || !dashboardPageActive || document.hidden || !byId("auto-refresh").checked) return;
+  if (summaryTimer !== null) window.clearTimeout(summaryTimer);
+  summaryTimer = window.setTimeout(() => {
+    summaryTimer = null;
+    if (canRefreshDashboard() && (typeof navigator === "undefined" || navigator.onLine !== false)) loadSummary(true);
+    else scheduleSummaryRetry();
+  }, 15000);
+}
+
+async function loadSummary(automatic = false, scopeChanged = false) {
+  if (!dashboardSignedIn || !dashboardPageActive) return;
+  if (scopeChanged) {
+    summaryGeneration += 1;
+    summarySnapshot = null;
+    if (summaryTimer !== null) window.clearTimeout(summaryTimer);
+    summaryTimer = null;
+  }
+  if (summaryBusy) { if (scopeChanged) summaryQueued = true; return; }
+  summaryBusy = true;
+  const requestToken = {};
+  summaryActiveRequest = requestToken;
+  const generation = ++summaryGeneration, epoch = ownerEpoch, device = byId("summary-device").value;
+  const started = performance.now(), wallStarted = Date.now();
+  summaryLastAttempt = wallStarted;
+  summaryLastStarted = started;
+  const stale = () => epoch !== ownerEpoch || generation !== summaryGeneration || device !== byId("summary-device").value;
+  byId("refresh-summary").disabled = true;
+  renderSummary(automatic && summarySnapshot ? "Refreshing authoritative metadata…" : "Loading authoritative metadata…");
+  try {
+    const value = await api(`/v1/owner/message-summary${device ? `?device_id=${encodeURIComponent(device)}` : ""}`);
+    if (stale()) return;
+    if (!validSummary(value, device)) throw new Error("The summary response was invalid.");
+    summarySnapshot = { value, started, wallStarted, expired: false, remaining: Math.min(value.max_age_ms, value.day_end_ms - value.observed_at_ms) };
+    summaryRetryable = false;
+    ageSummary();
+  } catch (error) {
+    if (stale()) return;
+    if (summarySnapshot) { summarySnapshot.expired = true; summarySnapshot.error = "Refresh failed"; }
+    summaryRetryable = error.status >= 500 || error.retryable === true;
+    renderSummary(`Summary unavailable. ${summarySnapshot ? "Showing historical metadata; current counts are unknown. " : ""}${error.message}`);
+    if (summarySnapshot) ageSummary(); else scheduleSummaryRetry();
+  } finally {
+    if (summaryActiveRequest === requestToken) {
+      summaryBusy = false;
+      summaryActiveRequest = null;
+      if (!stale()) { byId("refresh-summary").disabled = false; renderSummary(); }
+      if (summaryQueued && dashboardSignedIn) { summaryQueued = false; loadSummary(false, true); }
+    }
+  }
+}
+
+byId("refresh-summary").addEventListener("click", () => loadSummary());
+byId("summary-device").addEventListener("change", () => { loadSummary(false, true); renderSummary("Loading selected scope…"); });
+window.addEventListener("offline", () => { if (summarySnapshot) { summarySnapshot.expired = true; summarySnapshot.error = "Offline"; } ageSummary(); });
+window.addEventListener("online", () => { if (canRefreshDashboard()) loadSummary(true); });
 
 function localTime(milliseconds) {
   return formatTime(milliseconds, "Time unavailable");
@@ -1712,15 +1864,19 @@ byId("refresh-keys").addEventListener("click", () => loadKeys());
 byId("more-keys").addEventListener("click", () => loadKeys(false));
 byId("dismiss-key-secret").addEventListener("click", clearKeySecret);
 byId("auto-refresh").addEventListener("change", () => {
+  ageSummary();
   syncLiveUpdates();
   scheduleDashboardRefresh();
 });
 document.addEventListener("visibilitychange", () => {
+  resumeSummary();
   syncLiveUpdates();
   scheduleDashboardRefresh();
   agePreconditions();
 });
 window.addEventListener("pagehide", () => {
+  if (summaryTimer !== null) window.clearTimeout(summaryTimer);
+  summaryTimer = null;
   dashboardPageActive = false;
   stopDashboardRefresh();
   stopLiveUpdates();
@@ -1729,6 +1885,7 @@ window.addEventListener("pagehide", () => {
 });
 window.addEventListener("pageshow", () => {
   dashboardPageActive = true;
+  resumeSummary();
   agePreconditions();
   scheduleDashboardRefresh();
   startLiveUpdates();
