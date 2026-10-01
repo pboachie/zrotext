@@ -21,6 +21,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 const PASSWORD: &str = "synthetic-workflow-password";
+mod scope_expiry;
 pub(super) struct Case {
     pub(super) f: Fixture,
     pub(super) owner: SessionPrincipal,
