@@ -67,7 +67,17 @@ impl Fixture {
                 login(&db, &hasher, label, &password).await.unwrap(),
             ));
         }
-        let ((account, session), (other_account, _)) = (accounts.remove(0), accounts.remove(0));
+        let mut accounts = accounts.into_iter();
+        let (account, session) = accounts
+            .next()
+            .unwrap_or_else(|| panic!("primary summary fixture account is missing"));
+        let (other_account, _) = accounts
+            .next()
+            .unwrap_or_else(|| panic!("foreign summary fixture account is missing"));
+        assert!(
+            accounts.next().is_none(),
+            "unexpected summary fixture account"
+        );
         let (first, second, foreign) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
         db.execute("INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'Synthetic Alpha'),($3,$2,'Synthetic Beta'),($4,$5,'Synthetic Foreign')",
             &[&first, &account, &second, &foreign, &other_account]).await.unwrap();
