@@ -3,11 +3,12 @@ package org.zrotext.gateway
 
 import android.content.Context
 import android.content.ContextWrapper
-import java.lang.reflect.Proxy
+import androidx.room.Room
 import org.junit.Assert.assertNull
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
@@ -17,8 +18,10 @@ class ConversationUserSetupProviderTest {
         val context = object : ContextWrapper(null) {
             override fun getApplicationContext(): Context = error("Disabled context access")
         }
-        val lines = Proxy.newProxyInstance(SmsAttemptDao::class.java.classLoader,
-            arrayOf(SmsAttemptDao::class.java)) { _, _, _ -> error("Disabled journal access") } as SmsAttemptDao
+        val database = Room.inMemoryDatabaseBuilder(RuntimeEnvironment.getApplication(),
+            SmsJournalDatabase::class.java).allowMainThreadQueries().build()
+        val lines = database.attempts()
+        database.close() // Any accidental query must fail rather than opening setup storage.
         val provider = ConversationUserSetupProvider(context, lines)
         // API 28, malformed public bytes and throwing providers must remain untouched.
         assertNull(provider.resolve(ByteArray(0)))
