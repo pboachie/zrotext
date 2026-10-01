@@ -14,7 +14,7 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 @OptIn(ExperimentalComposeUiApi::class)
 class GatewayAccessibilityDeviceTest : GatewayAccessibilityChecks() {
-    override fun onScreen(page: String, check: (RootForTest) -> Unit) {
+    override fun onScreen(page: String, revealStatus: Boolean, check: (RootForTest) -> Unit) {
         assumeTrue(InstrumentationRegistry.getArguments().getString("a11yIsolatedEmulator") == "true")
         assumeTrue(Build.HARDWARE in setOf("ranchu", "goldfish"))
         val instrumentation = InstrumentationRegistry.getInstrumentation()
@@ -25,6 +25,21 @@ class GatewayAccessibilityDeviceTest : GatewayAccessibilityChecks() {
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         try {
             instrumentation.waitForIdleSync()
+            if (revealStatus) {
+                for (attempt in 0 until 20) {
+                    var visible = false
+                    instrumentation.runOnMainSync {
+                        val root = requireNotNull(findRoot(activity.window.decorView))
+                        root.measureAndLayoutForTest()
+                        visible = homeStatusIsVisible(root)
+                        if (!visible) scrollTowardHomeStatus(root)
+                    }
+                    if (visible) break
+                    // Scroll semantics enqueue work; let the real UI deliver it.
+                    instrumentation.waitForIdleSync()
+                    Thread.sleep(100)
+                }
+            }
             instrumentation.runOnMainSync {
                 val root = requireNotNull(findRoot(activity.window.decorView))
                 root.measureAndLayoutForTest()

@@ -278,8 +278,8 @@ Connect a dedicated Android phone and SIM, send and receive SMS through the serv
 - [x] Fleet overview and selectable bounded device details are merged (#685), preserving live-refresh input and focus
 - [x] Authoritative UTC writer summaries are merged (#695), with account/device scope, capped bounds and explicit freshness/unavailability
 - [ ] Concept-aligned responsive shared owner navigation and role-safe administration (#607)
-- [ ] Responsive message activity preserving history and conservative delivery evidence (#610)
-- [ ] Joint actual-browser/APK visual, state and accessibility acceptance (#612)
+- [ ] Integrate reviewed #690 responsive message activity, preserving history and conservative delivery evidence (#610); pending merge
+- [ ] Integrate reviewed #701 navigation/rendered checks (pending merge), then complete joint actual-browser/APK visual, state and human accessibility acceptance (#612)
 
 </details>
 
@@ -348,7 +348,7 @@ Make ZROtext practical to run, upgrade and build against.
 - [x] Supported-device list backed by repeatable tests ([compatibility matrix](DEVICE-COMPATIBILITY.md))
 - [x] Native Home/Setup/Connection/Tools and explicit guided setup are merged (#603/#604/#648); navigation does not imply sending authority
 - [x] Read-only lifecycle-aware local Home Power observations are merged (#693); unavailable observations remain explicit
-- [ ] Integrated new Home/widget/navigation accessibility, actual TalkBack and physical motion acceptance (#612)
+- [ ] Integrate reviewed #701 landscape/status checks (pending merge); actual TalkBack, keyboard/permission/lifecycle traversal and physical motion acceptance remain open (#612)
 - [ ] Android Home consumption of the merged authenticated summary source (#608); local counters cannot substitute
 
 </details>

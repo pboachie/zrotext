@@ -41,7 +41,7 @@ Sealed dashboard rules: fetch metadata and ciphertext; decrypt locally; render m
 
 ## Android companion screens
 
-The native gateway opens on **Home**, showing actual authenticated-service status, session heartbeat acknowledgments, the selected SIM and this session's pairing proof status. Test socket state stays separate. No sample queue, battery, usage or SMS-readiness metrics are displayed.
+The native gateway opens on **Home**, showing actual authenticated-service status, session heartbeat acknowledgments, the selected SIM, lifecycle-scoped local battery/charging observations and this session's pairing proof status. Test socket state stays separate. No sample queue, usage or SMS-readiness metrics are displayed.
 
 **Setup** contains purpose-specific permission disclosures, SIM selection and device pairing. **Connection** contains authenticated heartbeat controls and the explicit reboot-resume choice. **Tools** contains transport diagnostics and controlled inbound metadata, one-shot SMS and debug-only MMS pilots. Changing screens does not request permissions or start a session; Back returns to Home. Each screen scrolls with large text and the keyboard. Pause stops connections but does not revoke Android SMS receiving access or stop permission-enabled local SMS processing.
 

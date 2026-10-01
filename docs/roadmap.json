@@ -137,8 +137,8 @@
           ],
           "todo": [
             "Concept-aligned responsive shared owner navigation and role-safe administration (#607)",
-            "Responsive message activity preserving history and conservative delivery evidence (#610)",
-            "Joint actual-browser/APK visual, state and accessibility acceptance (#612)"
+            "Integrate reviewed #690 responsive message activity, preserving history and conservative delivery evidence (#610); pending merge",
+            "Integrate reviewed #701 navigation/rendered checks (pending merge), then complete joint actual-browser/APK visual, state and human accessibility acceptance (#612)"
           ]
         }
       ]
@@ -243,7 +243,7 @@
             "Read-only lifecycle-aware local Home Power observations are merged (#693); unavailable observations remain explicit"
           ],
           "todo": [
-            "Integrated new Home/widget/navigation accessibility, actual TalkBack and physical motion acceptance (#612)",
+            "Integrate reviewed #701 landscape/status checks (pending merge); actual TalkBack, keyboard/permission/lifecycle traversal and physical motion acceptance remain open (#612)",
             "Android Home consumption of the merged authenticated summary source (#608); local counters cannot substitute"
           ]
         },

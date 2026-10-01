@@ -26,7 +26,7 @@ are contracts for every presentation change. No UI can widen authority.
 | Fleet overview | `web/owner/devices.*`; merged #685 fleet overview and selectable bounded snapshots from `/v1/enrollment/devices`, owner event stream plus fallback snapshots | Prominent account fleet with truthful lease/precondition/queue columns; preserve pairing and input/focus on refresh | #609; synthetic empty/multiple/revoked devices, SSE reconnect, resume and paging |
 | Selected device side panel | Merged #685 selects an immutable device ID into a desktop detail/mobile stacked panel; missing, stale or failed snapshots retain explicit uncertainty | Select by immutable device ID; desktop detail/mobile stacked view; disappearing selection becomes unavailable | #609; keyboard selection, missing/revoked device, pending input and stable focus |
 | Device readiness | `active_socket_lease`, `status_observed_at_ms`, optional `reported_preconditions` from enrollment | Distinguish transport proof, Android local preconditions, report freshness, line authority and unknown carrier readiness | #609; missing SIM, denied SMS permission, airplane/network unknown, quarantined/revoked/stale observations |
-| Activity table | `/v1/owner/messages`, writer event expansion, alpha cancellation; `devices.js` history controls | Responsive time/device/recipient/state table, text-labelled chips, preserve cursor and expansion | #610; pending/granted/submitted/delivered/failed/unknown, paging, active interaction and device link |
+| Activity table | Reviewed #690 implementation, pending merge: `/v1/owner/messages` outbound writer metadata with device links, preserved paging/expansion/focus and conservative labelled states; alpha cancellation remains separate | Integrate the reviewed responsive activity view; a unified inbound feed and decrypted sealed content remain unavailable | #610; pending/granted/submitted/delivered/failed/unknown, paging, active interaction and device link |
 | All/outbound/inbound filter | Inbound history requires an explicit message identity; there is no unified inbox feed | Outbound metadata is available; a unified filter remains unavailable until an actual scoped feed ships | #610; no cosmetic inbound filter or claim of full conversation availability |
 | Account/security and credentials | `/owner/account` and existing devices-page security/session/API-key controls | Preserve registration, email verification, password/MFA/reset, session revocation, masked secrets and explicit grant widening | #607; form wiring, token clearing, sign-in failures and step-up error/focus behavior |
 | SMS lines and SIM choice | `/owner/sms-lines`, owner approval key and default-off line activation; phone selected subscription | Link existing key/approval/activation flow; display permitted slot/state, not sample phone digits | #607/#609; stale/changed SIM, cancelled comparison, revoked line and disabled activation |
@@ -57,6 +57,18 @@ length cannot substitute for an account/device message total.
 | Remote Pause | No owner remote-pause API | Unavailable. Revoke permanently removes device authority and is not Pause; never relabel it. New remote action requires its own reviewed contract |
 | Local Pause | Existing `onPause` stops connections, not permission-enabled local SMS processing | Keep the local-processing limitation beside the action; Android settings can revoke receiving access. No claim of suppressing already granted or submitted work |
 | Simulate a message | Existing synthetic receptionist demo is a separate local script | Label simulation and link only to that demo; it cannot grant real sending or stand in for the stable API |
+
+## Reviewed accessibility implementation awaiting integration
+
+Reviewed #701, pending merge, adapts compact owner navigation to available width
+and text size. Combined owner activity/navigation tests pass at compact and wide
+viewports with 200% text. Android landscape tests use actual scrolling and the
+Compose frame clock to reveal platform-visible status and reachable Pause and
+its local-processing disclosure. These are automated implementation checks, not
+completed #612 acceptance. The [candidate accessibility contract](CANDIDATE-ACCESSIBILITY.md)
+keeps actual TalkBack/Switch Access, keyboard-open editing/masking/focus return,
+permission revocation, final integrated lifecycle traversal and physical OEM/motion
+acceptance open. Reviewed local integration does not mean either PR has merged.
 
 ## State and freshness grammar
 
