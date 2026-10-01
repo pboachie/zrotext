@@ -10,7 +10,12 @@ Try the planned agent experience with no Android phone, SIM, gateway deployment,
 - The browser [receptionist simulation](RECEPTIONIST-DEMO.md), which explores the same owner-approval interaction design.
 - A dormant conversation simulator, loopback-only, behind the `conversation-simulator-tests` feature and `scripts/conversation_simulator.py`. No production route consumes it.
 
-No AI agent, MCP server, tool adapter, guided setup command or reply-event feed exists in this repository today; those are planned in #616, #617, #618, #619 and #620. The "agent" below is a scripted fixture, not a model call. Running this quickstart uses no AI-provider credits, Google Play services, real SMS, personal numbers or production credentials.
+The [shared synthetic adapters](agent-adapter-simulator.md) and
+[importable recipe previews](agent-recipes.md) provide additional local fixture
+entry points. Production scoped tools, guided activation and reply delivery remain
+unavailable. The "agent" below is a scripted fixture, not a model call. Running
+this quickstart uses no AI-provider credits, Google Play services, real SMS,
+personal numbers or production credentials.
 
 ## Launch
 

@@ -47,18 +47,7 @@ async fn assert_reset_preserves_mfa(path: ResetPath) {
     let url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
     let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
-    for migration in [
-        include_str!("../../../../../deploy/compose/migrations/002_auth.sql"),
-        include_str!("../../../../../deploy/compose/migrations/005_verification_outbox.sql"),
-        include_str!("../../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
-        include_str!("../../../../../deploy/compose/migrations/013_owner_mfa.sql"),
-        include_str!("../../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
-        include_str!("../../../../../deploy/compose/migrations/025_account_recovery.sql"),
-        include_str!("../../../../../deploy/compose/migrations/048_observer_memberships.sql"),
-        include_str!("../../../../../deploy/compose/migrations/055_trusted_browser_epoch.sql"),
-    ] {
-        db.batch_execute(migration).await.unwrap();
-    }
+    crate::auth::test_schema::apply(&db).await;
     let hasher = TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap();
     let cipher = mfa::MfaCipher::new(rand::random::<[u8; 32]>().to_vec()).unwrap();
     let old_password = Uuid::new_v4().to_string();
@@ -248,15 +237,7 @@ async fn expired_reset_mail_is_pruned_in_bounded_batches_before_live_mail() {
     let url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
     let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
-    for migration in [
-        include_str!("../../../../../deploy/compose/migrations/002_auth.sql"),
-        include_str!("../../../../../deploy/compose/migrations/005_verification_outbox.sql"),
-        include_str!("../../../../../deploy/compose/migrations/025_account_recovery.sql"),
-        include_str!("../../../../../deploy/compose/migrations/048_observer_memberships.sql"),
-        include_str!("../../../../../deploy/compose/migrations/055_trusted_browser_epoch.sql"),
-    ] {
-        db.batch_execute(migration).await.unwrap();
-    }
+    crate::auth::test_schema::apply(&db).await;
     let hasher = TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap();
     let owner = auth::register(
         &mut db,
@@ -333,16 +314,7 @@ async fn api_key_mint_waits_for_recovery_lock_and_rechecks_session() {
     tokio::spawn(async move { connection.await.unwrap() });
     let (mut mint_db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
-    for migration in [
-        include_str!("../../../../../deploy/compose/migrations/002_auth.sql"),
-        include_str!("../../../../../deploy/compose/migrations/005_verification_outbox.sql"),
-        include_str!("../../../../../deploy/compose/migrations/013_owner_mfa.sql"),
-        include_str!("../../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
-        include_str!("../../../../../deploy/compose/migrations/048_observer_memberships.sql"),
-        include_str!("../../../../../deploy/compose/migrations/055_trusted_browser_epoch.sql"),
-    ] {
-        recovery_db.batch_execute(migration).await.unwrap();
-    }
+    crate::auth::test_schema::apply(&recovery_db).await;
     let hasher = Arc::new(TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
     let password = Uuid::new_v4().to_string();
     let owner = auth::register(&mut recovery_db, &hasher, "owner@example.test", &password)
@@ -423,18 +395,7 @@ async fn postgres_password_session_and_reset_lifecycle() {
     let url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
     let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
-    for migration in [
-        include_str!("../../../../../deploy/compose/migrations/002_auth.sql"),
-        include_str!("../../../../../deploy/compose/migrations/005_verification_outbox.sql"),
-        include_str!("../../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
-        include_str!("../../../../../deploy/compose/migrations/013_owner_mfa.sql"),
-        include_str!("../../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
-        include_str!("../../../../../deploy/compose/migrations/025_account_recovery.sql"),
-        include_str!("../../../../../deploy/compose/migrations/048_observer_memberships.sql"),
-        include_str!("../../../../../deploy/compose/migrations/055_trusted_browser_epoch.sql"),
-    ] {
-        db.batch_execute(migration).await.unwrap();
-    }
+    crate::auth::test_schema::apply(&db).await;
     let hasher = TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap();
     let old_password = Uuid::new_v4().to_string();
     let changed_password = Uuid::new_v4().to_string();
@@ -765,17 +726,7 @@ async fn postgres_operator_reset_revokes_all_owner_credentials() {
     let url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
     let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
-    for migration in [
-        include_str!("../../../../../deploy/compose/migrations/002_auth.sql"),
-        include_str!("../../../../../deploy/compose/migrations/005_verification_outbox.sql"),
-        include_str!("../../../../../deploy/compose/migrations/013_owner_mfa.sql"),
-        include_str!("../../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
-        include_str!("../../../../../deploy/compose/migrations/025_account_recovery.sql"),
-        include_str!("../../../../../deploy/compose/migrations/048_observer_memberships.sql"),
-        include_str!("../../../../../deploy/compose/migrations/055_trusted_browser_epoch.sql"),
-    ] {
-        db.batch_execute(migration).await.unwrap();
-    }
+    crate::auth::test_schema::apply(&db).await;
     let hasher = TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap();
     let old_password = Uuid::new_v4().to_string();
     let new_password = Uuid::new_v4().to_string();
@@ -918,20 +869,7 @@ impl MfaOwner {
         let url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
         let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
         tokio::spawn(async move { connection.await.unwrap() });
-        for migration in [
-            include_str!("../../../../../deploy/compose/migrations/002_auth.sql"),
-            include_str!("../../../../../deploy/compose/migrations/005_verification_outbox.sql"),
-            include_str!("../../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
-            include_str!("../../../../../deploy/compose/migrations/013_owner_mfa.sql"),
-            include_str!(
-                "../../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"
-            ),
-            include_str!("../../../../../deploy/compose/migrations/025_account_recovery.sql"),
-            include_str!("../../../../../deploy/compose/migrations/048_observer_memberships.sql"),
-            include_str!("../../../../../deploy/compose/migrations/055_trusted_browser_epoch.sql"),
-        ] {
-            db.batch_execute(migration).await.unwrap();
-        }
+        crate::auth::test_schema::apply(&db).await;
         let hasher = TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap();
         let cipher = mfa::MfaCipher::new(rand::random::<[u8; 32]>().to_vec()).unwrap();
         let password = Uuid::new_v4().to_string();
@@ -1089,18 +1027,7 @@ async fn api_key_issuance_needs_step_up_expires_by_default_and_revoke_others_nee
     let url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
     let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
-    for migration in [
-        include_str!("../../../../../deploy/compose/migrations/002_auth.sql"),
-        include_str!("../../../../../deploy/compose/migrations/005_verification_outbox.sql"),
-        include_str!("../../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
-        include_str!("../../../../../deploy/compose/migrations/013_owner_mfa.sql"),
-        include_str!("../../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
-        include_str!("../../../../../deploy/compose/migrations/025_account_recovery.sql"),
-        include_str!("../../../../../deploy/compose/migrations/048_observer_memberships.sql"),
-        include_str!("../../../../../deploy/compose/migrations/055_trusted_browser_epoch.sql"),
-    ] {
-        db.batch_execute(migration).await.unwrap();
-    }
+    crate::auth::test_schema::apply(&db).await;
     let hasher = TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap();
     let cipher = mfa::MfaCipher::new(rand::random::<[u8; 32]>().to_vec()).unwrap();
     let password = Uuid::new_v4().to_string();

@@ -128,9 +128,11 @@
         </div>
       </section>
       <section id="message-activity" aria-labelledby="messages-title">
-        <div class="section-head"><h2 id="messages-title">Message timeline</h2><button id="refresh-messages" type="button" class="quiet">Refresh</button></div>
+        <div class="section-head"><h2 id="messages-title">Message activity</h2><button id="refresh-messages" type="button" class="quiet">Refresh</button></div>
         <p>Message history shows server states and device events from controlled tests. A delivery callback does not prove the recipient read a message.</p>
+        <p class="activity-scope">Outbound writer metadata only. Recipient values are unavailable in this feed. All/Inbound filters require a scoped unified feed and are unavailable; inbound UUID history and webhook replay remain below. Sealed conversation content is not available here.</p>
         <p id="message-status" role="status" aria-live="polite"></p>
+        <div class="activity-head" aria-hidden="true"><span>Time</span><span>Direction</span><span>Device</span><span>Recipient</span><span>State</span></div>
         <ul id="message-list"></ul>
         <button id="more-messages" type="button" class="quiet" hidden>Load more messages</button>
       </section>

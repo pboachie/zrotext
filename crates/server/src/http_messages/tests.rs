@@ -188,34 +188,7 @@ async fn postgres_alpha_http_accept_status_cancel_are_tenant_and_device_scoped()
     let url = format!("{base_url}?options=-csearch_path%3D{schema}");
     let (mut client, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
-    for sql in [
-        include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
-        include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
-        include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
-        include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
-        include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
-        include_str!("../../../../deploy/compose/migrations/006_usage_metering.sql"),
-        include_str!("../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"),
-        include_str!("../../../../deploy/compose/migrations/008_stripe_billing_foundation.sql"),
-        include_str!("../../../../deploy/compose/migrations/009_webhook_manual_replay.sql"),
-        include_str!("../../../../deploy/compose/migrations/010_billing_test_entitlement.sql"),
-        include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
-        include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
-        include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
-        include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
-        include_str!("../../../../deploy/compose/migrations/015_webhook_kek_commitments.sql"),
-        include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
-        include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
-        include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
-        include_str!("../../../../deploy/compose/migrations/030_terminal_dispatch_jobs.sql"),
-        include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
-        include_str!("../../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
-        include_str!("../../../../deploy/compose/migrations/038_owner_opt_out_hold_guards.sql"),
-        include_str!("../../../../deploy/compose/migrations/039_inbound_device_clock_offset.sql"),
-        include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
-    ] {
-        client.batch_execute(sql).await.unwrap();
-    }
+    crate::auth::test_schema::apply(&client).await;
     let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(51)).unwrap());
     let (account_a, device_a, send_a, read_a, unbound_send_a) =
         owner(&mut client, &hasher, "owner-a@example.test").await;

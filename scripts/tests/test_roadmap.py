@@ -51,6 +51,20 @@ class RoadmapTest(unittest.TestCase):
             "reached general release.",
         )
 
+    def test_scheduling_requires_exact_action_approval_first(self):
+        required = roadmap.prerequisites(self.data, ["scheduling"])
+        self.assertIn("approvals", required)
+        self.assertIn("contacts", required)
+        self.assertNotIn("scheduling", roadmap.prerequisites(self.data, ["approvals"]))
+
+    def test_functional_dashboard_does_not_complete_visual_candidate_acceptance(self):
+        caps = {cap["id"]: cap for cap in roadmap.capabilities(self.data)}
+        self.assertEqual(caps["dashboard"]["stage"], "build")
+        self.assertEqual(caps["diagnostics"]["stage"], "build")
+        self.assertTrue(caps["dashboard"]["todo"])
+        self.assertTrue(caps["diagnostics"]["todo"])
+        self.assertIn("#612", caps["dashboard"]["release_gate_note"])
+
     def test_completed_checklist_keeps_visible_release_gate_and_stage(self):
         data = copy.deepcopy(self.data)
         cap = next(c for c in roadmap.capabilities(data) if c["id"] == "releases")
