@@ -17,11 +17,11 @@ use zrotext_delivery_store::{Claim, DeliveryStore, NewMessage, SessionRecord};
 #[cfg(feature = "sealed-interop-tests")]
 mod cross_client_interop;
 
-struct TestCase {
+pub(crate) struct TestCase {
     fixture: Fixture,
-    principal: ApiPrincipal,
-    hasher: TokenHasher,
-    user: Uuid,
+    pub(crate) principal: ApiPrincipal,
+    pub(crate) hasher: TokenHasher,
+    pub(crate) user: Uuid,
     /// The bearer token text; the cross-client interop lane posts through the
     /// real HTTP route, which authenticates from headers, not from a principal.
     #[cfg(feature = "sealed-interop-tests")]
@@ -34,7 +34,7 @@ impl Deref for TestCase {
     }
 }
 impl TestCase {
-    async fn new() -> Self {
+    pub(crate) async fn new() -> Self {
         Self::with_manifest_lifetime(120_000).await
     }
     async fn with_manifest_lifetime(lifetime: i64) -> Self {
@@ -119,7 +119,7 @@ impl TestCase {
             token,
         }
     }
-    fn writer(&self) -> WriterContext<'static> {
+    pub(crate) fn writer(&self) -> WriterContext<'static> {
         WriterContext {
             site_id: "manifest-test",
             deployment_epoch: 1,
@@ -136,10 +136,10 @@ impl TestCase {
         )
         .await
     }
-    async fn envelope(&self, id: Uuid) -> Vec<u8> {
+    pub(crate) async fn envelope(&self, id: Uuid) -> Vec<u8> {
         envelope(self, id, now(&self.db).await, 60_000)
     }
-    async fn cleanup(self) {
+    pub(crate) async fn cleanup(self) {
         self.fixture.cleanup().await;
     }
 }

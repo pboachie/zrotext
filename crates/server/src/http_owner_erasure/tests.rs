@@ -308,6 +308,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../../../../deploy/compose/migrations/070_message_summary_metadata.sql"),
     ),
     (
+        "071_sealed_grant_authority.sql",
+        include_str!("../../../../deploy/compose/migrations/071_sealed_grant_authority.sql"),
+    ),
+    (
         "072_conversation_confirmation_records.sql",
         include_str!(
             "../../../../deploy/compose/migrations/072_conversation_confirmation_records.sql"

@@ -115,6 +115,7 @@ impl Fixture {
             // The retention prune stamp column; this fixture's schemas are
             // exercised through retention::prune.
             include_str!("../../../../deploy/compose/migrations/063_retention_blocked_stamp.sql"),
+            include_str!("../../../../deploy/compose/migrations/071_sealed_grant_authority.sql"),
         ] {
             if !role_reservations
                 && (sql
