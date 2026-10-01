@@ -47,8 +47,8 @@ Android resources are included so the real Material fields
 are rendered. The shared checks also run through the opt-in
 `GatewayAccessibilityDeviceTest` instrumentation wrapper in the
 [no-radio device smoke workflow](../.github/workflows/android-device-smoke.yml).
-That workflow selects its five accessibility checks alongside one device
-preconditions check on a disposable emulator. The
+That workflow selects its six accessibility checks alongside one device
+preconditions check on a disposable emulator. The earlier five-check version in the
 [merged accessibility change](https://github.com/pboachie/zrotext/pull/313) passed
 the [hosted selection](https://github.com/pboachie/zrotext/actions/runs/36269589242)
 with six actual tests and zero failures or skips.
