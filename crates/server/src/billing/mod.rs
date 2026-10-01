@@ -10,6 +10,7 @@ use tokio_postgres::{Client, Transaction};
 use uuid::Uuid;
 
 pub mod drain;
+pub mod exposure;
 pub mod http;
 pub mod owner;
 pub mod plans;

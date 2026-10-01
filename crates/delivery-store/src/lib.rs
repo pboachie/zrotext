@@ -8,6 +8,8 @@ use tokio_postgres::{Client, Row, Transaction, error::SqlState, types::Type};
 use uuid::Uuid;
 use zrotext_domain::{Evidence, MessageState};
 
+pub mod exposure;
+
 mod recovery;
 pub use recovery::{RECOVERY_BATCH, RECOVERY_BATCHES_PER_TICK, RecoveryBacklog, RecoveryPass};
 mod usage_projection;
