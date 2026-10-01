@@ -25,10 +25,9 @@ impl WindowPolicy {
                     b.is_ascii_digit()
                 }
             })
-            && self
-                .timezone
-                .as_ref()
-                .is_none_or(|z| !z.is_empty() && z.len() <= 128 && z.is_ascii())
+            && self.timezone.as_ref().is_none_or(|z| {
+                !z.is_empty() && z.len() <= 128 && z.bytes().all(|b| (b'!'..=b'~').contains(&b))
+            })
             && self.opens_minute < 1440
             && self.closes_minute < 1440
             && self.opens_minute != self.closes_minute
@@ -170,5 +169,16 @@ mod tests {
         let mut value = serde_json::to_value(policy()).unwrap();
         value["caller_authorized"] = true.into();
         assert!(serde_json::from_value::<WindowPolicy>(value).is_err());
+    }
+    #[test]
+    fn timezone_metadata_rejects_control_characters_and_whitespace() {
+        for zone in [" UTC", "UTC\n", "UTC\u{7f}", "", "Europe/London "] {
+            let mut p = policy();
+            p.timezone = Some(zone.into());
+            assert!(p.identity().is_err());
+        }
+        let mut p = policy();
+        p.timezone = Some("Etc/GMT+5".into());
+        assert!(p.identity().is_ok());
     }
 }
