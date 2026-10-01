@@ -45,7 +45,7 @@ class SealedDispatchExecutorTest {
             assertTrue(it.attempts().installVerifiedLineBinding(f.binding(), listOf(ActiveSimCard(3, 7))))
         }
 
-    private fun key() = DevicePayloadKeyStore("zrotext.test.unavailable.${UUID.randomUUID()}")
+    private fun key() = DevicePayloadKeyStore(RuntimeEnvironment.getApplication(), "zrotext.test.unavailable.${UUID.randomUUID()}")
 
     private fun frame(patch: Map<String, Any> = emptyMap()) =
         JSONObject(vectors.getJSONObject("frame").toString()).also { copy -> patch.forEach { (k, v) -> copy.put(k, v) } }
