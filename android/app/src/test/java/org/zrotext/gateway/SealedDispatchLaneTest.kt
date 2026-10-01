@@ -101,6 +101,65 @@ class SealedDispatchLaneTest {
         db.sealedPreparations().find(fields.accountId.toString(), fields.messageId.toString())?.state
 
     @Test
+    fun unusableOrExpiredTrustedTimeRefusesBeforeFetching() {
+        val db = db()
+        try {
+            for (elapsed in listOf(500_000L, 560_001L, 515_000L)) {
+                var fetched = 0
+                lane(db, elapsed = { elapsed }, fetch = { fetched++; f.envelope() }).onGrant(frame())
+                assertEquals("No fetch at elapsed $elapsed", 0, fetched)
+            }
+            assertEquals(0, db.sealedPreparations().count())
+        } finally { db.close() }
+    }
+
+    @Test
+    fun throwingFenceCallbacksCloseTextAbortPreparationAndNeverSubmit() {
+        val cases = listOf<Pair<SealedDispatchLane.Fence, (SmsJournalDatabase) -> SealedDispatchLane>>(
+            SealedDispatchLane.Fence.SESSION_TIME to { db -> lane(db, elapsed = { error("clock unavailable") }) },
+            SealedDispatchLane.Fence.SESSION_CANCELLED to { db -> lane(db, sessionCurrent = { error("session unavailable") }) },
+            SealedDispatchLane.Fence.SIM_CARD_CONTINUITY to { db -> lane(db, cards = { error("SIM permission unavailable") }) },
+        )
+        for ((expected, create) in cases) {
+            val db = db()
+            val held = HeldText()
+            try {
+                preparedRow(db)
+                assertEquals(SealedDispatchLane.Outcome.FenceRefused(expected),
+                    create(db).submitUnderFences(fields, local(), 1, { held.consumeText(it) }, { held.closeText() }))
+                assertTrue(held.closed)
+                assertFalse(held.consumed)
+                assertEquals("aborted", rowState(db))
+            } finally { db.close() }
+        }
+    }
+
+    @Test
+    fun suppressionLookupCannotUseAnotherRecipientFromCurrentAuthority() {
+        val db = db()
+        val held = HeldText()
+        try {
+            preparedRow(db)
+            var lookedUp = false
+            val changed = { grant: Draft02OutboundPreparation.Grant ->
+                val original = f.current(grant)
+                val request = original.request
+                val other = Draft02ManifestAuthority.Request(request.direction, request.account(), request.message(),
+                    request.device(), request.line(), "+13".toByteArray(), request.signer(), request.readers())
+                Draft02OutboundPreparation.Current(grant, original.authority, other, original.trustedNowMs,
+                    original.selectedSubscriptionId, original.cards())
+            }
+            val outcome = lane(db, current = changed, suppressed = { lookedUp = true; false })
+                .submitUnderFences(fields, local(), 1, { held.consumeText(it) }, { held.closeText() })
+            assertEquals(SealedDispatchLane.Outcome.FenceRefused(SealedDispatchLane.Fence.LOCAL_SUPPRESSION), outcome)
+            assertFalse(lookedUp)
+            assertTrue(held.closed)
+            assertFalse(held.consumed)
+            assertEquals("aborted", rowState(db))
+        } finally { db.close() }
+    }
+
+    @Test
     fun fetchIsBoundToTheGrantsEnvelopeDigestAndAMismatchedFetchIsRefused() {
         val db = db()
         try {

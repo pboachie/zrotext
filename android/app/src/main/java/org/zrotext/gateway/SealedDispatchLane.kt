@@ -123,6 +123,8 @@ internal class SealedDispatchLane(
         // A clock from another epoch never vouches for this session's grants:
         // refuse before any fetch, so a stale lane cannot pull envelopes.
         if (!clock.isCurrentSession(session.connectionEpoch)) return Outcome.Unavailable
+        val now = runCatching { clock.nowMs(elapsedRealtime()) }.getOrNull() ?: return Outcome.Unavailable
+        if (now >= fields.expiresAtMs) return Outcome.Refused(SealedExecutionGrantValidator.Verdict.Refused.EXPIRED)
         // Fetch only the grant-bound envelope; the executor still binds the
         // grant to the SHA-256 of exactly these bytes (digest mismatch refuses).
         val envelope = fetchEnvelopeByDigest(fields.envelopeDigest) ?: return Outcome.Unavailable
@@ -168,28 +170,33 @@ internal class SealedDispatchLane(
             }
             return Outcome.FenceRefused(fence)
         }
-        // Fixed order, each fail-closed, none skippable:
-        val now = clock.nowMs(elapsedRealtime()) ?: return refused(Fence.SESSION_TIME)
-        if (now >= fields.expiresAtMs) return refused(Fence.EXPIRY)
-        if (!isSessionCurrent()) return refused(Fence.SESSION_CANCELLED)
-        if (!SimCardContinuity.matches(
-                local.binding.cardId?.let { ActivatedSimCard(local.binding.subscriptionId, it) },
-                activeCards(),
-            )
-        ) return refused(Fence.SIM_CARD_CONTINUITY)
-        // The peer is the recipient the current manifest request carries — the
-        // same bytes the preparation verified — never a hub-supplied address.
-        val peer = currentPeer(fields, local) ?: return refused(Fence.LOCAL_SUPPRESSION)
-        if (runCatching { isRecipientSuppressed(peer) }.getOrDefault(true)) return refused(Fence.LOCAL_SUPPRESSION)
-        if (segments > fields.segmentCount) return refused(Fence.SEGMENT_CAP)
-        return try {
-            Outcome.Submitted(submit(fields, segments, consumeText))
-        } catch (_: Exception) {
-            // A throw may follow a partial radio action: ambiguous, and the
-            // journal row must stay as the permanent replay fence.
-            Outcome.Submitted(Submission.UNKNOWN)
+        // Own the prepared holder across every fence callback, including failures.
+        try {
+            // Fixed order, each fail-closed, none skippable:
+            val now = runCatching { clock.nowMs(elapsedRealtime()) }.getOrNull()
+                ?: return refused(Fence.SESSION_TIME)
+            if (now >= fields.expiresAtMs) return refused(Fence.EXPIRY)
+            if (!runCatching { isSessionCurrent() }.getOrDefault(false)) return refused(Fence.SESSION_CANCELLED)
+            val cards = runCatching { activeCards() }.getOrNull()
+            if (!SimCardContinuity.matches(
+                    local.binding.cardId?.let { ActivatedSimCard(local.binding.subscriptionId, it) },
+                    cards,
+                )
+            ) return refused(Fence.SIM_CARD_CONTINUITY)
+            // Bind the lookup to the preparation's immutable recipient digest;
+            // changing current authority cannot select another peer for STOP.
+            val peer = currentPeer(fields, local) ?: return refused(Fence.LOCAL_SUPPRESSION)
+            if (runCatching { isRecipientSuppressed(peer) }.getOrDefault(true)) return refused(Fence.LOCAL_SUPPRESSION)
+            if (segments > fields.segmentCount) return refused(Fence.SEGMENT_CAP)
+            return try {
+                Outcome.Submitted(submit(fields, segments, consumeText))
+            } catch (_: Exception) {
+                // A throw may follow a partial radio action: ambiguous, and the
+                // journal row must stay as the permanent replay fence.
+                Outcome.Submitted(Submission.UNKNOWN)
+            }
         } finally {
-            closeText() // Idempotent: a no-op once consumed, zeroize if the seam left it open.
+            closeText() // Idempotent: consumed, refused and throwing callbacks all relinquish custody.
         }
     }
 
@@ -204,5 +211,6 @@ internal class SealedDispatchLane(
         local: SealedDispatchExecutor.Local,
     ): ByteArray? = runCatching {
         current(SealedDispatchExecutor.candidate(fields, session, local))?.request?.peer()
+            ?.takeIf { Draft02OutboundPreparation.hash(it) == local.recipientDigest }
     }.getOrNull()
 }
