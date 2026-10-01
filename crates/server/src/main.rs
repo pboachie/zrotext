@@ -916,7 +916,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 auth.clone(),
                 session_key.ok_or("Stripe test session key missing")?,
                 price_id,
-            )?;
+            )?
+            .with_portal_configuration(required("STRIPE_TEST_PORTAL_CONFIGURATION_ID")?)?;
             billing_routes = billing_routes.merge(billing_sessions::router(sessions));
             billing_routes = billing_routes.merge(billing_owner::status_router(auth.clone()));
             app = app
