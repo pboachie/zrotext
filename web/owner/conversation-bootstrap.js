@@ -24,11 +24,13 @@
    * The SDK independently verifies the returned signature before any install. Downloads contain
    * public proposals only. The offline tool must independently review and sign the manifest.
    */
-  function requestFileSignature({document=root.document,host,review,URL:urls=root.URL,window=root.window,signal}){
+  function requestFileSignature({document=root.document,host,review,typedProposal,URL:urls=root.URL,window=root.window,signal}){
     const unsigned=bytes(review?.unsigned,154,16320);if(!host||!document||!urls)throw Error("Offline approval unavailable");if(signal?.aborted)throw Error("Offline approval closed");
+    let proposal=unsigned;
+    if(typedProposal!==undefined){proposal=bytes(typedProposal,unsigned.length+7,20480);const at=proposal.length-unsigned.length-2;if(![90,84,67,70,1].every((b,i)=>proposal[i]===b)||at<5||((proposal[at]<<8)|proposal[at+1])!==unsigned.length||!unsigned.every((b,i)=>proposal[at+2+i]===b))throw Error("Typed proposal differs from reviewed manifest");}
     let done=false,resolve,reject,url;const result=new Promise((a,b)=>{resolve=a;reject=b;});
     const pane=document.createElement("div"),download=document.createElement("a"),file=document.createElement("input"),cancel=document.createElement("button"),status=document.createElement("p");
-    url=urls.createObjectURL(new Blob([unsigned],{type:"application/octet-stream"}));download.href=url;download.download="conversation-manifest-proposal.bin";download.textContent="Download public proposal for offline review";
+    url=urls.createObjectURL(new Blob([proposal],{type:"application/octet-stream"}));download.href=url;download.download=typedProposal===undefined?"conversation-manifest-proposal.bin":"conversation-role5-proposal.bin";download.textContent="Download public proposal for offline review";
     file.type="file";file.accept="application/octet-stream";file.setAttribute("aria-label","Root-signed manifest returned by offline custodian");cancel.type="button";cancel.textContent="Cancel offline approval";status.textContent="Use your existing offline root custodian to review this exact proposal. Select its signed public manifest. No enrollment is installed by selecting a file.";
     pane.append(download,file,cancel,status);host.append(pane);
     function finish(error,signature){if(done)return;done=true;for(const cleanup of [()=>urls.revokeObjectURL(url),()=>window?.removeEventListener("pagehide",onHide),()=>document.removeEventListener?.("visibilitychange",onVisibility),()=>signal?.removeEventListener("abort",onHide),()=>pane.remove()]){try{cleanup();}catch(failure){error??=failure;}}if(error)reject(error);else resolve(signature);}

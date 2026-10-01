@@ -139,8 +139,18 @@ fn child(stage: &str, parent: PathBuf) {
             0
         );
     }
-    let now = now_millis().unwrap();
-    let until = now + 120_000;
+    // External clock/artifact are synthetic test-process inputs only; Expected below
+    // is recomputed independently from the fixed fixture scope and records.
+    let interop = stage == "interop";
+    let now = if interop {
+        std::env::var("ZT_REFRESH_INTEROP_NOW")
+            .unwrap()
+            .parse::<u64>()
+            .unwrap()
+    } else {
+        now_millis().unwrap()
+    };
+    let until = now + if interop { 1_800_000 } else { 120_000 };
     let expires = now + 3_600_000;
     let issued = now - 1000;
     let mut scalar = [0; 32];
@@ -207,7 +217,20 @@ fn child(stage: &str, parent: PathBuf) {
         ));
     }
     let proposal_path = parent.join("proposal.bin");
-    std::fs::write(&proposal_path, wrapper(&scope, &before, &after)).unwrap();
+    let proposal = if interop {
+        {
+            let value = std::env::var("ZT_REFRESH_INTEROP_PROPOSAL_HEX").unwrap();
+            assert!(value.len() <= refresh::MAX_PROPOSAL * 2 && value.len().is_multiple_of(2));
+            value
+                .as_bytes()
+                .chunks_exact(2)
+                .map(|pair| hex::<1>(pair).unwrap()[0])
+                .collect::<Vec<_>>()
+        }
+    } else {
+        wrapper(&scope, &before, &after)
+    };
+    std::fs::write(&proposal_path, proposal).unwrap();
     let output_path = parent.join("signed.bin");
     let values = vec![
         uuid::Uuid::from_bytes(scope.account).to_string(),
@@ -264,9 +287,9 @@ fn child(stage: &str, parent: PathBuf) {
     });
     let result = run(&args, parent.clone());
     injector.join().unwrap();
-    assert_eq!(result.is_ok(), stage == "success");
-    assert_eq!(output_path.exists(), stage == "success");
-    if stage == "success" {
+    assert_eq!(result.is_ok(), (stage == "success" || interop));
+    assert_eq!(output_path.exists(), (stage == "success" || interop));
+    if stage == "success" || interop {
         let expected = Expected { identity, scope };
         let p = refresh::decode(&std::fs::read(&proposal_path).unwrap()).unwrap();
         let mut scalar = [0; 32];
@@ -320,6 +343,14 @@ fn native_console_refresh_uses_existing_bundle_once() {
         std::fs::create_dir_all(&stage_parent).unwrap();
         launch(stage, &stage_parent);
     }
+    if std::env::var_os("ZT_REFRESH_INTEROP_PROPOSAL_HEX").is_some() {
+        let stage_parent = parent.join("interop");
+        std::fs::create_dir_all(&stage_parent).unwrap();
+        launch("interop", &stage_parent);
+        let signed = std::fs::read(stage_parent.join("signed.bin")).unwrap();
+        assert!(signed.len() <= refresh::MAX_PROPOSAL);
+        println!("ZT_REFRESH_INTEROP_SIGNED={}", display_hex(&signed));
+    }
     std::fs::remove_dir_all(parent).unwrap();
 }
 fn launch(stage: &str, parent: &std::path::Path) {
@@ -339,6 +370,12 @@ fn launch(stage: &str, parent: &std::path::Path) {
             "{key}={}",
             value.to_str().unwrap()
         ))));
+    }
+    if stage == "interop" {
+        for key in ["ZT_REFRESH_INTEROP_PROPOSAL_HEX", "ZT_REFRESH_INTEROP_NOW"] {
+            let value = std::env::var(key).unwrap();
+            environment.extend(wide(OsStr::new(&format!("{key}={value}"))));
+        }
     }
     environment.push(0);
     // SAFETY: live terminated buffers; no inherited handles or user console.
