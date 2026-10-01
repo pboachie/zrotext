@@ -664,6 +664,62 @@ a billing event still referenced by another account's risk record; or an observe
 of accounts with such rows must contact the operator about those records
 first; the endpoint never deletes part of an account.
 
+## Contacts and consent
+
+Owners can keep an account-scoped contact list and per-purpose consent
+records. One account holds at most one contact per normalized E.164 number:
+the server collapses separator spellings (`+1 555 010 0001` and
+`+15550100001` are the same routing identity) and reports a create or import
+that collides as a duplicate instead of writing a second row. Concurrent
+updates to one contact serialize on the row, and each request overwrites
+exactly the fields it carries.
+
+Routes (owner session, CSRF and Origin rules like the other owner APIs):
+
+| Route | Action |
+|---|---|
+| `GET /v1/owner/contacts` | Page through contacts newest first (`?before=<contact_id>`). |
+| `POST /v1/owner/contacts` | Create one contact (`409 duplicate` carries the existing contact's ID for review). |
+| `GET /v1/owner/contacts/{id}` | One contact with its consent states and full history. |
+| `PUT /v1/owner/contacts/{id}` | Replace carried fields; an explicit `null` clears one. |
+| `DELETE /v1/owner/contacts/{id}` | Delete the contact and its consent history. |
+| `POST /v1/owner/contacts/import` | Bounded CSV intake (`text/csv`, header `recipient,name,notes`, at most 1,000 rows and 256 KiB). |
+| `POST /v1/owner/contacts/{id}/consents` | Append one grant or withdrawal for one purpose. |
+
+Only the routing number, consent metadata and timestamps are stored in the
+clear. Display names and free-text notes are sealed with AES-256-GCM under
+the contacts key-encryption key (`CONTACTS_KEK_VERSION` plus
+`CONTACTS_KEK_B64`, set together like the webhook KEK; during rotation also
+set `CONTACTS_KEK_SECONDARY_VERSION` and `CONTACTS_KEK_SECONDARY_B64`).
+The ciphertext is bound to the key version, account, contact and column,
+so it cannot be moved between tenants or fields. Without a configured key
+the routes still work, but no request that carries a name or a note is
+accepted and no encrypted field is served. Losing the key loses the names
+and notes: they cannot be recovered from the database.
+
+Consent is a separate, append-only record per purpose
+(`transactional`, `operational`, `marketing`) with a source
+(`manual_entry`, `off_channel_record`), an effective time, an optional
+expiry and the recording member. The current state of a purpose is its
+newest event: a withdrawal stands until a later grant, and a grant whose
+expiry has passed reads as expired with no write. Marketing grants must
+carry an expiry of at most two years; withdrawals never carry one.
+Creating or importing a contact never creates consent, and nothing in the
+contacts API clears a suppression, releases an off-channel hold or revives
+cancelled work: those signed and owner-recorded planes are untouched.
+
+Retention boundaries: contact rows and their consent history live until
+the contact is deleted or the account is erased; the retention worker does
+not prune them. Deleting a contact removes its encrypted fields and its
+consent history immediately, but the suppression and hold records for the
+same number survive with their own lifecycle. The owner takeout
+(`GET /v1/owner/export`) includes the account's contacts with decrypted
+names and notes and the full consent history (paged with
+`?contacts_before=` when large), and account erasure deletes contacts and
+their consent records with everything else. The contacts and consent
+records do not gate message sending; admission and suppression checks are
+unchanged by this data.
+
 ## Source for modified deployments
 
 The server's HTML pages link to `/source`. Published release images point this link to the exact upstream commit used for the build. If you modify ZROtext and let people use your server over a network, set `SOURCE_URL` to a downloadable copy of the full corresponding source for **your running version**, including your changes and applicable build instructions. A link to the unmodified upstream repository is insufficient for a modified deployment. See [AGPL-3.0 section 13](https://www.gnu.org/licenses/agpl-3.0.en.html). Review the license for your situation.

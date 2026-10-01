@@ -291,6 +291,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
             "../../../../deploy/compose/migrations/066_conversation_interval_session_index.sql"
         ),
     ),
+    (
+        "068_contacts_consent.sql",
+        include_str!("../../../../deploy/compose/migrations/068_contacts_consent.sql"),
+    ),
 ];
 
 /// Indexes the Compose migrator prepares with CREATE INDEX CONCURRENTLY in
@@ -3150,6 +3154,94 @@ async fn erasing_thousands_of_referenced_rows_completes_within_the_runtime_timeo
         let count: i64 = db.query_one(sql, &[&a.account_id]).await.unwrap().get(0);
         assert_eq!(count, 0, "{sql} after erasure");
     }
+    admin
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn erasure_deletes_contacts_and_their_consent_history() {
+    let (admin, mut db, database_url, schema) = migrated_schema("contacts").await;
+    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(51)).unwrap());
+    let (a, session_a, b, _session_b, app) = fixture(&mut db, &hasher, &database_url, None).await;
+    // Account a keeps two contacts, one with encrypted fields and a full
+    // consent history; account b keeps one contact that must survive.
+    let contact = Uuid::new_v4();
+    db.execute(
+        "INSERT INTO contacts(id,account_id,recipient_e164,display_name_ciphertext,notes_ciphertext) \
+         VALUES($1,$2,'+15550100001',$3,$4)",
+        &[&contact, &a.account_id, &vec![1_u8; 64], &vec![2_u8; 80]],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO contacts(id,account_id,recipient_e164) VALUES($1,$2,'+15550100002')",
+        &[&Uuid::new_v4(), &a.account_id],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO contacts(id,account_id,recipient_e164) VALUES($1,$2,'+15550100001')",
+        &[&Uuid::new_v4(), &b.account_id],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO contact_consent_records \
+         (id,account_id,contact_id,purpose,action,source,effective_at,expires_at,recorded_by) \
+         SELECT $1::uuid,$2::uuid,$3::uuid,'marketing','grant','manual_entry', \
+         now()-interval '1 hour',now()+interval '30 days',$4::uuid \
+         UNION ALL SELECT $5::uuid,$2::uuid,$3::uuid,'marketing','withdraw', \
+         'off_channel_record',now()-interval '30 minutes',NULL,$4::uuid \
+         UNION ALL SELECT $6::uuid,$2::uuid,$3::uuid,'transactional','grant', \
+         'manual_entry',now()-interval '2 hours',NULL,$4::uuid",
+        &[
+            &Uuid::new_v4(),
+            &a.account_id,
+            &contact,
+            &a.user_id,
+            &Uuid::new_v4(),
+            &Uuid::new_v4(),
+        ],
+    )
+    .await
+    .unwrap();
+    let response = app
+        .clone()
+        .oneshot(erasure_post(
+            Some(&session_a.token),
+            Some(&session_a.csrf_token),
+            Some(ORIGIN),
+            &crate::test_keys::password(1),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let report = body(response).await;
+    assert_eq!(deleted_count(&report, "contacts"), 2);
+    assert_eq!(deleted_count(&report, "contact_consent_records"), 3);
+    let remaining = db
+        .query_one(
+            "SELECT (SELECT count(*) FROM contacts),(SELECT count(*) FROM contact_consent_records)",
+            &[],
+        )
+        .await
+        .unwrap();
+    let (contacts_left, consent_left): (i64, i64) = (remaining.get(0), remaining.get(1));
+    assert_eq!(
+        (contacts_left, consent_left),
+        (1, 0),
+        "only the other account's contact survives, without its own history"
+    );
+    let survivor: String = db
+        .query_one("SELECT recipient_e164 FROM contacts", &[])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(survivor, "+15550100001");
     admin
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
         .await
