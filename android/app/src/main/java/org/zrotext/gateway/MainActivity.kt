@@ -6,6 +6,18 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.net.Uri
+import androidx.compose.runtime.Composable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.sizeIn
+import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.ui.window.DialogProperties
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import android.telephony.SubscriptionManager
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
@@ -64,6 +76,34 @@ class MainActivity : ComponentActivity() {
     private var defaultSmsAppRcsRisk by mutableStateOf(DefaultSmsAppRcsRisk.Risk.UNAVAILABLE)
     private var permissionDisclosure by mutableStateOf<GatewayPermissionPurpose?>(null)
     private val pairingWorker = Executors.newSingleThreadExecutor()
+    // Release activation remains disabled. No intent, saved state or preference enables it.
+    internal var conversationSetupEnabled = false
+    internal var conversationHandleFactory: ((Uri, (ConversationPresentationPort) -> Unit) -> ConversationSetupEntrySession.Handle)? = null
+    private val conversationWorker = Executors.newSingleThreadExecutor()
+    private var conversationEntryOpen by mutableStateOf(false)
+    private var conversationSetupFile by mutableStateOf<Uri?>(null)
+    private var conversationReplyFile by mutableStateOf<Uri?>(null)
+    private var conversationPort by mutableStateOf<ConversationPresentationPort?>(null)
+    private var conversationEntryState by mutableStateOf(ConversationSetupEntrySession.State.CLOSED)
+    private var conversationEntryStatus by mutableStateOf("")
+    private var conversationEntry: ConversationSetupEntrySession? = null
+    private var conversationController: ConversationUserSetupController? = null
+    private var conversationUiEpoch = 0L
+    private var conversationPickEpoch: Long? = null
+    private var conversationReplyPending by mutableStateOf(false)
+    private val conversationSetupPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        val accepted = conversationEntryOpen && conversationPickEpoch == conversationUiEpoch
+        conversationPickEpoch = null
+        if (accepted) acceptConversationSetupFile(uri)
+    }
+    private val conversationReplyPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        val accepted = conversationEntryOpen && conversationPickEpoch == conversationUiEpoch
+        conversationPickEpoch = null
+        if (accepted && uri != null) {
+            conversationReplyFile = uri
+            conversationEntryStatus = "Public reply authority selected. Reopen and approve the conversation before verifying it."
+        }
+    }
     private val permissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         refreshSims()
     }
@@ -86,6 +126,7 @@ class MainActivity : ComponentActivity() {
         defaultSmsAppRcsRisk = DefaultSmsAppRcsRisk.observe(this)
         setContent {
             GatewayTheme {
+                if (conversationEntryOpen) ConversationEntryContent()
                 permissionDisclosure?.let { purpose ->
                     Dialog(onDismissRequest = { permissionDisclosure = null }) {
                         Surface(shape = MaterialTheme.shapes.large) {
@@ -180,6 +221,13 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                     if (page == GatewayPage.CONNECTION) {
+                        GatewaySectionTitle("Conversation content")
+                        Text("Review a selected conversation from your paired browser. Opening this screen does not approve SMS content transfer.")
+                        GatewayButton(onClick = {
+                            conversationUiEpoch++
+                            conversationEntryOpen = true
+                            conversationEntryStatus = ""
+                        }) { Text("Open conversation review") }
                         GatewaySectionTitle("Authenticated device heartbeat")
                         Text("After owner approval, enter the approved device UUID and trusted WSS origin. The heartbeat button only proves the phone's Keystore key and exchanges heartbeats.")
                         GatewayStatusText("Authenticated connection status", AuthenticatedGatewayStatus.value)
@@ -290,8 +338,199 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        closeConversationEntry()
+        conversationWorker.shutdownNow()
         pairingWorker.shutdownNow()
         super.onDestroy()
+    }
+
+    override fun onStop() {
+        // A file picker may return a public candidate, but never preserves phone authority.
+        conversationEntry?.close()
+        conversationEntry = null
+        conversationController = null
+        conversationPort = null
+        conversationSelectedLine = null
+        conversationVerifiedLineLabel = null
+        conversationReplyPending = false
+        if (conversationPickEpoch == null) closeConversationEntry()
+        super.onStop()
+    }
+
+    internal fun acceptConversationSetupFile(uri: Uri?) {
+        if (!conversationEntryOpen) return
+        conversationSetupFile = uri
+        conversationEntryStatus = if (uri == null) "File selection cancelled." else "Public setup selected. Phone approval is still required."
+    }
+
+    private fun closeConversationEntry() {
+        // Capture CLOSE_FAILED while this exact view generation is still observable.
+        conversationEntry?.close()
+        ++conversationUiEpoch
+        conversationEntryOpen = false
+        conversationPickEpoch = null
+        conversationEntry = null
+        conversationController = null
+        conversationPort = null
+        conversationSetupFile = null
+        conversationReplyFile = null
+        conversationSelectedLine = null
+        conversationVerifiedLineLabel = null
+        conversationReplyPending = false
+    }
+
+    @Composable private fun ConversationEntryContent() {
+        Dialog(onDismissRequest = { closeConversationEntry() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+            Surface(Modifier.fillMaxSize()) {
+                Column(Modifier.fillMaxSize().safeDrawingPadding().imePadding().padding(16.dp),
+                    verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp)) {
+                    GatewaySectionTitle("Conversation review")
+                    OutlinedButton(onClick = { closeConversationEntry() }, modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) {
+                        Text("Close conversation review")
+                    }
+                    val port = conversationPort
+                    if (port != null) {
+                        FutureConversationPane(port, { line, generation ->
+                            conversationVerifiedLineLabel?.takeIf { conversationSelectedLine == (line to generation) }
+                        }, Modifier.weight(1f), onDismiss = { closeConversationEntry() })
+                    } else {
+                        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()),
+                            verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp)) {
+                            Text("Select the public phone setup file from the paired browser. The existing paired device, selected line and enrolled hardware key must match. No key is created here.")
+                            if (!conversationSetupEnabled) Text("Conversation setup is not enabled in this build.")
+                            Button(onClick = {
+                                conversationPickEpoch = conversationUiEpoch
+                                conversationSetupPicker.launch(arrayOf("application/octet-stream"))
+                            }, enabled = conversationSetupEnabled && conversationEntryState != ConversationSetupEntrySession.State.OPENING &&
+                                conversationEntryState != ConversationSetupEntrySession.State.CLOSE_FAILED,
+                                modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) { Text("Select conversation setup file") }
+                            Button(onClick = { beginConversationEntry() }, enabled = conversationSetupEnabled && conversationSetupFile != null &&
+                                conversationEntryState != ConversationSetupEntrySession.State.OPENING && conversationEntryState != ConversationSetupEntrySession.State.CLOSE_FAILED,
+                                modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) { Text("Review selected conversation") }
+                            if (conversationEntryState == ConversationSetupEntrySession.State.OPENING) Text("Checking the selected conversation. Content transfer is not confirmed.")
+                            if (conversationEntryState == ConversationSetupEntrySession.State.CLOSE_FAILED) Text("Review closure could not be completed. Content transfer is not confirmed.")
+                        }
+                    }
+                    if (port != null) OutlinedButton(onClick = {
+                        conversationPickEpoch = conversationUiEpoch
+                        conversationReplyPicker.launch(arrayOf("application/octet-stream"))
+                    }, enabled = conversationSetupEnabled && !conversationReplyPending,
+                        modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) { Text("Select reply authority file") }
+                    if (port != null && conversationReplyFile != null) OutlinedButton(onClick = {
+                        conversationReplyFile?.let { installConversationReplyFile(it) }
+                    }, enabled = conversationSetupEnabled && !conversationReplyPending,
+                        modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) { Text("Verify selected reply authority") }
+                    if (conversationEntryStatus.isNotEmpty()) Text(conversationEntryStatus, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }
+    }
+
+    private var conversationSelectedLine: Pair<String, Long>? = null
+    private var conversationVerifiedLineLabel: String? = null
+
+    private fun beginConversationEntry() {
+        if (!conversationSetupEnabled || conversationEntryState == ConversationSetupEntrySession.State.CLOSE_FAILED) return
+        val uri = conversationSetupFile ?: return
+        conversationEntry?.close()
+        val epoch = conversationUiEpoch
+        val session = ConversationSetupEntrySession({ ready ->
+            conversationHandleFactory?.invoke(uri, ready) ?: createConversationHandle(uri, epoch, ready)
+        }, { state, port ->
+            if (conversationEntryOpen && conversationUiEpoch == epoch) {
+                conversationEntryState = state
+                conversationPort = port
+            }
+        })
+        conversationEntry = session
+        session.open()
+    }
+
+    private fun createConversationHandle(uri: Uri, epoch: Long, ready: (ConversationPresentationPort) -> Unit): ConversationSetupEntrySession.Handle {
+        val cancelled = AtomicBoolean(false)
+        val owned = AtomicReference<ConversationUserSetupController?>(null)
+        val selectedSubscription = selectedSim
+        val labels = sims.toMap()
+        fun report(text: String) = runOnUiThread {
+            if (!cancelled.get() && conversationEntryOpen && conversationUiEpoch == epoch) conversationEntryStatus = text
+        }
+        return object : ConversationSetupEntrySession.Handle {
+            override fun begin(): Boolean {
+                if (!conversationSetupEnabled) return false
+                conversationWorker.execute {
+                    try {
+                        val bytes = contentResolver.openInputStream(uri)?.use { readConversationSetupFile(it, 1128) }
+                            ?: error("Public file unavailable")
+                        if (cancelled.get()) return@execute
+                        val database = SmsJournalDatabase.get(applicationContext)
+                        val prepared = ConversationUserSetupProvider(database.attempts()).resolve(bytes, enabled = true)
+                            ?: error("Setup unavailable")
+                        val binding = checkNotNull(database.attempts().currentLineBinding())
+                        check(binding.accountId == prepared.selection.identity.accountId && binding.deviceId == prepared.selection.identity.deviceId &&
+                            binding.lineId == prepared.selection.lineId && binding.generation == prepared.selection.bindingGeneration)
+                        val verifiedLabel = conversationEntryLineLabel(binding, prepared.selection, selectedSubscription, labels)
+                        if (cancelled.get()) return@execute
+                        val controller = ConversationUserSetupController(applicationContext, database.attempts(), prepared.payloadAlias,
+                            conversationWorker, java.util.concurrent.Executor { action -> runOnUiThread(action) },
+                            ConversationExecutionComposition(applicationContext, database, enabled = false), { port ->
+                                if (!cancelled.get() && conversationEntryOpen && conversationUiEpoch == epoch) {
+                                    conversationSelectedLine = prepared.selection.lineId to prepared.selection.bindingGeneration
+                                    conversationVerifiedLineLabel = verifiedLabel
+                                    ready(port)
+                                }
+                            })
+                        owned.set(controller)
+                        if (cancelled.get()) { owned.getAndSet(null)?.close(); return@execute }
+                        if (!controller.begin(prepared.selection, enabled = true)) error("Setup refused")
+                        runOnUiThread {
+                            if (!cancelled.get() && conversationEntryOpen && conversationUiEpoch == epoch) conversationController = controller
+                        }
+                    } catch (error: Exception) {
+                        runCatching { owned.getAndSet(null)?.close() }
+                        report(if (error is ConversationUserSetupProvider.ExistingHardwareEnrollmentRequired)
+                            "An existing enrolled hardware reader is required. Complete enrollment before reviewing."
+                            else "The selected conversation could not be verified. Check pairing, the selected line and the setup file.")
+                        runOnUiThread {
+                            if (!cancelled.get() && conversationEntryOpen && conversationUiEpoch == epoch) {
+                                conversationEntry?.close(); conversationEntry = null
+                            }
+                        }
+                    }
+                }
+                return true
+            }
+            override fun close() { cancelled.set(true); owned.getAndSet(null)?.close() }
+        }
+    }
+
+    private fun installConversationReplyFile(uri: Uri) {
+        // The picker backgrounds this activity, which closes authority. Fresh review is mandatory.
+        val controller = conversationController ?: run {
+            conversationEntryStatus = "The review closed while selecting a file. Reopen the selected conversation and approve it again."
+            return
+        }
+        val epoch = conversationUiEpoch
+        conversationReplyPending = true
+        conversationWorker.execute {
+            try {
+                val bytes = contentResolver.openInputStream(uri)?.use { readConversationSetupFile(it, 16423) } ?: error("File unavailable")
+                val candidate = ConversationUserSetupProvider.decodeReplyAuthority(bytes)
+                controller.installReplyAuthority(candidate.signedSuccessor(), candidate.signerId()) { accepted ->
+                    if (conversationEntryOpen && conversationUiEpoch == epoch && conversationController === controller) {
+                        conversationReplyPending = false
+                        conversationEntryStatus = if (accepted) "Reply authority verified for the current interval. No message was sent."
+                            else "Reply authority was not accepted. Current phone approval and matching authority are required."
+                    }
+                }
+            } catch (_: Exception) {
+                runOnUiThread {
+                    if (conversationEntryOpen && conversationUiEpoch == epoch && conversationController === controller) {
+                        conversationReplyPending = false
+                        conversationEntryStatus = "The reply authority file could not be verified."
+                    }
+                }
+            }
+        }
     }
 
     private fun beginPairing() {
