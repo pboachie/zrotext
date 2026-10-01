@@ -51,7 +51,7 @@ fn header(version: u64, issued: u64, previous: [u8; 32], count: u8) -> Vec<u8> {
     ]
     .concat()
 }
-fn fixture() -> (RootSecret, Proposal, Expected) {
+pub(super) fn fixture() -> (RootSecret, Proposal, Expected) {
     let before_records = vec![
         record(1, 2, [4; 16], [5; 16], 4, 1000, 3_600_000),
         record(2, 3, [0; 16], [0; 16], 12, 1000, 3_600_000),

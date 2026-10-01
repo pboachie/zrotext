@@ -10,6 +10,8 @@ pub mod archive_backup;
 /// Typed offline conversation refresh; compiled only in the explicit unlock build.
 #[cfg(feature = "unlock")]
 pub mod conversation_refresh;
+#[cfg(feature = "unlock")]
+pub use conversation_refresh::activation as conversation_activation;
 pub mod recovery_kit;
 pub mod root_backup;
 /// Offline unlock signing, compiled only when the `unlock` feature is

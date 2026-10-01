@@ -14,6 +14,9 @@ use p256::ecdsa::{
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 
+#[path = "conversation_activation.rs"]
+pub mod activation;
+
 pub const MAX_PROPOSAL: usize = 20_480;
 const HEADER: usize = 151;
 const RECORD: usize = 149;

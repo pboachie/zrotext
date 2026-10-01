@@ -202,7 +202,7 @@ pub(super) fn run(args: &[String], parent: PathBuf) -> Result<()> {
     output_session.write_public_prompt("Public signed successor written once. No enrollment, network action, persistent unlock or archive change occurred. Independently verify and install through authenticated predecessor/session CAS.\r\n").map_err(|_|())?;
     output_session.finish().map_err(|_| ())
 }
-fn public_path(path: &str) -> Result<()> {
+pub(super) fn public_path(path: &str) -> Result<()> {
     let b = path.as_bytes();
     if !(4..=260).contains(&b.len())
         || !path.is_ascii()
@@ -255,7 +255,7 @@ fn public_path(path: &str) -> Result<()> {
     }
     Ok(())
 }
-fn write_public(path: &str, bytes: &[u8]) -> Result<()> {
+pub(super) fn write_public(path: &str, bytes: &[u8]) -> Result<()> {
     public_path(path)?;
     let mut file = std::fs::OpenOptions::new()
         .write(true)
@@ -267,9 +267,9 @@ fn write_public(path: &str, bytes: &[u8]) -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;
 
-fn read_proposal(path: &str) -> Result<Vec<u8>> {
+pub(super) fn read_proposal(path: &str) -> Result<Vec<u8>> {
     use std::io::Read;
     public_path(path)?;
     let bytes = path.as_bytes();

@@ -24,8 +24,9 @@
     <label>Optional received event UUID <input id="owner-event" autocomplete="off" maxlength="36"></label>
     <label><input id="content-consent" type="checkbox"> Allow phone SMS body transfer for this exact line and peer. Pairing and SMS permission do not grant this consent; separate phone approval is required.</label>
     <label>Existing root-signed activation successor <input id="activation-file" type="file" accept="application/octet-stream"></label>
+    <button id="prepare-activation" type="button">Review activation with existing offline custodian</button>
     <button id="activate-conversation" type="button">Submit activation for phone approval</button>
-    <p>Activation requires an existing root-signed public successor preserving all current key records. Missing signer output stays unavailable. Then approve and install on the phone before checking authorization. Historical messages whose manifests this session has not verified stay unavailable.</p>
+    <p>Download the typed public activation proposal and approve it with the existing offline conversation-activation command. Select the returned signed public manifest. Every current key record stays exact. Missing signer output stays unavailable. Then approve and install on the phone before checking authorization. Historical messages whose manifests this session has not verified stay unavailable.</p>
     <div id="custody-artifacts"></div>
   </fieldset>
   <label><input id="session-custody" type="checkbox"> Use a session-only signing key for this exact conversation. Leaving, logging out or expiry closes it; setup requires my existing owner-root approval.</label>

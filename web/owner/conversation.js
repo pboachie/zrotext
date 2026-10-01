@@ -76,6 +76,7 @@
     }
   };
   if (ordinary) {
+    el("prepare-activation").addEventListener("click",()=>action(async()=>{const ticket=++setupRevision;custodyLifetime?.abort();custodyLifetime=new AbortController();await setup.activate(undefined,{signal:custodyLifetime.signal});if(ticket!==setupRevision)throw Error("Activation closed");el("status").textContent="Activation submitted. Explicit phone approval and installation are still required; check authorization after both finish.";}));
     el("activate-conversation").addEventListener("click",()=>action(async()=>{if(el("activation-file").files.length!==1)throw Error("Existing root-signed activation successor required");const ticket=++setupRevision;custodyLifetime?.abort();custodyLifetime=new AbortController();await setup.activate(el("activation-file").files[0],{signal:custodyLifetime.signal});if(ticket!==setupRevision)throw Error("Activation closed");el("activation-file").value="";el("status").textContent="Activation submitted. Explicit phone approval and installation are still required; check authorization after both finish.";}));
     el("owner-setup").addEventListener("input",event=>{if(event.target.closest("#custody-artifacts")||event.target.id==="activation-file")return;if(custodyLifetime||setupPending){setup.close();clear();}});
     el("session-custody").addEventListener("change",()=>{if(custodyLifetime||setupPending){setup.close();clear();}});

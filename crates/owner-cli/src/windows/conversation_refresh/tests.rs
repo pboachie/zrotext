@@ -9,7 +9,7 @@ fn fixture_path(name: &str) -> String {
         .unwrap()
         .into()
 }
-fn args() -> Vec<String> {
+pub(crate) fn args() -> Vec<String> {
     let point = format!("04{}", "00".repeat(64));
     let values = [
         "11111111-1111-4111-8111-111111111111",
