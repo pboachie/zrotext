@@ -67,6 +67,14 @@ const HEARTBEAT_ABUSE_WINDOW: Duration = Duration::from_secs(60);
 const MAX_HEARTBEATS_PER_WINDOW: u32 = 60;
 const SESSION_LEASE_SECONDS: i32 = 90;
 const MAX_FRAME_BYTES: usize = 4096;
+// Only the explicitly configured future socket admits bounded sealed content frames.
+fn socket_frame_limit(conversation_enabled: bool) -> usize {
+    if conversation_enabled {
+        48_000
+    } else {
+        MAX_FRAME_BYTES
+    }
+}
 /// Authenticated device sockets per process, across all accounts.
 pub const MAX_DEVICE_SOCKETS: usize = 32;
 /// Default share of [`MAX_DEVICE_SOCKETS`] one account may hold.
@@ -617,10 +625,11 @@ async fn upgrade(
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
     let deadline = tokio::time::Instant::now() + admission.handshake_deadline;
+    let frame_limit = socket_frame_limit(conversation.is_some());
     websocket
         .protocols([preconditions::PROTOCOL_V2, preconditions::PROTOCOL])
-        .max_message_size(MAX_FRAME_BYTES)
-        .max_frame_size(MAX_FRAME_BYTES)
+        .max_message_size(frame_limit)
+        .max_frame_size(frame_limit)
         .on_upgrade(move |socket| {
             run_socket(
                 socket,
@@ -744,7 +753,12 @@ async fn receive_frame(socket: &mut WebSocket, budget: &mut FrameBudget) -> Opti
             return None;
         }
         match message {
-            Message::Text(text) => return serde_json::from_str(text.as_str()).ok(),
+            Message::Text(text) => {
+                if text.len() > MAX_FRAME_BYTES {
+                    return None;
+                }
+                return serde_json::from_str(text.as_str()).ok();
+            }
             Message::Binary(bytes) => return Some(ClientFrame::ConversationBinary(bytes.to_vec())),
             Message::Ping(_) | Message::Pong(_) => continue,
             _ => return None,

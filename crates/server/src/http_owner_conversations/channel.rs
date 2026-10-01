@@ -42,7 +42,9 @@ fn request(
     s: &AuthenticatedChannelSession<'_>,
     bytes: &[u8],
 ) -> Result<(u8, Uuid), ConversationError> {
-    if !(118..=1208).contains(&bytes.len()) || !matches!(bytes[5], 1 | 3 | 5 | 6 | 8 | 10) {
+    if !(118..=48_000).contains(&bytes.len())
+        || !matches!(bytes[5], 1 | 3 | 5 | 6 | 8 | 10 | 12 | 14)
+    {
         return Err(ConversationError::Invalid);
     }
     let kind = bytes[5];
@@ -50,7 +52,10 @@ fn request(
     if header(s, kind, nonce)? != bytes[..118] {
         return Err(ConversationError::Forbidden);
     }
-    if kind == 1 && bytes.len() != 118
+    if kind != 12 && bytes.len() > 1208
+        || kind == 12 && bytes.len() < 375
+        || kind == 14 && !(386..=399).contains(&bytes.len())
+        || kind == 1 && bytes.len() != 118
         || kind == 3 && !(370..=383).contains(&bytes.len())
         || kind == 5
             && (bytes.len() < 500
@@ -159,6 +164,12 @@ pub async fn handle(
     bytes: &[u8],
 ) -> Result<Vec<u8>, ConversationError> {
     let (kind, challenge) = request(authenticated, bytes)?;
+    if kind == 12 {
+        return capture::handle(client, authenticated, challenge, bytes).await;
+    }
+    if kind == 14 {
+        return delivery::handle(client, authenticated, challenge, bytes).await;
+    }
     if matches!(kind, 6 | 8 | 10) {
         return installation::handle(client, authenticated, kind, challenge, bytes).await;
     }
@@ -204,6 +215,8 @@ pub async fn handle(
     Ok(reply)
 }
 
+mod capture;
+mod delivery;
 mod installation;
 #[cfg(test)]
 mod tests;

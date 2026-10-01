@@ -1,4 +1,10 @@
 use super::*;
+
+#[test]
+fn sealed_content_frame_budget_requires_explicit_conversation_policy() {
+    assert_eq!(socket_frame_limit(false), 4096);
+    assert_eq!(socket_frame_limit(true), 48_000);
+}
 use crate::enrollment::{EnrollmentError, device_challenge_bytes};
 use futures_util::{SinkExt, StreamExt};
 use p256::ecdsa::{Signature, SigningKey, signature::Signer};

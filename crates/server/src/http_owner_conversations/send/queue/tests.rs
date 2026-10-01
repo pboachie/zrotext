@@ -25,6 +25,316 @@ struct Case {
     browser_id: [u8; 32],
     phone_reader: ExpectedRecipient,
 }
+
+// Independently build the negotiated wire bytes; do not call private production codecs.
+fn delivery_frame(
+    session: &crate::http_owner_conversations::channel::AuthenticatedChannelSession<'_>,
+    statement: &activation::Statement,
+    message: Uuid,
+    challenge: Uuid,
+) -> Vec<u8> {
+    let mut bytes = b"ZTCW\x01\x0e".to_vec();
+    for id in [
+        session.device.account_id,
+        session.device.device_id,
+        session.phone_session,
+    ] {
+        bytes.extend(id.as_bytes());
+    }
+    bytes.extend(session.device.connection_epoch.to_be_bytes());
+    bytes.extend(session.device.deployment_epoch.to_be_bytes());
+    bytes.extend(session.origin_hash);
+    bytes.extend(challenge.as_bytes());
+    assert_eq!(bytes.len(), 118);
+    for id in [
+        statement.account,
+        statement.device,
+        statement.line,
+        statement.interval,
+        statement.receipt,
+        statement.originating_session,
+    ] {
+        bytes.extend(id.as_bytes());
+    }
+    for n in [
+        statement.generation,
+        statement.trust_generation,
+        statement.activation_version,
+    ] {
+        bytes.extend(n.to_be_bytes());
+    }
+    bytes.extend(Sha256::digest(
+        activation::statement::DISCLOSURE_TEXT.as_bytes(),
+    ));
+    bytes.extend(statement.reader);
+    bytes.extend(statement.activation_digest);
+    bytes.extend(statement.digest().unwrap());
+    bytes.push(statement.peer.len() as u8);
+    bytes.extend(statement.peer.as_bytes());
+    bytes.extend(message.as_bytes());
+    bytes
+}
+
+fn delivery_identity(
+    case: &Case,
+) -> crate::http_owner_conversations::channel::AuthenticatedChannelSession<'static> {
+    crate::http_owner_conversations::channel::AuthenticatedChannelSession {
+        device: case.f.session(),
+        phone_session: Uuid::new_v4(),
+        origin_hash: [9; 32],
+    }
+}
+
+async fn dispatch_snapshot(case: &Case) -> String {
+    case.f
+        .db
+        .query_one("SELECT to_jsonb(j)::text FROM dispatch_jobs j", &[])
+        .await
+        .unwrap()
+        .get(0)
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn authenticated_delivery_returns_exact_confirmed_bytes_and_retry_never_claims_job() {
+    let case = Case::new().await;
+    let (envelope, confirmation, signature) = case.packet(Uuid::new_v4(), 30_000).await;
+    assert!(
+        case.enqueue(&envelope, &confirmation, &signature)
+            .await
+            .unwrap()
+            .created
+    );
+    let session = delivery_identity(&case);
+    let challenge = Uuid::new_v4();
+    let frame = delivery_frame(&session, &case.interval, confirmation.message, challenge);
+    let encoded = confirmation.encode().unwrap();
+    let mut expected = b"ZTCR\x01".to_vec();
+    expected.extend((envelope.len() as u32).to_be_bytes());
+    expected.extend(&envelope);
+    expected.extend((encoded.len() as u16).to_be_bytes());
+    expected.extend(&encoded);
+    expected.extend(&signature);
+    let before = dispatch_snapshot(&case).await;
+    let mut first = None;
+    for _ in 0..2 {
+        let reply = crate::http_owner_conversations::channel::handle(
+            &mut case.f.connect().await,
+            &session,
+            &frame,
+        )
+        .await
+        .unwrap();
+        assert_eq!(&reply[..5], b"ZTCW\x01");
+        assert_eq!(reply[5], 15);
+        assert_eq!(&reply[6..118], &frame[6..118]);
+        assert_eq!(
+            u32::from_be_bytes(reply[118..122].try_into().unwrap()) as usize,
+            expected.len()
+        );
+        assert_eq!(&reply[122..], expected);
+        if let Some(previous) = &first {
+            assert_eq!(&reply, previous);
+        }
+        first = Some(reply);
+        assert_eq!(dispatch_snapshot(&case).await, before);
+        assert_eq!(case.counts().await, (1, 1, 1, 1));
+    }
+    case.f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn authenticated_delivery_rejects_header_scope_and_foreign_selectors_without_claim() {
+    let case = Case::new().await;
+    let (b, c, sig) = case.packet(Uuid::new_v4(), 30_000).await;
+    case.enqueue(&b, &c, &sig).await.unwrap();
+    let session = delivery_identity(&case);
+    let frame = delivery_frame(&session, &case.interval, c.message, Uuid::new_v4());
+    let before = dispatch_snapshot(&case).await;
+    // Authenticated account/device/session/origin and each immutable scope field.
+    for offset in [
+        6, 22, 38, 54, 62, 70, 118, 134, 150, 166, 182, 198, 214, 222, 230, 238, 270, 302, 334, 370,
+    ] {
+        let mut changed = frame.clone();
+        changed[offset] ^= 1;
+        assert!(
+            crate::http_owner_conversations::channel::handle(
+                &mut case.f.connect().await,
+                &session,
+                &changed
+            )
+            .await
+            .is_err(),
+            "offset {offset}"
+        );
+        assert_eq!(dispatch_snapshot(&case).await, before);
+    }
+    for offset in [166, frame.len() - 16] {
+        let mut changed = frame.clone();
+        changed[offset..offset + 16].copy_from_slice(Uuid::new_v4().as_bytes());
+        assert!(
+            crate::http_owner_conversations::channel::handle(
+                &mut case.f.connect().await,
+                &session,
+                &changed
+            )
+            .await
+            .is_err()
+        );
+    }
+    let mut rebound = delivery_identity(&case);
+    rebound.phone_session = Uuid::new_v4();
+    assert!(
+        crate::http_owner_conversations::channel::handle(
+            &mut case.f.connect().await,
+            &rebound,
+            &frame
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(dispatch_snapshot(&case).await, before);
+    assert_eq!(case.counts().await, (1, 1, 1, 1));
+    case.f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn authenticated_delivery_rechecks_owner_phone_origin_and_withdrawal_without_claim() {
+    for cause in 0..5 {
+        let case = Case::new().await;
+        let (b, c, sig) = case.packet(Uuid::new_v4(), 30_000).await;
+        case.enqueue(&b, &c, &sig).await.unwrap();
+        let session = delivery_identity(&case);
+        let frame = delivery_frame(&session, &case.interval, c.message, Uuid::new_v4());
+        let before = dispatch_snapshot(&case).await;
+        match cause {
+            0 => {
+                case.f
+                    .db
+                    .execute(
+                        "UPDATE sessions SET revoked_at=clock_timestamp() WHERE id=$1",
+                        &[&case.owner.session_id],
+                    )
+                    .await
+                    .unwrap();
+            }
+            1 => {
+                case.f.db.execute("UPDATE device_sessions SET lease_until=clock_timestamp()-interval '1 second'", &[]).await.unwrap();
+            }
+            2 => {
+                case.f
+                    .db
+                    .execute("UPDATE devices SET revoked_at=clock_timestamp()", &[])
+                    .await
+                    .unwrap();
+            }
+            3 => {
+                activation::close(&mut case.f.connect().await, &case.owner, c.interval, true)
+                    .await
+                    .unwrap();
+            }
+            _ => {
+                case.f
+                    .db
+                    .execute(
+                        "UPDATE device_sessions SET connection_epoch=connection_epoch+1",
+                        &[],
+                    )
+                    .await
+                    .unwrap();
+            }
+        }
+        assert!(
+            crate::http_owner_conversations::channel::handle(
+                &mut case.f.connect().await,
+                &session,
+                &frame
+            )
+            .await
+            .is_err(),
+            "cause {cause}"
+        );
+        assert_eq!(dispatch_snapshot(&case).await, before);
+        assert_eq!(case.counts().await, (1, 1, 1, 1));
+        case.f.cleanup().await;
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn authenticated_delivery_rejects_missing_redacted_and_expired_proof_without_claim() {
+    for cause in 0..4 {
+        let case = Case::new().await;
+        let (b, c, sig) = case
+            .packet(Uuid::new_v4(), if cause == 3 { 5_000 } else { 30_000 })
+            .await;
+        case.enqueue(&b, &c, &sig).await.unwrap();
+        let session = delivery_identity(&case);
+        let frame = delivery_frame(&session, &case.interval, c.message, Uuid::new_v4());
+        let before = dispatch_snapshot(&case).await;
+        match cause {
+            0 => {
+                case.f
+                    .db
+                    .execute("DELETE FROM conversation_confirmation_records", &[])
+                    .await
+                    .unwrap();
+            }
+            1 => {
+                case.f.db.execute("UPDATE conversation_confirmation_records SET confirmation=NULL,signature=NULL", &[]).await.unwrap();
+            }
+            2 => {
+                case.f
+                    .db
+                    .execute(
+                        "UPDATE messages SET transport_payload=NULL,recipient_e164=NULL",
+                        &[],
+                    )
+                    .await
+                    .unwrap();
+            }
+            _ => {
+                tokio::time::timeout(std::time::Duration::from_secs(8), async {
+                    loop {
+                        let now: i64 = case
+                            .f
+                            .db
+                            .query_one(
+                                "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint",
+                                &[],
+                            )
+                            .await
+                            .unwrap()
+                            .get(0);
+                        if now >= c.expires_ms {
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                    }
+                })
+                .await
+                .expect("database clock must reach fixture expiry");
+            }
+        }
+        assert!(
+            crate::http_owner_conversations::channel::handle(
+                &mut case.f.connect().await,
+                &session,
+                &frame
+            )
+            .await
+            .is_err(),
+            "cause {cause}"
+        );
+        assert_eq!(dispatch_snapshot(&case).await, before);
+        let counts = case.counts().await;
+        assert_eq!((counts.0, counts.1, counts.3), (1, 1, 1));
+        assert_eq!(counts.2, if cause == 0 { 0 } else { 1 });
+        case.f.cleanup().await;
+    }
+}
 impl Case {
     async fn new() -> Self {
         let (mut f, owner, interval) = activation::tests::pending().await;

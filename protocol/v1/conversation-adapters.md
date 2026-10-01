@@ -38,8 +38,8 @@ of the already authenticated device socket. Session identity is copied from
 and deployment epochs and origin hash. The proposed reply carries that exact
 challenge and the server's send UTC timestamp. A server-authenticated socket is
 the time authority; this creates no new signing key or external time credential.
-The existing wire protocol does not yet emit this reply, so its authenticated
-server/frame adapter is a remaining integration gate.
+The dormant authenticated server/frame adapter emits this reply. Its ordinary
+socket policy remains disabled; installing it requires explicit future composition.
 
 The adapter allows at most two seconds of round-trip time and uses the full RTT
 as conservative uncertainty added to server UTC. It advances by elapsed monotonic
@@ -47,6 +47,36 @@ time, expires after thirty seconds, and is unavailable after restart/session los
 No wall-clock fallback or persisted anchor exists. Nonce/session mismatch,
 regression, overflow and unavailable clocks fail closed. Root/session authority
 must still be independently sampled; a time lease never authorizes content or SMS.
+
+## Authenticated content transfer
+
+The binary channel retains the 118-byte `ZTCW01` header and exact out-of-band
+account/device/phone-session, connection/deployment epochs, origin hash and nonce.
+All integers use network byte order. The canonical scope is the six UUIDs,
+three positive u64 generations/version, four 32-byte digests, and the length-prefixed
+ASCII peer already used by closure and installation.
+
+| Kind | Body after the header |
+|---|---|
+| 12 capture request | Canonical scope, u32 envelope length, exact sealed envelope |
+| 13 committed capture ACK | Event UUID, SHA-256 of the full envelope, canonical created byte 0 or 1 |
+| 14 confirmed-packet request | Canonical scope, exact message UUID |
+| 15 confirmed-packet reply | u32 packet length, exact packet |
+
+Envelopes and reply packets are bounded to 40,000 bytes; all frames reject trailing
+bytes. The confirmed packet is `ZTCR01`, u32 envelope length and bytes, u16
+confirmation length and bytes, then the exact 64-byte signature. A packet transfer
+does not claim a dispatch job or grant carrier execution. The phone independently
+verifies current authority and exact requested message before durable send admission.
+
+Capture allocates and commits a durable counter before encryption, then protects
+the single sealed packet in its receipt journal. Upload retries reuse those exact
+bytes and identity; renewal never reseals captured content. The server supplies
+the stored activation provenance and current manifest to the existing fenced ingest,
+then acknowledges only after commit. Stop/retention erase protected packet content
+while retaining identity/counter fences. Network waits never hold the shared
+admission monitor; admission is checked before and after transfer, and late replies
+cannot restore a stopped interval. These handlers and process mounts remain dormant.
 
 ## Execution and lifecycle
 

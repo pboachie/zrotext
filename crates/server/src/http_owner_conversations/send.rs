@@ -183,12 +183,45 @@ async fn authorize_in_transaction(
     confirmation: &[u8],
     signature: &[u8],
 ) -> Result<Confirmation, ConversationError> {
+    authorize_bound(
+        tx,
+        Some(owner),
+        phone,
+        owner.session_id,
+        envelope,
+        confirmation,
+        signature,
+    )
+    .await
+}
+
+/// Phone delivery uses only retained origin provenance, never a forged browser principal.
+pub(super) async fn authorize_delivery(
+    tx: &Transaction<'_>,
+    phone: InboundSession<'_>,
+    origin: Uuid,
+    envelope: &[u8],
+    confirmation: &[u8],
+    signature: &[u8],
+) -> Result<Confirmation, ConversationError> {
+    authorize_bound(tx, None, phone, origin, envelope, confirmation, signature).await
+}
+
+async fn authorize_bound(
+    tx: &Transaction<'_>,
+    owner: Option<&SessionPrincipal>,
+    phone: InboundSession<'_>,
+    origin: Uuid,
+    envelope: &[u8],
+    confirmation: &[u8],
+    signature: &[u8],
+) -> Result<Confirmation, ConversationError> {
     let c = Confirmation::decode(confirmation)?;
     let e = sealed_envelope::parse(envelope, Profile::Draft02Candidate)
         .map_err(|_| ConversationError::Invalid)?;
     if e.kind != Kind::Outbound
-        || c.account != owner.tenant.account_id()
-        || c.session != owner.session_id
+        || owner.is_some_and(|owner| c.account != owner.tenant.account_id())
+        || c.session != origin
         || c.account != phone.account_id
         || c.device != phone.device_id
         || e.account_id != c.account.as_bytes()
@@ -209,7 +242,16 @@ async fn authorize_in_transaction(
         return Err(ConversationError::Forbidden);
     }
     let mut authority = lock_current(tx, c.account).await?;
-    lock_owner(tx, owner).await?;
+    if let Some(owner) = owner {
+        lock_owner(tx, owner).await?;
+    } else {
+        tx.query_opt(
+            "SELECT 1 FROM accounts WHERE id=$1 AND disabled_at IS NULL FOR UPDATE",
+            &[&phone.account_id],
+        )
+        .await?
+        .ok_or(ConversationError::Forbidden)?;
+    }
     let row = activation::load(tx, c.account, c.interval).await?;
     let s = &row.statement;
     if row.phase != "active"
@@ -268,7 +310,9 @@ async fn authorize_in_transaction(
     {
         return Err(ConversationError::Forbidden);
     }
-    fresh_owner(tx, owner).await?;
+    if let Some(owner) = owner {
+        fresh_owner(tx, owner).await?;
+    }
     activation::origin(tx, s).await?;
     activation::device_live(tx, phone, s).await?;
     authority.context(&w).await?;
