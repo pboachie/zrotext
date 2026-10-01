@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 package org.zrotext.gateway
 
+import androidx.test.platform.app.InstrumentationRegistry
+
 import android.os.Build
 import android.security.keystore.KeyInfo
 import android.security.keystore.KeyProperties
@@ -27,9 +29,9 @@ class DevicePayloadKeyStoreDeviceTest {
         val alias = "zrotext.test.payload.${UUID.randomUUID()}"
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null, null) }
         try {
-            val recipient = DevicePayloadKeyStore(alias)
+            val recipient = DevicePayloadKeyStore(InstrumentationRegistry.getInstrumentation().targetContext, alias)
             val first = recipient.getOrCreateForEnrollment()
-            val second = DevicePayloadKeyStore(alias).getOrCreateForEnrollment()
+            val second = DevicePayloadKeyStore(InstrumentationRegistry.getInstrumentation().targetContext, alias).getOrCreateForEnrollment()
             assertArrayEquals(first.point, second.point)
             assertArrayEquals(first.keyId, second.keyId)
             assertEquals(65, first.point.size)
@@ -67,9 +69,36 @@ class DevicePayloadKeyStoreDeviceTest {
             store.deleteEntry(alias)
             assertFalse(store.containsAlias(alias))
             assertThrows(IllegalStateException::class.java) { recipient.agreeExisting(enc, first.keyId) }
+            assertThrows(IllegalStateException::class.java) { recipient.getOrCreateForEnrollment() }
+            assertThrows(IllegalStateException::class.java) {
+                DevicePayloadKeyStore(InstrumentationRegistry.getInstrumentation().targetContext, alias)
+                    .getOrCreateForEnrollment()
+            }
             assertFalse(store.containsAlias(alias))
         } finally {
             if (store.containsAlias(alias)) store.deleteEntry(alias)
+            clearPayloadLifecycleFixture(InstrumentationRegistry.getInstrumentation().targetContext, alias)
+        }
+    }
+
+    @Test fun localRevocationPersistsAcrossInstancesAndNeverRegeneratesAKey() {
+        assumeTrue(Build.VERSION.SDK_INT >= 31)
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val alias = "zrotext.test.payload.${UUID.randomUUID()}"
+        val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null, null) }
+        try {
+            val recipient = DevicePayloadKeyStore(context, alias)
+            val public = recipient.getOrCreateForEnrollment()
+            recipient.revokeExisting(public.keyId)
+            assertThrows(IllegalStateException::class.java) { DevicePayloadKeyStore(context, alias).existingPublic() }
+            store.deleteEntry(alias)
+            assertThrows(IllegalStateException::class.java) {
+                DevicePayloadKeyStore(context, alias).getOrCreateForEnrollment()
+            }
+            assertFalse(store.containsAlias(alias))
+        } finally {
+            if (store.containsAlias(alias)) store.deleteEntry(alias)
+            clearPayloadLifecycleFixture(context, alias)
         }
     }
 }
