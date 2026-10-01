@@ -14,9 +14,16 @@ use super::tests::{
     unreachable,
 };
 use super::*;
+use crate::anchor::MemoryEpochAnchor;
 use crate::decision::{DEFAULT_OBSERVATION_FRESHNESS_MS, Decision};
 use crate::executor::FailoverExecutor;
 use crate::executor_tests::MemoryAuthority;
+use crate::fence::{ExternalFencing, MemoryFenceAuthority};
+
+/// The corpus's default external adapters (see `executor_tests`).
+fn confirming_fencing() -> ExternalFencing {
+    ExternalFencing::new(MemoryFenceAuthority::default(), MemoryEpochAnchor::new())
+}
 use std::path::Path;
 
 /// The retention floor the corpus pins: the number of records every member
@@ -260,6 +267,7 @@ fn a_full_fence_and_promote_replay_survives_compaction() {
         test_config(),
         StoreObservationSource::new(store),
         MemoryAuthority::new(5),
+        confirming_fencing(),
     );
     let decisions: Vec<Option<Decision>> = [12_000_u64, 13_000, 14_000, 25_000, 36_000]
         .into_iter()
