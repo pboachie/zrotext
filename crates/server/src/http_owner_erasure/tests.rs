@@ -311,6 +311,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "071_sealed_grant_authority.sql",
         include_str!("../../../../deploy/compose/migrations/071_sealed_grant_authority.sql"),
     ),
+    (
+        "075_workflow_context.sql",
+        include_str!("../../../../deploy/compose/migrations/075_workflow_context.sql"),
+    ),
 ];
 
 /// Indexes the Compose migrator prepares with CREATE INDEX CONCURRENTLY in

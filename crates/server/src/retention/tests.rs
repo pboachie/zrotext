@@ -134,6 +134,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../../../deploy/compose/migrations/063_retention_blocked_stamp.sql"),
     include_str!("../../../../deploy/compose/migrations/064_owner_conversation_consent.sql"),
     include_str!("../../../../deploy/compose/migrations/065_conversation_activation.sql"),
+    include_str!("../../../../deploy/compose/migrations/075_workflow_context.sql"),
 ];
 
 async fn migrated(db: &Client) -> String {
@@ -297,6 +298,7 @@ async fn retention_respects_each_cutoff_and_replay_fences() {
             conversation_admissions_closed: 0,
             conversation_provenance: 0,
             conversation_intervals: 0,
+            workflow_contexts: 0,
         }
     );
     assert_eq!(

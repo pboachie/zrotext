@@ -27,7 +27,7 @@ fn sign(f: &Fixture, s: &Statement, domain: &[u8]) -> Vec<u8> {
     let signature: Signature = f.event_signer.sign(&s.transcript(domain).unwrap());
     signature.normalize_s().to_bytes().to_vec()
 }
-async fn pending() -> (Fixture, SessionPrincipal, Statement) {
+pub(crate) async fn pending() -> (Fixture, SessionPrincipal, Statement) {
     let (mut f, owner) = prepared().await;
     let mut client = f.connect().await;
     let tx = client.transaction().await.unwrap();
@@ -51,7 +51,7 @@ async fn pending() -> (Fixture, SessionPrincipal, Statement) {
         .unwrap();
     (f, owner, s)
 }
-async fn activate(f: &Fixture, s: &Statement) {
+pub(crate) async fn activate(f: &Fixture, s: &Statement) {
     approve(
         &mut f.connect().await,
         f.session(),
@@ -69,7 +69,7 @@ async fn activate(f: &Fixture, s: &Statement) {
     .await
     .unwrap();
 }
-async fn capture(
+pub(crate) async fn capture(
     f: &Fixture,
     s: &Statement,
     event: Uuid,

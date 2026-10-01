@@ -101,7 +101,23 @@ const BLOCKED_TABLES: &[&str] = &[
 /// rows with a NULL account_id. Tables that the schema cascades from the
 /// account row are deleted explicitly anyway, so the reported per-table
 /// counts stay honest.
-const DELETE_PLAN: &[(&str, &str)] = &[
+pub(crate) const DELETE_PLAN: &[(&str, &str)] = &[
+    (
+        "workflow_context_audit",
+        "DELETE FROM workflow_context_audit WHERE account_id=$1",
+    ),
+    (
+        "workflow_exceptions",
+        "DELETE FROM workflow_exceptions WHERE account_id=$1",
+    ),
+    (
+        "workflow_context_versions",
+        "DELETE FROM workflow_context_versions WHERE account_id=$1",
+    ),
+    (
+        "workflow_contexts",
+        "DELETE FROM workflow_contexts WHERE account_id=$1",
+    ),
     // Contacts and their append-only consent history: erasable account
     // records (unlike the schema-protected opt-out planes), deleted before
     // the memberships their recorder foreign keys point at.
