@@ -104,7 +104,51 @@ pub(crate) async fn record(
     digest: &[u8],
     result: &ActionState,
 ) -> Result<(), ConversationError> {
-    let account = owner.tenant.account_id();
+    record_actor(
+        tx,
+        (
+            owner.tenant.account_id(),
+            super::proposal::Actor::Owner(owner.user_id),
+        ),
+        context,
+        request,
+        op,
+        digest,
+        result,
+    )
+    .await
+}
+async fn record_actor(
+    tx: &Transaction<'_>,
+    identity: (Uuid, super::proposal::Actor),
+    context: Uuid,
+    request: Uuid,
+    op: i16,
+    digest: &[u8],
+    result: &ActionState,
+) -> Result<(), ConversationError> {
+    record_result(
+        tx,
+        identity,
+        context,
+        (request, op),
+        result.key.action_id,
+        digest,
+        result,
+    )
+    .await
+}
+pub(crate) async fn record_result<T: Serialize>(
+    tx: &Transaction<'_>,
+    identity: (Uuid, super::proposal::Actor),
+    context: Uuid,
+    request: (Uuid, i16),
+    subject: Uuid,
+    digest: &[u8],
+    result: &T,
+) -> Result<(), ConversationError> {
+    let (request, op) = request;
+    let (account, actor) = identity;
     let count: i64 = tx
         .query_one(
             "SELECT count(*) FROM workflow_action_mutations WHERE account_id=$1",
@@ -116,9 +160,61 @@ pub(crate) async fn record(
         return Err(ConversationError::Conflict);
     }
     let bytes = serde_json::to_vec(result).map_err(|_| ConversationError::Unavailable)?;
-    tx.execute("INSERT INTO workflow_action_mutations(account_id,request_id,context_id,subject_id,operation,request_digest,result,actor_user_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)",
-        &[&account,&request,&context,&result.key.action_id,&op,&digest,&bytes,&owner.user_id]).await?;
+    match actor {
+        super::proposal::Actor::Owner(user) => {
+            tx.execute("INSERT INTO workflow_action_mutations(account_id,request_id,context_id,subject_id,operation,request_digest,result,actor_user_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)", &[&account,&request,&context,&subject,&op,&digest,&bytes,&user]).await?;
+        }
+        super::proposal::Actor::Integration(grant) => {
+            tx.execute("INSERT INTO workflow_action_mutations(account_id,request_id,context_id,subject_id,operation,request_digest,result,actor_kind,actor_grant_id) VALUES($1,$2,$3,$4,$5,$6,$7,'integration',$8)", &[&account,&request,&context,&subject,&op,&digest,&bytes,&grant]).await?;
+        }
+    }
     Ok(())
+}
+/// The shared transition consumes an existing owner-confirmed message only.
+/// Callers retain their private authority fence before and after this write.
+pub(crate) async fn dispatch_transition(
+    tx: &Transaction<'_>,
+    descriptor: &Descriptor,
+    context: Uuid,
+    actor: super::proposal::Actor,
+    message: Uuid,
+    dispatch: Uuid,
+) -> Result<(), ConversationError> {
+    let key = descriptor.key()?;
+    if activation::now(tx).await?
+        < descriptor
+            .not_before
+            .checked_mul(1000)
+            .ok_or(ConversationError::Invalid)?
+    {
+        return Err(ConversationError::Conflict);
+    }
+    tx.query_opt("SELECT 1 FROM workflow_message_links l JOIN messages m ON (m.account_id,m.id)=(l.account_id,l.live_message_id) WHERE l.account_id=$1 AND l.action_id=$2 AND l.revision=$3 AND l.binding_digest=$4 AND l.message_id=$5 AND l.dispatch_id=$6 AND m.workflow_action_id=$2 AND m.state IN ('queued','claimed') AND m.transport_payload IS NOT NULL AND sha256(m.transport_payload)=l.message_digest AND NOT EXISTS(SELECT 1 FROM message_attempts a WHERE a.account_id=m.account_id AND a.message_id=m.id) FOR UPDATE OF m",
+        &[&key.account_id,&key.action_id,&key.revision,&&key.binding_digest[..],&message,&dispatch]).await?.ok_or(ConversationError::Forbidden)?;
+    if let super::proposal::Actor::Integration(grant) = actor
+        && tx.execute("UPDATE messages SET workflow_executor_grant=$3 WHERE account_id=$1 AND id=$2 AND (workflow_executor_grant IS NULL OR workflow_executor_grant=$3)", &[&key.account_id,&message,&grant]).await? != 1 {
+        return Err(ConversationError::Forbidden);
+    }
+    if tx.execute("UPDATE workflow_actions SET phase='dispatching',record_version=record_version+1 WHERE account_id=$1 AND id=$2 AND revision=$3 AND binding_digest=$4 AND phase='approved'", &[&key.account_id,&key.action_id,&key.revision,&&key.binding_digest[..]]).await? != 1 {
+        return Err(ConversationError::Conflict);
+    }
+    let state = head(tx, key.account_id, key.action_id).await?;
+    let digest = match actor {
+        super::proposal::Actor::Owner(_) => request_digest(7, &(key, message, dispatch))?,
+        super::proposal::Actor::Integration(grant) => {
+            request_digest(7, &(grant, key, message, dispatch))?
+        }
+    };
+    record_actor(
+        tx,
+        (key.account_id, actor),
+        context,
+        dispatch,
+        7,
+        &digest,
+        &state,
+    )
+    .await
 }
 pub(crate) async fn version(
     tx: &Transaction<'_>,
@@ -155,21 +251,37 @@ pub async fn register(
     request: Uuid,
     d: Descriptor,
 ) -> Result<ActionState, ConversationError> {
+    let tx = client.transaction().await?;
+    let mut permit = super::proposal::OwnerProposal::checked(&tx, owner, d).await?;
+    let result = register_core(&mut permit, request).await?;
+    drop(permit);
+    tx.commit().await?;
+    Ok(result)
+}
+pub(crate) async fn register_core<'connection>(
+    permit: &mut impl super::proposal::ProposalFence<'connection>,
+    request: Uuid,
+) -> Result<ActionState, ConversationError> {
+    let d = permit.descriptor().clone();
+    let h = permit.header().clone();
     if d.revision != 1 {
         return Err(ConversationError::Invalid);
     }
     let key = d.key()?;
     let ids = d.identities()?;
-    let digest = request_digest(1, &d)?;
-    let tx = client.transaction().await?;
-    let (mut authority, h) = checked_descriptor(&tx, owner, &d).await?;
-    if let Some(result) = replay(&tx, key.account_id, request, &digest).await? {
-        recheck_descriptor(&tx, owner, &mut authority, &h, &d).await?;
-        drop(authority);
-        tx.commit().await?;
+    let actor = permit.actor();
+    let digest = match actor {
+        super::proposal::Actor::Owner(_) => request_digest(1, &d)?,
+        super::proposal::Actor::Integration(grant) => request_digest(1, &(grant, &d))?,
+    };
+    permit.recheck().await?;
+    let tx = permit.transaction();
+    if let Some(result) = replay(tx, key.account_id, request, &digest).await? {
+        live_routine(tx, &d, &h).await?;
+        permit.recheck().await?;
         return Ok(result);
     }
-    if activation::now(&tx).await? >= d.expires_at_ms()? {
+    if activation::now(tx).await? >= d.expires_at_ms()? {
         return Err(ConversationError::Forbidden);
     }
     let count: i64 = tx
@@ -195,19 +307,32 @@ pub async fn register(
     }
     tx.execute("INSERT INTO workflow_context_fences(account_id,context_id) VALUES($1,$2) ON CONFLICT DO NOTHING",&[&key.account_id,&h.context]).await?;
     tx.execute("INSERT INTO workflow_routines(account_id,id,context_id,generation) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING",&[&key.account_id,&ids.routine,&h.context,&d.authority_generation]).await?;
-    live_routine(&tx, &d, &h).await?;
+    live_routine(tx, &d, &h).await?;
     let result = ActionState {
         key,
         record_version: 1,
         phase: Phase::Proposed,
     };
-    tx.execute("INSERT INTO workflow_actions(account_id,id,context_id,routine_id,revision,binding_digest,record_version,phase) VALUES($1,$2,$3,$4,1,$5,1,'proposed')",
-        &[&key.account_id,&key.action_id,&h.context,&ids.routine,&&key.binding_digest[..]]).await?;
-    version(&tx, &d, &h).await?;
-    record(&tx, owner, h.context, request, 1, &digest, &result).await?;
-    recheck_descriptor(&tx, owner, &mut authority, &h, &d).await?;
-    drop(authority);
-    tx.commit().await?;
+    match actor {
+        super::proposal::Actor::Owner(_) => {
+            tx.execute("INSERT INTO workflow_actions(account_id,id,context_id,routine_id,revision,binding_digest,record_version,phase) VALUES($1,$2,$3,$4,1,$5,1,'proposed')", &[&key.account_id,&key.action_id,&h.context,&ids.routine,&&key.binding_digest[..]]).await?;
+        }
+        super::proposal::Actor::Integration(grant) => {
+            tx.execute("INSERT INTO workflow_actions(account_id,id,context_id,routine_id,revision,binding_digest,record_version,phase,integration_origin_grant) VALUES($1,$2,$3,$4,1,$5,1,'proposed',$6)", &[&key.account_id,&key.action_id,&h.context,&ids.routine,&&key.binding_digest[..],&grant]).await?;
+        }
+    }
+    version(tx, &d, &h).await?;
+    record_actor(
+        tx,
+        (key.account_id, actor),
+        h.context,
+        request,
+        1,
+        &digest,
+        &result,
+    )
+    .await?;
+    permit.recheck().await?;
     Ok(result)
 }
 pub async fn read(

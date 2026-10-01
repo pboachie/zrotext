@@ -135,6 +135,18 @@ pub(crate) const DELETE_PLAN: &[(&str, &str)] = &[
         "DELETE FROM workflow_schedule_policies WHERE account_id=$1",
     ),
     (
+        "workflow_integration_access",
+        "DELETE FROM workflow_integration_access WHERE account_id=$1",
+    ),
+    (
+        "workflow_connector_context_envelopes",
+        "DELETE FROM workflow_connector_context_envelopes WHERE account_id=$1",
+    ),
+    (
+        "workflow_integration_grants",
+        "DELETE FROM workflow_integration_grants WHERE account_id=$1",
+    ),
+    (
         "workflow_message_links",
         "DELETE FROM workflow_message_links WHERE account_id=$1",
     ),
@@ -748,8 +760,22 @@ async fn erase_account(
     }
     // Everything below is one transaction: any failure rolls the whole
     // erasure back, never leaving a half-erased account.
+    let integration_installed = match crate::workflow_runtime::lifecycle::installed(&tx).await {
+        Ok(value) => value,
+        Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+    };
     let mut deleted = Vec::new();
     for &(table, sql) in DELETE_PLAN {
+        if [
+            "workflow_integration_access",
+            "workflow_connector_context_envelopes",
+            "workflow_integration_grants",
+        ]
+        .contains(&table)
+            && !integration_installed
+        {
+            continue;
+        }
         if table == "conversation_confirmation_records" && !confirmation_installed {
             continue;
         }

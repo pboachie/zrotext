@@ -264,7 +264,7 @@ async fn clock(tx: &Transaction<'_>, previous: u64) -> Result<u64, RegistryError
 /// Lock and authenticate the acting owner: active account, owner membership,
 /// verified MFA user, live session and enabled owner MFA, exactly the root
 /// ceremony fence. Registration never trusts the session's role copy alone.
-async fn owner_fence(
+pub(crate) async fn owner_fence(
     tx: &Transaction<'_>,
     principal: &SessionPrincipal,
 ) -> Result<(), RegistryError> {

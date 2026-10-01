@@ -1,7 +1,7 @@
 /** Proposed ZTWC01 client-only ciphertext. No networking, key generation for
- * customers, persistence, integration readers or dispatch authorization. */
+ * customers, persistence or dispatch authorization. */
 import { Aes128Gcm, CipherSuite, DhkemP256HkdfSha256, HkdfSha256 } from "@hpke/core";
-import { authorizeWorkflowContext02, type Manifest02 } from "./draft02-manifest.js";
+import { authorizeWorkflowContext02, authorizeIntegrationWorkflowContext02, type Manifest02 } from "./draft02-manifest.js";
 const suite = new CipherSuite({ kem: new DhkemP256HkdfSha256(), kdf: new HkdfSha256(), aead: new Aes128Gcm() });
 const enc = new TextEncoder(), domain = enc.encode("ZT/workflow-context/hpke/v1\0");
 const AAD_LENGTH = 222, HEADER_LENGTH = 291, MAX_CONTENT = 32768, MAX_SIGNED = (1n << 63n) - 1n;
@@ -32,19 +32,28 @@ export function workflowContextAad(scope: WorkflowContextScope): Uint8Array {
     ...[scope.bindingGeneration, scope.revision, scope.expiresMs, scope.trustGeneration, scope.manifestVersion].map(number),
     ...[scope.peerDigest, scope.readerId, scope.manifestDigest].map((b) => fixed(b, 32)));
 }
-function authorize(manifest: Manifest02, aad: Uint8Array, nowMs: bigint): Uint8Array {
+function authorize(manifest: Manifest02, aad: Uint8Array, nowMs: bigint, role: 2 | 3): Uint8Array {
   const view = new DataView(aad.buffer, aad.byteOffset, aad.byteLength);
   const expiry = view.getBigUint64(102, false);
   if (nowMs < 1n || expiry <= nowMs || expiry - nowMs > 30n * 86400000n) fail();
-  return authorizeWorkflowContext02(manifest, {accountId: aad.slice(6, 22), deviceId: aad.slice(22, 38),
+  const verify = role === 2 ? authorizeWorkflowContext02 : authorizeIntegrationWorkflowContext02;
+  return verify(manifest, {accountId: aad.slice(6, 22), deviceId: aad.slice(22, 38),
     lineId: aad.slice(38, 54), readerId: aad.slice(158, 190), generation: view.getBigUint64(110, false),
     version: view.getBigUint64(118, false), digest: aad.slice(190, 222)}, nowMs);
 }
 /** Uses a fresh library-generated HPKE encapsulation for each revision. */
 export async function sealWorkflowContext(manifest: Manifest02, scope: WorkflowContextScope, nowMs: bigint, plaintext: Uint8Array): Promise<Uint8Array> {
+  return sealContext(manifest, scope, nowMs, plaintext, 2);
+}
+/** Owner-declared separate representation for an explicitly selected role-3
+ * reader. This cryptographic operation does not issue a runtime grant. */
+export async function sealIntegrationWorkflowContext(manifest: Manifest02, scope: WorkflowContextScope, nowMs: bigint, plaintext: Uint8Array): Promise<Uint8Array> {
+  return sealContext(manifest, scope, nowMs, plaintext, 3);
+}
+async function sealContext(manifest: Manifest02, scope: WorkflowContextScope, nowMs: bigint, plaintext: Uint8Array, role: 2 | 3): Promise<Uint8Array> {
   if (plaintext.length < 1 || plaintext.length > MAX_CONTENT) fail();
   const aad = workflowContextAad(scope), content = Uint8Array.from(plaintext);
-  const point = authorize(manifest, aad, nowMs);
+  const point = authorize(manifest, aad, nowMs, role);
   const sender = await suite.createSenderContext({recipientPublicKey: await suite.kem.deserializePublicKey(buffer(point)), info: buffer(concat(domain, aad))});
   const ciphertext = new Uint8Array(await sender.seal(buffer(content), buffer(aad)));
   const encapsulation = new Uint8Array(sender.enc);
@@ -54,10 +63,16 @@ export async function sealWorkflowContext(manifest: Manifest02, scope: WorkflowC
 }
 /** The private key remains entirely in the selected customer client. */
 export async function openWorkflowContext(manifest: Manifest02, expected: WorkflowContextScope, nowMs: bigint, privateKey: CryptoKey, envelope: Uint8Array): Promise<Uint8Array> {
+  return openContext(manifest, expected, nowMs, privateKey, envelope, 2);
+}
+export async function openIntegrationWorkflowContext(manifest: Manifest02, expected: WorkflowContextScope, nowMs: bigint, privateKey: CryptoKey, envelope: Uint8Array): Promise<Uint8Array> {
+  return openContext(manifest, expected, nowMs, privateKey, envelope, 3);
+}
+async function openContext(manifest: Manifest02, expected: WorkflowContextScope, nowMs: bigint, privateKey: CryptoKey, envelope: Uint8Array, role: 2 | 3): Promise<Uint8Array> {
   if (envelope.length < HEADER_LENGTH + 17 || envelope.length > HEADER_LENGTH + MAX_CONTENT + 16) fail();
   const bytes = Uint8Array.from(envelope), aad = workflowContextAad(expected);
   if (!aad.every((v, i) => bytes[i] === v)) fail();
-  authorize(manifest, aad, nowMs);
+  authorize(manifest, aad, nowMs, role);
   if (new DataView(bytes.buffer).getUint32(HEADER_LENGTH - 4, false) !== bytes.length - HEADER_LENGTH) fail();
   const recipient = await suite.createRecipientContext({recipientKey: privateKey, enc: buffer(bytes.slice(AAD_LENGTH, AAD_LENGTH + 65)), info: buffer(concat(domain, aad))});
   return new Uint8Array(await recipient.open(buffer(bytes.slice(HEADER_LENGTH)), buffer(aad)));

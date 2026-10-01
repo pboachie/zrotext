@@ -6,7 +6,7 @@ import {readFileSync} from 'node:fs';
 import {Aes128Gcm,CipherSuite,DhkemP256HkdfSha256,HkdfSha256} from '@hpke/core';
 import {canonicalSignature02,verifyManifest02} from '../dist/draft02-manifest.js';
 import {keyId} from '../dist/draft01.js';
-import {sealWorkflowContext,openWorkflowContext,workflowContextAad} from '../dist/workflow-context.js';
+import {sealWorkflowContext,openWorkflowContext,sealIntegrationWorkflowContext,openIntegrationWorkflowContext,workflowContextAad} from '../dist/workflow-context.js';
 globalThis.crypto ??= webcrypto;
 const suite=new CipherSuite({kem:new DhkemP256HkdfSha256(),kdf:new HkdfSha256(),aead:new Aes128Gcm()});
 const bytes=(v,n)=>new Uint8Array(n).fill(v),enc=new TextEncoder();
@@ -16,31 +16,49 @@ const u64=n=>{const b=new Uint8Array(8);new DataView(b.buffer).setBigUint64(0,n,
 const u32=n=>{const b=new Uint8Array(4);new DataView(b.buffer).setUint32(0,n,false);return b;};
 const now=1893500000000n;
 test('canonical authenticated bytes match the independent public protocol vector',()=>{
-  const v=JSON.parse(readFileSync(new URL('../../../protocol/v1/vectors/workflow-context-01.json',import.meta.url),'utf8'));
+  for (const name of ['workflow-context-01.json','workflow-context-integration-01.json']) {
+  const v=JSON.parse(readFileSync(new URL(`../../../protocol/v1/vectors/${name}`,import.meta.url),'utf8'));
   const s=v.scope,uuid=b=>new Uint8Array(Buffer.from(b.replaceAll('-',''),'hex')),digest=b=>new Uint8Array(Buffer.from(b,'hex'));
   const scope={kind:s.kind,accountId:uuid(s.account_id),deviceId:uuid(s.device_id),lineId:uuid(s.line_id),intervalId:uuid(s.interval_id),contextId:uuid(s.context_id),
     bindingGeneration:BigInt(s.binding_generation),revision:BigInt(s.revision),expiresMs:BigInt(s.expires_ms),trustGeneration:BigInt(s.trust_generation),manifestVersion:BigInt(s.manifest_version),
     peerDigest:digest(s.peer_digest),readerId:digest(s.reader_id),manifestDigest:digest(s.manifest_digest)};
   assert.equal(Buffer.from(workflowContextAad(scope)).toString('hex'),v.aad_hex);
+  }
 });
-async function fixture(){
+async function fixture(integrationScope){
   const root=await crypto.subtle.generateKey({name:'ECDSA',namedCurve:'P-256'},true,['sign','verify']);
   const signer=await crypto.subtle.generateKey({name:'ECDSA',namedCurve:'P-256'},true,['sign','verify']);
   const rootPoint=new Uint8Array(await crypto.subtle.exportKey('raw',root.publicKey));
   const signerPoint=new Uint8Array(await crypto.subtle.exportKey('raw',signer.publicKey));
   const archive=await suite.kem.deriveKeyPair(bytes(0x22,32));
   const archivePoint=new Uint8Array(await suite.kem.serializePublicKey(archive.publicKey));
+  const integration=await suite.kem.deriveKeyPair(bytes(0x24,32));
+  const integrationPoint=new Uint8Array(await suite.kem.serializePublicKey(integration.publicKey));
   const account=bytes(1,16),device=bytes(2,16),line=bytes(3,16),zero16=new Uint8Array(16),zero32=new Uint8Array(32);
   const reader=await keyId(0x0010,archivePoint);
-  const record=async(role,point,d,l,scope)=>concat(Uint8Array.of(role),await keyId(role===2?0x0010:0x0101,point),point,d,l,Uint8Array.of(0,scope),u64(now-1000n),u64(now+3600000n),Uint8Array.of(1));
-  const unsigned=concat(enc.encode('ZTMA'),Uint8Array.of(2),account,u64(1n),u64(1n),u64(now-1000n),u64(now+3600000n),zero32,rootPoint,Uint8Array.of(3),
-    await record(2,archivePoint,zero16,zero16,12),await record(4,signerPoint,device,line,2),await record(6,rootPoint,zero16,zero16,0));
+  const record=async(role,point,d,l,scope)=>concat(Uint8Array.of(role),await keyId(role<=3?0x0010:0x0101,point),point,d,l,Uint8Array.of(0,scope),u64(now-1000n),u64(now+3600000n),Uint8Array.of(1));
+  const unsigned=concat(enc.encode('ZTMA'),Uint8Array.of(2),account,u64(1n),u64(1n),u64(now-1000n),u64(now+3600000n),zero32,rootPoint,Uint8Array.of(integrationScope===undefined?3:4),
+    await record(2,archivePoint,zero16,zero16,12),...(integrationScope===undefined?[]:[await record(3,integrationPoint,zero16,zero16,integrationScope)]),await record(4,signerPoint,device,line,2),await record(6,rootPoint,zero16,zero16,0));
   const signature=canonicalSignature02(new Uint8Array(await crypto.subtle.sign({name:'ECDSA',hash:'SHA-256'},root.privateKey,concat(enc.encode('ZTSE/manifest/v2\0'),u32(unsigned.length),unsigned))));
   const manifest=await verifyManifest02(concat(unsigned,signature),{accountId:account,generation:1n,rootPoint,version:0n,digest:zero32,anchorDigest:zero32},now);
   const scope={kind:1,accountId:account,deviceId:device,lineId:line,intervalId:bytes(4,16),contextId:bytes(5,16),bindingGeneration:1n,revision:1n,expiresMs:now+300000n,
     trustGeneration:1n,manifestVersion:1n,peerDigest:hash(enc.encode('+12')),readerId:reader,manifestDigest:Uint8Array.from(manifest.digest)};
-  return {manifest,scope,archive,root};
+  return {manifest,scope,archive,root,integration,integrationId:await keyId(0x0010,integrationPoint)};
 }
+
+test('selected integration context is separately encrypted and cannot alias archive or outbound-only authority',async()=>{
+  const f=await fixture(8),scope={...f.scope,readerId:f.integrationId},plain=enc.encode('synthetic integration content canary');
+  const envelope=await sealIntegrationWorkflowContext(f.manifest,scope,now,plain);
+  assert.equal(Buffer.from(envelope).includes(Buffer.from(plain)),false);
+  assert.deepEqual(await openIntegrationWorkflowContext(f.manifest,scope,now,f.integration.privateKey,envelope),plain);
+  await assert.rejects(openIntegrationWorkflowContext(f.manifest,scope,now,f.archive.privateKey,envelope));
+  await assert.rejects(openWorkflowContext(f.manifest,scope,now,f.integration.privateKey,envelope));
+  await assert.rejects(sealIntegrationWorkflowContext(f.manifest,f.scope,now,plain));
+  await assert.rejects(sealIntegrationWorkflowContext({...f.manifest},scope,now,plain));
+  await assert.rejects(sealIntegrationWorkflowContext(f.manifest,{...scope,lineId:bytes(7,16)},now,plain));
+  const outbound=await fixture(4);
+  await assert.rejects(sealIntegrationWorkflowContext(outbound.manifest,{...outbound.scope,readerId:outbound.integrationId},now,plain));
+});
 test('client HPKE roundtrip hides content and rejects ciphertext or every identity substitution',async()=>{
   const f=await fixture(),plain=enc.encode('synthetic workflow private canary');
   const sealed=await sealWorkflowContext(f.manifest,f.scope,now,plain);
