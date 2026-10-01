@@ -1,0 +1,168 @@
+{
+  "format": "workflow-action-01",
+  "action": {
+    "account_id": "account-a",
+    "action_id": "action-a",
+    "revision": 1,
+    "line_id": "line-a",
+    "recipient_id": "recipient-a",
+    "purpose_id": "purpose-a",
+    "content_ref": "encrypted-a",
+    "content_digest": "abababababababababababababababababababababababababababababababab",
+    "content_version": 1,
+    "not_before": 10,
+    "expires_at": 100,
+    "timezone": "UTC",
+    "window_id": "window-a",
+    "routine_id": "routine-a",
+    "authority_generation": 1,
+    "commitment": "informational"
+  },
+  "binding_digest": "9272cf1119375b3b8431e4fc338bb8b3f1bcf674b67b83a0d15aec773ef4a222",
+  "field_edits": {
+    "account_id": "account-a-changed",
+    "action_id": "action-a-changed",
+    "revision": 2,
+    "line_id": "line-a-changed",
+    "recipient_id": "recipient-a-changed",
+    "purpose_id": "purpose-a-changed",
+    "content_ref": "encrypted-a-changed",
+    "content_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+    "content_version": 2,
+    "not_before": 11,
+    "expires_at": 101,
+    "timezone": "UTC-changed",
+    "window_id": "window-a-changed",
+    "routine_id": "routine-a-changed",
+    "authority_generation": 2,
+    "commitment": "sensitive"
+  },
+  "rejected_decisions": [
+    {
+      "account": "account-b"
+    },
+    {
+      "revision": 2
+    },
+    {
+      "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+    },
+    {
+      "expected": 2
+    },
+    {
+      "authorized": false
+    },
+    {
+      "confirmed": false
+    },
+    {
+      "now": 100
+    },
+    {
+      "operation": "receipt"
+    }
+  ],
+  "canonical_utf8": "{\"account_id\":\"account-a\",\"action_id\":\"action-a\",\"authority_generation\":1,\"commitment\":\"informational\",\"content_digest\":\"abababababababababababababababababababababababababababababababab\",\"content_ref\":\"encrypted-a\",\"content_version\":1,\"expires_at\":100,\"line_id\":\"line-a\",\"not_before\":10,\"purpose_id\":\"purpose-a\",\"recipient_id\":\"recipient-a\",\"revision\":1,\"routine_id\":\"routine-a\",\"timezone\":\"UTC\",\"window_id\":\"window-a\"}",
+  "state_transcripts": [
+    {
+      "name": "approve_dispatch_uncertain_reconcile",
+      "steps": [
+        {
+          "op": "approve",
+          "expect": "approved"
+        },
+        {
+          "op": "dispatch",
+          "expect": "dispatching"
+        },
+        {
+          "op": "unknown",
+          "expect": "unknown"
+        },
+        {
+          "op": "dispatch",
+          "reject": true,
+          "expect": "unknown"
+        },
+        {
+          "op": "succeeded",
+          "expect": "succeeded"
+        }
+      ]
+    },
+    {
+      "name": "edit_sensitive_requires_new_confirmation",
+      "steps": [
+        {
+          "op": "approve",
+          "expect": "approved"
+        },
+        {
+          "op": "edit",
+          "expect": "invalidated"
+        },
+        {
+          "op": "dispatch",
+          "reject": true,
+          "expect": "invalidated"
+        },
+        {
+          "op": "approve",
+          "expect": "approved"
+        },
+        {
+          "op": "dispatch",
+          "expect": "dispatching"
+        },
+        {
+          "op": "failed",
+          "expect": "failed"
+        }
+      ]
+    },
+    {
+      "name": "cancellation_is_terminal",
+      "steps": [
+        {
+          "op": "cancel",
+          "expect": "cancelled"
+        },
+        {
+          "op": "approve",
+          "reject": true,
+          "expect": "cancelled"
+        },
+        {
+          "op": "edit",
+          "reject": true,
+          "expect": "cancelled"
+        }
+      ]
+    },
+    {
+      "name": "expiry_is_exclusive",
+      "steps": [
+        {
+          "op": "approve",
+          "expect": "approved"
+        },
+        {
+          "op": "expire",
+          "now": 99,
+          "expect": "approved"
+        },
+        {
+          "op": "expire",
+          "now": 100,
+          "expect": "expired"
+        },
+        {
+          "op": "dispatch",
+          "reject": true,
+          "expect": "expired"
+        }
+      ]
+    }
+  ]
+}
