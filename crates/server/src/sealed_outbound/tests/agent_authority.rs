@@ -247,13 +247,19 @@ async fn suppression_and_off_channel_withdrawal_stop_already_queued_agent_action
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; uses an isolated disposable schema"]
 async fn action_expiry_is_rechecked_after_waiting_for_the_grant_authority_lock() {
     let case = AgentCase::new(1, 1).await;
-    let bytes = envelope(&case.base, Uuid::new_v4(), now(&case.base.db).await, 4_000);
+    let bytes = envelope(&case.base, Uuid::new_v4(), now(&case.base.db).await, 20_000);
     let action = case.approve(Uuid::new_v4(), &bytes).await;
     assert!(case.send(&bytes, action.action).await.unwrap().created);
     let mut blocker = case.base.connect().await;
     let lock = blocker.transaction().await.unwrap();
     lock.query_one("SELECT grant_id FROM agent_authority_grants WHERE account_id=$1 AND grant_id=$2 FOR UPDATE", &[&case.base.account, &case.grant]).await.unwrap();
     let waiter = case.base.connect().await;
+    // This controlled wait must outlast the action's 20-second deadline;
+    // the fixture's normal 10-second statement timeout would preempt the guard.
+    waiter
+        .batch_execute("SET statement_timeout='30s'")
+        .await
+        .unwrap();
     let pid: i32 = waiter
         .query_one("SELECT pg_backend_pid()", &[])
         .await

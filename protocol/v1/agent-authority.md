@@ -33,6 +33,9 @@ Owner grant management uses `/v1/auth/agent-grants`, with grant-specific
 `/revoke`, `/takeover` and `/approvals` operations. Creation returns the API
 credential once. Listing exposes the selected reader, independent permissions,
 expiry, withdrawal state and reserved budgets, without returning credentials.
+Owner mutations recheck the current session after their final writes; expiry
+rolls back the complete grant, approval, withdrawal or takeover. Inventory
+rechecks current owner authority before releasing its page.
 Listing returns at most 100 grants with explicit `truncated` and `next_cursor`
 fields; `before` continues that account's history. Owner takeout includes the
 same bounded `agent_grants` page, continued with `agent_before`. A cursor outside

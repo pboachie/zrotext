@@ -26,7 +26,7 @@ fn request() -> GrantRequest {
 
 #[test]
 fn recipient_identity_is_account_peer_and_domain_bound() {
-    let hasher = TokenHasher::new(vec![7; 32]).unwrap();
+    let hasher = TokenHasher::new(crate::test_keys::key(77)).unwrap();
     let account = Uuid::from_u128(1);
     let peer = "+1".to_owned() + "00";
     let digest = hasher.agent_recipient_digest(account, &peer);

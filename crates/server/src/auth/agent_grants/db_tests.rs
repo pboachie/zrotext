@@ -14,6 +14,83 @@ struct Fixture {
     line: Uuid,
     connector: Uuid,
 }
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; uses an isolated disposable schema"]
+async fn owner_session_expiry_during_withdrawal_rolls_back_grant_and_key() {
+    let mut outcomes = Vec::new();
+    for takeover in [false, true] {
+        let mut f = Fixture::new().await;
+        let key = f.key().await;
+        let grant = f.attach(key.id, 60_000).await;
+        f.db.batch_execute("CREATE FUNCTION delay_agent_withdrawal() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(2); RETURN NEW; END $$; CREATE TRIGGER delay_agent_withdrawal BEFORE UPDATE ON agent_authority_grants FOR EACH ROW EXECUTE FUNCTION delay_agent_withdrawal();").await.unwrap();
+        f.db.execute(
+            "UPDATE sessions SET expires_at=clock_timestamp()+interval '1 second' WHERE id=$1",
+            &[&f.owner.session_id],
+        )
+        .await
+        .unwrap();
+        let result = revoke(
+            &mut f.db,
+            None,
+            &f.hasher,
+            OwnerProof {
+                owner: &f.owner,
+                password: &f.password,
+                code: None,
+            },
+            grant,
+            takeover,
+        )
+        .await;
+        let unchanged = f.db.query_one("SELECT g.revoked_ms IS NULL AND g.taken_over_ms IS NULL AND k.revoked_at IS NULL FROM agent_authority_grants g JOIN api_keys k ON k.id=g.api_key_id WHERE g.grant_id=$1", &[&grant]).await.unwrap().get::<_, bool>(0);
+        outcomes.push((
+            takeover,
+            matches!(result, Err(AuthError::Unauthorized)),
+            unchanged,
+        ));
+        f.close().await;
+    }
+    assert!(
+        outcomes
+            .iter()
+            .all(|(_, denied, unchanged)| *denied && *unchanged),
+        "every expired withdrawal must roll back: {outcomes:?}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; uses an isolated disposable schema"]
+async fn owner_session_expiry_during_inventory_read_withholds_grant_history() {
+    let mut f = Fixture::new().await;
+    let key = f.key().await;
+    f.attach(key.id, 60_000).await;
+    let held = f.setup.transaction().await.unwrap();
+    held.batch_execute(&format!(
+        "LOCK TABLE {}.agent_authority_grants IN ACCESS EXCLUSIVE MODE",
+        f.schema
+    ))
+    .await
+    .unwrap();
+    f.db.execute(
+        "UPDATE sessions SET expires_at=clock_timestamp()+interval '1 second' WHERE id=$1",
+        &[&f.owner.session_id],
+    )
+    .await
+    .unwrap();
+    let read = list(&f.db, &f.owner, None);
+    let release = async {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        held.commit().await.unwrap();
+    };
+    let (result, ()) = tokio::join!(read, release);
+    let denied = matches!(result, Err(AuthError::Unauthorized));
+    f.close().await;
+    assert!(
+        denied,
+        "the delayed inventory must not release grants after owner session expiry"
+    );
+}
 impl Fixture {
     async fn new() -> Self {
         let base =
@@ -30,7 +107,7 @@ impl Fixture {
         let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
         tokio::spawn(async move { connection.await.unwrap() });
         crate::auth::test_schema::apply(&db).await;
-        let hasher = TokenHasher::new(vec![7; 32]).unwrap();
+        let hasher = TokenHasher::new(crate::test_keys::key(77)).unwrap();
         let password = Uuid::new_v4().to_string();
         let signup = auth::register(&mut db, &hasher, "agent-owner@example.test", &password)
             .await

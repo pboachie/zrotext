@@ -226,6 +226,8 @@ pub(crate) async fn revoke(
         "UPDATE agent_authority_grants SET revoked_ms=COALESCE(revoked_ms,floor(extract(epoch FROM clock_timestamp())*1000)::bigint) WHERE account_id=$1 AND grant_id=$2"
     },&[&account,&grant]).await?;
     tx.execute("UPDATE api_keys SET revoked_at=COALESCE(revoked_at,clock_timestamp()) WHERE account_id=$1 AND id=$2",&[&account,&key]).await?;
+    // The final write can wait past the owner session deadline.
+    super::require_current_owner(&tx, proof.owner).await?;
     tx.commit().await?;
     Ok(())
 }
@@ -276,6 +278,8 @@ pub(crate) async fn approve(
             return Err(AuthError::Conflict);
         }
     }
+    // The final write can wait past the owner session deadline.
+    super::require_current_owner(&tx, proof.owner).await?;
     tx.commit().await?;
     Ok(digest)
 }
@@ -380,6 +384,8 @@ pub(crate) async fn create(
     if inserted != 1 {
         return Err(AuthError::InvalidInput);
     }
+    // The final write can wait past the owner session deadline.
+    super::require_current_owner(&tx, proof.owner).await?;
     tx.commit().await?;
     Ok((grant, key))
 }
@@ -494,6 +500,8 @@ pub(crate) async fn list(
             turns_consumed: row.get(18),
         })
         .collect();
+    // Do not release buffered inventory after a read outlives its owner session.
+    super::require_current_owner(client, owner).await?;
     Ok(Some(GrantPage {
         grants,
         next_cursor,

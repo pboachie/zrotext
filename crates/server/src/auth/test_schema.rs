@@ -12,39 +12,317 @@ pub(crate) async fn apply_without_summary(db: &Client) {
     apply_selected(db, true).await;
 }
 
+// Compile trusted SQL into the test executable; directory names are inventory only.
+const MIGRATIONS: &[(&str, &str)] = &[
+    (
+        "001_foundation.sql",
+        include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
+    ),
+    (
+        "002_auth.sql",
+        include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+    ),
+    (
+        "003_delivery.sql",
+        include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
+    ),
+    (
+        "004_enrollment.sql",
+        include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
+    ),
+    (
+        "005_verification_outbox.sql",
+        include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+    ),
+    (
+        "006_usage_metering.sql",
+        include_str!("../../../../deploy/compose/migrations/006_usage_metering.sql"),
+    ),
+    (
+        "007_inbound_webhook_foundation.sql",
+        include_str!("../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"),
+    ),
+    (
+        "008_stripe_billing_foundation.sql",
+        include_str!("../../../../deploy/compose/migrations/008_stripe_billing_foundation.sql"),
+    ),
+    (
+        "009_webhook_manual_replay.sql",
+        include_str!("../../../../deploy/compose/migrations/009_webhook_manual_replay.sql"),
+    ),
+    (
+        "010_billing_test_entitlement.sql",
+        include_str!("../../../../deploy/compose/migrations/010_billing_test_entitlement.sql"),
+    ),
+    (
+        "011_billing_payment_holds.sql",
+        include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
+    ),
+    (
+        "012_auth_abuse_limits.sql",
+        include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
+    ),
+    (
+        "013_owner_mfa.sql",
+        include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
+    ),
+    (
+        "014_owner_mfa_failure_budget.sql",
+        include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
+    ),
+    (
+        "015_webhook_kek_commitments.sql",
+        include_str!("../../../../deploy/compose/migrations/015_webhook_kek_commitments.sql"),
+    ),
+    (
+        "016_auth_abuse_atomic.sql",
+        include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
+    ),
+    (
+        "017_billing_device_caps.sql",
+        include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
+    ),
+    (
+        "018_sealed_inbound_identity.sql",
+        include_str!("../../../../deploy/compose/migrations/018_sealed_inbound_identity.sql"),
+    ),
+    (
+        "019_line_activation_contract.sql",
+        include_str!("../../../../deploy/compose/migrations/019_line_activation_contract.sql"),
+    ),
+    (
+        "020_enrollment_retention_indexes.sql",
+        include_str!("../../../../deploy/compose/migrations/020_enrollment_retention_indexes.sql"),
+    ),
+    (
+        "021_billing_payment_grace.sql",
+        include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
+    ),
+    (
+        "022_pending_owner_expiry.sql",
+        include_str!("../../../../deploy/compose/migrations/022_pending_owner_expiry.sql"),
+    ),
+    (
+        "023_billing_py_charge_and_unsupported.sql",
+        include_str!(
+            "../../../../deploy/compose/migrations/023_billing_py_charge_and_unsupported.sql"
+        ),
+    ),
+    (
+        "024_billing_risk_operator_review.sql",
+        include_str!("../../../../deploy/compose/migrations/024_billing_risk_operator_review.sql"),
+    ),
+    (
+        "025_account_recovery.sql",
+        include_str!("../../../../deploy/compose/migrations/025_account_recovery.sql"),
+    ),
+    (
+        "026_data_retention.sql",
+        include_str!("../../../../deploy/compose/migrations/026_data_retention.sql"),
+    ),
+    (
+        "027_billing_test_config.sql",
+        include_str!("../../../../deploy/compose/migrations/027_billing_test_config.sql"),
+    ),
+    (
+        "028_billing_provider_failures.sql",
+        include_str!("../../../../deploy/compose/migrations/028_billing_provider_failures.sql"),
+    ),
+    (
+        "029_webhook_dispatch_fairness.sql",
+        include_str!("../../../../deploy/compose/migrations/029_webhook_dispatch_fairness.sql"),
+    ),
+    (
+        "030_terminal_dispatch_jobs.sql",
+        include_str!("../../../../deploy/compose/migrations/030_terminal_dispatch_jobs.sql"),
+    ),
+    (
+        "031_recipient_suppression.sql",
+        include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
+    ),
+    (
+        "032_line_opt_out_events.sql",
+        include_str!("../../../../deploy/compose/migrations/032_line_opt_out_events.sql"),
+    ),
+    (
+        "033_sms_line_binding_scope.sql",
+        include_str!("../../../../deploy/compose/migrations/033_sms_line_binding_scope.sql"),
+    ),
+    (
+        "034_delivery_sweep_index.sql",
+        include_str!("../../../../deploy/compose/migrations/034_delivery_sweep_index.sql"),
+    ),
+    (
+        "035_sms_owner_key_ceremony.sql",
+        include_str!("../../../../deploy/compose/migrations/035_sms_owner_key_ceremony.sql"),
+    ),
+    (
+        "036_owner_opt_out_holds.sql",
+        include_str!("../../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
+    ),
+    (
+        "037_sms_line_activation_exchange.sql",
+        include_str!("../../../../deploy/compose/migrations/037_sms_line_activation_exchange.sql"),
+    ),
+    (
+        "038_owner_opt_out_hold_guards.sql",
+        include_str!("../../../../deploy/compose/migrations/038_owner_opt_out_hold_guards.sql"),
+    ),
+    (
+        "039_inbound_device_clock_offset.sql",
+        include_str!("../../../../deploy/compose/migrations/039_inbound_device_clock_offset.sql"),
+    ),
+    (
+        "040_radio_evidence_index.sql",
+        include_str!("../../../../deploy/compose/migrations/040_radio_evidence_index.sql"),
+    ),
+    (
+        "041_device_preconditions.sql",
+        include_str!("../../../../deploy/compose/migrations/041_device_preconditions.sql"),
+    ),
+    (
+        "042_sealed_manifest_authority.sql",
+        include_str!("../../../../deploy/compose/migrations/042_sealed_manifest_authority.sql"),
+    ),
+    (
+        "043_sealed_candidate_inbound.sql",
+        include_str!("../../../../deploy/compose/migrations/043_sealed_candidate_inbound.sql"),
+    ),
+    (
+        "044_sealed_root_role_reservations.sql",
+        include_str!("../../../../deploy/compose/migrations/044_sealed_root_role_reservations.sql"),
+    ),
+    (
+        "045_sealed_outbound_queue.sql",
+        include_str!("../../../../deploy/compose/migrations/045_sealed_outbound_queue.sql"),
+    ),
+    (
+        "046_sealed_root_ceremonies.sql",
+        include_str!("../../../../deploy/compose/migrations/046_sealed_root_ceremonies.sql"),
+    ),
+    (
+        "047_device_network_service.sql",
+        include_str!("../../../../deploy/compose/migrations/047_device_network_service.sql"),
+    ),
+    (
+        "048_observer_memberships.sql",
+        include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
+    ),
+    (
+        "049_owner_queue_probe_indexes.sql",
+        include_str!("../../../../deploy/compose/migrations/049_owner_queue_probe_indexes.sql"),
+    ),
+    (
+        "050_message_attempts_recent_index.sql",
+        include_str!("../../../../deploy/compose/migrations/050_message_attempts_recent_index.sql"),
+    ),
+    (
+        "051_failover_controller_state.sql",
+        include_str!("../../../../deploy/compose/migrations/051_failover_controller_state.sql"),
+    ),
+    (
+        "052_admission_pending_index.sql",
+        include_str!("../../../../deploy/compose/migrations/052_admission_pending_index.sql"),
+    ),
+    (
+        "053_observer_seat_invitations.sql",
+        include_str!("../../../../deploy/compose/migrations/053_observer_seat_invitations.sql"),
+    ),
+    (
+        "054_stateless_device_challenges.sql",
+        include_str!("../../../../deploy/compose/migrations/054_stateless_device_challenges.sql"),
+    ),
+    (
+        "055_trusted_browser_epoch.sql",
+        include_str!("../../../../deploy/compose/migrations/055_trusted_browser_epoch.sql"),
+    ),
+    (
+        "056_usage_limit_plans.sql",
+        include_str!("../../../../deploy/compose/migrations/056_usage_limit_plans.sql"),
+    ),
+    (
+        "057_webhook_history_index.sql",
+        include_str!("../../../../deploy/compose/migrations/057_webhook_history_index.sql"),
+    ),
+    (
+        "058_drop_abuse_counters_updated_index.sql",
+        include_str!(
+            "../../../../deploy/compose/migrations/058_drop_abuse_counters_updated_index.sql"
+        ),
+    ),
+    (
+        "059_erasure_fk_indexes.sql",
+        include_str!("../../../../deploy/compose/migrations/059_erasure_fk_indexes.sql"),
+    ),
+    (
+        "060_optout_review_indexes.sql",
+        include_str!("../../../../deploy/compose/migrations/060_optout_review_indexes.sql"),
+    ),
+    (
+        "061_inbound_events_attempt_fk_index.sql",
+        include_str!(
+            "../../../../deploy/compose/migrations/061_inbound_events_attempt_fk_index.sql"
+        ),
+    ),
+    (
+        "062_pending_recipient_index.sql",
+        include_str!("../../../../deploy/compose/migrations/062_pending_recipient_index.sql"),
+    ),
+    (
+        "063_retention_blocked_stamp.sql",
+        include_str!("../../../../deploy/compose/migrations/063_retention_blocked_stamp.sql"),
+    ),
+    (
+        "064_owner_conversation_consent.sql",
+        include_str!("../../../../deploy/compose/migrations/064_owner_conversation_consent.sql"),
+    ),
+    (
+        "065_conversation_activation.sql",
+        include_str!("../../../../deploy/compose/migrations/065_conversation_activation.sql"),
+    ),
+    (
+        "066_conversation_interval_session_index.sql",
+        include_str!(
+            "../../../../deploy/compose/migrations/066_conversation_interval_session_index.sql"
+        ),
+    ),
+    (
+        "067_contacts_consent.sql",
+        include_str!("../../../../deploy/compose/migrations/067_contacts_consent.sql"),
+    ),
+    (
+        "068_connector_registration.sql",
+        include_str!("../../../../deploy/compose/migrations/068_connector_registration.sql"),
+    ),
+    (
+        "069_sealed_root_custody.sql",
+        include_str!("../../../../deploy/compose/migrations/069_sealed_root_custody.sql"),
+    ),
+    (
+        "070_message_summary_metadata.sql",
+        include_str!("../../../../deploy/compose/migrations/070_message_summary_metadata.sql"),
+    ),
+    (
+        "071_sealed_grant_authority.sql",
+        include_str!("../../../../deploy/compose/migrations/071_sealed_grant_authority.sql"),
+    ),
+    (
+        "073_agent_authority.sql",
+        include_str!("../../../../deploy/compose/migrations/073_agent_authority.sql"),
+    ),
+];
+
 async fn apply_selected(db: &Client, skip_summary: bool) {
-    let directory =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/compose/migrations");
-    let mut files = std::fs::read_dir(directory)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| path.extension().is_some_and(|extension| extension == "sql"))
-        .collect::<Vec<_>>();
-    files.sort();
-    for file in files {
-        if skip_summary
-            && file
-                .file_name()
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .starts_with("070_")
-        {
+    for &(file, sql) in MIGRATIONS {
+        if skip_summary && file.starts_with("070_") {
             continue;
         }
-        prepare_indexes(db, file.file_name().unwrap().to_str().unwrap()).await;
-        let transaction = file
-            .file_name()
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .starts_with("070_");
+        prepare_indexes(db, file).await;
+        let transaction = file.starts_with("070_");
         if transaction {
             db.batch_execute("BEGIN").await.unwrap();
         }
-        let result = db
-            .batch_execute(&std::fs::read_to_string(file).unwrap())
-            .await;
+        let result = db.batch_execute(sql).await;
         if transaction {
             db.batch_execute(if result.is_ok() { "COMMIT" } else { "ROLLBACK" })
                 .await
@@ -52,6 +330,26 @@ async fn apply_selected(db: &Client, skip_summary: bool) {
         }
         result.unwrap();
     }
+}
+
+#[test]
+fn agent_auth_schema_includes_every_checked_in_migration() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/compose/migrations");
+    let mut files = std::fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .filter(|name| name.ends_with(".sql"))
+        .collect::<Vec<_>>();
+    files.sort();
+    assert_eq!(
+        files,
+        MIGRATIONS
+            .iter()
+            .map(|(name, _)| name.to_string())
+            .collect::<Vec<_>>(),
+        "update the compiled migration inventory"
+    );
 }
 
 /// Mirror the migrator's autocommit preparation on this unique test schema.

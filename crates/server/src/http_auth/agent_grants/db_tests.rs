@@ -45,6 +45,123 @@ async fn json_body(response: Response) -> Value {
 }
 
 #[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; uses signed isolated fixtures"]
+async fn owner_session_expiry_during_grant_or_approval_insert_rolls_back_authority() {
+    let mut outcomes = Vec::new();
+    for approval in [false, true] {
+        let (case, connector, connector_key) = TestCase::with_agent_connector().await;
+        let db = case.connect().await;
+        db.batch_execute(include_str!(
+            "../../../../../deploy/compose/migrations/055_trusted_browser_epoch.sql"
+        ))
+        .await
+        .unwrap();
+        let password = Uuid::new_v4().to_string();
+        let hash = Argon2::default()
+            .hash_password(password.as_bytes())
+            .unwrap()
+            .to_string();
+        db.execute(
+            "UPDATE users SET password_hash=$2 WHERE id=$1",
+            &[&case.user, &hash],
+        )
+        .await
+        .unwrap();
+        let credentials = auth::login(
+            &db,
+            &case.hasher,
+            &format!("{}@example.invalid", case.user.simple()),
+            &password,
+        )
+        .await
+        .unwrap();
+        let separator = if case.url.contains('?') { '&' } else { '?' };
+        let state = AuthHttpState::new(
+            format!(
+                "{}{separator}options=-csearch_path%3D{}",
+                case.url, case.schema
+            ),
+            Arc::new(auth::TokenHasher::new(crate::test_keys::key(76)).unwrap()),
+            "https://owner.example.test".into(),
+            Arc::new(super::super::DisabledVerificationDispatcher),
+        )
+        .unwrap()
+        .with_agent_grants_enabled();
+        let router = super::super::router(state);
+        let now: i64 = db
+            .query_one(
+                "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        let body = json!({"current_password":password,"grant":{"connector_id":connector,"connector_key_id":connector_key,"signer_key_id":case.signer,"device_id":case.device,"line_id":case.line,"binding_generation":1,"recipient":"+12","metadata_allowed":true,"content_allowed":false,"draft_allowed":false,"send_allowed":true,"reader_identity":null,"model_provider_identity":null,"model_reads_content":false,"owner_self_notification":true,"expires_ms":now+90_000,"message_limit":3,"turn_limit":2}});
+        let (route, body) = if approval {
+            let created = request(&router, "/agent-grants", &credentials, body, true).await;
+            assert_eq!(created.status(), StatusCode::CREATED);
+            let created = json_body(created).await;
+            (
+                format!(
+                    "/agent-grants/{}/approvals",
+                    created["grant_id"].as_str().unwrap()
+                ),
+                json!({"current_password":password,"action_id":Uuid::new_v4(),"envelope_b64":STANDARD.encode(case.envelope(Uuid::new_v4()).await),"not_before_ms":now}),
+            )
+        } else {
+            ("/agent-grants".to_owned(), body)
+        };
+        let before: i64 = db
+            .query_one("SELECT count(*) FROM api_keys", &[])
+            .await
+            .unwrap()
+            .get(0);
+        let table = if approval {
+            "agent_authority_approvals"
+        } else {
+            "agent_authority_grants"
+        };
+        db.batch_execute(&format!("CREATE SEQUENCE owner_insert_delays; CREATE FUNCTION delay_agent_insert() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM nextval('owner_insert_delays'); PERFORM pg_sleep(6); RETURN NEW; END $$; CREATE TRIGGER delay_agent_insert BEFORE INSERT ON {table} FOR EACH ROW EXECUTE FUNCTION delay_agent_insert();")).await.unwrap();
+        db.execute(
+            "UPDATE sessions SET expires_at=clock_timestamp()+interval '5 seconds' WHERE id=$1",
+            &[&credentials.id],
+        )
+        .await
+        .unwrap();
+        let status = request(&router, &route, &credentials, body, true)
+            .await
+            .status();
+        assert!(
+            db.query_one("SELECT is_called FROM owner_insert_delays", &[])
+                .await
+                .unwrap()
+                .get::<_, bool>(0),
+            "must reach the actual final insert delay"
+        );
+        let after: i64 = db
+            .query_one("SELECT count(*) FROM api_keys", &[])
+            .await
+            .unwrap()
+            .get(0);
+        let rows: i64 = db
+            .query_one(&format!("SELECT count(*) FROM {table}"), &[])
+            .await
+            .unwrap()
+            .get(0);
+        outcomes.push((approval, status, before == after, rows));
+        case.cleanup().await;
+    }
+    assert!(
+        outcomes.iter().all(
+            |(_, status, unchanged, rows)| *status == StatusCode::UNAUTHORIZED
+                && *unchanged
+                && *rows == 0
+        ),
+        "expired owner writes must roll back authority: {outcomes:?}"
+    );
+}
+
+#[tokio::test]
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; uses a signed fixture and isolated disposable schema"]
 async fn owner_http_grant_mfa_csrf_exact_approval_and_revocation_are_enforced() {
     let (case, connector, connector_key) = TestCase::with_agent_connector().await;

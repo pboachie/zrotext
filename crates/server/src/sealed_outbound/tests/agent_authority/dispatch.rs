@@ -229,9 +229,9 @@ async fn agent_key_expiry_during_final_intent_write_rolls_back_every_new_effect(
     let case = DispatchCase::new().await;
     let frame = case.grant().await.unwrap().unwrap();
     assert_eq!(case.fetch(frame.clone()).await.unwrap(), case.bytes);
-    case.agent.base.db.batch_execute("CREATE SEQUENCE agent_intent_delays; CREATE FUNCTION delay_agent_intent() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM nextval('agent_intent_delays'); PERFORM pg_sleep(3); RETURN NEW; END $$; CREATE TRIGGER delay_agent_intent BEFORE UPDATE OF outcome ON dispatch_fences FOR EACH ROW WHEN (NEW.outcome='submitting') EXECUTE FUNCTION delay_agent_intent()").await.unwrap();
-    case.agent.base.db.execute("UPDATE api_keys SET expires_at=clock_timestamp()+interval '2 seconds' WHERE id=(SELECT api_key_id FROM agent_authority_grants WHERE grant_id=$1)",&[&case.agent.grant]).await.unwrap();
+    case.agent.base.db.batch_execute("CREATE SEQUENCE agent_intent_delays; CREATE FUNCTION delay_agent_intent() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM nextval('agent_intent_delays'); PERFORM pg_sleep(6); RETURN NEW; END $$; CREATE TRIGGER delay_agent_intent BEFORE UPDATE OF outcome ON dispatch_fences FOR EACH ROW WHEN (NEW.outcome='submitting') EXECUTE FUNCTION delay_agent_intent()").await.unwrap();
     let intent = case.intent(&frame).await;
+    case.agent.base.db.execute("UPDATE api_keys SET expires_at=clock_timestamp()+interval '5 seconds' WHERE id=(SELECT api_key_id FROM agent_authority_grants WHERE grant_id=$1)",&[&case.agent.grant]).await.unwrap();
     let mut db = case.agent.base.connect().await;
     assert!(
         DeliveryStore::new(&mut db)

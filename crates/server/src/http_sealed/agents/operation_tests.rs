@@ -575,12 +575,12 @@ async fn draft_expiry_is_rechecked_after_the_final_identity_query_stalls() {
         .unwrap()
         .get(0);
     bytes[146..154].copy_from_slice(&(now as u64).to_be_bytes());
-    bytes[154..162].copy_from_slice(&((now + 2000) as u64).to_be_bytes());
+    bytes[154..162].copy_from_slice(&((now + 5000) as u64).to_be_bytes());
     sign(&case.base, &mut bytes);
     // Retain the actual constrained table and its FKs. A test-only view injects
     // a storage stall into the second identity lookup, after initial crypto
     // validation; it never changes or bypasses an authority guard.
-    case.base.db.batch_execute("ALTER TABLE api_keys RENAME TO draft_test_api_keys; CREATE SEQUENCE draft_identity_reads; CREATE FUNCTION draft_identity_delay() RETURNS boolean LANGUAGE plpgsql VOLATILE AS $$ BEGIN IF nextval('draft_identity_reads')=2 THEN PERFORM pg_sleep(3); END IF; RETURN true; END; $$; CREATE VIEW api_keys AS SELECT * FROM draft_test_api_keys WHERE draft_identity_delay()").await.unwrap();
+    case.base.db.batch_execute("ALTER TABLE api_keys RENAME TO draft_test_api_keys; CREATE SEQUENCE draft_identity_reads; CREATE FUNCTION draft_identity_delay() RETURNS boolean LANGUAGE plpgsql VOLATILE AS $$ BEGIN IF nextval('draft_identity_reads')=2 THEN PERFORM pg_sleep(6); END IF; RETURN true; END; $$; CREATE VIEW api_keys AS SELECT * FROM draft_test_api_keys WHERE draft_identity_delay()").await.unwrap();
     let mut db = case.base.connect().await;
     let tx = db.transaction().await.unwrap();
     assert!(matches!(
