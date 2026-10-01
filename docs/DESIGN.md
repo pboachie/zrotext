@@ -31,6 +31,12 @@ Never put essential status meaning in color alone. Buttons and inputs need keybo
 
 Account and device screens should include loading, empty, error, and stale states. Never represent offline or unknown as delivered.
 
+The [concept implementation matrix](CONCEPT-IMPLEMENTATION.md) binds each owner
+and Android concept component to its actual data source, current implementation,
+missing behavior and owning acceptance issue. It defines metric scope/freshness,
+unavailable controls and the joint #612 candidate gate. Artwork is not runtime
+evidence and a design change does not advance a release stage.
+
 Sealed dashboard rules: fetch metadata and ciphertext; decrypt locally; render messages as plain text; never send decrypted content through HTMX forms or analytics; server search only metadata. Keep a clear vault-locked state, local-search limit, and explicit export sensitivity prompt.
 
 ## Android companion screens
