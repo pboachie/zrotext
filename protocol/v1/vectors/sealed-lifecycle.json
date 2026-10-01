@@ -1,0 +1,16 @@
+{
+  "contract": "sealed-lifecycle-v1",
+  "page_size": 20,
+  "metadata_fields": ["message_id", "device_id", "state", "state_version", "created_at_ms", "updated_at_ms", "expires_at_ms"],
+  "cases": [
+    {"name": "stored_queue", "state": "queued", "grant": false, "cancel_status": 200, "result": "cancelled", "refunds": 1},
+    {"name": "repeated_cancel", "state": "cancelled", "grant": false, "cancel_status": 200, "result": "cancelled", "refunds": 1},
+    {"name": "already_expired", "state": "expired", "grant": false, "cancel_status": 409, "result": "expired", "refunds": 1},
+    {"name": "grant_published_first", "state": "queued", "grant": true, "cancel_status": 409, "result": "queued", "refunds": 0},
+    {"name": "unknown_radio", "state": "unknown", "grant": true, "cancel_status": 409, "result": "unknown", "refunds": 0},
+    {"name": "carrier_submitted", "state": "submitted", "grant": true, "cancel_status": 409, "result": "submitted", "refunds": 0},
+    {"name": "carrier_delivered", "state": "delivered", "grant": true, "cancel_status": 409, "result": "delivered", "refunds": 0}
+  ],
+  "visibility": {"foreign_id": 404, "foreign_cursor": 404, "wrong_device_id": 404, "alpha_id": 404, "missing_scope": 403, "revoked_after_authentication": 403, "disabled": 404},
+  "runtime_limits": "Existing sealed rows are queued/cancelled/expired only. Granted radio-state vectors pin the future execution boundary; they do not enable it."
+}
