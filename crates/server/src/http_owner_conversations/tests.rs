@@ -486,7 +486,7 @@ pub(super) async fn prepared() -> (Fixture, SessionPrincipal) {
     .unwrap();
 
     f.db.batch_execute(include_str!(
-        "../../../../deploy/compose/migrations/072_owner_confirmed_execution.sql"
+        "../../../../deploy/compose/migrations/072_conversation_confirmation_records.sql"
     ))
     .await
     .unwrap();
