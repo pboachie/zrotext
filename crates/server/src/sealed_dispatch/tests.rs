@@ -780,7 +780,7 @@ async fn execution_candidate_preserves_ordinary_sealed_grant_fetch_and_intent() 
     case.admission
         .db
         .batch_execute(include_str!(
-            "../../../../deploy/compose/migration-candidates/NNN_conversation_execution_records.sql"
+            "../../../../deploy/compose/migrations/082_conversation_execution_records.sql"
         ))
         .await
         .unwrap();

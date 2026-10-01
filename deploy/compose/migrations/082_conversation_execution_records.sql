@@ -1,6 +1,5 @@
 -- SPDX-License-Identifier: AGPL-3.0-only
--- Unnumbered execution installation candidate; keep outside numbered migrations
--- until its installation slot is allocated. Requires the confirmation records
+-- Execution installation requires the confirmation records
 -- from 072 and the sealed/workflow authority guards from 071 and 079.
 -- Install through the dedicated migrator only after allocation; never install
 -- from application code. Cryptographic admission remains in the server.

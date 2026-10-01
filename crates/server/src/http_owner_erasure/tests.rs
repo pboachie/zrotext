@@ -356,9 +356,9 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../../../../deploy/compose/migrations/081_invoice_bound_test_billing.sql"),
     ),
     (
-        "../migration-candidates/NNN_conversation_execution_records.sql",
+        "082_conversation_execution_records.sql",
         include_str!(
-            "../../../../deploy/compose/migration-candidates/NNN_conversation_execution_records.sql"
+            "../../../../deploy/compose/migrations/082_conversation_execution_records.sql"
         ),
     ),
 ];
@@ -518,7 +518,7 @@ async fn migrated_schema_with_execution(
     let (db, connection) = tokio_postgres::connect(&database_url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
     for (file, migration) in MIGRATIONS {
-        if !execution && *file == "../migration-candidates/NNN_conversation_execution_records.sql" {
+        if !execution && *file == "082_conversation_execution_records.sql" {
             continue;
         }
         if *file == "070_message_summary_metadata.sql" {

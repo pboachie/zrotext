@@ -8,7 +8,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 mod compatibility;
 
 const EXECUTION_SCHEMA: &str = include_str!(
-    "../../../../../../deploy/compose/migration-candidates/NNN_conversation_execution_records.sql"
+    "../../../../../../deploy/compose/migrations/082_conversation_execution_records.sql"
 );
 
 #[tokio::test]

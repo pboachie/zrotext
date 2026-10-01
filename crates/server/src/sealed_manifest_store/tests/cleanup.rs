@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Test-owned teardown releases relation locks after every DDL statement.
 use super::{Client, Fixture};
+mod catalog_retry;
 mod regressions;
 
 fn valid_name(name: &str) -> bool {
@@ -48,6 +49,39 @@ async fn step(
     Ok(())
 }
 
+const FOREIGN_DEPENDENCY_QUERY: &str = "SELECT EXISTS(SELECT 1 FROM pg_depend d \
+        CROSS JOIN LATERAL pg_identify_object(d.classid,d.objid,d.objsubid) a \
+        CROSS JOIN LATERAL pg_identify_object(d.refclassid,d.refobjid,d.refobjsubid) b \
+        LEFT JOIN pg_rewrite ar ON d.classid='pg_rewrite'::regclass AND ar.oid=d.objid \
+        LEFT JOIN pg_class ac ON ac.oid=ar.ev_class LEFT JOIN pg_namespace an ON an.oid=ac.relnamespace \
+        LEFT JOIN pg_rewrite br ON d.refclassid='pg_rewrite'::regclass AND br.oid=d.refobjid \
+        LEFT JOIN pg_class bc ON bc.oid=br.ev_class LEFT JOIN pg_namespace bn ON bn.oid=bc.relnamespace \
+        CROSS JOIN LATERAL (SELECT COALESCE(a.schema,an.nspname) AS source_schema,COALESCE(b.schema,bn.nspname) AS target_schema) scoped \
+        WHERE (scoped.source_schema=$1 AND scoped.target_schema IS NOT NULL AND scoped.target_schema<>$1 AND scoped.target_schema NOT IN ('pg_catalog','information_schema','pg_toast')) \
+        OR (scoped.target_schema=$1 AND scoped.source_schema IS NOT NULL AND scoped.source_schema<>$1 AND scoped.source_schema NOT IN ('pg_catalog','information_schema','pg_toast')))";
+
+async fn foreign_dependency(db: &Client, schema: &str) -> Result<bool, String> {
+    // Object identification can race unrelated catalog DDL in another fixture.
+    // Retry only this complete read-only guard, never a teardown operation.
+    for attempt in 0..3 {
+        match db.query_one(FOREIGN_DEPENDENCY_QUERY, &[&schema]).await {
+            Ok(row) => return Ok(row.get(0)),
+            Err(error) => {
+                let transient = error.as_db_error().is_some_and(|error| {
+                    error.code() == &tokio_postgres::error::SqlState::INTERNAL_ERROR
+                        && error
+                            .message()
+                            .starts_with("cache lookup failed for attribute ")
+                });
+                if !transient || attempt == 2 {
+                    return Err(error.to_string());
+                }
+            }
+        }
+    }
+    unreachable!("every preflight attempt returns or retries within the bound")
+}
+
 pub(super) async fn drop_fixture(db: &Client, schema: &str) -> Result<(), String> {
     if !valid_name(schema) {
         return Err("invalid fixture schema".into());
@@ -61,16 +95,7 @@ pub(super) async fn drop_fixture(db: &Client, schema: &str) -> Result<(), String
     // Rewrite rules identify a view without returning its namespace through
     // pg_identify_object. Resolve their owning relation explicitly so an
     // external view is refused before even a fixture constraint is removed.
-    let foreign: bool = db.query_one("SELECT EXISTS(SELECT 1 FROM pg_depend d \
-        CROSS JOIN LATERAL pg_identify_object(d.classid,d.objid,d.objsubid) a \
-        CROSS JOIN LATERAL pg_identify_object(d.refclassid,d.refobjid,d.refobjsubid) b \
-        LEFT JOIN pg_rewrite ar ON d.classid='pg_rewrite'::regclass AND ar.oid=d.objid \
-        LEFT JOIN pg_class ac ON ac.oid=ar.ev_class LEFT JOIN pg_namespace an ON an.oid=ac.relnamespace \
-        LEFT JOIN pg_rewrite br ON d.refclassid='pg_rewrite'::regclass AND br.oid=d.refobjid \
-        LEFT JOIN pg_class bc ON bc.oid=br.ev_class LEFT JOIN pg_namespace bn ON bn.oid=bc.relnamespace \
-        CROSS JOIN LATERAL (SELECT COALESCE(a.schema,an.nspname) AS source_schema,COALESCE(b.schema,bn.nspname) AS target_schema) scoped \
-        WHERE (scoped.source_schema=$1 AND scoped.target_schema IS NOT NULL AND scoped.target_schema<>$1 AND scoped.target_schema NOT IN ('pg_catalog','information_schema','pg_toast')) \
-        OR (scoped.target_schema=$1 AND scoped.source_schema IS NOT NULL AND scoped.source_schema<>$1 AND scoped.source_schema NOT IN ('pg_catalog','information_schema','pg_toast')))", &[&schema]).await.map_err(|e|e.to_string())?.get(0);
+    let foreign = foreign_dependency(db, schema).await?;
     if foreign {
         return Err("foreign fixture dependency".into());
     }
