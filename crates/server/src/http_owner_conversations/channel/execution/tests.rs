@@ -4,6 +4,9 @@ use super::*;
 use crate::http_owner_conversations::channel::{self, AuthenticatedChannelSession};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 
+#[path = "compatibility.rs"]
+mod compatibility;
+
 const EXECUTION_SCHEMA: &str = include_str!(
     "../../../../../../deploy/compose/migration-candidates/NNN_conversation_execution_records.sql"
 );

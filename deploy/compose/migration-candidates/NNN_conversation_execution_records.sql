@@ -187,14 +187,232 @@ $$;
 CREATE TRIGGER conversation_execution_before_write BEFORE INSERT OR UPDATE OR DELETE ON conversation_execution_records
  FOR EACH ROW EXECUTE FUNCTION conversation_execution_record_guard();
 
--- Preserve the original alpha branch exactly. No generic sealed message gets
--- effects: only the one immutable, proof-derived conversation record may do so.
+-- Extend 071 only for an exact immutable conversation execution. Generic sealed
+-- provenance remains unchanged; redacted confirmation identity never becomes generic.
+-- Called only when this optional candidate is installed, before locking the
+-- message. Keep live identity locks through the final first-intent sample.
+CREATE FUNCTION conversation_execution_lock_intent(account uuid, message uuid, device uuid, attempt uuid)
+RETURNS boolean LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
+BEGIN
+ PERFORM r.attempt_id FROM conversation_execution_records r
+ JOIN conversation_confirmation_records p ON (p.account_id,p.message_id)=(r.account_id,r.message_id)
+ JOIN conversation_intervals i ON (i.account_id,i.id)=(p.account_id,p.interval_id)
+ JOIN sessions origin ON (origin.account_id,origin.id)=(p.account_id,p.initiating_session_id)
+ JOIN users u ON u.id=origin.user_id
+ JOIN memberships member ON (member.account_id,member.user_id)=(origin.account_id,origin.user_id)
+ JOIN device_sessions phone ON (phone.account_id,phone.device_id)=(r.account_id,r.device_id)
+ JOIN device_keys k ON (k.account_id,k.device_id)=(r.account_id,r.device_id)
+ JOIN sites site ON site.site_id=r.site_id JOIN deployment_authority deploy ON deploy.singleton
+ JOIN phone_lines line ON (line.account_id,line.id)=(p.account_id,p.line_id)
+ JOIN device_line_bindings binding ON (binding.account_id,binding.line_id,binding.device_id,binding.generation)=
+  (p.account_id,p.line_id,p.device_id,p.binding_generation)
+ WHERE (r.account_id,r.message_id,r.device_id,r.attempt_id)=($1,$2,$3,$4)
+ FOR SHARE OF r,p,i,origin,u,member,phone,k,site,deploy,line,binding;
+ RETURN FOUND;
+END;
+$$;
+
+-- Final submit checks use the same immutable conversation identity and live
+-- authority as initial permission; historical callbacks do not invoke it.
+CREATE OR REPLACE FUNCTION sealed_grant_current(wanted uuid) RETURNS boolean
+LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
+DECLARE execution_record conversation_execution_records;
+BEGIN
+ SELECT * INTO execution_record FROM conversation_execution_records WHERE attempt_id=wanted;
+ IF FOUND THEN
+  RETURN conversation_execution_initial_valid(execution_record) AND EXISTS(
+   SELECT 1 FROM message_attempts a JOIN dispatch_fences f ON f.attempt_id=a.id
+   JOIN dispatch_jobs j ON (j.account_id,j.message_id)=(a.account_id,a.message_id)
+   WHERE a.id=execution_record.attempt_id AND (a.account_id,a.message_id,a.device_id,a.generation,a.session_epoch,a.deployment_epoch)=
+    (execution_record.account_id,execution_record.message_id,execution_record.device_id,execution_record.generation,execution_record.session_epoch,execution_record.deployment_epoch)
+   AND (f.account_id,f.message_id,f.device_id,f.generation,f.session_epoch,f.deployment_epoch)=
+    (execution_record.account_id,execution_record.message_id,execution_record.device_id,execution_record.generation,execution_record.session_epoch,execution_record.deployment_epoch)
+   AND a.status=f.outcome AND f.outcome IN ('granted','submitting')
+   AND j.generation=execution_record.generation AND j.finished_at IS NULL AND j.grant_issued_at IS NOT NULL
+   AND j.lease_owner='conversation:'||execution_record.phone_session::text
+   AND j.lease_until=to_timestamp(execution_record.expires_at_ms::double precision/1000)
+   AND f.grant_expires_at=j.lease_until);
+ END IF;
+ -- Retained confirmation identity cannot fall back after losing its execution.
+ IF EXISTS(SELECT 1 FROM message_attempts a JOIN conversation_confirmation_records p
+  ON (p.account_id,p.message_id)=(a.account_id,a.message_id) WHERE a.id=wanted) THEN RETURN FALSE; END IF;
+ RETURN (
+EXISTS (
+    SELECT 1 FROM sealed_grant_authorizations g
+    JOIN sealed_manifest_authorities r ON r.account_id=g.account_id
+    JOIN accounts a ON a.id=g.account_id
+    JOIN devices d ON (d.account_id,d.id)=(g.account_id,g.device_id)
+    JOIN device_keys k ON (k.account_id,k.device_id)=(g.account_id,g.device_id)
+    JOIN device_sessions ds ON (ds.account_id,ds.device_id)=(g.account_id,g.device_id)
+    JOIN phone_lines l ON (l.account_id,l.id)=(g.account_id,g.line_id)
+    JOIN device_line_bindings b ON (b.account_id,b.line_id,b.device_id,b.generation)=
+        (g.account_id,g.line_id,g.device_id,g.binding_generation)
+    JOIN sites s ON s.site_id=g.site_id
+    JOIN deployment_authority p ON p.singleton
+    JOIN messages m ON (m.account_id,m.id)=(g.account_id,g.message_id)
+    WHERE g.attempt_id=wanted AND a.disabled_at IS NULL AND d.revoked_at IS NULL AND k.revoked_at IS NULL
+      AND r.revoked_at IS NULL AND r.generation=g.manifest_generation AND r.version=g.manifest_version
+      AND r.semantic_digest=g.manifest_digest
+      AND r.last_verified_ms<=floor(extract(epoch FROM clock_timestamp())*1000)::bigint
+      AND g.authority_expires_at_ms>floor(extract(epoch FROM clock_timestamp())*1000)::bigint
+      AND m.expires_at>clock_timestamp() AND m.transport_mode='sealed_candidate02'
+      AND m.sealed_line_id=g.line_id AND m.sealed_binding_generation=g.binding_generation
+      AND m.sealed_manifest_generation=g.manifest_generation AND m.sealed_manifest_version=g.manifest_version
+      AND m.sealed_manifest_digest=g.manifest_digest AND m.request_digest=g.unsigned_digest
+      AND m.sealed_segment_limit=g.segment_limit AND m.transport_payload IS NOT NULL
+      AND EXISTS(SELECT 1 FROM usage_ledger u WHERE u.account_id=g.account_id
+          AND u.message_id=g.message_id AND u.metric='outbound_message' AND u.entry_kind='reserve' AND u.units=1)
+      AND NOT EXISTS(SELECT 1 FROM usage_ledger u WHERE u.account_id=g.account_id
+          AND u.message_id=g.message_id AND u.metric='outbound_message' AND u.entry_kind='refund')
+      AND ds.connection_epoch=g.connection_epoch AND ds.deployment_epoch=g.deployment_epoch
+      AND ds.site_id=g.site_id AND ds.instance_id=g.instance_id AND ds.lease_until>clock_timestamp()
+      AND p.epoch=g.deployment_epoch AND p.dispatch_enabled AND NOT pg_is_in_recovery()
+      AND s.enabled AND NOT s.draining
+      AND l.state='active' AND l.approved_at IS NOT NULL AND l.current_binding_generation=g.binding_generation
+      AND b.state='active' AND b.purpose='sealed' AND b.activated_at IS NOT NULL
+      AND b.owner_approval_digest IS NOT NULL AND b.device_confirmation_digest IS NOT NULL
+      AND NOT EXISTS(SELECT 1 FROM recipient_suppressions q WHERE q.account_id=g.account_id
+          AND q.recipient_e164=m.recipient_e164 AND q.active)
+      AND NOT EXISTS(SELECT 1 FROM owner_recipient_holds h WHERE h.account_id=g.account_id
+          AND h.recipient_e164=m.recipient_e164 AND h.released_at IS NULL)
+)
+ );
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION sealed_message_effect_state_guard() RETURNS trigger
+LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
+BEGIN
+ IF NEW.transport_mode='sealed_candidate02' AND NEW.state NOT IN ('queued','cancelled','expired')
+ AND EXISTS(SELECT 1 FROM conversation_confirmation_records
+ WHERE account_id=NEW.account_id AND message_id=NEW.id) THEN
+  IF NOT EXISTS(SELECT 1 FROM conversation_execution_records r
+   JOIN conversation_confirmation_records p ON (p.account_id,p.message_id)=(r.account_id,r.message_id)
+   WHERE r.account_id=NEW.account_id AND r.message_id=NEW.id AND r.device_id=NEW.device_id
+   AND p.device_id=NEW.device_id AND p.line_id=NEW.sealed_line_id
+   AND p.binding_generation=NEW.sealed_binding_generation
+   AND p.trust_generation=NEW.sealed_manifest_generation AND p.manifest_version=NEW.sealed_manifest_version
+   AND p.manifest_digest=NEW.sealed_manifest_digest AND p.signer_key_id=NEW.sealed_signer_key_id
+   AND r.unsigned_digest=NEW.request_digest AND r.envelope_digest=p.envelope_digest
+   AND r.expires_at_ms<=p.expires_at_ms AND NEW.sealed_segment_limit IS NULL) THEN
+   RAISE EXCEPTION 'conversation effect state requires exact execution provenance' USING ERRCODE='23514';
+  END IF;
+  RETURN NEW;
+ END IF;
+    IF NEW.transport_mode='sealed_candidate02' AND NEW.state NOT IN ('queued','cancelled','expired')
+        AND NOT EXISTS(SELECT 1 FROM sealed_grant_authorizations g
+            WHERE g.account_id=NEW.account_id AND g.message_id=NEW.id AND g.device_id=NEW.device_id
+            AND g.line_id=NEW.sealed_line_id AND g.binding_generation=NEW.sealed_binding_generation
+            AND g.manifest_generation=NEW.sealed_manifest_generation AND g.manifest_version=NEW.sealed_manifest_version
+            AND g.manifest_digest=NEW.sealed_manifest_digest AND g.unsigned_digest=NEW.request_digest
+            AND g.segment_limit=NEW.sealed_segment_limit) THEN
+        RAISE EXCEPTION 'sealed effect state requires exact grant provenance' USING ERRCODE='23514';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+-- The conversation lane retains its exact execution ceiling for historical
+-- evidence. Only a fresh intent consults current authority; no callback renews it.
+CREATE OR REPLACE FUNCTION sealed_radio_event_guard() RETURNS trigger
+LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
+DECLARE authorized smallint; r conversation_execution_records;
+BEGIN
+ IF EXISTS(SELECT 1 FROM conversation_confirmation_records
+ WHERE account_id=NEW.account_id AND message_id=NEW.message_id) AND NEW.attempt_id IS NOT NULL THEN
+  SELECT * INTO r FROM conversation_execution_records
+   WHERE account_id=NEW.account_id AND message_id=NEW.message_id AND attempt_id=NEW.attempt_id;
+  IF NOT FOUND OR (NEW.segment_count IS NOT NULL AND NEW.segment_count>r.segment_count) THEN
+   RAISE EXCEPTION 'conversation evidence requires exact execution ceiling' USING ERRCODE='23514';
+  END IF;
+  IF NEW.evidence_code='durable_intent' AND (NOT conversation_execution_initial_valid(r)
+   OR NOT EXISTS(SELECT 1 FROM dispatch_fences WHERE attempt_id=r.attempt_id
+    AND account_id=r.account_id AND message_id=r.message_id AND device_id=r.device_id
+    AND generation=r.generation AND session_epoch=r.session_epoch AND deployment_epoch=r.deployment_epoch
+    AND outcome='granted' AND grant_expires_at=to_timestamp(r.expires_at_ms::double precision/1000)
+    AND grant_expires_at>clock_timestamp())) THEN
+   RAISE EXCEPTION 'conversation submit intent has stale execution authority' USING ERRCODE='23514';
+  END IF;
+  RETURN NEW;
+ END IF;
+    IF NOT EXISTS(SELECT 1 FROM messages WHERE account_id=NEW.account_id AND id=NEW.message_id
+        AND transport_mode='sealed_candidate02') THEN RETURN NEW; END IF;
+    -- Non-radio queue lifecycle events carry no attempt and remain valid.
+    IF NEW.attempt_id IS NULL THEN RETURN NEW; END IF;
+    SELECT segment_limit INTO authorized FROM sealed_grant_authorizations
+        WHERE attempt_id=NEW.attempt_id AND account_id=NEW.account_id AND message_id=NEW.message_id;
+    IF authorized IS NULL OR (NEW.segment_count IS NOT NULL AND NEW.segment_count>authorized) THEN
+        RAISE EXCEPTION 'sealed evidence exceeds exact grant' USING ERRCODE='23514';
+    END IF;
+    IF NEW.evidence_code='durable_intent' AND (NOT sealed_grant_current(NEW.attempt_id)
+        OR NOT EXISTS(SELECT 1 FROM dispatch_fences WHERE attempt_id=NEW.attempt_id
+            AND outcome='granted' AND grant_expires_at>clock_timestamp())) THEN
+        RAISE EXCEPTION 'sealed submit intent has stale authority' USING ERRCODE='23514';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+-- Preserve the original alpha and generic sealed-grant branches exactly.
+-- Conversation effects require the immutable, proof-derived execution record.
 CREATE OR REPLACE FUNCTION alpha_message_effect_guard() RETURNS trigger
 LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
-DECLARE r conversation_execution_records; attempt uuid; before_status text; after_status text;
+DECLARE r conversation_execution_records; attempt uuid; before_status text; after_status text; wanted uuid;
 BEGIN
  IF EXISTS(SELECT 1 FROM messages WHERE account_id=NEW.account_id AND id=NEW.message_id
  AND device_id=NEW.device_id AND transport_mode='synthetic_alpha' FOR SHARE) THEN RETURN NEW; END IF;
+ -- Retained confirmation identity, including redacted proof, selects the conversation lane.
+ -- Other sealed effects keep every migration 071 provenance and freshness check.
+ IF NOT EXISTS(SELECT 1 FROM conversation_confirmation_records
+ WHERE account_id=NEW.account_id AND message_id=NEW.message_id) THEN
+    IF TG_TABLE_NAME='message_attempts' THEN wanted:=NEW.id; ELSE wanted:=NEW.attempt_id; END IF;
+    IF TG_OP='UPDATE' AND (
+        ROW(NEW.account_id,NEW.message_id,NEW.device_id,NEW.generation,NEW.session_epoch,NEW.deployment_epoch)
+        IS DISTINCT FROM
+        ROW(OLD.account_id,OLD.message_id,OLD.device_id,OLD.generation,OLD.session_epoch,OLD.deployment_epoch)) THEN
+        RAISE EXCEPTION 'sealed attempt identity cannot change' USING ERRCODE='23514';
+    END IF;
+    IF TG_OP='UPDATE' THEN
+        IF TG_TABLE_NAME='message_attempts' THEN
+            IF NEW.id<>OLD.id THEN
+                RAISE EXCEPTION 'sealed attempt identity cannot change' USING ERRCODE='23514';
+            END IF;
+        ELSE
+            IF ROW(NEW.attempt_id,NEW.grant_expires_at,NEW.recipient_digest) IS DISTINCT FROM
+               ROW(OLD.attempt_id,OLD.grant_expires_at,OLD.recipient_digest) THEN
+                RAISE EXCEPTION 'sealed fence identity cannot change' USING ERRCODE='23514';
+            END IF;
+        END IF;
+    END IF;
+    IF NOT EXISTS(SELECT 1 FROM sealed_grant_authorizations g JOIN messages m
+        ON (m.account_id,m.id)=(g.account_id,g.message_id)
+        WHERE g.attempt_id=wanted AND g.account_id=NEW.account_id AND g.message_id=NEW.message_id
+        AND g.device_id=NEW.device_id AND g.attempt_generation=NEW.generation
+        AND g.connection_epoch=NEW.session_epoch AND g.deployment_epoch=NEW.deployment_epoch
+        AND m.transport_mode='sealed_candidate02' AND m.sealed_segment_limit=g.segment_limit) THEN
+        RAISE EXCEPTION 'sealed effects require exact grant provenance' USING ERRCODE='23514';
+    END IF;
+    IF TG_OP='INSERT' AND NOT sealed_grant_current(wanted) THEN
+        RAISE EXCEPTION 'sealed grant authority is stale' USING ERRCODE='23514';
+    END IF;
+    IF TG_OP='INSERT' THEN
+        IF TG_TABLE_NAME='message_attempts' THEN
+            IF NEW.status<>'granted' THEN
+                RAISE EXCEPTION 'sealed attempt starts granted' USING ERRCODE='23514';
+            END IF;
+        ELSE
+            IF NEW.outcome<>'granted' OR NEW.grant_expires_at<=clock_timestamp()
+                OR NEW.grant_expires_at>clock_timestamp()+interval '30 seconds'
+                OR NOT EXISTS(SELECT 1 FROM sealed_grant_authorizations g JOIN messages m
+                    ON (m.account_id,m.id)=(g.account_id,g.message_id)
+                    WHERE g.attempt_id=wanted AND NEW.recipient_digest=m.recipient_digest
+                    AND NEW.grant_expires_at<=to_timestamp(g.authority_expires_at_ms::double precision/1000)) THEN
+                RAISE EXCEPTION 'sealed fence exceeds exact authority' USING ERRCODE='23514';
+            END IF;
+        END IF;
+    END IF;
+    RETURN NEW;
+ END IF;
  IF TG_TABLE_NAME='message_attempts' THEN attempt:=NEW.id; after_status:=NEW.status;
  ELSE attempt:=NEW.attempt_id; after_status:=NEW.outcome; END IF;
  SELECT * INTO r FROM conversation_execution_records WHERE account_id=NEW.account_id AND message_id=NEW.message_id;
@@ -244,6 +462,8 @@ DECLARE r conversation_execution_records;
 BEGIN
  IF NOT EXISTS(SELECT 1 FROM messages WHERE account_id=NEW.account_id AND id=NEW.message_id
  AND transport_mode='sealed_candidate02') THEN RETURN NEW; END IF;
+ IF NOT EXISTS(SELECT 1 FROM conversation_confirmation_records
+ WHERE account_id=NEW.account_id AND message_id=NEW.message_id) THEN RETURN NEW; END IF;
  SELECT * INTO r FROM conversation_execution_records WHERE account_id=NEW.account_id AND message_id=NEW.message_id;
  IF NOT FOUND THEN
   IF NEW.generation<>OLD.generation OR NEW.grant_issued_at IS NOT NULL OR NEW.lease_owner IS NOT NULL OR NEW.lease_until IS NOT NULL THEN
@@ -275,6 +495,8 @@ CREATE TRIGGER conversation_execution_job_before_update BEFORE UPDATE ON dispatc
 CREATE FUNCTION conversation_execution_effect_delete_guard() RETURNS trigger
 LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
 BEGIN
+ IF NOT EXISTS(SELECT 1 FROM conversation_execution_records
+ WHERE account_id=OLD.account_id AND message_id=OLD.message_id) THEN RETURN OLD; END IF;
  IF NOT EXISTS(SELECT 1 FROM messages WHERE account_id=OLD.account_id AND id=OLD.message_id
  AND transport_mode='sealed_candidate02') THEN RETURN OLD; END IF;
  IF NOT EXISTS(SELECT 1 FROM accounts WHERE id=OLD.account_id AND disabled_at IS NULL) THEN RETURN OLD; END IF;
@@ -295,6 +517,8 @@ CREATE FUNCTION conversation_execution_message_guard() RETURNS trigger
 LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
 BEGIN
  IF NEW.transport_mode<>'sealed_candidate02' THEN RETURN NEW; END IF;
+ IF NOT EXISTS(SELECT 1 FROM conversation_confirmation_records
+ WHERE account_id=NEW.account_id AND message_id=NEW.id) THEN RETURN NEW; END IF;
  IF TG_OP='INSERT' THEN
   IF NEW.state NOT IN ('queued','cancelled','expired') THEN
    RAISE EXCEPTION 'sealed initial state requires queued admission' USING ERRCODE='23514';
