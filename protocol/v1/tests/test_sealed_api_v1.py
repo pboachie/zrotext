@@ -413,21 +413,6 @@ class SealedApiContractTests(unittest.TestCase):
             sorted(usage["properties"]),
             "every usage field is required",
         )
-        page = DOCUMENT["components"]["schemas"]["SealedUsagePage"]
-        self.assertEqual(
-            page["properties"]["usage"]["items"]["$ref"],
-            "#/components/schemas/SealedUsage",
-        )
-        self.assertEqual(sorted(page["required"]), ["next_before", "usage"])
-        get = DOCUMENT["paths"]["/v1/sealed/usage"]["get"]
-        params = {p["name"]: p for p in get["parameters"]}
-        self.assertEqual(params["limit"]["schema"]["minimum"], 1)
-        self.assertEqual(params["limit"]["schema"]["maximum"], 24)
-        self.assertEqual(
-            get["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
-            "#/components/schemas/SealedUsagePage",
-        )
-        self.assertIn("400", get["responses"])
 
 
 if __name__ == "__main__":

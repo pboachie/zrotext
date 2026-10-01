@@ -215,33 +215,22 @@ Delivery and event semantics under the sealed profile:
   accepted sealed inbound events fan out in this slice; status events for
   outbound envelopes are deferred with the message status queries.
 
-## Usage
+## Usage (proposed)
 
-`GET /v1/sealed/usage` (existing `billing:read` scope) returns bounded pages
-of the account's usage history from the single authoritative metering core
-(`usage_periods` and `usage_ledger`), newest UTC calendar-month period first:
-`usage`, an array of period objects (`metric`, `period_start`, `period_end`
-(the exclusive reset boundary), `limit_units`, `reserved_units`,
-`refunded_units`, and the derived `used_units` = `reserved − refunded`), and
-`next_before`, the cursor for the next older page or null when exhausted.
-Query parameters: `before` (a previous `next_before`, `YYYY-MM-DD`) and
-`limit` (1–24, default 12); an out-of-bounds limit or a malformed or
-calendrically impossible cursor is `invalid_request`. An account without
-periods is a consistent empty page — never a distinct error.
-
-Counter meanings are fixed and shared with every consumer of the metering
-core (#631): a unit is reserved when a message is accepted, in the same
-transaction as admission; sealed outbound acceptance meters exactly one unit
-per accepted envelope; an idempotent digest replay reuses the original
-reservation and never reserves a second unit, even across a month boundary.
-Refunds exist only through the pre-grant cancellation/expiry path, are
-written exactly once per message against the original period, and whether
-sealed messages expose cancellation at all is deferred with the message
-status queries. `used_units` is a reservation counter; it is never a
-submitted or delivered counter (those summaries belong to the owner
-interfaces, not this API). Units are integer message counts, never currency
-or pricing; per-device or per-line breakdowns do not exist and are not
-implied.
+`GET /v1/sealed/usage` (existing `billing:read` scope) returns the current
+UTC calendar-month metering snapshot from the durable usage core
+(`usage_periods` and `usage_ledger`): `metric`, `period_start`,
+`period_end` (the exclusive reset boundary), `limit_units`,
+`reserved_units`, `refunded_units` and the derived `used_units`
+(`reserved − refunded`). Sealed outbound acceptance meters exactly one unit
+per accepted sealed envelope, reserved in the same transaction as admission;
+an idempotent digest replay reuses the original reservation and never
+reserves a second unit, even across a month boundary. Refunds exist only
+through the existing pre-grant cancellation/expiry path and are written
+against the original period — whether sealed messages expose cancellation at
+all is deferred with the message status queries. Units are integer message
+counts, never currency or pricing. History queries beyond the current period
+and per-device or per-line breakdowns are deferred.
 
 ## Error taxonomy
 

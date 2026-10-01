@@ -35,9 +35,7 @@
   "paths": {
     "/v1/sealed/messages": {
       "post": {
-        "tags": [
-          "sealed-messages"
-        ],
+        "tags": ["sealed-messages"],
         "operationId": "submitSealedOutbound",
         "summary": "Submit one sealed outbound envelope for device dispatch",
         "description": "Proposed contract; no route exists. The request body is exactly one complete sealed outbound envelope (profile kind 01) as raw binary bytes with the exact content type application/vnd.zrotext.sealed.v1. The relay never decrypts: it verifies the owner-pinned manifest chain, the allowed device signing key and scope, and the device signature over the exact unsigned bytes, then compares the protected account/device/line/manifest fields with the authenticated identity and database state. Idempotency is the SHA-256 digest of the unsigned envelope bytes (Q6): an identical replay returns the stored message identity with created=false and performs no new dispatch; no caller-supplied idempotency-key header is accepted. Admission fails closed when the active manifest is expired or was issued too far in the future (Q4), and clock-rollback or restored-high-water conditions require fresh owner-verified enrollment (Q4). The plaintext inside the ciphertext is a strict UTF-8 body of 1-32,768 bytes with no BOM, no NUL, no Unicode normalization and no padding in v1 (Q9); body length, recipient, timing and segment-count leakage is disclosed and accepted. Every response carries Cache-Control: no-store.",
@@ -87,14 +85,10 @@
                 },
                 "examples": {
                   "invalidEnvelope": {
-                    "value": {
-                      "code": "invalid_request"
-                    }
+                    "value": { "code": "invalid_request" }
                   },
                   "futureManifest": {
-                    "value": {
-                      "code": "future_manifest"
-                    }
+                    "value": { "code": "future_manifest" }
                   }
                 }
               }
@@ -112,9 +106,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "unauthorized"
-                }
+                "example": { "code": "unauthorized" }
               }
             }
           },
@@ -132,19 +124,13 @@
                 },
                 "examples": {
                   "forbidden": {
-                    "value": {
-                      "code": "forbidden"
-                    }
+                    "value": { "code": "forbidden" }
                   },
                   "staleManifest": {
-                    "value": {
-                      "code": "stale_manifest"
-                    }
+                    "value": { "code": "stale_manifest" }
                   },
                   "reEnrollmentRequired": {
-                    "value": {
-                      "code": "re_enrollment_required"
-                    }
+                    "value": { "code": "re_enrollment_required" }
                   }
                 }
               }
@@ -162,9 +148,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "idempotency_conflict"
-                }
+                "example": { "code": "idempotency_conflict" }
               }
             }
           },
@@ -180,9 +164,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "unsupported_media_type"
-                }
+                "example": { "code": "unsupported_media_type" }
               }
             }
           },
@@ -198,9 +180,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "rate_limited"
-                }
+                "example": { "code": "rate_limited" }
               }
             }
           },
@@ -216,9 +196,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "unavailable"
-                }
+                "example": { "code": "unavailable" }
               }
             }
           }
@@ -358,9 +336,7 @@
     },
     "/v1/sealed/inbound-events": {
       "post": {
-        "tags": [
-          "sealed-inbound"
-        ],
+        "tags": ["sealed-inbound"],
         "operationId": "uploadSealedInboundEvent",
         "summary": "Upload one sealed inbound event captured by a device",
         "description": "Mounted behind the default-off SEALED_ADMISSION_ENABLED flag exactly like the message route: when the flag is off the path answers 404 before reading any body or credential. This is the separate sealed inbound route required by Q8: it writes the separate sealed_inbound_events store and must never be routed through the M1 outbound-attempt inbound pilot. The request body is exactly one complete sealed inbound envelope (profile kind 02) as raw binary bytes with the exact content type application/vnd.zrotext.sealed.v1. The phone allocates one stable 16-byte event_id for the normalized logical SMS, journals text, event ID and a positive device-local sequence before sealing, and retries replay the exact envelope bytes. The server compares the (account, device, event_id) identity and the (device, device_sequence) replay fence against the unsigned envelope digest: an identical replay is a no-op success with created=false; a changed event under the same identity or a reused device sequence fails with 409. Out-of-order arrival is accepted within a seven-day observed-time window (Q8). Tombstone retention is an operational constraint: event-ID and device-sequence tombstones must be retained at least eight days after first acceptance, because deleting a row without a durable fence would permit replay. When the active manifest is expired the device quarantines the event locally until a fresh manifest rather than uploading (Q4); if an expired-manifest upload still arrives, the server fails closed. Clock-rollback or restored-high-water conditions require fresh owner-verified enrollment (Q4). The plaintext inside the ciphertext is a strict UTF-8 body of 1-32,768 bytes with no BOM, no NUL, no Unicode normalization and no padding in v1 (Q9). Every response carries Cache-Control: no-store and never echoes envelope content.",
@@ -410,19 +386,13 @@
                 },
                 "examples": {
                   "invalidEnvelope": {
-                    "value": {
-                      "code": "invalid_request"
-                    }
+                    "value": { "code": "invalid_request" }
                   },
                   "futureManifest": {
-                    "value": {
-                      "code": "future_manifest"
-                    }
+                    "value": { "code": "future_manifest" }
                   },
                   "staleEvent": {
-                    "value": {
-                      "code": "stale_event"
-                    }
+                    "value": { "code": "stale_event" }
                   }
                 }
               }
@@ -440,9 +410,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "unauthorized"
-                }
+                "example": { "code": "unauthorized" }
               }
             }
           },
@@ -460,19 +428,13 @@
                 },
                 "examples": {
                   "forbidden": {
-                    "value": {
-                      "code": "forbidden"
-                    }
+                    "value": { "code": "forbidden" }
                   },
                   "staleManifest": {
-                    "value": {
-                      "code": "stale_manifest"
-                    }
+                    "value": { "code": "stale_manifest" }
                   },
                   "reEnrollmentRequired": {
-                    "value": {
-                      "code": "re_enrollment_required"
-                    }
+                    "value": { "code": "re_enrollment_required" }
                   }
                 }
               }
@@ -492,14 +454,10 @@
                 },
                 "examples": {
                   "eventIdConflict": {
-                    "value": {
-                      "code": "event_id_conflict"
-                    }
+                    "value": { "code": "event_id_conflict" }
                   },
                   "sequenceConflict": {
-                    "value": {
-                      "code": "sequence_conflict"
-                    }
+                    "value": { "code": "sequence_conflict" }
                   }
                 }
               }
@@ -517,9 +475,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "unsupported_media_type"
-                }
+                "example": { "code": "unsupported_media_type" }
               }
             }
           },
@@ -535,9 +491,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "rate_limited"
-                }
+                "example": { "code": "rate_limited" }
               }
             }
           },
@@ -553,9 +507,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "unavailable"
-                }
+                "example": { "code": "unavailable" }
               }
             }
           }
@@ -564,9 +516,7 @@
     },
     "/v1/sealed/devices": {
       "get": {
-        "tags": [
-          "sealed-devices"
-        ],
+        "tags": ["sealed-devices"],
         "operationId": "listSealedDevices",
         "summary": "List the account's enrolled devices with their sealed line bindings",
         "description": "Proposed contract; no route exists. Read-only projection of the owner enrollment view onto the sealed API-key plane: one cursor page of the account's enrolled devices with revocation state, the current active_socket_lease observation, and each device's sealed-purpose line bindings (line_id, binding_generation, state) from the device_line_bindings table. Cursor pagination mirrors the owner route GET /v1/enrollment/devices: pass the returned next_cursor as before to fetch the next page; next_cursor is null after the last page. This surface never enrolls, approves, re-keys or revokes a device: pairing, owner approval and revocation stay on the owner-session enrollment routes because the Q1/Q4 ceremonies are out-of-band owner actions. No SIM identifier, phone number, ICCID, IMSI, Android subscription ID or key material is ever returned. Sealed-mode eligibility (Android API 31+, Q5) is a device property the owner verifies at enrollment; this list reports stored state only. Every response carries Cache-Control: no-store.",
@@ -615,9 +565,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "invalid_request"
-                }
+                "example": { "code": "invalid_request" }
               }
             }
           },
@@ -633,9 +581,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "unauthorized"
-                }
+                "example": { "code": "unauthorized" }
               }
             }
           },
@@ -651,9 +597,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "forbidden"
-                }
+                "example": { "code": "forbidden" }
               }
             }
           },
@@ -669,9 +613,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "unavailable"
-                }
+                "example": { "code": "unavailable" }
               }
             }
           }
@@ -680,9 +622,7 @@
     },
     "/v1/sealed/devices/{device_id}": {
       "get": {
-        "tags": [
-          "sealed-devices"
-        ],
+        "tags": ["sealed-devices"],
         "operationId": "getSealedDevice",
         "summary": "Get one enrolled device with its sealed line bindings",
         "description": "Proposed contract; no route exists. The same device view as the list operation for one device_id. An unknown device_id and another account's device_id are both 404 not_found: the response never reveals whether a foreign device exists. Tenant scoped, read-only, Cache-Control: no-store, and no SIM identifier, phone number, ICCID, IMSI or key material in any field.",
@@ -731,9 +671,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "invalid_request"
-                }
+                "example": { "code": "invalid_request" }
               }
             }
           },
@@ -749,9 +687,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "unauthorized"
-                }
+                "example": { "code": "unauthorized" }
               }
             }
           },
@@ -767,9 +703,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "forbidden"
-                }
+                "example": { "code": "forbidden" }
               }
             }
           },
@@ -785,9 +719,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "not_found"
-                }
+                "example": { "code": "not_found" }
               }
             }
           },
@@ -803,9 +735,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "unavailable"
-                }
+                "example": { "code": "unavailable" }
               }
             }
           }
@@ -814,9 +744,7 @@
     },
     "/v1/sealed/webhooks": {
       "get": {
-        "tags": [
-          "sealed-webhooks"
-        ],
+        "tags": ["sealed-webhooks"],
         "operationId": "listSealedWebhookEndpoints",
         "summary": "List this account's webhook endpoints",
         "description": "Proposed contract; no route exists. The sealed-profile projection of the owner webhook lifecycle (protocol/v1/webhook-endpoints.md) onto API-key authentication with the webhooks:read scope. Returns every endpoint of this account (at most eight, including disabled ones) ordered by creation. Never includes signing secrets or encrypted secret bytes; only the create and rotate responses ever expose a secret, once per generated secret. paused_at_ms and failure_started_at_ms expose the 72-hour sustained-transport-failure pause exactly as the owner list does. Cache-Control: no-store.",
@@ -853,9 +781,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "unauthorized"
-                }
+                "example": { "code": "unauthorized" }
               }
             }
           },
@@ -871,9 +797,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "forbidden"
-                }
+                "example": { "code": "forbidden" }
               }
             }
           },
@@ -889,18 +813,14 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "unavailable"
-                }
+                "example": { "code": "unavailable" }
               }
             }
           }
         }
       },
       "post": {
-        "tags": [
-          "sealed-webhooks"
-        ],
+        "tags": ["sealed-webhooks"],
         "operationId": "createSealedWebhookEndpoint",
         "summary": "Create one disabled webhook endpoint for sealed event fanout",
         "description": "Proposed contract; no route exists. Creates a disabled endpoint exactly as the owner-session POST /v1/webhooks does, returning the endpoint view plus the signing secret exactly once. The callback URL must pass the strict egress validator used by the owner route: an HTTPS DNS name on port 443, at most 2048 bytes, no IP literals, no userinfo, no fragment, no local/internal/special-use names and no invalid host labels; the URL is revalidated on enable and the resolved addresses are re-checked and pinned on every delivery attempt. The signing secret is 32 random bytes returned as unpadded base64url and is never retrievable again: only an AES-256-GCM ciphertext bound to account, endpoint and key version is stored, and losing the response requires rotation. The account cap is eight endpoints including disabled ones (409 endpoint_limit). Sealed event bodies delivered to this endpoint carry only ciphertext and metadata (see SealedWebhookEventBody); no route sends a test webhook, and no synthetic-alpha content is ever fanned out (Q11). Enabling actual delivery stays a separate operational gate. Cache-Control: no-store.",
@@ -950,14 +870,10 @@
                 },
                 "examples": {
                   "invalidRequest": {
-                    "value": {
-                      "code": "invalid_request"
-                    }
+                    "value": { "code": "invalid_request" }
                   },
                   "invalidWebhookEndpoint": {
-                    "value": {
-                      "code": "invalid_webhook_endpoint"
-                    }
+                    "value": { "code": "invalid_webhook_endpoint" }
                   }
                 }
               }
@@ -975,9 +891,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "unauthorized"
-                }
+                "example": { "code": "unauthorized" }
               }
             }
           },
@@ -993,9 +907,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "forbidden"
-                }
+                "example": { "code": "forbidden" }
               }
             }
           },
@@ -1011,9 +923,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "endpoint_limit"
-                }
+                "example": { "code": "endpoint_limit" }
               }
             }
           },
@@ -1029,9 +939,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "unavailable"
-                }
+                "example": { "code": "unavailable" }
               }
             }
           }
@@ -1040,9 +948,7 @@
     },
     "/v1/sealed/webhooks/{endpoint_id}/deliveries": {
       "get": {
-        "tags": [
-          "sealed-webhooks"
-        ],
+        "tags": ["sealed-webhooks"],
         "operationId": "listSealedWebhookDeliveries",
         "summary": "Page delivery history for one webhook endpoint",
         "description": "Proposed contract; no route exists. Read-only delivery and attempt metadata for this account's endpoint, mirroring the owner history route. Optional limit (1-20, default 20) and before (the delivery_id returned as next_before on the preceding page); ordered newest first by creation time then ID; attempts from every generation, including retired deliveries, are included as immutable audit history. No payload, callback URL, signing secret, response body, recipient, sender or inbound/sealed content is ever returned: event bodies stay ciphertext-only and this route returns none of them. An unknown or another account's endpoint or cursor is 404 not_found; invalid IDs and page sizes are 400. Cache-Control: no-store.",
@@ -1113,9 +1019,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "invalid_request"
-                }
+                "example": { "code": "invalid_request" }
               }
             }
           },
@@ -1131,9 +1035,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "unauthorized"
-                }
+                "example": { "code": "unauthorized" }
               }
             }
           },
@@ -1149,9 +1051,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "forbidden"
-                }
+                "example": { "code": "forbidden" }
               }
             }
           },
@@ -1167,9 +1067,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "not_found"
-                }
+                "example": { "code": "not_found" }
               }
             }
           },
@@ -1185,9 +1083,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "unavailable"
-                }
+                "example": { "code": "unavailable" }
               }
             }
           }
@@ -1196,9 +1092,7 @@
     },
     "/v1/sealed/webhooks/{endpoint_id}/deliveries/{delivery_id}/replay": {
       "post": {
-        "tags": [
-          "sealed-webhooks"
-        ],
+        "tags": ["sealed-webhooks"],
         "operationId": "replaySealedWebhookDelivery",
         "summary": "Queue one bounded replay generation of an exhausted failed delivery",
         "description": "Proposed contract; no route exists. Mirrors the owner manual-replay contract. The caller generates a random UUIDv4 Idempotency-Key and must reuse the exact same key after an uncertain response; the server never generates one on the caller's behalf. The endpoint must be enabled and the delivery must be dead with terminal_reason failed after seven completed transport failures in its current generation; pending, leased, succeeded, policy-rejected, retired and legacy rows are ineligible (409 replay_not_eligible), as is reusing the same key for a different delivery. A delivery has at most three generations (409 replay_limit): the initial seven attempts and two replay generations of seven attempts each (retry schedule 1m, 5m, 15m, 1h, 6h, 24h after each failure). Repeating a successful request returns 202 with the same generation and created:false. This action only queues work; the delivery sender remains a separate operational gate, and because a previous timeout may already have reached the receiver, the receiver must still deduplicate the event_id across every generation. Cache-Control: no-store.",
@@ -1268,9 +1162,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "invalid_request"
-                }
+                "example": { "code": "invalid_request" }
               }
             }
           },
@@ -1286,9 +1178,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "unauthorized"
-                }
+                "example": { "code": "unauthorized" }
               }
             }
           },
@@ -1304,9 +1194,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "forbidden"
-                }
+                "example": { "code": "forbidden" }
               }
             }
           },
@@ -1322,9 +1210,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "not_found"
-                }
+                "example": { "code": "not_found" }
               }
             }
           },
@@ -1342,14 +1228,10 @@
                 },
                 "examples": {
                   "replayNotEligible": {
-                    "value": {
-                      "code": "replay_not_eligible"
-                    }
+                    "value": { "code": "replay_not_eligible" }
                   },
                   "replayLimit": {
-                    "value": {
-                      "code": "replay_limit"
-                    }
+                    "value": { "code": "replay_limit" }
                   }
                 }
               }
@@ -1367,9 +1249,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "unavailable"
-                }
+                "example": { "code": "unavailable" }
               }
             }
           }
@@ -1378,9 +1258,7 @@
     },
     "/v1/sealed/webhooks/{endpoint_id}/enable": {
       "post": {
-        "tags": [
-          "sealed-webhooks"
-        ],
+        "tags": ["sealed-webhooks"],
         "operationId": "enableSealedWebhookEndpoint",
         "summary": "Enable future sealed event fanout to one endpoint",
         "description": "Proposed contract; no route exists. Revalidates the callback URL against the strict egress validator and the decryptability of the stored signing secret, then enables future fan-out and clears any transport-failure pause, exactly as the owner enable route does. Enabling never replays work retired by disable or rotation: only sealed events accepted while the endpoint is enabled create new deliveries. Actual sending remains a separate operational gate. No request body. Cache-Control: no-store.",
@@ -1424,14 +1302,10 @@
                 },
                 "examples": {
                   "invalidRequest": {
-                    "value": {
-                      "code": "invalid_request"
-                    }
+                    "value": { "code": "invalid_request" }
                   },
                   "invalidWebhookEndpoint": {
-                    "value": {
-                      "code": "invalid_webhook_endpoint"
-                    }
+                    "value": { "code": "invalid_webhook_endpoint" }
                   }
                 }
               }
@@ -1449,9 +1323,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "unauthorized"
-                }
+                "example": { "code": "unauthorized" }
               }
             }
           },
@@ -1467,9 +1339,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "forbidden"
-                }
+                "example": { "code": "forbidden" }
               }
             }
           },
@@ -1485,9 +1355,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "not_found"
-                }
+                "example": { "code": "not_found" }
               }
             }
           },
@@ -1503,9 +1371,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "unavailable"
-                }
+                "example": { "code": "unavailable" }
               }
             }
           }
@@ -1514,9 +1380,7 @@
     },
     "/v1/sealed/webhooks/{endpoint_id}/disable": {
       "post": {
-        "tags": [
-          "sealed-webhooks"
-        ],
+        "tags": ["sealed-webhooks"],
         "operationId": "disableSealedWebhookEndpoint",
         "summary": "Disable an endpoint and permanently retire its pending deliveries",
         "description": "Proposed contract; no route exists. Disables the endpoint and permanently retires its pending and leased deliveries in one transaction, exactly as the owner disable route does. Completed deliveries remain as audit history; retired deliveries can never be replayed, and re-enabling cannot revive them. An in-flight HTTPS request that already loaded a payload may still complete, so the receiver must deduplicate the event_id. No request body. Cache-Control: no-store.",
@@ -1558,9 +1422,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "invalid_request"
-                }
+                "example": { "code": "invalid_request" }
               }
             }
           },
@@ -1576,9 +1438,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "unauthorized"
-                }
+                "example": { "code": "unauthorized" }
               }
             }
           },
@@ -1594,9 +1454,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "forbidden"
-                }
+                "example": { "code": "forbidden" }
               }
             }
           },
@@ -1612,9 +1470,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "not_found"
-                }
+                "example": { "code": "not_found" }
               }
             }
           },
@@ -1630,9 +1486,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "unavailable"
-                }
+                "example": { "code": "unavailable" }
               }
             }
           }
@@ -1641,9 +1495,7 @@
     },
     "/v1/sealed/webhooks/{endpoint_id}/rotate": {
       "post": {
-        "tags": [
-          "sealed-webhooks"
-        ],
+        "tags": ["sealed-webhooks"],
         "operationId": "rotateSealedWebhookEndpoint",
         "summary": "Rotate the signing secret, disabling the endpoint and retiring its deliveries",
         "description": "Proposed contract; no route exists. Generates a new 32-byte signing secret, disables the endpoint and permanently retires pending, leased and replayable failed deliveries in one transaction, exactly as the owner rotate route does. The new secret is returned as unpadded base64url exactly once; only the AES-256-GCM ciphertext bound to account, endpoint and key version is stored, and there is no retrieval route. Receivers should keep verifying with the old secret until deliveries signed with the new secret arrive. No request body. Cache-Control: no-store.",
@@ -1692,9 +1544,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "invalid_request"
-                }
+                "example": { "code": "invalid_request" }
               }
             }
           },
@@ -1710,9 +1560,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "unauthorized"
-                }
+                "example": { "code": "unauthorized" }
               }
             }
           },
@@ -1728,9 +1576,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "forbidden"
-                }
+                "example": { "code": "forbidden" }
               }
             }
           },
@@ -1746,9 +1592,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "not_found"
-                }
+                "example": { "code": "not_found" }
               }
             }
           },
@@ -1764,9 +1608,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "unavailable"
-                }
+                "example": { "code": "unavailable" }
               }
             }
           }
@@ -1775,12 +1617,10 @@
     },
     "/v1/sealed/usage": {
       "get": {
-        "tags": [
-          "sealed-usage"
-        ],
+        "tags": ["sealed-usage"],
         "operationId": "getSealedUsage",
-        "summary": "List bounded usage history pages",
-        "description": "Read-only query of the single authoritative metering core (usage_periods and usage_ledger) for the authenticated account: bounded pages of UTC calendar-month periods, newest first, each with its unit limit, reserved units, refunded units and the derived used units (reserved - refunded). Counter semantics are fixed: reserved counts accepted messages, reserved in the same transaction as admission; refunds exist only through the pre-grant cancellation/expiry path, are written exactly once per message against the original period, and an idempotent digest replay reuses the original reservation. used units is a reservation counter and is never a submitted or delivered counter. Units are integer counts of accepted messages, never currency, invoices or per-recipient pricing. Per-device or per-line breakdowns do not exist and are not implied. The metric stays the shared outbound_message unit in v1.",
+        "summary": "Get the current metering period's usage snapshot",
+        "description": "Proposed contract; no route exists. Read-only query of the durable outbound metering core (usage_periods and usage_ledger) for the authenticated account: the current UTC calendar-month period, its unit limit, reserved units, refunded units, the derived used units, and the period boundary at which counters reset. Sealed outbound acceptance meters exactly one unit per accepted sealed envelope in the same transaction as admission, identical to the existing metered core; an idempotent digest replay reuses the original reservation and never reserves a second unit, even across a month boundary. Refunds exist only through the existing pre-grant cancellation/expiry path and are written against the original period; whether sealed messages expose cancellation at all is deferred with the message status queries. The metric stays the shared outbound_message unit in v1: sealed acceptance does not introduce a second metric. Units are integer counts of accepted messages, never currency, invoices or per-recipient pricing. History queries beyond the current period and per-device or per-line breakdowns are deferred. Cache-Control: no-store.",
         "security": [
           {
             "bearerAuth": []
@@ -1788,7 +1628,7 @@
         ],
         "responses": {
           "200": {
-            "description": "One bounded page of usage periods; empty history is an empty page.",
+            "description": "The current period's quota and usage counters.",
             "headers": {
               "Cache-Control": {
                 "$ref": "#/components/headers/NoStore"
@@ -1797,7 +1637,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SealedUsagePage"
+                  "$ref": "#/components/schemas/SealedUsage"
                 }
               }
             }
@@ -1814,9 +1654,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "unauthorized"
-                }
+                "example": { "code": "unauthorized" }
               }
             }
           },
@@ -1832,9 +1670,7 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "forbidden"
-                }
+                "example": { "code": "forbidden" }
               }
             }
           },
@@ -1850,55 +1686,11 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 },
-                "example": {
-                  "code": "unavailable"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "invalid_request: out-of-bounds limit or malformed before cursor.",
-            "headers": {
-              "Cache-Control": {
-                "$ref": "#/components/headers/NoStore"
-              }
-            },
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                },
-                "example": {
-                  "code": "invalid_request"
-                }
+                "example": { "code": "unavailable" }
               }
             }
           }
-        },
-        "parameters": [
-          {
-            "name": "before",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "format": "date"
-            },
-            "description": "Pagination cursor from a previous next_before: return periods with period_start strictly before this date. Malformed or calendrically impossible values are invalid_request."
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 24,
-              "default": 12
-            },
-            "description": "Periods per page, 1 to 24, default 12. Out-of-bounds is invalid_request."
-          }
-        ]
+        }
       }
     },
       "/v1/sealed/messages/{message_id}": {
@@ -2209,10 +2001,7 @@
       "SealedOutboundAccepted": {
         "type": "object",
         "description": "Acceptance metadata for a sealed outbound envelope. Contains no recipient, no plaintext and no envelope bytes.",
-        "required": [
-          "message_id",
-          "created"
-        ],
+        "required": ["message_id", "created"],
         "properties": {
           "message_id": {
             "type": "string",
@@ -2229,10 +2018,7 @@
       "SealedInboundAccepted": {
         "type": "object",
         "description": "Acceptance metadata for a sealed inbound event. Contains no sender, no plaintext and no envelope bytes.",
-        "required": [
-          "event_id",
-          "created"
-        ],
+        "required": ["event_id", "created"],
         "properties": {
           "event_id": {
             "type": "string",
@@ -2249,11 +2035,7 @@
       "SealedDeviceLine": {
         "type": "object",
         "description": "One sealed-purpose line binding of a device, from the device_line_bindings rows with purpose 'sealed'. A phone line is a stable owner-assigned identity, never an Android subscription ID, SIM slot, phone number, ICCID or IMSI.",
-        "required": [
-          "line_id",
-          "binding_generation",
-          "state"
-        ],
+        "required": ["line_id", "binding_generation", "state"],
         "properties": {
           "line_id": {
             "type": "string",
@@ -2268,11 +2050,7 @@
           },
           "state": {
             "type": "string",
-            "enum": [
-              "pending",
-              "active",
-              "revoked"
-            ],
+            "enum": ["pending", "active", "revoked"],
             "description": "Binding state. At most one active binding exists per line; revoked bindings never return to pending or active."
           }
         },
@@ -2281,13 +2059,7 @@
       "SealedDevice": {
         "type": "object",
         "description": "One enrolled device of the account and its sealed-purpose line bindings. Read-only view; contains no SIM identifier, phone number, ICCID, IMSI, Android subscription ID or key material.",
-        "required": [
-          "device_id",
-          "display_name",
-          "revoked",
-          "active_socket_lease",
-          "lines"
-        ],
+        "required": ["device_id", "display_name", "revoked", "active_socket_lease", "lines"],
         "properties": {
           "device_id": {
             "type": "string",
@@ -2319,10 +2091,7 @@
       "SealedDevicePage": {
         "type": "object",
         "description": "One cursor page of the account's devices.",
-        "required": [
-          "devices",
-          "next_cursor"
-        ],
+        "required": ["devices", "next_cursor"],
         "properties": {
           "devices": {
             "type": "array",
@@ -2332,10 +2101,7 @@
             "description": "Devices in creation order."
           },
           "next_cursor": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "uuid",
             "description": "The device_id to pass as before on the next request; null after the last page."
           }
@@ -2345,9 +2111,7 @@
       "SealedWebhookCreateRequest": {
         "type": "object",
         "description": "Create request for one webhook endpoint. Unknown members are rejected. The callback URL must pass the strict egress validator: HTTPS DNS name on port 443, at most 2048 bytes, no IP literals, userinfo, fragments, local/internal/special-use names or invalid host labels.",
-        "required": [
-          "callback_url"
-        ],
+        "required": ["callback_url"],
         "properties": {
           "callback_url": {
             "type": "string",
@@ -2360,14 +2124,7 @@
       "SealedWebhookEndpoint": {
         "type": "object",
         "description": "One webhook endpoint of the account. Never includes signing secrets or encrypted secret bytes.",
-        "required": [
-          "endpoint_id",
-          "callback_url",
-          "enabled",
-          "paused_at_ms",
-          "failure_started_at_ms",
-          "created_at_ms"
-        ],
+        "required": ["endpoint_id", "callback_url", "enabled", "paused_at_ms", "failure_started_at_ms", "created_at_ms"],
         "properties": {
           "endpoint_id": {
             "type": "string",
@@ -2383,19 +2140,13 @@
             "description": "Whether sealed events accepted now create new deliveries for this endpoint."
           },
           "paused_at_ms": {
-            "type": [
-              "integer",
-              "null"
-            ],
+            "type": ["integer", "null"],
             "format": "int64",
             "minimum": 0,
             "description": "Unix milliseconds when the sender paused the endpoint after 72 hours of sustained transport failure; null while unpause. Pending deliveries stay queued and the sender skips the endpoint while this is set."
           },
           "failure_started_at_ms": {
-            "type": [
-              "integer",
-              "null"
-            ],
+            "type": ["integer", "null"],
             "format": "int64",
             "minimum": 0,
             "description": "Unix milliseconds of the first failure of the current streak; null when the last delivery was acknowledged."
@@ -2412,9 +2163,7 @@
       "SealedWebhookEndpointList": {
         "type": "object",
         "description": "All of the account's webhook endpoints, at most eight, ordered by creation.",
-        "required": [
-          "endpoints"
-        ],
+        "required": ["endpoints"],
         "properties": {
           "endpoints": {
             "type": "array",
@@ -2430,12 +2179,7 @@
       "SealedWebhookSecret": {
         "type": "object",
         "description": "Create/rotate response exposing the signing secret exactly once per generated secret. Only an AES-256-GCM ciphertext bound to account, endpoint and key version is stored; there is no retrieval route, and losing this response requires rotation.",
-        "required": [
-          "endpoint_id",
-          "callback_url",
-          "enabled",
-          "signing_secret_b64url"
-        ],
+        "required": ["endpoint_id", "callback_url", "enabled", "signing_secret_b64url"],
         "properties": {
           "endpoint_id": {
             "type": "string",
@@ -2461,11 +2205,7 @@
       "SealedWebhookDeliveryAttempt": {
         "type": "object",
         "description": "One completed or in-flight delivery attempt of the current or an earlier generation. Immutable audit history; contains no payload or response body.",
-        "required": [
-          "generation",
-          "attempt_number",
-          "started_at_ms"
-        ],
+        "required": ["generation", "attempt_number", "started_at_ms"],
         "properties": {
           "generation": {
             "type": "integer",
@@ -2488,33 +2228,18 @@
             "description": "Unix milliseconds when the sender leased this attempt."
           },
           "completed_at_ms": {
-            "type": [
-              "integer",
-              "null"
-            ],
+            "type": ["integer", "null"],
             "format": "int64",
             "minimum": 0,
             "description": "Unix milliseconds when the attempt finished; null while in flight."
           },
           "outcome": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "enum": [
-              "timeout",
-              "http_error",
-              "network_error",
-              "policy_rejected",
-              null
-            ],
+            "type": ["string", "null"],
+            "enum": ["timeout", "http_error", "network_error", "policy_rejected", null],
             "description": "The transport outcome; null while in flight."
           },
           "http_status": {
-            "type": [
-              "integer",
-              "null"
-            ],
+            "type": ["integer", "null"],
             "format": "int32",
             "description": "The receiver's HTTP status when one was received; null otherwise."
           }
@@ -2524,17 +2249,7 @@
       "SealedWebhookDelivery": {
         "type": "object",
         "description": "Delivery metadata for one sealed event fan-out. No payload, callback URL, signing secret, response body, recipient or content is ever included.",
-        "required": [
-          "delivery_id",
-          "event_id",
-          "status",
-          "generation",
-          "terminal_reason",
-          "attempt_count",
-          "created_at_ms",
-          "updated_at_ms",
-          "attempts"
-        ],
+        "required": ["delivery_id", "event_id", "status", "generation", "terminal_reason", "attempt_count", "created_at_ms", "updated_at_ms", "attempts"],
         "properties": {
           "delivery_id": {
             "type": "string",
@@ -2548,12 +2263,7 @@
           },
           "status": {
             "type": "string",
-            "enum": [
-              "pending",
-              "leased",
-              "succeeded",
-              "dead"
-            ],
+            "enum": ["pending", "leased", "succeeded", "dead"],
             "description": "Delivery state. dead means terminal after exhaustion, policy rejection or retirement."
           },
           "generation": {
@@ -2564,17 +2274,8 @@
             "description": "The current generation: initial plus at most two manual replays."
           },
           "terminal_reason": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "enum": [
-              "failed",
-              "policy_rejected",
-              "retired",
-              "legacy",
-              null
-            ],
+            "type": ["string", "null"],
+            "enum": ["failed", "policy_rejected", "retired", "legacy", null],
             "description": "Set exactly when status is dead; null otherwise."
           },
           "attempt_count": {
@@ -2585,10 +2286,7 @@
             "description": "Completed attempts in the current generation."
           },
           "next_attempt_at_ms": {
-            "type": [
-              "integer",
-              "null"
-            ],
+            "type": ["integer", "null"],
             "format": "int64",
             "minimum": 0,
             "description": "Unix milliseconds of the next retry; present only while pending, null otherwise. Retry schedule per generation: 1m, 5m, 15m, 1h, 6h, 24h after each failure."
@@ -2618,10 +2316,7 @@
       "SealedWebhookDeliveryPage": {
         "type": "object",
         "description": "One page of delivery history, newest first by creation time then ID.",
-        "required": [
-          "deliveries",
-          "next_before"
-        ],
+        "required": ["deliveries", "next_before"],
         "properties": {
           "deliveries": {
             "type": "array",
@@ -2631,10 +2326,7 @@
             "description": "Deliveries of this endpoint."
           },
           "next_before": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "uuid",
             "description": "The delivery_id to pass as before on the next request; null after the last page."
           }
@@ -2644,11 +2336,7 @@
       "SealedWebhookReplayAccepted": {
         "type": "object",
         "description": "Acceptance metadata for one bounded replay request. Contains no payload and no receiver data.",
-        "required": [
-          "delivery_id",
-          "generation",
-          "created"
-        ],
+        "required": ["delivery_id", "generation", "created"],
         "properties": {
           "delivery_id": {
             "type": "string",
@@ -2672,17 +2360,7 @@
       "SealedWebhookEventBody": {
         "type": "object",
         "description": "PROPOSED outbound body the delivery sender POSTs to the customer's callback URL for one accepted sealed inbound event. This is not a response of any API operation in this document. Ciphertext-only fanout: envelope_b64 carries the exact stored sealed envelope bytes and the relay never decrypts, never synthesizes plaintext and never substitutes synthetic-alpha content (Q11). Delivered with content type application/json and the headers x-zrotext-timestamp (ASCII Unix seconds) and x-zrotext-signature ('v1=' plus lowercase hex of HMAC-SHA256(timestamp || '.' || exact raw body) keyed by the endpoint signing secret); receivers enforce a five-minute timestamp tolerance and deduplicate the event_id across every generation. HTTP 2xx acknowledges; redirects are rejected; connect/read timeouts are bounded. Sealed outbound dispatch-status fanout is a separate deferred contract.",
-        "required": [
-          "v",
-          "type",
-          "event_id",
-          "delivery_id",
-          "account_id",
-          "device_id",
-          "observed_at_ms",
-          "envelope_b64",
-          "unsigned_digest_b64"
-        ],
+        "required": ["v", "type", "event_id", "delivery_id", "account_id", "device_id", "observed_at_ms", "envelope_b64", "unsigned_digest_b64"],
         "properties": {
           "v": {
             "type": "integer",
@@ -2733,16 +2411,8 @@
       },
       "SealedUsage": {
         "type": "object",
-        "description": "One metering period from the durable usage core. Integer message counts only; never currency, invoices or pricing.",
-        "required": [
-          "metric",
-          "period_start",
-          "period_end",
-          "limit_units",
-          "reserved_units",
-          "refunded_units",
-          "used_units"
-        ],
+        "description": "The account's current metering period snapshot from the durable usage core. Integer message counts only; never currency, invoices or pricing.",
+        "required": ["metric", "period_start", "period_end", "limit_units", "reserved_units", "refunded_units", "used_units"],
         "properties": {
           "metric": {
             "type": "string",
@@ -2752,12 +2422,12 @@
           "period_start": {
             "type": "string",
             "format": "date",
-            "description": "Inclusive UTC calendar-month start of the period (YYYY-MM-DD)."
+            "description": "Inclusive UTC calendar-month start of the current period (YYYY-MM-DD)."
           },
           "period_end": {
             "type": "string",
             "format": "date",
-            "description": "Exclusive end of the period and reset boundary: counters restart at 00:00 UTC on this date."
+            "description": "Exclusive end of the current period and reset boundary: counters restart at 00:00 UTC on this date."
           },
           "limit_units": {
             "type": "integer",
@@ -2789,9 +2459,7 @@
       "Error": {
         "type": "object",
         "description": "The existing error shape used by the message routes: a single machine-readable code and no content echo.",
-        "required": [
-          "code"
-        ],
+        "required": ["code"],
         "properties": {
           "code": {
             "type": "string",
@@ -2820,32 +2488,6 @@
               "billing_pending",
               "unavailable"
             ]
-          }
-        },
-        "additionalProperties": false
-      },
-      "SealedUsagePage": {
-        "type": "object",
-        "description": "One bounded page of the account's usage history, newest period first, read from the single authoritative metering core (#631). consumed = reserved - refunded is a reservation counter and is never a submitted or delivered counter. An account without periods is a consistent empty page, not an error and not a distinction beyond emptiness.",
-        "required": [
-          "usage",
-          "next_before"
-        ],
-        "properties": {
-          "usage": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/SealedUsage"
-            },
-            "description": "Periods in descending period_start order."
-          },
-          "next_before": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "date",
-            "description": "Cursor for the next older page: the last row's period_start, or null when the history is exhausted."
           }
         },
         "additionalProperties": false
