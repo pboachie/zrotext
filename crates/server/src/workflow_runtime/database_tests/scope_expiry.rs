@@ -162,7 +162,7 @@ async fn grant_issuance_rolls_back_when_its_final_connector_query_crosses_expiry
             &case.owner,
             &case.hasher,
             &case.cipher,
-            PASSWORD,
+            &case.password,
             &case.factor,
             &case.request
         ),
