@@ -40,6 +40,7 @@ fn socket_state(database_url: String, site_id: &str) -> DeviceSocketState {
         auth_hasher: Arc::new(TokenHasher::new(crate::test_keys::key(62)).unwrap()),
         alpha_policy: Arc::new(AlphaPolicy::parse(None, None, None).unwrap()),
         dispatch_runtime_enabled: false,
+        sealed_dispatch_enabled: false,
         inbound_pilot_enabled: false,
         line_opt_out_enabled: false,
         sms_line_activation_enabled: false,

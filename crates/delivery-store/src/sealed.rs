@@ -25,6 +25,8 @@ pub struct CandidateQueueInput<'a> {
     pub recipient: &'a str,
     pub envelope: &'a [u8],
     pub expires_at_ms: i64,
+    /// Authenticated immutable authorization ceiling; missing is not dispatchable.
+    pub segment_limit: Option<u8>,
 }
 
 /// Account lock and billing policy cannot be fabricated by storage callers.
@@ -79,6 +81,9 @@ impl AccountAdmission<'_, '_> {
             || !(426..=34213).contains(&input.envelope.len())
             || !input.envelope.starts_with(b"ZTSE\x02\x01")
             || input.expires_at_ms <= 0
+            || input
+                .segment_limit
+                .is_some_and(|limit| !(1..=6).contains(&limit))
         {
             return Err(StoreError::InvalidInput);
         }
@@ -93,7 +98,7 @@ impl AccountAdmission<'_, '_> {
         }
         let existing = tx.query_opt(
             "SELECT transport_mode,request_digest,device_id,sealed_line_id,sealed_binding_generation, \
-             sealed_manifest_generation,sealed_manifest_version,sealed_manifest_digest,sealed_signer_key_id \
+             sealed_manifest_generation,sealed_manifest_version,sealed_manifest_digest,sealed_signer_key_id,sealed_segment_limit \
              FROM messages WHERE account_id=$1 AND id=$2",
             &[&self.account, &input.message_id],
         ).await?;
@@ -109,6 +114,7 @@ impl AccountAdmission<'_, '_> {
                     != Some(input.manifest_digest.as_slice())
                 || row.get::<_, Option<Vec<u8>>>(8).as_deref()
                     != Some(input.signer_key_id.as_slice())
+                || row.get::<_, Option<i16>>(9) != input.segment_limit.map(i16::from)
             {
                 return Err(StoreError::MessageIdConflict);
             }
@@ -131,13 +137,13 @@ impl AccountAdmission<'_, '_> {
         let inserted = tx.query_opt(
             "INSERT INTO messages(id,account_id,device_id,recipient_e164,recipient_digest,transport_mode, \
              transport_payload,request_digest,state,expires_at,sealed_line_id,sealed_binding_generation, \
-             sealed_manifest_generation,sealed_manifest_version,sealed_manifest_digest,sealed_signer_key_id) \
+             sealed_manifest_generation,sealed_manifest_version,sealed_manifest_digest,sealed_signer_key_id,sealed_segment_limit) \
              VALUES($1,$2,$3,$4,$5,'sealed_candidate02',$6,$7,'queued',to_timestamp($8::bigint::double precision/1000), \
-             $9,$10,$11,$12,$13,$14) ON CONFLICT(id) DO NOTHING RETURNING id",
+             $9,$10,$11,$12,$13,$14,$15) ON CONFLICT(id) DO NOTHING RETURNING id",
             &[&input.message_id,&self.account,&input.device_id,&input.recipient,&recipient_digest.as_slice(),
               &input.envelope,&input.unsigned_digest.as_slice(),&input.expires_at_ms,&input.line_id,
               &input.binding_generation,&input.manifest_generation,&input.manifest_version,
-              &input.manifest_digest.as_slice(),&input.signer_key_id.as_slice()],
+              &input.manifest_digest.as_slice(),&input.signer_key_id.as_slice(),&input.segment_limit.map(i16::from)],
         ).await?;
         if inserted.is_none() {
             return Err(StoreError::MessageIdConflict);
