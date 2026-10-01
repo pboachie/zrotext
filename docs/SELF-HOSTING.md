@@ -689,3 +689,7 @@ is spent the hub closes the device socket with `1013` and the phone retries
 later. See [inbound-pilot-budgets.md](../protocol/v1/inbound-pilot-budgets.md).
 
 Account mail reuses SMTP sessions on Linux and other non-Windows builds (issue #485): up to two idle sessions are kept, and each closes within two minutes of going idle. A session carries another message only after its previous message completed with a 2xx reply; a send that times out (30 seconds) or is cancelled, fails, or gets any other reply closes its session. Windows builds keep one connection per message, because lettre's session pool is enabled only for non-Windows targets.
+
+## Experimental local agent setup
+
+The [reviewed local connector setup](agent-local-setup.md) provides offline checks, a synthetic MCP fixture exchange and reviewed client configuration changes. Live scoped messaging, authenticated pairing and grant revocation remain unavailable.
