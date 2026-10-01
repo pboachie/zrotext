@@ -317,8 +317,8 @@ const TEST_MIGRATIONS: [(&str, &str); 79] = [
         migration!("078_test_billable_usage.sql"),
     ),
     (
-        "079_test_exposure_reservations.sql",
-        migration!("079_test_exposure_reservations.sql"),
+        "080_test_exposure_reservations.sql",
+        migration!("080_test_exposure_reservations.sql"),
     ),
 ];
 

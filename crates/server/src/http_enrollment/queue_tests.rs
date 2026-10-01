@@ -262,7 +262,7 @@ const QUEUE_SCHEMA: [(&str, &str); 79] = queue_schema!(
     "076_workflow_decisions.sql",
     "077_encrypted_schedule.sql",
     "078_test_billable_usage.sql",
-    "079_test_exposure_reservations.sql",
+    "080_test_exposure_reservations.sql",
 );
 #[test]
 fn queue_fixture_includes_every_checked_in_migration() {

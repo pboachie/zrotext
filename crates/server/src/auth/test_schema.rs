@@ -337,8 +337,8 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../../../../deploy/compose/migrations/078_test_billable_usage.sql"),
     ),
     (
-        "079_test_exposure_reservations.sql",
-        include_str!("../../../../deploy/compose/migrations/079_test_exposure_reservations.sql"),
+        "080_test_exposure_reservations.sql",
+        include_str!("../../../../deploy/compose/migrations/080_test_exposure_reservations.sql"),
     ),
 ];
 

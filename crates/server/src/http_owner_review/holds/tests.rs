@@ -109,7 +109,7 @@ const TEST_MIGRATIONS: [(&str, &str); 79] = [
     migration!("076_workflow_decisions.sql"),
     migration!("077_encrypted_schedule.sql"),
     migration!("078_test_billable_usage.sql"),
-    migration!("079_test_exposure_reservations.sql"),
+    migration!("080_test_exposure_reservations.sql"),
 ];
 
 #[test]
