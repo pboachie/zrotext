@@ -159,7 +159,7 @@ pub async fn prune(
     assert!((1..=1000).contains(&limit));
     let mut first_error: Option<Error> = None;
     let mut failures = 0_u8;
-    let steps = 11_u8;
+    let mandatory_steps = 10_u8;
 
     let idempotency_keys = step(
         "idempotency_keys",
@@ -350,6 +350,9 @@ pub async fn prune(
         ),
     )
     .await;
+    // An absent optional proof table must not turn total mandatory pruning
+    // failure into a successful worker tick.
+    let mandatory_unavailable = failures == mandatory_steps;
     let conversation_confirmations = step(
         "conversation_confirmation_records",
         &mut first_error,
@@ -357,9 +360,7 @@ pub async fn prune(
         crate::http_owner_conversations::send::queue::lifecycle::redact(client, limit),
     )
     .await;
-    if failures == steps
-        && let Some(error) = first_error
-    {
+    if mandatory_unavailable && let Some(error) = first_error {
         return Err(error);
     }
     Ok(RetentionCounts {
