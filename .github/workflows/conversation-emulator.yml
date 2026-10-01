@@ -92,7 +92,8 @@ jobs:
           test -c /dev/kvm
           sudo chmod a+rw /dev/kvm
           echo no | avdmanager create avd --name ZROtext_Conversation_API28 --package 'system-images;android-28;google_apis;x86_64' --force
-          emulator -avd ZROtext_Conversation_API28 -port 5596 -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect > "$RUNNER_TEMP/conversation-emulator.log" 2>&1 &
+          test -x "$ANDROID_HOME/emulator/emulator"
+          "$ANDROID_HOME/emulator/emulator" -avd ZROtext_Conversation_API28 -port 5596 -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect > "$RUNNER_TEMP/conversation-emulator.log" 2>&1 &
           emulator_pid=$!
           phase='adb-connect'
           timeout 180 adb -s emulator-5596 wait-for-device > "$RUNNER_TEMP/conversation-adb-wait.log" 2>&1 &
