@@ -312,9 +312,9 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../../../../deploy/compose/migrations/071_sealed_grant_authority.sql"),
     ),
     (
-        "071_conversation_confirmation_records.sql",
+        "072_conversation_confirmation_records.sql",
         include_str!(
-            "../../../../deploy/compose/migrations/071_conversation_confirmation_records.sql"
+            "../../../../deploy/compose/migrations/072_conversation_confirmation_records.sql"
         ),
     ),
 ];
