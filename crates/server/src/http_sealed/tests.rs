@@ -372,7 +372,7 @@ impl RouteCase {
         let end = b.len() - 64;
         let signature: Signature = f.event_signer.sign(
             &[
-                b"ZTSE/sign/v2\0".as_slice(),
+                b"ZTSE/sign/v2 ".as_slice(),
                 &(end as u32).to_be_bytes(),
                 &b[..end],
             ]
@@ -564,5 +564,290 @@ async fn disabled_state_refuses_valid_credentials() {
         code(response).await,
         (StatusCode::NOT_FOUND, "not_found".into())
     );
+    case.fixture.cleanup().await;
+}
+
+// ---------------------------------------------------------------------------
+// POST /v1/sealed/inbound-events (#538): the HTTP upload path stores kind-02
+// envelopes through the same sealed_inbound_events replay fences as the
+// device-socket pilot, with the stored current manifest as authority.
+// ---------------------------------------------------------------------------
+
+struct InboundCase {
+    fixture: Fixture,
+    token: String,
+    user: Uuid,
+    url: String,
+}
+
+impl InboundCase {
+    async fn new() -> Self {
+        let mut f = Fixture::new().await;
+        let now = route_now(&f.db).await;
+        // The fixture's manifest already carries the inbound role set (an
+        // archive reader and the device-bound event signer); publish it as
+        // the current chain so the stored-authority lock accepts it.
+        let digest = Sha256::digest(&f.bytes[..f.bytes.len() - 64]);
+        f.db.execute("UPDATE sealed_manifest_authorities SET version=1,semantic_digest=$2,manifest=$3,accepted_at_ms=$4,last_verified_ms=$4 WHERE account_id=$1",
+            &[&f.account,&digest.as_slice(),&f.bytes,&now]).await.unwrap();
+        let token = format!("ztk_{}", URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>()));
+        let user = insert_owner(&mut f).await;
+        insert_api_key(&mut f, &token, "messages:send", user).await;
+        let url = format!("{}?options=-csearch_path%3D{}", f.url, f.schema);
+        Self {
+            fixture: f,
+            token,
+            user,
+            url,
+        }
+    }
+
+    fn state(&self) -> SealedHttpState {
+        SealedHttpState::new(self.url.clone(), hasher(), "manifest-test".into(), 1, true).unwrap()
+    }
+
+    async fn envelope(
+        &self,
+        event: Uuid,
+        sequence: u64,
+        observed: i64,
+        body_length: usize,
+    ) -> Vec<u8> {
+        let f = &self.fixture;
+        let mut bytes = b"ZTSE  ".to_vec();
+        bytes.extend(172u16.to_be_bytes());
+        bytes.extend(f.account.as_bytes());
+        bytes.extend(event.as_bytes());
+        bytes.extend(f.device.as_bytes());
+        bytes.extend(f.line.as_bytes());
+        bytes.extend(&f.bytes[29..37]);
+        bytes.extend(Sha256::digest(&f.bytes[..f.bytes.len() - 64]));
+        bytes.extend(f.signer);
+        bytes.extend((observed as u64).to_be_bytes());
+        bytes.extend(event.as_bytes());
+        bytes.extend(sequence.to_be_bytes());
+        bytes.push(3);
+        bytes.extend(b"+12");
+        bytes.extend([3; 12]);
+        bytes.extend((body_length as u32).to_be_bytes());
+        bytes.extend(vec![7; body_length]);
+        bytes.push(1);
+        bytes.push(2);
+        bytes.extend(f.readers[0].key_id);
+        bytes.extend(f.root.verifying_key().to_sec1_point(false).as_bytes());
+        bytes.extend([9; 48]);
+        bytes.extend([0; 64]);
+        let end = bytes.len() - 64;
+        let signature: Signature = f.event_signer.sign(
+            &[
+                b"ZTSE/sign/v2 ".as_slice(),
+                &(end as u32).to_be_bytes(),
+                &bytes[..end],
+            ]
+            .concat(),
+        );
+        bytes[end..].copy_from_slice(&signature.normalize_s().to_bytes());
+        bytes
+    }
+
+    async fn count(&self) -> i64 {
+        self.fixture
+            .db
+            .query_one("SELECT count(*) FROM sealed_inbound_events", &[])
+            .await
+            .unwrap()
+            .get(0)
+    }
+}
+
+fn inbound_post(token: &str, bytes: Vec<u8>) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri("/inbound-events")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .header(header::CONTENT_TYPE, SEALED_CONTENT_TYPE)
+        .body(Body::from(bytes))
+        .unwrap()
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn inbound_upload_is_accepted_then_replayed_as_created_false() {
+    let case = InboundCase::new().await;
+    let app = router(case.state());
+    let now = route_now(&case.fixture.db).await;
+    let event = Uuid::new_v4();
+    let envelope = case.envelope(event, 1, now - 1_000, 200).await;
+    let response = app
+        .clone()
+        .oneshot(inbound_post(&case.token, envelope.clone()))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    #[derive(serde::Deserialize)]
+    struct Accepted {
+        event_id: Uuid,
+        created: bool,
+    }
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let accepted: Accepted = serde_json::from_slice(&body).unwrap();
+    assert_eq!(accepted.event_id, event);
+    assert!(accepted.created);
+    // Exact replay of the same envelope bytes is a no-op.
+    let response = app
+        .clone()
+        .oneshot(inbound_post(&case.token, envelope))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let replayed: Accepted = serde_json::from_slice(&body).unwrap();
+    assert_eq!(replayed.event_id, event);
+    assert!(!replayed.created);
+    assert_eq!(case.count().await, 1);
+    case.fixture.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn inbound_upload_accepts_out_of_order_sequences_inside_the_window() {
+    let case = InboundCase::new().await;
+    let app = router(case.state());
+    let now = route_now(&case.fixture.db).await;
+    let higher = case.envelope(Uuid::new_v4(), 9, now - 1_000, 200).await;
+    let response = app
+        .clone()
+        .oneshot(inbound_post(&case.token, higher))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let lower = case.envelope(Uuid::new_v4(), 4, now - 60_000, 200).await;
+    let response = app
+        .clone()
+        .oneshot(inbound_post(&case.token, lower))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    assert_eq!(case.count().await, 2);
+    case.fixture.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn inbound_upload_rejects_event_forks_and_sequence_reuse() {
+    let case = InboundCase::new().await;
+    let app = router(case.state());
+    let now = route_now(&case.fixture.db).await;
+    let event = Uuid::new_v4();
+    let first = case.envelope(event, 2, now - 1_000, 200).await;
+    let response = app
+        .clone()
+        .oneshot(inbound_post(&case.token, first))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    // Same event identity, different unsigned bytes.
+    let fork = case.envelope(event, 2, now - 1_000, 240).await;
+    let response = app
+        .clone()
+        .oneshot(inbound_post(&case.token, fork))
+        .await
+        .unwrap();
+    assert_eq!(
+        code(response).await,
+        (StatusCode::CONFLICT, "event_id_conflict".into())
+    );
+    // Different event, reused device sequence.
+    let reuse = case.envelope(Uuid::new_v4(), 2, now - 1_000, 200).await;
+    let response = app
+        .clone()
+        .oneshot(inbound_post(&case.token, reuse))
+        .await
+        .unwrap();
+    assert_eq!(
+        code(response).await,
+        (StatusCode::CONFLICT, "sequence_conflict".into())
+    );
+    assert_eq!(case.count().await, 1);
+    case.fixture.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn inbound_upload_rejects_stale_observed_time_outside_the_window() {
+    let case = InboundCase::new().await;
+    let app = router(case.state());
+    let now = route_now(&case.fixture.db).await;
+    let stale = case
+        .envelope(Uuid::new_v4(), 1, now - 8 * 24 * 60 * 60 * 1000, 200)
+        .await;
+    let response = app.oneshot(inbound_post(&case.token, stale)).await.unwrap();
+    assert_eq!(
+        code(response).await,
+        (StatusCode::BAD_REQUEST, "stale_event".into())
+    );
+    assert_eq!(case.count().await, 0);
+    case.fixture.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn inbound_upload_rejects_a_tampered_signature_without_storing() {
+    let case = InboundCase::new().await;
+    let app = router(case.state());
+    let now = route_now(&case.fixture.db).await;
+    let mut envelope = case.envelope(Uuid::new_v4(), 1, now - 1_000, 200).await;
+    let end = envelope.len() - 64;
+    envelope[end] ^= 1;
+    let response = app
+        .oneshot(inbound_post(&case.token, envelope))
+        .await
+        .unwrap();
+    assert_eq!(
+        code(response).await,
+        (StatusCode::BAD_REQUEST, "invalid_request".into())
+    );
+    assert_eq!(case.count().await, 0);
+    case.fixture.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn inbound_upload_requires_the_message_scope_on_the_uploading_device() {
+    let mut case = InboundCase::new().await;
+    // One owner per account: reuse the case's owner membership for the
+    // wrong-scoped key instead of inserting a second owner.
+    let wrong = format!("ztk_{}", URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>()));
+    insert_api_key(&mut case.fixture, &wrong, "devices:read", case.user).await;
+    let app = router(case.state());
+    let now = route_now(&case.fixture.db).await;
+    let envelope = case.envelope(Uuid::new_v4(), 1, now - 1_000, 200).await;
+    let response = app.oneshot(inbound_post(&wrong, envelope)).await.unwrap();
+    assert_eq!(
+        code(response).await,
+        (StatusCode::FORBIDDEN, "forbidden".into())
+    );
+    assert_eq!(case.count().await, 0);
+    case.fixture.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn inbound_upload_refuses_an_oversized_envelope_before_any_work() {
+    let case = InboundCase::new().await;
+    let app = router(case.state());
+    let now = route_now(&case.fixture.db).await;
+    // Body 33_000 exceeds the kind-02 envelope bound of 34_082 total bytes.
+    let oversized = case.envelope(Uuid::new_v4(), 1, now - 1_000, 33_000).await;
+    let response = app
+        .oneshot(inbound_post(&case.token, oversized))
+        .await
+        .unwrap();
+    assert_eq!(
+        code(response).await,
+        (StatusCode::BAD_REQUEST, "invalid_request".into())
+    );
+    assert_eq!(case.count().await, 0);
     case.fixture.cleanup().await;
 }
