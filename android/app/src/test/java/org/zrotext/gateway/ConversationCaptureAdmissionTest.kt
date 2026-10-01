@@ -96,6 +96,66 @@ class ConversationCaptureAdmissionTest {
         assertEquals(0, journal.contentCount())
     }
 
+    @Test fun sealedPacketAndCounterCommitBeforeUploadAndExactRetryNeverEncryptsAgain() {
+        prepare(); activate(); observe()
+        var seals=0
+        val first=gate.sealedCapture(token(1)){content,sequence ->
+            assertEquals(1L,sequence); assertEquals("fixture conversation text",content.body)
+            seals++; "synthetic sealed packet".toByteArray()
+        }!!
+        val retry=gate.sealedCapture(token(1)){_,_->error("Retry must not reseal")}!!
+        assertArrayEquals(first.second,retry.second); assertEquals(1,seals)
+        assertNotNull(journal.wireCapture(token(1))!!.protectedEnvelope)
+        observe(2)
+        gate.sealedCapture(token(2)){_,sequence->assertEquals(2L,sequence);byteArrayOf(1)}
+        gate.close(scope.intervalId)
+        assertNull(gate.sealedCapture(token(1)){_,_->error("Closed")})
+        assertEquals(1L,journal.wireCapture(token(1))!!.sequence)
+        assertNull(journal.wireCapture(token(1))!!.protectedEnvelope)
+    }
+
+    @Test fun wireEncryptionAuthorityLossLeavesOnlyCounterFenceAndCannotUpload() {
+        prepare(); activate(); observe()
+        assertThrows(IllegalStateException::class.java) {
+            gate.sealedCapture(token(1)){_,_->allowed=false;byteArrayOf(1)}
+        }
+        assertFalse(gate.captureEligible())
+        assertEquals(1L,journal.wireCapture(token(1))!!.sequence)
+        assertNull(journal.wireCapture(token(1))!!.protectedEnvelope)
+    }
+
+    @Test fun retentionPurgesWireAndBodyButKeepsSequenceAndReceiptIdentity() {
+        prepare(); activate(); observe()
+        gate.sealedCapture(token(1)){_,_->byteArrayOf(1)}
+        assertEquals(1,journal.purgeContentBefore(1235))
+        assertNull(journal.receipt(token(1))!!.protectedCapture)
+        assertNull(journal.wireCapture(token(1))!!.protectedEnvelope)
+        assertEquals(1L,journal.wireCapture(token(1))!!.sequence)
+        assertNull(gate.retry(token(1)))
+    }
+
+    @Test fun explicitVersionOneMigrationPreservesReceiptAndClosedIntervalFences() {
+        val context=RuntimeEnvironment.getApplication()
+        val name="conversation-migration-test.db"
+        context.deleteDatabase(name)
+        val file=context.getDatabasePath(name); file.parentFile!!.mkdirs()
+        context.openOrCreateDatabase(name,android.content.Context.MODE_PRIVATE,null).use { legacy ->
+            legacy.execSQL("CREATE TABLE conversation_closed_intervals (intervalId TEXT NOT NULL PRIMARY KEY)")
+            legacy.execSQL("CREATE TABLE conversation_installation (slot INTEGER NOT NULL PRIMARY KEY, intervalId TEXT NOT NULL, receiptId TEXT NOT NULL, transcriptDigest TEXT NOT NULL, protectedScope BLOB NOT NULL, nonce BLOB NOT NULL, state TEXT NOT NULL)")
+            legacy.execSQL("CREATE TABLE conversation_receipts (token TEXT NOT NULL PRIMARY KEY, firstObservedAtMs INTEGER NOT NULL, captureId TEXT, intervalId TEXT, protectedCapture BLOB, nonce BLOB)")
+            legacy.execSQL("INSERT INTO conversation_closed_intervals VALUES (?)",arrayOf(scope.intervalId))
+            legacy.execSQL("INSERT INTO conversation_receipts(token,firstObservedAtMs) VALUES (?,?)",arrayOf<Any>(token(1),1234))
+            legacy.version=1
+        }
+        val migrated=Room.databaseBuilder(context,ConversationCaptureDatabase::class.java,name)
+            .addMigrations(ConversationCaptureDatabase.MIGRATION_1_2).allowMainThreadQueries().build()
+        try {
+            assertEquals(1,migrated.journal().isClosed(scope.intervalId))
+            assertEquals(1234L,migrated.journal().receipt(token(1))!!.firstObservedAtMs)
+            assertNull(migrated.journal().wireCapture(token(1)))
+        } finally { migrated.close(); context.deleteDatabase(name) }
+    }
+
     @Test fun receiptDuringActivationMonitorWaitCannotInheritPromotedLease() {
         prepare()
         val finished=java.util.concurrent.CountDownLatch(1)

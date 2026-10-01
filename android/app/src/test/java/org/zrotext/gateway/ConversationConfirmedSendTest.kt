@@ -70,6 +70,10 @@ class ConversationConfirmedSendTest {
         }
     })
     private fun payload(v:VerifiedConversationSend)="fixture-confirmed|${v.scope.encode()}|${v.message}|${v.expiresAt}|${v.body}"
+    @Test fun deliveryForDifferentRequestedMessageCannotReserveOrSubmit() {
+        assertThrows(IllegalStateException::class.java){sender.receiveConfirmed(evidence(),uuid())}
+        assertNull(db.sends().receipt(verified.message));assertEquals(0,submits)
+    }
     private fun evidence(v:VerifiedConversationSend=verified):ByteArray {
         val content=payload(v).toByteArray();val sig=Signature.getInstance("SHA256withECDSA").apply{initSign(signer.private);update(content)}.sign()
         return ByteBuffer.allocate(4+sig.size+content.size).putInt(sig.size).put(sig).put(content).array()

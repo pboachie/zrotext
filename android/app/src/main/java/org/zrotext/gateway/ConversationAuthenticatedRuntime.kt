@@ -28,6 +28,7 @@ internal class ConversationAuthenticatedRuntime(
     private val clock = ConversationTrustedClock(elapsedMillis, wire::currentSession)
     private val transport = ConversationAuthorityTransport(ConversationSerializedChannel(wire), clock,
         wire::currentSession, elapsedMillis)
+    private val contentTransport = ConversationContentTransport(wire)
     private fun current(scope: ConversationCaptureScope) {
         check(!blocked.get()) { "Admission suspended" }
         val session = checkNotNull(selected.get())
@@ -107,7 +108,42 @@ internal class ConversationAuthenticatedRuntime(
     fun confirmedSender(verifier: ConversationSendVerifier, transport: ConversationSendTransport) =
         ConversationConfirmedSend(sends, admission, verifier, protection, clock::nowMs, transport)
 
+    /** Explicit worker request; receipt retries reuse their durably encrypted packet and counter. */
+    fun uploadCapture(token: String, seal: (ConversationCapturedBody, Long) -> ByteArray, complete: (Boolean) -> Unit) {
+        try { serial.execute {
+            var packet: ByteArray? = null
+            val result = runCatching {
+                val (capture, raw) = checkNotNull(admission.sealedCapture(token,seal))
+                packet=raw
+                admission.withCurrentScope(capture.scope) { it() }
+                contentTransport.upload(capture,raw)
+                admission.withCurrentScope(capture.scope) { it() }
+            }.isSuccess
+            packet?.fill(0)
+            runCatching { delivery.execute { runCatching { complete(result) } } }
+        } } catch (_:Exception) { runCatching { delivery.execute { complete(false) } } }
+    }
+
+    /** Receive exactly an already confirmed packet; this does not submit it to a carrier. */
+    fun receiveConfirmed(scope: ConversationCaptureScope, message: String, sender: ConversationConfirmedSend,
+                         complete: (Boolean) -> Unit) {
+        try { serial.execute {
+            var packet: ByteArray?=null
+            val result=runCatching {
+                admission.withCurrentScope(scope) { it() }
+                val raw=contentTransport.confirmed(scope,message); packet=raw
+                admission.withCurrentScope(scope) { it() }
+                // Sender owns its own admission check. Never invert sender -> admission locks.
+                sender.receiveConfirmed(raw,message)
+                admission.withCurrentScope(scope) { it() }
+            }.isSuccess
+            packet?.fill(0)
+            runCatching { delivery.execute { runCatching { complete(result) } } }
+        } } catch (_:Exception) { runCatching { delivery.execute { complete(false) } } }
+    }
+
     fun captureEligible(): Boolean = admission.captureEligible()
+    fun currentScope(): ConversationCaptureScope? = if(blocked.get()) null else admission.activeScope()
     internal fun trustedNowMs():Long? = clock.nowMs()
     fun firstReceiptBoundary() = admission.firstReceiptBoundary { if (blocked.get()) 0 else clock.nowMs() ?: 0 }
     fun observeAtBoundary(boundary: ConversationCaptureAdmission.ReceiptBoundary, token: String,

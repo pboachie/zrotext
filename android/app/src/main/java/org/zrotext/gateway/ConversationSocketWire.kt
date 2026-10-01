@@ -26,11 +26,13 @@ internal class ConversationSocketWire(private val socket: WebSocket,
     override fun currentSession()=synchronized(lock) { if(closed) null else authenticatedSession() }
     override fun exchange(request:ByteArray):ConversationAuthenticatedWire.Reply {
         val owned=request.copyOf()
-        require(owned.size in 118..1208 && owned.copyOfRange(0,5).contentEquals(byteArrayOf(90,84,67,87,1)))
+        require(owned.size in 118..48000 && owned.copyOfRange(0,5).contentEquals(byteArrayOf(90,84,67,87,1)))
         val session=checkNotNull(currentSession())
         val kind=owned[5].toInt()
         val challenge=ByteBuffer.wrap(owned,102,16).let{UUID(it.long,it.long)}
         when(kind) {
+            12 -> ConversationChannelCodec.parseCaptureRequest(owned,session)
+            14 -> ConversationChannelCodec.parseDeliveryRequest(owned,session)
             1 -> ConversationChannelCodec.parseTimeRequest(owned,session)
             3 -> ConversationChannelCodec.parseCloseRequest(owned,session)
             6,8 -> {
@@ -50,7 +52,7 @@ internal class ConversationSocketWire(private val socket: WebSocket,
             }
             else -> error("Conversation request kind unavailable")
         }
-        val pending=Waiting(session,challenge,when(kind){1->2;6->7;8,10->9;else->4})
+        val pending=Waiting(session,challenge,when(kind){1->2;6->7;8,10->9;12->13;14->15;else->4})
         synchronized(lock) {check(!closed && waiting==null && authenticatedSession()==session);waiting=pending}
         try {
             check(socket.send(owned.toByteString())) { "Socket submission refused" }
@@ -63,12 +65,14 @@ internal class ConversationSocketWire(private val socket: WebSocket,
     }
     fun acceptReply(session:ConversationPhoneSession, bytes:ByteArray):Boolean = synchronized(lock) {
         val pending=waiting ?: return@synchronized false
-        if(closed || session!=pending.session || authenticatedSession()!=session || bytes.size !in 118..512) return@synchronized false
+        if(closed || session!=pending.session || authenticatedSession()!=session || bytes.size !in 118..(if(pending.replyKind==15)40122 else 512)) return@synchronized false
         val challenge=runCatching {
             when(pending.replyKind) {
                 2 -> ConversationChannelCodec.parseTimeReply(bytes,session).challenge
                 7 -> ConversationChannelCodec.parseApprovalReply(bytes,session).first
                 9 -> ConversationChannelCodec.parseLeaseReply(bytes,session).first
+                13 -> ConversationChannelCodec.parseCaptureReply(bytes,session).challenge
+                15 -> ConversationChannelCodec.parseDeliveryReply(bytes,session).first
                 else -> ConversationChannelCodec.parseCloseReply(bytes,session).challenge
             }
         }.getOrNull()

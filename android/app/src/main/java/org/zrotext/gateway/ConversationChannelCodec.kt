@@ -23,8 +23,8 @@ internal object ConversationChannelCodec {
             out.writeLong(session.connectionEpoch);out.writeLong(session.deploymentEpoch);out.hex(session.originHash);out.id(challenge);body(out)
         };return bytes.toByteArray()
     }
-    private fun <T> read(bytes:ByteArray, kind:Int, authenticated:ConversationPhoneSession, body:(DataInputStream,UUID)->T):T {
-        require(bytes.size in 118..512)
+    private fun <T> read(bytes:ByteArray, kind:Int, authenticated:ConversationPhoneSession, maximum:Int=512, body:(DataInputStream,UUID)->T):T {
+        require(bytes.size in 118..maximum)
         val input=DataInputStream(ByteArrayInputStream(bytes.copyOf()))
         return input.use {
             require(ByteArray(5).also(it::readFully).contentEquals(magic) && it.readUnsignedByte()==kind)
@@ -46,6 +46,33 @@ internal object ConversationChannelCodec {
         return ConversationCaptureScope(ids[0],ids[1],ids[2],generation,peer.toString(Charsets.US_ASCII),ids[3],ids[4],ids[5],digests[0],digests[1],trust,version,digests[2],digests[3])
     }
     fun timeRequest(r:ConversationTrustedClock.Request)=write(1,r.session,r.challenge){}
+    fun captureRequest(session:ConversationPhoneSession,challenge:UUID,scope:ConversationCaptureScope,envelope:ByteArray):ByteArray {
+        val owned=envelope.copyOf();require(owned.size in 1..40000)
+        return write(12,session,challenge){it.scope(bound(scope,session));it.writeInt(owned.size);it.write(owned)}
+    }
+    fun parseCaptureRequest(bytes:ByteArray,session:ConversationPhoneSession)=read(bytes,12,session,48000){input,nonce->
+        val scope=bound(input.scope(),session);val length=input.readInt();require(length in 1..40000 && input.available()==length)
+        Triple(nonce,scope,ByteArray(length).also(input::readFully))
+    }
+    fun captureReply(session:ConversationPhoneSession,challenge:UUID,event:UUID,digest:String,created:Boolean)=
+        write(13,session,challenge){it.id(event);it.hex(digest);it.writeByte(if(created)1 else 0)}
+    fun parseCaptureReply(bytes:ByteArray,session:ConversationPhoneSession)=read(bytes,13,session){input,nonce->
+        val event=input.id();val digest=input.hex();val created=input.readUnsignedByte();require(created in 0..1)
+        ConversationCaptureAck(nonce,event,digest,created==1)
+    }
+    fun deliveryRequest(session:ConversationPhoneSession,challenge:UUID,scope:ConversationCaptureScope,message:UUID)=
+        write(14,session,challenge){it.scope(bound(scope,session));it.id(message)}
+    fun parseDeliveryRequest(bytes:ByteArray,session:ConversationPhoneSession)=read(bytes,14,session){input,nonce->
+        Triple(nonce,bound(input.scope(),session),input.id())
+    }
+    fun deliveryReply(session:ConversationPhoneSession,challenge:UUID,packet:ByteArray):ByteArray {
+        require(packet.size in 1..40000)
+        return write(15,session,challenge){it.writeInt(packet.size);it.write(packet)}
+    }
+    fun parseDeliveryReply(bytes:ByteArray,session:ConversationPhoneSession)=read(bytes,15,session,40122){input,nonce->
+        val length=input.readInt();require(length in 1..40000 && input.available()==length)
+        nonce to ByteArray(length).also(input::readFully)
+    }
     fun parseTimeRequest(bytes:ByteArray, session:ConversationPhoneSession)=read(bytes,1,session){_,nonce->ConversationTrustedClock.Request(nonce,session)}
     fun timeReply(r:ConversationTimeReply)=write(2,r.session,r.challenge){require(r.sentUtcMs>0);it.writeLong(r.sentUtcMs)}
     fun parseTimeReply(bytes:ByteArray,session:ConversationPhoneSession)=read(bytes,2,session){input,nonce->ConversationTimeReply(session,nonce,input.positive())}
@@ -71,6 +98,7 @@ internal object ConversationChannelCodec {
         val scope=bound(input.scope(),session);val state=input.readUnsignedByte();require(state in 0..1);ConversationClosureReply(session,nonce,scope,state==1)
     }
 }
+internal data class ConversationCaptureAck(val challenge:UUID,val event:UUID,val digest:String,val created:Boolean)
 
 /** Socket owner supplies out-of-band authenticated session for every response; no default exists. */
 internal interface ConversationAuthenticatedWire {

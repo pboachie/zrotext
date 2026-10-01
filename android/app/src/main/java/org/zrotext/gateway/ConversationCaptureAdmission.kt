@@ -211,6 +211,32 @@ internal class ConversationCaptureAdmission(
     }
 
     /** Queue retries retain original scope and receipt time; renewal never reseals old content. */
+    @Synchronized fun sealedCapture(receiptToken: String, seal: (ConversationCapturedBody, Long) -> ByteArray): Pair<ConversationCapturedBody, ByteArray>? = failClosed {
+        val content = retry(receiptToken) ?: return@failClosed null
+        fun checkLive() { check(checkNotNull(currentLease()).scope == content.scope) }
+        val row = journal.reserveWire(receiptToken, content.captureId, content.scope.intervalId, ::checkLive)
+        val aad = "zrotext-conversation-wire-v1:$receiptToken:${content.captureId}:${row.sequence}:${content.scope.transcriptDigest}"
+        if (row.protectedEnvelope == null) {
+            check(row.nonce == null)
+            val raw = seal(content, row.sequence)
+            try {
+                require(raw.size in 1..40000)
+                checkLive()
+                val protected = protection.seal(java.util.Base64.getEncoder().encodeToString(raw), aad)
+                journal.storeWire(row, protected.ciphertext, protected.nonce, ::checkLive)
+                checkLive()
+            } finally { raw.fill(0) }
+        }
+        val stored = checkNotNull(journal.wireCapture(receiptToken))
+        check(stored.sequence == row.sequence && stored.captureId == content.captureId && stored.intervalId == content.scope.intervalId)
+        val raw = java.util.Base64.getDecoder().decode(protection.open(InboundVault.Sealed(
+            checkNotNull(stored.protectedEnvelope), checkNotNull(stored.nonce)), aad))
+        require(raw.size in 1..40000); checkLive()
+        content to raw // Exact persisted bytes; no encryption or sequence allocation on retry.
+    }
+    @Synchronized fun activeScope(): ConversationCaptureScope? = currentLease()?.scope
+
+    /** Queue retries retain original scope and receipt time; renewal never reseals old content. */
     @Synchronized fun retry(receiptToken: String): ConversationCapturedBody? = failClosed {
         val active = currentLease() ?: return@failClosed null
         val row = journal.receipt(receiptToken) ?: return@failClosed null

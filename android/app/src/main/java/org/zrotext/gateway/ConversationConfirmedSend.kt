@@ -49,9 +49,10 @@ internal class ConversationConfirmedSend(
         latestTrustedTime = now
         check(now < value.expiresAt && value.expiresAt - now <= 30000) { "Confirmed intent expired" }
     }
-    @Synchronized fun receiveConfirmed(evidence: ByteArray) {
+    @Synchronized fun receiveConfirmed(evidence: ByteArray, expectedMessage: String? = null) {
         require(evidence.size in 1..80000)
         val copy = evidence.copyOf(); val verified = verifier.verify(copy.copyOf()); val hash = digest(copy)
+        check(expectedMessage == null || verified.message == expectedMessage) { "Confirmed message changed" }
         admission.withCurrentScope(verified.scope) { checkAdmission ->
             fresh(verified)
             val protected = protection.seal(Base64.getEncoder().encodeToString(copy), aad(verified.message, verified.scope.intervalId, hash))

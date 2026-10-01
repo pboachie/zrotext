@@ -30,6 +30,7 @@ class ConversationAuthenticatedRuntimeTest {
     private var decisions = 0
     private var exchanges = 0
     private var duringInstall: () -> Unit = {}
+    private var duringContent: () -> Unit = {}
     private class Queue : Executor {
         private val commands = java.util.ArrayDeque<Runnable>()
         var beforeSubmit: () -> Unit = {}
@@ -72,6 +73,15 @@ class ConversationAuthenticatedRuntimeTest {
                 val bytes=if(request[5].toInt()==1) {
                     val time=ConversationChannelCodec.parseTimeRequest(request,current)
                     ConversationChannelCodec.timeReply(ConversationTimeReply(current,if(tamperTime) UUID.randomUUID() else time.challenge,100000))
+                } else if(request[5].toInt()==12) {
+                    val (nonce,selected,envelope)=ConversationChannelCodec.parseCaptureRequest(request,current)
+                    duringContent()
+                    ConversationChannelCodec.captureReply(current,nonce,UUID.fromString(db.journal().receipt("55".repeat(32))!!.captureId),
+                        Draft02OutboundPreparation.hash(envelope),true).also {assertEquals(scope,selected)}
+                } else if(request[5].toInt()==14) {
+                    val (nonce,selected,_)=ConversationChannelCodec.parseDeliveryRequest(request,current)
+                    duringContent()
+                    ConversationChannelCodec.deliveryReply(current,nonce,byteArrayOf(1)).also {assertEquals(scope,selected)}
                 } else {
                     val close=ConversationChannelCodec.parseCloseRequest(request,current)
                     ConversationChannelCodec.closeReply(ConversationClosureReply(current,close.challenge,close.scope,closeAck))
@@ -99,6 +109,38 @@ class ConversationAuthenticatedRuntimeTest {
         assertEquals(1,db.journal().contentCount())
     }
     @Test fun denialNeverInstallsOrCaptures() {propose();val value=snapshots.last();assembly.presentation.declinePhoneReview(review.requestId,value.version);drain();assertFalse(assembly.captureEligible());assertEquals(0,decisions);assertEquals(0,exchanges)}
+    @Test fun stopClosesAdmissionWhileCaptureReplyIsHeldAndLateAckCannotSucceed() {
+        activate()
+        val token="55".repeat(32)
+        assertEquals(ConversationObservation.CAPTURED,assembly.observeFirstReceipt(token,scope.peer,scope.lineId,1,"synthetic"))
+        heldContentCannotDelayStop {done->assembly.uploadCapture(token,{_,_->byteArrayOf(1)},done)}
+    }
+    @Test fun stopClosesAdmissionWhileDeliveryReplyIsHeldAndLatePacketCannotEnterJournal() {
+        activate()
+        val sender=assembly.confirmedSender(object:ConversationSendVerifier {
+            override fun verify(evidence:ByteArray):VerifiedConversationSend=error("Late packet must not be verified")
+        },object:ConversationSendTransport {
+            override fun submit(message:String,attempt:String,scope:ConversationCaptureScope,body:String):ConversationSubmission=error("No dispatch")
+        })
+        val message=id()
+        heldContentCannotDelayStop {done->assembly.receiveConfirmed(scope,message,sender,done)}
+        assertNull(sendDb.sends().receipt(message))
+    }
+    private fun heldContentCannotDelayStop(begin:((Boolean)->Unit)->Unit) {
+        val entered=java.util.concurrent.CountDownLatch(1);val release=java.util.concurrent.CountDownLatch(1)
+        duringContent={entered.countDown();check(release.await(3,java.util.concurrent.TimeUnit.SECONDS))}
+        var accepted:Boolean?=null
+        begin {accepted=it}
+        val pool=java.util.concurrent.Executors.newFixedThreadPool(2)
+        try {
+            val upload=pool.submit {worker.drain()}
+            assertTrue(entered.await(2,java.util.concurrent.TimeUnit.SECONDS))
+            pool.submit {assembly.lifecycleLost(ConversationStopReason.USER_STOP)}.get(1,java.util.concurrent.TimeUnit.SECONDS)
+            assertFalse(assembly.captureEligible())
+            release.countDown();upload.get(2,java.util.concurrent.TimeUnit.SECONDS);delivery.drain()
+            assertEquals(false,accepted)
+        } finally {release.countDown();pool.shutdownNow()}
+    }
     @Test fun wrongAuthenticatedTimeNonceCannotPrepare() {tamperTime=true;propose();assertFalse(assembly.captureEligible());assertEquals(0,decisions);assertNull(db.journal().installation())}
     @Test fun permissionLossBeforeApprovalCannotInstall() {propose();permission=false;val value=snapshots.last();assembly.presentation.approvePhoneReview(review.requestId,value.version);drain();assertFalse(assembly.captureEligible());assertEquals(0,exchanges)}
     @Test fun permissionLossDuringInstallCannotActivate() {duringInstall={permission=false;assembly.lifecycleLost(ConversationStopReason.PERMISSION_LOST)};propose();val value=snapshots.last();assembly.presentation.approvePhoneReview(review.requestId,value.version);drain();assertFalse(assembly.captureEligible());assertEquals(ConversationStopReason.PERMISSION_LOST,snapshots.last().stopReason)}
