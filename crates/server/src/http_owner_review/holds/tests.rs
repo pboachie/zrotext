@@ -30,7 +30,7 @@ macro_rules! migration {
 
 // Holds are checked by admission and released by inbound, so these routes run
 // on the complete schema. SQL is embedded at build time.
-const TEST_MIGRATIONS: [(&str, &str); 69] = [
+const TEST_MIGRATIONS: [(&str, &str); 70] = [
     migration!("001_foundation.sql"),
     migration!("002_auth.sql"),
     migration!("003_delivery.sql"),
@@ -100,6 +100,7 @@ const TEST_MIGRATIONS: [(&str, &str); 69] = [
     migration!("067_contacts_consent.sql"),
     migration!("068_connector_registration.sql"),
     migration!("069_sealed_root_custody.sql"),
+    migration!("070_message_summary_metadata.sql"),
 ];
 
 #[test]
@@ -304,6 +305,16 @@ async fn owner_holds_and_review_decisions_are_owner_bound_tenant_scoped_and_audi
     let (mut db, connection) = tokio_postgres::connect(&database_url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
     for (name, migration) in TEST_MIGRATIONS {
+        if name == "070_message_summary_metadata.sql" {
+            db.batch_execute("CREATE INDEX CONCURRENTLY messages_summary_queue ON messages(account_id,state,created_at) WHERE state IN ('accepted','queued','claimed','submitting','submitted')").await.unwrap();
+            db.batch_execute("BEGIN").await.unwrap();
+            let result = db.batch_execute(migration).await;
+            db.batch_execute(if result.is_ok() { "COMMIT" } else { "ROLLBACK" })
+                .await
+                .unwrap();
+            result.unwrap();
+            continue;
+        }
         if name == "052_admission_pending_index.sql" {
             db.batch_execute(
                 "CREATE INDEX CONCURRENTLY messages_admission_pending \

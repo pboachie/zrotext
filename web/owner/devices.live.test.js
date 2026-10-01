@@ -34,6 +34,7 @@ async function ownerPage({ eventSource = FakeEventSource } = {}) {
   const makeElement = () => ({
     textContent: "", hidden: false, disabled: false, value: "", checked: false,
     children: [], listeners: {}, openDetails: null,
+    attributes: {}, setAttribute(name, value) { this.attributes[name] = value; },
     replaceChildren(...children) { this.children = children; },
     append(...children) { this.children.push(...children); },
     contains(node) { return this === node || this.children.some((child) => child.contains(node)); },
@@ -77,6 +78,8 @@ async function ownerPage({ eventSource = FakeEventSource } = {}) {
     if (url === "/v1/auth/api-keys" && (!options || options.method === "GET"))
       return response(200, { keys: [], next_cursor: null });
     if (url === "/v1/webhooks") return response(200, { endpoints: [] });
+    // These legacy fleet/history fixtures model a server without summary metadata.
+    if (url.startsWith("/v1/owner/message-summary")) return response(404);
     throw new Error(`Unexpected request: ${url}`);
   };
   globalThis.document = { hidden: false, activeElement: null,
