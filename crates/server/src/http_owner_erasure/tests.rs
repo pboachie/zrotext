@@ -304,6 +304,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../../../../deploy/compose/migrations/069_sealed_root_custody.sql"),
     ),
     (
+        "070_message_summary_metadata.sql",
+        include_str!("../../../../deploy/compose/migrations/070_message_summary_metadata.sql"),
+    ),
+    (
         "071_sealed_grant_authority.sql",
         include_str!("../../../../deploy/compose/migrations/071_sealed_grant_authority.sql"),
     ),
@@ -451,6 +455,16 @@ async fn migrated_schema(
     let (db, connection) = tokio_postgres::connect(&database_url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
     for (file, migration) in MIGRATIONS {
+        if *file == "070_message_summary_metadata.sql" {
+            db.batch_execute("CREATE INDEX CONCURRENTLY messages_summary_queue ON messages(account_id,state,created_at) WHERE state IN ('accepted','queued','claimed','submitting','submitted')").await.unwrap();
+            db.batch_execute("BEGIN").await.unwrap();
+            let result = db.batch_execute(migration).await;
+            db.batch_execute(if result.is_ok() { "COMMIT" } else { "ROLLBACK" })
+                .await
+                .unwrap();
+            result.unwrap();
+            continue;
+        }
         if let Some((_, index)) = PREPARED_INDEXES.iter().find(|(gate, _)| gate == file) {
             db.batch_execute(index).await.unwrap();
         }
