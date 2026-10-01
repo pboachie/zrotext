@@ -114,6 +114,7 @@ async fn owner_status_omits_provider_ids_and_foreign_tenant_rows() {
     assert_eq!(empty.headers()[header::CACHE_CONTROL], "no-store");
     let empty: Value =
         serde_json::from_slice(&to_bytes(empty.into_body(), 4096).await.unwrap()).unwrap();
+    assert_eq!(empty["localUsage"], Value::Null);
     assert_eq!(empty["customerBound"], false);
     assert_eq!(empty["pendingReconciliations"], 0);
     assert_eq!(empty["subscriptions"].as_array().unwrap().len(), 0);
@@ -184,6 +185,12 @@ async fn owner_status_omits_provider_ids_and_foreign_tenant_rows() {
         .await
         .unwrap();
     }
+    db.execute("INSERT INTO usage_periods(account_id,metric,period_start,period_end,limit_units,reserved_units,refunded_units) VALUES($1,'outbound_message',date_trunc('month',CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date,(date_trunc('month',CURRENT_TIMESTAMP AT TIME ZONE 'UTC')+interval '1 month')::date,10,7,2)", &[&first.account_id]).await.unwrap();
+    db.execute("INSERT INTO usage_periods(account_id,metric,period_start,period_end,limit_units,reserved_units,refunded_units) VALUES($1,'outbound_message',date_trunc('month',CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date,(date_trunc('month',CURRENT_TIMESTAMP AT TIME ZONE 'UTC')+interval '1 month')::date,0,0,0)", &[&second.account_id]).await.unwrap();
+    // Pre-provisioned future periods must not replace the current counter.
+    db.execute("INSERT INTO usage_periods(account_id,metric,period_start,period_end,limit_units,reserved_units,refunded_units) VALUES($1,'outbound_message',(date_trunc('month',CURRENT_TIMESTAMP AT TIME ZONE 'UTC')+interval '1 month')::date,(date_trunc('month',CURRENT_TIMESTAMP AT TIME ZONE 'UTC')+interval '2 months')::date,99,99,0)", &[&first.account_id]).await.unwrap();
+    // A historical period must not be mistaken for the current counter.
+    db.execute("INSERT INTO usage_periods(account_id,metric,period_start,period_end,limit_units,reserved_units,refunded_units) VALUES($1,'outbound_message',(date_trunc('month',CURRENT_TIMESTAMP AT TIME ZONE 'UTC')-interval '1 month')::date,date_trunc('month',CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date,99,99,0)", &[&first.account_id]).await.unwrap();
     let response = app
         .clone()
         .oneshot(get("/v1/billing/status", Some(&owner_a.token)))
@@ -193,6 +200,10 @@ async fn owner_status_omits_provider_ids_and_foreign_tenant_rows() {
     let body = to_bytes(response.into_body(), 4096).await.unwrap();
     let text = std::str::from_utf8(&body).unwrap();
     let status: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(status["localUsage"]["used_units"], 5);
+    assert_eq!(status["localUsage"]["reserved_units"], 7);
+    assert_eq!(status["localUsage"]["refunded_units"], 2);
+    assert_eq!(status["localUsage"]["limit_units"], 10);
     assert_eq!(status["mode"], "test");
     assert_eq!(status["customerBound"], true);
     assert_eq!(status["pendingReconciliations"], 1);
@@ -232,6 +243,8 @@ async fn owner_status_omits_provider_ids_and_foreign_tenant_rows() {
     let other: Value =
         serde_json::from_slice(&to_bytes(other.into_body(), 4096).await.unwrap()).unwrap();
     assert_eq!(other["subscriptions"][0]["stripeStatus"], "active");
+    assert_eq!(other["localUsage"]["used_units"], 0);
+    assert_eq!(other["localUsage"]["limit_units"], 0);
     assert_eq!(other["pendingReconciliations"], 0);
     assert_eq!(other["deviceCapacity"]["limit"], Value::Null);
     assert_eq!(other["deviceCapacity"]["active"], 0);

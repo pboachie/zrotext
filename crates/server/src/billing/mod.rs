@@ -16,6 +16,7 @@ pub mod plans;
 pub mod review;
 pub mod risk;
 pub mod sessions;
+pub(crate) mod usage;
 pub mod worker;
 
 type HmacSha256 = Hmac<Sha256>;

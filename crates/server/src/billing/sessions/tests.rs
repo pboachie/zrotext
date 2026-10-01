@@ -68,7 +68,7 @@ async fn mock_portal(
     ));
     Json(
         serde_json::json!({"id":"bps_fixture1","object":"billing_portal.session","livemode":false,
-            "customer":"cus_fixture1","return_url":"https://zrotext.example/billing",
+            "customer":"cus_fixture1","return_url":"https://zrotext.example/billing","configuration":"bpc_fixture1",
             "url":"https://billing.stripe.com/p/session/test_fixture1"}),
     )
 }
@@ -538,6 +538,10 @@ async fn owner_checkout_portal_bind_customer_and_reject_cross_tenant() {
             get(mock_no_open_checkouts).post(mock_checkout),
         )
         .route("/v1/billing_portal/sessions", post(mock_portal))
+        .route(
+            "/v1/billing_portal/configurations/{id}",
+            get(mock_configuration),
+        )
         .with_state(mock.clone());
     let server = tokio::spawn(async move {
         axum::serve(listener, mock_router).await.unwrap();
@@ -555,6 +559,9 @@ async fn owner_checkout_portal_bind_customer_and_reject_cross_tenant() {
         "price_fixture1".into(),
     )
     .unwrap();
+    state = state
+        .with_portal_configuration("bpc_fixture1".into())
+        .unwrap();
     state.stripe = Arc::new(StripeClient {
         http: HttpClient::builder()
             .no_proxy()
@@ -804,6 +811,10 @@ async fn owner_checkout_refused_while_subscription_live_or_pending() {
             get(mock_no_open_checkouts).post(mock_checkout),
         )
         .route("/v1/billing_portal/sessions", post(mock_portal))
+        .route(
+            "/v1/billing_portal/configurations/{id}",
+            get(mock_configuration),
+        )
         .with_state(mock.clone());
     let server = tokio::spawn(async move {
         axum::serve(listener, mock_router).await.unwrap();
@@ -821,6 +832,9 @@ async fn owner_checkout_refused_while_subscription_live_or_pending() {
         "price_fixture1".into(),
     )
     .unwrap();
+    state = state
+        .with_portal_configuration("bpc_fixture1".into())
+        .unwrap();
     state.stripe = Arc::new(StripeClient {
         http: HttpClient::builder()
             .no_proxy()
@@ -1023,7 +1037,15 @@ async fn real_stripe_sandbox_hosted_sessions_smoke() {
         Arc::new(DisabledVerificationDispatcher),
     )
     .unwrap();
-    let app = router(SessionState::new(auth_state, secret_key.clone(), price_id).unwrap());
+    let app = router(
+        SessionState::new(auth_state, secret_key.clone(), price_id)
+            .unwrap()
+            .with_portal_configuration(
+                std::env::var("STRIPE_TEST_PORTAL_CONFIGURATION_ID")
+                    .expect("explicit TEST portal configuration required"),
+            )
+            .unwrap(),
+    );
 
     let checkout = app
         .clone()
@@ -1086,4 +1108,146 @@ async fn real_stripe_sandbox_hosted_sessions_smoke() {
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
         .await
         .unwrap();
+}
+
+fn configuration_fixture() -> Value {
+    serde_json::json!({"id":"bpc_fixture1","object":"billing_portal.configuration","active":true,"livemode":false,
+        "features":{"invoice_history":{"enabled":true},"payment_method_update":{"enabled":true},"subscription_cancel":{"enabled":true,"mode":"at_period_end"}}})
+}
+
+async fn mock_configuration() -> Json<Value> {
+    Json(configuration_fixture())
+}
+
+#[test]
+fn selected_portal_requires_all_capabilities_and_exact_active_test_identity() {
+    let good = configuration_fixture();
+    validate_portal_configuration(&good, "bpc_fixture1").unwrap();
+    for feature in [
+        "invoice_history",
+        "payment_method_update",
+        "subscription_cancel",
+    ] {
+        let mut bad = good.clone();
+        bad["features"][feature]["enabled"] = false.into();
+        assert!(validate_portal_configuration(&bad, "bpc_fixture1").is_err());
+    }
+    for (field, value) in [
+        ("id", serde_json::json!("bpc_other")),
+        ("object", serde_json::json!("other")),
+        ("active", false.into()),
+        ("livemode", true.into()),
+    ] {
+        let mut bad = good.clone();
+        bad[field] = value;
+        assert!(validate_portal_configuration(&bad, "bpc_fixture1").is_err());
+    }
+    let mut bad = good.clone();
+    bad["features"]["subscription_cancel"]["mode"] = "unknown".into();
+    assert!(validate_portal_configuration(&bad, "bpc_fixture1").is_err());
+    bad["features"]["subscription_cancel"]["mode"] = "immediately".into();
+    validate_portal_configuration(&bad, "bpc_fixture1").unwrap();
+    assert!(validate_portal_configuration(&serde_json::json!({}), "bpc_fixture1").is_err());
+}
+
+#[tokio::test]
+async fn portal_provider_verification_precedes_session_creation_and_binds_configuration() {
+    for invalid in [false, true] {
+        let mut configuration = configuration_fixture();
+        if invalid {
+            configuration["livemode"] = true.into();
+        }
+        let mock = Arc::new(MockStripe {
+            account_id: Uuid::new_v4(),
+            calls: Mutex::new(Vec::new()),
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = Router::new()
+            .route(
+                "/v1/billing_portal/configurations/{id}",
+                get(move || {
+                    let value = configuration.clone();
+                    async move { Json(value) }
+                }),
+            )
+            .route("/v1/billing_portal/sessions", post(mock_portal))
+            .with_state(mock.clone());
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = StripeClient {
+            http: HttpClient::builder()
+                .no_proxy()
+                .redirect(redirect::Policy::none())
+                .retry(retry::never())
+                .timeout(Duration::from_secs(3))
+                .build()
+                .unwrap(),
+            secret_key: "rk_test_fixture123456".into(),
+            api_base: format!("http://{address}"),
+        };
+        let result = client
+            .create_portal(
+                "cus_fixture1",
+                "https://zrotext.example/billing",
+                "bpc_fixture1",
+            )
+            .await;
+        let calls = mock.calls.lock().unwrap();
+        if invalid {
+            assert!(result.is_err());
+            assert!(calls.is_empty());
+        } else {
+            assert!(result.is_ok());
+            assert_eq!(calls.len(), 1);
+            assert!(calls[0].1.contains("configuration=bpc_fixture1"));
+        }
+        server.abort();
+    }
+}
+
+#[tokio::test]
+async fn portal_offline_or_changed_session_configuration_refuses_handoff() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let app = Router::new()
+        .route("/v1/billing_portal/configurations/{id}", get(mock_configuration))
+        .route("/v1/billing_portal/sessions", post(|| async { Json(serde_json::json!({"id":"bps_fixture1","object":"billing_portal.session","livemode":false,"configuration":"bpc_other","customer":"cus_fixture1","return_url":"https://zrotext.example/billing","url":"https://billing.stripe.com/p/session/test_fixture1"})) }));
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let client = StripeClient {
+        http: HttpClient::builder()
+            .no_proxy()
+            .redirect(redirect::Policy::none())
+            .retry(retry::never())
+            .timeout(Duration::from_secs(3))
+            .build()
+            .unwrap(),
+        secret_key: "rk_test_fixture123456".into(),
+        api_base: format!("http://{address}"),
+    };
+    assert!(
+        client
+            .create_portal(
+                "cus_fixture1",
+                "https://zrotext.example/billing",
+                "bpc_fixture1"
+            )
+            .await
+            .is_err()
+    );
+    server.abort();
+    server.await.ok();
+    assert!(
+        client
+            .create_portal(
+                "cus_fixture1",
+                "https://zrotext.example/billing",
+                "bpc_fixture1"
+            )
+            .await
+            .is_err()
+    );
 }
