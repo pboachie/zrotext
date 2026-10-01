@@ -25,8 +25,19 @@ class ConversationEntryOptInDeviceTest {
         val activity = instrumentation.startActivitySync(Intent(context, MainActivity::class.java)
             .putExtra("gateway_screen", "CONNECTION").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) as MainActivity
         val candidate = File.createTempFile("public-setup-", ".bin", context.cacheDir)
-        fun node(label: String): AccessibilityNodeInfo? = instrumentation.uiAutomation.rootInActiveWindow
-            ?.findAccessibilityNodeInfosByText(label)?.firstOrNull { it.text?.toString() == label && it.isClickable }
+        fun node(label: String): AccessibilityNodeInfo? {
+            val labels = instrumentation.uiAutomation.rootInActiveWindow
+                ?.findAccessibilityNodeInfosByText(label).orEmpty()
+            for (textNode in labels.filter { it.text?.toString() == label }) {
+                // Compose exposes button text as a non-clickable child of the action node.
+                var action: AccessibilityNodeInfo? = textNode
+                while (action != null) {
+                    if (action.isClickable) return action
+                    action = action.parent
+                }
+            }
+            return null
+        }
         fun click(label: String) {
             val deadline = SystemClock.elapsedRealtime() + 5000
             while (node(label) == null && SystemClock.elapsedRealtime() < deadline) Thread.sleep(25)
