@@ -289,8 +289,8 @@ const TEST_MIGRATIONS: [(&str, &str); 72] = [
         migration!("071_sealed_grant_authority.sql"),
     ),
     (
-        "068_conversation_confirmation_records.sql",
-        migration!("068_conversation_confirmation_records.sql"),
+        "070_conversation_confirmation_records.sql",
+        migration!("070_conversation_confirmation_records.sql"),
     ),
 ];
 
