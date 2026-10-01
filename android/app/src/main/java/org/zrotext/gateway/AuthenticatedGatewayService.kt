@@ -588,7 +588,8 @@ class AuthenticatedGatewayService : Service() {
                 val grant = activeGrant
                 if (work.retireOrphans && (grant == null || grant.connectionEpoch != epoch ||
                         System.currentTimeMillis() >= grant.expiresAtMs)) {
-                    dao.retireOrphanedAlphaIntents(System.currentTimeMillis())
+                    dao.retireOrphanedAlphaIntents(System.currentTimeMillis(),
+                        ConversationRadioIntentOwnership.excluded(identity), ConversationRadioIntentOwnership::owns)
                 }
                 if (work.quarantineForeign &&
                     dao.quarantineForeignAlpha(identity.accountId, identity.deviceId,
@@ -598,7 +599,8 @@ class AuthenticatedGatewayService : Service() {
                         "Authenticated heartbeat; older device evidence quarantined"
                 }
                 val event = dao.nextAlphaEvent(identity.accountId, identity.deviceId,
-                    identity.originHash) ?: return@execute
+                    identity.originHash, ConversationRadioIntentOwnership.excluded(identity)) ?: return@execute
+                if (ConversationRadioIntentOwnership.owns(event)) return@execute
                 if (awaitingEventId != null && awaitingEventId != event.eventId) {
                     // A contradictory callback can retract an unsent no-radio
                     // proof. Do not let its retired ID block the conflict event.
@@ -618,6 +620,11 @@ class AuthenticatedGatewayService : Service() {
                     frame.put("segment_index", event.segmentIndex)
                         .put("segment_count", event.segmentCount)
                 }
+                // The permanent sealed-preparation SQL filter handles inserted rows even if
+                // the process registry is lost; refresh the live owner after selection too.
+                if (ConversationRadioIntentOwnership.owns(event) ||
+                    (event.evidence == "durable_submit_intent" &&
+                        event.eventId in ConversationRadioIntentOwnership.excluded(identity))) return@execute
                 awaitingEventId = event.eventId
                 awaitingEventSentAtNanos = System.nanoTime()
                 if (!webSocket.send(frame.toString())) {
