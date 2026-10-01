@@ -1,0 +1,52 @@
+{
+  "status": "UNAPPROVED_TEST_ONLY",
+  "readerId": "10000000-0000-4000-8000-000000000007",
+  "syntheticWebhookBytesHex": "0101010101010101010101010101010101010101010101010101010101010101",
+  "timestamp": "1700000000",
+  "rawBody": "{\"v\":1,\"type\":\"inbound.message\",\"event_id\":\"10000000-0000-4000-8000-000000000010\",\"delivery_id\":\"10000000-0000-4000-8000-000000001010\",\"account_id\":\"10000000-0000-4000-8000-000000000001\",\"device_id\":\"10000000-0000-4000-8000-000000000003\",\"message_id\":\"10000000-0000-4000-8000-000000000004\",\"attempt_id\":\"10000000-0000-4000-8000-000000000005\",\"classification\":\"opt_out\",\"observed_at_ms\":1700000000000,\"part_count\":1,\"content_kind\":\"metadata_only\",\"content_ciphertext_b64\":null,\"event_digest_b64\":\"CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo=\",\"device_signature_der_b64\":\"AwMDAwMDAwM=\"}",
+  "signature": "v1=6bdc9a64f6e2e563382ea1c8b4f1c8bd1ba3a712cfb94834773060556f7578c3",
+  "responses": [
+    {
+      "events": [
+        {
+          "sequence": 1,
+          "account_id": "10000000-0000-4000-8000-000000000001",
+          "line_id": "10000000-0000-4000-8000-000000000002",
+          "device_id": "10000000-0000-4000-8000-000000000003",
+          "event_id": "10000000-0000-4000-8000-000000000010",
+          "message_id": "10000000-0000-4000-8000-000000000004",
+          "attempt_id": "10000000-0000-4000-8000-000000000005",
+          "classification": "opt_out",
+          "observed_at_ms": 1700000000000,
+          "content": {
+            "kind": "metadata_stop"
+          },
+          "consumed": false,
+          "approval": false
+        }
+      ],
+      "cursor": "c3ludGhldGlj.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    },
+    {
+      "actionId": "10000000-0000-4000-8000-000000000030",
+      "disposition": "stop",
+      "execute": true,
+      "state": "reserved",
+      "approval": false
+    },
+    {
+      "actionId": "10000000-0000-4000-8000-000000000030",
+      "disposition": "stop",
+      "execute": false,
+      "state": "unknown",
+      "approval": false
+    },
+    {
+      "created": true,
+      "sequence": 1
+    },
+    {
+      "code": "cursor_expired"
+    }
+  ]
+}
