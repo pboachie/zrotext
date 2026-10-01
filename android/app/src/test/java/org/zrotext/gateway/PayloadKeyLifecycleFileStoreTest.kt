@@ -57,6 +57,27 @@ class PayloadKeyLifecycleFileStoreTest {
         assertEquals(0, creates)
     }
 
+    @Test fun interruptedRevocationReplacementRefusesUseOfThePreviouslyBoundKey() = withStore { alias ->
+        val id = ByteArray(32) { 7 }
+        val store = PayloadKeyLifecycleFileStore(context, alias)
+        store.locked { it.write(PayloadKeyRecord.Bound(id)) }
+        val file = PayloadKeyLifecycleFileStore.recordFile(context, alias)
+        // Process death after syncing the replacement but before atomic publication.
+        java.io.File(file.path + ".new").writeBytes(PayloadKeyLifecycleFileStore.encode(PayloadKeyRecord.Revoked(id)))
+        var operations = 0
+        assertThrows(IllegalStateException::class.java) {
+            PayloadKeyLifecycle(PayloadKeyLifecycleFileStore(context, alias))
+                .existing(id, { id.copyOf() }, { it }) { operations++ }
+        }
+        assertEquals(0, operations)
+        var created = 0
+        assertThrows(IllegalStateException::class.java) {
+            PayloadKeyLifecycle(PayloadKeyLifecycleFileStore(context, alias))
+                .enroll<ByteArray>({ true }, { created++ }, { id.copyOf() }) { it }
+        }
+        assertEquals(0, created)
+    }
+
     @Test fun metadataCodecRejectsUnknownStateVersionWidthAndEmptyIdentity() {
         val valid = PayloadKeyLifecycleFileStore.encode(PayloadKeyRecord.Bound(ByteArray(32) { 3 }))
         val altered = listOf(valid.copyOf(37), valid + 1,

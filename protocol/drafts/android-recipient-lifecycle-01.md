@@ -52,7 +52,9 @@ Metadata writes sync a same-directory temporary file and require
 [`Files.move`](https://developer.android.com/reference/java/nio/file/Files)
 with atomic replacement, followed by bounded readback verification. An
 unsupported atomic move fails closed; no non-atomic fallback is supplied.
-An interrupted first write without a committed record also fails closed. A shared
+An interrupted first write without a committed record also fails closed. Any
+remaining replacement file refuses further use or enrollment, including an
+interrupted revocation beside an older bound record. A shared
 process mutex and an OS file lock cover the entire enrollment/private operation
 and local revocation. Filesystem replacement alone supplies no locking.
 This serializes separate key-store instances and processes using this adapter:

@@ -25,6 +25,9 @@ internal class PayloadKeyLifecycleFileStore(context: Context, alias: String) : P
             lock.channel.lock().use {
                 operation(object : PayloadKeyRecordAccess {
                     override fun read(): PayloadKeyRecord {
+                        // A replacement may carry a revocation not yet published.
+                        // Never revive the old bound record after interrupted persistence.
+                        check(!pending.exists()) { "Payload lifecycle commit interrupted" }
                         val bytes = try {
                             FileInputStream(base).use { stream ->
                                 val buffer = ByteArray(39)
