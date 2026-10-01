@@ -93,7 +93,8 @@ class KeystoreHpkeProofDeviceTest {
         HpkeOneShot.requireSupportedApi(Build.VERSION.SDK_INT)
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null, null) }
         if (store.containsAlias(browserInteropAlias)) store.deleteEntry(browserInteropAlias)
-        val recipient = DevicePayloadKeyStore(browserInteropAlias).getOrCreateForEnrollment()
+        clearPayloadLifecycleFixture(InstrumentationRegistry.getInstrumentation().targetContext, browserInteropAlias)
+        val recipient = DevicePayloadKeyStore(InstrumentationRegistry.getInstrumentation().targetContext, browserInteropAlias).getOrCreateForEnrollment()
         assertNull(store.getKey(browserInteropAlias, null)?.encoded)
         InstrumentationRegistry.getInstrumentation().sendStatus(0, Bundle().apply {
             putString("m2_browser_interop_recipient_point_hex", recipient.point.toHex())
@@ -108,7 +109,7 @@ class KeystoreHpkeProofDeviceTest {
             val enc = hexBytes(requireNotNull(args.getString("m2_enc_hex")))
             val ct = hexBytes(requireNotNull(args.getString("m2_ct_hex")))
             val expectedCek = hexBytes(requireNotNull(args.getString("m2_cek_hex")))
-            val keyStore = DevicePayloadKeyStore(browserInteropAlias)
+            val keyStore = DevicePayloadKeyStore(InstrumentationRegistry.getInstrumentation().targetContext, browserInteropAlias)
             val recipient = keyStore.existingPublic()
             val protected = ByteArray(157) { it.toByte() }
             val role = byteArrayOf(1)
@@ -128,6 +129,7 @@ class KeystoreHpkeProofDeviceTest {
             expectedCek.fill(0)
         } finally {
             if (store.containsAlias(browserInteropAlias)) store.deleteEntry(browserInteropAlias)
+            clearPayloadLifecycleFixture(InstrumentationRegistry.getInstrumentation().targetContext, browserInteropAlias)
             assertFalse(store.containsAlias(browserInteropAlias))
         }
     }
@@ -135,7 +137,7 @@ class KeystoreHpkeProofDeviceTest {
     @Test fun openBrowserInteropEnvelope() {
         assumeBrowserInteropHarness()
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null, null) }
-        val keyStore = DevicePayloadKeyStore(browserInteropAlias)
+        val keyStore = DevicePayloadKeyStore(InstrumentationRegistry.getInstrumentation().targetContext, browserInteropAlias)
         try {
             val envelope = hexBytes(requireNotNull(InstrumentationRegistry.getArguments().getString("m2_envelope_hex")))
             val keyId = keyStore.existingPublic().keyId
@@ -172,6 +174,7 @@ class KeystoreHpkeProofDeviceTest {
             })
         } finally {
             if (store.containsAlias(browserInteropAlias)) store.deleteEntry(browserInteropAlias)
+            clearPayloadLifecycleFixture(InstrumentationRegistry.getInstrumentation().targetContext, browserInteropAlias)
             assertFalse(store.containsAlias(browserInteropAlias))
         }
     }
@@ -180,6 +183,7 @@ class KeystoreHpkeProofDeviceTest {
         assumeBrowserInteropHarness()
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null, null) }
         if (store.containsAlias(browserInteropAlias)) store.deleteEntry(browserInteropAlias)
+        clearPayloadLifecycleFixture(InstrumentationRegistry.getInstrumentation().targetContext, browserInteropAlias)
         assertFalse(store.containsAlias(browserInteropAlias))
         InstrumentationRegistry.getInstrumentation().sendStatus(0, Bundle().apply {
             putString("m2_browser_interop_alias_removed", "PASSED")
