@@ -274,9 +274,10 @@ Connect a dedicated Android phone and SIM, send and receive SMS through the serv
 - [x] Device health and recent messages refresh every 15 seconds while the owner page is visible; pagination and active interactions pause their list ([#295](https://github.com/pboachie/zrotext/pull/295))
 - [x] Live device and message updates over an owner event stream; the 15-second snapshot refresh stays as the fallback
 - [x] SIM, queue depth and radio readiness per device, from Android-reported preconditions and bounded writer counts ([#308](https://github.com/pboachie/zrotext/pull/308), [#317](https://github.com/pboachie/zrotext/pull/317), [#340](https://github.com/pboachie/zrotext/pull/340), [#396](https://github.com/pboachie/zrotext/pull/396))
+- [x] Shared responsive owner shell is merged (#683), with fleet-first navigation and separate observer roles
+- [x] Fleet overview and selectable bounded device details are merged (#685), preserving live-refresh input and focus
+- [x] Authoritative UTC writer summaries are merged (#695), with account/device scope, capped bounds and explicit freshness/unavailability
 - [ ] Concept-aligned responsive shared owner navigation and role-safe administration (#607)
-- [ ] Authoritative UTC submitted-today and queue summaries without sample metrics (#608)
-- [ ] Fleet overview and selectable details preserving live-refresh interactions (#609)
 - [ ] Responsive message activity preserving history and conservative delivery evidence (#610)
 - [ ] Joint actual-browser/APK visual, state and accessibility acceptance (#612)
 
@@ -348,6 +349,7 @@ Make ZROtext practical to run, upgrade and build against.
 - [x] Native Home/Setup/Connection/Tools and explicit guided setup are merged (#603/#604/#648); navigation does not imply sending authority
 - [x] Read-only lifecycle-aware local Home Power observations are merged (#693); unavailable observations remain explicit
 - [ ] Integrated new Home/widget/navigation accessibility, actual TalkBack and physical motion acceptance (#612)
+- [ ] Android Home consumption of the merged authenticated summary source (#608); local counters cannot substitute
 
 </details>
 

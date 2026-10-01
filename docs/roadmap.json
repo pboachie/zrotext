@@ -130,12 +130,13 @@
             "SMS lines page: approval key, line list and activation approval ([#251](https://github.com/pboachie/zrotext/pull/251), [#255](https://github.com/pboachie/zrotext/pull/255))",
             "Device health and recent messages refresh every 15 seconds while the owner page is visible; pagination and active interactions pause their list ([#295](https://github.com/pboachie/zrotext/pull/295))",
             "Live device and message updates over an owner event stream; the 15-second snapshot refresh stays as the fallback",
-            "SIM, queue depth and radio readiness per device, from Android-reported preconditions and bounded writer counts ([#308](https://github.com/pboachie/zrotext/pull/308), [#317](https://github.com/pboachie/zrotext/pull/317), [#340](https://github.com/pboachie/zrotext/pull/340), [#396](https://github.com/pboachie/zrotext/pull/396))"
+            "SIM, queue depth and radio readiness per device, from Android-reported preconditions and bounded writer counts ([#308](https://github.com/pboachie/zrotext/pull/308), [#317](https://github.com/pboachie/zrotext/pull/317), [#340](https://github.com/pboachie/zrotext/pull/340), [#396](https://github.com/pboachie/zrotext/pull/396))",
+            "Shared responsive owner shell is merged (#683), with fleet-first navigation and separate observer roles",
+            "Fleet overview and selectable bounded device details are merged (#685), preserving live-refresh input and focus",
+            "Authoritative UTC writer summaries are merged (#695), with account/device scope, capped bounds and explicit freshness/unavailability"
           ],
           "todo": [
             "Concept-aligned responsive shared owner navigation and role-safe administration (#607)",
-            "Authoritative UTC submitted-today and queue summaries without sample metrics (#608)",
-            "Fleet overview and selectable details preserving live-refresh interactions (#609)",
             "Responsive message activity preserving history and conservative delivery evidence (#610)",
             "Joint actual-browser/APK visual, state and accessibility acceptance (#612)"
           ]
@@ -242,7 +243,8 @@
             "Read-only lifecycle-aware local Home Power observations are merged (#693); unavailable observations remain explicit"
           ],
           "todo": [
-            "Integrated new Home/widget/navigation accessibility, actual TalkBack and physical motion acceptance (#612)"
+            "Integrated new Home/widget/navigation accessibility, actual TalkBack and physical motion acceptance (#612)",
+            "Android Home consumption of the merged authenticated summary source (#608); local counters cannot substitute"
           ]
         },
         {
@@ -683,7 +685,12 @@
       "example": "Gather job details by text, draft a reply, and ask the owner to approve a quote.",
       "priority": "first",
       "availability": "planned",
-      "requires": ["contacts", "scheduling", "approvals", "assistant"],
+      "requires": [
+        "contacts",
+        "scheduling",
+        "approvals",
+        "assistant"
+      ],
       "journey": [
         "The owner connects a dedicated line and configures service facts, intake questions, hours and escalation rules.",
         "A customer texts an inquiry; approved intake questions collect the minimum details needed for a job summary.",
@@ -708,7 +715,12 @@
       "example": "Text your assistant a note or reminder; let approved routines communicate with selected contacts.",
       "priority": "first",
       "availability": "planned",
-      "requires": ["contacts", "scheduling", "approvals", "assistant"],
+      "requires": [
+        "contacts",
+        "scheduling",
+        "approvals",
+        "assistant"
+      ],
       "journey": [
         "The owner connects an assistant, pairs an owner channel, and chooses allowed contacts and routines in the authenticated dashboard.",
         "The owner texts a note, question or reminder; the connector decrypts the selected conversation and uses the chosen AI.",
@@ -733,7 +745,13 @@
       "example": "Receive a task-completion text from your agent, reply with context, and review its proposed next action.",
       "priority": "first",
       "availability": "planned",
-      "requires": ["mcp", "agenttools", "agentsetup", "approvals", "integrations"],
+      "requires": [
+        "mcp",
+        "agenttools",
+        "agentsetup",
+        "approvals",
+        "integrations"
+      ],
       "journey": [
         "The owner installs a supported client integration and completes a synthetic first exchange through guided setup.",
         "For a later controlled-device pilot, the owner pairs a dedicated Android phone and SIM, compares fingerprints and grants selected read or send authority.",
@@ -761,7 +779,12 @@
       "example": "Send a repair update and request approval before extra work.",
       "priority": "next",
       "availability": "planned",
-      "requires": ["contacts", "scheduling", "approvals", "integrations"],
+      "requires": [
+        "contacts",
+        "scheduling",
+        "approvals",
+        "integrations"
+      ],
       "journey": [
         "The owner records a job and selects update templates.",
         "A job milestone triggers an approved status update to the customer.",
@@ -786,7 +809,12 @@
       "example": "Offer an open slot in sequence and stop when one booking is confirmed.",
       "priority": "next",
       "availability": "planned",
-      "requires": ["contacts", "scheduling", "approvals", "integrations"],
+      "requires": [
+        "contacts",
+        "scheduling",
+        "approvals",
+        "integrations"
+      ],
       "journey": [
         "The owner enters an available slot and eligible waiting contacts.",
         "The workflow offers it to one contact with an expiry before moving to the next.",
@@ -811,7 +839,13 @@
       "example": "Send personalized invitations, collect RSVPs, and remind only unanswered guests.",
       "priority": "next",
       "availability": "planned",
-      "requires": ["contacts", "scheduling", "approvals", "integrations", "export"],
+      "requires": [
+        "contacts",
+        "scheduling",
+        "approvals",
+        "integrations",
+        "export"
+      ],
       "journey": [
         "The host imports or enters a guest list with permission records, reviews duplicate contacts and previews invitations.",
         "The host approves a paced batch with event details, recipient timing and expiry.",
@@ -836,7 +870,12 @@
       "example": "Fill an open shift by text and stop requests once it is covered.",
       "priority": "next",
       "availability": "planned",
-      "requires": ["contacts", "scheduling", "approvals", "integrations"],
+      "requires": [
+        "contacts",
+        "scheduling",
+        "approvals",
+        "integrations"
+      ],
       "journey": [
         "The coordinator defines an opening, capacity, expiry and opt-in contact group.",
         "An approved workflow sends paced requests and records replies.",
@@ -861,7 +900,12 @@
       "example": "Coordinate pickups, errands and recurring responsibilities through opt-in reminders and replies.",
       "priority": "later",
       "availability": "planned",
-      "requires": ["contacts", "scheduling", "approvals", "integrations"],
+      "requires": [
+        "contacts",
+        "scheduling",
+        "approvals",
+        "integrations"
+      ],
       "journey": [
         "An owner creates an opt-in household contact group and recurring reminders.",
         "A member receives a task and replies to accept, decline or report completion.",
@@ -886,7 +930,12 @@
       "example": "Request equipment by text, confirm availability, and receive return reminders.",
       "priority": "later",
       "availability": "planned",
-      "requires": ["contacts", "scheduling", "approvals", "integrations"],
+      "requires": [
+        "contacts",
+        "scheduling",
+        "approvals",
+        "integrations"
+      ],
       "journey": [
         "The owner records items, availability and borrowing rules.",
         "A member requests an item by text; the request enters the owner queue.",
@@ -911,7 +960,12 @@
       "example": "Notify a small team about a maintenance issue and record who will handle it.",
       "priority": "later",
       "availability": "planned",
-      "requires": ["contacts", "scheduling", "approvals", "integrations"],
+      "requires": [
+        "contacts",
+        "scheduling",
+        "approvals",
+        "integrations"
+      ],
       "journey": [
         "A configured integration creates a routine issue with an expiry and eligible contacts.",
         "An approved workflow notifies the group and collects acknowledgments.",
