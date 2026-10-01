@@ -503,4 +503,4 @@ pub async fn read_history(
 #[cfg(all(test, feature = "conversation-simulator-tests"))]
 mod simulator;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

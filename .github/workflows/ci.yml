@@ -130,6 +130,8 @@ jobs:
           python3 -m venv /tmp/zrotext-schema-venv
           /tmp/zrotext-schema-venv/bin/pip install --disable-pip-version-check jsonschema==4.25.1
           /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_device_stream_schema.py'
+      - name: Candidate encrypted workflow context contract
+        run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_workflow_context.py'
       - name: Proposed sealed execution grant vectors
         run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_sealed_execution_grant_vectors.py'
       - name: Sealed dispatch contract
