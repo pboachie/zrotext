@@ -85,7 +85,10 @@ impl Case {
         admitted.context(&f.wanted()).await.unwrap();
         drop(admitted);
         tx.commit().await.unwrap();
-        if !queue::lifecycle::installed(&f.db).await.unwrap() {
+        if !crate::http_owner_conversations::confirmation_records::installed(&f.db)
+            .await
+            .unwrap()
+        {
             f.db.batch_execute(SCHEMA).await.unwrap();
         }
         f.db.execute("INSERT INTO usage_quota_policies(account_id,metric,limit_units) VALUES($1,'outbound_message',1000)",&[&f.account]).await.unwrap();
@@ -480,6 +483,7 @@ fn test_router(url: String) -> Router {
         auth_hasher: hasher,
         alpha_policy: Arc::new(crate::alpha_policy::AlphaPolicy::parse(None, None, None).unwrap()),
         dispatch_runtime_enabled: false,
+        sealed_dispatch_enabled: false,
         inbound_pilot_enabled: false,
         line_opt_out_enabled: false,
         sms_line_activation_enabled: false,

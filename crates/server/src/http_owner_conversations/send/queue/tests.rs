@@ -405,7 +405,10 @@ impl Case {
         admitted.context(&f.wanted()).await.unwrap();
         drop(admitted);
         tx.commit().await.unwrap();
-        if !lifecycle::installed(&f.db).await.unwrap() {
+        if !crate::http_owner_conversations::confirmation_records::installed(&f.db)
+            .await
+            .unwrap()
+        {
             f.db.batch_execute(SCHEMA).await.unwrap();
         }
         f.db.execute("INSERT INTO usage_quota_policies(account_id,metric,limit_units) VALUES($1,'outbound_message',1000)",&[&f.account]).await.unwrap();
@@ -749,20 +752,32 @@ async fn confirmed_proof_lifecycle_redacts_bounded_content_and_exports_only_meta
     // Admission and proof binding are tested separately with real signed packets.
     case.f.db.batch_execute("WITH added AS (INSERT INTO messages SELECT (jsonb_populate_record(NULL::messages,to_jsonb(m)||jsonb_build_object('id',gen_random_uuid()))).* FROM messages m CROSS JOIN generate_series(1,100) RETURNING id) INSERT INTO conversation_confirmation_records SELECT (jsonb_populate_record(NULL::conversation_confirmation_records,to_jsonb(c)||jsonb_build_object('message_id',a.id))).* FROM conversation_confirmation_records c CROSS JOIN added a").await.unwrap();
     let mut db = case.f.connect().await;
-    let first = lifecycle::inventory(&mut db, &case.owner, None)
-        .await
-        .unwrap();
+    let first = crate::http_owner_conversations::confirmation_records::inventory(
+        &mut db,
+        &case.owner,
+        None,
+    )
+    .await
+    .unwrap();
     assert_eq!(first.records.len(), 100);
     assert!(first.truncated);
-    let last = lifecycle::inventory(&mut db, &case.owner, first.next_cursor)
-        .await
-        .unwrap();
+    let last = crate::http_owner_conversations::confirmation_records::inventory(
+        &mut db,
+        &case.owner,
+        first.next_cursor,
+    )
+    .await
+    .unwrap();
     assert_eq!(last.records.len(), 1);
     assert!(!last.truncated);
     assert!(
-        lifecycle::inventory(&mut db, &case.owner, Some(Uuid::new_v4()))
-            .await
-            .is_err()
+        crate::http_owner_conversations::confirmation_records::inventory(
+            &mut db,
+            &case.owner,
+            Some(Uuid::new_v4())
+        )
+        .await
+        .is_err()
     );
     let serialized = serde_json::to_string(&first).unwrap();
     for forbidden in [
@@ -777,12 +792,31 @@ async fn confirmed_proof_lifecycle_redacts_bounded_content_and_exports_only_meta
     activation::close(&mut db, &case.owner, case.interval.interval, false)
         .await
         .unwrap();
-    assert_eq!(lifecycle::redact(&db, 1).await.unwrap(), 1);
-    assert_eq!(lifecycle::redact(&db, 100).await.unwrap(), 100);
-    assert_eq!(lifecycle::redact(&db, 100).await.unwrap(), 0);
-    let inventory = lifecycle::inventory(&mut db, &case.owner, None)
-        .await
-        .unwrap();
+    assert_eq!(
+        crate::http_owner_conversations::confirmation_records::redact(&db, 1)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        crate::http_owner_conversations::confirmation_records::redact(&db, 100)
+            .await
+            .unwrap(),
+        100
+    );
+    assert_eq!(
+        crate::http_owner_conversations::confirmation_records::redact(&db, 100)
+            .await
+            .unwrap(),
+        0
+    );
+    let inventory = crate::http_owner_conversations::confirmation_records::inventory(
+        &mut db,
+        &case.owner,
+        None,
+    )
+    .await
+    .unwrap();
     assert!(inventory.records.iter().all(|p| !p.proof_retained));
     let hashes: i64 = db.query_one("SELECT count(*) FROM conversation_confirmation_records WHERE octet_length(confirmation_digest)=32 AND signature IS NULL AND confirmation IS NULL",&[]).await.unwrap().get(0);
     assert_eq!(hashes, 101);
@@ -807,9 +841,13 @@ async fn confirmed_proof_lifecycle_redacts_bounded_content_and_exports_only_meta
     .await
     .unwrap();
     assert!(
-        lifecycle::inventory(&mut db, &case.owner, None)
-            .await
-            .is_err()
+        crate::http_owner_conversations::confirmation_records::inventory(
+            &mut db,
+            &case.owner,
+            None
+        )
+        .await
+        .is_err()
     );
     case.f.cleanup().await;
 }
@@ -837,8 +875,17 @@ async fn confirmed_proof_retention_session_revocation_and_schema_absence_are_exp
     db.batch_execute("DROP TABLE conversation_confirmation_records")
         .await
         .unwrap();
-    assert!(!lifecycle::installed(&db).await.unwrap());
-    assert_eq!(lifecycle::redact(&db, 100).await.unwrap(), 0);
+    assert!(
+        !crate::http_owner_conversations::confirmation_records::installed(&db)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        crate::http_owner_conversations::confirmation_records::redact(&db, 100)
+            .await
+            .unwrap(),
+        0
+    );
     assert!(case.enqueue(&b, &c, &sig).await.is_err());
     case.f.cleanup().await;
 }

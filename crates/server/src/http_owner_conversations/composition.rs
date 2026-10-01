@@ -181,6 +181,7 @@ mod tests {
                 crate::alpha_policy::AlphaPolicy::parse(None, None, None).unwrap(),
             ),
             dispatch_runtime_enabled: false,
+            sealed_dispatch_enabled: false,
             inbound_pilot_enabled: false,
             line_opt_out_enabled: false,
             sms_line_activation_enabled: false,

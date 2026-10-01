@@ -275,6 +275,7 @@ fn queue_router(f: &Fixture) -> Router {
         auth_hasher: hasher,
         alpha_policy: Arc::new(crate::alpha_policy::AlphaPolicy::parse(None, None, None).unwrap()),
         dispatch_runtime_enabled: false,
+        sealed_dispatch_enabled: false,
         inbound_pilot_enabled: false,
         line_opt_out_enabled: false,
         sms_line_activation_enabled: false,
@@ -320,7 +321,7 @@ async fn owner_credentials(f: &Fixture, owner: &SessionPrincipal) -> (String, St
 async fn loopback_journal_bridge() {
     assert!(std::env::var_os("ZT_CONVERSATION_SIM_DIR").is_some());
     let (mut f, owner) = super::super::tests::prepared().await;
-    if !super::super::send::queue::lifecycle::installed(&f.db)
+    if !super::super::confirmation_records::installed(&f.db)
         .await
         .unwrap()
     {
