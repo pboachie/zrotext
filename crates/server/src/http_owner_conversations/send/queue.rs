@@ -122,6 +122,9 @@ pub async fn enqueue_confirmed_send(
             recipient: &c.peer,
             envelope: packet.envelope,
             expires_at_ms: c.expires_ms,
+            // ZTCR v1 carries no authenticated segment ceiling. Main's sealed
+            // dispatcher excludes this NULL bound; do not fabricate authority.
+            segment_limit: None,
         })
         .await?;
     if old.is_none() {
