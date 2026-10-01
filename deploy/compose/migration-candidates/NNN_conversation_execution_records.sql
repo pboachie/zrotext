@@ -5,7 +5,13 @@
 -- includes this additive field in its immutable identity comparison.
 ALTER TABLE conversation_confirmation_records ADD COLUMN execution_metered boolean;
 
--- Preserve every metadata predicate from 045. State authority is separately
+CREATE FUNCTION conversation_execution_is_message(wanted_account uuid, wanted_message uuid) RETURNS boolean
+LANGUAGE sql STABLE SET search_path FROM CURRENT AS $$
+ SELECT EXISTS(SELECT 1 FROM conversation_confirmation_records
+ WHERE account_id=$1 AND message_id=$2);
+$$;
+
+-- Preserve the metadata and ordinary ceiling predicates from 071. State authority is separately
 -- constrained below to the exact permanent execution record and effects.
 ALTER TABLE messages DROP CONSTRAINT messages_sealed_metadata;
 ALTER TABLE messages ADD CONSTRAINT messages_sealed_metadata CHECK (
@@ -15,7 +21,8 @@ ALTER TABLE messages ADD CONSTRAINT messages_sealed_metadata CHECK (
  sealed_manifest_generation,sealed_manifest_version,sealed_manifest_digest,sealed_signer_key_id)=6
  AND sealed_binding_generation>0 AND sealed_manifest_generation>0 AND sealed_manifest_version>0
  AND octet_length(sealed_manifest_digest)=32 AND octet_length(sealed_signer_key_id)=32
- AND state IN ('queued','cancelled','expired','claimed','submitting','submitted','unknown','failed','delivered','delivery_unknown')));
+ AND (sealed_segment_limit IS NOT NULL OR state IN ('queued','cancelled','expired')
+ OR conversation_execution_is_message(account_id,id))));
 CREATE TABLE conversation_execution_records (
  account_id uuid NOT NULL,
  message_id uuid NOT NULL,
@@ -297,6 +304,11 @@ BEGIN
    AND r.expires_at_ms<=p.expires_at_ms AND NEW.sealed_segment_limit IS NULL) THEN
    RAISE EXCEPTION 'conversation effect state requires exact execution provenance' USING ERRCODE='23514';
   END IF;
+  IF TG_OP='UPDATE' AND OLD.state='queued' AND NEW.state='claimed' AND NOT EXISTS(
+   SELECT 1 FROM conversation_execution_records r WHERE r.account_id=NEW.account_id AND r.message_id=NEW.id
+   AND conversation_execution_initial_valid(r)) THEN
+   RAISE EXCEPTION 'conversation initial effect requires fresh authority' USING ERRCODE='23514';
+  END IF;
   RETURN NEW;
  END IF;
     IF NEW.transport_mode='sealed_candidate02' AND NEW.state NOT IN ('queued','cancelled','expired')
@@ -322,7 +334,12 @@ BEGIN
  WHERE account_id=NEW.account_id AND message_id=NEW.message_id) AND NEW.attempt_id IS NOT NULL THEN
   SELECT * INTO r FROM conversation_execution_records
    WHERE account_id=NEW.account_id AND message_id=NEW.message_id AND attempt_id=NEW.attempt_id;
-  IF NOT FOUND OR (NEW.segment_count IS NOT NULL AND NEW.segment_count>r.segment_count) THEN
+  IF NOT FOUND OR NOT EXISTS(SELECT 1 FROM message_attempts a JOIN messages m
+   ON (m.account_id,m.id)=(a.account_id,a.message_id)
+   WHERE (a.account_id,a.message_id,a.device_id,a.id,a.generation,a.session_epoch,a.deployment_epoch)=
+    (r.account_id,r.message_id,r.device_id,r.attempt_id,r.generation,r.session_epoch,r.deployment_epoch)
+   AND m.device_id=r.device_id)
+   OR (NEW.segment_count IS NOT NULL AND NEW.segment_count>r.segment_count) THEN
    RAISE EXCEPTION 'conversation evidence requires exact execution ceiling' USING ERRCODE='23514';
   END IF;
   IF NEW.evidence_code='durable_intent' AND (NOT conversation_execution_initial_valid(r)

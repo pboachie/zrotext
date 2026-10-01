@@ -88,7 +88,8 @@ impl BrowserAssets {
         let mut pending = vec![root.clone()];
         let mut visited = BTreeSet::new();
         while let Some(dir) = pending.pop() {
-            let dir = checked_directory(&dir, &root)?;
+            checked_directory(&dir, &root)?;
+            let dir = dir.canonicalize()?;
             // Recheck each popped directory at the read_dir sink, including entries
             // queued during an earlier traversal step. No request chooses this path.
             if !dir.starts_with(&root) {
@@ -99,6 +100,11 @@ impl BrowserAssets {
             }
             for entry in std::fs::read_dir(&dir)? {
                 let path = entry?.path();
+                // Validate the exact directory-entry path before inspecting that
+                // named object; checking a different canonical value is insufficient.
+                if !path.starts_with(&root) {
+                    return Err(std::io::Error::other("SDK entry escapes package"));
+                }
                 let actual = path.canonicalize()?;
                 if !actual.starts_with(&root) {
                     return Err(std::io::Error::other("SDK asset escapes package"));
@@ -151,7 +157,7 @@ impl BrowserAssets {
 fn checked_directory(
     directory: &std::path::Path,
     root: &std::path::Path,
-) -> Result<std::path::PathBuf, std::io::Error> {
+) -> Result<(), std::io::Error> {
     if directory.symlink_metadata()?.file_type().is_symlink() {
         return Err(std::io::Error::other("SDK directory symlink refused"));
     }
@@ -159,7 +165,7 @@ fn checked_directory(
     if !actual.starts_with(root) || !actual.is_dir() {
         return Err(std::io::Error::other("SDK directory escapes package"));
     }
-    Ok(actual)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -333,10 +339,7 @@ mod tests {
         let package = test_files::Package::new();
         let other = test_files::Package::new();
         let root = package.root().canonicalize().unwrap();
-        assert_eq!(
-            checked_directory(&package.root().join("sdk"), &root).unwrap(),
-            root.join("sdk")
-        );
+        assert!(checked_directory(&package.root().join("sdk"), &root).is_ok());
         assert!(checked_directory(other.root(), &root).is_err());
         package
             .write("sdk/conversation-custody.js", b"export const fixture=true;")
@@ -363,6 +366,42 @@ mod tests {
         assert!(checked_directory(&link, &root).is_err());
         assert!(BrowserAssets::load(&link).is_err());
     }
+    #[cfg(unix)]
+    #[test]
+    fn package_file_symlinks_are_refused_for_inside_and_outside_targets() {
+        for outside in [false, true] {
+            let package = test_files::Package::new();
+            let other = test_files::Package::new();
+            package
+                .write("sdk/conversation-custody.js", b"export const fixture=true;")
+                .unwrap();
+            other
+                .write("sdk/target.js", b"export const fixture=true;")
+                .unwrap();
+            let target = if outside {
+                other.root().join("sdk/target.js")
+            } else {
+                package.root().join("sdk/conversation-custody.js")
+            };
+            std::os::unix::fs::symlink(target, package.root().join("sdk/linked.js")).unwrap();
+            assert!(BrowserAssets::load(package.root()).is_err());
+        }
+    }
+
+    #[test]
+    fn popped_parent_traversal_cannot_reach_a_sibling_package() {
+        let package = test_files::Package::new();
+        let other = test_files::Package::new();
+        let root = package.root().canonicalize().unwrap();
+        let candidate = package
+            .root()
+            .join("..")
+            .join(other.root().file_name().unwrap());
+        assert!(candidate.starts_with(package.root()));
+        assert!(checked_directory(&candidate, &root).is_err());
+        assert!(!candidate.canonicalize().unwrap().starts_with(&root));
+    }
+
     #[test]
     fn ordinary_setup_requires_every_transitive_packaged_import() {
         let mut files = BTreeMap::new();
