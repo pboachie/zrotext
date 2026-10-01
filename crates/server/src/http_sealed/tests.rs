@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use super::*;
 use crate::sealed_envelope::ExpectedRecipient;
+
+// Ordinary-CI layer of the issue #632 downgrade/leakage acceptance harness:
+// the stateless boundary, which needs no PostgreSQL and runs in every build.
+mod boundary_guard;
 use crate::sealed_manifest_store::tests::Fixture;
 use axum::{
     body::{Body, to_bytes},
