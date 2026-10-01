@@ -453,6 +453,16 @@ pub(super) async fn prepared() -> (Fixture, SessionPrincipal) {
     ))
     .await
     .unwrap();
+    f.db.batch_execute(include_str!(
+        "../../../../deploy/compose/migrations/067_contacts_consent.sql"
+    ))
+    .await
+    .unwrap();
+    f.db.batch_execute(include_str!(
+        "../../../../deploy/compose/migrations/076_workflow_decisions.sql"
+    ))
+    .await
+    .unwrap();
     let owner = owner(&f).await;
     (f, owner)
 }

@@ -52,3 +52,21 @@ export type WorkflowActionPhase = "proposed" | "approved" | "invalidated" | "can
 export interface WorkflowActionState {
   key: WorkflowActionKey; record_version: number; phase: WorkflowActionPhase;
 }
+
+export type WorkflowConsentPurpose = "transactional" | "operational" | "marketing";
+const purposeIds: Record<WorkflowConsentPurpose, string> = {
+  transactional: "00000000-0000-0000-0000-000000000001",
+  operational: "00000000-0000-0000-0000-000000000002",
+  marketing: "00000000-0000-0000-0000-000000000003",
+};
+/** Closed identity mapping only. The service checks current contact consent. */
+export function workflowPurposeId(purpose: WorkflowConsentPurpose): string {
+  if (!Object.hasOwn(purposeIds, purpose)) throw new Error("unsupported purpose");
+  return purposeIds[purpose];
+}
+export function workflowPurposeSlug(id: string): WorkflowConsentPurpose {
+  for (const [purpose, value] of Object.entries(purposeIds)) {
+    if (id === value) return purpose as WorkflowConsentPurpose;
+  }
+  throw new Error("unsupported purpose identity");
+}

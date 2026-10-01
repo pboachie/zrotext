@@ -5,14 +5,14 @@ use crate::{
     sealed_manifest_store::tests::Fixture,
 };
 
-struct Case {
-    f: Fixture,
-    owner: SessionPrincipal,
-    s: activation::Statement,
-    h: wire::Header,
+pub(crate) struct Case {
+    pub(crate) f: Fixture,
+    pub(crate) owner: SessionPrincipal,
+    pub(crate) s: activation::Statement,
+    pub(crate) h: wire::Header,
 }
 impl Case {
-    async fn new() -> Self {
+    pub(crate) async fn new() -> Self {
         let (f, owner, s) = pending().await;
         activate(&f, &s).await;
         let r=f.db.query_one("SELECT generation,version,semantic_digest FROM sealed_manifest_authorities WHERE account_id=$1",&[&f.account]).await.unwrap();
@@ -37,10 +37,10 @@ impl Case {
         };
         Self { f, owner, s, h }
     }
-    fn bytes(&self) -> Vec<u8> {
+    pub(crate) fn bytes(&self) -> Vec<u8> {
         Self::envelope(&self.h, 88)
     }
-    fn envelope(h: &wire::Header, value: u8) -> Vec<u8> {
+    pub(crate) fn envelope(h: &wire::Header, value: u8) -> Vec<u8> {
         let mut b = h.aad().unwrap();
         let key = p256::SecretKey::from_slice(&[1; 32]).unwrap();
         b.extend(key.public_key().to_sec1_bytes());
@@ -74,7 +74,7 @@ impl Case {
             &[&id,&self.f.account,&self.f.device,&peer,&vec![1u8;32],&payload,&state,&self.f.line,&self.h.trust_generation,&self.h.manifest_version,&self.h.manifest_digest.as_slice(),&self.s.signer.as_slice()]).await.unwrap();
         id
     }
-    async fn cleanup(self) {
+    pub(crate) async fn cleanup(self) {
         self.f.cleanup().await;
     }
 }
