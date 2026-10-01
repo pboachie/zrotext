@@ -19,6 +19,8 @@ use zrotext_root_terminal::{Session, verify_process_eligibility};
 mod conversation_activation;
 #[cfg(feature = "unlock")]
 mod conversation_refresh;
+#[cfg(all(test, feature = "unlock"))]
+mod native_fixture_path;
 
 type Result<T> = std::result::Result<T, ()>;
 const TIMEOUT: Duration = Duration::from_secs(300);

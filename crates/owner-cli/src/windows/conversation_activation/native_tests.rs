@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Synthetic keys and a hidden, exclusively owned limited-token console only.
 use super::*;
-#[path = "../native_fixture_path.rs"]
-mod fixture_path;
+use crate::windows::native_fixture_path as fixture_path;
 use p256::ecdsa::{Signature, SigningKey, signature::Signer};
 use sha2::Digest;
 use std::{
