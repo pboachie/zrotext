@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Unmounted owner-session conversation consent and sealed inbound reads.
-//! No send, upload, key provisioning or production feature flag is added here.
+//! Default-disabled owner-session conversation consent and sealed inbound reads.
+//! Explicit startup composition reuses separate confirmed-send and device adapters.
 //! A future integration must enforce this consent at phone capture and ingest
 //! too; these reader fences alone do not authorize content transfer.
 
@@ -30,13 +30,14 @@ use uuid::Uuid;
 pub mod activation;
 pub mod browser_assets;
 pub mod channel;
+pub mod composition;
 pub mod confirmed_http;
 pub mod enrollment;
 pub(crate) mod lifecycle;
 pub mod owner_host;
 pub mod send;
 
-/// Future explicit composition. The ordinary main/router never supplies SDK assets.
+/// Startup supplies a checked SDK package only after explicit default-off configuration.
 pub fn router_with_browser_sdk(
     state: OwnerConversationsState,
     assets: browser_assets::BrowserAssets,
@@ -66,7 +67,7 @@ impl OwnerAuthState for OwnerConversationsState {
     }
 }
 
-/// Deliberately not called by main. Completing phone consent, secure browser
+/// Called only by explicit default-off startup composition. Phone consent and browser
 /// custody, upload and retention integration is required before mounting.
 pub fn router(state: OwnerConversationsState) -> Router {
     Router::new()

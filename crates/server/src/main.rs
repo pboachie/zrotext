@@ -169,6 +169,15 @@ fn worker_budget_check(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let conversation_enabled = optional_bool("CONVERSATION_ENABLED")?;
+    let conversation_startup =
+        zrotext_server::http_owner_conversations::composition::Startup::load(
+            conversation_enabled,
+            env::var_os("CONVERSATION_SDK_DIRECTORY")
+                .as_deref()
+                .map(std::path::Path::new),
+            env::var("CONVERSATION_WSS_ORIGIN").ok().as_deref(),
+        )?;
     let hosted_sessions_enabled = optional_bool("STRIPE_TEST_HOSTED_SESSIONS_ENABLED")?;
     let billing_test = match env::var("STRIPE_BILLING_TEST_ENABLED").ok().as_deref() {
         None | Some("false") => None,
@@ -735,6 +744,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             draining: config.draining.clone(),
             drain_notify: config.drain_notify.clone(),
         };
+        let device_router = if let Some(startup) = conversation_startup {
+            startup.router(
+                zrotext_server::http_owner_conversations::OwnerConversationsState {
+                    database_url: config.database_url.clone(),
+                    auth_hasher: auth_state.hasher.clone(),
+                    canonical_origin: auth_state.canonical_origin.clone(),
+                },
+                socket_state,
+                device_sockets_per_account,
+                billing_test.is_some() || usage_limits_enabled,
+            )?
+        } else {
+            device_socket::router_with_account_share(socket_state, device_sockets_per_account)
+        };
         let owner_export_state = OwnerExportState {
             database_url: config.database_url.clone(),
             auth_hasher: auth_state.hasher.clone(),
@@ -776,10 +799,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .merge(http_owner_events::router(owner_events_state))
             .merge(http_owner_review::router(owner_review_state))
             .merge(owner_ui::router())
-            .merge(device_socket::router_with_account_share(
-                socket_state,
-                device_sockets_per_account,
-            ));
+            .merge(device_router);
         if config.alpha_policy.enabled() {
             let message_state = MessagesHttpState::new(
                 config.database_url.clone(),
@@ -800,7 +820,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             )?;
             app = app.nest("/v1/sealed", http_sealed::router(sealed_state));
         }
-    } else if config.alpha_policy.enabled()
+    } else if conversation_enabled
+        || config.alpha_policy.enabled()
         || inbound_pilot_enabled
         || line_opt_out_enabled
         || config.sms_line_activation_enabled

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Dormant owner-cookie confirmed queue adapter. Nothing mounts this router.
+//! Owner-cookie confirmed queue adapter, mounted only by default-disabled composition.
 use super::{
     ConversationError, OwnerConversationsState,
     send::{

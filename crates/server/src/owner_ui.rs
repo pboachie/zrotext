@@ -69,6 +69,63 @@ pub fn router() -> Router {
         .route("/owner/template-preview.css", get(template_style))
 }
 
+/// Mounted only by explicitly enabled conversation startup composition.
+pub fn conversation_router() -> Router {
+    fn asset(body: &'static str, kind: &'static str) -> axum::routing::MethodRouter {
+        axum::routing::get(move || async move { secure_response(body.into_response(), kind) })
+    }
+    Router::new()
+        .route(
+            "/owner/conversation",
+            asset(
+                include_str!("../../../web/owner/conversation.html"),
+                "text/html; charset=utf-8",
+            ),
+        )
+        .route(
+            "/owner/conversation.css",
+            asset(
+                include_str!("../../../web/owner/conversation.css"),
+                "text/css; charset=utf-8",
+            ),
+        )
+        .route(
+            "/owner/conversation-core.js",
+            asset(
+                include_str!("../../../web/owner/conversation-core.js"),
+                "text/javascript; charset=utf-8",
+            ),
+        )
+        .route(
+            "/owner/conversation-owner-adapter.js",
+            asset(
+                include_str!("../../../web/owner/conversation-owner-adapter.js"),
+                "text/javascript; charset=utf-8",
+            ),
+        )
+        .route(
+            "/owner/conversation-bootstrap.js",
+            asset(
+                include_str!("../../../web/owner/conversation-bootstrap.js"),
+                "text/javascript; charset=utf-8",
+            ),
+        )
+        .route(
+            "/owner/conversation-owner-setup.js",
+            asset(
+                include_str!("../../../web/owner/conversation-owner-setup.js"),
+                "text/javascript; charset=utf-8",
+            ),
+        )
+        .route(
+            "/owner/conversation.js",
+            asset(
+                include_str!("../../../web/owner/conversation.js"),
+                "text/javascript; charset=utf-8",
+            ),
+        )
+}
+
 pub fn source_router<S>(source_url: String) -> Router<S>
 where
     S: Clone + Send + Sync + 'static,

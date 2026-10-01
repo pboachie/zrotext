@@ -585,16 +585,31 @@ fn router_with_admission(state: DeviceSocketState, admission: SocketAdmission) -
 
 /// Explicit future composition only. Main continues to call the default disabled router.
 /// The configured WSS origin must match the phone's independently approved endpoint.
+pub fn conversation_origin_check(origin: &str) -> Result<(), &'static str> {
+    conversation::Policy::new(origin).map(|_| ())
+}
+
 pub fn router_with_conversations(
     state: DeviceSocketState,
     origin: &str,
+) -> Result<Router, &'static str> {
+    router_with_conversations_and_account_share(state, origin, DEFAULT_DEVICE_SOCKETS_PER_ACCOUNT)
+}
+
+/// Conversation negotiation retains the ordinary account socket admission budget.
+pub fn router_with_conversations_and_account_share(
+    state: DeviceSocketState,
+    origin: &str,
+    sockets_per_account: usize,
 ) -> Result<Router, &'static str> {
     let policy = conversation::Policy::new(origin)?;
     Ok(Router::new()
         .route("/v1/device-stream", get(upgrade))
         .with_state(SocketRoute {
             state,
-            admission: DEVICE_SOCKET_ADMISSION.clone(),
+            admission: DEVICE_SOCKET_ADMISSION
+                .clone()
+                .with_account_limit(sockets_per_account),
             conversation: Some(policy),
         }))
 }

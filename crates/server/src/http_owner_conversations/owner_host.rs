@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Dormant concrete owner-cookie adapters. No mounting, root custody or key creation.
+//! Owner-cookie adapters in default-disabled composition. No root custody or key creation.
 use super::{
     ConversationConsent, ConversationError, OwnerConversationsState, activation, enrollment,
 };
