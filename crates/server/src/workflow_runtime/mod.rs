@@ -5,12 +5,17 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 mod authentication;
+mod contacts;
+mod status;
+pub use status::read_action_status;
 #[cfg(test)]
 mod database_tests;
 mod grants;
 pub(crate) mod lifecycle;
 mod reads;
+mod scope;
 pub use authentication::{IntegrationPrincipal, authenticate};
+pub use contacts::{ContactScope, read_contact};
 pub use grants::{GrantRequest, IssuedCredential, issue_grant, revoke_grant};
 pub use reads::{read_context_content, read_context_metadata};
 

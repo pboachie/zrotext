@@ -156,3 +156,20 @@ integration grants bound to that contact within the owner transaction. Account
 erasure includes all three tables before their source references and preserves
 the existing erasure blockers. These housekeeping and takeout paths do not
 activate integration action, scheduling, or delivery services.
+
+Shared integration service reads use a private transaction-bound scope proof.
+The proof locks the current manifest, account, live grant creator, context,
+activation interval, device binding and registered connector key; it rechecks
+clock-sensitive grant and session state after audit writes. An authenticated
+workflow credential identifies a grant and does not itself prove an effect is
+authorized.
+
+`read_contact` requires only the independent `contact_read` permission. It returns
+the bound contact UUID, closed purpose and peer digest as permitted routing
+metadata, without granting context reading. `read_action_status` requires
+`status`, checks the persisted descriptor against the grant's exact account,
+line, contact, purpose and source context version, and returns the shared action
+service's current durable state. Repeating its request can observe a later owner
+cancellation; the access identity is recorded once. Both use bounded content-free
+access records included in the lifecycle described above. Integration proposal,
+execution and scheduling services remain incomplete and unmounted.

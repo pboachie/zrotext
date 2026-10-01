@@ -705,3 +705,240 @@ async fn contact_erasure_removes_bound_grants_without_touching_other_contacts() 
     );
     case.f.cleanup().await;
 }
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; disposable workflow schema"]
+async fn contact_metadata_authority_does_not_inherit_context_or_connector_read_permissions() {
+    let mut case = Case::new().await;
+    case.request.permissions = Permissions::new(&[Operation::ContactRead]).unwrap();
+    let issued = case.issue().await.unwrap();
+    let principal = authenticate(&case.f.db, &case.hasher, &issued.token)
+        .await
+        .unwrap();
+    case.f.db.execute("UPDATE connector_grants SET revoked_ms=floor(extract(epoch FROM clock_timestamp())*1000)::bigint WHERE account_id=$1 AND kind='read'", &[&case.f.account]).await.unwrap();
+    let mut client = case.f.connect().await;
+    let request = Uuid::new_v4();
+    for _ in 0..2 {
+        let contact = read_contact(&mut client, &principal, request, case.header.context)
+            .await
+            .unwrap();
+        assert_eq!(contact.contact_id, case.request.contact);
+        assert_eq!(contact.purpose, "operational");
+        assert_eq!(contact.peer_digest, case.header.peer_digest);
+        assert!(!serde_json::to_string(&contact).unwrap().contains("+12"));
+    }
+    assert!(
+        read_context_metadata(&mut client, &principal, Uuid::new_v4(), case.header.context)
+            .await
+            .is_err()
+    );
+    assert!(
+        read_context_content(&mut client, &principal, Uuid::new_v4(), case.header.context)
+            .await
+            .is_err()
+    );
+    assert!(
+        read_contact(&mut client, &principal, Uuid::new_v4(), Uuid::new_v4())
+            .await
+            .is_err()
+    );
+    assert!(
+        read_contact(&mut client, &principal, Uuid::nil(), case.header.context)
+            .await
+            .is_err()
+    );
+    let count: i64 = client
+        .query_one(
+            "SELECT count(*) FROM workflow_integration_access WHERE operation=1",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(count, 1);
+    case.f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; disposable workflow schema"]
+async fn transaction_scope_rechecks_a_withdrawal_after_its_constructor() {
+    let case = Case::new().await;
+    let issued = case.issue().await.unwrap();
+    let principal = authenticate(&case.f.db, &case.hasher, &issued.token)
+        .await
+        .unwrap();
+    let mut client = case.f.connect().await;
+    let tx = client.transaction().await.unwrap();
+    let mut permit = scope::lock_scope(
+        &tx,
+        &principal,
+        case.header.context,
+        Operation::ContextMetadata,
+    )
+    .await
+    .unwrap();
+    tx.execute("UPDATE workflow_integration_grants SET revoked_ms=floor(extract(epoch FROM clock_timestamp())*1000)::bigint WHERE grant_id=$1", &[&issued.grant_id]).await.unwrap();
+    assert!(matches!(
+        permit.recheck().await,
+        Err(auth::AuthError::Forbidden)
+    ));
+    drop(permit);
+    tx.rollback().await.unwrap();
+    case.f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; disposable workflow schema"]
+async fn status_only_grant_reads_current_owner_action_without_approval_or_content_authority() {
+    use crate::http_owner_conversations::context::decisions::{self, Descriptor, model::Decision};
+    let mut case = Case::new().await;
+    case.request.permissions = Permissions::new(&[Operation::Status]).unwrap();
+    let bytes: Vec<u8> = case
+        .f
+        .db
+        .query_one(
+            "SELECT envelope FROM workflow_context_versions WHERE context_id=$1",
+            &[&case.header.context],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    case.f.db.execute("INSERT INTO contact_consent_records(id,account_id,contact_id,purpose,action,source,effective_at,recorded_by) VALUES($1,$2,$3,'operational','grant','manual_entry',clock_timestamp(),$4)", &[&Uuid::new_v4(),&case.f.account,&case.request.contact,&case.owner.user_id]).await.unwrap();
+    let descriptor = Descriptor {
+        account_id: case.f.account.to_string(),
+        action_id: Uuid::new_v4().to_string(),
+        revision: 1,
+        line_id: case.header.line.to_string(),
+        recipient_id: case.request.contact.to_string(),
+        purpose_id: "00000000-0000-0000-0000-000000000002".into(),
+        content_ref: case.header.context.to_string(),
+        content_digest: decisions::descriptor::hex(&Sha256::digest(bytes)),
+        content_version: 1,
+        not_before: 0,
+        expires_at: case.header.expires_ms / 1000,
+        timezone: "UTC".into(),
+        window_id: "exact-window".into(),
+        routine_id: Uuid::new_v4().to_string(),
+        authority_generation: 1,
+        commitment: "informational".into(),
+    };
+    let mut client = case.f.connect().await;
+    let state = decisions::register(&mut client, &case.owner, Uuid::new_v4(), descriptor)
+        .await
+        .unwrap();
+    let issued = case.issue().await.unwrap();
+    let principal = authenticate(&case.f.db, &case.hasher, &issued.token)
+        .await
+        .unwrap();
+    let request = Uuid::new_v4();
+    let actual = read_action_status(
+        &mut client,
+        &principal,
+        request,
+        case.header.context,
+        state.key.action_id,
+    )
+    .await
+    .unwrap();
+    assert_eq!(actual.key, state.key);
+    assert_eq!(actual.phase, decisions::model::Phase::Proposed);
+    let canceled = decisions::decide(
+        &mut client,
+        &case.owner,
+        Uuid::new_v4(),
+        state.record_version,
+        state.key,
+        Decision::Cancel,
+    )
+    .await
+    .unwrap();
+    let actual = read_action_status(
+        &mut client,
+        &principal,
+        request,
+        case.header.context,
+        state.key.action_id,
+    )
+    .await
+    .unwrap();
+    assert_eq!(actual.record_version, canceled.record_version);
+    assert_eq!(actual.phase, decisions::model::Phase::Cancelled);
+    assert!(
+        read_contact(&mut client, &principal, Uuid::new_v4(), case.header.context)
+            .await
+            .is_err()
+    );
+    assert!(
+        read_context_metadata(&mut client, &principal, Uuid::new_v4(), case.header.context)
+            .await
+            .is_err()
+    );
+    assert!(
+        read_action_status(
+            &mut client,
+            &principal,
+            Uuid::new_v4(),
+            case.header.context,
+            Uuid::new_v4()
+        )
+        .await
+        .is_err()
+    );
+    revoke_grant(&mut client, &case.owner, issued.grant_id)
+        .await
+        .unwrap();
+    assert!(
+        read_action_status(
+            &mut client,
+            &principal,
+            request,
+            case.header.context,
+            state.key.action_id
+        )
+        .await
+        .is_err()
+    );
+    let count: i64 = client
+        .query_one(
+            "SELECT count(*) FROM workflow_integration_access WHERE operation=16",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(count, 1);
+    case.f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; disposable workflow schema"]
+async fn transaction_scope_rechecks_device_and_connector_key_revocation() {
+    let case = Case::new().await;
+    let issued = case.issue().await.unwrap();
+    let principal = authenticate(&case.f.db, &case.hasher, &issued.token)
+        .await
+        .unwrap();
+    let mut client = case.f.connect().await;
+    for sql in [
+        "UPDATE devices SET revoked_at=clock_timestamp() WHERE account_id=$1",
+        "UPDATE connector_keys SET retired_ms=floor(extract(epoch FROM clock_timestamp())*1000)::bigint WHERE account_id=$1",
+    ] {
+        let tx = client.transaction().await.unwrap();
+        let mut permit = scope::lock_scope(
+            &tx,
+            &principal,
+            case.header.context,
+            Operation::ContextMetadata,
+        )
+        .await
+        .unwrap();
+        tx.execute(sql, &[&case.f.account]).await.unwrap();
+        assert!(matches!(
+            permit.recheck().await,
+            Err(auth::AuthError::Forbidden)
+        ));
+        drop(permit);
+        tx.rollback().await.unwrap();
+    }
+    case.f.cleanup().await;
+}
