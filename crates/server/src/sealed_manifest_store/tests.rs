@@ -7,6 +7,7 @@ use p256::{
 };
 use sha2::{Digest, Sha256};
 use tokio_postgres::{Client, NoTls};
+mod cleanup;
 
 pub(crate) struct Fixture {
     pub(crate) url: String,
@@ -306,10 +307,7 @@ impl Fixture {
         self.resign();
     }
     pub(crate) async fn cleanup(self) {
-        self.db
-            .batch_execute(&format!("DROP SCHEMA {} CASCADE", self.schema))
-            .await
-            .unwrap();
+        cleanup::drop_fixture(&self.db, &self.schema).await.unwrap();
     }
 }
 
