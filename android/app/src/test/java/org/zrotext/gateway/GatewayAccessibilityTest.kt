@@ -29,7 +29,7 @@ import java.time.Duration
 @OptIn(ExperimentalComposeUiApi::class)
 open class GatewayAccessibilityTest : GatewayAccessibilityChecks() {
     protected open val testFontScale = 2f
-    override fun onScreen(page: String, check: (RootForTest) -> Unit) {
+    override fun onScreen(page: String, revealStatus: Boolean, check: (RootForTest) -> Unit) {
         RuntimeEnvironment.setFontScale(testFontScale)
         val app = RuntimeEnvironment.getApplication()
         shadowOf(app.getSystemService(AccessibilityManager::class.java)).setEnabled(true)
@@ -47,6 +47,18 @@ open class GatewayAccessibilityTest : GatewayAccessibilityChecks() {
             controller.get().window.decorView.requestLayout()
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(300))
             root.measureAndLayoutForTest()
+            if (revealStatus) {
+                for (attempt in 0 until 20) {
+                    if (homeStatusIsVisible(root)) break
+                    scrollTowardHomeStatus(root)
+                    Snapshot.sendApplyNotifications()
+                    shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(300))
+                    root.measureAndLayoutForTest()
+                }
+                assertTrue("Home status must become visible after actual scrolling; " +
+                    nodes(root).filter { it.config.contains(SemanticsProperties.LiveRegion) }
+                        .map { "${text(it)} ${it.boundsInRoot} ${it.positionInRoot}" }, homeStatusIsVisible(root))
+            }
             check(root)
         } finally {
             controller.pause().stop().destroy()

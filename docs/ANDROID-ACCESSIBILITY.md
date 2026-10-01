@@ -53,9 +53,13 @@ preconditions check on a disposable emulator. The earlier five-check version in 
 the [hosted selection](https://github.com/pboachie/zrotext/actions/runs/36269589242)
 with six actual tests and zero failures or skips.
 
-The five shared checks also pass on a disposable API 36 emulator with a 360 by
-640 dp portrait viewport at normal and 2× font scale. This validates platform
-heading and visible live-region flags, not spoken announcements.
+The current six shared checks cover the Home observation rows and separate
+screens/substeps. The harness verifies the initial title heading, then scrolls
+to reveal a Home status below the fold before asserting its visible platform
+live-region flag. Landscape and 200% text must retain that assertion. Separate
+Compose-clock JVM landscape regressions verify actual scrolling and reachable
+Pause/disclosure; see [the integrated candidate gate](CANDIDATE-ACCESSIBILITY.md).
+These checks validate platform semantics, not spoken announcements.
 
 ```sh
 cd android

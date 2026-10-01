@@ -14,7 +14,11 @@ async function ownerPage() {
     textContent: "", hidden: false, disabled: false, value: "", checked: false,
     children: [], listeners: {},
     replaceChildren(...children) { this.children = children; },
-    append(...children) { this.children.push(...children); },
+    append(...children) {
+      for (const child of children) if (child && typeof child.remove === "function") child.remove();
+      this.children.push(...children);
+    },
+    remove() { for (const parent of elements.values()) parent.children = parent.children.filter(child => child !== this); },
     attributes: {}, setAttribute(name, value) { this.attributes[name] = value; },
     contains(node) { return this === node || this.children.some((child) => child.contains(node)); },
     querySelector() { return this.openDetails || null; },
@@ -670,6 +674,74 @@ test("unknown message state warns that a new send may duplicate it", async () =>
   assert.equal(delivered.children.some((child) => child.className === "message-uncertain"), false);
 });
 
+test("activity labels outbound metadata conservatively and never renders response content", async () => {
+  const { element, state } = await ownerPage();
+  state.messages = ["accepted", "claimed", "submitting", "submitted", "delivered", "delivery_unknown", "invented", "constructor"].map((status, index) => ({
+    message_id: `synthetic-${index}`, device_id: "unloaded-device", state: status,
+    created_at_ms: 1000, events: [], recipient_e164: "secret-recipient", body: "secret-content",
+  }));
+  await element("refresh-messages").listeners.click();
+  const text = visibleText(element("message-list"));
+  assert.match(text, /Direction: Outbound/);
+  assert.match(text, /Recipient: unavailable/);
+  assert.match(text, /Claimed · not sent/);
+  assert.match(text, /Sent callback · delivery unconfirmed/);
+  assert.match(text, /Delivered callback · unread status unknown/);
+  assert.match(text, /Unrecognized state · outcome unknown/);
+  assert.doesNotMatch(text, /secret-recipient|secret-content/);
+});
+
+test("activity refresh preserves expanded writer history and loaded device linking", async () => {
+  const { element, state } = await ownerPage();
+  const deviceId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  state.devices = [{ device_id: deviceId, display_name: "Synthetic gateway", revoked: false }];
+  await element("refresh-devices").listeners.click();
+  state.messages = [{ message_id: "synthetic", device_id: deviceId, state: "queued", created_at_ms: 1000, events: [] }];
+  await element("refresh-messages").listeners.click();
+  const row = element("message-list").children[0];
+  row.activityDetails.open = true;
+  state.messages[0].state = "submitted";
+  await element("refresh-messages").listeners.click();
+  assert.equal(element("message-list").children[0], row);
+  assert.equal(row.activityDetails.open, true);
+  const link = row.children[0].children[2].children[0];
+  link.listeners.click();
+  assert.equal(element("device-detail-name").textContent, "Synthetic gateway");
+  assert.match(visibleText(row), /delivery unconfirmed/);
+});
+
+test("device context follows later fleet loading without a message refresh", async () => {
+  const { element, state } = await ownerPage();
+  const deviceId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  state.messages = [{ message_id: "synthetic", device_id: deviceId, state: "unknown", created_at_ms: 1000, events: [] }];
+  await element("refresh-messages").listeners.click();
+  const row = element("message-list").children[0];
+  assert.equal(row.activityDeviceLink.hidden, true);
+  const requests = state.requests.filter(url => url.startsWith("/v1/owner/messages")).length;
+  state.devices = [{ device_id: deviceId, display_name: "Later synthetic gateway", revoked: false }];
+  await element("refresh-devices").listeners.click();
+  assert.equal(row.activityDeviceLink.hidden, false);
+  assert.match(row.activityDeviceLink.textContent, /Later synthetic gateway/);
+  assert.equal(state.requests.filter(url => url.startsWith("/v1/owner/messages")).length, requests);
+  state.devices = [];
+  await element("refresh-devices").listeners.click();
+  assert.equal(row.activityDeviceLink.hidden, true);
+  assert.equal(row.activityDeviceUnavailable.hidden, false);
+});
+
+test("ambiguous message identities fail closed and preserve historical metadata", async () => {
+  const { element, state } = await ownerPage();
+  const item = { message_id: "synthetic", device_id: "synthetic-device", state: "queued", created_at_ms: 1000, events: [] };
+  state.messages = [item];
+  await element("refresh-messages").listeners.click();
+  const row = element("message-list").children[0];
+  state.messages = [item, { ...item, state: "delivered" }];
+  await element("refresh-messages").listeners.click();
+  assert.match(element("message-status").textContent, /older metadata; current states are unknown/);
+  assert.equal(element("message-list").children[0], row);
+  assert.match(visibleText(row), /Queued · not sent/);
+});
+
 test("device authorization is not presented as a live connection", async () => {
   const { element, state } = await ownerPage();
   state.devices = [
@@ -918,7 +990,7 @@ test("automatic refresh stops on session expiry and discards a late device respo
 test("automatic refresh preserves paginated history until manual refresh", async () => {
   const { element, state, tick } = await ownerPage();
   state.devicePages.push({ devices: [{ device_id: endpointId, display_name: "Gateway", revoked: true }], next_cursor: endpointId });
-  state.messagePages.push({ messages: [{ message_id: eventId, state: "unknown", events: [] }], next_cursor: eventId });
+  state.messagePages.push({ messages: [{ message_id: eventId, device_id: endpointId, state: "unknown", events: [] }], next_cursor: eventId });
   await element("refresh-devices").listeners.click();
   await element("refresh-messages").listeners.click();
   await element("more-devices").listeners.click();
