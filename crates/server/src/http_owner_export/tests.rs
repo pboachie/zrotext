@@ -36,7 +36,7 @@ macro_rules! export_schema {
             [$(($name, include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/compose/migrations/", $name)))),+]
         };
     }
-const EXPORT_SCHEMA: [(&str, &str); 65] = export_schema!(
+const EXPORT_SCHEMA: [(&str, &str); 66] = export_schema!(
     "001_foundation.sql",
     "002_auth.sql",
     "003_delivery.sql",
@@ -102,6 +102,7 @@ const EXPORT_SCHEMA: [(&str, &str); 65] = export_schema!(
     "063_retention_blocked_stamp.sql",
     "064_owner_conversation_consent.sql",
     "065_conversation_activation.sql",
+    "066_conversation_interval_session_index.sql",
 );
 #[test]
 fn export_schema_includes_every_checked_in_migration() {
@@ -239,6 +240,11 @@ async fn export_is_tenant_bound_and_carries_owner_content() {
             )
             .await
             .unwrap();
+        }
+        if name == "066_conversation_interval_session_index.sql" {
+            db.batch_execute("CREATE INDEX erasure_fk_conversation_interval_session ON conversation_intervals(account_id,initiating_session_id)")
+                .await
+                .unwrap();
         }
         if name == "049_owner_queue_probe_indexes.sql" {
             db.batch_execute(

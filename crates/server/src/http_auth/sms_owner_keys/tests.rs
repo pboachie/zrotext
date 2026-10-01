@@ -18,7 +18,7 @@ macro_rules! migration {
 
 // The ceremony runs on the complete schema. SQL is embedded at build time so
 // the test never executes files discovered at runtime.
-const TEST_MIGRATIONS: [(&str, &str); 65] = [
+const TEST_MIGRATIONS: [(&str, &str); 66] = [
     ("001_foundation.sql", migration!("001_foundation.sql")),
     ("002_auth.sql", migration!("002_auth.sql")),
     ("003_delivery.sql", migration!("003_delivery.sql")),
@@ -264,6 +264,10 @@ const TEST_MIGRATIONS: [(&str, &str); 65] = [
         "065_conversation_activation.sql",
         migration!("065_conversation_activation.sql"),
     ),
+    (
+        "066_conversation_interval_session_index.sql",
+        migration!("066_conversation_interval_session_index.sql"),
+    ),
 ];
 
 #[test]
@@ -482,6 +486,11 @@ async fn postgres_owner_key_ceremony_requires_possession_mfa_and_revokes_only_sm
             )
             .await
             .unwrap();
+        }
+        if name == "066_conversation_interval_session_index.sql" {
+            db.batch_execute("CREATE INDEX erasure_fk_conversation_interval_session ON conversation_intervals(account_id,initiating_session_id)")
+                .await
+                .unwrap();
         }
         if name == "049_owner_queue_probe_indexes.sql" {
             db.batch_execute(
