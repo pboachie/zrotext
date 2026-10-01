@@ -57,6 +57,9 @@ async fn no_store(request: Request, next: Next) -> Response {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ExportQuery {
+    invoice_periods_after: Option<Uuid>,
+    invoice_usage_after: Option<Uuid>,
+    invoice_audit_after: Option<i64>,
     before: Option<Uuid>,
     sealed_before: Option<Uuid>,
     interval_before: Option<Uuid>,
@@ -182,6 +185,7 @@ struct ExportView {
         crate::http_owner_conversations::channel::execution::lifecycle::ExecutionInventory,
     workflow_schedule: crate::encrypted_schedule::lifecycle::ScheduleExport,
     workflow_integrations: crate::workflow_runtime::lifecycle::Export,
+    invoice_billing: crate::billing::invoice::lifecycle::InvoiceExport,
     workflow_context: crate::http_owner_conversations::context::lifecycle::WorkflowExport,
     confirmation_inventory: crate::http_owner_conversations::confirmation_records::ProofInventory,
     agent_grants: crate::auth::agent_grants::GrantPage,
@@ -464,6 +468,18 @@ async fn export_account(
         workflow_integrations,
         workflow_decisions,
         workflow_schedule,
+        invoice_billing: match crate::billing::invoice::lifecycle::export(
+            &mut client,
+            &principal,
+            query.invoice_periods_after,
+            query.invoice_usage_after,
+            query.invoice_audit_after,
+        )
+        .await
+        {
+            Ok(view) => view,
+            Err(error) => return error.into_response(),
+        },
         workflow_context,
         confirmation_inventory:
             match crate::http_owner_conversations::confirmation_records::inventory(

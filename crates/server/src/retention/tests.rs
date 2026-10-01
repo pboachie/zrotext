@@ -239,6 +239,7 @@ async fn retention_respects_each_cutoff_and_replay_fences() {
     assert_eq!(
         counts,
         RetentionCounts {
+            invoice_audit: 0,
             idempotency_keys: 1,
             messages: 1,
             message_events: 1,

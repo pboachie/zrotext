@@ -96,6 +96,9 @@ pub(super) async fn entitlement(tx: &Transaction<'_>, account: Uuid) -> Result<(
     if !billed {
         return Ok(());
     }
+    super::super::invoice::exposure_period(tx, account)
+        .await
+        .map_err(|_| Error::Unavailable)?;
     // Reuse the existing TEST projection and payment-risk/grace ledgers;
     // provider summaries and prompts cannot manufacture current entitlement.
     let guards = tx.query_one("SELECT EXISTS(SELECT 1 FROM billing_risk_events WHERE account_id=$1 AND state IN ('queued','held','needs_review') FOR SHARE), \
@@ -276,6 +279,18 @@ pub(super) async fn require_live_policies(
     for b in budgets {
         b.require_period(now)?;
         tx.query_opt("SELECT 1 FROM exposure_scope_budgets WHERE account_id=$1 AND scope_kind=$2 AND scope_id=$3 AND version=$4 AND enabled",&[&account,&b.kind,&b.id,&b.version]).await?.ok_or(Error::Unavailable)?;
+    }
+    if let Some((start, end)) = super::super::invoice::exposure_period(tx, account)
+        .await
+        .map_err(|_| Error::Unavailable)?
+    {
+        let tenant = budgets
+            .iter()
+            .find(|b| b.kind == "tenant" && b.id == account)
+            .ok_or(Error::Unavailable)?;
+        if tenant.start != start || tenant.end != end {
+            return Err(Error::Unavailable);
+        }
     }
     entitlement(tx, account).await
 }
