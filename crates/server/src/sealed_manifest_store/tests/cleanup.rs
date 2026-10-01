@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Test-owned teardown releases relation locks after every DDL statement.
 use super::{Client, Fixture};
+mod regressions;
 
 fn valid_name(name: &str) -> bool {
     name.strip_prefix("manifest_authority_")
@@ -45,7 +46,19 @@ pub(super) async fn drop_fixture(db: &Client, schema: &str) -> Result<(), String
     }
     // Refuse dependencies crossing another user schema before changing anything.
     // Catalog dependencies (types, language, built-ins) are not fixture objects.
-    let foreign: bool = db.query_one("SELECT EXISTS(SELECT 1 FROM pg_depend d CROSS JOIN LATERAL pg_identify_object(d.classid,d.objid,d.objsubid) a CROSS JOIN LATERAL pg_identify_object(d.refclassid,d.refobjid,d.refobjsubid) b WHERE (a.schema=$1 AND b.schema IS NOT NULL AND b.schema<>$1 AND b.schema NOT IN ('pg_catalog','information_schema','pg_toast')) OR (b.schema=$1 AND a.schema IS NOT NULL AND a.schema<>$1 AND a.schema NOT IN ('pg_catalog','information_schema','pg_toast')))", &[&schema]).await.map_err(|e|e.to_string())?.get(0);
+    // Rewrite rules identify a view without returning its namespace through
+    // pg_identify_object. Resolve their owning relation explicitly so an
+    // external view is refused before even a fixture constraint is removed.
+    let foreign: bool = db.query_one("SELECT EXISTS(SELECT 1 FROM pg_depend d \
+        CROSS JOIN LATERAL pg_identify_object(d.classid,d.objid,d.objsubid) a \
+        CROSS JOIN LATERAL pg_identify_object(d.refclassid,d.refobjid,d.refobjsubid) b \
+        LEFT JOIN pg_rewrite ar ON d.classid='pg_rewrite'::regclass AND ar.oid=d.objid \
+        LEFT JOIN pg_class ac ON ac.oid=ar.ev_class LEFT JOIN pg_namespace an ON an.oid=ac.relnamespace \
+        LEFT JOIN pg_rewrite br ON d.refclassid='pg_rewrite'::regclass AND br.oid=d.refobjid \
+        LEFT JOIN pg_class bc ON bc.oid=br.ev_class LEFT JOIN pg_namespace bn ON bn.oid=bc.relnamespace \
+        CROSS JOIN LATERAL (SELECT COALESCE(a.schema,an.nspname) AS source_schema,COALESCE(b.schema,bn.nspname) AS target_schema) scoped \
+        WHERE (scoped.source_schema=$1 AND scoped.target_schema IS NOT NULL AND scoped.target_schema<>$1 AND scoped.target_schema NOT IN ('pg_catalog','information_schema','pg_toast')) \
+        OR (scoped.target_schema=$1 AND scoped.source_schema IS NOT NULL AND scoped.source_schema<>$1 AND scoped.source_schema NOT IN ('pg_catalog','information_schema','pg_toast')))", &[&schema]).await.map_err(|e|e.to_string())?.get(0);
     if foreign {
         return Err("foreign fixture dependency".into());
     }
@@ -62,16 +75,25 @@ pub(super) async fn drop_fixture(db: &Client, schema: &str) -> Result<(), String
         )
         .await?;
     }
-    let tables = db.query("SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=$1 AND c.relkind IN ('r','p') ORDER BY c.relname", &[&schema]).await.map_err(|e|e.to_string())?;
-    for row in tables {
+    // Triggers retain function dependencies. Remove only this schema's own
+    // user triggers before functions whose composite parameters retain tables.
+    let triggers = db.query("SELECT c.relname,t.tgname FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=$1 AND NOT t.tgisinternal ORDER BY c.relname,t.tgname", &[&schema]).await.map_err(|e|e.to_string())?;
+    for row in triggers {
         step(
             db,
-            &format!("DROP TABLE {prefix}.{} RESTRICT", quote(row.get(0))),
+            &format!(
+                "DROP TRIGGER {} ON {prefix}.{} RESTRICT",
+                quote(row.get(1)),
+                quote(row.get(0))
+            ),
         )
         .await?;
     }
-    let functions = db.query("SELECT p.proname,pg_get_function_identity_arguments(p.oid) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname=$1 ORDER BY p.proname,p.oid", &[&schema]).await.map_err(|e|e.to_string())?;
-    for row in functions {
+    let function_count: i64 = db.query_one("SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname=$1", &[&schema]).await.map_err(|e|e.to_string())?.get(0);
+    // A finite topological walk also handles SQL-body function dependencies.
+    // No retries or CASCADE can silently delete an unreviewed dependent object.
+    for _ in 0..function_count {
+        let row = db.query_opt("SELECT p.proname,pg_get_function_identity_arguments(p.oid) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname=$1 AND NOT EXISTS(SELECT 1 FROM pg_depend d WHERE d.refclassid='pg_proc'::regclass AND d.refobjid=p.oid AND d.classid='pg_proc'::regclass AND d.objid<>p.oid) ORDER BY p.proname,p.oid LIMIT 1", &[&schema]).await.map_err(|e|e.to_string())?.ok_or("fixture function dependency cycle")?;
         step(
             db,
             &format!(
@@ -79,6 +101,14 @@ pub(super) async fn drop_fixture(db: &Client, schema: &str) -> Result<(), String
                 quote(row.get(0)),
                 row.get::<_, String>(1)
             ),
+        )
+        .await?;
+    }
+    let tables = db.query("SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=$1 AND c.relkind IN ('r','p') ORDER BY c.relname", &[&schema]).await.map_err(|e|e.to_string())?;
+    for row in tables {
+        step(
+            db,
+            &format!("DROP TABLE {prefix}.{} RESTRICT", quote(row.get(0))),
         )
         .await?;
     }
