@@ -21,4 +21,23 @@ class ConversationActivationCodecTest {
         for (end in vector.indices) assertThrows(Exception::class.java) { ConversationActivationCodec.decode(vector.copyOf(end)) }
         assertThrows(IllegalArgumentException::class.java) { ConversationActivationCodec.decode(vector + byteArrayOf(0)) }
     }
+
+    @Test fun closedOnlyReconciliationBindsOriginalCanonicalStatement() {
+        val parsed=ConversationActivationCodec.decode(vector)
+        val phone=ConversationPhoneSession(java.util.UUID.fromString(parsed.scope.accountId),java.util.UUID.fromString(parsed.scope.deviceId),java.util.UUID.randomUUID(),1,1,"11".repeat(32))
+        val request=ConversationClosureRequest(phone,java.util.UUID.randomUUID(),parsed.scope)
+        val frame=ConversationChannelCodec.reconciliationRequest(request,vector)
+        assertEquals(5,frame[5].toInt());assertEquals(vector.size+120,frame.size)
+        assertArrayEquals(vector,frame.copyOfRange(120,frame.size))
+        assertThrows(IllegalArgumentException::class.java){ConversationChannelCodec.reconciliationRequest(request.copy(scope=parsed.scope.copy(peer="+13")),vector)}
+    }
+
+    @Test fun canonicalRecoveryProofUsesExistingProtectedScopeAndReadsLegacy() {
+        val scope=ConversationActivationCodec.decode(vector).scope
+        val modern=ConversationProtectedInstallation.decode(ConversationProtectedInstallation.encode(scope,vector))
+        assertEquals(scope,modern.scope);assertArrayEquals(vector,modern.originalStatement)
+        val legacy=ConversationProtectedInstallation.decode(scope.encode())
+        assertEquals(scope,legacy.scope);assertNull(legacy.originalStatement)
+        assertThrows(IllegalArgumentException::class.java){ConversationProtectedInstallation.encode(scope.copy(peer="+13"),vector)}
+    }
 }

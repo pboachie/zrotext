@@ -44,7 +44,7 @@ internal class ConversationCaptureAdmission(
     private data class Lease(val scope: ConversationCaptureScope, val deadline: Long)
     private data class Accepted(val request: Recovery, val duration: Long)
     private var recovery: Recovery? = null
-    private var lease: Lease? = null
+    @Volatile private var lease: Lease? = null
     private var accepted: Accepted? = null
     private var lastElapsed: Long? = null
 
@@ -61,7 +61,9 @@ internal class ConversationCaptureAdmission(
                 check(readScope(existing) == scope) { "Prepared scope changed" }
                 existing
             } else {
-                val sealed = protection.seal(scope.encode(), scopeAad(scope.intervalId, scope.receiptId))
+                val original=runCatching { ConversationActivationCodec.decode(evidence).takeIf { it.scope==scope } }.getOrNull()?.let { evidence.copyOf() }
+                val sealed = protection.seal(ConversationProtectedInstallation.encode(scope,original), scopeAad(scope.intervalId, scope.receiptId))
+                original?.fill(0)
                 ConversationInstallation(intervalId = scope.intervalId, receiptId = scope.receiptId,
                     transcriptDigest = scope.transcriptDigest, protectedScope = sealed.ciphertext,
                     nonce = sealed.nonce)
@@ -120,7 +122,50 @@ internal class ConversationCaptureAdmission(
         journal.close(intervalId)
     }
 
+    /** Runtime worker closes admission before any lifecycle persistence; no Room or network work. */
+    @Synchronized fun disableForLifecycle() { lease = null; recovery = null; accepted = null }
+
     @Synchronized fun captureEligible(): Boolean = currentLease() != null
+    @Synchronized fun originalClosedStatement(): ByteArray {
+        val row=checkNotNull(journal.installation())
+        check(row.state=="closed" && journal.isClosed(row.intervalId)>0)
+        val value=ConversationProtectedInstallation.decode(protection.open(
+            InboundVault.Sealed(row.protectedScope,row.nonce),scopeAad(row.intervalId,row.receiptId)))
+        check(value.scope.intervalId==row.intervalId && value.scope.receiptId==row.receiptId && value.scope.transcriptDigest==row.transcriptDigest)
+        return checkNotNull(value.originalStatement).copyOf()
+    }
+
+
+    /** Main-thread receipt fence: no database, plaintext or authority decision is read here. */
+    class ReceiptBoundary internal constructor(internal val identity: Any?, internal val utcMs: Long) {
+        override fun toString() = "ConversationReceiptBoundary(redacted)"
+    }
+    fun firstReceiptBoundary(utcMillis: () -> Long): ReceiptBoundary {
+        // Snapshot BEFORE any clock callback or monitor wait. A later activation cannot
+        // promote this receipt. Full monotonic/authority/storage checks run on the worker.
+        val atEntry = lease
+        val utcMs = runCatching(utcMillis).getOrDefault(0)
+        val elapsed = runCatching { elapsedMillis() }.getOrNull()
+        return ReceiptBoundary(atEntry?.takeIf { utcMs > 0 && elapsed != null && elapsed >= 0 && elapsed < it.deadline }, utcMs)
+    }
+    @Synchronized fun observeAtBoundary(boundary: ReceiptBoundary, token: String, peer: String,
+                                         line: String, generation: Long, body: String): ConversationObservation =
+        observe(token, if (boundary.identity != null && boundary.identity === lease) boundary.utcMs else 0,
+            peer, line, generation, body)
+
+
+    /** Fresh sanitized budget for the dormant runtime; storage state alone never implies active. */
+    @Synchronized fun remainingMs(expected: ConversationCaptureScope): Long {
+        val value = currentLease() ?: return 0
+        return if (value.scope == expected) (value.deadline - clock()).coerceIn(0, MAX_ADMISSION_MS) else 0
+    }
+
+    /** Dormant adapters share the exact receiver/Pause monitor and scope fence. */
+    @Synchronized fun <T> withCurrentScope(expected: ConversationCaptureScope, action: (() -> Unit) -> T): T = failClosed {
+        val check = { check(checkNotNull(currentLease()).scope == expected) { "Conversation scope unavailable" } }
+        check()
+        action(check)
+    }
 
     /**
      * receiptToken is the existing vault's domain-separated HMAC of the original PDU identity.
@@ -164,6 +209,32 @@ internal class ConversationCaptureAdmission(
         }
         return if (result.protectedCapture != null) ConversationObservation.CAPTURED else ConversationObservation.DISCARDED
     }
+
+    /** Queue retries retain original scope and receipt time; renewal never reseals old content. */
+    @Synchronized fun sealedCapture(receiptToken: String, seal: (ConversationCapturedBody, Long) -> ByteArray): Pair<ConversationCapturedBody, ByteArray>? = failClosed {
+        val content = retry(receiptToken) ?: return@failClosed null
+        fun checkLive() { check(checkNotNull(currentLease()).scope == content.scope) }
+        val row = journal.reserveWire(receiptToken, content.captureId, content.scope.intervalId, ::checkLive)
+        val aad = "zrotext-conversation-wire-v1:$receiptToken:${content.captureId}:${row.sequence}:${content.scope.transcriptDigest}"
+        if (row.protectedEnvelope == null) {
+            check(row.nonce == null)
+            val raw = seal(content, row.sequence)
+            try {
+                require(raw.size in 1..40000)
+                checkLive()
+                val protected = protection.seal(java.util.Base64.getEncoder().encodeToString(raw), aad)
+                journal.storeWire(row, protected.ciphertext, protected.nonce, ::checkLive)
+                checkLive()
+            } finally { raw.fill(0) }
+        }
+        val stored = checkNotNull(journal.wireCapture(receiptToken))
+        check(stored.sequence == row.sequence && stored.captureId == content.captureId && stored.intervalId == content.scope.intervalId)
+        val raw = java.util.Base64.getDecoder().decode(protection.open(InboundVault.Sealed(
+            checkNotNull(stored.protectedEnvelope), checkNotNull(stored.nonce)), aad))
+        require(raw.size in 1..40000); checkLive()
+        content to raw // Exact persisted bytes; no encryption or sequence allocation on retry.
+    }
+    @Synchronized fun activeScope(): ConversationCaptureScope? = currentLease()?.scope
 
     /** Queue retries retain original scope and receipt time; renewal never reseals old content. */
     @Synchronized fun retry(receiptToken: String): ConversationCapturedBody? = failClosed {
@@ -214,8 +285,8 @@ internal class ConversationCaptureAdmission(
     }
 
     private fun readScope(row: ConversationInstallation): ConversationCaptureScope {
-        val scope = ConversationCaptureScope.decode(protection.open(
-            InboundVault.Sealed(row.protectedScope, row.nonce), scopeAad(row.intervalId, row.receiptId)))
+        val scope = ConversationProtectedInstallation.decode(protection.open(
+            InboundVault.Sealed(row.protectedScope, row.nonce), scopeAad(row.intervalId, row.receiptId))).scope
         check(scope.intervalId == row.intervalId && scope.receiptId == row.receiptId &&
             scope.transcriptDigest == row.transcriptDigest) { "Protected installation identity changed" }
         return scope

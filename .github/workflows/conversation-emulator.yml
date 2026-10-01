@@ -1,0 +1,140 @@
+name: Isolated conversation emulator
+on:
+  pull_request:
+    paths: ['android/**', 'crates/**', 'sdk/typescript/**', 'web/owner/**', 'deploy/compose/migrations/**', 'scripts/conversation_emulator.py', 'scripts/test_conversation_emulator.py', 'scripts/conversation_compiled_acceptance.py', 'scripts/test_conversation_compiled_acceptance.py', '.github/workflows/conversation-emulator.yml']
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  conversation-emulator:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: postgres:18.6-bookworm
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 3s --health-retries 12
+    env:
+      ZT_INBOUND_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/postgres
+      DATABASE_ALLOW_PLAINTEXT: 'true'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: gradle/actions/wrapper-validation@9c971963bec38e04b3d30dcc455b5382be2fdbfb
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd
+      - name: Install existing toolchains and isolated browser tooling
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal
+          sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0' 'emulator' 'system-images;android-28;google_apis;x86_64'
+          npm install --prefix "$RUNNER_TEMP/conversation-browser-tools" --no-save --ignore-scripts playwright@1.58.2
+          node "$RUNNER_TEMP/conversation-browser-tools/node_modules/playwright/cli.js" install --with-deps chromium
+          echo "ZT_CONVERSATION_BROWSER_TOOLS=$RUNNER_TEMP/conversation-browser-tools" >> "$GITHUB_ENV"
+      - name: Build only synthetic emulator artifacts
+        run: |
+          python3 -m unittest discover -s scripts -p test_conversation_emulator.py
+          python3 -m unittest discover -s scripts -p test_conversation_compiled_acceptance.py
+          (cd sdk/typescript && npm ci --ignore-scripts && npm run build)
+          cargo +1.97.1 test --locked -p zrotext-server --lib --features conversation-simulator-tests --no-run
+          (cd android && ./gradlew -PisolatedConversationProbe=true :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon)
+      - name: Boot owned isolated emulator and require round trip
+        run: |
+          diagnostics="$RUNNER_TEMP/conversation-startup-diagnostics"
+          mkdir -p "$diagnostics"
+          emulator_pid=''
+          wait_pid=''
+          phase='preflight'
+          preserve_startup() {
+            status=$?
+            trap - EXIT
+            printf 'phase=%s\nstep_exit=%s\n' "$phase" "$status" > "$diagnostics/status.txt"
+            tail -c 65536 "$RUNNER_TEMP/conversation-emulator.log" > "$diagnostics/emulator-startup.log" 2>/dev/null || true
+            tail -c 16384 "$RUNNER_TEMP/conversation-adb-wait.log" > "$diagnostics/adb-wait.log" 2>/dev/null || true
+            if [ "$status" -ne 0 ]; then
+              echo '::group::Bounded synthetic emulator startup diagnostics'
+              cat "$diagnostics/status.txt"
+              tail -c 16384 "$diagnostics/emulator-startup.log"
+              tail -c 4096 "$diagnostics/adb-wait.log"
+              echo '::endgroup::'
+            fi
+            if [ -n "$wait_pid" ]; then
+              kill "$wait_pid" 2>/dev/null || true
+            fi
+            if [ -n "$emulator_pid" ]; then
+              timeout 5 adb -s emulator-5596 emu kill || true
+              kill "$emulator_pid" 2>/dev/null || true
+            fi
+            exit "$status"
+          }
+          require_emulator_process() {
+            if ! kill -0 "$emulator_pid" 2>/dev/null; then
+              if wait "$emulator_pid"; then emulator_exit=0; else emulator_exit=$?; fi
+              printf 'emulator_exit=%s\n' "$emulator_exit" > "$diagnostics/process-exit.txt"
+              echo "::error::Owned emulator exited during $phase (exit $emulator_exit)"
+              exit 1
+            fi
+          }
+          trap preserve_startup EXIT
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
+          echo no | avdmanager create avd --name ZROtext_Conversation_API28 --package 'system-images;android-28;google_apis;x86_64' --force
+          test -x "$ANDROID_HOME/emulator/emulator"
+          "$ANDROID_HOME/emulator/emulator" -avd ZROtext_Conversation_API28 -port 5596 -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect > "$RUNNER_TEMP/conversation-emulator.log" 2>&1 &
+          emulator_pid=$!
+          phase='adb-connect'
+          timeout 180 adb -s emulator-5596 wait-for-device > "$RUNNER_TEMP/conversation-adb-wait.log" 2>&1 &
+          wait_pid=$!
+          while kill -0 "$wait_pid" 2>/dev/null; do
+            require_emulator_process
+            sleep 1
+          done
+          if wait "$wait_pid"; then :; else
+            status=$?
+            echo "::error::Owned emulator ADB connection failed (exit $status)"
+            exit "$status"
+          fi
+          wait_pid=''
+          phase='android-boot'
+          boot_completed=''
+          boot_deadline=$((SECONDS + 120))
+          while [ "$SECONDS" -lt "$boot_deadline" ]; do
+            require_emulator_process
+            remaining=$((boot_deadline - SECONDS))
+            if [ "$remaining" -le 0 ]; then break; fi
+            probe_timeout=5
+            if [ "$remaining" -lt "$probe_timeout" ]; then probe_timeout="$remaining"; fi
+            boot_completed="$(timeout "$probe_timeout" adb -s emulator-5596 shell getprop sys.boot_completed | tr -d '\r')" || boot_completed=''
+            if [ "$boot_completed" = 1 ]; then break; fi
+            sleep 1
+          done
+          test "$boot_completed" = 1
+          phase='compiled-roundtrip'
+          python3 scripts/conversation_emulator.py --serial emulator-5596 --adb "$ANDROID_HOME/platform-tools/adb" --aapt "$ANDROID_HOME/build-tools/37.0.0/aapt" --toolchain 1.97.1 --skip-build
+          python3 scripts/conversation_compiled_acceptance.py \
+            --commit "$(git rev-parse HEAD)" \
+            --app-sha256 "$(sha256sum android/app/build/outputs/apk/debug/app-debug.apk | cut -d ' ' -f 1)" \
+            --test-sha256 "$(sha256sum android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk | cut -d ' ' -f 1)" \
+            --adb "$ANDROID_HOME/platform-tools/adb" --aapt "$ANDROID_HOME/build-tools/37.0.0/aapt" \
+            --execute --handoff-reference "exclusive job-owned emulator after roundtrip"
+      - name: Preserve bounded synthetic emulator startup diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: conversation-emulator-startup-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/conversation-startup-diagnostics/
+          if-no-files-found: ignore
+          retention-days: 3

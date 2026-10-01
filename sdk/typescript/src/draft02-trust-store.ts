@@ -7,6 +7,8 @@ import {
 
 const storeName = "owner-root-high-water";
 const stateKey = "state";
+const historyPrefix = "accepted-manifest:";
+const historyLimit = 64;
 const maxSigned = (1n << 63n) - 1n;
 
 type StoredTrust = {
@@ -225,7 +227,8 @@ export class Draft02TrustStore {
 
   /**
    * Explicit recovery from a row that `read()` rejects as corrupt or of an unknown schema.
-   * Deletes the row only if it does not decode; a valid enrollment is never removed here.
+   * Deletes corrupt state and its associated public history only if state does not decode;
+   * a valid enrollment is never removed here.
    * Returns false when nothing is stored. Afterwards the caller must `enroll` again.
    */
   clearCorruptState(): Promise<boolean> {
@@ -241,7 +244,7 @@ export class Draft02TrustStore {
           valid = true;
           tx.abort();
         } catch {
-          tx.objectStore(storeName).delete(stateKey);
+          tx.objectStore(storeName).clear();
           cleared = true;
         }
       };
@@ -266,8 +269,73 @@ export class Draft02TrustStore {
       trust: advanceManifestTrust02(before.trust, manifest),
       lastTrustedTimeMs: ratchet(before.lastTrustedTimeMs, nowMs, manifest.issuedMs),
     };
-    await this.write(before, next);
+    await this.write(before, next, signed);
     return manifest;
+  }
+
+  /** Restore a manifest this browser actually accepted. Public signed bytes are retained atomically
+   * with high-water, for the last 64 accepted versions of the current root/generation only.
+   * Existing installations without stored ancestors and pruned/gapped histories fail closed.
+   */
+  async verifyStoredHistory(manifestDigest: Uint8Array, observedMs: bigint): Promise<Manifest02> {
+    checkedTime(observedMs);
+    const requested = copy(manifestDigest, 32);
+    const rows: { digest: Uint8Array; bytes: Uint8Array }[] = await new Promise((resolve, reject) => {
+      const tx = this.db.transaction(storeName, "readonly"), values: { digest: Uint8Array; bytes: Uint8Array }[] = [];
+      const cursor = tx.objectStore(storeName).openCursor();
+      cursor.onsuccess = () => {
+        const entry = cursor.result;
+        if (!entry) return;
+        try {
+          if (typeof entry.key === "string" && entry.key.startsWith(historyPrefix)) {
+            if (values.length >= historyLimit || entry.value?.kind !== "accepted-manifest" ||
+                !(entry.value.bytes instanceof Uint8Array) || entry.value.bytes.length < 215 || entry.value.bytes.length > 11223) fail("corrupt stored history");
+            values.push({ digest: copy(entry.value.digest, 32), bytes: input(entry.value.bytes, "stored history") });
+          }
+          entry.continue();
+        } catch { tx.abort(); }
+      };
+      tx.oncomplete = () => resolve(values);
+      tx.onabort = () => reject(new Error("ZTSE draft-02 trust store: corrupt stored history"));
+      tx.onerror = () => reject(tx.error ?? new Error("IndexedDB history read failed"));
+    });
+    const at = rows.findIndex(row => sameBytes(row.digest, requested));
+    if (at < 0) fail("accepted stored history unavailable");
+    const accepted = await this.verifyHistory(rows.slice(at).map(row => row.bytes), observedMs);
+    if (!sameBytes(accepted.digest, requested)) fail("stored history digest mismatch");
+    return accepted;
+  }
+
+  /** Restore historical acceptance without lowering high-water: prove a complete signed successor
+   * chain ending at the exact CURRENT persisted digest. Expired ancestors are verified at their signed
+   * issue times; the requested ancestor is verified at authenticated receipt time. Root transitions
+   * and incomplete/oversized chains are refused. This operation never writes or enrolls a root.
+   */
+  async verifyHistory(chain: readonly Uint8Array[], observedMs: bigint): Promise<Manifest02> {
+    checkedTime(observedMs);
+    if (chain.length < 1 || chain.length > historyLimit) fail("history chain bound");
+    const signed = chain.map(bytes => input(bytes, "history manifest"));
+    if (signed.some(bytes => bytes.length < 215 || bytes.length > 11223)) fail("history manifest bound");
+    const before = await this.read();
+    if (!before || before.trust.version === 0n) fail("history requires accepted high-water");
+    const first = signed[0];
+    const version = new DataView(first.buffer, first.byteOffset, first.byteLength).getBigUint64(29);
+    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", Uint8Array.from(first.subarray(0, -64)).buffer));
+    // This temporary self-digest permits signature parsing only. It is accepted solely after the
+    // contiguous chain reaches the already trusted current digest, below.
+    let pin: ManifestTrust02 = { ...before.trust, version, digest };
+    const historical = await verifyManifest02(first, pin, observedMs);
+    pin = advanceManifestTrust02(pin, historical);
+    for (const bytes of signed.slice(1)) {
+      const issuedMs = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getBigUint64(37);
+      const next = await verifyManifest02(bytes, pin, issuedMs);
+      if (next.version !== pin.version + 1n) fail("history chain duplicate");
+      pin = advanceManifestTrust02(pin, next);
+    }
+    if (pin.version !== before.trust.version || !sameBytes(pin.digest, before.trust.digest)) fail("history does not reach high-water");
+    const after = await this.read();
+    if (!after || !sameSnapshot(before, after)) fail("history high-water changed");
+    return historical;
   }
 
   /** The expected new root must be pinned by the owner independently of the relay. */
@@ -288,9 +356,10 @@ export class Draft02TrustStore {
     return decode(encode(next));
   }
 
-  private write(before: Draft02TrustSnapshot | null, after: Draft02TrustSnapshot): Promise<void> {
+  private write(before: Draft02TrustSnapshot | null, after: Draft02TrustSnapshot, signedManifest?: Uint8Array): Promise<void> {
     const expected = before === null ? null : captured(before);
     const row = encode(after);
+    const signed = signedManifest === undefined ? undefined : input(signedManifest, "accepted manifest");
     return new Promise((resolve, reject) => {
       const tx = this.db.transaction(storeName, "readwrite");
       const request = tx.objectStore(storeName).get(stateKey);
@@ -303,7 +372,20 @@ export class Draft02TrustStore {
             tx.abort();
             return;
           }
-          tx.objectStore(storeName).put(row, stateKey);
+          const store = tx.objectStore(storeName);
+          // Enrollment/recovery/root transition starts a fresh public history. Time recovery retains it.
+          if (after.trust.version === 0n || expected === null || expected.trust.generation !== after.trust.generation ||
+              !sameBytes(expected.trust.accountId, after.trust.accountId) || !sameBytes(expected.trust.rootPoint, after.trust.rootPoint)) store.clear();
+          if (signed) {
+            const key = historyPrefix + after.trust.generation.toString().padStart(19, "0") + ":" + after.trust.version.toString().padStart(19, "0");
+            store.put({ kind: "accepted-manifest", digest: Uint8Array.from(after.trust.digest), bytes: signed }, key);
+            const keys = store.getAllKeys();
+            keys.onsuccess = () => {
+              const history = keys.result.filter((key): key is string => typeof key === "string" && key.startsWith(historyPrefix)).sort();
+              for (const old of history.slice(0, Math.max(0, history.length - historyLimit))) store.delete(old);
+            };
+          }
+          store.put(row, stateKey);
         } catch {
           denied = true;
           tx.abort();

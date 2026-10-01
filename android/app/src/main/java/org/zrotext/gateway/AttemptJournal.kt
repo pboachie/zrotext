@@ -486,9 +486,22 @@ abstract class SmsAttemptDao {
     @Query("SELECT * FROM alpha_radio_events WHERE eventId = :eventId")
     abstract fun getAlphaEvent(eventId: String): AlphaRadioEvent?
 
-    @Query("SELECT * FROM alpha_radio_events WHERE acknowledgedAtMs IS NULL AND quarantinedAtMs IS NULL AND accountId = :accountId AND deviceId = :deviceId AND originHash = :originHash ORDER BY rowid LIMIT 1")
-    abstract fun nextAlphaEvent(accountId: String, deviceId: String,
-                                originHash: String): AlphaRadioEvent?
+    @Query("SELECT e.* FROM alpha_radio_events e WHERE e.acknowledgedAtMs IS NULL AND e.quarantinedAtMs IS NULL AND e.accountId = :accountId AND e.deviceId = :deviceId AND e.originHash = :originHash AND (e.evidence != 'durable_submit_intent' OR (instr(:excludedEvents, ',' || e.eventId || ',') = 0 AND NOT EXISTS (SELECT 1 FROM sealed_preparations p WHERE p.accountId = e.accountId AND p.messageId = e.messageId AND p.attemptId = e.attemptId))) ORDER BY e.rowid LIMIT 1")
+    protected abstract fun nextAlphaEventExcluding(accountId: String, deviceId: String,
+                                                   originHash: String, excludedEvents: String): AlphaRadioEvent?
+
+    /** Filter before LIMIT so an owned sealed intent cannot starve ordinary reconciliation. */
+    open fun nextAlphaEvent(accountId: String, deviceId: String, originHash: String,
+                            excluded: List<String> = emptyList()): AlphaRadioEvent? =
+        nextAlphaEventExcluding(accountId, deviceId, originHash, intentExclusions(excluded))
+
+    // Four SQL bindings even at the registry's capacity, including older Android SQLite builds.
+    private fun intentExclusions(excluded: List<String>): String {
+        require(excluded.size <= 1024 && excluded.all {
+            runCatching { UUID.fromString(it).let { id -> id != UUID(0, 0) && id.toString() == it } }.getOrDefault(false)
+        })
+        return excluded.joinToString(",", prefix = ",", postfix = ",")
+    }
 
     @Query("UPDATE alpha_radio_events SET quarantinedAtMs = :now, quarantineReason = 'identity_changed' WHERE acknowledgedAtMs IS NULL AND quarantinedAtMs IS NULL AND (accountId IS NULL OR deviceId IS NULL OR originHash IS NULL OR accountId != :accountId OR deviceId != :deviceId OR originHash != :originHash)")
     abstract fun quarantineForeignAlpha(accountId: String, deviceId: String,
@@ -497,8 +510,8 @@ abstract class SmsAttemptDao {
     @Query("UPDATE alpha_radio_events SET quarantinedAtMs = :now, quarantineReason = :reason WHERE eventId = :eventId AND acknowledgedAtMs IS NULL AND quarantinedAtMs IS NULL")
     abstract fun quarantineAlphaEvent(eventId: String, reason: String, now: Long): Int
 
-    @Query("SELECT e.* FROM alpha_radio_events e JOIN sms_attempts a ON a.attemptId = e.attemptId WHERE e.evidence = 'durable_submit_intent' AND e.acknowledgedAtMs IS NULL AND e.quarantinedAtMs IS NULL AND a.state IN ('reserved','not_submitted') ORDER BY e.rowid")
-    protected abstract fun orphanedAlphaIntents(): List<AlphaRadioEvent>
+    @Query("SELECT e.* FROM alpha_radio_events e JOIN sms_attempts a ON a.attemptId = e.attemptId WHERE e.evidence = 'durable_submit_intent' AND e.acknowledgedAtMs IS NULL AND e.quarantinedAtMs IS NULL AND a.state IN ('reserved','not_submitted') AND instr(:excludedEvents, ',' || e.eventId || ',') = 0 ORDER BY e.rowid")
+    protected abstract fun orphanedAlphaIntents(excludedEvents: String): List<AlphaRadioEvent>
 
     @Query("UPDATE alpha_radio_events SET acknowledgedAtMs = :now WHERE eventId = :eventId AND acknowledgedAtMs IS NULL AND quarantinedAtMs IS NULL")
     abstract fun acknowledgeAlphaEvent(eventId: String, now: Long): Int
@@ -562,9 +575,13 @@ abstract class SmsAttemptDao {
 
     /** A replaced/expired stream cannot authorize a still-reserved intent. */
     @Transaction
-    open fun retireOrphanedAlphaIntents(now: Long) {
-        for (event in orphanedAlphaIntents()) {
+    open fun retireOrphanedAlphaIntents(now: Long, excluded: List<String> = emptyList(),
+                                       keepCurrent: (AlphaRadioEvent) -> Boolean = { false }) {
+        for (event in orphanedAlphaIntents(intentExclusions(excluded))) {
             val attempt = getAttempt(event.attemptId) ?: continue
+            // Registration precedes insertion; refresh ownership after transaction acquisition,
+            // immediately before any state write, rather than trusting the earlier exclusion list.
+            if (keepCurrent(event)) continue
             if (attempt.state == AttemptState.RESERVED) {
                 setState(event.attemptId, AttemptState.NOT_SUBMITTED, now)
             }

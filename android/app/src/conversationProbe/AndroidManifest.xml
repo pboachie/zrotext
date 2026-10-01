@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
+    <uses-permission tools:node="removeAll" />
+    <uses-permission-sdk-23 tools:node="removeAll" />
+    <uses-feature tools:node="removeAll" />
+    <permission tools:node="removeAll" />
+    <queries tools:node="removeAll" />
+    <application tools:node="replace" android:name="android.app.Application" android:testOnly="true"
+        android:allowBackup="false" android:usesCleartextTraffic="true" android:label="SIMULATOR ONLY conversation">
+        <activity android:name=".ConversationProbeActivity" android:exported="false" />
+        <service android:name=".ConversationProbeService" android:exported="false" />
+    </application>
+</manifest>

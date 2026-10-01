@@ -457,6 +457,11 @@ async fn candidate_ingest_preserves_legacy_profile_constraints_and_prune_tombsto
     ))
     .await
     .unwrap();
+    db.batch_execute(include_str!(
+        "../../../../../deploy/compose/migrations/072_conversation_confirmation_records.sql"
+    ))
+    .await
+    .unwrap();
     let pruned = crate::retention::prune(&mut db, policy, 10).await.unwrap();
     assert_eq!(pruned.sealed_inbound_events, 2);
     assert_eq!(count(&f).await, 2);
@@ -481,22 +486,25 @@ async fn candidate_ingest_preserves_legacy_profile_constraints_and_prune_tombsto
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn candidate_ingest_does_not_acknowledge_existing_identity_with_expired_authority_or_event_age()
  {
+    // Allow bounded crypto/database setup while authority is live. The replay
+    // assertions below still wait for the actual database expiry boundary.
+    let setup_window_ms = 2_000;
     for expire_manifest in [false, true] {
         let mut f = Fixture::new().await;
         let time = now(&f).await;
         if expire_manifest {
-            f.bytes[45..53].copy_from_slice(&((time + 500) as u64).to_be_bytes());
+            f.bytes[45..53].copy_from_slice(&((time + setup_window_ms) as u64).to_be_bytes());
             f.resign();
         }
         let observed = if expire_manifest {
             time
         } else {
-            time - MAX_AGE_MS + 500
+            time - MAX_AGE_MS + setup_window_ms
         };
         let bytes = envelope(&f, Uuid::new_v4(), 1, observed, 17);
         ingest(&f, &bytes).await.unwrap();
         let (deadline, phase) = if expire_manifest {
-            (time + 500, "manifest replay expiry")
+            (time + setup_window_ms, "manifest replay expiry")
         } else {
             // Event age rejects strictly older timestamps, so observe the
             // first database millisecond beyond the inclusive age bound.

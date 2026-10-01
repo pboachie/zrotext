@@ -1,4 +1,10 @@
 use super::*;
+
+#[test]
+fn sealed_content_frame_budget_requires_explicit_conversation_policy() {
+    assert_eq!(socket_frame_limit(false), 4096);
+    assert_eq!(socket_frame_limit(true), 48_000);
+}
 use crate::enrollment::{EnrollmentError, device_challenge_bytes};
 use futures_util::{SinkExt, StreamExt};
 use p256::ecdsa::{Signature, SigningKey, signature::Signer};
@@ -174,6 +180,8 @@ fn stream_schema_examples_match_serde_frames() {
         let parsed: ClientFrame = serde_json::from_value(frame.clone()).unwrap();
         assert_eq!(frame["v"], 1);
         let variant = match parsed {
+            ClientFrame::ConversationReady { .. } => "conversation_ready",
+            ClientFrame::ConversationBinary(_) => "conversation_binary",
             ClientFrame::Hello { .. } => "hello",
             ClientFrame::Proof { .. } => "proof",
             ClientFrame::Heartbeat { .. } => "heartbeat",

@@ -46,6 +46,7 @@ use zrotext_domain::{Evidence, MessageState};
 
 mod mms_spike_policy;
 pub use mms_spike_policy::MmsSpikePolicy;
+mod conversation;
 mod preconditions;
 mod stream_diagnostic;
 
@@ -66,6 +67,14 @@ const HEARTBEAT_ABUSE_WINDOW: Duration = Duration::from_secs(60);
 const MAX_HEARTBEATS_PER_WINDOW: u32 = 60;
 const SESSION_LEASE_SECONDS: i32 = 90;
 const MAX_FRAME_BYTES: usize = 4096;
+// Only the explicitly configured future socket admits bounded sealed content frames.
+fn socket_frame_limit(conversation_enabled: bool) -> usize {
+    if conversation_enabled {
+        48_000
+    } else {
+        MAX_FRAME_BYTES
+    }
+}
 /// Authenticated device sockets per process, across all accounts.
 pub const MAX_DEVICE_SOCKETS: usize = 32;
 /// Default share of [`MAX_DEVICE_SOCKETS`] one account may hold.
@@ -233,6 +242,7 @@ impl SocketAdmission {
 struct SocketRoute {
     state: DeviceSocketState,
     admission: SocketAdmission,
+    conversation: Option<conversation::Policy>,
 }
 
 #[derive(Clone)]
@@ -267,6 +277,14 @@ pub struct DeviceSession {
 #[derive(Deserialize)]
 #[serde(tag = "type", deny_unknown_fields)]
 enum ClientFrame {
+    #[serde(rename = "conversation_ready")]
+    ConversationReady {
+        v: u8,
+        connection_epoch: i64,
+        challenge: Uuid,
+    },
+    #[serde(skip)]
+    ConversationBinary(Vec<u8>),
     #[serde(rename = "sealed_ready")]
     SealedReady {
         v: u8,
@@ -568,11 +586,50 @@ pub fn router_with_account_share(state: DeviceSocketState, sockets_per_account: 
 fn router_with_admission(state: DeviceSocketState, admission: SocketAdmission) -> Router {
     Router::new()
         .route("/v1/device-stream", get(upgrade))
-        .with_state(SocketRoute { state, admission })
+        .with_state(SocketRoute {
+            state,
+            admission,
+            conversation: None,
+        })
+}
+
+/// Explicit future composition only. Main continues to call the default disabled router.
+/// The configured WSS origin must match the phone's independently approved endpoint.
+pub fn conversation_origin_check(origin: &str) -> Result<(), &'static str> {
+    conversation::Policy::new(origin).map(|_| ())
+}
+
+pub fn router_with_conversations(
+    state: DeviceSocketState,
+    origin: &str,
+) -> Result<Router, &'static str> {
+    router_with_conversations_and_account_share(state, origin, DEFAULT_DEVICE_SOCKETS_PER_ACCOUNT)
+}
+
+/// Conversation negotiation retains the ordinary account socket admission budget.
+pub fn router_with_conversations_and_account_share(
+    state: DeviceSocketState,
+    origin: &str,
+    sockets_per_account: usize,
+) -> Result<Router, &'static str> {
+    let policy = conversation::Policy::new(origin)?;
+    Ok(Router::new()
+        .route("/v1/device-stream", get(upgrade))
+        .with_state(SocketRoute {
+            state,
+            admission: DEVICE_SOCKET_ADMISSION
+                .clone()
+                .with_account_limit(sockets_per_account),
+            conversation: Some(policy),
+        }))
 }
 
 async fn upgrade(
-    State(SocketRoute { state, admission }): State<SocketRoute>,
+    State(SocketRoute {
+        state,
+        admission,
+        conversation,
+    }): State<SocketRoute>,
     headers: HeaderMap,
     websocket: WebSocketUpgrade,
 ) -> Response {
@@ -597,11 +654,21 @@ async fn upgrade(
     if state.sealed_dispatch_enabled && state.dispatch_runtime_enabled {
         protocols.insert(0, crate::sealed_dispatch::wire::PROTOCOL);
     }
+    let frame_limit = socket_frame_limit(conversation.is_some());
     websocket
         .protocols(protocols)
-        .max_message_size(MAX_FRAME_BYTES)
-        .max_frame_size(MAX_FRAME_BYTES)
-        .on_upgrade(move |socket| run_socket(socket, state, admission, handshake_slot, deadline))
+        .max_message_size(frame_limit)
+        .max_frame_size(frame_limit)
+        .on_upgrade(move |socket| {
+            run_socket(
+                socket,
+                state,
+                admission,
+                handshake_slot,
+                deadline,
+                conversation,
+            )
+        })
         .into_response()
 }
 
@@ -715,7 +782,13 @@ async fn receive_frame(socket: &mut WebSocket, budget: &mut FrameBudget) -> Opti
             return None;
         }
         match message {
-            Message::Text(text) => return serde_json::from_str(text.as_str()).ok(),
+            Message::Text(text) => {
+                if text.len() > MAX_FRAME_BYTES {
+                    return None;
+                }
+                return serde_json::from_str(text.as_str()).ok();
+            }
+            Message::Binary(bytes) => return Some(ClientFrame::ConversationBinary(bytes.to_vec())),
             Message::Ping(_) | Message::Pong(_) => continue,
             _ => return None,
         }
@@ -953,6 +1026,7 @@ async fn run_socket(
     admission: SocketAdmission,
     handshake_slot: OwnedSemaphorePermit,
     deadline: tokio::time::Instant,
+    conversation_policy: Option<conversation::Policy>,
 ) {
     let mut status_protocol = socket
         .protocol()
@@ -1055,10 +1129,32 @@ async fn run_socket(
     let mut diagnostic_tally = stream_diagnostic::StreamTally::new(last_heartbeat);
     let mut close_reason = "other_stream_exit";
     let mut close_with_code = None;
+    let mut conversation_session = None;
     loop {
         tokio::select! {
             message = receive_frame(&mut socket, &mut frame_budget) => {
                 match message {
+                    Some(ClientFrame::ConversationReady {v:1,connection_epoch,challenge}) => {
+                        if conversation_session.is_some() || connection_epoch!=session.connection_epoch || challenge.is_nil() {
+                            close_with_code=Some(close_code::POLICY);break;
+                        }
+                        let Some(policy)=conversation_policy.as_ref() else {close_with_code=Some(close_code::POLICY);break;};
+                        let Ok(client)=runtime_db::connect_device(&state.database_url).await else {close_with_code=Some(RETRY_LATER);break;};
+                        if !session_current(&client,session,&state).await.unwrap_or(false) {close_with_code=Some(close_code::POLICY);break;}
+                        drop(client);
+                        let negotiated=policy.negotiate(session,state.deployment_epoch,challenge);
+                        let Ok((held,reply))=negotiated else {close_with_code=Some(close_code::POLICY);break;};
+                        if socket.send(Message::Text(reply.into())).await.is_err(){break;}
+                        conversation_session=Some(held);
+                    }
+                    Some(ClientFrame::ConversationBinary(bytes)) => {
+                        let Some(held)=conversation_session.as_ref() else {close_with_code=Some(close_code::POLICY);break;};
+                        let Ok(mut client)=runtime_db::connect_device(&state.database_url).await else {close_with_code=Some(RETRY_LATER);break;};
+                        match held.handle(&mut client,session,&state,&bytes).await {
+                            Ok(reply)=> {if socket.send(Message::Binary(reply.into())).await.is_err(){break;}}
+                            Err(_)=>{close_with_code=Some(close_code::POLICY);break;}
+                        }
+                    }
                     Some(ClientFrame::SealedReady { v: 1, grant_version, connection_epoch, line_id, binding_generation, reader_key_id })
                         if sealed_negotiated && !sealed_ready_used => {
                         let ready = crate::sealed_dispatch::wire::Ready {
@@ -1222,7 +1318,12 @@ async fn run_socket(
                             let (current_grant, previous_intent) = match durable_intent_preflight(
                                 &client, session, event_id, message_id, attempt_id, &state,
                             ).await {
-                                Ok((grant, intent)) => (Some(grant), Some(intent)),
+                                Ok((grant, intent)) => {
+                                    let grant = grant && conversation_execution_current(
+                                        &mut client, session, &state, conversation_session.as_ref(), message_id, attempt_id,
+                                    ).await.unwrap_or(false);
+                                    (Some(grant), Some(intent))
+                                },
                                 Err(_) => (None, None),
                             };
                             if let Some(code) = durable_intent_preflight_close_code(
@@ -1255,7 +1356,10 @@ async fn run_socket(
                         let submit_permitted = matches!(evidence, RadioEvidence::DurableSubmitIntent)
                             && grant_still_current(&client, session, message_id, attempt_id, &state)
                                 .await
-                                .unwrap_or(false);
+                                .unwrap_or(false)
+                            && conversation_execution_current(
+                                &mut client, session, &state, conversation_session.as_ref(), message_id, attempt_id,
+                            ).await.unwrap_or(false);
                         drop(client);
                         if !send_frame(&mut socket, ServerFrame::RadioEventAck {
                             v: 1, event_id, state: next, submit_permitted,
@@ -1647,6 +1751,33 @@ fn store_session(session: DeviceSession, state: &DeviceSocketState) -> SessionRe
         instance_id: state.instance_id.clone(),
         epoch: session.connection_epoch,
         deployment_epoch: state.deployment_epoch,
+    }
+}
+
+async fn conversation_execution_current(
+    client: &mut Client,
+    session: DeviceSession,
+    state: &DeviceSocketState,
+    negotiated: Option<&conversation::Negotiated>,
+    message: Uuid,
+    attempt: Uuid,
+) -> Result<bool, crate::http_owner_conversations::ConversationError> {
+    let row = client
+        .query_opt(
+            "SELECT transport_mode FROM messages WHERE account_id=$1 AND id=$2 AND device_id=$3",
+            &[&session.account_id, &message, &session.device_id],
+        )
+        .await?;
+    match row.map(|r| r.get::<_, String>(0)).as_deref() {
+        Some("synthetic_alpha") => Ok(true),
+        Some("sealed_candidate02") => match negotiated {
+            Some(held) => {
+                held.execution_current(client, session, state, message, attempt)
+                    .await
+            }
+            None => Ok(false),
+        },
+        _ => Ok(false),
     }
 }
 

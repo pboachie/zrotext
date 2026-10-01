@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Explicit dormant authenticated conversation negotiation",
+  "oneOf": [
+    {
+      "type": "object", "additionalProperties": false,
+      "required": ["v", "type", "connection_epoch", "challenge"],
+      "properties": {
+        "v": {"const": 1}, "type": {"const": "conversation_ready"},
+        "connection_epoch": {"type": "integer", "minimum": 1},
+        "challenge": {"$ref": "#/$defs/uuid"}
+      }
+    },
+    {
+      "type": "object", "additionalProperties": false,
+      "required": ["v", "type", "challenge", "account_id", "device_id", "phone_session", "connection_epoch", "deployment_epoch", "origin_hash"],
+      "properties": {
+        "v": {"const": 1}, "type": {"const": "conversation_session"},
+        "challenge": {"$ref": "#/$defs/uuid"}, "account_id": {"$ref": "#/$defs/uuid"},
+        "device_id": {"$ref": "#/$defs/uuid"}, "phone_session": {"$ref": "#/$defs/uuid"},
+        "connection_epoch": {"type": "integer", "minimum": 1},
+        "deployment_epoch": {"type": "integer", "minimum": 1},
+        "origin_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  ],
+  "$defs": {"uuid": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "not": {"const": "00000000-0000-0000-0000-000000000000"}}}
+}
