@@ -1,0 +1,170 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+package org.zrotext.gateway
+
+import android.content.Context
+import android.os.SystemClock
+import java.nio.ByteBuffer
+import java.util.UUID
+import java.util.concurrent.Executor
+import java.util.concurrent.atomic.AtomicReference
+
+/** Explicit process-only setup. Existing compared-root storage and hardware keys are mandatory.
+ * The ordinary service continues to own authentication, negotiation and socket callbacks.
+ */
+internal class ConversationUserSetupController(
+    context: Context, private val lines: SmsAttemptDao, private val payloadAlias: String,
+    private val worker: Executor, private val delivery: Executor,
+    private val execution: ConversationExecutionComposition,
+    private val onReady: (ConversationPresentationPort) -> Unit,
+    private val elapsedMillis: () -> Long = SystemClock::elapsedRealtime
+) : AutoCloseable {
+    internal class Selection(
+        val session: ConversationPhoneSession, val intervalId: String,
+        val bundle: ConversationActivationBundle, val review: ConversationPhoneReview,
+        val bindings: ConversationConnectionBindings, val site: String, val instance: String
+    ) {
+        override fun toString() = "ConversationUserSelection(redacted)"
+    }
+    private val application = checkNotNull(context.applicationContext)
+    private val gate = Any()
+    private var closed = false
+    private var installed: AutoCloseable? = null
+    private val connection = AtomicReference<ConversationConnectionFactory.Connection?>(null)
+    private val negotiation = AtomicReference<ConversationSocketNegotiation?>(null)
+    private fun requireOpen() = synchronized(gate) { check(!closed) }
+
+    /** Called only for a deliberate selected interval. False opens no journal, key or trust handle. */
+    fun begin(selection: Selection, enabled: Boolean = false): Boolean = synchronized(gate) {
+        check(!closed)
+        if (!enabled || installed != null) return false
+        validate(selection, selection.session)
+        var wire: ConversationAuthenticatedWire? = null
+        var owned: ConversationAndroidConnectionInputs.Owned? = null
+        val provider = ConversationAndroidConnectionInputs(application, lines, payloadAlias, delivery,
+            { wire?.currentSession() }, object : ConversationSendTransport {
+                override fun submit(message: String, attempt: String, scope: ConversationCaptureScope,
+                    body: String) = ConversationSubmission.UNKNOWN
+            })
+        val factory = ConversationConnectionFactory(selection.site, selection.instance, elapsedMillis, worker,
+            { session, authenticated ->
+                requireOpen(); validate(selection, session); check(authenticated.currentSession() == session)
+                wire = authenticated
+                ConversationConnectionProposal(selection.bundle.statement(), selection.review)
+            }, { session ->
+                requireOpen()
+                val parsed = validate(selection, session)
+                val inputs = provider.openForUserAction(session, parsed.scope, selection.review, 0, selection.bindings)
+                try {
+                    requireOpen()
+                    val authenticated = checkNotNull(wire)
+                    val clock = ConversationTrustedClock(elapsedMillis, authenticated::currentSession)
+                    val time = ConversationAuthorityTransport(ConversationSerializedChannel(authenticated), clock,
+                        authenticated::currentSession, elapsedMillis)
+                    time.refreshTime()
+                    fun now(): Long {
+                        requireOpen(); check(authenticated.currentSession() == selection.session)
+                        return checkNotNull(clock.nowMs()).also { check(it in 1 until parsed.expiresMs) }
+                    }
+                    val trust = inputs.inputs.trust
+                    val saved = trust.inspect()
+                    check(saved.status == Draft02TrustStore.Status.NEEDS_FRESHNESS)
+                    val snapshot = checkNotNull(saved.snapshot)
+                    check(snapshot.version > 0) // Never enroll a downloaded root or initial pin here.
+                    val manifest = selection.bundle.manifest()
+                    try {
+                        check(manifest.size in 364..9751 && manifest.copyOfRange(0, 5).contentEquals(byteArrayOf(90,84,77,65,2)))
+                        check(ByteBuffer.wrap(manifest, 21, 8).long == parsed.scope.trustGeneration &&
+                            ByteBuffer.wrap(manifest, 29, 8).long == parsed.scope.activationVersion &&
+                            Draft02OutboundPreparation.hash(manifest.copyOfRange(0, manifest.size - 64)) == parsed.scope.activationDigest)
+                        val prior = trust.currentAuthority(::now)
+                        val position = if (prior.version == parsed.scope.activationVersion)
+                            Draft02ManifestAuthority.Position.current(prior.version, prior.digest)
+                        else Draft02ManifestAuthority.Position.after(prior.version, prior.digest)
+                        val candidate = Draft02ManifestAuthority.verify(snapshot.pin, manifest,
+                            Draft02ManifestAuthority.Trust(uuid(parsed.scope.accountId),
+                                Draft02RootComparison.fingerprint(snapshot.pin), parsed.scope.trustGeneration, position), now())
+                        fun contexts(authority: Draft02ManifestAuthority) {
+                            val recipient = inputs.inputs.payloadKeys.existingPublic()
+                            check(recipient.security in setOf(PayloadKeySecurity.STRONGBOX, PayloadKeySecurity.TRUSTED_ENVIRONMENT))
+                            fun request(inbound: Boolean) = Draft02ManifestAuthority.Request(
+                                if (inbound) Draft02ManifestAuthority.Direction.INBOUND else Draft02ManifestAuthority.Direction.OUTBOUND,
+                                uuid(parsed.scope.accountId), uuid(parsed.scope.intervalId), uuid(parsed.scope.deviceId),
+                                uuid(parsed.scope.lineId), parsed.scope.peer.toByteArray(Charsets.US_ASCII),
+                                if (inbound) parsed.signerId else selection.bindings.outboundSigner,
+                                (if (inbound) emptyList() else listOf(Draft02ManifestAuthority.Reader(1, recipient.keyId))) +
+                                    Draft02ManifestAuthority.Reader(2, hex(parsed.scope.readerKeyId)))
+                            authority.context(request(true), now()); authority.context(request(false), now())
+                        }
+                        contexts(candidate) // Reject wrong roles/bindings before durable trust CAS.
+                        check(trust.acceptManifest(snapshot, manifest, ::now).status == Draft02TrustStore.Status.NEEDS_FRESHNESS)
+                        val verified = trust.currentAuthority(::now)
+                        check(verified.accountId.contentEquals(uuid(parsed.scope.accountId)) &&
+                            verified.version == parsed.scope.activationVersion && verified.generation == parsed.scope.trustGeneration &&
+                            Draft02OutboundPreparation.hex(verified.digest) == parsed.scope.activationDigest)
+                        contexts(verified)
+                        requireOpen(); now(); owned = inputs; inputs.inputs
+                    } finally { manifest.fill(0) }
+                } catch (error: Exception) { inputs.close(); throw error }
+            }, { value ->
+                requireOpen()
+                val inputs = checkNotNull(owned)
+                val presentation = Presentation(value.presentation, inputs.decision, ::requireOpen)
+                inputs.decision.observePresentation(value.presentation)
+                check(connection.compareAndSet(null, value))
+                requireOpen()
+                delivery.execute {
+                    try { requireOpen(); value.requireLive(); onReady(presentation) }
+                    catch (_: Exception) { close() }
+                }
+            }, dispatchForConnection = { value -> requireOpen(); execution.dispatch(value) })
+        installed = ConversationSocketComposition.installOwned({ socket, identity, epoch ->
+            requireOpen()
+            val value = factory.create(socket, identity, epoch)
+            if (!negotiation.compareAndSet(null, value)) { value.close(); error("Setup already attached") }
+            try { requireOpen(); value } catch (error: Exception) { value.close(); throw error }
+        }, enabled = true)
+        installed != null
+    }
+
+    override fun close() {
+        val installation = synchronized(gate) {
+            if (closed) return
+            closed = true
+            installed.also { installed = null }
+        }
+        try { negotiation.getAndSet(null)?.close() }
+        finally { try { connection.getAndSet(null)?.close() } finally { installation?.close() } }
+    }
+    override fun toString() = "ConversationUserSetupController(redacted)"
+
+    /** Same observed domain and Stop outcome; this wrapper manufactures no active/closed state. */
+    internal class Presentation(private val delegate: ConversationPresentationPort,
+        private val decision: ConversationPhoneDecision, private val requireLive: () -> Unit) : ConversationPresentationPort {
+        override fun observe(listener: (ConversationPresentationSnapshot) -> Unit): AutoCloseable {
+            requireLive(); return delegate.observe { value -> requireLive(); listener(value) }
+        }
+        override fun refresh() { requireLive(); delegate.refresh() }
+        override fun approvePhoneReview(requestId: String, observedVersion: Long) {
+            requireLive(); decision.approve(requestId, observedVersion)
+            requireLive(); delegate.approvePhoneReview(requestId, observedVersion)
+        }
+        override fun declinePhoneReview(requestId: String, observedVersion: Long) {
+            requireLive(); delegate.declinePhoneReview(requestId, observedVersion)
+        }
+        override fun requestStop(intervalId: String, observedVersion: Long) {
+            requireLive(); delegate.requestStop(intervalId, observedVersion)
+        }
+    }
+    companion object {
+        internal fun validate(selection: Selection, session: ConversationPhoneSession): ConversationActivationCodec.Parsed {
+            check(session == selection.session)
+            val parsed = ConversationConnectionFactory.validateProposal(selection.bundle.statement(), selection.review,
+                session, selection.site, selection.instance)
+            check(parsed.scope.intervalId == selection.intervalId)
+            check(DevicePayloadKeyStore.keyId(selection.bindings.archivePoint).contentEquals(hex(parsed.scope.readerKeyId)))
+            return parsed
+        }
+        private fun hex(value: String) = value.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+        private fun uuid(value: String) = UUID.fromString(value).let { ByteBuffer.allocate(16).putLong(it.mostSignificantBits).putLong(it.leastSignificantBits).array() }
+    }
+}

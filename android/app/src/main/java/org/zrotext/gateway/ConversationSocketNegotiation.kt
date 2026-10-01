@@ -56,6 +56,14 @@ internal object ConversationSocketComposition {
     @Synchronized fun install(value:(WebSocket,EvidenceIdentity,Long)->ConversationSocketNegotiation,enabled:Boolean=false):Boolean {
         if(!enabled || factory!=null)return false;factory=value;return true
     }
+    /** Closing an obsolete installer cannot clear a later process-only owner. */
+    @Synchronized fun installOwned(value:(WebSocket,EvidenceIdentity,Long)->ConversationSocketNegotiation,
+        enabled:Boolean=false):AutoCloseable? {
+        if(!install(value,enabled))return null
+        return AutoCloseable { synchronized(this) {
+            if(factory===value){factory=null;ConversationProcessMount.runtime.pause(ConversationStopReason.PHONE_SESSION_LOST)}
+        } }
+    }
     fun create(socket:WebSocket,identity:EvidenceIdentity,epoch:Long)=factory?.invoke(socket,identity,epoch)
     @Synchronized fun clear(){factory=null;ConversationProcessMount.runtime.pause(ConversationStopReason.PHONE_SESSION_LOST)}
 }
