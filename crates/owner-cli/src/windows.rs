@@ -15,6 +15,9 @@ use zrotext_root_material::{
 };
 use zrotext_root_terminal::{Session, verify_process_eligibility};
 
+#[cfg(feature = "unlock")]
+mod conversation_refresh;
+
 type Result<T> = std::result::Result<T, ()>;
 const TIMEOUT: Duration = Duration::from_secs(300);
 
@@ -512,6 +515,10 @@ fn run_unlock(
 }
 
 pub(super) fn run(args: &[String]) -> Result<()> {
+    #[cfg(feature = "unlock")]
+    if args.first().map(String::as_str) == Some("conversation-refresh") {
+        return conversation_refresh::run(args, local_store_parent()?);
+    }
     let command = parse(args)?;
     verify_process_eligibility().map_err(|_| ())?;
     let parent = local_store_parent()?;

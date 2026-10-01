@@ -18,6 +18,7 @@ fn main() -> std::process::ExitCode {
             help.push_str(
                 "unlock --account UUID --origin HTTPS_ORIGIN --bundle PUBLIC_ID --challenge FILE\nSigns one enrollment challenge after verified recovery (candidate).\n",
             );
+            help.push_str("conversation-refresh (explicit unlock build only): independently expected --account --origin --bundle --proposal --output --session --interval --device --line --generation --peer --manifest-version --manifest-digest --phone-reader --archive-reader --signer --signer-point --until, in that order. One typed role-5 manifest refresh; archive records remain exact.\n");
             help
         };
         #[cfg(not(feature = "unlock"))]
@@ -38,6 +39,13 @@ fn main() -> std::process::ExitCode {
     if args.first().map(String::as_str) == Some("unlock") {
         eprintln!(
             "Operation failed. No signature was produced; the stored bundle and recovery state are unchanged."
+        );
+        return std::process::ExitCode::FAILURE;
+    }
+    #[cfg(feature = "unlock")]
+    if args.first().map(String::as_str) == Some("conversation-refresh") {
+        eprintln!(
+            "Operation failed. No usable signed result is confirmed; the stored bundle and recovery state are unchanged. A partial public output may need separate inspection."
         );
         return std::process::ExitCode::FAILURE;
     }
