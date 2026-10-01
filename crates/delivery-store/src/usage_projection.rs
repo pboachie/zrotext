@@ -91,21 +91,24 @@ pub async fn usage_history(
     {
         return Err(StoreError::InvalidInput);
     }
+    let fetch_limit = limit + 1;
     let rows = client
         .query(
             "SELECT metric,period_start::text,period_end::text, \
                     limit_units,reserved_units,refunded_units \
-             FROM usage_periods \
-             WHERE account_id=$1 \
-               AND ($2::text IS NULL OR period_start::text < $2::date::text) \
-             ORDER BY period_start DESC, metric \
+             FROM usage_periods u \
+             WHERE u.account_id=$1 AND u.metric='outbound_message' \
+               AND ($2::text IS NULL OR u.period_start < $2::date) \
+             ORDER BY u.period_start DESC \
              LIMIT $3",
-            &[&account_id, &before, &limit],
+            &[&account_id, &before, &fetch_limit],
         )
         .await
         .map_err(invalid_date_as_invalid_input)?;
+    let has_more = rows.len() as i64 > limit;
     let periods: Vec<UsagePeriodView> = rows
         .iter()
+        .take(limit as usize)
         .map(|row| UsagePeriodView {
             metric: row.get(0),
             period_start: row.get(1),
@@ -115,7 +118,7 @@ pub async fn usage_history(
             refunded_units: row.get(5),
         })
         .collect();
-    let next_before = if periods.len() as i64 == limit {
+    let next_before = if has_more {
         periods.last().map(|p| p.period_start.clone())
     } else {
         None

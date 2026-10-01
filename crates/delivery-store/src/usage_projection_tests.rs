@@ -127,6 +127,13 @@ async fn usage_history_pages_newest_first_with_bounds_and_counters() {
     assert_eq!(rest.periods[0].period_start, oldest);
     assert_eq!(rest.next_before, None, "history is exhausted");
 
+    let exact = usage_history(&db.client, a, None, 3).await.unwrap();
+    assert_eq!(exact.periods.len(), 3);
+    assert_eq!(
+        exact.next_before, None,
+        "an exact-size final page is exhausted"
+    );
+
     let head = &page.periods[0];
     assert_eq!(head.period_end, head.next_month_end());
     assert_eq!(

@@ -1146,6 +1146,9 @@ async fn usage_rejects_unbounded_and_malformed_queries() {
     let app = router(case.state());
     for path in [
         "/usage?limit=0",
+        "/usage?limit=not-a-number",
+        &format!("/usage?limit={}", i64::from(i32::MAX) + 1),
+        "/usage?limit=1&limit=2",
         &format!("/usage?limit={}", 24 + 1),
         "/usage?before=not-a-date",
         "/usage?before=2026-02-30",
@@ -1155,7 +1158,12 @@ async fn usage_rejects_unbounded_and_malformed_queries() {
             .oneshot(get_request(&token, path))
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
+        assert_eq!(response.headers().get("cache-control").unwrap(), "no-store");
+        assert_eq!(
+            code(response).await,
+            (StatusCode::BAD_REQUEST, "invalid_request".into()),
+            "{path}"
+        );
     }
     // The maximum bound itself is valid.
     let response = app

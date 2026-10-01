@@ -317,9 +317,10 @@ struct UsagePage {
 async fn get_usage(
     State(state): State<Arc<super::SealedHttpState>>,
     auth: SealedResourceAuth,
-    Query(query): Query<UsagePageQuery>,
+    query: Result<Query<UsagePageQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Result<Json<UsagePage>, SealedHttpError> {
     auth.principal.require_read_for(Scope::BillingRead)?;
+    let Query(query) = query.map_err(|_| SealedHttpError::BadRequest)?;
     let limit = query.limit.unwrap_or(USAGE_PAGE_DEFAULT);
     if !(1..=zrotext_delivery_store::USAGE_PAGE_MAX).contains(&limit) {
         return Err(SealedHttpError::BadRequest);
