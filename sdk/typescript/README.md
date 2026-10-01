@@ -334,3 +334,5 @@ This is one slice of ZT-010 evidence. Independent Rust cross-open, full manifest
 chain/rollback vectors, production key lifecycle, and the Q1–Q11 decisions
 remain separate gates. The candidate profile says vectors must be regenerated
 after those decisions and versioning.
+
+The [synthetic agent adapter foundation](../../docs/agent-adapter-simulator.md) adds callable fixture handling and a Python wrapper over this SDK. It cannot activate live messaging or grant agent authority.
