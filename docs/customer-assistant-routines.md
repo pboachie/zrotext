@@ -77,7 +77,9 @@ flow and cannot infer owner approval.
 
 Local clock rollback refuses work. Expiry, current authority and withdrawal are
 rechecked after adapter waits. Unknown timezone/window resolution holds for
-owner review. STOP or human takeover persists withdrawal and aborts outstanding
+owner review. The scheduling candidate uses an exact `window-v1-` plus SHA-256
+policy identity and UTC epoch seconds; UUID windows are synthetic fixture
+identities. No authenticated live `open` window endpoint exists yet. STOP or human takeover persists withdrawal and aborts outstanding
 calls. A provider ignoring cancellation may still incur its already reserved
 cost; its late result cannot create a proposal. Shared services must enforce
 withdrawal transactionally, including changes racing the final proposal call.

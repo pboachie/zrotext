@@ -85,7 +85,7 @@ export class AssistantRunner {
         a.takeover!==false || a.suppressed!==false) fail('authority_unavailable');
     integer(a.expiresMs,1,Number.MAX_SAFE_INTEGER);
     const window=object(a.window,['id','timezone','notBefore','expiresAt','state']);
-    id(window.id);
+    if (typeof window.id!=='string' || (!uuid.test(window.id) && !/^window-v1-[0-9a-f]{64}$/.test(window.id))) fail('owner_review');
     if (typeof window.timezone!=='string' || !/^[A-Za-z0-9_+\/-]{1,128}$/.test(window.timezone)) fail('owner_review');
     integer(window.notBefore,0,Number.MAX_SAFE_INTEGER); integer(window.expiresAt,window.notBefore+1,Number.MAX_SAFE_INTEGER);
     if (window.state!=='open') fail('owner_review');

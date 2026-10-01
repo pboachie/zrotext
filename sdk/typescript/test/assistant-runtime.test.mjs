@@ -233,3 +233,10 @@ test('strict policy and event descriptors reject getters and unsafe limits befor
     assert.throws(()=>f.create({policy:{...f.p,...patch}}),/invalid_request/);
   assert.equal(f.observed.calls,0);
 });
+
+test('resolved hashed sending window identity binds the exact proposal',async t=>{
+  const f=await fixture(t);f.authority.window.id='window-v1-'+sha('synthetic immutable policy window');
+  assert.equal((await f.runner.run(f.e)).state,'proposed');
+  assert.equal(f.observed.proposals[0].action.window_id,f.authority.window.id);
+  f.authority.window.id='unresolved';await assert.rejects(f.runner.run({...f.e,eventId:randomUUID()}),/owner_review/);
+});
