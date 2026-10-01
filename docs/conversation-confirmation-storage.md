@@ -1,6 +1,6 @@
 # Conversation confirmation storage
 
-Migration 070 prepares durable signed conversation confirmation records. It
+Migration 071 prepares durable signed conversation confirmation records. It
 does not install a confirmation producer, queue admission route, execution
 grant or radio path. Those integrations must independently verify the original
 confirmation, signature and sealed envelope under current authority before
