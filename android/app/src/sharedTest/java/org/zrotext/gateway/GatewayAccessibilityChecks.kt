@@ -10,6 +10,7 @@ import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsNode
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.getOrNull
 import org.junit.Assert.*
 import org.junit.Test
@@ -61,6 +62,19 @@ abstract class GatewayAccessibilityChecks {
         assertTrue(regions.all { it.config[SemanticsProperties.LiveRegion] == LiveRegionMode.Polite })
         assertTrue(regions.none { text(it).contains("acknowledgments") })
         assertEquals(expected, regions.map { text(it).substringBefore(":") })
+    }
+
+    @Test fun homeObservationsKeepReadOnlyLabelsAndReadingOrderAtCurrentTextScale() = onScreen { root ->
+        val rows = listOf("Sending from", "Power", "Connection").map { label ->
+            nodes(root).single { it.config.getOrNull(SemanticsProperties.TestTag) == "home-observation-$label" }
+        }
+        assertTrue(rows.zipWithNext().all { (first, next) -> first.positionInRoot.y < next.positionInRoot.y })
+        val pause = nodes(root).single { text(it) == "Pause connections" && it.config.contains(SemanticsActions.OnClick) }
+        assertTrue("Observations precede Pause in the Home hierarchy", rows.last().positionInRoot.y < pause.positionInRoot.y)
+        assertTrue(rows.all { !it.config.contains(SemanticsActions.OnClick) })
+        assertTrue(text(rows[1]).contains("Unavailable") || text(rows[1]).contains("%"))
+        assertTrue(text(rows[2]).contains("paused") || text(rows[2]).contains("authenticated") ||
+            text(rows[2]).contains("network") || text(rows[2]).contains("connection") || text(rows[2]).contains("Proving"))
     }
 
     @Test fun platformNodesExposeHeadingsAndVisibleStatusRegions() = onScreen { root ->
