@@ -166,6 +166,40 @@ class ConversationExecutionTransportTest {
             assertEquals(1,f.exchanges)
         } finally {capture.close()}
     }
+    @Test fun heldExecutionGrantCannotDelayStopAndLateValidReplyNeverPreparesOrConsumes()=Fixture().use { f->
+        val capture=Room.inMemoryDatabaseBuilder(RuntimeEnvironment.getApplication(),ConversationCaptureDatabase::class.java).allowMainThreadQueries().build()
+        val held=java.util.concurrent.CountDownLatch(1);val release=java.util.concurrent.CountDownLatch(1)
+        val stopped=java.util.concurrent.CountDownLatch(1)
+        val executor=java.util.concurrent.Executors.newFixedThreadPool(2)
+        try {
+            val activation=object:ConversationActivationVerifier {
+                override fun verifiedPreparation(evidence:ByteArray)=f.scope
+                override fun verifiedActiveLease(scope:ConversationCaptureScope,challenge:String,evidence:ByteArray)=60000L
+            }
+            val admission=ConversationCaptureAdmission(capture.journal(),activation,f.protection,{100L},{check(f.live && it==f.scope)})
+            admission.prepare(byteArrayOf(1),true);val request=admission.beginRecovery();admission.completeRecovery(request.challenge,byteArrayOf(1))
+            f.exchangeHook={held.countDown();check(release.await(5,java.util.concurrent.TimeUnit.SECONDS))}
+            val sender=ConversationConfirmedSend(f.db.sends(),admission,f.crypto,f.protection,{f.now},f.transport())
+            sender.receiveConfirmed(f.original)
+            val send=executor.submit<ConversationSubmission>{sender.submitConfirmed(uuid(f.message))}
+            assertTrue(held.await(2,java.util.concurrent.TimeUnit.SECONDS))
+            assertEquals("claimed",f.db.sends().receipt(uuid(f.message))!!.state)
+            val stop=executor.submit{sender.close(f.scope.intervalId);stopped.countDown()}
+            assertTrue("Stop must disable actual admission before the held grant is released",
+                stopped.await(1,java.util.concurrent.TimeUnit.SECONDS))
+            assertFalse(admission.captureEligible())
+            assertTrue(capture.journal().isClosed(f.scope.intervalId)>0)
+            assertEquals(1,f.db.sends().closed(f.scope.intervalId))
+            assertEquals(1L,release.count)
+            release.countDown()
+            assertEquals(ConversationSubmission.UNKNOWN,send.get(3,java.util.concurrent.TimeUnit.SECONDS))
+            stop.get(1,java.util.concurrent.TimeUnit.SECONDS)
+            assertEquals("unknown",f.db.sends().receipt(uuid(f.message))!!.state)
+            assertEquals(0,f.preparations);assertEquals(0,f.submissions)
+            assertThrows(Exception::class.java){sender.submitConfirmed(uuid(f.message))}
+            assertEquals(1,f.exchanges)
+        } finally {release.countDown();executor.shutdown();assertTrue(executor.awaitTermination(5,java.util.concurrent.TimeUnit.SECONDS));capture.close()}
+    }
     @Test fun bodyOnlyMissingClaimPurgedProofAndTamperedOriginalNeverRequestGrant() {
         Fixture().use{f->val t=f.transport();assertEquals(ConversationSubmission.UNKNOWN,t.submit(uuid(f.message),f.attempt,f.scope,"Synthetic reply"));assertEquals(0,f.exchanges)}
         Fixture().use{f->f.retain(false);assertEquals(ConversationSubmission.UNKNOWN,f.transport().submitClaimed(f.token()));assertEquals(0,f.exchanges)}

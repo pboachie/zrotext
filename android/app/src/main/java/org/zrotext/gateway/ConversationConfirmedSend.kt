@@ -84,7 +84,40 @@ internal class ConversationConfirmedSend(
         }
     }
     /** Explicit caller action only. No restart worker invokes this method. */
-    @Synchronized fun submitConfirmed(message: String): ConversationSubmission {
+    fun submitConfirmed(message: String): ConversationSubmission {
+        val evidenceTransport=transport as? ConversationClaimedEvidenceTransport
+        if(evidenceTransport==null)return synchronized(this){submitBodyConfirmed(message)}
+        // Commit the claim and mint its one-use handoff under both monitors. The external grant
+        // exchange MUST run after releasing both: Stop can then disable admission while it waits.
+        val claim=synchronized(this){claimEvidence(message)}
+        val result=try {evidenceTransport.submitClaimed(claim)}
+            catch (_:Exception){ConversationSubmission.UNKNOWN}
+            finally {claim.close()}
+        synchronized(this){journal.recordOutcome(message,claim.attempt,
+            if(result==ConversationSubmission.SUBMITTED)"submitted" else "unknown")}
+        return result
+    }
+    private fun claimEvidence(message:String):ConversationClaimedEvidence {
+        val row=checkNotNull(journal.receipt(message))
+        check(row.state=="confirmed"){"Claimed attempts require reconciliation, never replay"}
+        val raw=Base64.getDecoder().decode(protection.open(InboundVault.Sealed(
+            checkNotNull(row.protectedPayload),checkNotNull(row.nonce)),aad(message,row.interval,row.evidenceDigest)))
+        try {
+            check(raw.size in 1..80000 && digest(raw)==row.evidenceDigest){"Protected intent changed"}
+            val verified=verifier.verify(raw.copyOf())
+            check(verified.message==row.message && verified.scope.intervalId==row.interval && verified.expiresAt==row.deadline)
+            return admission.withCurrentScope(verified.scope){checkAdmission->
+                fresh(verified)
+                val attempt=UUID.randomUUID().toString()
+                journal.claim(message,attempt)
+                check(verifier.verify(raw.copyOf())==verified){"Current signed intent changed"}
+                fresh(verified);checkAdmission();fresh(verified)
+                ConversationClaimedEvidence(message,attempt,verified.scope,row.evidenceDigest,verified.expiresAt,raw)
+            }
+        } finally {raw.fill(0)}
+    }
+    /** Legacy synchronous fixture adapters keep their original atomic submission semantics. */
+    private fun submitBodyConfirmed(message: String): ConversationSubmission {
         val row = checkNotNull(journal.receipt(message))
         check(row.state == "confirmed") { "Claimed attempts require reconciliation, never replay" }
         val raw = Base64.getDecoder().decode(protection.open(InboundVault.Sealed(checkNotNull(row.protectedPayload), checkNotNull(row.nonce)), aad(message, row.interval, row.evidenceDigest)))
@@ -101,12 +134,7 @@ internal class ConversationConfirmedSend(
             fresh(verified)
             checkAdmission()
             fresh(verified)
-            val result = try {
-                if(transport is ConversationClaimedEvidenceTransport) {
-                    val claim=ConversationClaimedEvidence(message,attempt,verified.scope,row.evidenceDigest,verified.expiresAt,raw)
-                    try { transport.submitClaimed(claim) } finally { claim.close() }
-                } else transport.submit(message, attempt, verified.scope, verified.body)
-            }
+            val result = try {transport.submit(message, attempt, verified.scope, verified.body)}
                 catch (_: Exception) { ConversationSubmission.UNKNOWN }
             journal.recordOutcome(message, attempt, if (result == ConversationSubmission.SUBMITTED) "submitted" else "unknown")
             result
