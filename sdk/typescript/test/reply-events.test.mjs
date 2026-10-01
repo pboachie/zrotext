@@ -282,6 +282,64 @@ test('reader-only revocation during decryption removes content while metadata sc
   assert.equal(result.disposition, 'owner_review');
 }));
 
+test('page completion removes earlier plaintext when a later read revokes, stops or expires content', async () => {
+  for (const change of ['reader', 'stop', 'expiry']) await fixture(async f => {
+    f.adapter.ingest(...f.signed(f.event())); f.adapter.ingest(...f.signed(f.event(11)));
+    let reads = 0;
+    f.adapter.reader = async () => {
+      if (++reads === 2) {
+        if (change === 'reader') f.revokeReader();
+        else if (change === 'stop') f.adapter.ingest(...f.signed(f.event(12, { classification: 'opt_out' })));
+        else f.advance(60_001);
+      }
+      return { kind: 'decrypted', text: 'Synthetic reply' };
+    };
+    const page = await f.adapter.page({ consumerId: consumer });
+    assert.equal(reads, 2);
+    assert.deepEqual(page.events.map(event => event.content), [{ kind: 'unavailable' }, { kind: 'unavailable' }], change);
+  });
+});
+
+test('selected reader refuses a load completed after authorization loss or cancellation before parsing', async () => {
+  for (const change of ['authorization', 'cancellation']) {
+    let active = true; const controller = new AbortController();
+    const reader = createSelectedDraftReader({ authorize: () => active, load: async () => {
+      if (change === 'authorization') active = false;
+      else controller.abort();
+      return { envelope: Uint8Array.of(1), context: {} };
+    } });
+    assert.deepEqual(await reader({}, controller.signal), { kind: 'unavailable' }, change);
+  }
+});
+
+test('selected reader cancellation during asynchronous authorization prevents loading or opening', async () => {
+  for (const stage of [1, 2]) {
+    const controller = new AbortController(); let checks = 0; let loads = 0;
+    const reader = createSelectedDraftReader({ authorize: async () => {
+      if (++checks === stage) controller.abort();
+      return true;
+    }, load: async () => { loads++; return { envelope: Uint8Array.of(1), context: {} }; } });
+    assert.deepEqual(await reader({}, controller.signal), { kind: 'unavailable' });
+    assert.equal(loads, stage - 1);
+  }
+});
+
+test('consumption cannot advance past an expired checkpoint without owner gap review', () => fixture(async f => {
+  f.adapter.ingest(...f.signed(f.event())); await f.adapter.page({ consumerId: consumer });
+  f.advance(60_001); f.adapter.ingest(...f.signed(f.event(11)));
+  f.adapter.registerRequest(f.request(20, { startsAtMs: initial + 60_000 }));
+  const input = { consumerId: consumer, eventId: uid(11), actionId: uid(30) }; let effects = 0;
+  await rejectsAsync(() => f.adapter.runAction(input, () => { effects++; }), 'cursor_expired');
+  assert.equal(effects, 0); assert.equal(f.adapter.exportMetadata().actions.length, 0);
+  assert.equal(f.adapter.exportMetadata().checkpoints[0].checkpoint, 0);
+  assert.equal(f.adapter.db.prepare('SELECT turns FROM requests').get().turns, 0);
+  assert.equal(f.adapter.db.prepare('SELECT consumed FROM events').get().consumed, 0);
+  f.adapter.resynchronize(consumer); f.restart();
+  const result = await f.adapter.runAction(input, () => { effects++; });
+  assert.equal(result.disposition, 'reply_notice'); assert.equal(result.state, 'completed');
+  assert.equal(effects, 1);
+}));
+
 test('a hung selected reader is aborted within the bounded receive window and reports unavailable', () => fixture(async f => {
   f.adapter.ingest(...f.signed(f.event())); let aborted = false;
   f.adapter.reader = (_, signal) => new Promise(() => { signal.addEventListener('abort', () => { aborted = true; }); });

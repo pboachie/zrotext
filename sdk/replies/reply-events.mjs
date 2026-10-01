@@ -280,6 +280,19 @@ export class ReplyEventAdapter {
       if (this.current(this.event(row), this.now()).revision !== row.revision) fail('revoked');
       events.push({ sequence: row.seq, ...this.event(row), content, consumed: row.consumed === 1, approval: false });
     }
+    // Later reader awaits can invalidate content prepared for earlier rows.
+    // Recheck the complete response synchronously before returning any text.
+    const completedAt = this.now();
+    for (const [index, event] of events.entries()) {
+      const current = this.current(this.event(selection.rows[index]), completedAt);
+      if (current.revision !== selection.revision) fail('revoked');
+      if (event.content.kind === 'decrypted' && (event.observed_at_ms <= completedAt - this.retentionMs ||
+          current.canReadContent !== true || current.readerId !== event.content.readerId ||
+          this.readerId !== event.content.readerId ||
+          this.db.prepare('SELECT stopped FROM scope WHERE id=1').get().stopped)) {
+        event.content = { kind: 'unavailable' };
+      }
+    }
     const sequence = events.at(-1)?.sequence ?? selection.after;
     return { events, cursor: this.cursor(consumerId, sequence, selection.revision, this.now()) };
   }
@@ -309,6 +322,7 @@ export class ReplyEventAdapter {
           state: previous.state === 'reserved' ? 'unknown' : previous.state, approval: false };
       }
       const checkpoint = this.consumer(consumerId);
+      if (checkpoint < this.db.prepare('SELECT floor FROM scope WHERE id=1').get().floor) fail('cursor_expired');
       const next = this.db.prepare('SELECT seq FROM events WHERE seq>? ORDER BY seq LIMIT 1').get(checkpoint);
       if (!next || next.seq !== stored.seq || stored.consumed) fail('out_of_order');
       const scope = this.db.prepare('SELECT stopped FROM scope WHERE id=1').get();

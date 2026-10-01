@@ -11,8 +11,9 @@ const same = (a, b) => a.length === b.length && a.every((byte, index) => byte ==
 export function createSelectedDraftReader({ load, authorize }) {
   return async (event, signal) => {
     if (signal?.aborted || typeof load !== 'function' || typeof authorize !== 'function' ||
-        await authorize(event) !== true) return { kind: 'unavailable' };
+        await authorize(event) !== true || signal?.aborted) return { kind: 'unavailable' };
     const selected = await load(event, signal);
+    if (signal?.aborted || await authorize(event) !== true || signal?.aborted) return { kind: 'unavailable' };
     if (!selected || !(selected.envelope instanceof Uint8Array) || !selected.context) return { kind: 'unavailable' };
     const envelope = Uint8Array.from(selected.envelope);
     const parsed = parseDraftEnvelope(envelope);
@@ -21,7 +22,7 @@ export function createSelectedDraftReader({ load, authorize }) {
         !same(parsed.lineId, uuidBytes(event.line_id)) ||
         parsed.observedMs !== BigInt(event.observed_at_ms)) return { kind: 'unavailable' };
     const text = await openDraftEnvelope(envelope, selected.context);
-    if (signal?.aborted || await authorize(event) !== true) return { kind: 'unavailable' };
+    if (signal?.aborted || await authorize(event) !== true || signal?.aborted) return { kind: 'unavailable' };
     return { kind: 'decrypted', text };
   };
 }

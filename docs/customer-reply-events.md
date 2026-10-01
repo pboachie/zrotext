@@ -55,12 +55,16 @@ current grant's reader ID and `canReadContent === true`. The customer-local
 content service/queue. It has a five-second bound. Content access is checked
 again after decryption and before an automatic notification. Revoking just the
 reader preserves metadata access and returns content `unavailable`.
+Before returning a page, all previously prepared content is checked again;
+a later read's revocation, STOP or expiry also suppresses earlier page text.
 
 `sdk/replies/selected-draft-reader.mjs` is a testable profile-01 reader seam. It
 delegates origin verification and HPKE/body decryption to the existing SDK
 `openDraftEnvelope`, and checks exact inbound event/account/device/line/time
 binding. Its trusted `authorize` callback must independently authorize the
-current manifest, recipient and reader before and after loading. It implements
+current manifest, recipient and reader before and after loading. It performs
+the post-load authorization/cancellation check before parsing or opening the
+selected envelope, and checks authorization again after opening. It implements
 no alternate crypto. It is **not** a production profile-02 reader or a root
 enrollment service. The shared public envelope corpus proves the delegation;
 production reader approval remains unavailable.
@@ -117,6 +121,8 @@ checkpoint to recover unconsumed events. A foreign/tampered/revised/expired
 cursor fails explicitly. Retention gaps never silently skip into automatic
 processing: a trusted local owner must review the gap and call `resynchronize`;
 the skipped floor and gap count persist, and no skipped effects are run.
+New consumption reservations enforce the same retained checkpoint floor as
+page reads; direct consumption cannot bypass the owner's gap review.
 
 ## Action identity and correlation
 
