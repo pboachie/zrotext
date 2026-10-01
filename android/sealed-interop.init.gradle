@@ -6,6 +6,7 @@ gradle.projectsEvaluated {
     app.tasks.withType(org.gradle.api.tasks.testing.Test).configureEach {
         filter {
             includeTestsMatching 'org.zrotext.gateway.SealedSdkPostgresInteropTest'
+            includeTestsMatching 'org.zrotext.gateway.SealedBoundaryCanaryTest'
             failOnNoMatchingTests = true
         }
         outputs.upToDateWhen { false }

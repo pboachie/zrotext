@@ -5,6 +5,62 @@ use std::path::Path;
 
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB on a disposable PostgreSQL cluster"]
+async fn summary_index_preparation_preserves_conflicting_shapes_and_rechecks_readiness() {
+    let (name, admin, config) = disposable_database().await;
+    let mut client = connect(&config).await;
+    for sql in [
+        include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
+        include_str!("../../../deploy/compose/migrations/002_auth.sql"),
+        include_str!("../../../deploy/compose/migrations/003_delivery.sql"),
+    ] {
+        client.batch_execute(sql).await.unwrap();
+    }
+    client.batch_execute("CREATE INDEX messages_summary_queue ON messages(state,account_id,created_at) WHERE state IN ('accepted','queued','claimed','submitting','submitted')").await.unwrap();
+    assert!(matches!(
+        prepare_summary_queue_index(&client).await,
+        Err(MigrationError::OwnerQueueIndexConflict(
+            "messages_summary_queue"
+        ))
+    ));
+    assert!(
+        client
+            .query_one(
+                "SELECT to_regclass('messages_summary_queue') IS NOT NULL",
+                &[]
+            )
+            .await
+            .unwrap()
+            .get::<_, bool>(0)
+    );
+    client
+        .batch_execute("DROP INDEX messages_summary_queue")
+        .await
+        .unwrap();
+    prepare_summary_queue_index(&client).await.unwrap();
+    prepare_summary_queue_index(&client).await.unwrap();
+    let tx = client.transaction().await.unwrap();
+    tx.batch_execute(include_str!(
+        "../../../deploy/compose/migrations/070_message_summary_metadata.sql"
+    ))
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    verify_summary_metadata(&client).await.unwrap();
+    client
+        .batch_execute("DROP INDEX messages_summary_queue")
+        .await
+        .unwrap();
+    assert!(matches!(
+        verify_summary_metadata(&client).await,
+        Err(MigrationError::OwnerQueueIndexUnavailable(
+            "message summary metadata"
+        ))
+    ));
+    finish_database(&name, &admin).await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB on a disposable PostgreSQL cluster"]
 async fn fresh_install_checks_owner_queue_indexes_and_rejects_conflicting_or_lost_indexes() {
     let (name, admin, config) = disposable_database().await;
     let mut client = connect(&config).await;
