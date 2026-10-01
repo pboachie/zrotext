@@ -5,6 +5,7 @@ pub mod api_json;
 pub mod auth;
 pub mod billing;
 pub mod device_socket;
+pub mod encrypted_schedule;
 pub mod enrollment;
 pub mod failover_executor;
 pub mod http_auth;
