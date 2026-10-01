@@ -52,7 +52,7 @@ async function fixture() {
       await page.locator("#body").fill(text);await page.getByRole("button",{name:"Review message",exact:true}).click();
       await page.getByRole("button",{name:"Cancel review"}).press("Enter");assert.equal(await page.locator("#body").inputValue(),text);
       await page.getByRole("button",{name:"Review message",exact:true}).click();
-      await page.getByRole("button",{name:"Confirm simulated send"}).press("Enter");
+      await page.getByRole("button",{name:"Confirm this send"}).press("Enter");
       await page.waitForFunction(()=>fixtureCalls.send===1);assert.equal(await page.locator("#body").inputValue(),"");
       assert.ok((await page.locator("#messages").textContent()).includes(text));
       if(viewport.width===360)await page.addStyleTag({content:":root {font-size:125%;}"});
