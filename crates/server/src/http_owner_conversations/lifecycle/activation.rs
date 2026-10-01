@@ -16,7 +16,22 @@ pub(crate) async fn prune(
         closed+=tx.execute("WITH due AS (SELECT i.id FROM conversation_intervals i JOIN sessions s ON (s.account_id,s.id)=(i.account_id,i.initiating_session_id) JOIN users u ON u.id=s.user_id WHERE i.account_id=$1 AND i.phase IN ('pending','install_pending','active') AND (s.revoked_at IS NOT NULL OR s.expires_at<=clock_timestamp() OR u.email_verified_at IS NULL OR NOT EXISTS (SELECT 1 FROM memberships m WHERE m.account_id=$1 AND m.user_id=u.id AND m.role='owner' AND m.revoked_at IS NULL) OR (i.phase<>'active' AND i.expires_at_ms<=floor(extract(epoch FROM clock_timestamp())*1000))) FOR UPDATE OF i SKIP LOCKED LIMIT 1) UPDATE conversation_intervals i SET phase=CASE WHEN phase='active' THEN 'history' ELSE 'expired' END,statement=CASE WHEN phase='active' THEN statement ELSE NULL END,closed_at=clock_timestamp() FROM due WHERE (i.account_id,i.id)=($1,due.id)", &[&account]).await?;
     }
     // Erase original manifest provenance once its associated encrypted body is gone.
-    let provenance=tx.execute("WITH due AS (SELECT p.account_id,p.event_id FROM conversation_inbound_provenance p JOIN sealed_inbound_events e ON (e.account_id,e.id)=(p.account_id,p.event_id) WHERE e.envelope IS NULL ORDER BY p.account_id,p.event_id FOR UPDATE OF p SKIP LOCKED LIMIT $1) DELETE FROM conversation_inbound_provenance p USING due WHERE (p.account_id,p.event_id)=(due.account_id,due.event_id)", &[&limit]).await?;
+    let decision_guard = if tx
+        .query_one(
+            "SELECT to_regclass('workflow_reply_correlations') IS NOT NULL",
+            &[],
+        )
+        .await?
+        .get::<_, bool>(0)
+    {
+        " AND NOT EXISTS(SELECT 1 FROM workflow_reply_correlations r WHERE (r.account_id,r.event_id)=(p.account_id,p.event_id)) "
+    } else {
+        ""
+    };
+    let provenance_sql = format!(
+        "WITH due AS (SELECT p.account_id,p.event_id FROM conversation_inbound_provenance p JOIN sealed_inbound_events e ON (e.account_id,e.id)=(p.account_id,p.event_id) WHERE e.envelope IS NULL {decision_guard} ORDER BY p.account_id,p.event_id FOR UPDATE OF p SKIP LOCKED LIMIT $1) DELETE FROM conversation_inbound_provenance p USING due WHERE (p.account_id,p.event_id)=(due.account_id,due.event_id)"
+    );
+    let provenance = tx.execute(&provenance_sql, &[&limit]).await?;
     let workflow_guard = if crate::http_owner_conversations::context::lifecycle::installed(&tx)
         .await?
     {

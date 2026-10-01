@@ -185,3 +185,85 @@ async fn retention_preserves_an_existing_message_fence_and_erases_after_message_
     tx.commit().await.unwrap();
     c.cleanup().await;
 }
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn message_retention_preserves_immutable_dispatch_tombstone_without_reopening_authority() {
+    let mut c = Case::new().await;
+    let a = c.approved().await;
+    let bound = c.bind(a).await;
+    let mut db = c.base.f.connect().await;
+    let old = db
+        .query_one(
+            "SELECT message_id,dispatch_id FROM workflow_message_links",
+            &[],
+        )
+        .await
+        .unwrap();
+    let message: Uuid = old.get(0);
+    let dispatch: Uuid = old.get(1);
+    let tx = db.transaction().await.unwrap();
+    tx.execute(
+        "DELETE FROM usage_ledger WHERE account_id=$1",
+        &[&c.base.f.account],
+    )
+    .await
+    .unwrap();
+    tx.execute(
+        "DELETE FROM dispatch_jobs WHERE account_id=$1",
+        &[&c.base.f.account],
+    )
+    .await
+    .unwrap();
+    tx.execute(
+        "DELETE FROM messages WHERE account_id=$1",
+        &[&c.base.f.account],
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let row = db
+        .query_one(
+            "SELECT message_id,dispatch_id,live_message_id FROM workflow_message_links",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(row.get::<_, Uuid>(0), message);
+    assert_eq!(row.get::<_, Uuid>(1), dispatch);
+    assert!(row.get::<_, Option<Uuid>>(2).is_none());
+    assert!(
+        !db.query_one(
+            "SELECT workflow_effect_current($1,$2)",
+            &[&c.base.f.account, &message]
+        )
+        .await
+        .unwrap()
+        .get::<_, bool>(0)
+    );
+    assert!(
+        db.execute(
+            "UPDATE workflow_message_links SET message_id=$1",
+            &[&Uuid::new_v4()]
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        db.execute(
+            "UPDATE workflow_message_links SET live_message_id=message_id",
+            &[]
+        )
+        .await
+        .is_err()
+    );
+    let tx = db.transaction().await.unwrap();
+    assert!(
+        super::super::lifecycle::erase_context(&tx, c.base.f.account, c.base.h.context)
+            .await
+            .unwrap()
+    );
+    tx.commit().await.unwrap();
+    assert!(read(&mut db, &c.base.owner, bound.key).await.is_err());
+    c.cleanup().await;
+}

@@ -7,6 +7,7 @@ use uuid::Uuid;
 mod dispatch;
 mod http;
 mod lifecycle;
+mod replies;
 mod support;
 pub(crate) use support::Case;
 
@@ -159,6 +160,28 @@ async fn takeover_stops_only_the_context_and_rejects_new_proposals_and_dispatch(
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
 async fn purpose_and_peer_substitution_withdrawal_and_owner_revocation_refuse_approval() {
     let c = Case::new().await;
+    let other_peer = Uuid::new_v4();
+    c.base
+        .f
+        .db
+        .execute(
+            "INSERT INTO contacts(id,account_id,recipient_e164) VALUES($1,$2,'+13')",
+            &[&other_peer, &c.base.f.account],
+        )
+        .await
+        .unwrap();
+    let mut wrong_peer = c.descriptor.clone();
+    wrong_peer.recipient_id = other_peer.to_string();
+    assert!(
+        register(
+            &mut c.base.f.connect().await,
+            &c.base.owner,
+            Uuid::new_v4(),
+            wrong_peer
+        )
+        .await
+        .is_err()
+    );
     let mut bad = c.descriptor.clone();
     bad.purpose_id = Uuid::new_v4().to_string();
     assert!(

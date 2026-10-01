@@ -9,10 +9,6 @@ use crate::{
 use p256::ecdsa::{Signature, signature::Signer};
 use tokio_postgres::error::SqlState;
 
-const SCHEMA: &str = include_str!(
-    "../../../../../deploy/compose/migrations/072_conversation_confirmation_records.sql"
-);
-
 struct Case {
     f: Fixture,
     owner: SessionPrincipal,
@@ -65,7 +61,6 @@ impl Case {
         )
         .await
         .unwrap();
-        db.batch_execute(SCHEMA).await.unwrap();
         Self { f, owner, interval }
     }
     async fn record(&self, expired: bool) -> Uuid {

@@ -268,6 +268,8 @@ pub async fn correlate_reply(
         if d.identities()?.content != h.context {
             return Err(ConversationError::NotFound);
         }
+        tx.query_opt("SELECT 1 FROM workflow_context_fences WHERE account_id=$1 AND context_id=$2 FOR UPDATE",&[&account,&h.context]).await?.ok_or(ConversationError::NotFound)?;
+        tx.query_opt("SELECT 1 FROM workflow_routines WHERE account_id=$1 AND id=$2 AND context_id=$3 FOR UPDATE",&[&account,&d.identities()?.routine,&h.context]).await?.ok_or(ConversationError::NotFound)?;
         let current = store::head(&tx, account, key.action_id).await?;
         if current.key != key {
             return Err(ConversationError::Conflict);

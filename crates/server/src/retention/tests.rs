@@ -91,53 +91,6 @@ async fn present(db: &Client, table: &str, id: Uuid) -> bool {
 /// runtime. The 062 gate file needs its index built first; a fresh
 /// fixture builds them with a plain CREATE INDEX, which differs from the
 /// migrator's concurrent build only in not being concurrent.
-const MIGRATIONS: &[&str] = &[
-    include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
-    include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
-    include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
-    include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
-    include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
-    include_str!("../../../../deploy/compose/migrations/006_usage_metering.sql"),
-    include_str!("../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"),
-    include_str!("../../../../deploy/compose/migrations/008_stripe_billing_foundation.sql"),
-    include_str!("../../../../deploy/compose/migrations/009_webhook_manual_replay.sql"),
-    include_str!("../../../../deploy/compose/migrations/010_billing_test_entitlement.sql"),
-    include_str!("../../../../deploy/compose/migrations/011_billing_payment_holds.sql"),
-    include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
-    include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
-    include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
-    include_str!("../../../../deploy/compose/migrations/015_webhook_kek_commitments.sql"),
-    include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
-    include_str!("../../../../deploy/compose/migrations/017_billing_device_caps.sql"),
-    include_str!("../../../../deploy/compose/migrations/018_sealed_inbound_identity.sql"),
-    include_str!("../../../../deploy/compose/migrations/019_line_activation_contract.sql"),
-    include_str!("../../../../deploy/compose/migrations/020_enrollment_retention_indexes.sql"),
-    include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
-    include_str!("../../../../deploy/compose/migrations/022_pending_owner_expiry.sql"),
-    include_str!("../../../../deploy/compose/migrations/025_account_recovery.sql"),
-    include_str!("../../../../deploy/compose/migrations/026_data_retention.sql"),
-    include_str!("../../../../deploy/compose/migrations/027_billing_test_config.sql"),
-    include_str!("../../../../deploy/compose/migrations/028_billing_provider_failures.sql"),
-    include_str!("../../../../deploy/compose/migrations/029_webhook_dispatch_fairness.sql"),
-    include_str!("../../../../deploy/compose/migrations/030_terminal_dispatch_jobs.sql"),
-    include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
-    include_str!("../../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
-    include_str!("../../../../deploy/compose/migrations/038_owner_opt_out_hold_guards.sql"),
-    include_str!("../../../../deploy/compose/migrations/039_inbound_device_clock_offset.sql"),
-    include_str!("../../../../deploy/compose/migrations/041_device_preconditions.sql"),
-    include_str!("../../../../deploy/compose/migrations/047_device_network_service.sql"),
-    include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
-    "CREATE INDEX messages_pending_recipient \
-        ON messages(recipient_e164,account_id) \
-        WHERE state IN ('queued','claimed') AND recipient_e164 IS NOT NULL",
-    include_str!("../../../../deploy/compose/migrations/062_pending_recipient_index.sql"),
-    include_str!("../../../../deploy/compose/migrations/063_retention_blocked_stamp.sql"),
-    include_str!("../../../../deploy/compose/migrations/064_owner_conversation_consent.sql"),
-    include_str!("../../../../deploy/compose/migrations/065_conversation_activation.sql"),
-    include_str!("../../../../deploy/compose/migrations/075_workflow_context.sql"),
-    include_str!("../../../../deploy/compose/migrations/076_workflow_decisions.sql"),
-];
-
 async fn migrated(db: &Client) -> String {
     let schema = format!("retention_test_{}", Uuid::new_v4().simple());
     db.batch_execute(&format!(
@@ -145,9 +98,7 @@ async fn migrated(db: &Client) -> String {
     ))
     .await
     .unwrap();
-    for migration in MIGRATIONS {
-        db.batch_execute(migration).await.unwrap();
-    }
+    crate::auth::test_schema::apply(db).await;
     schema
 }
 

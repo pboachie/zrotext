@@ -103,14 +103,16 @@ CREATE TABLE workflow_reply_correlations (
 );
 CREATE TABLE workflow_message_links (
     account_id uuid NOT NULL, action_id uuid NOT NULL, revision bigint NOT NULL,
-    binding_digest bytea NOT NULL, message_id uuid NOT NULL, dispatch_id uuid NOT NULL,
+    binding_digest bytea NOT NULL, message_id uuid NOT NULL, live_message_id uuid, dispatch_id uuid NOT NULL,
     message_digest bytea NOT NULL CHECK(octet_length(message_digest)=32),
     confirmed_by uuid NOT NULL, confirmed_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     PRIMARY KEY(account_id,action_id,revision), UNIQUE(account_id,message_id),
     UNIQUE(account_id,dispatch_id),
     FOREIGN KEY(account_id,action_id,revision,binding_digest)
         REFERENCES workflow_action_versions(account_id,action_id,revision,binding_digest),
-    FOREIGN KEY(account_id,message_id) REFERENCES messages(account_id,id)
+    FOREIGN KEY(account_id,live_message_id) REFERENCES messages(account_id,id)
+        ON DELETE SET NULL (live_message_id),
+    CHECK(live_message_id IS NULL OR live_message_id=message_id)
 );
 ALTER TABLE messages ADD COLUMN workflow_action_id uuid;
 ALTER TABLE messages ADD CONSTRAINT workflow_message_action
@@ -125,8 +127,21 @@ CREATE TRIGGER workflow_mutation_immutable BEFORE UPDATE ON workflow_action_muta
     FOR EACH ROW EXECUTE FUNCTION workflow_record_immutable();
 CREATE TRIGGER workflow_reply_immutable BEFORE UPDATE ON workflow_reply_correlations
     FOR EACH ROW EXECUTE FUNCTION workflow_record_immutable();
-CREATE TRIGGER workflow_link_immutable BEFORE UPDATE ON workflow_message_links
-    FOR EACH ROW EXECUTE FUNCTION workflow_record_immutable();
+CREATE FUNCTION workflow_link_guard() RETURNS trigger LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
+BEGIN
+    IF TG_OP='INSERT' THEN
+        IF NEW.live_message_id IS DISTINCT FROM NEW.message_id THEN
+            RAISE EXCEPTION 'workflow link requires its exact live message' USING ERRCODE='23514';
+        END IF;
+    ELSIF (to_jsonb(NEW)-'live_message_id') IS DISTINCT FROM (to_jsonb(OLD)-'live_message_id') OR
+          NOT (OLD.live_message_id IS NOT NULL AND NEW.live_message_id IS NULL AND
+               NOT EXISTS(SELECT 1 FROM messages WHERE account_id=OLD.account_id AND id=OLD.message_id)) THEN
+        RAISE EXCEPTION 'workflow message tombstone is immutable' USING ERRCODE='23514';
+    END IF;
+    RETURN NEW;
+END; $$;
+CREATE TRIGGER workflow_link_immutable BEFORE INSERT OR UPDATE ON workflow_message_links
+    FOR EACH ROW EXECUTE FUNCTION workflow_link_guard();
 CREATE FUNCTION workflow_message_marker_guard() RETURNS trigger LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
 BEGIN
     IF OLD.workflow_action_id IS NOT NULL AND NEW.workflow_action_id IS DISTINCT FROM OLD.workflow_action_id THEN
@@ -176,7 +191,7 @@ SELECT EXISTS(SELECT 1 FROM workflow_message_links l
             WHEN '00000000-0000-0000-0000-000000000003' THEN 'marketing' END
         ORDER BY effective_at DESC,recorded_at DESC,id DESC LIMIT 1) consent ON true
     WHERE l.account_id=wanted_account AND l.message_id=wanted_message
-        AND m.workflow_action_id=a.id AND a.phase='dispatching'
+      AND m.workflow_action_id=a.id AND l.live_message_id=m.id AND a.phase='dispatching'
         AND approver.role='owner' AND approver.revoked_at IS NULL AND approval_user.email_verified_at IS NOT NULL
         AND r.generation=v.authority_generation AND r.stopped_at IS NULL AND f.stopped_at IS NULL
         AND c.purged_at IS NULL AND c.expires_at_ms>floor(extract(epoch FROM clock_timestamp())*1000)::bigint

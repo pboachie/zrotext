@@ -77,7 +77,7 @@ impl LockedAction<'_, '_> {
             return Err(ConversationError::Forbidden);
         }
         let actor = self.actor_user_id();
-        self.transaction().execute("INSERT INTO workflow_message_links(account_id,action_id,revision,binding_digest,message_id,dispatch_id,message_digest,confirmed_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8)",
+        self.transaction().execute("INSERT INTO workflow_message_links(account_id,action_id,revision,binding_digest,message_id,live_message_id,dispatch_id,message_digest,confirmed_by) VALUES($1,$2,$3,$4,$5,$5,$6,$7,$8)",
             &[&self.key.account_id,&self.key.action_id,&self.key.revision,&&self.key.binding_digest[..],&message,&dispatch,&&digest[..],&actor]).await?;
         self.transaction()
             .execute(

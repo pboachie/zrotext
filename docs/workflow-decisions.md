@@ -72,3 +72,10 @@ purges encrypted bytes at the existing deadline. Later metadata pruning waits
 for linked messages to disappear before deleting action authority, so a
 surviving message cannot lose its workflow fence. A stopped routine or context
 cannot be reopened by clearing its stop timestamp.
+
+Message retention clears only the live message reference through its foreign
+key. The original message identifier, dispatch identifier, ciphertext digest,
+and exact action binding remain immutable tombstones. Recreating a message with
+the same identifier cannot restore a live workflow effect. Signed inbound
+provenance remains while a reply-correlation ledger references it; cleanup
+removes those references with their expired context metadata.
