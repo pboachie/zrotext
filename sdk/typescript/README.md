@@ -391,7 +391,11 @@ The [synthetic agent adapter foundation](../../docs/agent-adapter-simulator.md) 
 `workflow-context.ts` seals and opens proposed ZTWC01 contexts using the existing
 HPKE implementation and a just-verified role-2 archive reader. It performs no
 networking, persistence, private-key generation or dispatch activation. The
-server's owner router remains unmounted. See
+server's owner router remains unmounted. The separate
+`sealIntegrationWorkflowContext`/`openIntegrationWorkflowContext` functions require
+a just-verified selected role-3 reader with inbound scope; they never alias an
+archive envelope or issue a runtime grant. Owner confirmation and server grant
+checks remain separate from client encryption. See
 [`workflow-context.md`](../../protocol/v1/workflow-context.md) for exact authenticated
 identity, version, ciphertext, exception and retention boundaries.
 [Importable agent recipe previews](../../docs/agent-recipes.md) add a disabled n8n

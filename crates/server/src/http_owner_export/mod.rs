@@ -63,6 +63,9 @@ struct ExportQuery {
     confirmation_before: Option<Uuid>,
     execution_before: Option<Uuid>,
     contacts_before: Option<Uuid>,
+    workflow_grants_before: Option<Uuid>,
+    workflow_envelopes_before: Option<Uuid>,
+    workflow_access_before: Option<Uuid>,
     workflow_contexts_before: Option<Uuid>,
     workflow_versions_before: Option<Uuid>,
     workflow_exceptions_before: Option<Uuid>,
@@ -178,6 +181,7 @@ struct ExportView {
     execution_inventory:
         crate::http_owner_conversations::channel::execution::lifecycle::ExecutionInventory,
     workflow_schedule: crate::encrypted_schedule::lifecycle::ScheduleExport,
+    workflow_integrations: crate::workflow_runtime::lifecycle::Export,
     workflow_context: crate::http_owner_conversations::context::lifecycle::WorkflowExport,
     confirmation_inventory: crate::http_owner_conversations::confirmation_records::ProofInventory,
     agent_grants: crate::auth::agent_grants::GrantPage,
@@ -441,8 +445,23 @@ async fn export_account(
         Ok(view) => view,
         Err(error) => return error.into_response(),
     };
+    let workflow_integrations = match crate::workflow_runtime::lifecycle::export(
+        &mut client,
+        &principal,
+        [
+            query.workflow_grants_before,
+            query.workflow_envelopes_before,
+            query.workflow_access_before,
+        ],
+    )
+    .await
+    {
+        Ok(view) => view,
+        Err(error) => return error.into_response(),
+    };
     Json(ExportView {
         execution_inventory,
+        workflow_integrations,
         workflow_decisions,
         workflow_schedule,
         workflow_context,

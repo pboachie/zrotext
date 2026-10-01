@@ -195,6 +195,80 @@ impl CurrentAuthority<'_, '_> {
         Ok(())
     }
 
+    /// Selected integration readers must be active in the same pinned current
+    /// manifest as the device/line. A stored registration alone is insufficient.
+    pub(crate) async fn integration_snapshot(
+        &mut self,
+        device: Uuid,
+        line: Uuid,
+        point: &[u8],
+    ) -> Result<(ManifestSnapshot, [u8; 32], u16), AdmissionError> {
+        let now = self.checked_time().await?;
+        self.manifest
+            .conversation_keys(device.as_bytes(), line.as_bytes(), now)?;
+        let (reader, scope, _) =
+            self.manifest
+                .active_integration_reader(point, now)
+                .ok_or(AdmissionError::Rejected(
+                    "selected integration reader authority",
+                ))?;
+        Ok((
+            ManifestSnapshot {
+                generation: self.generation(),
+                version: self.manifest.version() as i64,
+                digest: *self.manifest.digest(),
+                bytes: self.bytes.clone(),
+                accepted_ms: now as i64,
+            },
+            reader,
+            scope,
+        ))
+    }
+
+    pub(crate) async fn integration_reader_deadline(
+        &mut self,
+        device: Uuid,
+        line: Uuid,
+        point: &[u8],
+    ) -> Result<i64, AdmissionError> {
+        let now = self.checked_time().await?;
+        self.manifest
+            .conversation_keys(device.as_bytes(), line.as_bytes(), now)?;
+        let (_, _, until) = self
+            .manifest
+            .active_integration_reader(point, now)
+            .ok_or(AdmissionError::Rejected("integration reader deadline"))?;
+        i64::try_from(until).map_err(|_| AdmissionError::Rejected("integration reader deadline"))
+    }
+
+    /// A workflow signer is a distinct active role-5 key for this exact line.
+    pub(crate) async fn workflow_signer(
+        &mut self,
+        device: Uuid,
+        line: Uuid,
+        id: &[u8; 32],
+    ) -> Result<(), AdmissionError> {
+        self.workflow_signer_deadline(device, line, id)
+            .await
+            .map(|_| ())
+    }
+
+    pub(crate) async fn workflow_signer_deadline(
+        &mut self,
+        device: Uuid,
+        line: Uuid,
+        id: &[u8; 32],
+    ) -> Result<i64, AdmissionError> {
+        let now = self.checked_time().await?;
+        self.manifest
+            .conversation_keys(device.as_bytes(), line.as_bytes(), now)?;
+        let until = self
+            .manifest
+            .active_agent_signer_until(line.as_bytes(), id, now)
+            .ok_or(AdmissionError::Rejected("workflow signer authority"))?;
+        i64::try_from(until).map_err(|_| AdmissionError::Rejected("workflow signer deadline"))
+    }
+
     /// Invoke after every potentially blocking storage operation, immediately
     /// before commit. Also detects authority changes made within this transaction.
     pub(crate) async fn context<'a>(

@@ -77,6 +77,7 @@ pub struct RetentionCounts {
     pub conversation_provenance: u64,
     pub conversation_intervals: u64,
     pub workflow_contexts: u64,
+    pub workflow_integrations: u64,
     pub conversation_confirmations: u64,
     pub workflow_schedule: u64,
 }
@@ -98,6 +99,7 @@ impl RetentionCounts {
             self.conversation_provenance,
             self.conversation_intervals,
             self.workflow_contexts,
+            self.workflow_integrations,
             self.conversation_confirmations,
             self.workflow_schedule,
         ]
@@ -364,6 +366,13 @@ pub async fn prune(
         crate::encrypted_schedule::lifecycle::prune(client, policy.sealed_inbound_days, limit),
     )
     .await;
+    let workflow_integrations = step(
+        "workflow_integrations",
+        &mut first_error,
+        &mut failures,
+        crate::workflow_runtime::lifecycle::prune(client, limit),
+    )
+    .await;
     let workflow_contexts = step(
         "workflow_contexts",
         &mut first_error,
@@ -399,6 +408,7 @@ pub async fn prune(
         conversation_provenance,
         conversation_intervals,
         workflow_contexts,
+        workflow_integrations,
         conversation_confirmations,
         workflow_schedule,
     })
