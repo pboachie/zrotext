@@ -156,6 +156,22 @@ impl CurrentAuthority<'_, '_> {
         ))
     }
 
+    pub(crate) async fn integration_reader_deadline(
+        &mut self,
+        device: Uuid,
+        line: Uuid,
+        point: &[u8],
+    ) -> Result<i64, AdmissionError> {
+        let now = self.checked_time().await?;
+        self.manifest
+            .conversation_keys(device.as_bytes(), line.as_bytes(), now)?;
+        let (_, _, until) = self
+            .manifest
+            .active_integration_reader(point, now)
+            .ok_or(AdmissionError::Rejected("integration reader deadline"))?;
+        i64::try_from(until).map_err(|_| AdmissionError::Rejected("integration reader deadline"))
+    }
+
     /// A workflow signer is a distinct active role-5 key for this exact line.
     pub(crate) async fn workflow_signer(
         &mut self,

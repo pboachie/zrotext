@@ -171,5 +171,22 @@ metadata, without granting context reading. `read_action_status` requires
 line, contact, purpose and source context version, and returns the shared action
 service's current durable state. Repeating its request can observe a later owner
 cancellation; the access identity is recorded once. Both use bounded content-free
-access records included in the lifecycle described above. Integration proposal,
-execution and scheduling services remain incomplete and unmounted.
+access records included in the lifecycle described above.
+
+`propose_action` requires the independent `propose` permission and a distinct,
+currently active role-5 signer for the exact line. It reuses the shared action,
+version, routine and mutation ledger. Exact retries return the persisted action;
+changed descriptors conflict. The mutation records the exact integration grant
+as its actor, with no owner user identity. Owner approval remains the separate
+existing owner-only decision ceremony. Proposal retries after takeover or grant
+withdrawal are refused; proposals create no messages.
+
+Grant issuance bounds expiry by the verified manifest and required context,
+selected role-3 reader and optional role-5 signer deadlines before consuming the
+owner MFA factor. The immutable action origin persists even if its grant is
+erased. The database effect predicate composes the shared decision and schedule
+predicates with current source-grant and executor-grant scope checks. Missing or
+withdrawn grants cannot convert an integration action into owner authority.
+Actor metadata appears in the shared bounded action takeout and is removed with
+its source action lifecycle. Integration execution and scheduling service
+wrappers remain incomplete; the entire runtime remains unmounted.

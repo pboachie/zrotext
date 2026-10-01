@@ -319,7 +319,7 @@ impl VerifiedManifest {
         self.roles
             .iter()
             .filter(|k| k.role == 3 && k.point.as_slice() == point && k.active(now))
-            .map(|k| (k.id, k.scope, k.until))
+            .map(|k| (k.id, k.scope, k.until.min(self.expires)))
             .next()
     }
 

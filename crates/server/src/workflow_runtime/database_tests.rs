@@ -45,11 +45,7 @@ impl Case {
     async fn with_signer(signer_lifetime: Option<i64>) -> Self {
         let (mut f, owner, s) = pending().await;
         activate(&f, &s).await;
-        for sql in [include_str!(
-            "../../../../deploy/compose/migrations/078_workflow_integration_authority.sql"
-        )] {
-            f.db.batch_execute(sql).await.unwrap();
-        }
+
         let now: i64 =
             f.db.query_one(
                 "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint",
@@ -1042,6 +1038,27 @@ async fn integration_proposal_retries_share_action_ledger_and_require_separate_o
     .await
     .unwrap();
     assert_eq!(approved.phase, Phase::Approved);
+    assert!(
+        client
+            .query_one(
+                "SELECT workflow_action_origin_current($1,$2)",
+                &[&case.f.account, &first.key.action_id]
+            )
+            .await
+            .unwrap()
+            .get::<_, bool>(0)
+    );
+    let takeout = decisions::lifecycle::export(&mut client, &case.owner, [None; 7])
+        .await
+        .unwrap();
+    let proposal = takeout
+        .mutations
+        .items
+        .iter()
+        .find(|item| item["actor_kind"] == "integration")
+        .unwrap();
+    assert_eq!(proposal["actor_grant_id"], issued.grant_id.to_string());
+    assert!(proposal["actor_user_id"].is_null());
     assert_eq!(
         client
             .query_one("SELECT count(*) FROM messages", &[])
@@ -1053,6 +1070,16 @@ async fn integration_proposal_retries_share_action_ledger_and_require_separate_o
     revoke_grant(&mut client, &case.owner, issued.grant_id)
         .await
         .unwrap();
+    assert!(
+        !client
+            .query_one(
+                "SELECT workflow_action_origin_current($1,$2)",
+                &[&case.f.account, &first.key.action_id]
+            )
+            .await
+            .unwrap()
+            .get::<_, bool>(0)
+    );
     assert!(
         propose_action(&mut client, &principal, request, descriptor)
             .await
@@ -1144,5 +1171,107 @@ async fn workflow_grant_cannot_outlive_verified_role_five_signer_or_consume_fact
     assert_eq!(counts.get::<_, i64>(1), 1);
     case.request.expires_ms = case.header.expires_ms - 30000;
     assert!(case.issue().await.is_ok());
+    case.f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; disposable workflow schema"]
+async fn sql_origin_fence_requires_live_grant_creator_context_and_current_key_authority() {
+    let mut case = Case::with_signer(Some(120000)).await;
+    case.request.permissions = Permissions::new(&[Operation::Propose]).unwrap();
+    let descriptor = case.descriptor().await;
+    let issued = case.issue().await.unwrap();
+    let principal = authenticate(&case.f.db, &case.hasher, &issued.token)
+        .await
+        .unwrap();
+    let mut client = case.f.connect().await;
+    let action = propose_action(&mut client, &principal, Uuid::new_v4(), descriptor)
+        .await
+        .unwrap();
+    assert!(
+        client
+            .query_one(
+                "SELECT workflow_action_origin_current($1,$2)",
+                &[&case.f.account, &action.key.action_id]
+            )
+            .await
+            .unwrap()
+            .get::<_, bool>(0)
+    );
+    for change in [
+        "UPDATE devices SET revoked_at=clock_timestamp()",
+        "UPDATE connector_keys SET retired_ms=floor(extract(epoch FROM clock_timestamp())*1000)::bigint",
+        "UPDATE sessions SET expires_at=clock_timestamp()-interval '1 second'",
+        "UPDATE users SET mfa_enabled=false",
+        "UPDATE sealed_manifest_authorities SET revoked_at=clock_timestamp()",
+        "UPDATE workflow_contexts SET purged_at=clock_timestamp()",
+    ] {
+        let tx = client.transaction().await.unwrap();
+        tx.batch_execute(change).await.unwrap();
+        assert!(
+            !tx.query_one(
+                "SELECT workflow_action_origin_current($1,$2)",
+                &[&case.f.account, &action.key.action_id]
+            )
+            .await
+            .unwrap()
+            .get::<_, bool>(0),
+            "{change}"
+        );
+        tx.rollback().await.unwrap();
+    }
+    assert!(
+        !client
+            .query_one(
+                "SELECT workflow_action_origin_current($1,$2)",
+                &[&Uuid::new_v4(), &action.key.action_id]
+            )
+            .await
+            .unwrap()
+            .get::<_, bool>(0)
+    );
+    assert!(
+        !client
+            .query_one(
+                "SELECT workflow_integration_grant_current($1,$2,$3,64)",
+                &[&case.f.account, &issued.grant_id, &action.key.action_id]
+            )
+            .await
+            .unwrap()
+            .get::<_, bool>(0)
+    );
+    assert!(
+        client
+            .query_one(
+                "SELECT workflow_action_origin_current($1,$2)",
+                &[&case.f.account, &action.key.action_id]
+            )
+            .await
+            .unwrap()
+            .get::<_, bool>(0)
+    );
+    let tx = client.transaction().await.unwrap();
+    lifecycle::erase_contact(&tx, case.f.account, case.request.contact)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert!(
+        !client
+            .query_one(
+                "SELECT workflow_action_origin_current($1,$2)",
+                &[&case.f.account, &action.key.action_id]
+            )
+            .await
+            .unwrap()
+            .get::<_, bool>(0)
+    );
+    assert_eq!(
+        client
+            .query_one("SELECT integration_origin_grant FROM workflow_actions", &[])
+            .await
+            .unwrap()
+            .get::<_, Uuid>(0),
+        issued.grant_id
+    );
     case.f.cleanup().await;
 }

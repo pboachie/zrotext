@@ -180,6 +180,19 @@ pub async fn issue_grant(
     {
         return Err(AuthError::Forbidden);
     }
+    let readers = activation::readers(&s);
+    let wanted = activation::wanted(&s, header.context, &readers);
+    let context_deadline = authority
+        .admission_deadline(&wanted)
+        .await
+        .map_err(|_| AuthError::Forbidden)?;
+    let reader_deadline = authority
+        .integration_reader_deadline(header.device, header.line, &point)
+        .await
+        .map_err(|_| AuthError::Forbidden)?;
+    if request.expires_ms > context_deadline.min(reader_deadline) {
+        return Err(AuthError::Forbidden);
+    }
     if let Some(signer) = request.signer {
         let deadline = authority
             .workflow_signer_deadline(header.device, header.line, &signer)
